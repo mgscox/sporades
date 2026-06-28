@@ -1,0 +1,3 @@
+# Single container per project, replace on redeploy
+
+v0 supports one container per project. `sporades deploy` checks `.sporades/binding.json` for an existing container ID. If found, it stops and removes the old container before starting a new one. This avoids port collisions and orphaned containers. The binding file tracks the container ID and name (`sporades-<project-name>`). v1 may support multiple environments (staging, production) with separate bindings.

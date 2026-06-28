@@ -25,8 +25,12 @@ The Docker image (Node 22 alpine) that all container sessions use. v0 uses the s
 _Avoid_: runtime image, host image
 
 **Runtime directory**:
-The `.sporades/` directory in a project. Contains build output (`build/server.mjs`, `build/client.js`) and the SQLite database (`data.db`). Gitignored. Owned by Sporades — the user does not touch it.
+The `.sporades/` directory in a project. Contains build output (`build/server.mjs`, `build/client.js`), the SQLite database (`data.db`), and the container binding (`binding.json`). Gitignored. Owned by Sporades — the user does not touch it.
 _Avoid_: build directory, cache directory
+
+**Container binding**:
+A `.sporades/binding.json` file tracking the running container's ID and name. Used by `sporades deploy` to find and replace the existing container. v0 supports one container per project — redeploy replaces, does not multiply.
+_Avoid_: deploy metadata, container record
 
 ## Server runtime
 
@@ -114,6 +118,10 @@ _Avoid_: config file (too generic — it's the specific project config)
 **Config cascade**:
 `sporades.json` → CLI flag → default. CLI flags override config values; config values override defaults. Applied to: ports, framework, auth mode.
 
+**Server env**:
+A `.env.sporades.server` file at the project root containing server-only environment variables. Mounted read-only at `/app/.env.sporades.server` in the container. Max 64 keys, 64KB total. No `SPORADES_` prefix (reserved). Accessible via `ctx.env`. This is a v0 stopgap — env files are terrible and will be replaced.
+_Avoid_: environment file, dot-env (implementation detail)
+
 ## CLI output
 
 **JSON output**:
@@ -123,3 +131,13 @@ _Avoid_: structured output (too generic)
 **JSONL streaming**:
 `sporades dev --json` streams JSON Lines to stdout — one JSON object per event (started, rebuild success, rebuild failed). Enables agents to watch for build errors and react in real time.
 _Avoid_: streaming output, log lines
+
+## Scaffold
+
+**Scaffold**:
+The output of `sporades create`. A project directory with server entry, client entry, shared types, index.html, config, and agent instructions. Includes a todo app template that demonstrates the full stack.
+_Avoid_: boilerplate, starter (it's a complete project, not a placeholder)
+
+**Scaffold install**:
+`sporades create` runs `npm install` for the chosen framework after scaffolding. The user (or agent) does not run `npm install` separately. The project's `package.json` includes the framework dependency and the Sporades CLI as dev dependencies.
+_Avoid_: dependency install, setup step

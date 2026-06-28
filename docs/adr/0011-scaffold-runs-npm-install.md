@@ -1,0 +1,3 @@
+# Scaffold runs npm install for the chosen framework
+
+`sporades create` runs `npm install` for the chosen client framework (React, Preact) after scaffolding. The project's `package.json` includes the framework as a dependency and `sporades` as a dev dependency. The user (or agent) does not run `npm install` separately. This ensures the project is immediately runnable with `sporades dev` and the esbuild bundler can resolve the framework's JSX runtime.

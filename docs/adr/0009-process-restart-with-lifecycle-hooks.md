@@ -1,0 +1,3 @@
+# Process restart for dev rebuilds, structured for future hot reload
+
+v0 dev rebuilds do a full process restart: kill the Node process, start a fresh one, re-import the bundle. The client reconnects via WebSocket with 500ms backoff. This is the simplest reliable approach. The server runtime has `init()` and `shutdown()` lifecycle hooks from day one — v0 uses them as "start" and "die", but they exist so v1 can implement hot reload (call `shutdown()`, re-import, call `init()`) without restructuring.

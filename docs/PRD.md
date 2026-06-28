@@ -4,24 +4,26 @@
 
 ## Overview
 
-Sporades is a CLI-first PaaS for spinning up and hosting full-stack web applications. It provides the developer experience of Lakebed — `create`, `dev`, `deploy` in three commands — without the artificial constraints of an interpreted IR sandbox. Apps run as real Node.js in isolated containers with a locked base image, mounted bundle files, and a persistent SQLite volume.
+Sporades is a CLI-first tool for building and running full-stack web apps. It provides the developer experience of Lakebed — `create`, `dev`, `deploy` in three commands — without the artificial constraints of an interpreted IR sandbox. Apps run as real Node.js with a real SQLite database, bundled by esbuild into self-contained files.
 
 **Target users:** developers who want zero-config full-stack apps, and agentic LLM systems that need a deterministic, scriptable deployment pipeline.
+
+**v0 scope:** runs entirely locally. `dev` runs the bundled app in Node with file watching. `deploy` runs the bundled app in a local Docker container. No remote hosting, no PaaS API, no TLS. Hosting is a future concern.
 
 ## Core Principles
 
 1. **CLI is the primary interface.** Every command is scriptable, deterministic, and supports `--json` output. No interactive prompts unless strictly necessary. Agents don't use browsers or dashboards.
 2. **Bundle, don't install.** esbuild bundles server and client into self-contained files at build time. No `node_modules` at runtime. The host runs `node server.mjs` — nothing else.
-3. **Real isolation, not regex.** Container security (seccomp, non-root, read-only FS, cgroups) instead of source-code scanning for forbidden patterns.
+3. **Always bundle, even in dev.** Both `dev` and `deploy` run esbuild-bundled code. This eliminates the parity gap between dev and container environments. Dev rebuilds are debounced (100ms); failed rebuilds keep serving the last successful bundle.
 4. **No platform lock-in at the code level.** The server API is a thin layer over standard Node.js. If you outgrow Sporades, your bundled `server.mjs` runs anywhere Node runs.
 5. **Agent-first scaffolds.** Every project includes `AGENTS.md` so any LLM dropped into a Sporades project immediately knows the structure, rules, and commands.
 
 ## Server API (v0)
 
-Mirrors Lakebed's API for familiarity and simplicity. Extensible by design — `capsule()` is an identity function today, interceptable for enrichment in v1.
+Mirrors Lakebed's API for familiarity and simplicity. `capsule()` is the initialisation function — it registers the schema with SQLite, configures Better Auth, and wires the table API. Future extensibility (middleware, hooks, custom field types) hooks into this function.
 
 ```typescript
-import { Boolean, capsule, endpoint, mutation, query, String, table, text } from "sporades/server";
+import { Boolean, capsule, mutation, query, String, table } from "sporades/server";
 
 export default capsule({
   name: "My App",
@@ -47,17 +49,17 @@ export default capsule({
     addTodo: mutation((ctx, text: string) => {
       ctx.db.todos.insert({ text, ownerId: ctx.auth.userId });
     })
-  },
-
-  endpoints: {
-    status: endpoint({ method: "GET", path: "/api/status" }, () => text("ok"))
   }
 });
 ```
 
+### No endpoints in v0
+
+v0 does not include `endpoint()`. The server exposes queries, mutations, and auth over WebSocket only. Webhooks and HTTP-based integrations are a v1 concern. (Lakebed needed endpoints for Google OAuth callbacks; Sporades handles auth server-side via Better Auth, so that use case doesn't exist.)
+
 ### Context (`ctx`)
 
-Every query, mutation, and endpoint handler receives a context:
+Every query and mutation handler receives a context:
 
 | Field | Type | Description |
 |---|---|---|
@@ -66,118 +68,136 @@ Every query, mutation, and endpoint handler receives a context:
 | `ctx.env` | `Record<string, string>` | Server-only environment variables from `.env.sporades.server` |
 | `ctx.log` | `Logger` | `{ info, warn, error }` — entries captured and viewable via `sporades logs` |
 
+### Field types
+
+Capitalised to avoid TypeScript keyword collisions:
+
+| Builder | SQLite type | JS type |
+|---|---|---|
+| `String()` | `TEXT` | `string` |
+| `Boolean()` | `INTEGER` (0/1) | `boolean` — Sporades owns serialisation |
+
+### Auto fields
+
+Every table has three managed fields. App code cannot set or update them:
+
+| Field | Type | Description |
+|---|---|---|
+| `id` | `TEXT` (UUID) | `crypto.randomUUID()` |
+| `createdAt` | `TEXT` (ISO 8601) | Set on insert |
+| `updatedAt` | `TEXT` (ISO 8601) | Set on insert, auto-updated on every `update` |
+
 ### Extensibility path (v1+)
 
-- **Field types:** `number()`, `date()`, `json()`, `reference()` — same builder pattern, extend the field registry.
-- **Middleware:** wrap context creation to inject custom services.
+- **Field types:** `Number()`, `Date()`, `Json()`, `Reference()` — same builder pattern.
+- **Middleware:** hook into `capsule()` to wrap context creation.
 - **Custom query operators:** extend `TableApi` with new chainable methods.
-- **Hooks:** pre/post mutation hooks for validation, audit logging, etc.
+- **Hooks:** pre/post mutation hooks for validation, audit logging.
+- **Endpoints:** `endpoint({ method, path }, handler)` for HTTP escape hatches.
 
 ## Client Framework
 
-### v0: JSX-based frameworks
+### Framework-agnostic via factory pattern
 
-esbuild's JSX transform is configured via a single flag per framework. `sporades.json` declares the framework; the build pipeline configures esbuild accordingly.
+`sporades/client` exports a transport layer and a `createHooks` factory. The user provides their framework's primitives; Sporades provides the hook logic.
 
-```json
-{
-  "client": {
-    "framework": "react"
-  }
-}
+```tsx
+import { useState, useEffect } from "react";
+import { createHooks } from "sporades/client";
+
+const { useQuery, useMutation, useAuth } = createHooks({ useState, useEffect });
 ```
 
-| Framework | v0 support | Config |
+The scaffold template handles this wiring — the agent or developer never writes it by hand.
+
+### Supported frameworks (v0)
+
+| Framework | JSX import source | Notes |
 |---|---|---|
-| **React** | ✅ | `--jsx-import-source=react` |
-| **Preact** | ✅ | `--jsx-import-source=preact` |
-| **Solid** | ✅ | `--jsx-import-source=solid-js` |
+| **React** (default) | `react` | Largest LLM training data presence |
+| **Preact** | `preact` | Smallest bundle |
 
-React is the default — it has the largest presence in LLM training data, making agent-authored code more reliable.
-
-### v1+: Template-based frameworks
-
-Svelte and Vue require esbuild plugins (Svelte compiler, `@vue/compiler-sfc`) in the build pipeline. Angular requires its own build system and is explicitly out of scope.
-
-### Client API
-
-The client receives real-time data via WebSocket. The transport is framework-agnostic — hooks are thin wrappers over a shared WebSocket layer.
-
-```typescript
-import { useQuery, useMutation, useAuth } from "sporades/client";
-// React hooks: useQuery, useMutation, useAuth
-// Preact hooks: same API, preact/hooks adapter
-```
+`sporades.json` declares the framework; esbuild configures `--jsx-import-source` accordingly.
 
 ### Client transport
 
-WebSocket connection to `/__sporades/ws` on the same origin:
+WebSocket connection to `/__sporades/ws` on the same origin (same port as HTTP):
 
 - `query.subscribe` → server pushes `query.result` whenever state changes
 - `mutation.run` → request/response with ID correlation
 - `auth.get` → returns current auth state
 - `refresh` → client reloads (dev mode, on rebuild)
 
-Auto-reconnect with 500ms backoff. Query cache + listener pattern for reactive updates.
+Auto-reconnect with 500ms backoff. Session token stored in `localStorage`, sent on WebSocket connection.
+
+### No router
+
+Sporades does not provide a router. The scaffold template includes a framework-appropriate router (React Router for React, preact-router for Preact) as a template choice.
 
 ## Database
 
-**SQLite via Node 22+ built-in `node:sqlite`** (`DatabaseSync`). No native addons, no npm dependency, no `better-sqlite3`.
+**SQLite via Node 22+ built-in `node:sqlite`** (`DatabaseSync`). No native addons, no npm dependency.
 
 | Property | Detail |
 |---|---|
-| Local dev | SQLite file in `.sporades/data.db` |
-| Production | SQLite file in mounted volume (`/app/data/data.db`) |
-| Persistence | Survives container restarts. Local dev state persists across `sporades dev` restarts (unlike Lakebed). |
-| Concurrency | WAL mode enabled. Single-writer, multiple-reader. Sufficient for prototype-class apps. |
-| Migrations | v0: schema derived from `capsule()` definition. Table creation is automatic. v1: explicit migration support. |
+| Local dev | SQLite file at `.sporades/data.db` |
+| Container | SQLite file in mounted volume (`/app/data/data.db`) |
+| Persistence | Survives dev restarts and container restarts |
+| Concurrency | WAL mode. Single writer (one process in v0). |
+| Migrations | Schema-version-locked: hash changes → drop and recreate. Data lost on schema change. |
 
-### Why not Postgres
+### System table
 
-If you need Postgres, you've outgrown Sporades. The product is intentionally scoped to prototype-to-small-production apps. SQLite in a volume handles tens of thousands of rows and low concurrency — more than enough for the target use case.
+A `sporades` table auto-created in every database. Stores schema version hash, migration state, and app metadata. Sporades owns it; app code cannot write to it.
+
+### Row cache
+
+`Map<rowId, row>` in-memory cache. Rows cached on read (lazy, per-row), invalidated on write. SQLite is the source of truth. Single writer in v0 means no cache coherence problem.
+
+### Query builder
+
+Chainable API accumulates filters, sort, and limit. Compilation to SQL happens at `.all()` (queries) or at mutation execution. Same pattern as Lakebed's `QueryBuilder`, with SQL execution instead of in-memory filtering.
 
 ## Auth
 
-**Strategy:** wrapped auth layer providing guest mode by default, with opt-in provider configuration. The user shouldn't need to understand auth internals — `sporades.json` configures it, the CLI manages it.
+**Better Auth with Anonymous plugin**, owned entirely by the server. The client never sees the auth library.
 
 ### v0 auth modes
 
 | Mode | Config | Behaviour |
 |---|---|---|
-| **Guest** (default) | `auth: { mode: "guest" }` or unset | Every visitor gets a random `userId` (`guest:<random>`). `isGuest: true`. No sign-in UI. |
-| **Google OAuth** | `auth: { mode: "google", clientId, clientSecret }` | Guest by default, `<SignInWithGoogle />` component available for upgrade. |
+| **Anonymous** (default) | `auth: { mode: "anonymous" }` or unset | Every visitor gets a real session via Better Auth's Anonymous plugin. Persistent account, session token in `localStorage`. Data preserved when linking an auth method. |
+| **Google OAuth** | `auth: { mode: "google", clientId, clientSecret }` | Anonymous by default, `signInWithGoogle()` function available for upgrade. Links Google identity to existing anonymous account — no data loss. |
 
 ### Auth context
 
-`ctx.auth` is always populated, even in guest mode:
+`ctx.auth` is always populated from the Better Auth session:
 
 ```typescript
 {
-  userId: string,          // "guest:abc123" or real user ID
-  displayName: string,     // "Guest" or real name
+  userId: string,          // anonymous account ID or real user ID
+  displayName: string,     // "Anonymous" or real name
   email: string | null,
   picture: string | null,
-  isAuthenticated: boolean, // false for guests
-  isGuest: boolean,        // true for unauthenticated visitors
-  provider: string         // "guest" | "google" | ...
+  isAuthenticated: boolean, // false for anonymous-only
+  isGuest: boolean,        // true for anonymous-only sessions
+  provider: string         // "anonymous" | "google" | ...
 }
 ```
 
-### v1+ auth
+### Implementation
 
-- Additional OAuth providers (GitHub, Microsoft, etc.)
-- Email/password (if demand exists)
-- Magic link
-- Session management API
+- **Server:** `sporades/server` initialises Better Auth with a `node:sqlite` adapter. Manages sessions, OAuth callbacks, and `ctx.auth` population. The user never touches Better Auth directly.
+- **Client:** `sporades/client` calls Sporades auth endpoints, stores session token in `localStorage`, sends it on the WebSocket. No Better Auth client SDK in the bundle.
 
 ## Build Pipeline
 
 ### How it works
 
 ```
-DEVELOPER MACHINE                         HOST
+DEVELOPER MACHINE                         CONTAINER (deploy only)
 ─────────────────                         ──────────────────
-npm install <framework>           │
+npm install react                 │
                                   │  BUILD TIME
 sporades dev / sporades deploy    │
   ↓                               │
@@ -185,148 +205,146 @@ sporades dev / sporades deploy    │
     server/index.ts → server.mjs  │  (all deps inlined)
     client/index.tsx → client.js  │  (all deps inlined)
   ↓                               │
-  [dev] run locally with Node     │
-  [deploy] sync bundles to host ──┼──→ node server.mjs  (in container)
-                                  │    serve client.js   (static)
-                                  │    SQLite volume     (persistent)
+  [dev] run server.mjs with Node  │
+  [deploy] docker run             │
+    mount server.mjs (ro) ────────┼──→ node server.mjs
+    mount client.js (ro) ─────────┼──→ serve statically
+    mount index.html (ro) ────────┼──→ serve at /
+    mount .env.sporades.server(ro)┼──→ env vars
+    volume /app/data (rw) ────────┼──→ SQLite database
 ```
 
 ### esbuild configuration
 
 Server bundle:
-- `bundle: true` — inline all dependencies
-- `platform: "node"` — Node.js target
-- `format: "esm"` — ES module output
-- `external: []` — nothing is external (except `node:` builtins, which esbuild handles automatically)
-- Source maps: inline (dev), none (production)
+- `bundle: true`, `platform: "node"`, `format: "esm"`
+- Source maps: inline (dev), none (deploy)
+- External: nothing (all deps inlined, `node:` builtins auto-resolved)
 
 Client bundle:
-- `bundle: true` — inline all dependencies
-- `platform: "browser"` — browser target
-- `format: "esm"` — ES module output
-- `--jsx-import-source` — from `sporades.json` client.framework
-- Source maps: inline (dev), none (production)
+- `bundle: true`, `platform: "browser"`, `format: "esm"`
+- `--jsx-import-source` from `sporades.json` `client.framework`
+- Source maps: inline (dev), none (deploy)
 
-### What can't be bundled
+### Runtime directory
 
-| Case | Handling |
-|---|---|
-| Native addons (`.node` files) | Mark as external, pre-install in base image. v0: not needed — `node:sqlite` is built-in. |
-| Dynamic `require(variable)` | esbuild warns. Rewrite to static imports. |
-| Runtime config file reads | Rare. Workaround: inline config at build time. |
+All build output and runtime artefacts live in `.sporades/` (gitignored):
 
-For v0, the target is zero externals. The server and client bundles are fully self-contained.
-
-## Container Architecture
-
-### Base image (locked, shared across all apps)
-
-```dockerfile
-FROM node:22-alpine-slim
-USER node
-# No shell, no package manager cache, no build tools
-# Just Node.js
+```
+.sporades/
+├── build/
+│   ├── server.mjs
+│   └── client.js
+├── data.db
+└── binding.json    # container binding (deploy only)
 ```
 
-- ~50MB, never changes per-app
-- Non-root user enforced
-- No `node_modules` in the image
+## Container Architecture (v0)
+
+### Base image
+
+```
+FROM node:22-alpine
+```
+
+Stock image, no hardening in v0. v1 will introduce: non-root user, read-only FS, seccomp, cgroups, no-shell.
 
 ### Per-app runtime
 
 ```
 Container
-├── Base image (read-only, shared)
-├── /app/server.mjs     ← mounted read-only (esbuild output)
-├── /app/client.js      ← mounted read-only (esbuild output)
-├── /app/sporades.json  ← mounted read-only (config)
-├── /app/data/          ← mounted read-write (SQLite volume)
-└── /tmp                ← tmpfs (ephemeral)
+├── Base image (node:22-alpine)
+├── /app/server.mjs     ← mounted read-only
+├── /app/client.js      ← mounted read-only
+├── /app/index.html     ← mounted read-only
+├── /app/sporades.json  ← mounted read-only (passed as arg, not read by server)
+├── /app/.env.sporades.server ← mounted read-only
+└── /app/data/          ← mounted read-write (SQLite volume)
 ```
 
-### Security hardening
+### Container lifecycle
 
-| Layer | Mechanism |
-|---|---|
-| Kernel isolation | Docker namespaces + cgroups |
-| Syscall filtering | seccomp profile (block `clone()`, `mount()`, `ptrace()`, etc.) |
-| Filesystem | `--read-only` root, only `/app/data` writable |
-| Privilege | Non-root user, `--no-new-privileges` |
-| Network | v0: unrestricted egress. v1: configurable allowlist. |
-| Resources | CPU + memory limits per container |
-| Capabilities | Drop all, add none |
-
-### Why this is better than Lakebed's regex scanner
-
-Lakebed scans source code with regex for forbidden patterns (`/fetch/`, `/eval/`, `/process/`). This is bypassable through obfuscation, string concatenation, and encoding. Container security is enforced by the kernel — a seccomp profile blocking `mount()` can't be bypassed by clever JavaScript.
+- `sporades deploy` checks `.sporades/binding.json` for an existing container
+- If found: stops and removes the old container
+- Starts a new container with the same name (`sporades-<project-name>`)
+- Writes the new container ID to `binding.json`
+- Returns the URL (`http://localhost:<port>`)
+- One container per project in v0
 
 ## CLI Commands
 
 ### `sporades create [name]`
 
-Scaffolds a new project from the default template.
+Scaffolds a new project, runs `npm install`, initialises git.
 
 ```
 my-app/
-├── sporades.json          # config (framework, auth mode, app name)
-├── AGENTS.md              # instructions for AI agents
-├── CLAUDE.md              # mirror of AGENTS.md (Claude convention)
+├── sporades.json
+├── AGENTS.md
+├── CLAUDE.md
 ├── README.md
 ├── .gitignore
+├── .env.sporades.server
+├── index.html
+├── package.json
 ├── server/
-│   └── index.ts           # capsule definition (schema, queries, mutations, endpoints)
+│   └── index.ts
 ├── client/
-│   └── index.tsx          # UI entrypoint
+│   └── index.tsx
 └── shared/
-    └── types.ts            # shared types between client and server
+    └── types.ts
 ```
 
 Flags:
-- `--template <name>` — template selection (v0: only "default")
+- `--template <name>` — template selection (v0: only "todo")
 - `--framework <react|preact>` — client framework (default: react)
 - `--no-git` — skip git init
-- `--json` — output scaffold path as JSON
-
-Initialises git with a first commit (unless `--no-git`).
+- `--no-install` — skip npm install
+- `--json` — output `{ ok, data: { path }, error: null }`
 
 ### `sporades dev`
 
 Starts local dev server with live rebuild.
 
-- HTTP server on port 3000 (configurable via `--port`)
 - esbuild bundles server + client on start
-- File watcher → debounced rebuild (100ms) → WebSocket push `refresh` to client
+- File watcher → debounced rebuild (100ms) → process restart → WebSocket reconnect
+- Failed rebuilds: keep serving last successful bundle, report error
 - SQLite at `.sporades/data.db` (persists across restarts)
-- Debug endpoints:
-  - `GET /__sporades/logs` — server log entries
-  - `GET /__sporades/db` — full database dump
-  - `GET /__sporades/db/tables` — table list
-- Auth: guest mode (configurable)
+- Debug endpoints: `GET /__sporades/logs`, `GET /__sporades/db`, `GET /__sporades/db/tables`
+- Auth: anonymous mode (configurable)
 
 Flags:
-- `--port <number>` — port (default: 3000)
-- `--json` — output `{ url, port }` as JSON
+- `--port <number>` — override dev port (default: from `sporades.json` or `deploy.port`)
+- `--json` — JSONL streaming output (one JSON object per event)
+
+JSONL events:
+```jsonl
+{"ok":true,"data":{"event":"started","url":"http://localhost:3000","port":3000},"error":null}
+{"ok":true,"data":{"event":"rebuild","status":"success","durationMs":120},"error":null}
+{"ok":true,"data":{"event":"rebuild","status":"failed","error":"Syntax error in server/index.ts:12"},"error":null}
+```
 
 ### `sporades deploy`
 
-Bundles and deploys to the managed PaaS target.
+Bundles and runs in a local Docker container.
 
-1. esbuild bundles server + client (~2s)
-2. POST bundles to Sporades PaaS API (~1s)
-3. PaaS restarts container with new mounted files (~1s)
-4. Returns live URL
-
-Flags:
-- `--json` — output `{ url, deployId, updatedAt, expiresAt }` as JSON
-- `--target <name>` — deploy target (v0: only the default PaaS)
-
-### `sporades logs [deployId]`
-
-Fetches server logs for a deploy.
+1. esbuild bundles server + client
+2. Check `.sporades/binding.json` for existing container → stop and remove if found
+3. `docker run` with mounted bundles, index.html, env file, and data volume
+4. Write container ID to `binding.json`
+5. Return URL
 
 Flags:
-- `--port <number>` — local dev server port (for local logs)
-- `--follow` — stream logs (if supported by PaaS)
+- `--port <number>` — override deploy port (default: from `sporades.json`)
+- `--json` — output `{ ok, data: { url, port, containerId }, error: null }`
+
+### `sporades logs`
+
+Fetches server logs.
+
+Flags:
+- `--port <number>` — local dev server port (default: from `sporades.json` or 3000)
+- `--follow` — stream new log entries
 - `--json` — structured JSON output
 
 ### `sporades db`
@@ -339,7 +357,7 @@ Subcommands:
 - `sporades db query <sql>` — run a read-only SQL query
 
 Flags:
-- `--port <number>` — local dev server port (default: 3000)
+- `--port <number>` — local dev server port
 - `--json` — structured JSON output
 
 ### `sporades auth`
@@ -350,23 +368,12 @@ Subcommands:
 - `sporades auth status` — show current auth configuration
 - `sporades auth set google --client-id <id> --client-secret <secret>` — configure Google OAuth
 
-### `sporades inspect [deployId]`
-
-Shows deploy metadata, status, resource usage, and limits.
-
-Flags:
-- `--json` — structured JSON output
-
 ## Output conventions
 
-Every command supports `--json` and produces machine-readable output when used:
+Every command supports `--json`:
 
 ```json
-{
-  "ok": true,
-  "data": { ... },
-  "error": null
-}
+{ "ok": true, "data": { ... }, "error": null }
 ```
 
 Error output (exit code 1):
@@ -381,82 +388,7 @@ Error output (exit code 1):
 }
 ```
 
-Error messages always include a `hint` field with an actionable suggestion — designed for agents to self-correct without human intervention.
-
-## `AGENTS.md` template
-
-Every scaffolded project includes `AGENTS.md` (and `CLAUDE.md` mirror) with:
-
-```markdown
-# Sporades App Instructions
-
-This directory is for a Sporades app. Sporades is a CLI-first PaaS for
-full-stack web apps.
-
-## Rules
-
-- Server code goes in `server/`, client code in `client/`, shared code in `shared/`.
-- Use `sporades/server` only from `server/*.ts`.
-- Use `sporades/client` only from `client/*.tsx`.
-- Data is accessed through queries. Changes go through mutations.
-- Endpoints are an escape hatch for HTTP-based flows (webhooks, etc.).
-- No file-based routing. Use the client router from `sporades/client`.
-- All imports must be from Sporades, the configured framework, or relative paths.
-- Do not use Node built-ins in client code.
-- Auth is available via `ctx.auth` on the server, `useAuth()` on the client.
-- Server env vars: define in `.env.sporades.server`, access via `ctx.env`.
-
-## Commands
-
-```sh
-sporades dev      # local dev server with live rebuild
-sporades deploy   # bundle and deploy to PaaS
-sporades logs     # view server logs
-sporades db list  # list database tables
-sporades db dump  # dump database as JSON
-```
-
-## Structure
-
-- `server/index.ts` — schema, queries, mutations, endpoints
-- `client/index.tsx` — UI entrypoint
-- `shared/` — pure TypeScript shared by client and server
-- `sporades.json` — project configuration
-```
-
-## Hosting (PaaS layer)
-
-### v0: Managed PaaS
-
-The deploy target is a managed API that accepts bundled files and runs them in a container. The user does not configure infrastructure.
-
-**Deploy flow:**
-1. CLI bundles server + client with esbuild
-2. CLI authenticates with PaaS (token stored in `~/.sporades/auth.json`)
-3. CLI POSTs `{ serverBundle, clientBundle, config, serverEnv }` to PaaS API
-4. PaaS mounts bundles into a container with the locked base image
-5. PaaS returns `{ url, deployId, expiresAt }`
-
-**PaaS requirements:**
-- Accept file upload (not Docker images)
-- Manage container lifecycle (start, stop, restart)
-- Provide persistent volume per deploy
-- Handle TLS termination
-- Provide a subdomain URL
-- Rate limiting per deploy (abuse prevention)
-
-**Candidate platforms:**
-- Fly.io (API-driven, volumes, Machines — strongest fit)
-- Railway (API-driven, simple)
-- Custom supervisor on a VPS (fallback, more control)
-
-### v1+: Self-hosted option
-
-`sporades deploy --target self` deploys to a user's own VPS running the Sporades supervisor. The supervisor is a small daemon that:
-- Watches for new bundle uploads
-- Manages container lifecycle
-- Routes traffic via Caddy/Traefik
-- Manages TLS via Let's Encrypt
+Error messages always include a `hint` field with an actionable suggestion.
 
 ## Configuration (`sporades.json`)
 
@@ -467,73 +399,147 @@ The deploy target is a managed API that accepts bundled files and runs them in a
     "framework": "react"
   },
   "auth": {
-    "mode": "guest"
+    "mode": "anonymous"
   },
   "deploy": {
-    "target": "managed"
+    "port": 4000
+  },
+  "dev": {
+    "port": null
   }
 }
 ```
 
-### Environment variables
+| Field | Default | Description |
+|---|---|---|
+| `name` | (from scaffold) | App name, shown in HTML title and logs |
+| `client.framework` | `react` | JSX import source for esbuild |
+| `auth.mode` | `anonymous` | Auth mode: `anonymous` or `google` |
+| `deploy.port` | 4000 | Container port |
+| `dev.port` | `null` | Dev port override; `null` = same as `deploy.port` |
 
-Server-only environment variables are defined in `.env.sporades.server`:
+Config cascade: `sporades.json` → CLI flag → default.
+
+### Server env (`.env.sporades.server`)
 
 ```
 STRIPE_API_KEY=sk_test_...
 OPENAI_API_KEY=sk-...
 ```
 
-- Max 64 keys, 64KB total (same limits as Lakebed)
+- Max 64 keys, 64KB total
 - No `SPORADES_` prefix (reserved)
-- Accessible via `ctx.env` in server handlers
-- Synced to PaaS on `sporades deploy` (encrypted in transit, stored as secrets)
+- Accessible via `ctx.env`
+- Mounted read-only at `/app/.env.sporades.server` in container
+- v0 stopgap — env files are terrible and will be replaced (see ADR-0001)
+
+## `AGENTS.md` template
+
+Every scaffold includes `AGENTS.md` (and `CLAUDE.md` mirror):
+
+```markdown
+# Sporades App Instructions
+
+This directory is for a Sporades app. Sporades is a CLI-first tool for
+building and running full-stack web apps.
+
+## Rules
+
+- Server code goes in `server/`, client code in `client/`, shared code in `shared/`.
+- Use `sporades/server` only from `server/*.ts`.
+- Use `sporades/client` only from `client/*.tsx`.
+- Data is accessed through queries. Changes go through mutations.
+- No endpoints in v0 — WebSocket only.
+- No file-based routing. Use the router included in the scaffold template.
+- All imports must be from Sporades, the configured framework, or relative paths.
+- Do not use Node built-ins in client code.
+- Auth is available via `ctx.auth` on the server, `useAuth()` on the client.
+- Server env vars: define in `.env.sporades.server`, access via `ctx.env`.
+- Keep `shared/` free of DOM, Node, env, and Sporades runtime imports.
+
+## Commands
+
+sporades dev      # local dev server with live rebuild
+sporades deploy   # bundle and run in Docker container
+sporades logs     # view server logs
+sporades db list  # list database tables
+sporades db dump  # dump database as JSON
+
+## Structure
+
+- `server/index.ts` — schema, queries, mutations
+- `client/index.tsx` — UI entrypoint
+- `shared/` — pure TypeScript shared by client and server
+- `index.html` — HTML shell (user-owned)
+- `sporades.json` — project configuration
+```
+
+## Technical dependencies
+
+### CLI package (`sporades`)
+
+| Dependency | Purpose |
+|---|---|
+| esbuild | Build pipeline |
+| ws | WebSocket server |
+| chokidar | File watching |
+| better-auth | Auth library (server-side) |
+| Docker CLI | Container management (system dependency, not npm) |
+
+### Runtime (bundled into `server.mjs`)
+
+| Dependency | Source |
+|---|---|
+| better-auth | Inlined from `sporades/server` |
+| ws | Inlined from `sporades/server` |
+| node:sqlite | Node 22+ built-in |
+| node:http | Node built-in |
+| node:crypto | Node built-in |
+
+### Client (bundled into `client.js`)
+
+| Dependency | Source |
+|---|---|
+| react / preact | User's `node_modules` (installed by scaffold) |
+| sporades/client | Inlined by esbuild |
 
 ## v0 Scope
 
 ### In scope
 
-- `sporades create` — scaffold with default template, git init
-- `sporades dev` — local dev server, live rebuild, SQLite, WebSocket real-time
-- `sporades deploy` — bundle and deploy to managed PaaS
+- `sporades create` — scaffold with todo template, npm install, git init
+- `sporades dev` — local dev server, live rebuild, SQLite, WebSocket real-time, JSONL streaming
+- `sporades deploy` — bundle and run in local Docker container
 - `sporades logs` — view server logs
 - `sporades db` — inspect database (list, dump, query)
-- `sporades inspect` — deploy metadata and status
-- `sporades auth` — configure auth mode (guest, Google OAuth)
-- Server API: `capsule({ schema, queries, mutations, endpoints })`
-- Client API: `useQuery`, `useMutation`, `useAuth`, router, `SignInWithGoogle`
-- Field types: `string()`, `boolean()`
-- Auth: guest mode + Google OAuth
-- Database: SQLite via `node:sqlite` (Node 22+)
+- `sporades auth` — configure auth mode (anonymous, Google OAuth)
+- Server API: `capsule({ schema, queries, mutations })` — no endpoints
+- Client API: `createHooks` factory, transport layer
+- Field types: `String()`, `Boolean()`
+- Auth: Better Auth anonymous sessions + Google OAuth
+- Database: SQLite via `node:sqlite` (Node 22+), row-level cache
 - Client frameworks: React (default), Preact
-- `--json` output on all commands
+- `--json` output on all commands, JSONL streaming for `dev`
 - `AGENTS.md` + `CLAUDE.md` in scaffolds
-- Container isolation: non-root, read-only FS, seccomp, cgroups
+- Container: stock `node:22-alpine`, no hardening
+- Process restart on dev rebuild with lifecycle hooks for future hot reload
 
 ### Out of scope (v1+)
 
-- Additional field types (`number()`, `date()`, `json()`, `reference()`)
+- Endpoints (`endpoint()`)
+- Additional field types (`Number()`, `Date()`, `Json()`, `Reference()`)
 - Additional client frameworks (Solid, Svelte, Vue)
 - Additional auth providers (GitHub, Microsoft, email)
 - Custom domains
-- Self-hosted deploy target
-- Database migrations
+- Remote hosting / PaaS
+- Database migrations (incremental)
 - Middleware / hooks
 - File storage
-- Scaling / multiple replicas
+- Container hardening (seccomp, read-only FS, non-root)
+- Hot reload (lifecycle hooks exist but v0 uses process restart)
+- Multiple containers / environments per project
 - Metrics / dashboards
 - Angular (explicitly never)
-
-## Technical dependencies
-
-| Dependency | Purpose | Bundled? |
-|---|---|---|
-| esbuild | Build pipeline (server + client bundling) | CLI only, not in output |
-| ws | WebSocket server (dev server real-time) | Bundled into server.mjs |
-| preact / react | Client UI framework | Bundled into client.js |
-| node:sqlite | Database (Node 22+ built-in) | Not bundled — built into Node |
-| node:http | HTTP server | Not bundled — built into Node |
-| node:crypto | IDs, hashing | Not bundled — built into Node |
 
 ## Non-goals
 
@@ -541,13 +547,5 @@ OPENAI_API_KEY=sk-...
 - Competing with Vercel/Netlify for enterprise workloads. This is for prototype-to-small-production apps.
 - Supporting Postgres or any external database. Use a different platform if you need that.
 - Supporting Angular. Its build system is incompatible with the esbuild-only pipeline.
-- File-based routing. The client router is programmatic.
+- File-based routing. The client router is a template choice, not a Sporades concern.
 - Being fully framework-agnostic on day one. JSX frameworks first; template-based frameworks are a v1 concern.
-
-## Open questions for resolution during implementation
-
-1. **PaaS partner**: Fly.io vs Railway vs custom supervisor — decide based on API quality, volume support, and pricing for small deploys.
-2. **Deploy expiry**: should free deploys expire? Lakebed uses 7-day TTL. Consider same for unclaimed deploys.
-3. **Rate limits**: what are reasonable defaults for v0? (Lakebed: 10K req/day, 1K mutations/day, 1MB state.)
-4. **CLI auth flow**: device code flow (like Lakebed's claim) vs API key? Agents need non-interactive auth.
-5. **Multi-deploy management**: does `sporades deploy` always create a new deploy, or update an existing one? Need a binding/metadata file (like Lakebed's `lakebed.json`).
