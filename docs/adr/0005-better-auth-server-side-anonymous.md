@@ -1,0 +1,3 @@
+# Auth via Better Auth (server-side only, anonymous plugin)
+
+Sporades uses Better Auth on the server with its Anonymous plugin for guest-to-authenticated upgrade flow. The server owns the entire auth lifecycle: session management, database tables (via `node:sqlite` adapter), OAuth callback handling, and `ctx.auth` population. The client never touches Better Auth's SDK — Sporades exposes thin auth endpoints and the client transport layer stores the session token in `localStorage`, sending it on the WebSocket connection. This keeps the client bundle framework-agnostic and free of auth library weight. Users upgrade from anonymous to authenticated (e.g. Google OAuth) without losing data — Better Auth links the new auth method to the existing anonymous account.

@@ -24,6 +24,34 @@ _Avoid_: build (that's the act), artifact (too abstract)
 The locked, shared Docker image (Node 22 alpine) that all container sessions use. Never changes per-app.
 _Avoid_: runtime image, host image
 
+## Auth
+
+Sporades owns auth entirely on the server side. The client never sees the auth library.
+
+**Anonymous session**:
+A real session created automatically for every visitor via Better Auth's Anonymous plugin. Not a fake guest ID — a persistent account with a session token. Data created anonymously is preserved when the user links an authentication method (e.g. Google OAuth).
+_Avoid_: guest mode (implies fake/transient — these are real sessions), guest user
+
+**Session token**:
+A string stored in `localStorage` on the client and sent on the WebSocket connection. The server verifies it via Better Auth on every request. No auth SDK in the client bundle.
+_Avoid_: auth token, JWT (implementation detail of Better Auth)
+
+**Linked account**:
+An anonymous session upgraded with a real authentication method (Google OAuth, etc.). The user's data follows them because the auth method is linked to the existing account, not a new one.
+_Avoid_: upgrade, migration (those are schema concerns, not auth)
+
+## Client transport
+
+Sporades is client-framework-agnostic. `sporades/client` exports a transport layer (WebSocket connect, query subscribe, mutation send, auth state) and a `createHooks` factory that takes a framework's primitives (`useState`, `useEffect`) and returns ready-to-use hooks (`useQuery`, `useMutation`, `useAuth`). The user wires one line; the scaffold template handles it by default.
+
+**createHooks**:
+A factory function exported by `sporades/client`. Accepts `{ useState, useEffect }` from any JSX framework (React, Preact, Solid) and returns Sporades hooks bound to that framework's reactivity model.
+_Avoid_: useQuery (that's what it produces, not what it is), hooks provider
+
+## Routing
+
+Sporades does not provide a router. The scaffold template includes a framework-appropriate router (e.g. React Router for React apps) as a template choice. Routing is not a Sporades concern.
+
 **System table**:
 A `sporades` table auto-created in every app's SQLite database. Stores schema version, migration state, and app metadata. Sporades owns it; app code cannot write to it.
 _Avoid_: migration table, metadata table
