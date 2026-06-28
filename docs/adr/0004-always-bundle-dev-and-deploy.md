@@ -1,0 +1,3 @@
+# Always bundle, even in dev
+
+Both `sporades dev` and `sporades deploy` run esbuild-bundled code. The dev server rebuilds on file changes (debounced 100ms) and restarts the bundled `server.mjs`. This eliminates the parity gap between dev and container environments — the same bundled code runs in both. The trade-off is a ~2s cold start and ~100ms per rebuild, which is acceptable given esbuild's speed. If a rebuild fails, the dev server keeps serving the last successful bundle and reports the error.

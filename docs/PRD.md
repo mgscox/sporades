@@ -21,16 +21,16 @@ Sporades is a CLI-first PaaS for spinning up and hosting full-stack web applicat
 Mirrors Lakebed's API for familiarity and simplicity. Extensible by design — `capsule()` is an identity function today, interceptable for enrichment in v1.
 
 ```typescript
-import { boolean, capsule, endpoint, mutation, query, string, table, text } from "sporades/server";
+import { Boolean, capsule, endpoint, mutation, query, String, table, text } from "sporades/server";
 
 export default capsule({
   name: "My App",
 
   schema: {
     todos: table({
-      text: string(),
-      done: boolean().default(false),
-      ownerId: string()
+      text: String(),
+      done: Boolean().default(false),
+      ownerId: String()
     })
   },
 

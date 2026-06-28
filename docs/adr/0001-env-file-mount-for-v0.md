@@ -1,0 +1,3 @@
+# Mount .env.sporades.server as a file in v0
+
+v0 mounts `.env.sporades.server` read-only at `/app/.env.sporades.server` in the container. This is simple and mirrors `dev` behaviour, but it's a terrible long-term solution — env files are unstructured, leak secrets into filesystems, and don't support rotation or per-environment overrides. We accept this for v0 because the alternative (a secrets manager, encrypted vault, or platform-managed config) is out of scope for a local-only prototype. This should be replaced before any remote hosting is added.

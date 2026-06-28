@@ -1,0 +1,3 @@
+# Capitalised field builders: String() and Boolean()
+
+Sporades field type builders use capitalised names (`String()`, `Boolean()`) instead of lowercase (`string()`, `boolean()`). TypeScript's `string` and `boolean` are reserved primitive type keywords — using them as function names causes compilation errors and conflicts in type signatures. The capitalised convention avoids this entirely while staying readable. Future field types (`Number()`, `Date()`, `Json()`) follow the same pattern.

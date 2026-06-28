@@ -1,0 +1,3 @@
+# SQLite as source of truth with row-level read-through cache
+
+Sporades uses SQLite (via Node 22+ built-in `node:sqlite`) as the persistent data store. A row-level `Map<rowId, row>` cache sits in front: rows are cached on read, invalidated on write. This avoids loading entire tables into memory while keeping repeated reads fast. There is one writer process in v0 (single dev session or single container), so cache coherence is guaranteed — no invalidation race conditions. The cache is populated lazily (per-row on query) not eagerly (not full-table on startup). Mutations write to SQLite then invalidate the affected cache entry; the next read fetches fresh from the database.
