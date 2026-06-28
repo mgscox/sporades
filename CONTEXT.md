@@ -21,8 +21,39 @@ The esbuild output — a self-contained JavaScript file with all dependencies in
 _Avoid_: build (that's the act), artifact (too abstract)
 
 **Base image**:
-The locked, shared Docker image (Node 22 alpine) that all container sessions use. Never changes per-app.
+The Docker image (Node 22 alpine) that all container sessions use. v0 uses the stock image with no hardening. v1 will introduce a locked, hardened image (non-root, read-only FS, seccomp).
 _Avoid_: runtime image, host image
+
+## Server runtime
+
+**sporades/server**:
+A runtime context, not just a set of exports. Internally manages the SQLite connection, Better Auth instance, env vars, and row-level cache. When imported, it initialises the runtime. `capsule()` registers the app definition (schema, queries, mutations, endpoints) against this runtime. The user never touches the runtime directly.
+_Avoid_: server module, server library (it's a living context, not a static library)
+
+**capsule()**:
+The initialisation function. Called with the app definition. Registers the schema with SQLite (creating tables, updating the system table), configures Better Auth, and wires the table API. This is where app bootstrap happens — not an identity function. Future extensibility (middleware, hooks, custom field types) hooks into this function.
+_Avoid_: app definition (that's the argument, not the function), config function
+
+## Field types
+
+Sporades field builders use capitalised names to avoid collisions with TypeScript's `string` and `boolean` primitive type keywords.
+
+**String()**:
+A text field. Maps to SQLite `TEXT`. JavaScript `string` ↔ SQLite `TEXT`.
+_Avoid_: string() (lowercase — collides with TS keyword)
+
+**Boolean()**:
+A boolean field. Maps to SQLite `INTEGER`. JavaScript `true`/`false` ↔ SQLite `1`/`0`. Sporades owns the serialisation/deserialisation — the user never sees `0` or `1`.
+_Avoid_: boolean() (lowercase — collides with TS keyword)
+
+## Auto fields
+
+Every table has three managed fields added automatically by Sporades. App code cannot set or update them.
+
+**id**: UUID string (`crypto.randomUUID()`). SQLite `TEXT`.
+**createdAt**: ISO 8601 timestamp string. SQLite `TEXT`.
+**updatedAt**: ISO 8601 timestamp string. SQLite `TEXT`. Auto-updated on every `update` operation.
+_Avoid_: primary key, timestamp fields (these are Sporades-managed, not user-defined)
 
 ## Auth
 
@@ -52,6 +83,8 @@ _Avoid_: useQuery (that's what it produces, not what it is), hooks provider
 
 Sporades does not provide a router. The scaffold template includes a framework-appropriate router (e.g. React Router for React apps) as a template choice. Routing is not a Sporades concern.
 
+## Data
+
 **System table**:
 A `sporades` table auto-created in every app's SQLite database. Stores schema version, migration state, and app metadata. Sporades owns it; app code cannot write to it.
 _Avoid_: migration table, metadata table
@@ -60,23 +93,6 @@ _Avoid_: migration table, metadata table
 A hash of the capsule's schema definition, stored in the system table. On startup, if the hash differs from the stored version, all app tables are dropped and recreated. Data is lost on schema change. This is a v0 simplification — v1 will support incremental migrations.
 _Avoid_: migration version, database version
 
-## Field types
-
-Sporades field builders use capitalised names to avoid collisions with TypeScript's `string` and `boolean` primitive type keywords.
-
-**String()**:
-A text field. Maps to SQLite `TEXT`. JavaScript `string` ↔ SQLite `TEXT`.
-_Avoid_: string() (lowercase — collides with TS keyword)
-
-**Boolean()**:
-A boolean field. Maps to SQLite `INTEGER`. JavaScript `true`/`false` ↔ SQLite `1`/`0`. Sporades owns the serialisation/deserialisation — the user never sees `0` or `1`.
-_Avoid_: boolean() (lowercase — collides with TS keyword)
-
-## Auto fields
-
-Every table has three managed fields added automatically by Sporades. App code cannot set or update them.
-
-**id**: UUID string (`crypto.randomUUID()`). SQLite `TEXT`.
-**createdAt**: ISO 8601 timestamp string. SQLite `TEXT`.
-**updatedAt**: ISO 8601 timestamp string. SQLite `TEXT`. Auto-updated on every `update` operation.
-_Avoid_: primary key, timestamp fields (these are Sporades-managed, not user-defined)
+**Row cache**:
+A `Map<rowId, row>` in-memory cache. Rows are cached on read (lazy, per-row) and invalidated on write. SQLite is the source of truth. Single writer in v0 (one dev session or one container), so no cache coherence problem.
+_Avoid_: table cache (it's row-level, not table-level), data cache
