@@ -1,0 +1,3 @@
+# JSONL streaming for dev --json
+
+`sporades dev --json` streams JSON Lines to stdout — each event (server started, rebuild success, rebuild failed) is a separate JSON object on its own line. This enables agents to parse the stream reactively: watch for `event: "rebuild"` with `status: "failed"`, read the error, fix the file, and wait for the next success. Non-`--json` mode outputs human-readable status lines as before.

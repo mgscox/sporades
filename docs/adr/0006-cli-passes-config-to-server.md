@@ -1,0 +1,3 @@
+# CLI passes config to server runtime as startup argument
+
+The CLI reads `sporades.json` and passes the relevant configuration to the server runtime as a startup argument. The server runtime does not read files from disk — it receives config injection. This makes the server more testable (pass config directly in tests) and container-friendly (no filesystem dependency). The CLI owns file I/O; the server owns runtime behaviour.

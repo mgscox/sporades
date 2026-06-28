@@ -13,7 +13,7 @@ A local Node process running the bundled app with file watching, hot rebuild, an
 _Avoid_: dev server (it's more than a server — it's a whole feedback loop)
 
 **Container session**:
-A local Docker container running the bundled app with the locked base image, mounted bundle files, and a persistent SQLite volume. For production-like testing.
+A local Docker container running the bundled app with the base image, mounted bundle files, and a persistent SQLite volume. For production-like testing.
 _Avoid_: deploy (that's the command), deployment (remote connotation)
 
 **Bundle**:
@@ -24,15 +24,23 @@ _Avoid_: build (that's the act), artifact (too abstract)
 The Docker image (Node 22 alpine) that all container sessions use. v0 uses the stock image with no hardening. v1 will introduce a locked, hardened image (non-root, read-only FS, seccomp).
 _Avoid_: runtime image, host image
 
+**Runtime directory**:
+The `.sporades/` directory in a project. Contains build output (`build/server.mjs`, `build/client.js`) and the SQLite database (`data.db`). Gitignored. Owned by Sporades — the user does not touch it.
+_Avoid_: build directory, cache directory
+
 ## Server runtime
 
 **sporades/server**:
-A runtime context, not just a set of exports. Internally manages the SQLite connection, Better Auth instance, env vars, and row-level cache. When imported, it initialises the runtime. `capsule()` registers the app definition (schema, queries, mutations, endpoints) against this runtime. The user never touches the runtime directly.
+A runtime context, not just a set of exports. Internally manages the SQLite connection, Better Auth instance, env vars, and row-level cache. When imported, it initialises the runtime. `capsule()` registers the app definition (schema, queries, mutations) against this runtime. The user never touches the runtime directly.
 _Avoid_: server module, server library (it's a living context, not a static library)
 
 **capsule()**:
 The initialisation function. Called with the app definition. Registers the schema with SQLite (creating tables, updating the system table), configures Better Auth, and wires the table API. This is where app bootstrap happens — not an identity function. Future extensibility (middleware, hooks, custom field types) hooks into this function.
 _Avoid_: app definition (that's the argument, not the function), config function
+
+**Lifecycle hooks**:
+`init()` and `shutdown()` boundaries on the server runtime. v0 uses them as "start" and "die" (full process restart on rebuild). v1 will use them for hot reload — call `shutdown()`, re-import the bundle, call `init()` — without restructuring.
+_Avoid_: start/stop (too generic), lifecycle methods (they're hooks, not methods)
 
 ## Field types
 
@@ -96,3 +104,22 @@ _Avoid_: migration version, database version
 **Row cache**:
 A `Map<rowId, row>` in-memory cache. Rows are cached on read (lazy, per-row) and invalidated on write. SQLite is the source of truth. Single writer in v0 (one dev session or one container), so no cache coherence problem.
 _Avoid_: table cache (it's row-level, not table-level), data cache
+
+## Configuration
+
+**sporades.json**:
+The project configuration file at the project root. Read by the CLI at startup; relevant pieces passed to the server runtime as a startup argument. The server runtime does not read files. Contains: app name, client framework, auth mode, deploy port, optional dev port override.
+_Avoid_: config file (too generic — it's the specific project config)
+
+**Config cascade**:
+`sporades.json` → CLI flag → default. CLI flags override config values; config values override defaults. Applied to: ports, framework, auth mode.
+
+## CLI output
+
+**JSON output**:
+All CLI commands support `--json`. Output is `{ ok, data, error }` where `error` includes a `hint` field with an actionable suggestion. Errors exit with code 1.
+_Avoid_: structured output (too generic)
+
+**JSONL streaming**:
+`sporades dev --json` streams JSON Lines to stdout — one JSON object per event (started, rebuild success, rebuild failed). Enables agents to watch for build errors and react in real time.
+_Avoid_: streaming output, log lines
