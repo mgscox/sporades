@@ -76,6 +76,7 @@ Capitalised to avoid TypeScript keyword collisions:
 |---|---|---|
 | `String()` | `TEXT` | `string` |
 | `Boolean()` | `INTEGER` (0/1) | `boolean` — Sporades owns serialisation |
+| `Date()` | `TEXT` | ISO 8601 `string`; runtime table APIs also accept JavaScript `Date` values and normalise them to ISO strings |
 
 ### Auto fields
 
@@ -89,7 +90,7 @@ Every table has three managed fields. App code cannot set or update them:
 
 ### Extensibility path (v1+)
 
-- **Field types:** `Number()`, `Date()`, `Json()`, `Reference()` — same builder pattern.
+- **Field types:** `Number()`, `Json()`, `Reference()` — same builder pattern.
 - **Middleware:** hook into `capsule()` to wrap context creation.
 - **Custom query operators:** extend `TableApi` with new chainable methods.
 - **Hooks:** pre/post mutation hooks for validation, audit logging.
@@ -517,7 +518,7 @@ sporades db dump  # dump database as JSON
 - `sporades auth` — configure auth mode (anonymous, Google OAuth)
 - Server API: `capsule({ schema, queries, mutations })` — no endpoints
 - Client API: `createHooks` factory, transport layer
-- Field types: `String()`, `Boolean()`
+- Field types: `String()`, `Boolean()`, `Date()`
 - Auth: Better Auth anonymous sessions + Google OAuth
 - Database: SQLite via `node:sqlite` (Node 22+), row-level cache
 - Client frameworks: React (default), Preact
@@ -529,7 +530,7 @@ sporades db dump  # dump database as JSON
 ### Out of scope (v1+)
 
 - Endpoints (`endpoint()`)
-- Additional field types (`Number()`, `Date()`, `Json()`, `Reference()`)
+- Additional field types (`Number()`, `Json()`, `Reference()`)
 - Additional client frameworks (Solid, Svelte, Vue)
 - Additional auth providers (GitHub, Microsoft, email)
 - Custom domains

@@ -62,6 +62,10 @@ _Avoid_: string() (lowercase — collides with TS keyword)
 A boolean field. Maps to SQLite `INTEGER`. JavaScript `true`/`false` ↔ SQLite `1`/`0`. Sporades owns the serialisation/deserialisation — the user never sees `0` or `1`.
 _Avoid_: boolean() (lowercase — collides with TS keyword)
 
+**Date()**:
+A date/timestamp field. Maps to SQLite `TEXT`. JavaScript/API values are ISO 8601 strings, with JavaScript `Date` values accepted by runtime table APIs and normalised to ISO strings before storage.
+_Avoid_: date() (lowercase — collides with the field-builder convention)
+
 ## Auto fields
 
 Every table has three managed fields added automatically by Sporades. App code cannot set or update them.
