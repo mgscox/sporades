@@ -42,6 +42,10 @@ export function Boolean() {
   return field("Boolean");
 }
 
+export function Number() {
+  return field("Number");
+}
+
 function field(kind) {
   return {
     kind,
