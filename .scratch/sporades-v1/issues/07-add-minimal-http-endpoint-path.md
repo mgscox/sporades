@@ -1,6 +1,6 @@
 # Add a minimal HTTP endpoint path
 
-Status: ready-for-agent
+Status: done
 
 ## What to build
 

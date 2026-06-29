@@ -24,6 +24,10 @@ const websocketHub = createWebSocketHub(() => database);
 
 const server = createServer(async (request, response) => {
   try {
+    if (await routeEndpoint(database, request, response)) {
+      return;
+    }
+
     if (request.url === "/" || request.url === "/index.html") {
       const html = await readRuntimeFile("index.html", path.join(process.cwd(), "index.html"));
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });

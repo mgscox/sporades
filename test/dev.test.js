@@ -255,6 +255,111 @@ test("sporades dev bundles and serves a scaffolded React todo capsule", async ()
   });
 });
 
+test("sporades dev routes registered capsule endpoints and preserves non-matching HTTP behavior", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "endpoint-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "endpoint-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "endpoint-island",
+
+  endpoints: {
+    ping: endpoint({ method: "POST", path: "/integrations/ping" }, () => "pong"),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+
+      const endpointResponse = await fetch(`${started.data.url}/integrations/ping?source=test`, { method: "POST" });
+      assert.equal(endpointResponse.status, 200);
+      assert.match(endpointResponse.headers.get("content-type") ?? "", /^text\/plain/);
+      assert.equal(await endpointResponse.text(), "pong");
+
+      const methodMissResponse = await fetch(`${started.data.url}/integrations/ping`);
+      assert.equal(methodMissResponse.status, 404);
+      assert.equal(await methodMissResponse.text(), "Not found");
+
+      const pathMissResponse = await fetch(`${started.data.url}/integrations/missing`, { method: "POST" });
+      assert.equal(pathMissResponse.status, 404);
+      assert.equal(await pathMissResponse.text(), "Not found");
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev returns structured endpoint errors without crashing the session", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "endpoint-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "endpoint-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "endpoint-island",
+
+  endpoints: {
+    broken: endpoint({ method: "POST", path: "/integrations/broken" }, () => {
+      throw new Error("broken integration");
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+
+      const endpointResponse = await fetch(`${started.data.url}/integrations/broken`, { method: "POST" });
+      assert.equal(endpointResponse.status, 500);
+      assert.match(endpointResponse.headers.get("content-type") ?? "", /^application\/json/);
+      assert.deepEqual(await endpointResponse.json(), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Endpoint handler failed.",
+          hint: "Check the endpoint handler and retry the request.",
+        },
+      });
+
+      const rootResponse = await fetch(started.data.url);
+      assert.equal(rootResponse.status, 200);
+      assert.match(await rootResponse.text(), /<script type="module" src="\/client\.js"><\/script>/);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev streams rebuild success events and serves the rebuilt client bundle", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
