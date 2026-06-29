@@ -6,6 +6,12 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   extractSchema,
   extractFields,
   parseFieldDefault,
+  migrateAppSchema,
+  normalizeSchema,
+  hashSchema,
+  assertAdditiveTableMigration,
+  createAppTable,
+  commandError,
   toSqlLiteral,
   authStatus,
   createAnonymousAuthTables,
@@ -19,6 +25,10 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   runQuery,
   runMutation,
   formatMutationResult,
+  resolveTableForQuery,
+  resolveTableForAddMutation,
+  toSqlBindingValue,
+  rowToApiValue,
   quoteIdentifier,
 ];
 
@@ -46,26 +56,98 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
   };
   sqlite.exec("PRAGMA journal_mode = WAL");
   sqlite.exec("CREATE TABLE IF NOT EXISTS sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-  sqlite.prepare("INSERT OR REPLACE INTO sporades (key, value) VALUES (?, ?)").run("schemaVersion", "v0");
   createAnonymousAuthTables(sqlite);
-
-  for (const table of schema.tables) {
-    sqlite.exec(
-      `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(table.name)} (` +
-        [
-          "id TEXT PRIMARY KEY",
-          "createdAt TEXT NOT NULL",
-          "updatedAt TEXT NOT NULL",
-          ...table.fields.map((field) => {
-            const defaultSql = field.defaultValue === undefined ? "" : ` DEFAULT ${toSqlLiteral(field.defaultValue)}`;
-            return `${quoteIdentifier(field.name)} ${field.sqliteType} NOT NULL${defaultSql}`;
-          }),
-        ].join(", ") +
-        ")",
-    );
-  }
+  migrateAppSchema(sqlite, schema);
 
   return database;
+}
+
+function migrateAppSchema(sqlite, schema) {
+  const nextSchema = normalizeSchema(schema);
+  const nextSchemaJson = JSON.stringify(nextSchema);
+  const nextSchemaHash = hashSchema(nextSchemaJson);
+  const existingSchemaRow = sqlite.prepare("SELECT value FROM sporades WHERE key = ?").get("schema");
+
+  if (existingSchemaRow) {
+    let existingSchema;
+    try {
+      existingSchema = JSON.parse(existingSchemaRow.value);
+    } catch {
+      throw commandError(
+        "Invalid Sporades schema metadata.",
+        "Delete the Runtime directory only if you can lose local data, then restart the Capsule.",
+      );
+    }
+
+    if (hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash) {
+      assertAdditiveTableMigration(existingSchema, nextSchema);
+    }
+  }
+
+  for (const table of schema.tables) {
+    createAppTable(sqlite, table);
+  }
+
+  const upsert = sqlite.prepare("INSERT OR REPLACE INTO sporades (key, value) VALUES (?, ?)");
+  upsert.run("schemaVersion", "v1:additive-tables");
+  upsert.run("schemaHash", nextSchemaHash);
+  upsert.run("schema", nextSchemaJson);
+}
+
+function normalizeSchema(schema) {
+  return {
+    tables: schema.tables
+      .map((table) => ({
+        name: table.name,
+        fields: table.fields.map((field) => ({
+          name: field.name,
+          kind: field.kind,
+          sqliteType: field.sqliteType,
+          defaultValue: field.defaultValue,
+        })),
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name)),
+  };
+}
+
+function hashSchema(schemaJson) {
+  return createHash("sha256").update(schemaJson).digest("hex");
+}
+
+function assertAdditiveTableMigration(existingSchema, nextSchema) {
+  const nextTables = new Map(nextSchema.tables.map((table) => [table.name, table]));
+
+  for (const existingTable of existingSchema.tables ?? []) {
+    const nextTable = nextTables.get(existingTable.name);
+    if (!nextTable || JSON.stringify(existingTable.fields) !== JSON.stringify(nextTable.fields)) {
+      throw commandError(
+        "Unsupported Capsule schema change.",
+        "Only adding new tables is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
+      );
+    }
+  }
+}
+
+function createAppTable(sqlite, table) {
+  sqlite.exec(
+    `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(table.name)} (` +
+      [
+        "id TEXT PRIMARY KEY",
+        "createdAt TEXT NOT NULL",
+        "updatedAt TEXT NOT NULL",
+        ...table.fields.map((field) => {
+          const defaultSql = field.defaultValue === undefined ? "" : ` DEFAULT ${toSqlLiteral(field.defaultValue)}`;
+          return `${quoteIdentifier(field.name)} ${field.sqliteType} NOT NULL${defaultSql}`;
+        }),
+      ].join(", ") +
+      ")",
+  );
+}
+
+function commandError(message, hint) {
+  const error = new Error(message);
+  error.hint = hint;
+  return error;
 }
 
 function extractSchema(serverSource) {
@@ -524,7 +606,8 @@ function runQuery(database, auth, queryName) {
     return { data: database.serverEnv, error: null };
   }
 
-  if (queryName !== "todos") {
+  const table = resolveTableForQuery(database.schema, queryName);
+  if (!table) {
     return {
       rows: null,
       error: {
@@ -534,12 +617,18 @@ function runQuery(database, auth, queryName) {
     };
   }
 
-  const cacheKey = `todos:${auth.userId}`;
+  const cacheKey = `${table.name}:${auth.userId}`;
   if (!database.rowCache.has(cacheKey)) {
+    const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
+    const ownerScoped = table.fields.some((field) => field.name === "ownerId");
+    const sql =
+      `SELECT ${columns.map(quoteIdentifier).join(", ")} FROM ${quoteIdentifier(table.name)}` +
+      (ownerScoped ? " WHERE ownerId = ?" : "") +
+      " ORDER BY createdAt DESC";
     const rows = database.sqlite
-      .prepare("SELECT id, createdAt, updatedAt, text, done, ownerId FROM todos WHERE ownerId = ? ORDER BY createdAt DESC")
-      .all(auth.userId)
-      .map((row) => ({ ...row, done: Boolean(row.done) }));
+      .prepare(sql)
+      .all(...(ownerScoped ? [auth.userId] : []))
+      .map((row) => rowToApiValue(row, table));
     database.rowCache.set(cacheKey, rows);
   }
 
@@ -547,7 +636,8 @@ function runQuery(database, auth, queryName) {
 }
 
 function runMutation(database, auth, mutationName, args) {
-  if (mutationName !== "addTodo") {
+  const table = resolveTableForAddMutation(database.schema, mutationName);
+  if (!table) {
     return {
       ok: false,
       error: {
@@ -558,9 +648,45 @@ function runMutation(database, auth, mutationName, args) {
   }
 
   const now = new Date().toISOString();
+  const values = {
+    id: randomUUID(),
+    createdAt: now,
+    updatedAt: now,
+  };
+  for (const field of table.fields) {
+    if (field.name === "ownerId") {
+      values[field.name] = auth.userId;
+      continue;
+    }
+    if (field.name === "text") {
+      values[field.name] = String(args[0] ?? "");
+      continue;
+    }
+    if (field.defaultValue !== undefined) {
+      values[field.name] = toSqlBindingValue(field.defaultValue, field);
+    }
+  }
+  const missingField = table.fields.find((field) => values[field.name] === undefined);
+  if (missingField) {
+    return {
+      ok: false,
+      error: {
+        message: `Missing value for field: ${missingField.name}`,
+        hint: "Pass a value accepted by the capsule mutation.",
+      },
+    };
+  }
+
+  const columns = Object.keys(values);
   database.sqlite
-    .prepare("INSERT INTO todos (id, createdAt, updatedAt, text, done, ownerId) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(randomUUID(), now, now, String(args[0] ?? ""), 0, auth.userId);
+    .prepare(
+      `INSERT INTO ${quoteIdentifier(table.name)} (` +
+        columns.map(quoteIdentifier).join(", ") +
+        ") VALUES (" +
+        columns.map(() => "?").join(", ") +
+        ")",
+    )
+    .run(...columns.map((column) => values[column]));
   database.rowCache.clear();
   return { ok: true, error: null };
 }
@@ -593,6 +719,36 @@ function authStatus(config, serverEnv) {
       clientSecretEnv,
     },
   };
+}
+
+function resolveTableForQuery(schema, queryName) {
+  return schema.tables.find((table) => table.name === queryName) ?? null;
+}
+
+function resolveTableForAddMutation(schema, mutationName) {
+  if (!mutationName.startsWith("add") || mutationName.length <= 3) {
+    return null;
+  }
+  const singular = mutationName.slice(3);
+  const tableName = `${singular[0].toLowerCase()}${singular.slice(1)}s`;
+  return schema.tables.find((table) => table.name === tableName) ?? null;
+}
+
+function toSqlBindingValue(value, field) {
+  if (field.kind === "Boolean") {
+    return value ? 1 : 0;
+  }
+  return value;
+}
+
+function rowToApiValue(row, table) {
+  const value = { ...row };
+  for (const field of table.fields) {
+    if (field.kind === "Boolean") {
+      value[field.name] = Boolean(value[field.name]);
+    }
+  }
+  return value;
 }
 
 function quoteIdentifier(identifier) {
