@@ -6,6 +6,14 @@ export function isAuthenticated() {
   return connect().isAuthenticated();
 }
 
+export function sendMessage(type, data) {
+  return connect().sendMessage(type, data);
+}
+
+export function onMessage(listener) {
+  return connect().onMessage(listener);
+}
+
 export function createHooks(primitives) {
   const { useEffect, useState } = primitives;
 
@@ -87,6 +95,7 @@ function createConnection() {
   let sessionToken = localStorage.getItem("sporades.sessionToken");
   const pending = new Map();
   const subscriptions = new Map();
+  const appMessageListeners = new Set();
 
   function open() {
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
@@ -116,6 +125,13 @@ function createConnection() {
       }
       if (message.type === "query.result" && subscriptions.has(message.id)) {
         subscriptions.get(message.id).listener(message);
+        return;
+      }
+      if (message.type === "app.message") {
+        notifyAppMessageListeners({
+          type: message.message,
+          data: message.data ?? null,
+        });
         return;
       }
       if (pending.has(message.id)) {
@@ -161,6 +177,34 @@ function createConnection() {
     return message;
   }
 
+  function notifyAppMessageListeners(appMessage) {
+    for (const listener of appMessageListeners) {
+      listener(appMessage);
+    }
+  }
+
+  function createAppMessageStream(predicate = () => true) {
+    return {
+      filter(nextPredicate) {
+        return createAppMessageStream((message) => predicate(message) && nextPredicate(message));
+      },
+      subscribe(listener) {
+        const filteredListener = (message) => {
+          if (predicate(message)) {
+            listener(message);
+          }
+        };
+        appMessageListeners.add(filteredListener);
+        open();
+        return {
+          unsubscribe() {
+            appMessageListeners.delete(filteredListener);
+          },
+        };
+      },
+    };
+  }
+
   open();
 
   return {
@@ -185,6 +229,13 @@ function createConnection() {
     },
     mutate(name, args) {
       return request("mutation.run", { mutation: name, args });
+    },
+    sendMessage(type, data) {
+      return request("app.send", { message: type, data });
+    },
+    onMessage(listener) {
+      const stream = createAppMessageStream();
+      return typeof listener === "function" ? stream.subscribe(listener) : stream;
     },
   };
 }

@@ -11,6 +11,7 @@ async function importClientRuntime() {
 
 function installBrowserFakes(auth) {
   const storage = new Map();
+  const sockets = [];
   globalThis.localStorage = {
     getItem(key) {
       return storage.get(key) ?? null;
@@ -33,6 +34,7 @@ function installBrowserFakes(auth) {
 
     constructor(url) {
       this.url = url;
+      sockets.push(this);
       queueMicrotask(() => {
         this.readyState = FakeWebSocket.OPEN;
         this.emit("open", {});
@@ -48,6 +50,19 @@ function installBrowserFakes(auth) {
     send(rawMessage) {
       const message = JSON.parse(rawMessage);
       if (message.type !== "auth.get") {
+        if (message.type === "app.send") {
+          queueMicrotask(() => {
+            this.emit("message", {
+              data: JSON.stringify({
+                id: message.id,
+                type: "app.result",
+                message: message.message,
+                data: { accepted: message.data },
+                error: null,
+              }),
+            });
+          });
+        }
         return;
       }
       queueMicrotask(() => {
@@ -75,6 +90,7 @@ function installBrowserFakes(auth) {
 
   return {
     storage,
+    sockets,
     cleanup() {
       delete globalThis.localStorage;
       delete globalThis.window;
@@ -115,6 +131,80 @@ test("client isAuthenticated returns true for linked auth", async () => {
   try {
     const runtime = await importClientRuntime();
     assert.equal(await runtime.isAuthenticated(), true);
+  } finally {
+    browser.cleanup();
+  }
+});
+
+test("client sendMessage sends unprefixed app messages over the transport", async () => {
+  const browser = installBrowserFakes({
+    userId: "anonymous-user",
+    displayName: "Anonymous",
+    email: null,
+    picture: null,
+    isAuthenticated: false,
+    isGuest: true,
+    provider: "anonymous",
+  });
+  try {
+    const runtime = await importClientRuntime();
+    const result = await runtime.sendMessage("typing", { roomId: "general" });
+
+    assert.equal(typeof result.id, "number");
+    assert.deepEqual(
+      {
+        ...result,
+        id: "request-id",
+      },
+      {
+        id: "request-id",
+        type: "app.result",
+        message: "typing",
+        data: { accepted: { roomId: "general" } },
+        error: null,
+      },
+    );
+  } finally {
+    browser.cleanup();
+  }
+});
+
+test("client onMessage exposes filterable app message subscriptions", async () => {
+  const browser = installBrowserFakes({
+    userId: "anonymous-user",
+    displayName: "Anonymous",
+    email: null,
+    picture: null,
+    isAuthenticated: false,
+    isGuest: true,
+    provider: "anonymous",
+  });
+  try {
+    const runtime = await importClientRuntime();
+    const received = [];
+    const subscription = runtime
+      .onMessage()
+      .filter((message) => message.type === "typing")
+      .subscribe((message) => received.push(message));
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    browser.sockets[0].emit("message", {
+      data: JSON.stringify({
+        type: "app.message",
+        message: "typing",
+        data: { roomId: "general" },
+      }),
+    });
+    browser.sockets[0].emit("message", {
+      data: JSON.stringify({
+        type: "app.message",
+        message: "ignored",
+        data: { roomId: "general" },
+      }),
+    });
+
+    assert.deepEqual(received, [{ type: "typing", data: { roomId: "general" } }]);
+    subscription.unsubscribe();
   } finally {
     browser.cleanup();
   }

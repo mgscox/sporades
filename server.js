@@ -27,6 +27,13 @@ export function mutation(handler) {
   };
 }
 
+export function message(handler) {
+  return {
+    kind: "message",
+    handler,
+  };
+}
+
 export function table(fields) {
   return {
     kind: "table",

@@ -26,6 +26,52 @@ and parsed request body data. Structured endpoint responses use
 `{ status, headers, body }`; object bodies are returned as JSON, and string bodies
 are returned as text.
 
+## App messages
+
+Capsules can declare ephemeral app-level messages with `message(handler)` and
+clients can send them through `sporades/client` without touching raw WebSocket
+objects:
+
+```ts
+// server/index.ts
+import { capsule, message } from "sporades/server";
+
+export default capsule({
+  messages: {
+    typing: message((ctx, data) => {
+      ctx.messages.send({ type: "typing", data });
+      return { ok: true };
+    }),
+  },
+});
+```
+
+```ts
+// client/index.tsx
+import { onMessage, sendMessage } from "sporades/client";
+
+await sendMessage("typing", { roomId: "general", active: true });
+
+const subscription = onMessage()
+  .filter((message) => message.type === "typing")
+  .subscribe((message) => {
+    console.log(message.data);
+  });
+```
+
+App and server code use unprefixed type names. Sporades reserves platform
+namespaces such as `app.`, `auth.`, `query.`, `mutation.`, `files.`, and
+`runtime.` for internal transport messages. Client-origin app messages always
+run through declared Capsule handlers; the platform does not directly relay
+arbitrary client messages. `ctx.messages.send()` defaults to the current user's
+connected clients, and handlers can explicitly target users with
+`{ scope: "users", userIds: [...] }`. App-wide `{ scope: "all" }` broadcasts are
+not available from client-origin handlers.
+
+App messages are a real-time escape hatch for JSON-serializable, ephemeral
+events. Use queries and mutations for durable state, auth APIs for identity, and
+file APIs for binary payloads.
+
 ## Context middleware
 
 Capsules can register synchronous context middleware with `middleware`. Each
