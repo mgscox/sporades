@@ -14,6 +14,7 @@ import {
   openDevDatabase,
   readJsonRequest,
   routeEndpoint,
+  routeSporadesAuth,
   runReadOnlyQuery,
 } from "../src/server-runtime-source.js";
 
@@ -408,6 +409,10 @@ async function startDevSession(options) {
       if (request.method === "POST" && requestUrl.pathname === "/__sporades/debug/db/query") {
         const body = await readJsonRequest(request);
         writeJsonResponse(response, 200, runReadOnlyQuery(runtime.database, body.sql));
+        return;
+      }
+
+      if (await routeSporadesAuth(runtime.database, request, response)) {
         return;
       }
 
@@ -977,11 +982,12 @@ function clientTemplate(framework) {
   if (framework === "preact") {
     return `import { render } from "preact";
 import { useState, useEffect } from "preact/hooks";
-import { createHooks } from "sporades/client";
+import { auth, createHooks } from "sporades/client";
 
-const { useQuery, useMutation } = createHooks({ useState, useEffect });
+const { useAuth, useQuery, useMutation } = createHooks({ useState, useEffect });
 
 function App() {
+  const session = useAuth();
   const todos = useQuery("todos");
   const addTodo = useMutation("addTodo");
   const [text, setText] = useState("");
@@ -989,6 +995,11 @@ function App() {
   return (
     <main>
       <h1>Sporades Todos</h1>
+      {session.providers.google?.configured && !session.isAuthenticated() ? (
+        <button type="button" onClick={() => auth.signIn("google")}>
+          Sign in with Google
+        </button>
+      ) : null}
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -1016,11 +1027,12 @@ render(<App />, document.getElementById("app")!);
 
   return `import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { createHooks } from "sporades/client";
+import { auth, createHooks } from "sporades/client";
 
-const { useQuery, useMutation } = createHooks({ useState, useEffect });
+const { useAuth, useQuery, useMutation } = createHooks({ useState, useEffect });
 
 function App() {
+  const session = useAuth();
   const todos = useQuery("todos");
   const addTodo = useMutation("addTodo");
   const [text, setText] = useState("");
@@ -1028,6 +1040,11 @@ function App() {
   return (
     <main>
       <h1>Sporades Todos</h1>
+      {session.providers.google?.configured && !session.isAuthenticated() ? (
+        <button type="button" onClick={() => auth.signIn("google")}>
+          Sign in with Google
+        </button>
+      ) : null}
       <form
         onSubmit={(event) => {
           event.preventDefault();

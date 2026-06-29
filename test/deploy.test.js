@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -122,6 +123,48 @@ async function writePackage(projectDir, packageName, exports, files) {
   await Promise.all(
     Object.entries(files).map(([name, contents]) => writeFile(path.join(packageDir, name), contents)),
   );
+}
+
+async function withFakeGoogleServer(fn) {
+  const server = createHttpServer(async (request, response) => {
+    const requestUrl = new URL(request.url, "http://127.0.0.1");
+
+    if (request.method === "POST" && requestUrl.pathname === "/token") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ access_token: "container-access-token", token_type: "Bearer" }));
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/userinfo") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          email: "mira@example.com",
+          name: "Mira",
+          picture: "https://example.com/mira.png",
+        }),
+      );
+      return;
+    }
+
+    response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+    response.end("Not found");
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+
+  const port = server.address().port;
+  try {
+    return await fn({
+      tokenUrl: `http://127.0.0.1:${port}/token`,
+      userInfoUrl: `http://127.0.0.1:${port}/userinfo`,
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 }
 
 async function getAvailablePort() {
@@ -582,63 +625,66 @@ export default capsule({
     assert.equal(setResult.code, 0, setResult.stderr);
     const docker = await installFakeDocker(dir, "container-google-auth");
 
-    const deployResult = await runCli(["deploy", "--json"], {
-      cwd: projectDir,
-      env: docker.env,
-    });
-    assert.equal(deployResult.code, 0, deployResult.stderr);
-
-    const port = await getAvailablePort();
-    const serverBundlePath = path.join(projectDir, ".sporades", "build", "server.mjs");
-    const child = spawn(process.execPath, [serverBundlePath], {
-      cwd: projectDir,
-      env: {
-        ...process.env,
-        PORT: String(port),
-        SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db"),
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    let socket;
-    try {
-      await waitForHttp(`http://127.0.0.1:${port}/`, child);
-      socket = await openSocket(`http://127.0.0.1:${port}`);
-      socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
-      const anonymousAuth = await readSocketMessage(socket);
-      const userId = anonymousAuth.data.auth.userId;
-
-      socket.send(
-        JSON.stringify({
-          id: "complete-google",
-          type: "auth.completeGoogleSignIn",
-          profile: {
-            email: "mira@example.com",
-            displayName: "Mira",
-            picture: "https://example.com/mira.png",
-          },
-        }),
-      );
-      const linkedAuth = await readSocketMessage(socket);
-      assert.deepEqual(linkedAuth.data.auth, {
-        userId,
-        displayName: "Mira",
-        email: "mira@example.com",
-        picture: "https://example.com/mira.png",
-        isAuthenticated: true,
-        isGuest: false,
-        provider: "google",
+    await withFakeGoogleServer(async (google) => {
+      const deployResult = await runCli(["deploy", "--json"], {
+        cwd: projectDir,
+        env: docker.env,
       });
+      assert.equal(deployResult.code, 0, deployResult.stderr);
 
-      const endpointResponse = await fetch(`http://127.0.0.1:${port}/integrations/auth`, {
-        headers: { "x-sporades-session-token": anonymousAuth.data.sessionToken },
+      const port = await getAvailablePort();
+      const serverBundlePath = path.join(projectDir, ".sporades", "build", "server.mjs");
+      const child = spawn(process.execPath, [serverBundlePath], {
+        cwd: projectDir,
+        env: {
+          ...process.env,
+          PORT: String(port),
+          SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db"),
+          SPORADES_GOOGLE_TOKEN_URL: google.tokenUrl,
+          SPORADES_GOOGLE_USERINFO_URL: google.userInfoUrl,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
       });
-      const endpointBody = await endpointResponse.json();
-      assert.equal(endpointResponse.status, 200, JSON.stringify(endpointBody));
-      assert.deepEqual(endpointBody, linkedAuth.data.auth);
-    } finally {
-      socket?.close();
-      await stopChild(child);
-    }
+      let socket;
+      try {
+        await waitForHttp(`http://127.0.0.1:${port}/`, child);
+        socket = await openSocket(`http://127.0.0.1:${port}`);
+        socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+        const anonymousAuth = await readSocketMessage(socket);
+        const userId = anonymousAuth.data.auth.userId;
+
+        socket.send(JSON.stringify({ id: "signin", type: "auth.signIn", provider: "google", returnTo: `http://127.0.0.1:${port}/integrations/auth` }));
+        const signIn = await readSocketMessage(socket);
+        const signInUrl = new URL(signIn.data.url);
+        const callbackResponse = await fetch(
+          `http://127.0.0.1:${port}/__sporades/auth/google/callback?code=container-code&state=${signInUrl.searchParams.get("state")}`,
+          { redirect: "manual" },
+        );
+        assert.equal(callbackResponse.status, 302);
+
+        socket.send(JSON.stringify({ id: "auth-after", type: "auth.get" }));
+        const linkedAuth = await readSocketMessage(socket);
+        assert.deepEqual(linkedAuth.data.auth, {
+          userId,
+          displayName: "Mira",
+          email: "mira@example.com",
+          picture: "https://example.com/mira.png",
+          isAuthenticated: true,
+          isGuest: false,
+          provider: "google",
+        });
+
+        const endpointResponse = await fetch(`http://127.0.0.1:${port}/integrations/auth`, {
+          headers: { "x-sporades-session-token": anonymousAuth.data.sessionToken },
+        });
+        const endpointBody = await endpointResponse.json();
+        assert.equal(endpointResponse.status, 200, JSON.stringify(endpointBody));
+        assert.deepEqual(endpointBody, linkedAuth.data.auth);
+      } finally {
+        socket?.close();
+        await stopChild(child);
+      }
+    });
   });
 });
 
