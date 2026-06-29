@@ -47,6 +47,13 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createAnonymousAuthTables,
   resolveAnonymousSession,
   sessionFromRow,
+  routeSporadesAuth,
+  beginGoogleSignIn,
+  normalizeReturnTo,
+  exchangeGoogleCode,
+  fetchGoogleProfile,
+  linkGoogleAccount,
+  writeRedirect,
   createWebSocketAccept,
   createWebSocketHub,
   drainWebSocketFrames,
@@ -56,7 +63,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   writeEndpointResult,
   writeEndpointError,
   endpointResponseError,
-  linkGoogleAccount,
   runQuery,
   runMutation,
   runAppMessage,
@@ -1041,10 +1047,13 @@ export function createWebSocketHub(getDatabase) {
         ].join("\r\n"),
       );
 
-      const sessionToken = new URL(request.url, "http://127.0.0.1").searchParams.get("sessionToken");
+      const requestUrl = new URL(request.url, "http://127.0.0.1");
+      const sessionToken = requestUrl.searchParams.get("sessionToken");
+      const protocol = request.socket?.encrypted ? "https" : "http";
+      const origin = `${protocol}://${request.headers.host}`;
       const database = getDatabase();
       const session = resolveAnonymousSession(database, sessionToken);
-      const client = { socket, buffer: Buffer.alloc(0), subscriptions: new Map(), session };
+      const client = { socket, buffer: Buffer.alloc(0), subscriptions: new Map(), session, origin };
       clients.add(client);
       socket.on("data", (chunk) => {
         client.buffer = Buffer.concat([client.buffer, chunk]);
@@ -1083,40 +1092,23 @@ export function createWebSocketHub(getDatabase) {
       return;
     }
 
-    if (message.type === "auth.signInWithGoogle") {
-      const google = database.authConfig.google;
-      if (!google.configured) {
+    if (message.type === "auth.signIn" || message.type === "auth.signInWithGoogle") {
+      const provider = message.type === "auth.signInWithGoogle" ? "google" : message.provider;
+      if (provider !== "google") {
         sendJson(client, {
           id: message.id ?? null,
           type: "error",
           error: {
-            message: "Google OAuth is not configured.",
-            hint: "Run `sporades auth set google --client-id <id> --client-secret <secret>`.",
+            message: `Unsupported auth provider: ${provider ?? ""}`.trim(),
+            hint: "Use auth.signIn with a configured provider such as google.",
           },
         });
         return;
       }
-      const clientId = database.serverEnv[google.clientIdEnv];
-      sendJson(client, {
-        id: message.id ?? null,
-        type: "auth.redirect",
-        data: {
-          url:
-            "https://accounts.google.com/o/oauth2/v2/auth?" +
-            new URLSearchParams({
-              client_id: clientId,
-              response_type: "code",
-              scope: "openid email profile",
-              state: client.session.token,
-            }).toString(),
-        },
-        error: null,
+      const result = beginGoogleSignIn(database, client.session, {
+        origin: client.origin,
+        returnTo: message.returnTo,
       });
-      return;
-    }
-
-    if (message.type === "auth.completeGoogleSignIn") {
-      const result = linkGoogleAccount(database, client.session, message.profile ?? {});
       if (!result.ok) {
         sendJson(client, {
           id: message.id ?? null,
@@ -1125,8 +1117,12 @@ export function createWebSocketHub(getDatabase) {
         });
         return;
       }
-      client.session.auth = result.auth;
-      sendAuthResult(client, message.id ?? null);
+      sendJson(client, {
+        id: message.id ?? null,
+        type: "auth.redirect",
+        data: { url: result.url },
+        error: null,
+      });
       return;
     }
 
@@ -1174,7 +1170,7 @@ export function createWebSocketHub(getDatabase) {
       type: "error",
       error: {
         message: `Unsupported WebSocket message: ${message.type ?? ""}`.trim(),
-        hint: "Use auth.get, auth.signInWithGoogle, query.subscribe, mutation.run, or app.send.",
+        hint: "Use auth.get, auth.signIn, query.subscribe, mutation.run, or app.send.",
       },
     });
   }
@@ -1199,6 +1195,7 @@ export function createWebSocketHub(getDatabase) {
 
   function sendAuthResult(client, id) {
     const database = getDatabase();
+    client.session = resolveAnonymousSession(database, client.session.token);
     sendJson(client, {
       id,
       type: "auth.result",
@@ -1241,7 +1238,43 @@ export function createWebSocketHub(getDatabase) {
   }
 }
 
-function linkGoogleAccount(database, session, profile) {
+export async function routeSporadesAuth(database, request, response) {
+  const requestUrl = new URL(request.url, "http://127.0.0.1");
+  if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/auth/google/callback") {
+    return false;
+  }
+
+  const state = requestUrl.searchParams.get("state");
+  const code = requestUrl.searchParams.get("code");
+  if (!state || !code) {
+    writeEndpointError(response, commandError("Invalid Google OAuth callback.", "Retry Google sign-in from the app."));
+    return true;
+  }
+
+  const stateRow = database.sqlite
+    .prepare("SELECT state, sessionToken, returnTo, redirectUri FROM sporades_auth_oauth_states WHERE state = ?")
+    .get(state);
+  database.sqlite.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
+  if (!stateRow) {
+    writeEndpointError(response, commandError("Invalid Google OAuth state.", "Retry Google sign-in from the app."));
+    return true;
+  }
+
+  try {
+    const profile = await exchangeGoogleCode(database, code, stateRow.redirectUri);
+    const session = resolveAnonymousSession(database, stateRow.sessionToken);
+    const result = linkGoogleAccount(database, session, profile);
+    if (!result.ok) {
+      throw commandError(result.error.message, result.error.hint);
+    }
+    writeRedirect(response, stateRow.returnTo);
+  } catch (error) {
+    writeEndpointError(response, error);
+  }
+  return true;
+}
+
+function beginGoogleSignIn(database, session, options) {
   if (!database.authConfig.google.configured) {
     return {
       ok: false,
@@ -1251,6 +1284,89 @@ function linkGoogleAccount(database, session, profile) {
       },
     };
   }
+  const origin = options.origin;
+  const redirectUri = `${origin}/__sporades/auth/google/callback`;
+  const returnTo = normalizeReturnTo(options.returnTo, origin);
+  const state = randomBytes(32).toString("base64url");
+  const now = new Date().toISOString();
+  database.sqlite
+    .prepare(
+      "INSERT INTO sporades_auth_oauth_states (state, sessionToken, returnTo, redirectUri, createdAt) VALUES (?, ?, ?, ?, ?)",
+    )
+    .run(state, session.token, returnTo, redirectUri, now);
+
+  const clientId = database.serverEnv[database.authConfig.google.clientIdEnv];
+  const params = new URLSearchParams({
+    client_id: clientId,
+    redirect_uri: redirectUri,
+    response_type: "code",
+    scope: "openid email profile",
+    state,
+  });
+  return {
+    ok: true,
+    url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
+  };
+}
+
+function normalizeReturnTo(returnTo, origin) {
+  if (!returnTo) {
+    return origin;
+  }
+  try {
+    const url = new URL(returnTo, origin);
+    if (url.origin !== origin) {
+      return origin;
+    }
+    return url.toString();
+  } catch {
+    return origin;
+  }
+}
+
+async function exchangeGoogleCode(database, code, redirectUri) {
+  const google = database.authConfig.google;
+  const tokenUrl = process.env.SPORADES_GOOGLE_TOKEN_URL ?? "https://oauth2.googleapis.com/token";
+  const clientId = database.serverEnv[google.clientIdEnv];
+  const clientSecret = database.serverEnv[google.clientSecretEnv];
+  const tokenResponse = await fetch(tokenUrl, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      code,
+      client_id: clientId,
+      client_secret: clientSecret,
+      redirect_uri: redirectUri,
+      grant_type: "authorization_code",
+    }),
+  });
+  if (!tokenResponse.ok) {
+    throw commandError("Google OAuth code exchange failed.", "Check the Google OAuth client configuration and retry sign-in.");
+  }
+  const token = await tokenResponse.json();
+  if (!token.access_token) {
+    throw commandError("Google OAuth response did not include an access token.", "Check the Google OAuth client configuration and retry sign-in.");
+  }
+  return fetchGoogleProfile(token.access_token);
+}
+
+async function fetchGoogleProfile(accessToken) {
+  const userInfoUrl = process.env.SPORADES_GOOGLE_USERINFO_URL ?? "https://www.googleapis.com/oauth2/v3/userinfo";
+  const profileResponse = await fetch(userInfoUrl, {
+    headers: { authorization: `Bearer ${accessToken}` },
+  });
+  if (!profileResponse.ok) {
+    throw commandError("Google profile lookup failed.", "Retry Google sign-in with an email-bearing account.");
+  }
+  const profile = await profileResponse.json();
+  return {
+    email: profile.email,
+    displayName: profile.name ?? profile.email,
+    picture: profile.picture ?? null,
+  };
+}
+
+function linkGoogleAccount(database, session, profile) {
   if (!profile.email) {
     return {
       ok: false,
@@ -1278,6 +1394,11 @@ function linkGoogleAccount(database, session, profile) {
   return { ok: true, auth };
 }
 
+function writeRedirect(response, location) {
+  response.writeHead(302, { location });
+  response.end();
+}
+
 function createAnonymousAuthTables(sqlite) {
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
@@ -1295,6 +1416,15 @@ function createAnonymousAuthTables(sqlite) {
     "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
       "token TEXT PRIMARY KEY, " +
       "userId TEXT NOT NULL, " +
+      "createdAt TEXT NOT NULL" +
+      ")",
+  );
+  sqlite.exec(
+    "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
+      "state TEXT PRIMARY KEY, " +
+      "sessionToken TEXT NOT NULL, " +
+      "returnTo TEXT NOT NULL, " +
+      "redirectUri TEXT NOT NULL, " +
       "createdAt TEXT NOT NULL" +
       ")",
   );

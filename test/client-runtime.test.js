@@ -9,7 +9,7 @@ async function importClientRuntime() {
   return import(`data:text/javascript;base64,${encoded}#${Date.now()}-${Math.random()}`);
 }
 
-function installBrowserFakes(auth) {
+function installBrowserFakes(auth, options = {}) {
   const storage = new Map();
   const sockets = [];
   globalThis.localStorage = {
@@ -22,7 +22,10 @@ function installBrowserFakes(auth) {
   };
   globalThis.window = {
     location: {
-      href: "http://localhost:4000/",
+      href: options.href ?? "http://localhost:4000/",
+      assign(url) {
+        storage.set("assignedLocation", url);
+      },
     },
   };
   globalThis.WebSocket = class FakeWebSocket {
@@ -49,6 +52,20 @@ function installBrowserFakes(auth) {
 
     send(rawMessage) {
       const message = JSON.parse(rawMessage);
+      if (message.type === "auth.signIn") {
+        storage.set("signInMessage", JSON.stringify(message));
+        queueMicrotask(() => {
+          this.emit("message", {
+            data: JSON.stringify({
+              id: message.id,
+              type: "auth.redirect",
+              data: { url: "https://accounts.google.com/o/oauth2/v2/auth?state=opaque-state" },
+              error: null,
+            }),
+          });
+        });
+        return;
+      }
       if (message.type !== "auth.get") {
         if (message.type === "app.send") {
           queueMicrotask(() => {
@@ -205,6 +222,35 @@ test("client onMessage exposes filterable app message subscriptions", async () =
 
     assert.deepEqual(received, [{ type: "typing", data: { roomId: "general" } }]);
     subscription.unsubscribe();
+  } finally {
+    browser.cleanup();
+  }
+});
+
+test("client auth.signIn starts a full-page provider redirect and preserves the current URL", async () => {
+  const browser = installBrowserFakes(
+    {
+      userId: "anonymous-user",
+      displayName: "Anonymous",
+      email: null,
+      picture: null,
+      isAuthenticated: false,
+      isGuest: true,
+      provider: "anonymous",
+    },
+    { href: "http://localhost:4000/notes?filter=mine#today" },
+  );
+  try {
+    const runtime = await importClientRuntime();
+    await runtime.auth.signIn("google");
+    assert.deepEqual({ ...JSON.parse(browser.storage.get("signInMessage")), id: "request-id" }, {
+      id: "request-id",
+      type: "auth.signIn",
+      provider: "google",
+      returnTo: "http://localhost:4000/notes?filter=mine#today",
+    });
+    assert.equal(browser.storage.get("sporades.authReturnTo"), "http://localhost:4000/notes?filter=mine#today");
+    assert.equal(browser.storage.get("assignedLocation"), "https://accounts.google.com/o/oauth2/v2/auth?state=opaque-state");
   } finally {
     browser.cleanup();
   }

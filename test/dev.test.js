@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -205,6 +206,61 @@ async function writePackage(projectDir, packageName, exports, files) {
   await Promise.all(
     Object.entries(files).map(([name, contents]) => writeFile(path.join(packageDir, name), contents)),
   );
+}
+
+async function withFakeGoogleServer(fn) {
+  const requests = [];
+  const server = createServer(async (request, response) => {
+    const requestUrl = new URL(request.url, "http://127.0.0.1");
+    requests.push({ method: request.method, path: requestUrl.pathname });
+
+    if (request.method === "POST" && requestUrl.pathname === "/token") {
+      const body = await new Promise((resolve) => {
+        let raw = "";
+        request.on("data", (chunk) => {
+          raw += chunk;
+        });
+        request.on("end", () => resolve(new URLSearchParams(raw)));
+      });
+      requests.at(-1).body = Object.fromEntries(body.entries());
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ access_token: "server-owned-access-token", token_type: "Bearer" }));
+      return;
+    }
+
+    if (request.method === "GET" && requestUrl.pathname === "/userinfo") {
+      requests.at(-1).authorization = request.headers.authorization;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          email: "mira@example.com",
+          name: "Mira",
+          picture: "https://example.com/mira.png",
+          email_verified: true,
+        }),
+      );
+      return;
+    }
+
+    response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+    response.end("Not found");
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+
+  const port = server.address().port;
+  try {
+    return await fn({
+      tokenUrl: `http://127.0.0.1:${port}/token`,
+      userInfoUrl: `http://127.0.0.1:${port}/userinfo`,
+      requests,
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 }
 
 test("sporades dev bundles and serves a scaffolded React todo capsule", async () => {
@@ -922,6 +978,7 @@ test("sporades dev restarts server runtime and accepts new WebSocket connections
       assert.deepEqual(JSON.parse(listResult.stdout).data.tables, [
         "notes",
         "sporades",
+        "sporades_auth_oauth_states",
         "sporades_auth_sessions",
         "sporades_auth_users",
         "todos",
@@ -2257,7 +2314,7 @@ test("sporades dev rejects Google auth mode when required env values are missing
   });
 });
 
-test("Google auth links to the current anonymous account and keeps owned todos visible", async () => {
+test("Google auth callback exchanges the code server-side and links the current anonymous account", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
@@ -2276,65 +2333,104 @@ test("Google auth links to the current anonymous account and keeps owned todos v
     );
     assert.equal(setResult.code, 0, setResult.stderr);
 
-    const child = startCli(["dev", "--json"], { cwd: projectDir });
-    let socket;
-    try {
-      const started = await waitForJsonLine(child);
-      socket = await openSocket(started.data.url);
-
-      socket.send(JSON.stringify({ id: "auth-1", type: "auth.get" }));
-      const anonymousAuth = await readSocketMessage(socket);
-      const userId = anonymousAuth.data.auth.userId;
-      assert.equal(anonymousAuth.data.auth.isGuest, true);
-      assert.equal(anonymousAuth.data.providers.google.configured, true);
-
-      socket.send(JSON.stringify({ id: "query-1", type: "query.subscribe", query: "todos" }));
-      assert.deepEqual((await readSocketMessage(socket)).data, []);
-      socket.send(JSON.stringify({ id: "todo-1", type: "mutation.run", mutation: "addTodo", args: ["Keep me"] }));
-      assert.equal((await readSocketMessage(socket)).type, "mutation.result");
-      assert.equal((await readSocketMessage(socket)).data[0].text, "Keep me");
-
-      socket.send(JSON.stringify({ id: "signin-1", type: "auth.signInWithGoogle" }));
-      const signIn = await readSocketMessage(socket);
-      assert.equal(signIn.id, "signin-1");
-      assert.equal(signIn.type, "auth.redirect");
-      assert.match(signIn.data.url, /^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?/);
-      assert.doesNotMatch(signIn.data.url, /client-secret/);
-
-      socket.send(
-        JSON.stringify({
-          id: "complete-1",
-          type: "auth.completeGoogleSignIn",
-          profile: {
-            email: "mira@example.com",
-            displayName: "Mira",
-            picture: "https://example.com/mira.png",
-          },
-        }),
-      );
-      const linked = await readSocketMessage(socket);
-      assert.equal(linked.type, "auth.result");
-      assert.deepEqual(linked.data.auth, {
-        userId,
-        displayName: "Mira",
-        email: "mira@example.com",
-        picture: "https://example.com/mira.png",
-        isAuthenticated: true,
-        isGuest: false,
-        provider: "google",
+    await withFakeGoogleServer(async (google) => {
+      const child = startCli(["dev", "--json"], {
+        cwd: projectDir,
+        env: {
+          SPORADES_GOOGLE_TOKEN_URL: google.tokenUrl,
+          SPORADES_GOOGLE_USERINFO_URL: google.userInfoUrl,
+        },
       });
+      let socket;
+      try {
+        const started = await waitForJsonLine(child);
+        assert.equal(started.ok, true, JSON.stringify(started));
+        socket = await openSocket(started.data.url);
 
-      socket.send(JSON.stringify({ id: "query-2", type: "query.subscribe", query: "todos" }));
-      const todosAfterLink = await readSocketMessage(socket);
-      assert.deepEqual(
-        todosAfterLink.data.map((todo) => todo.text),
-        ["Keep me"],
-      );
-    } finally {
-      socket?.close();
-      child.kill("SIGTERM");
-      await new Promise((resolve) => child.once("exit", resolve));
-    }
+        socket.send(JSON.stringify({ id: "auth-1", type: "auth.get" }));
+        const anonymousAuth = await readSocketMessage(socket);
+        const userId = anonymousAuth.data.auth.userId;
+        assert.equal(anonymousAuth.data.auth.isGuest, true);
+        assert.equal(anonymousAuth.data.providers.google.configured, true);
+
+        socket.send(JSON.stringify({ id: "query-1", type: "query.subscribe", query: "todos" }));
+        assert.deepEqual((await readSocketMessage(socket)).data, []);
+        socket.send(JSON.stringify({ id: "todo-1", type: "mutation.run", mutation: "addTodo", args: ["Keep me"] }));
+        assert.equal((await readSocketMessage(socket)).type, "mutation.result");
+        assert.equal((await readSocketMessage(socket)).data[0].text, "Keep me");
+
+        socket.send(
+          JSON.stringify({
+            id: "complete-1",
+            type: "auth.completeGoogleSignIn",
+            profile: { email: "mallory@example.com", displayName: "Mallory" },
+          }),
+        );
+        const fakeComplete = await readSocketMessage(socket);
+        assert.equal(fakeComplete.type, "error");
+        assert.match(fakeComplete.error.message, /Unsupported WebSocket message/);
+
+        socket.send(JSON.stringify({ id: "signin-1", type: "auth.signIn", provider: "google", returnTo: `${started.data.url}/notes` }));
+        const signIn = await readSocketMessage(socket);
+        assert.equal(signIn.id, "signin-1");
+        assert.equal(signIn.type, "auth.redirect");
+        assert.match(signIn.data.url, /^https:\/\/accounts\.google\.com\/o\/oauth2\/v2\/auth\?/);
+        assert.doesNotMatch(signIn.data.url, /client-secret/);
+        const signInUrl = new URL(signIn.data.url);
+        assert.equal(signInUrl.searchParams.get("client_id"), "client-id");
+        assert.equal(signInUrl.searchParams.get("response_type"), "code");
+        assert.equal(signInUrl.searchParams.get("scope"), "openid email profile");
+        assert.match(signInUrl.searchParams.get("redirect_uri"), /\/__sporades\/auth\/google\/callback$/);
+        assert.notEqual(signInUrl.searchParams.get("state"), anonymousAuth.data.sessionToken);
+
+        const callbackResponse = await fetch(
+          `${started.data.url}/__sporades/auth/google/callback?code=server-owned-code&state=${signInUrl.searchParams.get("state")}`,
+          { redirect: "manual" },
+        );
+        assert.equal(callbackResponse.status, 302);
+        assert.equal(callbackResponse.headers.get("location"), `${started.data.url}/notes`);
+        assert.deepEqual(google.requests[0], {
+          method: "POST",
+          path: "/token",
+          body: {
+            code: "server-owned-code",
+            client_id: "client-id",
+            client_secret: "client-secret",
+            redirect_uri: `${started.data.url}/__sporades/auth/google/callback`,
+            grant_type: "authorization_code",
+          },
+        });
+        assert.deepEqual(google.requests[1], {
+          method: "GET",
+          path: "/userinfo",
+          authorization: "Bearer server-owned-access-token",
+        });
+
+        socket.send(JSON.stringify({ id: "auth-2", type: "auth.get" }));
+        const linked = await readSocketMessage(socket);
+        assert.equal(linked.type, "auth.result");
+        assert.deepEqual(linked.data.auth, {
+          userId,
+          displayName: "Mira",
+          email: "mira@example.com",
+          picture: "https://example.com/mira.png",
+          isAuthenticated: true,
+          isGuest: false,
+          provider: "google",
+        });
+
+        socket.send(JSON.stringify({ id: "query-2", type: "query.subscribe", query: "todos" }));
+        const todosAfterLink = await readSocketMessage(socket);
+        assert.deepEqual(
+          todosAfterLink.data.map((todo) => todo.text),
+          ["Keep me"],
+        );
+      } finally {
+        socket?.close();
+        child.kill("SIGTERM");
+        await new Promise((resolve) => child.once("exit", resolve));
+      }
+    });
   });
 });
 
@@ -2401,7 +2497,7 @@ test("sporades db list returns tables from the running dev session database", as
       assert.deepEqual(JSON.parse(listResult.stdout), {
         ok: true,
         data: {
-          tables: ["sporades", "sporades_auth_sessions", "sporades_auth_users", "todos"],
+          tables: ["sporades", "sporades_auth_oauth_states", "sporades_auth_sessions", "sporades_auth_users", "todos"],
         },
         error: null,
       });
@@ -2448,6 +2544,11 @@ test("sporades db dump returns structured table data from the running dev sessio
                     '{"tables":[{"name":"todos","fields":[{"name":"text","kind":"String","sqliteType":"TEXT"},{"name":"done","kind":"Boolean","sqliteType":"INTEGER","defaultValue":false},{"name":"ownerId","kind":"String","sqliteType":"TEXT"}]}]}',
                 },
               ],
+            },
+            {
+              name: "sporades_auth_oauth_states",
+              columns: ["state", "sessionToken", "returnTo", "redirectUri", "createdAt"],
+              rows: [],
             },
             {
               name: "sporades_auth_sessions",
@@ -2513,6 +2614,7 @@ test("sporades db query runs read-only SQL against the running dev session datab
           columns: ["name"],
           rows: [
             { name: "sporades" },
+            { name: "sporades_auth_oauth_states" },
             { name: "sporades_auth_sessions" },
             { name: "sporades_auth_users" },
             { name: "todos" },

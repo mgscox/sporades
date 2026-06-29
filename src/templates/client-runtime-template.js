@@ -14,6 +14,12 @@ export function onMessage(listener) {
   return connect().onMessage(listener);
 }
 
+export const auth = {
+  signIn(provider) {
+    return connect().signIn(provider);
+  },
+};
+
 export function createHooks(primitives) {
   const { useEffect, useState } = primitives;
 
@@ -73,6 +79,9 @@ export function createHooks(primitives) {
       ...state,
       isAuthenticated() {
         return Boolean(state.auth?.isAuthenticated);
+      },
+      signIn(provider) {
+        return connect().signIn(provider);
       },
     };
   }
@@ -215,6 +224,16 @@ function createConnection() {
       return request("auth.get")
         .then(storeAuthSession)
         .then((result) => Boolean(result.data?.auth?.isAuthenticated));
+    },
+    signIn(provider) {
+      const returnTo = window.location.href;
+      localStorage.setItem("sporades.authReturnTo", returnTo);
+      return request("auth.signIn", { provider, returnTo }).then((result) => {
+        if (result.data?.url) {
+          window.location.assign(result.data.url);
+        }
+        return result;
+      });
     },
     subscribe(name, listener) {
       const id = nextId++;
