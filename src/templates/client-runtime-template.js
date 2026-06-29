@@ -2,6 +2,10 @@ export function createClientRuntimeSource() {
   return `
 const websocketPath = "/__sporades/ws";
 
+export function isAuthenticated() {
+  return connect().isAuthenticated();
+}
+
 export function createHooks(primitives) {
   const { useEffect, useState } = primitives;
 
@@ -57,7 +61,12 @@ export function createHooks(primitives) {
       };
     }, []);
 
-    return state;
+    return {
+      ...state,
+      isAuthenticated() {
+        return Boolean(state.auth?.isAuthenticated);
+      },
+    };
   }
 
   return { useQuery, useMutation, useAuth };
@@ -157,6 +166,11 @@ function createConnection() {
   return {
     auth() {
       return request("auth.get").then(storeAuthSession);
+    },
+    isAuthenticated() {
+      return request("auth.get")
+        .then(storeAuthSession)
+        .then((result) => Boolean(result.data?.auth?.isAuthenticated));
     },
     subscribe(name, listener) {
       const id = nextId++;

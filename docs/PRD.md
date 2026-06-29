@@ -103,7 +103,7 @@ Every table has three managed fields. App code cannot set or update them:
 
 ```tsx
 import { useState, useEffect } from "react";
-import { createHooks } from "sporades/client";
+import { createHooks, isAuthenticated } from "sporades/client";
 
 const { useQuery, useMutation, useAuth } = createHooks({ useState, useEffect });
 ```
@@ -126,6 +126,7 @@ WebSocket connection to `/__sporades/ws` on the same origin (same port as HTTP):
 - `query.subscribe` → server pushes `query.result` whenever state changes
 - `mutation.run` → request/response with ID correlation
 - `auth.get` → returns current auth state
+- `isAuthenticated()` → resolves whether the current session has a linked authentication method
 - `refresh` → client reloads (dev mode, on rebuild)
 
 Auto-reconnect with 500ms backoff. Session token stored in `localStorage`, sent on WebSocket connection.
