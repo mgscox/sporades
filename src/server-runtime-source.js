@@ -5,6 +5,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   openDevDatabase,
   extractSchema,
   extractEndpoints,
+  extractQueryHandlers,
+  extractMutationHandlers,
   extractMessageHandlers,
   extractContextMiddleware,
   extractMutationHooks,
@@ -84,7 +86,9 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   writeEndpointError,
   endpointResponseError,
   runQuery,
+  runCustomQuery,
   runMutation,
+  runCustomMutation,
   runAppMessage,
   validateAppMessageType,
   isAllAppMessageScope,
@@ -119,6 +123,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
   const sqlite = new DatabaseSync(databasePath);
   const schema = extractSchema(serverSource);
   const endpoints = extractEndpoints(serverSource);
+  const queries = extractQueryHandlers(serverSource);
+  const mutations = extractMutationHandlers(serverSource);
   const messages = extractMessageHandlers(serverSource);
   const contextMiddleware = extractContextMiddleware(serverSource);
   const mutationHooks = extractMutationHooks(serverSource);
@@ -127,6 +133,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     sqlite,
     schema,
     endpoints,
+    queries,
+    mutations,
     messages,
     contextMiddleware,
     mutationHooks,
@@ -383,6 +391,85 @@ function extractEndpoints(serverSource) {
   }
 
   return endpoints;
+}
+
+function extractQueryHandlers(serverSource) {
+  const queriesSource = extractObjectPropertySource(serverSource, "queries");
+  if (!queriesSource) {
+    return [];
+  }
+
+  const source = queriesSource.trim();
+  if (!source.startsWith("{")) {
+    return [];
+  }
+  const closeIndex = findMatchingDelimiter(source, 0, "{", "}");
+  if (closeIndex === -1) {
+    return [];
+  }
+
+  const handlers = [];
+  const entriesSource = source.slice(1, closeIndex);
+  for (const entry of splitTopLevelList(entriesSource)) {
+    const match = entry.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*query\s*\(/);
+    if (!match) {
+      continue;
+    }
+
+    const queryCallIndex = entry.indexOf("query");
+    const openIndex = entry.indexOf("(", queryCallIndex);
+    const argsEnd = findMatchingParen(entry, openIndex);
+    if (argsEnd === -1) {
+      continue;
+    }
+
+    handlers.push({
+      name: match[1],
+      handlerSource: entry.slice(openIndex + 1, argsEnd).trim().replace(/,\s*$/, ""),
+    });
+  }
+  return handlers;
+}
+
+function extractMutationHandlers(serverSource) {
+  const mutationsSource = extractObjectPropertySource(serverSource, "mutations");
+  if (!mutationsSource) {
+    return [];
+  }
+
+  const source = mutationsSource.trim();
+  if (!source.startsWith("{")) {
+    return [];
+  }
+  const closeIndex = findMatchingDelimiter(source, 0, "{", "}");
+  if (closeIndex === -1) {
+    return [];
+  }
+
+  const handlers = [];
+  const entriesSource = source.slice(1, closeIndex);
+  for (const entry of splitTopLevelList(entriesSource)) {
+    const match = entry.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*mutation\s*\(/);
+    if (!match) {
+      continue;
+    }
+    if (match[1].startsWith("add") || match[1].startsWith("update")) {
+      continue;
+    }
+
+    const mutationCallIndex = entry.indexOf("mutation");
+    const openIndex = entry.indexOf("(", mutationCallIndex);
+    const argsEnd = findMatchingParen(entry, openIndex);
+    if (argsEnd === -1) {
+      continue;
+    }
+
+    handlers.push({
+      name: match[1],
+      handlerSource: entry.slice(openIndex + 1, argsEnd).trim().replace(/,\s*$/, ""),
+    });
+  }
+  return handlers;
 }
 
 function extractMessageHandlers(serverSource) {
@@ -1188,6 +1275,9 @@ function createEndpointTableApi(database, table, query = {}) {
     orderBy(fieldName, direction = "asc") {
       return createEndpointTableApi(database, table, { ...query, orderBy: { fieldName, direction } });
     },
+    limit(count) {
+      return createEndpointTableApi(database, table, { ...query, limit: count });
+    },
     all() {
       const whereSql = query.where ? ` WHERE ${quoteIdentifier(query.where.fieldName)} = ?` : "";
       const orderSql = query.orderBy
@@ -1195,10 +1285,12 @@ function createEndpointTableApi(database, table, query = {}) {
             String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"
           }`
         : "";
+      const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
+      const limitSql = limit === null ? "" : " LIMIT ?";
       const params = query.where ? [serializeFieldValue(table.fields.find((field) => field.name === query.where.fieldName), query.where.value)] : [];
       return database.sqlite
-        .prepare(`SELECT * FROM ${quoteIdentifier(table.name)}${whereSql}${orderSql}`)
-        .all(...params)
+        .prepare(`SELECT * FROM ${quoteIdentifier(table.name)}${whereSql}${orderSql}${limitSql}`)
+        .all(...(limit === null ? params : [...params, limit]))
         .map((row) => deserializeRow(table, row));
     },
   };
@@ -1709,11 +1801,9 @@ export function createWebSocketHub(getDatabase) {
     const database = getDatabase();
     const result = runQuery(database, client.session.auth, subscription.name);
     const data =
-      result.data !== undefined
-        ? result.data
-        : subscription.style === "direct"
-          ? result.rows
-          : { rows: result.rows };
+      subscription.style === "direct"
+        ? (result.data ?? result.rows)
+        : { rows: result.data ?? result.rows };
     sendJson(client, {
       id: subscription.id,
       type: "query.result",
@@ -2103,6 +2193,11 @@ function runQuery(database, auth, queryName) {
     return { data: context.env, error: null };
   }
 
+  const customResult = runCustomQuery(database, context, queryName);
+  if (customResult) {
+    return customResult;
+  }
+
   const table = resolveTableForQuery(database.schema, queryName);
   if (!table) {
     return {
@@ -2132,6 +2227,28 @@ function runQuery(database, auth, queryName) {
   return { rows: database.rowCache.get(cacheKey), error: null };
 }
 
+function runCustomQuery(database, context, queryName) {
+  const handler = database.queries.find((candidate) => candidate.name === queryName);
+  if (!handler) {
+    return null;
+  }
+
+  try {
+    const createHandler = new Function(`return (${handler.handlerSource});`);
+    const data = createHandler()(context);
+    assertJsonCompatible(data);
+    return { data, error: null };
+  } catch (error) {
+    return {
+      data: null,
+      error: {
+        message: error?.message || "Query handler failed.",
+        hint: error?.hint ?? "Check the Capsule query handler and retry the query.",
+      },
+    };
+  }
+}
+
 function runMutation(database, auth, mutationName, args) {
   let context;
   let result;
@@ -2143,9 +2260,12 @@ function runMutation(database, auth, mutationName, args) {
       runMutationHook(hookSource, { name: mutationName, args, ctx: context });
     }
 
-    result = mutationName.startsWith("update")
-      ? runUpdateMutation(database, context.auth, mutationName, args)
-      : runInsertMutation(database, context.auth, mutationName, args);
+    result = runCustomMutation(database, context, mutationName, args);
+    if (!result) {
+      result = mutationName.startsWith("update")
+        ? runUpdateMutation(database, context.auth, mutationName, args)
+        : runInsertMutation(database, context.auth, mutationName, args);
+    }
 
     if (result.ok) {
       for (const hookSource of database.mutationHooks.afterMutation) {
@@ -2160,6 +2280,21 @@ function runMutation(database, auth, mutationName, args) {
     database.rowCache.clear();
     return createHookErrorResult(error);
   }
+}
+
+function runCustomMutation(database, context, mutationName, args) {
+  const handler = database.mutations.find((candidate) => candidate.name === mutationName);
+  if (!handler) {
+    return null;
+  }
+
+  const createHandler = new Function(`return (${handler.handlerSource});`);
+  const result = createHandler()(context, ...args);
+  if (result !== undefined) {
+    assertJsonCompatible(result);
+  }
+  database.rowCache.clear();
+  return { ok: true, error: null };
 }
 
 function runAppMessage(database, auth, messageName, data, options = {}) {

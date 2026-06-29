@@ -137,6 +137,60 @@ test("sporades create writes a runnable React todo scaffold when requested", asy
   });
 });
 
+test("sporades create writes a runnable React guestbook scaffold when requested", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "guest-island", "--template", "guestbook", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: true,
+      data: { path: await realpath(path.join(dir, "guest-island")), template: "guestbook" },
+      error: null,
+    });
+
+    const projectDir = path.join(dir, "guest-island");
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.equal(config.name, "guest-island");
+    assert.equal(config.template, "guestbook");
+
+    const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
+    assert.match(serverEntry, /entries: table\(/);
+    assert.match(serverEntry, /body: String\(\)/);
+    assert.match(serverEntry, /authorId: String\(\)/);
+    assert.match(serverEntry, /authorName: String\(\)/);
+    assert.match(serverEntry, /authorPicture: String\(\)/);
+    assert.match(serverEntry, /entries: query/);
+    assert.match(serverEntry, /orderBy\("createdAt", "desc"\)/);
+    assert.match(serverEntry, /\.limit\(50\)/);
+    assert.match(serverEntry, /sign: mutation/);
+    assert.match(serverEntry, /body\.trim\(\)/);
+    assert.match(serverEntry, /throw new Error\("Write a message before signing\."\)/);
+    assert.match(serverEntry, /throw new Error\("Guestbook messages must be 280 characters or fewer\."\)/);
+    assert.match(serverEntry, /authorId: ctx\.auth\.userId/);
+    assert.match(serverEntry, /authorName: ctx\.auth\.displayName/);
+    assert.match(serverEntry, /authorPicture: ctx\.auth\.picture/);
+    assert.doesNotMatch(serverEntry, /avatar|upload/i);
+
+    const clientEntry = await readFile(path.join(projectDir, "client", "index.tsx"), "utf8");
+    assert.match(clientEntry, /createHooks/);
+    assert.match(clientEntry, /useAuth/);
+    assert.match(clientEntry, /useQuery\("entries"\)/);
+    assert.match(clientEntry, /useMutation\("sign"\)/);
+    assert.match(clientEntry, /auth\.signIn\("google"\)/);
+    assert.match(clientEntry, /session\.providers\.google\?\.configured/);
+    assert.match(clientEntry, /authorPicture/);
+    assert.doesNotMatch(clientEntry, /better-auth|googleapis|gapi|oauth|accounts\.google|avatar|upload/i);
+
+    const agents = await readFile(path.join(projectDir, "AGENTS.md"), "utf8");
+    assert.match(agents, /Template: guestbook/);
+    const readme = await readFile(path.join(projectDir, "README.md"), "utf8");
+    assert.match(readme, /A Sporades guestbook capsule\./);
+    assert.match(readme, /Trusted author fields come from `ctx\.auth`/);
+  });
+});
+
 test("sporades create --template blank writes the blank scaffold", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(["create", "blank-island", "--template", "blank", "--no-install", "--no-git", "--json"], {
@@ -288,6 +342,44 @@ test("sporades create writes a runnable Preact todo scaffold", async () => {
   });
 });
 
+test("sporades create writes a runnable Preact guestbook scaffold", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(
+      ["create", "guest-island", "--template", "guestbook", "--framework", "preact", "--no-install", "--no-git", "--json"],
+      {
+        cwd: dir,
+      },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: true,
+      data: { path: await realpath(path.join(dir, "guest-island")), template: "guestbook" },
+      error: null,
+    });
+
+    const projectDir = path.join(dir, "guest-island");
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.equal(config.template, "guestbook");
+    assert.equal(config.client.framework, "preact");
+
+    const clientEntry = await readFile(path.join(projectDir, "client", "index.tsx"), "utf8");
+    assert.match(clientEntry, /from "preact"/);
+    assert.match(clientEntry, /from "preact\/hooks"/);
+    assert.match(clientEntry, /createHooks\(\{ useState, useEffect \}\)/);
+    assert.match(clientEntry, /useQuery\("entries"\)/);
+    assert.match(clientEntry, /useMutation\("sign"\)/);
+    assert.match(clientEntry, /auth\.signIn\("google"\)/);
+    assert.match(clientEntry, /onInput=/);
+    assert.doesNotMatch(clientEntry, /react-dom|better-auth|googleapis|gapi|oauth|accounts\.google|avatar|upload/i);
+
+    const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
+    assert.equal(packageJson.dependencies.preact, "^10.25.0");
+    assert.equal(packageJson.dependencies.react, undefined);
+    assert.equal(packageJson.dependencies["react-dom"], undefined);
+  });
+});
+
 test("sporades create rejects unsupported framework values with structured JSON", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(
@@ -320,7 +412,7 @@ test("sporades create rejects unsupported template values with structured JSON",
       data: null,
       error: {
         message: "Unsupported template: blog",
-        hint: "Use one of: blank, todo.",
+        hint: "Use one of: blank, todo, guestbook.",
       },
     });
   });
