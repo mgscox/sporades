@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, realpath, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -179,7 +179,8 @@ test("sporades create writes a runnable React guestbook scaffold when requested"
     assert.match(clientEntry, /useQuery\("entries"\)/);
     assert.match(clientEntry, /useMutation\("sign"\)/);
     assert.match(clientEntry, /auth\.signIn\("google"\)/);
-    assert.match(clientEntry, /session\.providers\.google\?\.configured/);
+    assert.match(clientEntry, /Sign in with Google/);
+    assert.doesNotMatch(clientEntry, /providers\.google\?\.configured/);
     assert.match(clientEntry, /authorPicture/);
     assert.doesNotMatch(clientEntry, /better-auth|googleapis|gapi|oauth|accounts\.google|avatar|upload/i);
 
@@ -370,6 +371,8 @@ test("sporades create writes a runnable Preact guestbook scaffold", async () => 
     assert.match(clientEntry, /useQuery\("entries"\)/);
     assert.match(clientEntry, /useMutation\("sign"\)/);
     assert.match(clientEntry, /auth\.signIn\("google"\)/);
+    assert.match(clientEntry, /Sign in with Google/);
+    assert.doesNotMatch(clientEntry, /providers\.google\?\.configured/);
     assert.match(clientEntry, /onInput=/);
     assert.doesNotMatch(clientEntry, /react-dom|better-auth|googleapis|gapi|oauth|accounts\.google|avatar|upload/i);
 
@@ -476,5 +479,73 @@ test("sporades auth status reports anonymous and Google OAuth configuration stat
     const googleStatus = await runCli(["auth", "status", "--json"], { cwd: projectDir });
     assert.equal(googleStatus.code, 0, googleStatus.stderr);
     assert.deepEqual(JSON.parse(googleStatus.stdout).data.google.configured, true);
+  });
+});
+
+test("sporades auth set google can read a Google OAuth client JSON file", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    await writeFile(
+      path.join(projectDir, "client_secret_google.json"),
+      `${JSON.stringify({
+        web: {
+          client_id: "json-client-id.apps.googleusercontent.com",
+          client_secret: "json-client-secret",
+          redirect_uris: ["http://localhost:4000/__sporades/auth/google/callback"],
+        },
+      })}\n`,
+    );
+
+    const setResult = await runCli(["auth", "set", "google", "--client-json", "client_secret_google.json", "--json"], {
+      cwd: projectDir,
+    });
+    assert.equal(setResult.code, 0, setResult.stderr);
+    assert.doesNotMatch(setResult.stdout, /json-client-secret/);
+    assert.deepEqual(JSON.parse(setResult.stdout), {
+      ok: true,
+      data: {
+        mode: "google",
+        google: {
+          configured: true,
+          clientIdEnv: "GOOGLE_CLIENT_ID",
+          clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+        },
+      },
+      error: null,
+    });
+
+    const envFile = await readFile(path.join(projectDir, ".env.sporades.server"), "utf8");
+    assert.match(envFile, /^GOOGLE_CLIENT_ID=json-client-id\.apps\.googleusercontent\.com$/m);
+    assert.match(envFile, /^GOOGLE_CLIENT_SECRET=json-client-secret$/m);
+  });
+});
+
+test("sporades auth set google rejects invalid OAuth client JSON files", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    await writeFile(path.join(projectDir, "client_secret_google.json"), `${JSON.stringify({ web: { client_id: "only-id" } })}\n`);
+
+    const result = await runCli(["auth", "set", "google", "--client-json", "client_secret_google.json", "--json"], {
+      cwd: projectDir,
+    });
+    assert.equal(result.code, 1);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "OAuth client JSON is missing Google client credentials.",
+        hint: "Use a Google OAuth Web application JSON file containing `web.client_id` and `web.client_secret`.",
+      },
+    });
   });
 });

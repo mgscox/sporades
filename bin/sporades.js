@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { watch } from "node:fs";
+import { readFileSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -213,6 +213,7 @@ function parseAuthArgs(args) {
   let json = false;
   let clientId = null;
   let clientSecret = null;
+  let clientJson = null;
 
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
@@ -228,6 +229,10 @@ function parseAuthArgs(args) {
       clientSecret = readFlagValue(rest, ++index, "--client-secret");
       continue;
     }
+    if (arg === "--client-json") {
+      clientJson = readFlagValue(rest, ++index, "--client-json");
+      continue;
+    }
     throw commandError(`Unknown flag: ${arg}`, "Use `sporades auth status` or `sporades auth set google`.");
   }
 
@@ -235,16 +240,63 @@ function parseAuthArgs(args) {
     return { subcommand, json, projectDir: process.cwd() };
   }
   if (subcommand === "set" && provider === "google") {
+    if (clientJson) {
+      const credentials = readProviderClientCredentials(provider, clientJson, process.cwd());
+      clientId ??= credentials.clientId;
+      clientSecret ??= credentials.clientSecret;
+    }
     if (!clientId || !clientSecret) {
       throw commandError(
         "Missing Google OAuth credentials.",
-        "Run `sporades auth set google --client-id <id> --client-secret <secret>`.",
+        "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`.",
       );
     }
     return { subcommand, provider, clientId, clientSecret, json, projectDir: process.cwd() };
   }
 
   throw commandError("Unknown auth command.", "Use `sporades auth status` or `sporades auth set google`.");
+}
+
+function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
+  if (provider !== "google") {
+    throw commandError(
+      `Unsupported auth provider credentials file: ${provider}`,
+      "Use explicit --client-id and --client-secret values for this provider.",
+    );
+  }
+  const resolvedPath = path.resolve(projectDir, clientJsonPath);
+  let raw;
+  try {
+    raw = readFileSync(resolvedPath, "utf8");
+  } catch {
+    throw commandError(
+      `Unable to read OAuth client JSON: ${clientJsonPath}`,
+      "Check the file path and retry `sporades auth set google --client-json <path>`.",
+    );
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw commandError(
+      `Invalid OAuth client JSON: ${clientJsonPath}`,
+      "Download a valid OAuth client credentials JSON file from the provider and retry.",
+    );
+  }
+
+  const client = parsed.web;
+  if (!client?.client_id || !client?.client_secret) {
+    throw commandError(
+      "OAuth client JSON is missing Google client credentials.",
+      "Use a Google OAuth Web application JSON file containing `web.client_id` and `web.client_secret`.",
+    );
+  }
+
+  return {
+    clientId: client.client_id,
+    clientSecret: client.client_secret,
+  };
 }
 
 function parseLogsArgs(args) {
@@ -634,6 +686,7 @@ async function manageAuth(options) {
     writeResult({ ok: true, data: status, error: null });
   } else {
     process.stdout.write("Google OAuth configured.\n");
+    process.stdout.write("Restart any running Sporades dev session so the server reloads auth configuration.\n");
   }
 }
 
@@ -1217,7 +1270,16 @@ function App() {
   const entries = useQuery("entries");
   const sign = useMutation("sign");
   const [body, setBody] = useState("");
+  const [authError, setAuthError] = useState("");
   const remaining = maxLength - body.length;
+
+  async function signInWithGoogle() {
+    setAuthError("");
+    const result = await auth.signIn("google");
+    if (result.error) {
+      setAuthError(result.error.message);
+    }
+  }
 
   async function submit(event: Event) {
     event.preventDefault();
@@ -1237,11 +1299,12 @@ function App() {
         </div>
         <div class="auth-panel">
           <span>{session.auth?.displayName ?? "Anonymous"}</span>
-          {session.providers.google?.configured && !session.isAuthenticated() ? (
-            <button type="button" onClick={() => auth.signIn("google")}>
+          {!session.isAuthenticated() ? (
+            <button type="button" onClick={signInWithGoogle}>
               Sign in with Google
             </button>
           ) : null}
+          {authError ? <p class="error">{authError}</p> : null}
         </div>
       </section>
 
@@ -1328,7 +1391,16 @@ function App() {
   const entries = useQuery("entries");
   const sign = useMutation("sign");
   const [body, setBody] = useState("");
+  const [authError, setAuthError] = useState("");
   const remaining = maxLength - body.length;
+
+  async function signInWithGoogle() {
+    setAuthError("");
+    const result = await auth.signIn("google");
+    if (result.error) {
+      setAuthError(result.error.message);
+    }
+  }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1348,11 +1420,12 @@ function App() {
         </div>
         <div className="auth-panel">
           <span>{session.auth?.displayName ?? "Anonymous"}</span>
-          {session.providers.google?.configured && !session.isAuthenticated() ? (
-            <button type="button" onClick={() => auth.signIn("google")}>
+          {!session.isAuthenticated() ? (
+            <button type="button" onClick={signInWithGoogle}>
               Sign in with Google
             </button>
           ) : null}
+          {authError ? <p className="error">{authError}</p> : null}
         </div>
       </section>
 

@@ -1,5 +1,31 @@
 # Sporades
 
+## Auth
+
+Configure Google OAuth from explicit credentials:
+
+```sh
+sporades auth set google --client-id <id> --client-secret <secret>
+```
+
+Or pass a downloaded Google OAuth client JSON file:
+
+```sh
+sporades auth set google --client-json ./client_secret_google.json
+```
+
+The JSON form reads Google Web application credentials from `web.client_id` and
+`web.client_secret`. Sporades stores the values in `.env.sporades.server` and
+keeps only env var names in `sporades.json`.
+
+After running `sporades auth set <provider>`, restart any running dev session so
+the server runtime reloads the updated Server env and auth configuration:
+
+```sh
+# stop the current dev session, then run:
+sporades dev
+```
+
 ## File uploads
 
 Client code uses `files.upload()` from `sporades/client` to upload browser

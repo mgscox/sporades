@@ -2314,7 +2314,7 @@ test("sporades dev rejects Google auth mode when required env values are missing
       data: null,
       error: {
         message: "Google OAuth is not fully configured.",
-        hint: "Run `sporades auth set google --client-id <id> --client-secret <secret>`.",
+        hint: "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`.",
       },
     });
   });

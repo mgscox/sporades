@@ -370,6 +370,8 @@ Auth configuration.
 Subcommands:
 - `sporades auth status` — show current auth configuration
 - `sporades auth set google --client-id <id> --client-secret <secret>` — configure Google OAuth
+- `sporades auth set google --client-json <path>` — configure Google OAuth from a downloaded provider credentials JSON file
+- After `sporades auth set <provider>`, restart any running `sporades dev` session so the server runtime reloads the updated Server env and auth configuration.
 
 ## Output conventions
 

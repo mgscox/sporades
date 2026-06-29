@@ -151,7 +151,7 @@ function validateAuthConfig(config, serverEnv) {
   if (!status.google.configured) {
     throw commandError(
       "Google OAuth is not fully configured.",
-      "Run `sporades auth set google --client-id <id> --client-secret <secret>`.",
+      "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`.",
     );
   }
 }

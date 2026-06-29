@@ -73,6 +73,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   beginGoogleSignIn,
   normalizeReturnTo,
   exchangeGoogleCode,
+  readGoogleOAuthError,
+  oauthErrorHint,
   fetchGoogleProfile,
   linkGoogleAccount,
   writeRedirect,
@@ -1900,7 +1902,7 @@ function beginGoogleSignIn(database, session, options) {
       ok: false,
       error: {
         message: "Google OAuth is not configured.",
-        hint: "Run `sporades auth set google --client-id <id> --client-secret <secret>`.",
+        hint: "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`.",
       },
     };
   }
@@ -1961,13 +1963,61 @@ async function exchangeGoogleCode(database, code, redirectUri) {
     }),
   });
   if (!tokenResponse.ok) {
-    throw commandError("Google OAuth code exchange failed.", "Check the Google OAuth client configuration and retry sign-in.");
+    const details = await readGoogleOAuthError(tokenResponse);
+    throw commandError(
+      `Google OAuth code exchange failed${details.message ? `: ${details.message}` : "."}`,
+      details.hint,
+    );
   }
   const token = await tokenResponse.json();
   if (!token.access_token) {
     throw commandError("Google OAuth response did not include an access token.", "Check the Google OAuth client configuration and retry sign-in.");
   }
   return fetchGoogleProfile(token.access_token);
+}
+
+async function readGoogleOAuthError(response) {
+  const fallback = {
+    message: "",
+    hint: "Check the Google OAuth client configuration and retry sign-in.",
+  };
+  let body;
+  try {
+    body = await response.text();
+  } catch {
+    return fallback;
+  }
+  if (!body) {
+    return fallback;
+  }
+  try {
+    const parsed = JSON.parse(body);
+    const code = parsed.error ? String(parsed.error) : "";
+    const description = parsed.error_description ? String(parsed.error_description) : "";
+    return {
+      message: [code, description].filter(Boolean).join(": "),
+      hint: oauthErrorHint(code, description),
+    };
+  } catch {
+    return {
+      message: body.slice(0, 240),
+      hint: fallback.hint,
+    };
+  }
+}
+
+function oauthErrorHint(code, description) {
+  const detail = `${code} ${description}`.toLowerCase();
+  if (detail.includes("redirect_uri_mismatch") || detail.includes("redirect_uri")) {
+    return "Make sure Google Console has the exact authorized redirect URI shown in the browser callback URL, including scheme, host, and port.";
+  }
+  if (detail.includes("invalid_client")) {
+    return "Check that the Client ID and Client secret belong to the same Web application OAuth client.";
+  }
+  if (detail.includes("invalid_grant")) {
+    return "Retry sign-in from the app. OAuth codes can only be used once and expire quickly; also check that the redirect URI has not changed.";
+  }
+  return "Check the Google OAuth client configuration and retry sign-in.";
 }
 
 async function fetchGoogleProfile(accessToken) {
