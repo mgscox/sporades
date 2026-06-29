@@ -530,6 +530,7 @@ test("sporades dev applies an additive table migration without losing existing C
     let migratedSocket;
     try {
       const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
       socket = await openSocket(started.data.url);
       socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
       const sessionToken = (await readSocketMessage(socket)).data.sessionToken;
@@ -652,6 +653,148 @@ test("sporades dev applies an additive table migration without losing existing C
   });
 });
 
+test("sporades dev applies additive field migrations without losing existing Capsule data", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    let migratedSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+      socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+      const sessionToken = (await readSocketMessage(socket)).data.sessionToken;
+
+      socket.send(JSON.stringify({ id: "todos-before", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+
+      socket.send(JSON.stringify({ id: "add-before", type: "mutation.run", mutation: "addTodo", args: ["Keep me"] }));
+      assert.equal((await readSocketMessage(socket)).type, "mutation.result");
+      assert.deepEqual(
+        (await readSocketMessage(socket)).data.map((todo) => todo.text),
+        ["Keep me"],
+      );
+
+      const serverPath = path.join(projectDir, "server", "index.ts");
+      const originalServer = await readFile(serverPath, "utf8");
+      await writeFile(
+        serverPath,
+        originalServer
+          .replace(
+            "done: Boolean().default(false),",
+            `done: Boolean().default(false),
+      priority: String().default("normal"),
+      note: String(),`,
+          )
+          .replace(
+            "addTodo: mutation((ctx, text: string) => {",
+            `updateTodoNote: mutation((ctx, id: string, note: string) => {
+      ctx.db.todos.update(id, { note });
+    }),
+
+    addTodo: mutation((ctx, text: string, done: boolean, priority: string, note: string) => {`,
+          )
+          .replace(
+            "ctx.db.todos.insert({ text, ownerId: ctx.auth.userId });",
+            "ctx.db.todos.insert({ text, done, priority, note, ownerId: ctx.auth.userId });",
+          ),
+      );
+
+      const [rebuilt] = await Promise.all([
+        waitForJsonEvent(
+          child,
+          (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success",
+        ),
+        waitForSocketClose(socket),
+      ]);
+      assert.equal(rebuilt.error, null);
+      socket = null;
+
+      migratedSocket = await openSocket(started.data.url, sessionToken);
+      migratedSocket.send(JSON.stringify({ id: "todos-after", type: "query.subscribe", query: "todos" }));
+      const migratedRows = await readSocketMessage(migratedSocket);
+      assert.equal(migratedRows.error, null);
+      assert.equal(migratedRows.data.length, 1);
+      assert.equal(migratedRows.data[0].text, "Keep me");
+      assert.equal(migratedRows.data[0].done, false);
+      assert.equal(migratedRows.data[0].priority, "normal");
+      assert.equal(migratedRows.data[0].note, null);
+
+      migratedSocket.send(
+        JSON.stringify({
+          id: "add-after",
+          type: "mutation.run",
+          mutation: "addTodo",
+          args: ["New field works", false, "urgent", "first note"],
+        }),
+      );
+      assert.equal((await readSocketMessage(migratedSocket)).type, "mutation.result");
+      const insertedRows = await waitForSocketMessage(
+        migratedSocket,
+        (message) =>
+          message.id === "todos-after" &&
+          message.type === "query.result" &&
+          message.query === "todos" &&
+          message.data.length === 2,
+      );
+      assert.equal(insertedRows.data[0].text, "New field works");
+      assert.equal(insertedRows.data[0].priority, "urgent");
+      assert.equal(insertedRows.data[0].note, "first note");
+
+      migratedSocket.send(
+        JSON.stringify({
+          id: "update-note",
+          type: "mutation.run",
+          mutation: "updateTodoNote",
+          args: [insertedRows.data[0].id, "edited note"],
+        }),
+      );
+      assert.equal((await readSocketMessage(migratedSocket)).type, "mutation.result");
+      const updatedRows = await waitForSocketMessage(
+        migratedSocket,
+        (message) =>
+          message.id === "todos-after" &&
+          message.type === "query.result" &&
+          message.query === "todos" &&
+          message.data[0]?.note === "edited note",
+      );
+      assert.equal(updatedRows.data[0].priority, "urgent");
+
+      const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
+      assert.equal(dumpResult.code, 0, dumpResult.stderr);
+      const tables = JSON.parse(dumpResult.stdout).data.tables;
+      const todosTable = tables.find((table) => table.name === "todos");
+      assert.deepEqual(todosTable.columns, ["id", "createdAt", "updatedAt", "text", "done", "ownerId", "priority", "note"]);
+      assert.equal(todosTable.rows.find((row) => row.text === "Keep me").priority, "normal");
+      assert.equal(todosTable.rows.find((row) => row.text === "Keep me").note, null);
+      assert.equal(todosTable.rows.find((row) => row.text === "New field works").note, "edited note");
+      const systemRows = tables.find((table) => table.name === "sporades").rows;
+      assert.equal(systemRows.find((row) => row.key === "schemaVersion")?.value, "v1:additive-fields");
+      assert.match(systemRows.find((row) => row.key === "schema")?.value ?? "", /"priority"/);
+    } finally {
+      migratedSocket?.close();
+      socket?.close();
+      if (child.exitCode === null) {
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.kill("SIGTERM");
+        await exited;
+      }
+    }
+  });
+});
+
 test("sporades dev rejects unsupported Capsule schema changes with a structured rebuild error", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
@@ -689,7 +832,7 @@ test("sporades dev rejects unsupported Capsule schema changes with a structured 
         },
         error: {
           message: "Unsupported Capsule schema change.",
-          hint: "Only adding new tables is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
+          hint: "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
         },
       });
     } finally {
@@ -1048,7 +1191,7 @@ test("sporades db dump returns structured table data from the running dev sessio
               name: "sporades",
               columns: ["key", "value"],
               rows: [
-                { key: "schemaVersion", value: "v1:additive-tables" },
+                { key: "schemaVersion", value: "v1:additive-fields" },
                 { key: "schemaHash", value: "71a20803ea953152096eea819b23296357aa0f92317215685136640caac64904" },
                 {
                   key: "schema",
