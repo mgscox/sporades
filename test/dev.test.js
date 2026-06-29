@@ -1785,6 +1785,179 @@ test("sporades dev applies additive Json field migrations with decoded defaults"
   });
 });
 
+test("sporades dev supports Reference fields end-to-end", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "library", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "library");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint, mutation, query, Reference, String, table } from "sporades/server";
+
+export default capsule({
+  name: "Library",
+  schema: {
+    users: table({
+      name: String(),
+      ownerId: String(),
+    }),
+    posts: table({
+      text: String(),
+      authorId: Reference("users"),
+      ownerId: String(),
+    }),
+  },
+  queries: {
+    users: query((ctx) => ctx.db.users.where("ownerId", ctx.auth.userId).all()),
+    posts: query((ctx) => ctx.db.posts.where("ownerId", ctx.auth.userId).orderBy("createdAt", "desc").all()),
+  },
+  mutations: {
+    addUser: mutation((ctx, name: string) => {
+      ctx.db.users.insert({ name, ownerId: ctx.auth.userId });
+    }),
+    addPost: mutation((ctx, text: string, authorId: string) => {
+      ctx.db.posts.insert({ text, authorId, ownerId: ctx.auth.userId });
+    }),
+    updatePostAuthorId: mutation((ctx, id: string, authorId: string) => {
+      ctx.db.posts.update(id, { authorId });
+    }),
+  },
+  endpoints: {
+    postsByAuthor: endpoint({ method: "GET", path: "/posts/by-author" }, (ctx) => ({
+      body: ctx.db.posts.where("authorId", ctx.request.query.authorId).orderBy("authorId").all(),
+    })),
+  },
+});
+`,
+    );
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    let migratedSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+      socket.send(JSON.stringify({ id: "auth", type: "auth.get" }));
+      const sessionToken = (await readSocketMessage(socket)).data.sessionToken;
+
+      socket.send(JSON.stringify({ id: "users", type: "query.subscribe", query: "users" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+      socket.send(JSON.stringify({ id: "add-ada", type: "mutation.run", mutation: "addUser", args: ["Ada"] }));
+      assert.equal((await readSocketMessage(socket)).error, null);
+      const usersAfterAda = await readSocketMessage(socket);
+      const adaId = usersAfterAda.data[0].id;
+      assert.equal(usersAfterAda.data[0].name, "Ada");
+
+      socket.send(JSON.stringify({ id: "posts", type: "query.subscribe", query: "posts" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+      socket.send(
+        JSON.stringify({ id: "add-post", type: "mutation.run", mutation: "addPost", args: ["Notes on engines", adaId] }),
+      );
+      assert.equal((await readSocketMessage(socket)).error, null);
+      const postsAfterInsert = await waitForSocketMessage(
+        socket,
+        (message) => message.id === "posts" && message.type === "query.result" && message.data.length === 1,
+      );
+      assert.equal(postsAfterInsert.data[0].authorId, adaId);
+
+      const byAuthorResponse = await fetch(`${started.data.url}/posts/by-author?authorId=${adaId}`);
+      assert.equal(byAuthorResponse.status, 200);
+      const postsByAuthor = await byAuthorResponse.json();
+      assert.equal(postsByAuthor[0].text, "Notes on engines");
+      assert.equal(postsByAuthor[0].authorId, adaId);
+
+      socket.send(JSON.stringify({ id: "add-grace", type: "mutation.run", mutation: "addUser", args: ["Grace"] }));
+      assert.equal((await readSocketMessage(socket)).error, null);
+      const usersAfterGrace = await waitForSocketMessage(
+        socket,
+        (message) => message.id === "users" && message.type === "query.result" && message.data.length === 2,
+      );
+      const graceId = usersAfterGrace.data.find((user) => user.name === "Grace").id;
+
+      socket.send(
+        JSON.stringify({
+          id: "update-author",
+          type: "mutation.run",
+          mutation: "updatePostAuthorId",
+          args: [postsAfterInsert.data[0].id, graceId],
+        }),
+      );
+      assert.equal((await readSocketMessage(socket)).error, null);
+      const postsAfterUpdate = await waitForSocketMessage(
+        socket,
+        (message) => message.id === "posts" && message.type === "query.result" && message.data[0]?.authorId === graceId,
+      );
+      assert.equal(postsAfterUpdate.data[0].text, "Notes on engines");
+
+      socket.send(
+        JSON.stringify({
+          id: "bad-reference",
+          type: "mutation.run",
+          mutation: "addPost",
+          args: ["Missing author", "missing-user-id"],
+        }),
+      );
+      assert.deepEqual((await readSocketMessage(socket)).error, {
+        message: "Invalid reference for field: authorId",
+        hint: "Pass the id of an existing users row.",
+      });
+
+      const serverPath = path.join(projectDir, "server", "index.ts");
+      const originalServer = await readFile(serverPath, "utf8");
+      await writeFile(
+        serverPath,
+        originalServer.replace(
+          "authorId: Reference(\"users\"),",
+          `authorId: Reference("users"),
+      editorId: Reference("users").default("${graceId}"),`,
+        ),
+      );
+
+      const [rebuilt] = await Promise.all([
+        waitForJsonEvent(
+          child,
+          (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success",
+        ),
+        waitForSocketClose(socket),
+      ]);
+      assert.equal(rebuilt.error, null);
+      socket = null;
+
+      migratedSocket = await openSocket(started.data.url, sessionToken);
+      migratedSocket.send(JSON.stringify({ id: "posts-after-migration", type: "query.subscribe", query: "posts" }));
+      const migratedPosts = await readSocketMessage(migratedSocket);
+      assert.equal(migratedPosts.error, null);
+      assert.equal(migratedPosts.data[0].authorId, graceId);
+      assert.equal(migratedPosts.data[0].editorId, graceId);
+
+      const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
+      assert.equal(dumpResult.code, 0, dumpResult.stderr);
+      const postsTable = JSON.parse(dumpResult.stdout).data.tables.find((table) => table.name === "posts");
+      assert.deepEqual(postsTable.columns, ["id", "createdAt", "updatedAt", "text", "authorId", "ownerId", "editorId"]);
+      assert.equal(postsTable.rows[0].authorId, graceId);
+      assert.equal(postsTable.rows[0].editorId, graceId);
+    } finally {
+      migratedSocket?.close();
+      socket?.close();
+      if (child.exitCode === null) {
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.kill("SIGTERM");
+        await exited;
+      }
+    }
+  });
+});
+
 test("sporades dev rejects unsupported Capsule schema changes with a structured rebuild error", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {

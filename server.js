@@ -54,6 +54,20 @@ export function Json() {
   return field("Json");
 }
 
+export function Reference(targetTable) {
+  return {
+    kind: "Reference",
+    targetTable,
+    default(defaultValue) {
+      return {
+        kind: "Reference",
+        targetTable,
+        defaultValue,
+      };
+    },
+  };
+}
+
 function field(kind) {
   return {
     kind,

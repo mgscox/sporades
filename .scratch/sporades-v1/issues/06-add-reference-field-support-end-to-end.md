@@ -1,6 +1,6 @@
 # Add `Reference()` field support end-to-end
 
-Status: ready-for-agent
+Status: done
 
 ## What to build
 
@@ -8,12 +8,12 @@ Add a first-class `Reference()` field builder so Capsules can model relationship
 
 ## Acceptance criteria
 
-- [ ] `Reference()` can be imported from `sporades/server` and used to reference another Capsule table.
-- [ ] Reference values are stored in SQLite using the referenced row's Sporades-managed `id`.
-- [ ] The table API supports inserting, updating, filtering, ordering, and returning reference fields.
-- [ ] Query subscriptions and mutation responses return reference values without exposing SQLite implementation details.
-- [ ] Additive migrations can add a reference field to an existing table.
-- [ ] Invalid references fail with structured errors and actionable hints where validation is possible.
+- [x] `Reference()` can be imported from `sporades/server` and used to reference another Capsule table.
+- [x] Reference values are stored in SQLite using the referenced row's Sporades-managed `id`.
+- [x] The table API supports inserting, updating, filtering, ordering, and returning reference fields.
+- [x] Query subscriptions and mutation responses return reference values without exposing SQLite implementation details.
+- [x] Additive migrations can add a reference field to an existing table.
+- [x] Invalid references fail with structured errors and actionable hints where validation is possible.
 
 ## Blocked by
 

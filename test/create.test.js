@@ -120,6 +120,23 @@ test("sporades/server exports the Json field builder", async () => {
   });
 });
 
+test("sporades/server exports the Reference field builder", async () => {
+  const runtime = await import("sporades/server");
+
+  assert.equal(typeof runtime.Reference, "function");
+  const reference = runtime.Reference("users");
+  assert.equal(typeof reference.default, "function");
+  assert.deepEqual({ kind: reference.kind, targetTable: reference.targetTable }, {
+    kind: "Reference",
+    targetTable: "users",
+  });
+  assert.deepEqual(reference.default("user-1"), {
+    kind: "Reference",
+    targetTable: "users",
+    defaultValue: "user-1",
+  });
+});
+
 test("sporades create writes a runnable Preact todo scaffold", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(
