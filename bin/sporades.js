@@ -10,6 +10,7 @@ import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../
 import {
   createWebSocketHub,
   dumpDatabase,
+  handleFileHttpRoute,
   listDatabaseTables,
   openDevDatabase,
   readJsonRequest,
@@ -413,6 +414,10 @@ async function startDevSession(options) {
       }
 
       if (await routeSporadesAuth(runtime.database, request, response)) {
+        return;
+      }
+
+      if (await handleFileHttpRoute(runtime.database, request, response, websocketHub)) {
         return;
       }
 

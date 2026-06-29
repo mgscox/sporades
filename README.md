@@ -1,5 +1,25 @@
 # Sporades
 
+## File uploads
+
+Client code uses `files.upload()` from `sporades/client` to upload browser
+`File` or `Blob` values. The SDK first asks the Sporades server for an upload
+URL, transfers the bytes internally, and resolves with Sporades-owned metadata:
+file ID, original filename, MIME type, size, bucket, storage path, and version.
+Arrays are accepted as a convenience and are uploaded sequentially.
+
+Uploaded bytes are private by default and scoped to the current authenticated
+user in that user's `default` bucket. During dev sessions, bytes live under
+`.sporades/files/`; metadata, buckets, upload records, and public URL records
+live in the `.sporades/data.db` SQLite database. Container sessions use the
+mounted `/app/data` volume for the same platform-managed storage.
+
+Private reads go through `files.url(fileId)` or `files.download(fileId)`.
+Public reads must be created explicitly with exactly one expiry choice:
+`ttlSeconds`, `expires`, or `noExpiry: true`. Replacing a file preserves the file
+ID, creates a new version, and invalidates previously generated private and
+public URLs.
+
 ## Endpoint handlers
 
 Capsules can register custom HTTP endpoints with `endpoint({ method, path }, handler)`.

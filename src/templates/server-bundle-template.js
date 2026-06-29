@@ -28,6 +28,10 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    if (await handleFileHttpRoute(database, request, response, websocketHub)) {
+      return;
+    }
+
     if (await routeEndpoint(database, request, response)) {
       return;
     }

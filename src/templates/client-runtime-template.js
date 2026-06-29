@@ -20,6 +20,27 @@ export const auth = {
   },
 };
 
+export const files = {
+  upload(fileOrFiles, options = {}) {
+    return connect().upload(fileOrFiles, options);
+  },
+  url(fileId) {
+    return connect().fileUrl(fileId);
+  },
+  download(fileId) {
+    return connect().downloadFile(fileId);
+  },
+  delete(fileId) {
+    return connect().deleteFile(fileId);
+  },
+  publicUrl(fileId, options) {
+    return connect().createPublicFileUrl(fileId, options);
+  },
+  revokePublicUrl(publicUrlId) {
+    return connect().revokePublicFileUrl(publicUrlId);
+  },
+};
+
 export function createHooks(primitives) {
   const { useEffect, useState } = primitives;
 
@@ -256,7 +277,86 @@ function createConnection() {
       const stream = createAppMessageStream();
       return typeof listener === "function" ? stream.subscribe(listener) : stream;
     },
+    async upload(fileOrFiles, options = {}) {
+      if (Array.isArray(fileOrFiles)) {
+        const results = [];
+        for (const file of fileOrFiles) {
+          results.push(await this.upload(file, options));
+        }
+        return results;
+      }
+
+      const file = fileOrFiles;
+      const negotiate = await request("file.uploadUrl", {
+        file: {
+          name: file.name ?? "upload",
+          type: file.type ?? "application/octet-stream",
+          size: file.size ?? 0,
+        },
+        replace: options.replace === true,
+        fileId: options.fileId ?? null,
+      });
+      if (negotiate.error) {
+        throw structuredError(negotiate.error);
+      }
+
+      const upload = negotiate.data;
+      options.onProgress?.({ type: "progress", fileId: upload.file.id, loaded: file.size ?? 0, total: file.size ?? 0 });
+      const response = await fetch(upload.uploadUrl, {
+        method: upload.method ?? "PUT",
+        headers: upload.headers ?? {},
+        body: file,
+      });
+      const result = await response.json();
+      if (!response.ok || result.error) {
+        throw structuredError(result.error ?? {
+          message: "File upload failed.",
+          hint: "Retry the upload or choose a smaller file.",
+        });
+      }
+      const metadata = result.data.file;
+      options.onComplete?.({ type: "complete", file: metadata });
+      return metadata;
+    },
+    async fileUrl(fileId) {
+      const result = await request("file.url", { fileId });
+      if (result.error) throw structuredError(result.error);
+      return result.data.url;
+    },
+    async downloadFile(fileId) {
+      const url = await this.fileUrl(fileId);
+      const response = await fetch(url);
+      if (!response.ok) {
+        throw structuredError({
+          message: "File download failed.",
+          hint: "Check that the file exists and belongs to the current user.",
+        });
+      }
+      return response.blob();
+    },
+    async deleteFile(fileId) {
+      const result = await request("file.delete", { fileId });
+      if (result.error) throw structuredError(result.error);
+      return result.data.file;
+    },
+    async createPublicFileUrl(fileId, options) {
+      const result = await request("file.publicUrl.create", { fileId, options: options ?? {} });
+      if (result.error) throw structuredError(result.error);
+      return result.data.publicUrl;
+    },
+    async revokePublicFileUrl(publicUrlId) {
+      const result = await request("file.publicUrl.revoke", { publicUrlId });
+      if (result.error) throw structuredError(result.error);
+      return result.data.publicUrl;
+    },
   };
+}
+
+function structuredError(error) {
+  const next = new Error(error?.message ?? "Sporades file operation failed.");
+  next.hint = error?.hint ?? "Retry the operation.";
+  next.error = error;
+  return next;
 }
 `;
 }
