@@ -2681,6 +2681,7 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
     const child = startCli(["dev", "--json"], { cwd: projectDir });
     try {
       const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
       const socket = await openSocket(started.data.url);
       try {
         socket.send(JSON.stringify({ id: "query-1", type: "query.subscribe", query: "todos" }));
@@ -2726,6 +2727,168 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
     }
+  });
+});
+
+test("a scaffolded guestbook trims, validates, and reads shared entries over WebSocket", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "guest-island", "--template", "guestbook", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "guest-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      const socket = await openSocket(started.data.url);
+      try {
+        socket.send(JSON.stringify({ id: "auth-1", type: "auth.get" }));
+        const authResult = await readSocketMessage(socket);
+        assert.equal(authResult.data.auth.isGuest, true);
+        assert.equal(authResult.data.auth.displayName, "Anonymous");
+
+        socket.send(JSON.stringify({ id: "entries-1", type: "query.subscribe", query: "entries" }));
+        assert.deepEqual(await readSocketMessage(socket), {
+          id: "entries-1",
+          type: "query.result",
+          query: "entries",
+          data: [],
+          error: null,
+        });
+
+        socket.send(JSON.stringify({ id: "empty-1", type: "mutation.run", mutation: "sign", args: ["   "] }));
+        const emptyResult = await readSocketMessage(socket);
+        assert.equal(emptyResult.type, "mutation.result");
+        assert.equal(emptyResult.error.message, "Write a message before signing.");
+
+        socket.send(JSON.stringify({ id: "long-1", type: "mutation.run", mutation: "sign", args: ["x".repeat(281)] }));
+        const longResult = await readSocketMessage(socket);
+        assert.equal(longResult.type, "mutation.result");
+        assert.equal(longResult.error.message, "Guestbook messages must be 280 characters or fewer.");
+
+        socket.send(JSON.stringify({ id: "sign-1", type: "mutation.run", mutation: "sign", args: ["  First note  "] }));
+        assert.deepEqual(await readSocketMessage(socket), {
+          id: "sign-1",
+          type: "mutation.result",
+          mutation: "sign",
+          data: null,
+          error: null,
+        });
+        const firstRefresh = await readSocketMessage(socket);
+        assert.equal(firstRefresh.data.length, 1);
+        assert.equal(firstRefresh.data[0].body, "First note");
+        assert.equal(firstRefresh.data[0].authorId, authResult.data.auth.userId);
+        assert.equal(firstRefresh.data[0].authorName, "Anonymous");
+        assert.equal(firstRefresh.data[0].authorPicture, "");
+
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        socket.send(JSON.stringify({ id: "sign-2", type: "mutation.run", mutation: "sign", args: ["Second note"] }));
+        assert.equal((await readSocketMessage(socket)).error, null);
+        const secondRefresh = await readSocketMessage(socket);
+        assert.deepEqual(
+          secondRefresh.data.map((entry) => entry.body),
+          ["Second note", "First note"],
+        );
+
+        const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
+        assert.equal(dumpResult.code, 0, dumpResult.stderr);
+        const entriesTable = JSON.parse(dumpResult.stdout).data.tables.find((table) => table.name === "entries");
+        assert.deepEqual(entriesTable.columns, ["id", "createdAt", "updatedAt", "body", "authorId", "authorName", "authorPicture"]);
+      } finally {
+        socket.close();
+      }
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("a scaffolded guestbook stores Google-linked author metadata from ctx.auth", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "guest-island", "--template", "guestbook", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "guest-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    const setResult = await runCli(
+      ["auth", "set", "google", "--client-id", "client-id", "--client-secret", "client-secret", "--json"],
+      { cwd: projectDir },
+    );
+    assert.equal(setResult.code, 0, setResult.stderr);
+
+    await withFakeGoogleServer(async (google) => {
+      const child = startCli(["dev", "--json"], {
+        cwd: projectDir,
+        env: {
+          SPORADES_GOOGLE_TOKEN_URL: google.tokenUrl,
+          SPORADES_GOOGLE_USERINFO_URL: google.userInfoUrl,
+        },
+      });
+      let socket;
+      try {
+        const started = await waitForJsonLine(child);
+        assert.equal(started.ok, true, JSON.stringify(started));
+        socket = await openSocket(started.data.url);
+
+        socket.send(JSON.stringify({ id: "auth-1", type: "auth.get" }));
+        const anonymousAuth = await readSocketMessage(socket);
+        const userId = anonymousAuth.data.auth.userId;
+        assert.equal(anonymousAuth.data.providers.google.configured, true);
+
+        socket.send(JSON.stringify({ id: "signin-1", type: "auth.signIn", provider: "google", returnTo: `${started.data.url}/guestbook` }));
+        const signIn = await readSocketMessage(socket);
+        assert.equal(signIn.type, "auth.redirect");
+        const signInUrl = new URL(signIn.data.url);
+        const callbackResponse = await fetch(
+          `${started.data.url}/__sporades/auth/google/callback?code=server-owned-code&state=${signInUrl.searchParams.get("state")}`,
+          { redirect: "manual" },
+        );
+        assert.equal(callbackResponse.status, 302);
+        assert.equal(callbackResponse.headers.get("location"), `${started.data.url}/guestbook`);
+
+        socket.send(JSON.stringify({ id: "auth-2", type: "auth.get" }));
+        const linkedAuth = await readSocketMessage(socket);
+        assert.deepEqual(linkedAuth.data.auth, {
+          userId,
+          displayName: "Mira",
+          email: "mira@example.com",
+          picture: "https://example.com/mira.png",
+          isAuthenticated: true,
+          isGuest: false,
+          provider: "google",
+        });
+
+        socket.send(JSON.stringify({ id: "entries-1", type: "query.subscribe", query: "entries" }));
+        assert.deepEqual((await readSocketMessage(socket)).data, []);
+
+        socket.send(JSON.stringify({ id: "sign-1", type: "mutation.run", mutation: "sign", args: ["Signed with Google"] }));
+        assert.equal((await readSocketMessage(socket)).error, null);
+        const refresh = await readSocketMessage(socket);
+        assert.equal(refresh.data[0].body, "Signed with Google");
+        assert.equal(refresh.data[0].authorId, userId);
+        assert.equal(refresh.data[0].authorName, "Mira");
+        assert.equal(refresh.data[0].authorPicture, "https://example.com/mira.png");
+      } finally {
+        socket?.close();
+        child.kill("SIGTERM");
+        await new Promise((resolve) => child.once("exit", resolve));
+      }
+    });
   });
 });
 

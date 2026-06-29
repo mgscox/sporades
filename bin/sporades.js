@@ -19,7 +19,7 @@ import {
 } from "../src/server-runtime-source.js";
 
 const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
-const SUPPORTED_TEMPLATES = new Set(["blank", "todo"]);
+const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
 const CONTAINER_BINDING_FILE = path.join(".sporades", "binding.json");
 const DEV_REBUILD_DEBOUNCE_MS = 100;
@@ -131,7 +131,7 @@ function parseCreateArgs(args) {
     throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact.");
   }
   if (!SUPPORTED_TEMPLATES.has(template)) {
-    throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo.");
+    throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook.");
   }
 
   return {
@@ -884,7 +884,12 @@ function scaffoldFiles(options) {
       : {
           preact: "^10.25.0",
         };
-  const templateFiles = options.template === "todo" ? todoTemplateFiles(options) : blankTemplateFiles(options);
+  const templateFiles =
+    options.template === "todo"
+      ? todoTemplateFiles(options)
+      : options.template === "guestbook"
+        ? guestbookTemplateFiles(options)
+        : blankTemplateFiles(options);
 
   return {
     "sporades.json": `${JSON.stringify(
@@ -993,6 +998,71 @@ export default capsule({
   id: string;
   text: string;
   done: boolean;
+  createdAt: string;
+  updatedAt: string;
+};
+`,
+  };
+}
+
+function guestbookTemplateFiles(options) {
+  return {
+    "README.md": `# ${options.name}
+
+A Sporades guestbook capsule.
+
+Trusted author fields come from \`ctx.auth\` on the server, not from client-submitted input. Anonymous sessions can sign the guestbook, and Google-linked sessions display richer author metadata when configured with \`sporades auth set google\`.
+`,
+    "server/index.ts": `import { capsule, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: ${JSON.stringify(options.name)},
+
+  schema: {
+    entries: table({
+      body: String(),
+      authorId: String(),
+      authorName: String(),
+      authorPicture: String(),
+    }),
+  },
+
+  queries: {
+    entries: query((ctx) =>
+      ctx.db.entries
+        .orderBy("createdAt", "desc")
+        .limit(50)
+        .all(),
+    ),
+  },
+
+  mutations: {
+    sign: mutation((ctx, body) => {
+      const trimmed = body.trim();
+      if (!trimmed) {
+        throw new Error("Write a message before signing.");
+      }
+      if (trimmed.length > 280) {
+        throw new Error("Guestbook messages must be 280 characters or fewer.");
+      }
+
+      ctx.db.entries.insert({
+        body: trimmed,
+        authorId: ctx.auth.userId,
+        authorName: ctx.auth.displayName,
+        authorPicture: ctx.auth.picture ?? "",
+      });
+    }),
+  },
+});
+`,
+    "client/index.tsx": guestbookClientTemplate(options.framework),
+    "shared/types.ts": `export type GuestbookEntry = {
+  id: string;
+  body: string;
+  authorId: string;
+  authorName: string;
+  authorPicture: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -1125,6 +1195,230 @@ function App() {
 }
 
 createRoot(document.getElementById("app")!).render(<App />);
+`;
+}
+
+function guestbookClientTemplate(framework) {
+  if (framework === "preact") {
+    return `import { render } from "preact";
+import { useState, useEffect } from "preact/hooks";
+import { auth, createHooks } from "sporades/client";
+
+const { useAuth, useQuery, useMutation } = createHooks({ useState, useEffect });
+const maxLength = 280;
+
+function App() {
+  const session = useAuth();
+  const entries = useQuery("entries");
+  const sign = useMutation("sign");
+  const [body, setBody] = useState("");
+  const remaining = maxLength - body.length;
+
+  async function submit(event: Event) {
+    event.preventDefault();
+    const message = body.trim();
+    if (!message || message.length > maxLength) return;
+    const result = await sign.run(message);
+    if (!result.error) setBody("");
+  }
+
+  return (
+    <main class="shell">
+      <style>{styles}</style>
+      <section class="intro">
+        <div>
+          <p class="eyebrow">Sporades guestbook</p>
+          <h1>Leave a note from this island.</h1>
+        </div>
+        <div class="auth-panel">
+          <span>{session.auth?.displayName ?? "Anonymous"}</span>
+          {session.providers.google?.configured && !session.isAuthenticated() ? (
+            <button type="button" onClick={() => auth.signIn("google")}>
+              Sign in with Google
+            </button>
+          ) : null}
+        </div>
+      </section>
+
+      <form class="composer" onSubmit={submit}>
+        <textarea
+          value={body}
+          maxLength={maxLength}
+          placeholder="Write something kind, sharp, or strangely memorable."
+          onInput={(event) => setBody(event.currentTarget.value)}
+        />
+        <div class="composer-row">
+          <span class={remaining < 0 ? "over" : ""}>{remaining} characters left</span>
+          <button type="submit" disabled={!body.trim() || sign.loading}>
+            Sign guestbook
+          </button>
+        </div>
+        {sign.error ? <p class="error">{sign.error.message}</p> : null}
+      </form>
+
+      <section class="entries">
+        {(entries.data ?? []).map((entry) => (
+          <article class="entry" key={entry.id}>
+            {entry.authorPicture ? <img src={entry.authorPicture} alt="" /> : <span class="author-badge">{initials(entry.authorName)}</span>}
+            <div>
+              <div class="entry-meta">
+                <strong>{entry.authorName}</strong>
+                <time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time>
+              </div>
+              <p>{entry.body}</p>
+            </div>
+          </article>
+        ))}
+      </section>
+    </main>
+  );
+}
+
+function initials(name: string) {
+  return name
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase() || "?";
+}
+
+render(<App />, document.getElementById("app")!);
+
+const styles = \`
+  :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  body { margin: 0; background: #f6f3ed; color: #25211b; }
+  .shell { width: min(920px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0; }
+  .intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 28px; }
+  .eyebrow { margin: 0 0 8px; color: #7a4b28; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; }
+  h1 { margin: 0; max-width: 620px; font-size: clamp(2rem, 6vw, 4.8rem); line-height: 0.95; }
+  .auth-panel { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; min-width: 220px; }
+  button { border: 0; border-radius: 8px; background: #176b61; color: white; cursor: pointer; font: inherit; font-weight: 700; min-height: 42px; padding: 0 16px; }
+  button:disabled { cursor: not-allowed; opacity: 0.55; }
+  .composer { background: white; border: 1px solid #ded6ca; border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+  textarea { width: 100%; min-height: 116px; box-sizing: border-box; resize: vertical; border: 1px solid #cfc6b8; border-radius: 8px; padding: 12px; font: inherit; }
+  .composer-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 12px; }
+  .over, .error { color: #a33b28; }
+  .entries { display: grid; gap: 12px; }
+  .entry { display: grid; grid-template-columns: 48px 1fr; gap: 14px; background: white; border: 1px solid #ded6ca; border-radius: 8px; padding: 14px; }
+  .entry img, .author-badge { width: 48px; height: 48px; border-radius: 50%; }
+  .author-badge { display: grid; place-items: center; background: #25211b; color: white; font-weight: 800; }
+  .entry-meta { display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; }
+  time { color: #73695b; font-size: 0.88rem; }
+  .entry p { margin: 8px 0 0; white-space: pre-wrap; }
+  @media (max-width: 680px) { .intro, .composer-row { display: grid; } .auth-panel { justify-content: flex-start; } }
+\`;
+`;
+  }
+
+  return `import { useEffect, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { auth, createHooks } from "sporades/client";
+
+const { useAuth, useQuery, useMutation } = createHooks({ useState, useEffect });
+const maxLength = 280;
+
+function App() {
+  const session = useAuth();
+  const entries = useQuery("entries");
+  const sign = useMutation("sign");
+  const [body, setBody] = useState("");
+  const remaining = maxLength - body.length;
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const message = body.trim();
+    if (!message || message.length > maxLength) return;
+    const result = await sign.run(message);
+    if (!result.error) setBody("");
+  }
+
+  return (
+    <main className="shell">
+      <style>{styles}</style>
+      <section className="intro">
+        <div>
+          <p className="eyebrow">Sporades guestbook</p>
+          <h1>Leave a note from this island.</h1>
+        </div>
+        <div className="auth-panel">
+          <span>{session.auth?.displayName ?? "Anonymous"}</span>
+          {session.providers.google?.configured && !session.isAuthenticated() ? (
+            <button type="button" onClick={() => auth.signIn("google")}>
+              Sign in with Google
+            </button>
+          ) : null}
+        </div>
+      </section>
+
+      <form className="composer" onSubmit={submit}>
+        <textarea
+          value={body}
+          maxLength={maxLength}
+          placeholder="Write something kind, sharp, or strangely memorable."
+          onChange={(event) => setBody(event.currentTarget.value)}
+        />
+        <div className="composer-row">
+          <span className={remaining < 0 ? "over" : ""}>{remaining} characters left</span>
+          <button type="submit" disabled={!body.trim() || sign.loading}>
+            Sign guestbook
+          </button>
+        </div>
+        {sign.error ? <p className="error">{sign.error.message}</p> : null}
+      </form>
+
+      <section className="entries">
+        {(entries.data ?? []).map((entry) => (
+          <article className="entry" key={entry.id}>
+            {entry.authorPicture ? <img src={entry.authorPicture} alt="" /> : <span className="author-badge">{initials(entry.authorName)}</span>}
+            <div>
+              <div className="entry-meta">
+                <strong>{entry.authorName}</strong>
+                <time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time>
+              </div>
+              <p>{entry.body}</p>
+            </div>
+          </article>
+        ))}
+      </section>
+    </main>
+  );
+}
+
+function initials(name: string) {
+  return name
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase() || "?";
+}
+
+createRoot(document.getElementById("app")!).render(<App />);
+
+const styles = \`
+  :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  body { margin: 0; background: #f6f3ed; color: #25211b; }
+  .shell { width: min(920px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0; }
+  .intro { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 28px; }
+  .eyebrow { margin: 0 0 8px; color: #7a4b28; font-size: 0.8rem; font-weight: 700; text-transform: uppercase; }
+  h1 { margin: 0; max-width: 620px; font-size: clamp(2rem, 6vw, 4.8rem); line-height: 0.95; }
+  .auth-panel { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; min-width: 220px; }
+  button { border: 0; border-radius: 8px; background: #176b61; color: white; cursor: pointer; font: inherit; font-weight: 700; min-height: 42px; padding: 0 16px; }
+  button:disabled { cursor: not-allowed; opacity: 0.55; }
+  .composer { background: white; border: 1px solid #ded6ca; border-radius: 8px; padding: 16px; margin-bottom: 24px; }
+  textarea { width: 100%; min-height: 116px; box-sizing: border-box; resize: vertical; border: 1px solid #cfc6b8; border-radius: 8px; padding: 12px; font: inherit; }
+  .composer-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-top: 12px; }
+  .over, .error { color: #a33b28; }
+  .entries { display: grid; gap: 12px; }
+  .entry { display: grid; grid-template-columns: 48px 1fr; gap: 14px; background: white; border: 1px solid #ded6ca; border-radius: 8px; padding: 14px; }
+  .entry img, .author-badge { width: 48px; height: 48px; border-radius: 50%; }
+  .author-badge { display: grid; place-items: center; background: #25211b; color: white; font-weight: 800; }
+  .entry-meta { display: flex; gap: 10px; flex-wrap: wrap; align-items: baseline; }
+  time { color: #73695b; font-size: 0.88rem; }
+  .entry p { margin: 8px 0 0; white-space: pre-wrap; }
+  @media (max-width: 680px) { .intro, .composer-row { display: grid; } .auth-panel { justify-content: flex-start; } }
+\`;
 `;
 }
 
