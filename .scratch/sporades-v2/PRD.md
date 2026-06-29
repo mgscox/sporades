@@ -125,7 +125,7 @@ Provider secrets should live in Server env. `sporades.json` should store env var
 
 ## Future Markers
 
-The following items are intentionally recorded for later versions, not v2:
+The following items are intentionally recorded for later versions, not v2. Planning artifacts live under `.scratch/post-v2-platform-hardening-and-ops/`.
 
 - Move from `.env` files to hardened secrets.
 - Harden the Docker build, including read-only folders where appropriate.
