@@ -1308,6 +1308,214 @@ test("sporades dev supports Number fields end-to-end through migrations and runt
   });
 });
 
+test("sporades dev supports Date fields through migrations, mutations, queries, and table API filters", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    let migratedSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+      socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+      const sessionToken = (await readSocketMessage(socket)).data.sessionToken;
+
+      socket.send(JSON.stringify({ id: "todos-before", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+
+      socket.send(JSON.stringify({ id: "add-before", type: "mutation.run", mutation: "addTodo", args: ["Keep me"] }));
+      assert.equal((await readSocketMessage(socket)).type, "mutation.result");
+      assert.deepEqual(
+        (await readSocketMessage(socket)).data.map((todo) => todo.text),
+        ["Keep me"],
+      );
+
+      const serverPath = path.join(projectDir, "server", "index.ts");
+      const originalServer = await readFile(serverPath, "utf8");
+      await writeFile(
+        serverPath,
+        originalServer
+          .replace(
+            `import { Boolean, capsule, mutation, query, String, table } from "sporades/server";`,
+            `import { Boolean, capsule, Date, endpoint, mutation, query, String, table } from "sporades/server";`,
+          )
+          .replace(
+            "done: Boolean().default(false),",
+            `done: Boolean().default(false),
+      dueAt: Date().default("2026-01-02T03:04:05.000Z"),
+      reminderAt: Date(),`,
+          )
+          .replace(
+            "queries: {",
+            `endpoints: {
+    dueTodos: endpoint({ method: "GET", path: "/due-todos" }, (ctx) => ({
+      body: ctx.db.todos.where("dueAt", ctx.request.query.dueAt).orderBy("reminderAt", "asc").all()
+    })),
+  },
+
+  queries: {`,
+          )
+          .replace(
+            "addTodo: mutation((ctx, text: string) => {",
+            `updateTodoDueAt: mutation((ctx, id: string, dueAt: string) => {
+      ctx.db.todos.update(id, { dueAt });
+    }),
+
+    addTodo: mutation((ctx, text: string, done: boolean, dueAt: string, reminderAt: string) => {`,
+          )
+          .replace(
+            "ctx.db.todos.insert({ text, ownerId: ctx.auth.userId });",
+            "ctx.db.todos.insert({ text, done, dueAt, reminderAt, ownerId: ctx.auth.userId });",
+          ),
+      );
+
+      const [rebuilt] = await Promise.all([
+        waitForJsonEvent(
+          child,
+          (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success",
+        ),
+        waitForSocketClose(socket),
+      ]);
+      assert.equal(rebuilt.error, null);
+      socket = null;
+
+      migratedSocket = await openSocket(started.data.url, sessionToken);
+      migratedSocket.send(JSON.stringify({ id: "todos-after", type: "query.subscribe", query: "todos" }));
+      const migratedRows = await readSocketMessage(migratedSocket);
+      assert.equal(migratedRows.error, null);
+      assert.equal(migratedRows.data.length, 1);
+      assert.equal(migratedRows.data[0].text, "Keep me");
+      assert.equal(migratedRows.data[0].dueAt, "2026-01-02T03:04:05.000Z");
+      assert.equal(migratedRows.data[0].reminderAt, null);
+
+      migratedSocket.send(
+        JSON.stringify({
+          id: "add-first",
+          type: "mutation.run",
+          mutation: "addTodo",
+          args: ["First date", false, "2026-03-01T10:00:00.000Z", "2026-02-01T09:00:00.000Z"],
+        }),
+      );
+      assert.equal((await readSocketMessage(migratedSocket)).type, "mutation.result");
+      await waitForSocketMessage(
+        migratedSocket,
+        (message) =>
+          message.id === "todos-after" &&
+          message.type === "query.result" &&
+          message.query === "todos" &&
+          message.data.some((todo) => todo.text === "First date"),
+      );
+
+      migratedSocket.send(
+        JSON.stringify({
+          id: "add-second",
+          type: "mutation.run",
+          mutation: "addTodo",
+          args: ["Second date", false, "2026-03-01T10:00:00.000Z", "2026-01-15T09:00:00.000Z"],
+        }),
+      );
+      assert.equal((await readSocketMessage(migratedSocket)).type, "mutation.result");
+      const rowsWithSecond = await waitForSocketMessage(
+        migratedSocket,
+        (message) =>
+          message.id === "todos-after" &&
+          message.type === "query.result" &&
+          message.query === "todos" &&
+          message.data.some((todo) => todo.text === "Second date"),
+      );
+      const firstDateRow = rowsWithSecond.data.find((todo) => todo.text === "First date");
+      assert.equal(firstDateRow.dueAt, "2026-03-01T10:00:00.000Z");
+
+      migratedSocket.send(
+        JSON.stringify({
+          id: "update-date",
+          type: "mutation.run",
+          mutation: "updateTodoDueAt",
+          args: [firstDateRow.id, "2026-04-01T12:30:00.000Z"],
+        }),
+      );
+      assert.equal((await readSocketMessage(migratedSocket)).type, "mutation.result");
+      await waitForSocketMessage(
+        migratedSocket,
+        (message) =>
+          message.id === "todos-after" &&
+          message.type === "query.result" &&
+          message.query === "todos" &&
+          message.data.find((todo) => todo.id === firstDateRow.id)?.dueAt === "2026-04-01T12:30:00.000Z",
+      );
+
+      migratedSocket.send(
+        JSON.stringify({
+          id: "invalid-date",
+          type: "mutation.run",
+          mutation: "addTodo",
+          args: ["Bad date", false, "not-a-date", "2026-02-01T09:00:00.000Z"],
+        }),
+      );
+      assert.deepEqual(await readSocketMessage(migratedSocket), {
+        id: "invalid-date",
+        type: "mutation.result",
+        data: null,
+        error: {
+          message: "Invalid date value for field: dueAt",
+          hint: "Pass an ISO 8601 date string or JavaScript Date value.",
+        },
+        mutation: "addTodo",
+      });
+
+      const endpointResult = await fetch(`${started.data.url}/due-todos?dueAt=2026-03-01T10%3A00%3A00.000Z`);
+      assert.equal(endpointResult.status, 200);
+      const endpointRows = await endpointResult.json();
+      assert.deepEqual(
+        endpointRows.map((todo) => todo.text),
+        ["Second date"],
+      );
+      assert.equal(endpointRows[0].reminderAt, "2026-01-15T09:00:00.000Z");
+
+      const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
+      assert.equal(dumpResult.code, 0, dumpResult.stderr);
+      const tables = JSON.parse(dumpResult.stdout).data.tables;
+      const todosTable = tables.find((table) => table.name === "todos");
+      assert.deepEqual(todosTable.columns, [
+        "id",
+        "createdAt",
+        "updatedAt",
+        "text",
+        "done",
+        "ownerId",
+        "dueAt",
+        "reminderAt",
+      ]);
+      assert.equal(todosTable.rows.find((row) => row.text === "Keep me").dueAt, "2026-01-02T03:04:05.000Z");
+      assert.equal(todosTable.rows.find((row) => row.text === "Keep me").reminderAt, null);
+      assert.equal(todosTable.rows.find((row) => row.text === "First date").dueAt, "2026-04-01T12:30:00.000Z");
+      const systemRows = tables.find((table) => table.name === "sporades").rows;
+      assert.match(systemRows.find((row) => row.key === "schema")?.value ?? "", /"kind":"Date"/);
+      assert.match(systemRows.find((row) => row.key === "schema")?.value ?? "", /"sqliteType":"TEXT"/);
+    } finally {
+      migratedSocket?.close();
+      socket?.close();
+      if (child.exitCode === null) {
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.kill("SIGTERM");
+        await exited;
+      }
+    }
+  });
+});
+
 test("sporades dev rejects unsupported Capsule schema changes with a structured rebuild error", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {

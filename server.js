@@ -46,6 +46,10 @@ export function Number() {
   return field("Number");
 }
 
+export function Date() {
+  return field("Date");
+}
+
 function field(kind) {
   return {
     kind,

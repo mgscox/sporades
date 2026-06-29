@@ -1,6 +1,6 @@
 # Add `Date()` field support end-to-end
 
-Status: ready-for-agent
+Status: done
 
 ## What to build
 
@@ -8,12 +8,12 @@ Add a first-class `Date()` field builder so Capsules can model dates and timesta
 
 ## Acceptance criteria
 
-- [ ] `Date()` can be imported from `sporades/server` and used in a Capsule table schema.
-- [ ] Date values have a documented JavaScript representation and SQLite representation.
-- [ ] The table API supports inserting, updating, filtering, ordering, and returning date fields.
-- [ ] Query subscriptions and mutation responses preserve date values according to the documented representation.
-- [ ] Defaults for date fields work for new rows and additive field migrations.
-- [ ] Invalid date values fail with structured errors and actionable hints.
+- [x] `Date()` can be imported from `sporades/server` and used in a Capsule table schema.
+- [x] Date values have a documented JavaScript representation and SQLite representation.
+- [x] The table API supports inserting, updating, filtering, ordering, and returning date fields.
+- [x] Query subscriptions and mutation responses preserve date values according to the documented representation.
+- [x] Defaults for date fields work for new rows and additive field migrations.
+- [x] Invalid date values fail with structured errors and actionable hints.
 
 ## Blocked by
 

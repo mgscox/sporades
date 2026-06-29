@@ -21,6 +21,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createEndpointDatabaseApi,
   createEndpointTableApi,
   serializeFieldValue,
+  normalizeDateValue,
+  dateValueError,
   deserializeRow,
   readEndpointBody,
   createEndpointLogger,
@@ -295,7 +297,7 @@ function extractEndpoints(serverSource) {
 }
 
 function extractFields(tableSource) {
-  return [...tableSource.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|Boolean|Number)\(\)(?:\.default\(([^)]*)\))?/g)].map(
+  return [...tableSource.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|Boolean|Number|Date)\(\)(?:\.default\(([^)]*)\))?/g)].map(
     (match) => {
       const kind = match[2];
       return {
@@ -421,7 +423,34 @@ function serializeFieldValue(field, value) {
   if (field?.kind === "Number") {
     return toSqlNumber(value, field.name);
   }
+  if (field?.kind === "Date") {
+    return normalizeDateValue(value, field.name);
+  }
   return String(value ?? "");
+}
+
+function normalizeDateValue(value, fieldName) {
+  if (value instanceof Date) {
+    if (Number.isNaN(value.getTime())) {
+      throw dateValueError(fieldName);
+    }
+    return value.toISOString();
+  }
+  if (typeof value !== "string") {
+    throw dateValueError(fieldName);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw dateValueError(fieldName);
+  }
+  return parsed.toISOString();
+}
+
+function dateValueError(fieldName) {
+  return commandError(
+    `Invalid date value for field: ${fieldName}`,
+    "Pass an ISO 8601 date string or JavaScript Date value.",
+  );
 }
 
 function deserializeRow(table, row) {
@@ -503,9 +532,15 @@ function writeEndpointError(response, error) {
       ok: false,
       data: null,
       error: {
-        message: error?.sporadesEndpointResponse ? "Invalid endpoint response." : "Endpoint handler failed.",
+        message: error?.hint
+          ? error.message
+          : error?.sporadesEndpointResponse
+            ? "Invalid endpoint response."
+            : "Endpoint handler failed.",
         hint: error?.sporadesEndpointResponse
           ? "Return { status, headers, body } with a numeric status, plain object headers, and a serializable body."
+          : error?.hint
+            ? error.hint
           : "Check the endpoint handler and retry the request.",
       },
     })}\n`,
@@ -532,7 +567,11 @@ function parseFieldDefault(kind, rawDefault) {
     }
     return value;
   }
-  return rawDefault.trim().replace(/^["']|["']$/g, "");
+  const defaultValue = rawDefault.trim().replace(/^["']|["']$/g, "");
+  if (kind === "Date") {
+    return normalizeDateValue(defaultValue, "default");
+  }
+  return defaultValue;
 }
 
 function toSqlLiteral(value) {
@@ -1173,6 +1212,9 @@ function toSqlBindingValue(value, field) {
   }
   if (field.kind === "Number") {
     return toSqlNumber(value, field.name);
+  }
+  if (field.kind === "Date") {
+    return normalizeDateValue(value, field.name);
   }
   return value;
 }
