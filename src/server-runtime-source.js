@@ -5,6 +5,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   openDevDatabase,
   extractSchema,
   extractEndpoints,
+  extractMessageHandlers,
   extractContextMiddleware,
   extractMutationHooks,
   extractHookList,
@@ -58,8 +59,12 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   linkGoogleAccount,
   runQuery,
   runMutation,
+  runAppMessage,
+  validateAppMessageType,
+  isAllAppMessageScope,
   runMutationHook,
   createMutationContext,
+  createMessageContext,
   createHookErrorResult,
   runInsertMutation,
   runUpdateMutation,
@@ -87,6 +92,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
   const sqlite = new DatabaseSync(databasePath);
   const schema = extractSchema(serverSource);
   const endpoints = extractEndpoints(serverSource);
+  const messages = extractMessageHandlers(serverSource);
   const contextMiddleware = extractContextMiddleware(serverSource);
   const mutationHooks = extractMutationHooks(serverSource);
   const rowCache = new Map();
@@ -94,6 +100,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     sqlite,
     schema,
     endpoints,
+    messages,
     contextMiddleware,
     mutationHooks,
     rowCache,
@@ -346,6 +353,44 @@ function extractEndpoints(serverSource) {
   }
 
   return endpoints;
+}
+
+function extractMessageHandlers(serverSource) {
+  const messagesSource = extractObjectPropertySource(serverSource, "messages");
+  if (!messagesSource) {
+    return [];
+  }
+
+  const source = messagesSource.trim();
+  if (!source.startsWith("{")) {
+    return [];
+  }
+  const closeIndex = findMatchingDelimiter(source, 0, "{", "}");
+  if (closeIndex === -1) {
+    return [];
+  }
+
+  const handlers = [];
+  const entriesSource = source.slice(1, closeIndex);
+  for (const entry of splitTopLevelList(entriesSource)) {
+    const match = entry.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*message\s*\(/);
+    if (!match) {
+      continue;
+    }
+
+    const messageCallIndex = entry.indexOf("message");
+    const openIndex = entry.indexOf("(", messageCallIndex);
+    const argsEnd = findMatchingParen(entry, openIndex);
+    if (argsEnd === -1) {
+      continue;
+    }
+
+    handlers.push({
+      name: match[1],
+      handlerSource: entry.slice(openIndex + 1, argsEnd).trim(),
+    });
+  }
+  return handlers;
 }
 
 function extractContextMiddleware(serverSource) {
@@ -1109,12 +1154,27 @@ export function createWebSocketHub(getDatabase) {
       return;
     }
 
+    if (message.type === "app.send") {
+      const messageName = message.message ?? message.name;
+      const result = runAppMessage(database, client.session.auth, messageName, message.data, {
+        sendAppMessage,
+      });
+      sendJson(client, {
+        id: message.id ?? null,
+        type: "app.result",
+        message: messageName,
+        data: result.data ?? null,
+        error: result.error,
+      });
+      return;
+    }
+
     sendJson(client, {
       id: message.id ?? null,
       type: "error",
       error: {
         message: `Unsupported WebSocket message: ${message.type ?? ""}`.trim(),
-        hint: "Use auth.get, auth.signInWithGoogle, query.subscribe, or mutation.run.",
+        hint: "Use auth.get, auth.signInWithGoogle, query.subscribe, mutation.run, or app.send.",
       },
     });
   }
@@ -1153,6 +1213,31 @@ export function createWebSocketHub(getDatabase) {
       },
       error: null,
     });
+  }
+
+  function sendAppMessage(senderAuth, appMessage) {
+    const scope = appMessage.scope ?? { scope: "user", userId: senderAuth.userId };
+    const recipients = clientsForAppMessageScope(scope, senderAuth);
+    for (const recipient of recipients) {
+      sendJson(recipient, {
+        type: "app.message",
+        message: appMessage.type,
+        data: appMessage.data ?? null,
+      });
+    }
+    return recipients.length;
+  }
+
+  function clientsForAppMessageScope(scope, senderAuth) {
+    if (scope === "all" || scope?.scope === "all") {
+      return [...clients];
+    }
+    if (scope?.scope === "users") {
+      const userIds = new Set((scope.userIds ?? []).map(String));
+      return [...clients].filter((candidate) => userIds.has(candidate.session.auth.userId));
+    }
+    const userId = scope?.userId ?? senderAuth.userId;
+    return [...clients].filter((candidate) => candidate.session.auth.userId === userId);
   }
 }
 
@@ -1415,6 +1500,109 @@ function runMutation(database, auth, mutationName, args) {
     database.rowCache.clear();
     return createHookErrorResult(error);
   }
+}
+
+function runAppMessage(database, auth, messageName, data, options = {}) {
+  if (!messageName) {
+    return {
+      data: null,
+      error: {
+        message: "Missing app message type.",
+        hint: "Pass an unprefixed message name declared by the Capsule.",
+      },
+    };
+  }
+
+  try {
+    validateAppMessageType(messageName);
+  } catch (error) {
+    return {
+      data: null,
+      error: {
+        message: error.message,
+        hint: error.hint,
+      },
+    };
+  }
+
+  const handler = database.messages.find((candidate) => candidate.name === messageName);
+  if (!handler) {
+    return {
+      data: null,
+      error: {
+        message: `Unknown app message: ${messageName}`,
+        hint: "Use an app message declared by the Capsule.",
+      },
+    };
+  }
+
+  try {
+    if (data !== undefined) {
+      assertJsonCompatible(data);
+    }
+    const context = applyContextMiddleware(
+      database,
+      createMessageContext(database, auth, options.sendAppMessage),
+      "message",
+    );
+    const createHandler = new Function(`return (${handler.handlerSource});`);
+    const result = createHandler()(context, data);
+    if (result !== undefined) {
+      assertJsonCompatible(result);
+    }
+    return { data: result ?? null, error: null };
+  } catch (error) {
+    return {
+      data: null,
+      error: {
+        message: error?.message || "App message handler failed.",
+        hint: error?.hint ?? "Check the Capsule message handler and retry the app message.",
+      },
+    };
+  }
+}
+
+function validateAppMessageType(type) {
+  const value = String(type ?? "");
+  const reservedPrefixes = ["app.", "auth.", "query.", "mutation.", "file.", "files.", "runtime.", "upload."];
+  const reservedExact = new Set(["error", "refresh"]);
+  if (reservedExact.has(value) || reservedPrefixes.some((prefix) => value.startsWith(prefix))) {
+    throw commandError(
+      `Reserved app message type: ${value}`,
+      "Use an unprefixed app message type that does not start with a Sporades platform namespace.",
+    );
+  }
+  if (!value || !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(value)) {
+    throw commandError(
+      `Invalid app message type: ${value}`,
+      "Use an unprefixed app message type containing letters, numbers, underscores, or hyphens.",
+    );
+  }
+}
+
+function isAllAppMessageScope(scope) {
+  return scope === "all" || scope?.scope === "all";
+}
+
+function createMessageContext(database, auth, sendAppMessage) {
+  return {
+    ...createMutationContext(database, auth),
+    messages: {
+      send(appMessage) {
+        validateAppMessageType(appMessage?.type);
+        if (isAllAppMessageScope(appMessage?.scope)) {
+          throw commandError(
+            "Client-origin app messages cannot broadcast to all clients.",
+            "Use the default current-user scope or an explicit users scope authorized by the message handler.",
+          );
+        }
+        if (appMessage?.data !== undefined) {
+          assertJsonCompatible(appMessage.data);
+        }
+        return sendAppMessage?.(auth, appMessage) ?? 0;
+      },
+    },
+  };
 }
 
 function runMutationHook(hookSource, event) {

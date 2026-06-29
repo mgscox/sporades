@@ -2591,6 +2591,340 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
   });
 });
 
+test("sporades dev routes client app messages through declared Capsule handlers", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "message-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "message-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, message } from "sporades/server";
+
+export default capsule({
+  name: "message-island",
+
+  messages: {
+    typing: message((ctx, data) => ({
+      handledBy: ctx.auth.userId,
+      received: data,
+    })),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+
+      socket.send(JSON.stringify({ id: "auth", type: "auth.get" }));
+      const auth = await readSocketMessage(socket);
+
+      socket.send(
+        JSON.stringify({
+          id: "typing-1",
+          type: "app.send",
+          message: "typing",
+          data: { roomId: "general", active: true },
+        }),
+      );
+
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "typing-1",
+        type: "app.result",
+        message: "typing",
+        data: {
+          handledBy: auth.data.auth.userId,
+          received: { roomId: "general", active: true },
+        },
+        error: null,
+      });
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("server app message handlers can send filtered app messages to the current user's clients", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "message-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "message-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, message } from "sporades/server";
+
+export default capsule({
+  name: "message-island",
+
+  messages: {
+    typing: message((ctx, data) => {
+      ctx.messages.send({ type: "typing", data });
+      return { ok: true };
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let firstSocket;
+    let secondSocket;
+    let otherUserSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      firstSocket = await openSocket(started.data.url);
+      firstSocket.send(JSON.stringify({ id: "first-auth", type: "auth.get" }));
+      const firstAuth = await readSocketMessage(firstSocket);
+
+      secondSocket = await openSocket(started.data.url, firstAuth.data.sessionToken);
+      otherUserSocket = await openSocket(started.data.url);
+
+      const firstAppMessage = waitForSocketMessage(
+        firstSocket,
+        (message) => message.type === "app.message" && message.message === "typing",
+      );
+      const secondAppMessage = waitForSocketMessage(
+        secondSocket,
+        (message) => message.type === "app.message" && message.message === "typing",
+      );
+      const sendResult = waitForSocketMessage(
+        firstSocket,
+        (message) => message.id === "typing" && message.type === "app.result",
+      );
+
+      firstSocket.send(
+        JSON.stringify({
+          id: "typing",
+          type: "app.send",
+          message: "typing",
+          data: { roomId: "general", active: true },
+        }),
+      );
+
+      assert.deepEqual(await firstAppMessage, {
+        type: "app.message",
+        message: "typing",
+        data: { roomId: "general", active: true },
+      });
+      assert.deepEqual(await secondAppMessage, {
+        type: "app.message",
+        message: "typing",
+        data: { roomId: "general", active: true },
+      });
+      assert.deepEqual(await sendResult, {
+        id: "typing",
+        type: "app.result",
+        message: "typing",
+        data: { ok: true },
+        error: null,
+      });
+
+      otherUserSocket.send(JSON.stringify({ id: "other-auth", type: "auth.get" }));
+      assert.equal((await readSocketMessage(otherUserSocket)).type, "auth.result");
+    } finally {
+      firstSocket?.close();
+      secondSocket?.close();
+      otherUserSocket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("app messages reject reserved names and client-origin app-wide broadcasts", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "message-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "message-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, message } from "sporades/server";
+
+export default capsule({
+  name: "message-island",
+
+  messages: {
+    broadcast: message((ctx, data) => {
+      ctx.messages.send({ type: "notice", data, scope: { scope: "all" } });
+    }),
+    reservedOutbound: message((ctx) => {
+      ctx.messages.send({ type: "query.result", data: null });
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      socket = await openSocket(started.data.url);
+
+      socket.send(JSON.stringify({ id: "reserved-inbound", type: "app.send", message: "app.typing", data: null }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "reserved-inbound",
+        type: "app.result",
+        message: "app.typing",
+        data: null,
+        error: {
+          message: "Reserved app message type: app.typing",
+          hint: "Use an unprefixed app message type that does not start with a Sporades platform namespace.",
+        },
+      });
+
+      socket.send(JSON.stringify({ id: "broadcast", type: "app.send", message: "broadcast", data: { text: "hi" } }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "broadcast",
+        type: "app.result",
+        message: "broadcast",
+        data: null,
+        error: {
+          message: "Client-origin app messages cannot broadcast to all clients.",
+          hint: "Use the default current-user scope or an explicit users scope authorized by the message handler.",
+        },
+      });
+
+      socket.send(JSON.stringify({ id: "reserved-outbound", type: "app.send", message: "reservedOutbound" }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "reserved-outbound",
+        type: "app.result",
+        message: "reservedOutbound",
+        data: null,
+        error: {
+          message: "Reserved app message type: query.result",
+          hint: "Use an unprefixed app message type that does not start with a Sporades platform namespace.",
+        },
+      });
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("server app message handlers can target explicit users", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "message-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "message-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, message } from "sporades/server";
+
+export default capsule({
+  name: "message-island",
+
+  messages: {
+    whisper: message((ctx, data) => {
+      return {
+        delivered: ctx.messages.send({
+          type: "whisper",
+          data: { text: data.text },
+          scope: { scope: "users", userIds: data.userIds },
+        }),
+      };
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let senderSocket;
+    let recipientSocket;
+    let otherSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      senderSocket = await openSocket(started.data.url);
+      recipientSocket = await openSocket(started.data.url);
+      otherSocket = await openSocket(started.data.url);
+
+      recipientSocket.send(JSON.stringify({ id: "recipient-auth", type: "auth.get" }));
+      const recipientAuth = await readSocketMessage(recipientSocket);
+
+      const recipientMessage = waitForSocketMessage(
+        recipientSocket,
+        (message) => message.type === "app.message" && message.message === "whisper",
+      );
+      const senderResult = waitForSocketMessage(
+        senderSocket,
+        (message) => message.id === "whisper" && message.type === "app.result",
+      );
+
+      senderSocket.send(
+        JSON.stringify({
+          id: "whisper",
+          type: "app.send",
+          message: "whisper",
+          data: { text: "psst", userIds: [recipientAuth.data.auth.userId] },
+        }),
+      );
+
+      assert.deepEqual(await recipientMessage, {
+        type: "app.message",
+        message: "whisper",
+        data: { text: "psst" },
+      });
+      assert.deepEqual(await senderResult, {
+        id: "whisper",
+        type: "app.result",
+        message: "whisper",
+        data: { delivered: 1 },
+        error: null,
+      });
+
+      otherSocket.send(JSON.stringify({ id: "other-auth", type: "auth.get" }));
+      assert.equal((await readSocketMessage(otherSocket)).type, "auth.result");
+    } finally {
+      senderSocket?.close();
+      recipientSocket?.close();
+      otherSocket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev runs Capsule pre and post mutation hooks around WebSocket mutations", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "hook-island", "--no-install", "--no-git", "--json"], {

@@ -107,6 +107,17 @@ test("sporades/server exports the endpoint builder", async () => {
   });
 });
 
+test("sporades/server exports the message builder", async () => {
+  const runtime = await import("sporades/server");
+  const handler = () => ({ ok: true });
+
+  assert.equal(typeof runtime.message, "function");
+  assert.deepEqual(runtime.message(handler), {
+    kind: "message",
+    handler,
+  });
+});
+
 test("sporades/server exports the Json field builder", async () => {
   const runtime = await import("sporades/server");
   const field = runtime.Json();
