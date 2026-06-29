@@ -18,7 +18,7 @@ import {
 } from "../src/server-runtime-source.js";
 
 const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
-const SUPPORTED_TEMPLATES = new Set(["todo"]);
+const SUPPORTED_TEMPLATES = new Set(["blank", "todo"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
 const CONTAINER_BINDING_FILE = path.join(".sporades", "binding.json");
 const DEV_REBUILD_DEBOUNCE_MS = 100;
@@ -47,7 +47,7 @@ async function main() {
 
     writeResult({
       ok: true,
-      data: { path: options.projectDir },
+      data: { path: options.projectDir, template: options.template },
       error: null,
     });
     return;
@@ -86,7 +86,7 @@ async function main() {
 function parseCreateArgs(args) {
   let name = null;
   let framework = "react";
-  let template = "todo";
+  let template = "blank";
   let install = true;
   let git = true;
   let json = false;
@@ -130,7 +130,7 @@ function parseCreateArgs(args) {
     throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact.");
   }
   if (!SUPPORTED_TEMPLATES.has(template)) {
-    throw commandError(`Unsupported template: ${template}`, "v0 only supports the todo template.");
+    throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo.");
   }
 
   return {
@@ -879,11 +879,13 @@ function scaffoldFiles(options) {
       : {
           preact: "^10.25.0",
         };
+  const templateFiles = options.template === "todo" ? todoTemplateFiles(options) : blankTemplateFiles(options);
 
   return {
     "sporades.json": `${JSON.stringify(
       {
         name: options.name,
+        template: options.template,
         client: { framework: options.framework },
         auth: { mode: "anonymous" },
         deploy: { port: 4000 },
@@ -910,9 +912,8 @@ function scaffoldFiles(options) {
       null,
       2,
     )}\n`,
-    "AGENTS.md": agentsTemplate(),
-    "CLAUDE.md": agentsTemplate(),
-    "README.md": `# ${options.name}\n\nA Sporades todo capsule.\n`,
+    "AGENTS.md": agentsTemplate(options.template),
+    "CLAUDE.md": agentsTemplate(options.template),
     ".gitignore": "node_modules/\n.sporades/\n.env*.local\n",
     ".env.sporades.server": "# Server-only environment variables for Sporades.\n",
     "index.html": `<!doctype html>
@@ -928,6 +929,31 @@ function scaffoldFiles(options) {
   </body>
 </html>
 `,
+    ...templateFiles,
+  };
+}
+
+function blankTemplateFiles(options) {
+  return {
+    "README.md": `# ${options.name}\n\nA blank Sporades capsule.\n`,
+    "server/index.ts": `import { capsule } from "sporades/server";
+
+export default capsule({
+  name: ${JSON.stringify(options.name)},
+  schema: {},
+  queries: {},
+  mutations: {},
+});
+`,
+    "client/index.tsx": blankClientTemplate(options.framework),
+    "shared/types.ts": `export {};
+`,
+  };
+}
+
+function todoTemplateFiles(options) {
+  return {
+    "README.md": `# ${options.name}\n\nA Sporades todo capsule.\n`,
     "server/index.ts": `import { Boolean, capsule, mutation, query, String, table } from "sporades/server";
 
 export default capsule({
@@ -957,7 +983,7 @@ export default capsule({
   },
 });
 `,
-    "client/index.tsx": clientTemplate(options.framework),
+    "client/index.tsx": todoClientTemplate(options.framework),
     "shared/types.ts": `export type Todo = {
   id: string;
   text: string;
@@ -973,7 +999,39 @@ function scaffoldSporadesDependency() {
   return `file:${CLI_ROOT}`;
 }
 
-function clientTemplate(framework) {
+function blankClientTemplate(framework) {
+  if (framework === "preact") {
+    return `import { render } from "preact";
+
+function App() {
+  return (
+    <main>
+      <h1>Blank Sporades Capsule</h1>
+      <p>Start building in server/index.ts and client/index.tsx.</p>
+    </main>
+  );
+}
+
+render(<App />, document.getElementById("app")!);
+`;
+  }
+
+  return `import { createRoot } from "react-dom/client";
+
+function App() {
+  return (
+    <main>
+      <h1>Blank Sporades Capsule</h1>
+      <p>Start building in server/index.ts and client/index.tsx.</p>
+    </main>
+  );
+}
+
+createRoot(document.getElementById("app")!).render(<App />);
+`;
+}
+
+function todoClientTemplate(framework) {
   if (framework === "preact") {
     return `import { render } from "preact";
 import { useState, useEffect } from "preact/hooks";
@@ -1053,10 +1111,12 @@ createRoot(document.getElementById("app")!).render(<App />);
 `;
 }
 
-function agentsTemplate() {
+function agentsTemplate(template) {
   return `# Sporades App Instructions
 
 This directory is for a Sporades app. Sporades is a CLI-first tool for building and running full-stack web apps.
+
+Template: ${template}
 
 ## Rules
 
