@@ -336,7 +336,6 @@ Bundles and runs in a local Docker container.
 
 Flags:
 - `--port <number>` — override deploy port (default: from `sporades.json`)
-- `--force` — ignore a stale container binding when the recorded container was deleted manually
 - `--json` — output `{ ok, data: { url, port, containerId }, error: null }`
 
 ### `sporades logs`

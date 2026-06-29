@@ -1,3 +1,8 @@
+# Sporades
+
+- Read @CONTEXT.md to obtain an overview of this repository
+- Read @docs/PRD.md to learn about the Product Requirements
+
 ## Agent skills
 
 ### Issue tracker
