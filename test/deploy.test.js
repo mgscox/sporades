@@ -325,6 +325,150 @@ export default capsule({
   });
 });
 
+test("sporades deploy writes a server bundle that applies additive table migrations on Container session startup", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "container-first");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+
+    const databasePath = path.join(projectDir, ".sporades", "data", "data.db");
+    const serverBundlePath = path.join(projectDir, ".sporades", "build", "server.mjs");
+    const firstPort = await getAvailablePort();
+    const firstServer = spawn(process.execPath, [serverBundlePath], {
+      cwd: projectDir,
+      env: {
+        ...process.env,
+        PORT: String(firstPort),
+        SPORADES_DATABASE_PATH: databasePath,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let firstSocket;
+    let secondSocket;
+    try {
+      await waitForHttp(`http://127.0.0.1:${firstPort}/`, firstServer);
+      firstSocket = await openSocket(`http://127.0.0.1:${firstPort}`);
+      firstSocket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+      const sessionToken = (await readSocketMessage(firstSocket)).data.sessionToken;
+      firstSocket.send(JSON.stringify({ id: "todos-before", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual((await readSocketMessage(firstSocket)).data, []);
+      firstSocket.send(
+        JSON.stringify({ id: "add-todo", type: "mutation.run", mutation: "addTodo", args: ["Container keeps me"] }),
+      );
+      assert.equal((await readSocketMessage(firstSocket)).type, "mutation.result");
+      assert.deepEqual(
+        (await readSocketMessage(firstSocket)).data.map((todo) => todo.text),
+        ["Container keeps me"],
+      );
+      firstSocket.close();
+      firstSocket = null;
+      await stopChild(firstServer);
+
+      const serverPath = path.join(projectDir, "server", "index.ts");
+      const originalServer = await readFile(serverPath, "utf8");
+      await writeFile(
+        serverPath,
+        originalServer
+          .replace(
+            "todos: table({",
+            `notes: table({
+      text: String(),
+      ownerId: String(),
+    }),
+    todos: table({`,
+          )
+          .replace(
+            "todos: query((ctx) =>",
+            `notes: query((ctx) =>
+      ctx.db.notes
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "desc")
+        .all(),
+    ),
+
+    todos: query((ctx) =>`,
+          )
+          .replace(
+            "addTodo: mutation((ctx, text: string) => {",
+            `addNote: mutation((ctx, text: string) => {
+      ctx.db.notes.insert({ text, ownerId: ctx.auth.userId });
+    }),
+
+    addTodo: mutation((ctx, text: string) => {`,
+          ),
+      );
+
+      const redeployResult = await runCli(["deploy", "--force", "--json"], {
+        cwd: projectDir,
+        env: {
+          ...docker.env,
+          FAKE_DOCKER_CONTAINER_ID: "container-second",
+          FAKE_DOCKER_MISSING_CONTAINER_ACTIONS: "stop,rm",
+        },
+      });
+      assert.equal(redeployResult.code, 0, redeployResult.stderr);
+
+      const secondPort = await getAvailablePort();
+      const secondServer = spawn(process.execPath, [serverBundlePath], {
+        cwd: projectDir,
+        env: {
+          ...process.env,
+          PORT: String(secondPort),
+          SPORADES_DATABASE_PATH: databasePath,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      try {
+        await waitForHttp(`http://127.0.0.1:${secondPort}/`, secondServer);
+        secondSocket = await openSocket(`http://127.0.0.1:${secondPort}`, sessionToken);
+        secondSocket.send(JSON.stringify({ id: "todos-after", type: "query.subscribe", query: "todos" }));
+        assert.deepEqual(
+          (await readSocketMessage(secondSocket)).data.map((todo) => todo.text),
+          ["Container keeps me"],
+        );
+        secondSocket.send(JSON.stringify({ id: "notes-before", type: "query.subscribe", query: "notes" }));
+        assert.deepEqual((await readSocketMessage(secondSocket)).data, []);
+        secondSocket.send(
+          JSON.stringify({
+            id: "add-note",
+            type: "mutation.run",
+            mutation: "addNote",
+            args: ["Container new table works"],
+          }),
+        );
+        assert.equal((await readSocketMessage(secondSocket)).type, "mutation.result");
+        const notesAfter = await waitForSocketMessage(
+          secondSocket,
+          (message) =>
+            message.id === "notes-before" &&
+            message.type === "query.result" &&
+            message.query === "notes" &&
+            message.data.length === 1,
+        );
+        assert.equal(notesAfter.data[0].text, "Container new table works");
+      } finally {
+        secondSocket?.close();
+        await stopChild(secondServer);
+      }
+    } finally {
+      firstSocket?.close();
+      await stopChild(firstServer);
+    }
+  });
+});
+
 test("sporades deploy skips the server env mount when the env file is absent", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
@@ -475,3 +619,70 @@ test("sporades deploy fails on stale container bindings without --force", async 
     );
   });
 });
+
+function openSocket(baseUrl, sessionToken = null) {
+  return new Promise((resolve, reject) => {
+    const url = new URL("/__sporades/ws", baseUrl);
+    if (sessionToken) {
+      url.searchParams.set("sessionToken", sessionToken);
+    }
+    const socket = new WebSocket(url);
+    socket.addEventListener("open", () => resolve(socket), { once: true });
+    socket.addEventListener("error", reject, { once: true });
+  });
+}
+
+function readSocketMessage(socket) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out waiting for WebSocket message."));
+    }, 5000);
+
+    function cleanup() {
+      clearTimeout(timeout);
+      socket.removeEventListener("message", onMessage);
+      socket.removeEventListener("error", onError);
+    }
+    function onMessage(event) {
+      cleanup();
+      resolve(JSON.parse(event.data));
+    }
+    function onError(event) {
+      cleanup();
+      reject(event.error ?? new Error("WebSocket failed."));
+    }
+
+    socket.addEventListener("message", onMessage);
+    socket.addEventListener("error", onError);
+  });
+}
+
+function waitForSocketMessage(socket, predicate) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out waiting for WebSocket message"));
+    }, 5000);
+
+    function cleanup() {
+      clearTimeout(timeout);
+      socket.removeEventListener("message", onMessage);
+      socket.removeEventListener("error", onError);
+    }
+    function onMessage(event) {
+      const message = JSON.parse(event.data);
+      if (predicate(message)) {
+        cleanup();
+        resolve(message);
+      }
+    }
+    function onError() {
+      cleanup();
+      reject(new Error("WebSocket error"));
+    }
+
+    socket.addEventListener("message", onMessage);
+    socket.addEventListener("error", onError);
+  });
+}

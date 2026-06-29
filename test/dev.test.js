@@ -511,6 +511,197 @@ test("sporades dev restarts server runtime and accepts new WebSocket connections
   });
 });
 
+test("sporades dev applies an additive table migration without losing existing Capsule data", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    let migratedSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      socket = await openSocket(started.data.url);
+      socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+      const sessionToken = (await readSocketMessage(socket)).data.sessionToken;
+
+      socket.send(JSON.stringify({ id: "todos-before", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "todos-before",
+        type: "query.result",
+        query: "todos",
+        data: [],
+        error: null,
+      });
+
+      socket.send(JSON.stringify({ id: "add-todo", type: "mutation.run", mutation: "addTodo", args: ["Keep me"] }));
+      assert.equal((await readSocketMessage(socket)).type, "mutation.result");
+      assert.deepEqual(
+        (await readSocketMessage(socket)).data.map((todo) => todo.text),
+        ["Keep me"],
+      );
+
+      const serverPath = path.join(projectDir, "server", "index.ts");
+      const originalServer = await readFile(serverPath, "utf8");
+      await writeFile(
+        serverPath,
+        originalServer
+          .replace(
+            "todos: table({",
+            `notes: table({
+      text: String(),
+      ownerId: String(),
+    }),
+    todos: table({`,
+          )
+          .replace(
+            "todos: query((ctx) =>",
+            `notes: query((ctx) =>
+      ctx.db.notes
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "desc")
+        .all(),
+    ),
+
+    todos: query((ctx) =>`,
+          )
+          .replace(
+            "addTodo: mutation((ctx, text: string) => {",
+            `addNote: mutation((ctx, text: string) => {
+      ctx.db.notes.insert({ text, ownerId: ctx.auth.userId });
+    }),
+
+    addTodo: mutation((ctx, text: string) => {`,
+          ),
+      );
+
+      const [rebuilt] = await Promise.all([
+        waitForJsonEvent(
+          child,
+          (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success",
+        ),
+        waitForSocketClose(socket),
+      ]);
+      assert.equal(rebuilt.error, null);
+      socket = null;
+
+      migratedSocket = await openSocket(started.data.url, sessionToken);
+      migratedSocket.send(JSON.stringify({ id: "todos-after", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual(
+        (await readSocketMessage(migratedSocket)).data.map((todo) => todo.text),
+        ["Keep me"],
+      );
+
+      migratedSocket.send(JSON.stringify({ id: "notes-before", type: "query.subscribe", query: "notes" }));
+      assert.deepEqual(await readSocketMessage(migratedSocket), {
+        id: "notes-before",
+        type: "query.result",
+        query: "notes",
+        data: [],
+        error: null,
+      });
+
+      migratedSocket.send(
+        JSON.stringify({ id: "add-note", type: "mutation.run", mutation: "addNote", args: ["New table works"] }),
+      );
+      assert.equal((await readSocketMessage(migratedSocket)).type, "mutation.result");
+      const notesAfter = await waitForSocketMessage(
+        migratedSocket,
+        (message) =>
+          message.id === "notes-before" &&
+          message.type === "query.result" &&
+          message.query === "notes" &&
+          message.data.length === 1,
+      );
+      assert.equal(notesAfter.data[0].text, "New table works");
+      assert.equal(typeof notesAfter.data[0].id, "string");
+      assert.equal(typeof notesAfter.data[0].createdAt, "string");
+      assert.equal(typeof notesAfter.data[0].updatedAt, "string");
+
+      const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
+      assert.equal(dumpResult.code, 0, dumpResult.stderr);
+      const tables = JSON.parse(dumpResult.stdout).data.tables;
+      const systemRows = tables.find((table) => table.name === "sporades").rows;
+      assert.ok(systemRows.find((row) => row.key === "schemaHash")?.value);
+      assert.match(systemRows.find((row) => row.key === "schema")?.value ?? "", /"notes"/);
+      assert.deepEqual(tables.find((table) => table.name === "notes").columns, [
+        "id",
+        "createdAt",
+        "updatedAt",
+        "text",
+        "ownerId",
+      ]);
+    } finally {
+      migratedSocket?.close();
+      socket?.close();
+      if (child.exitCode === null) {
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.kill("SIGTERM");
+        await exited;
+      }
+    }
+  });
+});
+
+test("sporades dev rejects unsupported Capsule schema changes with a structured rebuild error", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      await waitForJsonLine(child);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const serverPath = path.join(projectDir, "server", "index.ts");
+      const originalServer = await readFile(serverPath, "utf8");
+      await writeFile(serverPath, originalServer.replace("done: Boolean().default(false),", "done: String(),"));
+
+      const failed = await waitForJsonEvent(
+        child,
+        (event) => !event.ok && event.data.event === "rebuild" && event.data.status === "failed",
+      );
+      assert.deepEqual(failed, {
+        ok: false,
+        data: {
+          event: "rebuild",
+          status: "failed",
+          url: failed.data.url,
+          port: failed.data.port,
+        },
+        error: {
+          message: "Unsupported Capsule schema change.",
+          hint: "Only adding new tables is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
+        },
+      });
+    } finally {
+      if (child.exitCode === null) {
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.kill("SIGTERM");
+        await exited;
+      }
+    }
+  });
+});
+
 test("sporades dev reports rebuild events in human-readable output", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
@@ -856,7 +1047,15 @@ test("sporades db dump returns structured table data from the running dev sessio
             {
               name: "sporades",
               columns: ["key", "value"],
-              rows: [{ key: "schemaVersion", value: "v0" }],
+              rows: [
+                { key: "schemaVersion", value: "v1:additive-tables" },
+                { key: "schemaHash", value: "71a20803ea953152096eea819b23296357aa0f92317215685136640caac64904" },
+                {
+                  key: "schema",
+                  value:
+                    '{"tables":[{"name":"todos","fields":[{"name":"text","kind":"String","sqliteType":"TEXT"},{"name":"done","kind":"Boolean","sqliteType":"INTEGER","defaultValue":false},{"name":"ownerId","kind":"String","sqliteType":"TEXT"}]}]}',
+                },
+              ],
             },
             {
               name: "sporades_auth_sessions",
