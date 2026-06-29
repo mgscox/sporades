@@ -6,6 +6,9 @@
   "bin": {
     "sporades": "./bin/sporades.js"
   },
+  "exports": {
+    "./server": "./server.js"
+  },
   "scripts": {
     "test": "node --test"
   },

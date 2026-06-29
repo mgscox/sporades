@@ -95,6 +95,18 @@ test("sporades create writes a runnable React todo scaffold", async () => {
   });
 });
 
+test("sporades/server exports the endpoint builder", async () => {
+  const runtime = await import("sporades/server");
+  const handler = () => "pong";
+
+  assert.equal(typeof runtime.endpoint, "function");
+  assert.deepEqual(runtime.endpoint({ method: "POST", path: "/integrations/ping" }, handler), {
+    kind: "endpoint",
+    options: { method: "POST", path: "/integrations/ping" },
+    handler,
+  });
+});
+
 test("sporades create writes a runnable Preact todo scaffold", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(

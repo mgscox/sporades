@@ -267,6 +267,64 @@ test("sporades deploy writes a server bundle that serves the capsule", async () 
   });
 });
 
+test("sporades deploy writes a server bundle that serves registered capsule endpoints", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "endpoint-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "endpoint-island"));
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "endpoint-island",
+
+  endpoints: {
+    ping: endpoint({ method: "POST", path: "/integrations/ping" }, () => "pong"),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "container-first");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+
+    const port = await getAvailablePort();
+    const serverBundlePath = path.join(projectDir, ".sporades", "build", "server.mjs");
+    const child = spawn(process.execPath, [serverBundlePath], {
+      cwd: projectDir,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    try {
+      await waitForHttp(`http://127.0.0.1:${port}/`, child);
+      const endpointResponse = await fetch(`http://127.0.0.1:${port}/integrations/ping`, { method: "POST" });
+      assert.equal(endpointResponse.status, 200);
+      assert.match(endpointResponse.headers.get("content-type") ?? "", /^text\/plain/);
+      assert.equal(await endpointResponse.text(), "pong");
+
+      const missResponse = await fetch(`http://127.0.0.1:${port}/integrations/ping`);
+      assert.equal(missResponse.status, 404);
+      assert.equal(await missResponse.text(), "Not found");
+    } finally {
+      await stopChild(child);
+    }
+  });
+});
+
 test("sporades deploy skips the server env mount when the env file is absent", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {

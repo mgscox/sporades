@@ -4,6 +4,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   readJsonRequest,
   openDevDatabase,
   extractSchema,
+  extractEndpoints,
   extractFields,
   parseFieldDefault,
   toSqlLiteral,
@@ -15,6 +16,10 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createWebSocketHub,
   drainWebSocketFrames,
   sendJson,
+  routeEndpoint,
+  runEndpoint,
+  writeEndpointResult,
+  writeEndpointError,
   linkGoogleAccount,
   runQuery,
   runMutation,
@@ -35,10 +40,12 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
   const { DatabaseSync } = await import("node:sqlite");
   const sqlite = new DatabaseSync(databasePath);
   const schema = extractSchema(serverSource);
+  const endpoints = extractEndpoints(serverSource);
   const rowCache = new Map();
   const database = {
     sqlite,
     schema,
+    endpoints,
     rowCache,
     serverEnv,
     authConfig: authStatus(config, serverEnv),
@@ -79,6 +86,79 @@ function extractSchema(serverSource) {
   };
 }
 
+function extractEndpoints(serverSource) {
+  const endpoints = [];
+  const endpointPattern = /([A-Za-z_][A-Za-z0-9_]*)\s*:\s*endpoint\s*\(/g;
+  let match;
+
+  while ((match = endpointPattern.exec(serverSource))) {
+    const argsEnd = findMatchingParen(serverSource, endpointPattern.lastIndex - 1);
+    if (argsEnd === -1) {
+      continue;
+    }
+
+    const argsSource = serverSource.slice(endpointPattern.lastIndex, argsEnd);
+    const descriptor = argsSource.match(
+      /^\s*\{\s*method\s*:\s*["']([A-Za-z]+)["']\s*,\s*path\s*:\s*["']([^"']+)["']\s*\}\s*,/,
+    );
+    if (!descriptor) {
+      endpointPattern.lastIndex = argsEnd + 1;
+      continue;
+    }
+
+    endpoints.push({
+      name: match[1],
+      method: descriptor[1].toUpperCase(),
+      path: descriptor[2],
+      handlerSource: argsSource.slice(descriptor[0].length).trim(),
+    });
+    endpointPattern.lastIndex = argsEnd + 1;
+  }
+
+  return endpoints;
+
+  function findMatchingParen(source, openIndex) {
+    let depth = 0;
+    let quote = null;
+    let escaped = false;
+
+    for (let index = openIndex; index < source.length; index += 1) {
+      const char = source[index];
+      if (quote) {
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === "\\") {
+          escaped = true;
+          continue;
+        }
+        if (char === quote) {
+          quote = null;
+        }
+        continue;
+      }
+
+      if (char === '"' || char === "'" || char === "`") {
+        quote = char;
+        continue;
+      }
+      if (char === "(") {
+        depth += 1;
+        continue;
+      }
+      if (char === ")") {
+        depth -= 1;
+        if (depth === 0) {
+          return index;
+        }
+      }
+    }
+
+    return -1;
+  }
+}
+
 function extractFields(tableSource) {
   return [...tableSource.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|Boolean)\(\)(?:\.default\(([^)]*)\))?/g)].map(
     (match) => {
@@ -90,6 +170,48 @@ function extractFields(tableSource) {
         defaultValue: parseFieldDefault(kind, match[3]),
       };
     },
+  );
+}
+
+export async function routeEndpoint(database, request, response) {
+  const requestUrl = new URL(request.url, "http://127.0.0.1");
+  const endpoint = database.endpoints.find(
+    (candidate) => candidate.method === request.method && candidate.path === requestUrl.pathname,
+  );
+  if (!endpoint) {
+    return false;
+  }
+
+  try {
+    writeEndpointResult(response, await runEndpoint(endpoint));
+  } catch {
+    writeEndpointError(response);
+  }
+  return true;
+}
+
+async function runEndpoint(endpoint) {
+  const createHandler = new Function(`return (${endpoint.handlerSource});`);
+  const handler = createHandler();
+  return handler();
+}
+
+function writeEndpointResult(response, result) {
+  response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
+  response.end(String(result ?? ""));
+}
+
+function writeEndpointError(response) {
+  response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+  response.end(
+    `${JSON.stringify({
+      ok: false,
+      data: null,
+      error: {
+        message: "Endpoint handler failed.",
+        hint: "Check the endpoint handler and retry the request.",
+      },
+    })}\n`,
   );
 }
 
