@@ -1,6 +1,6 @@
 # Support template selection and blank default for `sporades create`
 
-Status: needs-triage
+Status: done
 
 ## What to build
 
@@ -8,14 +8,14 @@ Update project creation so `sporades create` accepts an optional `--template <na
 
 ## Acceptance criteria
 
-- [ ] `sporades create <name>` creates a runnable blank app by default.
-- [ ] `sporades create <name> --template blank` creates the same blank app.
-- [ ] `sporades create <name> --template todo` creates the existing todo app template.
-- [ ] Unsupported template names fail with `{ ok: false, data: null, error: { message, hint } }`.
-- [ ] `--json` output reports the selected template in the success payload.
-- [ ] Existing framework, install, and git flags continue to work across templates.
-- [ ] Generated `AGENTS.md`, `README.md`, and `sporades.json` reflect the selected template accurately.
-- [ ] The blank template is minimal and does not include auth, file, or app-message examples.
+- [x] `sporades create <name>` creates a runnable blank app by default.
+- [x] `sporades create <name> --template blank` creates the same blank app.
+- [x] `sporades create <name> --template todo` creates the existing todo app template.
+- [x] Unsupported template names fail with `{ ok: false, data: null, error: { message, hint } }`.
+- [x] `--json` output reports the selected template in the success payload.
+- [x] Existing framework, install, and git flags continue to work across templates.
+- [x] Generated `AGENTS.md`, `README.md`, and `sporades.json` reflect the selected template accurately.
+- [x] The blank template is minimal and does not include auth, file, or app-message examples.
 
 ## Blocked by
 

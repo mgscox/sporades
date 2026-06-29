@@ -1,6 +1,6 @@
 # Implement real provider auth beyond anonymous sessions
 
-Status: ready-for-agent
+Status: done
 
 ## What to build
 
@@ -20,24 +20,24 @@ The server must do all trusted auth work. The client should only call the Sporad
 
 ## Acceptance criteria
 
-- [ ] The fake `auth.completeGoogleSignIn` profile-trust path is removed or restricted to an explicit test-only harness that cannot ship in normal runtime code.
-- [ ] The server performs a real Google OAuth flow, including callback handling, authorization-code exchange, and verified identity/profile extraction.
-- [ ] The server owns provider redirect URL generation and validates all callback state before linking an account.
-- [ ] Required auth dependencies are installed and bundled intentionally, or the implementation documents why no auth library is needed.
-- [ ] Provider secrets live in Server env.
-- [ ] `sporades.json` stores provider env var names, not secret values.
-- [ ] Apps can configure provider auth without exposing secrets in normal CLI output.
-- [ ] The Sporades client SDK exposes an intent-level provider sign-in API, preferably `auth.signIn("google")`.
-- [ ] The client SDK handles the necessary full-page browser redirect mechanics internally so scaffold/app code does not need OAuth route or callback knowledge.
-- [ ] The client SDK preserves the current browser URL before redirect and restores it after auth completes.
-- [ ] Provider login does not use popup windows.
-- [ ] Scaffolded apps that enable provider auth include a visible login/sign-in control that only calls the Sporades client SDK.
-- [ ] Guestbook is used as the live-site acceptance test for Google authentication.
-- [ ] Signing in with a provider links the identity to the current anonymous session instead of creating an unrelated account.
-- [ ] `ctx.auth` reflects provider-backed identity fields such as display name, email, picture, authentication state, and provider.
-- [ ] Misconfigured provider auth fails with structured errors and actionable hints.
-- [ ] The auth surface leaves room for future providers beyond Google.
-- [ ] Tests cover the real auth boundary rather than only sending a synthetic client profile over WebSocket.
+- [x] The fake `auth.completeGoogleSignIn` profile-trust path is removed or restricted to an explicit test-only harness that cannot ship in normal runtime code.
+- [x] The server performs a real Google OAuth flow, including callback handling, authorization-code exchange, and verified identity/profile extraction.
+- [x] The server owns provider redirect URL generation and validates all callback state before linking an account.
+- [x] Required auth dependencies are installed and bundled intentionally, or the implementation documents why no auth library is needed.
+- [x] Provider secrets live in Server env.
+- [x] `sporades.json` stores provider env var names, not secret values.
+- [x] Apps can configure provider auth without exposing secrets in normal CLI output.
+- [x] The Sporades client SDK exposes an intent-level provider sign-in API, preferably `auth.signIn("google")`.
+- [x] The client SDK handles the necessary full-page browser redirect mechanics internally so scaffold/app code does not need OAuth route or callback knowledge.
+- [x] The client SDK preserves the current browser URL before redirect and restores it after auth completes.
+- [x] Provider login does not use popup windows.
+- [x] Scaffolded apps that enable provider auth include a visible login/sign-in control that only calls the Sporades client SDK.
+- [x] Guestbook is used as the live-site acceptance test for Google authentication.
+- [x] Signing in with a provider links the identity to the current anonymous session instead of creating an unrelated account.
+- [x] `ctx.auth` reflects provider-backed identity fields such as display name, email, picture, authentication state, and provider.
+- [x] Misconfigured provider auth fails with structured errors and actionable hints.
+- [x] The auth surface leaves room for future providers beyond Google.
+- [x] Tests cover the real auth boundary rather than only sending a synthetic client profile over WebSocket.
 
 ## Blocked by
 

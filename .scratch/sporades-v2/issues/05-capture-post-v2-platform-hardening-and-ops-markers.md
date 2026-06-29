@@ -1,6 +1,6 @@
 # Capture post-v2 platform hardening and ops markers
 
-Status: ready-for-human
+Status: done
 
 ## What to build
 
