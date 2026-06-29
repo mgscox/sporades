@@ -166,12 +166,35 @@ Chainable API accumulates filters, sort, and limit. Compilation to SQL happens a
 
 **Better Auth with Anonymous plugin**, owned entirely by the server. The client never sees the auth library.
 
-### v0 auth modes
+### v0 auth providers
 
-| Mode | Config | Behaviour |
+| Provider | Config | Behaviour |
 |---|---|---|
-| **Anonymous** (default) | `auth: { mode: "anonymous" }` or unset | Every visitor gets a real session via Better Auth's Anonymous plugin. Persistent account, session token in `localStorage`. Data preserved when linking an auth method. |
-| **Google OAuth** | `auth: { mode: "google", clientId, clientSecret }` | Anonymous by default, `signInWithGoogle()` function available for upgrade. Links Google identity to existing anonymous account — no data loss. |
+| **Anonymous** (default) | `auth: { providers: { anonymous: true } }`, `auth: { mode: "anonymous" }`, or unset | Every visitor gets a real session via Better Auth's Anonymous plugin. Persistent account, session token in `localStorage`. Data preserved when linking an auth method. |
+| **Google OAuth** | `auth: { providers: { google: { clientIdEnv, clientSecretEnv } } }` or legacy `auth: { mode: "google", google: { clientIdEnv, clientSecretEnv } }` | Anonymous by default, `auth.signIn("google")` available for linked sign-in. Links Google identity to existing anonymous account — no data loss. |
+| **Email** | `auth: { providers: { email: true } }` | Reserved configuration shape for the future email provider. Accepted in config/status so projects can represent it before runtime sign-in is implemented. |
+
+`auth.providers` is the preferred configuration shape for enabling multiple
+providers at once. Existing apps using `auth.mode` remain supported for
+backwards compatibility.
+
+```json
+{
+  "auth": {
+    "providers": {
+      "anonymous": true,
+      "google": {
+        "clientIdEnv": "GOOGLE_CLIENT_ID",
+        "clientSecretEnv": "GOOGLE_CLIENT_SECRET"
+      },
+      "email": true
+    }
+  }
+}
+```
+
+Runtime validation accepts `anonymous`, `google`, and `email`, and rejects
+unsupported provider names with structured errors and actionable hints.
 
 ### Auth context
 
@@ -315,7 +338,7 @@ Starts local dev server with live rebuild.
 - Failed rebuilds: keep serving last successful bundle, report error
 - SQLite at `.sporades/data.db` (persists across restarts)
 - Debug endpoints: `GET /__sporades/logs`, `GET /__sporades/db`, `GET /__sporades/db/tables`
-- Auth: anonymous mode (configurable)
+- Auth: anonymous sessions with configurable providers
 
 Flags:
 - `--port <number>` — override dev port (default: from `sporades.json` or `deploy.port`)
@@ -406,7 +429,9 @@ Error messages always include a `hint` field with an actionable suggestion.
     "framework": "react"
   },
   "auth": {
-    "mode": "anonymous"
+    "providers": {
+      "anonymous": true
+    }
   },
   "deploy": {
     "port": 4000
@@ -421,7 +446,8 @@ Error messages always include a `hint` field with an actionable suggestion.
 |---|---|---|
 | `name` | (from scaffold) | App name, shown in HTML title and logs |
 | `client.framework` | `react` | JSX import source for esbuild |
-| `auth.mode` | `anonymous` | Auth mode: `anonymous` or `google` |
+| `auth.providers` | `{ anonymous: true }` | Enabled auth providers: `anonymous`, `google`, and future `email` |
+| `auth.mode` | `anonymous` | Backwards-compatible auth mode: `anonymous` or `google` |
 | `deploy.port` | 4000 | Container port |
 | `dev.port` | `null` | Dev port override; `null` = same as `deploy.port` |
 
@@ -519,11 +545,11 @@ sporades db dump  # dump database as JSON
 - `sporades deploy` — bundle and run in local Docker container
 - `sporades logs` — view server logs
 - `sporades db` — inspect database (list, dump, query)
-- `sporades auth` — configure auth mode (anonymous, Google OAuth)
+- `sporades auth` — inspect auth providers and configure Google OAuth
 - Server API: `capsule({ schema, queries, mutations })` — no endpoints
 - Client API: `createHooks` factory, transport layer
 - Field types: `String()`, `Boolean()`, `Date()`
-- Auth: Better Auth anonymous sessions + Google OAuth
+- Auth: Better Auth anonymous sessions + Google OAuth, with multi-provider config
 - Database: SQLite via `node:sqlite` (Node 22+), row-level cache
 - Client frameworks: React (default), Preact
 - `--json` output on all commands, JSONL streaming for `dev`
@@ -536,7 +562,7 @@ sporades db dump  # dump database as JSON
 - Endpoints (`endpoint()`)
 - Additional field types (`Number()`, `Json()`, `Reference()`)
 - Additional client frameworks (Solid, Svelte, Vue)
-- Additional auth providers (GitHub, Microsoft, email)
+- Additional runtime auth providers (GitHub, Microsoft, email sign-in)
 - Custom domains
 - Remote hosting / PaaS
 - Database migrations (incremental)

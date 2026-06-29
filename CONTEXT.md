@@ -150,11 +150,11 @@ _Avoid_: table cache (it's row-level, not table-level), data cache
 ## Configuration
 
 **sporades.json**:
-The project configuration file at the project root. Read by the CLI at startup; relevant pieces passed to the server runtime as a startup argument. The server runtime does not read files. Contains: app name, client framework, auth mode, deploy port, optional dev port override.
+The project configuration file at the project root. Read by the CLI at startup; relevant pieces passed to the server runtime as a startup argument. The server runtime does not read files. Contains: app name, client framework, enabled auth providers (or legacy auth mode), deploy port, optional dev port override.
 _Avoid_: config file (too generic — it's the specific project config)
 
 **Config cascade**:
-`sporades.json` → CLI flag → default. CLI flags override config values; config values override defaults. Applied to: ports, framework, auth mode.
+`sporades.json` → CLI flag → default. CLI flags override config values; config values override defaults. Applied to: ports, framework, auth providers, and legacy auth mode.
 
 **Server env**:
 A `.env.sporades.server` file at the project root containing server-only environment variables. Mounted read-only at `/app/.env.sporades.server` in the container. Max 64 keys, 64KB total. No `SPORADES_` prefix (reserved). Accessible via `ctx.env`. This is a v0 stopgap — env files are terrible and will be replaced.

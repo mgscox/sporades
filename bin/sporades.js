@@ -1181,7 +1181,7 @@ function App() {
   return (
     <main>
       <h1>Sporades Todos</h1>
-      {session.providers.google?.configured && !session.isAuthenticated() ? (
+      {session.providers.google?.enabled && session.providers.google?.configured && !session.isAuthenticated() ? (
         <button type="button" onClick={() => auth.signIn("google")}>
           Sign in with Google
         </button>
@@ -1226,7 +1226,7 @@ function App() {
   return (
     <main>
       <h1>Sporades Todos</h1>
-      {session.providers.google?.configured && !session.isAuthenticated() ? (
+      {session.providers.google?.enabled && session.providers.google?.configured && !session.isAuthenticated() ? (
         <button type="button" onClick={() => auth.signIn("google")}>
           Sign in with Google
         </button>

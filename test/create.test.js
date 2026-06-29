@@ -435,6 +435,17 @@ test("sporades auth status reports anonymous and Google OAuth configuration stat
       ok: true,
       data: {
         mode: "anonymous",
+        providers: {
+          anonymous: {
+            enabled: true,
+          },
+          google: {
+            enabled: false,
+            configured: false,
+            clientIdEnv: null,
+            clientSecretEnv: null,
+          },
+        },
         google: {
           configured: false,
           clientIdEnv: null,
@@ -454,6 +465,17 @@ test("sporades auth status reports anonymous and Google OAuth configuration stat
       ok: true,
       data: {
         mode: "google",
+        providers: {
+          anonymous: {
+            enabled: true,
+          },
+          google: {
+            enabled: true,
+            configured: true,
+            clientIdEnv: "GOOGLE_CLIENT_ID",
+            clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+          },
+        },
         google: {
           configured: true,
           clientIdEnv: "GOOGLE_CLIENT_ID",
@@ -479,6 +501,61 @@ test("sporades auth status reports anonymous and Google OAuth configuration stat
     const googleStatus = await runCli(["auth", "status", "--json"], { cwd: projectDir });
     assert.equal(googleStatus.code, 0, googleStatus.stderr);
     assert.deepEqual(JSON.parse(googleStatus.stdout).data.google.configured, true);
+  });
+});
+
+test("sporades auth status reports multi-provider configuration without secrets", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.auth = {
+      providers: {
+        anonymous: true,
+        google: {
+          clientIdEnv: "GOOGLE_CLIENT_ID",
+          clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+        },
+        email: true,
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "GOOGLE_CLIENT_ID=google-client-id\nGOOGLE_CLIENT_SECRET=super-secret\n");
+
+    const status = await runCli(["auth", "status", "--json"], { cwd: projectDir });
+    assert.equal(status.code, 0, status.stderr);
+    assert.doesNotMatch(status.stdout, /google-client-id|super-secret/);
+    assert.deepEqual(JSON.parse(status.stdout), {
+      ok: true,
+      data: {
+        mode: "google",
+        providers: {
+          anonymous: {
+            enabled: true,
+          },
+          google: {
+            enabled: true,
+            configured: true,
+            clientIdEnv: "GOOGLE_CLIENT_ID",
+            clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+          },
+          email: {
+            enabled: true,
+          },
+        },
+        google: {
+          configured: true,
+          clientIdEnv: "GOOGLE_CLIENT_ID",
+          clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+        },
+      },
+      error: null,
+    });
   });
 });
 
@@ -510,6 +587,17 @@ test("sporades auth set google can read a Google OAuth client JSON file", async 
       ok: true,
       data: {
         mode: "google",
+        providers: {
+          anonymous: {
+            enabled: true,
+          },
+          google: {
+            enabled: true,
+            configured: true,
+            clientIdEnv: "GOOGLE_CLIENT_ID",
+            clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+          },
+        },
         google: {
           configured: true,
           clientIdEnv: "GOOGLE_CLIENT_ID",

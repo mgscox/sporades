@@ -2320,6 +2320,94 @@ test("sporades dev rejects Google auth mode when required env values are missing
   });
 });
 
+test("sporades dev rejects unsupported auth providers with structured JSON", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.auth = {
+      providers: {
+        anonymous: true,
+        mastodon: true,
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const result = await runCli(["dev", "--json"], { cwd: projectDir });
+    assert.equal(result.code, 1);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Unsupported auth provider: mastodon",
+        hint: "Use supported auth providers: anonymous, google, email.",
+      },
+    });
+  });
+});
+
+test("WebSocket auth.get reports enabled providers from multi-provider config", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = {
+      providers: {
+        anonymous: true,
+        google: {
+          clientIdEnv: "GOOGLE_CLIENT_ID",
+          clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+        },
+        email: true,
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "GOOGLE_CLIENT_ID=client-id\nGOOGLE_CLIENT_SECRET=client-secret\n");
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      socket = await openSocket(started.data.url);
+
+      socket.send(JSON.stringify({ id: "auth-1", type: "auth.get" }));
+      const auth = await readSocketMessage(socket);
+
+      assert.equal(auth.id, "auth-1");
+      assert.deepEqual(auth.data.providers, {
+        anonymous: {
+          enabled: true,
+        },
+        google: {
+          enabled: true,
+          configured: true,
+        },
+        email: {
+          enabled: true,
+        },
+      });
+      assert.doesNotMatch(JSON.stringify(auth.data.providers), /GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET|client-secret/);
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("Google auth callback exchanges the code server-side and links the current anonymous account", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

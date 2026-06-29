@@ -14,6 +14,7 @@ const FRAMEWORK_BUNDLE_CONFIG = {
     jsxRuntimeImport: "preact/jsx-runtime",
   },
 };
+const SUPPORTED_AUTH_PROVIDERS = new Set(["anonymous", "google", "email"]);
 
 export async function createBundle(projectDir, config) {
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
@@ -130,22 +131,90 @@ function parseEnvValue(value) {
 
 export function authStatus(config, serverEnv) {
   const authConfig = config.auth ?? { mode: "anonymous" };
-  const google = authConfig.google ?? {};
-  const clientIdEnv = google.clientIdEnv ?? null;
-  const clientSecretEnv = google.clientSecretEnv ?? null;
-  return {
-    mode: authConfig.mode ?? "anonymous",
+  const normalized = normalizeAuthConfig(authConfig);
+  const clientIdEnv = normalized.providers.google.clientIdEnv;
+  const clientSecretEnv = normalized.providers.google.clientSecretEnv;
+  const providers = {
+    anonymous: {
+      enabled: normalized.providers.anonymous.enabled,
+    },
     google: {
+      enabled: normalized.providers.google.enabled,
       configured: Boolean(clientIdEnv && clientSecretEnv && serverEnv[clientIdEnv] && serverEnv[clientSecretEnv]),
+      clientIdEnv,
+      clientSecretEnv,
+    },
+  };
+  if (normalized.providers.email.enabled) {
+    providers.email = {
+      enabled: true,
+    };
+  }
+  return {
+    mode: normalized.mode,
+    providers,
+    google: {
+      configured: providers.google.configured,
       clientIdEnv,
       clientSecretEnv,
     },
   };
 }
 
+function normalizeAuthConfig(authConfig) {
+  const providerConfig = authConfig.providers ?? {};
+  for (const provider of Object.keys(providerConfig)) {
+    if (!SUPPORTED_AUTH_PROVIDERS.has(provider)) {
+      throw commandError(
+        `Unsupported auth provider: ${provider}`,
+        "Use supported auth providers: anonymous, google, email.",
+      );
+    }
+  }
+
+  const googleConfig = readProviderConfig(providerConfig.google);
+  const legacyGoogle = authConfig.google ?? {};
+  const googleEnabled = googleConfig.enabled || authConfig.mode === "google";
+  const emailConfig = readProviderConfig(providerConfig.email);
+  const anonymousConfig = readProviderConfig(providerConfig.anonymous);
+  const anonymousEnabled = providerConfig.anonymous === undefined ? true : anonymousConfig.enabled;
+  const mode = authConfig.mode ?? (googleEnabled ? "google" : "anonymous");
+
+  return {
+    mode,
+    providers: {
+      anonymous: {
+        enabled: anonymousEnabled,
+      },
+      google: {
+        enabled: googleEnabled,
+        clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv ?? null,
+        clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv ?? null,
+      },
+      email: {
+        enabled: emailConfig.enabled,
+      },
+    },
+  };
+}
+
+function readProviderConfig(config) {
+  if (config === true) {
+    return { enabled: true };
+  }
+  if (config === false || config === undefined || config === null) {
+    return { enabled: false };
+  }
+  return {
+    enabled: config.enabled !== false,
+    clientIdEnv: config.clientIdEnv ?? null,
+    clientSecretEnv: config.clientSecretEnv ?? null,
+  };
+}
+
 function validateAuthConfig(config, serverEnv) {
   const status = authStatus(config, serverEnv);
-  if (status.mode !== "google") {
+  if (!status.providers.google.enabled) {
     return;
   }
   if (!status.google.configured) {

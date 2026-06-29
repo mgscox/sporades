@@ -46,6 +46,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   readEndpointBody,
   createEndpointLogger,
   authStatus,
+  normalizeAuthConfig,
+  readProviderConfig,
   createFileStorageTables,
   handleFileHttpRoute,
   readRequestBytes,
@@ -69,6 +71,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createAnonymousAuthTables,
   resolveAnonymousSession,
   sessionFromRow,
+  authProvidersForClient,
   routeSporadesAuth,
   beginGoogleSignIn,
   normalizeReturnTo,
@@ -1835,11 +1838,7 @@ export function createWebSocketHub(getDatabase) {
       data: {
         sessionToken: client.session.token,
         auth: client.session.auth,
-        providers: {
-          google: {
-            configured: database.authConfig.google.configured,
-          },
-        },
+        providers: authProvidersForClient(database.authConfig),
       },
       error: null,
     });
@@ -1924,7 +1923,7 @@ export async function routeSporadesAuth(database, request, response) {
 }
 
 function beginGoogleSignIn(database, session, options) {
-  if (!database.authConfig.google.configured) {
+  if (!database.authConfig.providers.google.enabled || !database.authConfig.google.configured) {
     return {
       ok: false,
       error: {
@@ -2635,17 +2634,102 @@ function formatMutationResult(message, mutationName, result) {
 
 function authStatus(config, serverEnv) {
   const authConfig = config.auth ?? { mode: "anonymous" };
-  const google = authConfig.google ?? {};
-  const clientIdEnv = google.clientIdEnv ?? null;
-  const clientSecretEnv = google.clientSecretEnv ?? null;
-  return {
-    mode: authConfig.mode ?? "anonymous",
+  const normalized = normalizeAuthConfig(authConfig);
+  const clientIdEnv = normalized.providers.google.clientIdEnv;
+  const clientSecretEnv = normalized.providers.google.clientSecretEnv;
+  const providers = {
+    anonymous: {
+      enabled: normalized.providers.anonymous.enabled,
+    },
     google: {
+      enabled: normalized.providers.google.enabled,
       configured: Boolean(clientIdEnv && clientSecretEnv && serverEnv[clientIdEnv] && serverEnv[clientSecretEnv]),
       clientIdEnv,
       clientSecretEnv,
     },
   };
+  if (normalized.providers.email.enabled) {
+    providers.email = {
+      enabled: true,
+    };
+  }
+  return {
+    mode: normalized.mode,
+    providers,
+    google: {
+      configured: providers.google.configured,
+      clientIdEnv,
+      clientSecretEnv,
+    },
+  };
+}
+
+function normalizeAuthConfig(authConfig) {
+  const providerConfig = authConfig.providers ?? {};
+  for (const provider of Object.keys(providerConfig)) {
+    if (!["anonymous", "google", "email"].includes(provider)) {
+      throw commandError(
+        `Unsupported auth provider: ${provider}`,
+        "Use supported auth providers: anonymous, google, email.",
+      );
+    }
+  }
+
+  const googleConfig = readProviderConfig(providerConfig.google);
+  const legacyGoogle = authConfig.google ?? {};
+  const googleEnabled = googleConfig.enabled || authConfig.mode === "google";
+  const emailConfig = readProviderConfig(providerConfig.email);
+  const anonymousConfig = readProviderConfig(providerConfig.anonymous);
+  const anonymousEnabled = providerConfig.anonymous === undefined ? true : anonymousConfig.enabled;
+  const mode = authConfig.mode ?? (googleEnabled ? "google" : "anonymous");
+
+  return {
+    mode,
+    providers: {
+      anonymous: {
+        enabled: anonymousEnabled,
+      },
+      google: {
+        enabled: googleEnabled,
+        clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv ?? null,
+        clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv ?? null,
+      },
+      email: {
+        enabled: emailConfig.enabled,
+      },
+    },
+  };
+}
+
+function readProviderConfig(config) {
+  if (config === true) {
+    return { enabled: true };
+  }
+  if (config === false || config === undefined || config === null) {
+    return { enabled: false };
+  }
+  return {
+    enabled: config.enabled !== false,
+    clientIdEnv: config.clientIdEnv ?? null,
+    clientSecretEnv: config.clientSecretEnv ?? null,
+  };
+}
+
+function authProvidersForClient(authConfig) {
+  const providers = {};
+  for (const [name, provider] of Object.entries(authConfig.providers)) {
+    if (name === "google") {
+      providers.google = {
+        enabled: provider.enabled,
+        configured: provider.configured,
+      };
+      continue;
+    }
+    providers[name] = {
+      enabled: provider.enabled,
+    };
+  }
+  return providers;
 }
 
 function resolveTableForQuery(schema, queryName) {

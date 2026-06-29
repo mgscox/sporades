@@ -2,6 +2,28 @@
 
 ## Auth
 
+Sporades apps can enable multiple auth providers in `sporades.json`:
+
+```json
+{
+  "auth": {
+    "providers": {
+      "anonymous": true,
+      "google": {
+        "clientIdEnv": "GOOGLE_CLIENT_ID",
+        "clientSecretEnv": "GOOGLE_CLIENT_SECRET"
+      },
+      "email": true
+    }
+  }
+}
+```
+
+`anonymous`, `google`, and the future `email` provider are valid provider names.
+Existing projects using `auth.mode` continue to work; `auth.mode: "anonymous"`
+maps to anonymous sessions, and `auth.mode: "google"` enables Google alongside
+anonymous sessions.
+
 Configure Google OAuth from explicit credentials:
 
 ```sh
@@ -17,6 +39,9 @@ sporades auth set google --client-json ./client_secret_google.json
 The JSON form reads Google Web application credentials from `web.client_id` and
 `web.client_secret`. Sporades stores the values in `.env.sporades.server` and
 keeps only env var names in `sporades.json`.
+
+`sporades auth status --json` reports enabled providers and configuration state
+without printing OAuth client IDs or secrets.
 
 After running `sporades auth set <provider>`, restart any running dev session so
 the server runtime reloads the updated Server env and auth configuration:
