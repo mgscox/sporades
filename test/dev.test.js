@@ -683,6 +683,192 @@ export default capsule({
   });
 });
 
+test("sporades auth as email returns a localStorage session payload that resolves through auth.get", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "auth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "auth-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = { providers: { anonymous: true, email: true } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      const simulated = await runCli(
+        [
+          "auth",
+          "as",
+          "email",
+          "--email",
+          "mira@example.com",
+          "--display-name",
+          "Mira Vale",
+          "--json",
+        ],
+        { cwd: projectDir },
+      );
+      assert.equal(simulated.code, 0, simulated.stderr);
+      const body = JSON.parse(simulated.stdout);
+      assert.equal(body.ok, true);
+      assert.equal(body.error, null);
+      assert.equal(body.data.localStorage.key, "sporades.sessionToken");
+      assert.equal(typeof body.data.localStorage.value, "string");
+      assert.deepEqual(body.data.auth, {
+        userId: body.data.auth.userId,
+        displayName: "Mira Vale",
+        email: "mira@example.com",
+        picture: null,
+        isAuthenticated: true,
+        isGuest: false,
+        provider: "email",
+      });
+
+      socket = await openSocket(started.data.url, body.data.localStorage.value);
+      socket.send(JSON.stringify({ id: "auth-after-simulation", type: "auth.get" }));
+      const resolved = await readSocketMessage(socket);
+      assert.deepEqual(resolved.data.auth, body.data.auth);
+      assert.equal(resolved.data.sessionToken, body.data.localStorage.value);
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades auth as email returns a structured error when identity details are invalid", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "auth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "auth-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      const result = await runCli(["auth", "as", "email", "--json"], { cwd: projectDir });
+      assert.equal(result.code, 1);
+      assert.deepEqual(JSON.parse(result.stdout), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Simulated identity requires an email address.",
+          hint: "Pass `--email <address>` to `sporades auth as email`.",
+        },
+      });
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades auth as google creates a simulated provider-shaped session without OAuth", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "auth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "auth-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = { providers: { anonymous: true, google: { clientIdEnv: "GOOGLE_CLIENT_ID", clientSecretEnv: "GOOGLE_CLIENT_SECRET" } } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n");
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      const result = await runCli(
+        [
+          "auth",
+          "as",
+          "google",
+          "--email",
+          "mira@example.com",
+          "--display-name",
+          "Mira",
+          "--picture",
+          "https://example.com/mira.png",
+          "--json",
+        ],
+        { cwd: projectDir },
+      );
+      assert.equal(result.code, 0, result.stderr);
+      const simulated = JSON.parse(result.stdout);
+      assert.equal(simulated.data.auth.provider, "google");
+      assert.equal(simulated.data.auth.email, "mira@example.com");
+      assert.equal(simulated.data.auth.displayName, "Mira");
+      assert.equal(simulated.data.auth.picture, "https://example.com/mira.png");
+      assert.equal(typeof simulated.data.localStorage.value, "string");
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades auth as refuses servers without local identity simulation support", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "auth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "auth-island");
+
+    const server = createServer((request, response) => {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+    });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+
+    try {
+      const result = await runCli(
+        ["auth", "as", "email", "--email", "mira@example.com", "--port", String(server.address().port), "--json"],
+        { cwd: projectDir },
+      );
+      assert.equal(result.code, 1);
+      assert.deepEqual(JSON.parse(result.stdout), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Dev session does not support local identity simulation.",
+          hint: "Start a current `sporades dev` session for this project, then retry `sporades auth as email`.",
+        },
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
+
 test("sporades dev returns structured errors for invalid endpoint responses", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "endpoint-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

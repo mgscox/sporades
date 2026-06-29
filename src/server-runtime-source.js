@@ -1583,6 +1583,97 @@ export function runReadOnlyQuery(database, sql) {
   }
 }
 
+export function simulateLocalIdentitySession(database, options = {}) {
+  const provider = String(options.provider ?? "").trim().toLowerCase();
+  if (!["email", "google"].includes(provider)) {
+    return {
+      ok: false,
+      data: null,
+      error: {
+        message: `Unsupported simulated auth provider: ${provider || ""}`.trim(),
+        hint: "Use `sporades auth as email` for local identity simulation. Google simulation is reserved for provider-shaped browser tests.",
+      },
+    };
+  }
+
+  const email = normalizeSimulatedEmail(options.email);
+  if (!email) {
+    return {
+      ok: false,
+      data: null,
+      error: {
+        message: "Simulated identity requires an email address.",
+        hint: "Pass `--email <address>` to `sporades auth as email`.",
+      },
+    };
+  }
+
+  const displayName = normalizeSimulatedText(options.displayName) ?? email;
+  const picture = normalizeSimulatedText(options.picture);
+  const now = new Date().toISOString();
+  const existing = database.sqlite
+    .prepare("SELECT id FROM sporades_auth_users WHERE provider = ? AND email = ?")
+    .get(provider, email);
+  const userId = existing?.id ?? randomUUID();
+  const token = randomBytes(32).toString("base64url");
+
+  if (existing) {
+    database.sqlite
+      .prepare(
+        "UPDATE sporades_auth_users SET displayName = ?, picture = ?, isAuthenticated = ?, isGuest = ? WHERE id = ?",
+      )
+      .run(displayName, picture, 1, 0, userId);
+  } else {
+    database.sqlite
+      .prepare(
+        "INSERT INTO sporades_auth_users " +
+          "(id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      )
+      .run(userId, now, displayName, email, picture, 1, 0, provider);
+  }
+  database.sqlite
+    .prepare("INSERT INTO sporades_auth_sessions (token, userId, createdAt) VALUES (?, ?, ?)")
+    .run(token, userId, now);
+
+  const auth = {
+    userId,
+    displayName,
+    email,
+    picture,
+    isAuthenticated: true,
+    isGuest: false,
+    provider,
+  };
+  return {
+    ok: true,
+    data: {
+      localStorage: {
+        key: "sporades.sessionToken",
+        value: token,
+      },
+      auth,
+    },
+    error: null,
+  };
+}
+
+function normalizeSimulatedEmail(value) {
+  const email = normalizeSimulatedText(value)?.toLowerCase();
+  if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+    return null;
+  }
+  return email;
+}
+
+function normalizeSimulatedText(value) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  const text = String(value).trim();
+  return text ? text : null;
+}
+
 export function createWebSocketHub(getDatabase) {
   const clients = new Set();
 

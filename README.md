@@ -43,6 +43,21 @@ keeps only env var names in `sporades.json`.
 `sporades auth status --json` reports enabled providers and configuration state
 without printing OAuth client IDs or secrets.
 
+For local browser tests and agents, a running dev session can create a simulated
+linked identity and return the same session token shape the SDK stores in
+`localStorage`:
+
+```sh
+sporades auth as email --email mira@example.com --display-name "Mira Vale" --json
+```
+
+The JSON response is `{ localStorage: { key, value }, auth }`, where `key` is
+`sporades.sessionToken`. This is local identity simulation only: it creates a
+Sporades-owned dev session for `ctx.auth` testing and does not complete OAuth,
+trust arbitrary JWTs, or authenticate against a real provider. `google` can be
+used as a simulated provider shape for browser tests that need Google-like auth
+metadata.
+
 After running `sporades auth set <provider>`, restart any running dev session so
 the server runtime reloads the updated Server env and auth configuration:
 

@@ -17,6 +17,7 @@ import {
   routeEndpoint,
   routeSporadesAuth,
   runReadOnlyQuery,
+  simulateLocalIdentitySession,
 } from "../src/server-runtime-source.js";
 
 const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
@@ -209,11 +210,16 @@ function parseDeployArgs(args) {
 function parseAuthArgs(args) {
   const [subcommand] = args;
   const provider = subcommand === "set" ? args[1] : null;
-  const rest = subcommand === "set" ? args.slice(2) : args.slice(1);
+  const simulatedProvider = subcommand === "as" ? args[1] : null;
+  const rest = subcommand === "set" ? args.slice(2) : subcommand === "as" ? args.slice(2) : args.slice(1);
   let json = false;
   let clientId = null;
   let clientSecret = null;
   let clientJson = null;
+  let email = null;
+  let displayName = null;
+  let picture = null;
+  let port = null;
 
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
@@ -233,11 +239,33 @@ function parseAuthArgs(args) {
       clientJson = readFlagValue(rest, ++index, "--client-json");
       continue;
     }
-    throw commandError(`Unknown flag: ${arg}`, "Use `sporades auth status` or `sporades auth set google`.");
+    if (arg === "--email") {
+      email = readFlagValue(rest, ++index, "--email");
+      continue;
+    }
+    if (arg === "--display-name") {
+      displayName = readFlagValue(rest, ++index, "--display-name");
+      continue;
+    }
+    if (arg === "--picture") {
+      picture = readFlagValue(rest, ++index, "--picture");
+      continue;
+    }
+    if (arg === "--port") {
+      port = readPort(readFlagValue(rest, ++index, "--port"));
+      continue;
+    }
+    throw commandError(`Unknown flag: ${arg}`, "Use `sporades auth status`, `sporades auth set google`, or `sporades auth as email`.");
   }
 
   if (subcommand === "status") {
     return { subcommand, json, projectDir: process.cwd() };
+  }
+  if (subcommand === "as") {
+    if (!simulatedProvider) {
+      throw commandError("Missing simulated auth provider.", "Use `sporades auth as email --email <address> --json`.");
+    }
+    return { subcommand, provider: simulatedProvider, email, displayName, picture, port, json, projectDir: process.cwd() };
   }
   if (subcommand === "set" && provider === "google") {
     if (clientJson) {
@@ -254,7 +282,7 @@ function parseAuthArgs(args) {
     return { subcommand, provider, clientId, clientSecret, json, projectDir: process.cwd() };
   }
 
-  throw commandError("Unknown auth command.", "Use `sporades auth status` or `sporades auth set google`.");
+  throw commandError("Unknown auth command.", "Use `sporades auth status`, `sporades auth set google`, or `sporades auth as email`.");
 }
 
 function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
@@ -465,6 +493,13 @@ async function startDevSession(options) {
         return;
       }
 
+      if (request.method === "POST" && requestUrl.pathname === "/__sporades/debug/auth/as") {
+        const body = await readJsonRequest(request);
+        const result = simulateLocalIdentitySession(runtime.database, body);
+        writeJsonResponse(response, result.ok ? 200 : 400, result);
+        return;
+      }
+
       if (await routeSporadesAuth(runtime.database, request, response)) {
         return;
       }
@@ -663,6 +698,29 @@ async function manageAuth(options) {
     return;
   }
 
+  if (options.subcommand === "as") {
+    const session = options.port ? { url: `http://localhost:${options.port}` } : await readDevSession(options.projectDir);
+    const result = await fetchLocalIdentitySimulation(session, {
+      provider: options.provider,
+      email: options.email,
+      displayName: options.displayName,
+      picture: options.picture,
+    });
+
+    if (options.json) {
+      writeResult(result, !result.ok);
+      return;
+    }
+
+    if (!result.ok) {
+      throw commandError(result.error.message, result.error.hint);
+    }
+
+    process.stdout.write(`Simulated ${result.data.auth.provider} identity: ${result.data.auth.email}\n`);
+    process.stdout.write(`localStorage.${result.data.localStorage.key}=${result.data.localStorage.value}\n`);
+    return;
+  }
+
   const configPath = path.join(options.projectDir, "sporades.json");
   const config = await readProjectConfig(options.projectDir);
   config.auth = {
@@ -856,6 +914,40 @@ async function fetchDevSessionJson(session, pathname, fetchOptions = {}) {
       "Check that `sporades dev` is still running in this project, then retry the command.",
     );
   }
+}
+
+async function fetchLocalIdentitySimulation(session, body) {
+  let response;
+  try {
+    response = await fetch(new URL("/__sporades/debug/auth/as", session.url), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  } catch {
+    throw commandError(
+      "Unable to reach the running Sporades dev session.",
+      "Check that `sporades dev` is still running in this project, then retry the command.",
+    );
+  }
+
+  try {
+    const result = await response.json();
+    if (result && typeof result.ok === "boolean") {
+      return result;
+    }
+  } catch {
+    // Fall through to the unsupported-session error below.
+  }
+
+  return {
+    ok: false,
+    data: null,
+    error: {
+      message: "Dev session does not support local identity simulation.",
+      hint: "Start a current `sporades dev` session for this project, then retry `sporades auth as email`.",
+    },
+  };
 }
 
 async function upsertServerEnvValues(envPath, values) {

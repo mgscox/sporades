@@ -196,6 +196,24 @@ backwards compatibility.
 Runtime validation accepts `anonymous`, `google`, and `email`, and rejects
 unsupported provider names with structured errors and actionable hints.
 
+### Local identity simulation
+
+`sporades auth as <provider> ... --json` is a dev-session-only helper for agents
+and browser tests. Against a running `sporades dev` session, it creates or
+resolves a simulated linked identity in Sporades-owned auth tables and returns:
+
+```json
+{
+  "localStorage": { "key": "sporades.sessionToken", "value": "..." },
+  "auth": { "...": "normal ctx.auth fields" }
+}
+```
+
+The returned `localStorage.value` is the normal opaque Sporades session token
+the SDK persists and sends over WebSocket. This helper supports `email` and a
+provider-shaped `google` simulation for local tests, but it is not OAuth and
+does not accept arbitrary JWTs or provider tokens.
+
 ### Auth context
 
 `ctx.auth` is always populated from the Better Auth session:
@@ -396,6 +414,7 @@ Subcommands:
 - `sporades auth status` — show current auth configuration
 - `sporades auth set google --client-id <id> --client-secret <secret>` — configure Google OAuth
 - `sporades auth set google --client-json <path>` — configure Google OAuth from a downloaded provider credentials JSON file
+- `sporades auth as email --email <address> --display-name <name> --json` — create a local simulated linked identity against a running dev session
 - After `sporades auth set <provider>`, restart any running `sporades dev` session so the server runtime reloads the updated Server env and auth configuration.
 
 ## Output conventions
