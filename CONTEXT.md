@@ -101,6 +101,34 @@ Sporades is client-framework-agnostic. `sporades/client` exports a transport lay
 A factory function exported by `sporades/client`. Accepts `{ useState, useEffect }` from any JSX framework (React, Preact, Solid) and returns Sporades hooks bound to that framework's reactivity model.
 _Avoid_: useQuery (that's what it produces, not what it is), hooks provider
 
+**App message**:
+An application-defined message sent over the Sporades client transport. App and server code provide an unprefixed type name; Sporades owns adding and reserving the internal `app.` prefix. Client-origin app messages are always mediated by server code. App messages default to the current user's connected clients; app-wide broadcast is a server-code-only capability. App code uses SDK send/subscribe APIs such as `onMessage().filter(...)`, not raw WebSocket objects.
+_Avoid_: raw WebSocket message, custom socket packet, transport frame
+
+**Upload call**:
+A high-level `sporades/client` operation that accepts a browser file/blob and returns Sporades-owned file metadata. It hides upload URL negotiation and byte transfer details from app code, and may replace an existing file when called with an explicit file ID. Passing an array is a convenience that runs single-file uploads sequentially.
+_Avoid_: upload URL API, presigned URL flow, storage client
+
+**Upload event**:
+An app-facing SDK callback or event for upload progress, completion, or failure. The server may deliver underlying messages over WebSocket, but app code does not subscribe to raw upload WebSocket plumbing.
+_Avoid_: upload WebSocket message, raw upload notification, transport event
+
+**File metadata**:
+The app-scoped record returned by an Upload call, including the file's Sporades ID and descriptive properties such as size, MIME type, original name, and storage URL/path when appropriate. App code stores references to this metadata in its own tables through normal mutations.
+_Avoid_: file field, attachment row, upload result
+
+**File version**:
+The cache-busting identity of a file's current bytes. Replacing a file preserves the file ID but creates a new version so previously generated URLs cannot keep serving stale content.
+_Avoid_: revision, cache token, object generation
+
+**File bucket**:
+A user-scoped storage namespace for uploaded files. v2 creates one `default` bucket per user, preserving the bucket model for later storage backends without exposing multiple bucket management yet.
+_Avoid_: folder, directory, container
+
+**Public file URL**:
+A server-managed read URL record for a private uploaded file. It is explicit, has either a TTL or an explicit no-expiry setting, can be revoked before expiry, and does not change the file's private ownership.
+_Avoid_: public upload, permanent link, static file path
+
 ## Routing
 
 Sporades does not provide a router. The scaffold template includes a framework-appropriate router (e.g. React Router for React apps) as a template choice. Routing is not a Sporades concern.
