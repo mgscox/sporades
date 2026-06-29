@@ -2431,6 +2431,32 @@ test("Google auth callback exchanges the code server-side and links the current 
           todosAfterLink.data.map((todo) => todo.text),
           ["Keep me"],
         );
+
+        socket.send(JSON.stringify({ id: "signout-1", type: "auth.signOut" }));
+        const signOut = await readSocketMessage(socket);
+        assert.deepEqual(signOut, {
+          id: "signout-1",
+          type: "auth.signOut.result",
+          data: { ok: true },
+          error: null,
+        });
+
+        socket.send(JSON.stringify({ id: "auth-3", type: "auth.get" }));
+        const signedOutAuth = await readSocketMessage(socket);
+        assert.notEqual(signedOutAuth.data.sessionToken, linked.data.sessionToken);
+        assert.notEqual(signedOutAuth.data.auth.userId, userId);
+        assert.deepEqual(signedOutAuth.data.auth, {
+          userId: signedOutAuth.data.auth.userId,
+          displayName: "Anonymous",
+          email: null,
+          picture: null,
+          isAuthenticated: false,
+          isGuest: true,
+          provider: "anonymous",
+        });
+
+        socket.send(JSON.stringify({ id: "query-3", type: "query.subscribe", query: "todos" }));
+        assert.deepEqual((await readSocketMessage(socket)).data, []);
       } finally {
         socket?.close();
         child.kill("SIGTERM");

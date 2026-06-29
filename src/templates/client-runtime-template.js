@@ -18,6 +18,9 @@ export const auth = {
   signIn(provider) {
     return connect().signIn(provider);
   },
+  signOut() {
+    return connect().signOut();
+  },
 };
 
 export const files = {
@@ -80,19 +83,19 @@ export function createHooks(primitives) {
 
     useEffect(() => {
       let active = true;
-      connect()
-        .auth()
-        .then((result) => {
-          if (!active) return;
-          setState({
-            auth: result.data?.auth ?? null,
-            providers: result.data?.providers ?? {},
-            loading: false,
-            error: result.error ?? null,
-          });
+      const connection = connect();
+      const subscription = connection.onAuthState((result) => {
+        if (!active) return;
+        setState({
+          auth: result.data?.auth ?? null,
+          providers: result.data?.providers ?? {},
+          loading: false,
+          error: result.error ?? null,
         });
+      });
       return () => {
         active = false;
+        subscription.unsubscribe();
       };
     }, []);
 
@@ -103,6 +106,9 @@ export function createHooks(primitives) {
       },
       signIn(provider) {
         return connect().signIn(provider);
+      },
+      signOut() {
+        return connect().signOut();
       },
     };
   }
@@ -126,6 +132,8 @@ function createConnection() {
   const pending = new Map();
   const subscriptions = new Map();
   const appMessageListeners = new Set();
+  const authStateListeners = new Set();
+  let latestAuthMessage = null;
 
   function open() {
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
@@ -139,7 +147,7 @@ function createConnection() {
     }
     socket = new WebSocket(url);
     socket.addEventListener("open", () => {
-      request("auth.get").then(storeAuthSession);
+      request("auth.get");
       for (const subscription of subscriptions.values()) {
         send({
           id: subscription.id,
@@ -204,7 +212,15 @@ function createConnection() {
       sessionToken = token;
       localStorage.setItem("sporades.sessionToken", token);
     }
+    latestAuthMessage = message;
+    notifyAuthStateListeners(message);
     return message;
+  }
+
+  function notifyAuthStateListeners(message) {
+    for (const listener of authStateListeners) {
+      listener(message);
+    }
   }
 
   function notifyAppMessageListeners(appMessage) {
@@ -239,12 +255,22 @@ function createConnection() {
 
   return {
     auth() {
-      return request("auth.get").then(storeAuthSession);
+      return request("auth.get");
     },
     isAuthenticated() {
       return request("auth.get")
-        .then(storeAuthSession)
         .then((result) => Boolean(result.data?.auth?.isAuthenticated));
+    },
+    onAuthState(listener) {
+      authStateListeners.add(listener);
+      if (latestAuthMessage) {
+        listener(latestAuthMessage);
+      }
+      return {
+        unsubscribe() {
+          authStateListeners.delete(listener);
+        },
+      };
     },
     signIn(provider) {
       const returnTo = window.location.href;
@@ -252,6 +278,16 @@ function createConnection() {
       return request("auth.signIn", { provider, returnTo }).then((result) => {
         if (result.data?.url) {
           window.location.assign(result.data.url);
+        }
+        return result;
+      });
+    },
+    signOut() {
+      return request("auth.signOut").then(async (result) => {
+        if (!result.error && result.data?.ok === true) {
+          sessionToken = null;
+          localStorage.removeItem("sporades.sessionToken");
+          await request("auth.get");
         }
         return result;
       });

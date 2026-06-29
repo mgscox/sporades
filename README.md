@@ -26,6 +26,23 @@ the server runtime reloads the updated Server env and auth configuration:
 sporades dev
 ```
 
+Client code signs out through the same provider-neutral auth surface. A
+successful sign-out clears the stored Sporades session token and refreshes auth
+state to a fresh anonymous session, so apps can route immediately:
+
+```tsx
+import { auth } from "sporades/client";
+
+async function signOutAndGoHome(navigate: (path: string) => void) {
+  const result = await auth.signOut();
+  if (result.data?.ok) {
+    navigate("/");
+  } else {
+    console.error(result.error?.message);
+  }
+}
+```
+
 ## File uploads
 
 Client code uses `files.upload()` from `sporades/client` to upload browser

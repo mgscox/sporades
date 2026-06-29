@@ -127,6 +127,8 @@ WebSocket connection to `/__sporades/ws` on the same origin (same port as HTTP):
 - `query.subscribe` → server pushes `query.result` whenever state changes
 - `mutation.run` → request/response with ID correlation
 - `auth.get` → returns current auth state
+- `auth.signIn(provider)` → starts a server-owned provider sign-in flow
+- `auth.signOut()` → ends the current session, clears the client session token, and refreshes auth state to a fresh anonymous session
 - `isAuthenticated()` → resolves whether the current session has a linked authentication method
 - `refresh` → client reloads (dev mode, on rebuild)
 
@@ -190,7 +192,7 @@ Chainable API accumulates filters, sort, and limit. Compilation to SQL happens a
 ### Implementation
 
 - **Server:** `sporades/server` initialises Better Auth with a `node:sqlite` adapter. Manages sessions, OAuth callbacks, and `ctx.auth` population. The user never touches Better Auth directly.
-- **Client:** `sporades/client` calls Sporades auth endpoints, stores session token in `localStorage`, sends it on the WebSocket. No Better Auth client SDK in the bundle.
+- **Client:** `sporades/client` calls Sporades auth endpoints, stores session token in `localStorage`, sends it on the WebSocket, and exposes provider-neutral `auth.signIn(provider)` and `auth.signOut()` methods. No Better Auth client SDK in the bundle.
 
 ## Build Pipeline
 

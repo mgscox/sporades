@@ -21,6 +21,9 @@ function installBrowserFakes(auth, options = {}) {
     setItem(key, value) {
       storage.set(key, String(value));
     },
+    removeItem(key) {
+      storage.delete(key);
+    },
   };
   globalThis.window = {
     location: {
@@ -56,6 +59,28 @@ function installBrowserFakes(auth, options = {}) {
 
     send(rawMessage) {
       const message = JSON.parse(rawMessage);
+      const handler = handlers[message.type];
+      if (handler) {
+        queueMicrotask(async () => {
+          let response;
+          try {
+            response = await handler(message);
+          } catch (error) {
+            response = {
+              type: "error",
+              error: {
+                message: error.message,
+                hint: "The fake browser handler failed.",
+              },
+            };
+          }
+          this.emit("message", {
+            data: JSON.stringify({ id: message.id, ...response }),
+          });
+        });
+        return;
+      }
+
       if (message.type === "auth.get") {
         queueMicrotask(() => {
           this.emit("message", {
@@ -104,27 +129,6 @@ function installBrowserFakes(auth, options = {}) {
         return;
       }
 
-      const handler = handlers[message.type];
-      if (!handler) {
-        return;
-      }
-      queueMicrotask(async () => {
-        let response;
-        try {
-          response = await handler(message);
-        } catch (error) {
-          response = {
-            type: "error",
-            error: {
-              message: error.message,
-              hint: "The fake browser handler failed.",
-            },
-          };
-        }
-        this.emit("message", {
-          data: JSON.stringify({ id: message.id, ...response }),
-        });
-      });
     }
 
     emit(type, event) {
@@ -261,6 +265,170 @@ test("client auth.signIn starts a full-page provider redirect and preserves the 
     });
     assert.equal(browser.storage.get("sporades.authReturnTo"), "http://localhost:4000/notes?filter=mine#today");
     assert.equal(browser.storage.get("assignedLocation"), "https://accounts.google.com/o/oauth2/v2/auth?state=opaque-state");
+  } finally {
+    browser.cleanup();
+  }
+});
+
+test("client auth.signOut clears the stored session and refreshes auth state", async () => {
+  const linkedAuth = {
+    userId: "linked-user",
+    displayName: "Mira",
+    email: "mira@example.com",
+    picture: null,
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "google",
+  };
+  let currentAuth = linkedAuth;
+  let currentToken = "linked-session-token";
+  const browser = installBrowserFakes(linkedAuth, {
+    handlers: {
+      "auth.get": async () => ({
+        type: "auth.result",
+        data: {
+          sessionToken: currentToken,
+          auth: currentAuth,
+          providers: {},
+        },
+        error: null,
+      }),
+      "auth.signOut": async () => {
+        currentAuth = anonymousAuth;
+        currentToken = "fresh-anonymous-token";
+        return {
+          type: "auth.signOut.result",
+          data: {
+            ok: true,
+          },
+          error: null,
+        };
+      },
+    },
+  });
+  try {
+    const runtime = await importClientRuntime();
+    assert.equal(await runtime.isAuthenticated(), true);
+    assert.equal(browser.storage.get("sporades.sessionToken"), "linked-session-token");
+
+    const result = await runtime.auth.signOut();
+
+    assert.deepEqual(result.data, { ok: true });
+    assert.equal(browser.storage.get("sporades.sessionToken"), "fresh-anonymous-token");
+    assert.equal(await runtime.isAuthenticated(), false);
+  } finally {
+    browser.cleanup();
+  }
+});
+
+test("client auth.signOut returns structured errors without clearing the session on failure", async () => {
+  const linkedAuth = {
+    userId: "linked-user",
+    displayName: "Mira",
+    email: "mira@example.com",
+    picture: null,
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "google",
+  };
+  const browser = installBrowserFakes(linkedAuth, {
+    handlers: {
+      "auth.get": async () => ({
+        type: "auth.result",
+        data: {
+          sessionToken: "linked-session-token",
+          auth: linkedAuth,
+          providers: {},
+        },
+        error: null,
+      }),
+      "auth.signOut": async () => ({
+        type: "error",
+        data: null,
+        error: {
+          message: "Could not sign out.",
+          hint: "Retry sign-out.",
+        },
+      }),
+    },
+  });
+  try {
+    const runtime = await importClientRuntime();
+    assert.equal(await runtime.isAuthenticated(), true);
+
+    const result = await runtime.auth.signOut();
+
+    assert.deepEqual(result, {
+      id: result.id,
+      type: "error",
+      data: null,
+      error: {
+        message: "Could not sign out.",
+        hint: "Retry sign-out.",
+      },
+    });
+    assert.equal(browser.storage.get("sporades.sessionToken"), "linked-session-token");
+    assert.equal(await runtime.isAuthenticated(), true);
+  } finally {
+    browser.cleanup();
+  }
+});
+
+test("useAuth receives refreshed anonymous auth state after sign-out", async () => {
+  const linkedAuth = {
+    userId: "linked-user",
+    displayName: "Mira",
+    email: "mira@example.com",
+    picture: null,
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "google",
+  };
+  let currentAuth = linkedAuth;
+  let currentToken = "linked-session-token";
+  const browser = installBrowserFakes(linkedAuth, {
+    handlers: {
+      "auth.get": async () => ({
+        type: "auth.result",
+        data: {
+          sessionToken: currentToken,
+          auth: currentAuth,
+          providers: {},
+        },
+        error: null,
+      }),
+      "auth.signOut": async () => {
+        currentAuth = anonymousAuth;
+        currentToken = "fresh-anonymous-token";
+        return {
+          type: "auth.signOut.result",
+          data: { ok: true },
+          error: null,
+        };
+      },
+    },
+  });
+  const stateUpdates = [];
+  try {
+    const runtime = await importClientRuntime();
+    const hooks = runtime.createHooks({
+      useState(initialState) {
+        return [initialState, (nextState) => stateUpdates.push(nextState)];
+      },
+      useEffect(effect) {
+        effect();
+      },
+    });
+
+    const authState = hooks.useAuth();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await authState.signOut();
+
+    assert.deepEqual(
+      stateUpdates.map((state) => state.auth?.provider),
+      ["google", "anonymous"],
+    );
+    assert.equal(browser.storage.get("sporades.sessionToken"), "fresh-anonymous-token");
   } finally {
     browser.cleanup();
   }

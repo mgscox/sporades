@@ -1660,6 +1660,17 @@ export function createWebSocketHub(getDatabase) {
       return;
     }
 
+    if (message.type === "auth.signOut") {
+      const result = signOutSession(database, client);
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "auth.signOut.result" : "error",
+        data: result.ok ? { ok: true } : null,
+        error: result.error ?? null,
+      });
+      return;
+    }
+
     if (message.type === "auth.signIn" || message.type === "auth.signInWithGoogle") {
       const provider = message.type === "auth.signInWithGoogle" ? "google" : message.provider;
       if (provider !== "google") {
@@ -1794,7 +1805,7 @@ export function createWebSocketHub(getDatabase) {
       type: "error",
       error: {
         message: `Unsupported WebSocket message: ${message.type ?? ""}`.trim(),
-        hint: "Use auth.get, auth.signIn, query.subscribe, mutation.run, app messages, or files.* through the Sporades client SDK.",
+        hint: "Use auth.get, auth.signIn, auth.signOut, query.subscribe, mutation.run, app messages, or files.* through the Sporades client SDK.",
       },
     });
   }
@@ -1832,6 +1843,22 @@ export function createWebSocketHub(getDatabase) {
       },
       error: null,
     });
+  }
+
+  function signOutSession(database, client) {
+    try {
+      database.sqlite.prepare("DELETE FROM sporades_auth_sessions WHERE token = ?").run(client.session.token);
+      client.session = resolveAnonymousSession(database, null);
+      return { ok: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: {
+          message: "Could not sign out.",
+          hint: "Retry sign-out. If this keeps happening, restart the Sporades dev session.",
+        },
+      };
+    }
   }
 
   function sendAppMessage(senderAuth, appMessage) {
