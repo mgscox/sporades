@@ -40,20 +40,20 @@ function runCli(args, options = {}) {
   });
 }
 
-test("sporades create writes a runnable React todo scaffold", async () => {
+test("sporades create writes a runnable React blank scaffold by default", async () => {
   await withTempDir(async (dir) => {
-    const result = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+    const result = await runCli(["create", "blank-island", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
 
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), {
       ok: true,
-      data: { path: await realpath(path.join(dir, "todo-island")) },
+      data: { path: await realpath(path.join(dir, "blank-island")), template: "blank" },
       error: null,
     });
 
-    const projectDir = path.join(dir, "todo-island");
+    const projectDir = path.join(dir, "blank-island");
     const entries = await readdir(projectDir);
     assert.deepEqual(
       entries.toSorted(),
@@ -73,12 +73,54 @@ test("sporades create writes a runnable React todo scaffold", async () => {
     );
 
     const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
-    assert.equal(config.name, "todo-island");
+    assert.equal(config.name, "blank-island");
+    assert.equal(config.template, "blank");
     assert.equal(config.client.framework, "react");
     assert.equal(config.auth.mode, "anonymous");
 
     const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
     assert.match(serverEntry, /capsule\(/);
+    assert.match(serverEntry, /schema: \{\}/);
+    assert.match(serverEntry, /queries: \{\}/);
+    assert.match(serverEntry, /mutations: \{\}/);
+    assert.doesNotMatch(serverEntry, /todos|auth|files|messages/);
+
+    const clientEntry = await readFile(path.join(projectDir, "client", "index.tsx"), "utf8");
+    assert.match(clientEntry, /createRoot/);
+    assert.match(clientEntry, /Blank Sporades Capsule/);
+    assert.doesNotMatch(clientEntry, /createHooks|useQuery|useMutation|useAuth|files|messages|todo/i);
+
+    const agents = await readFile(path.join(projectDir, "AGENTS.md"), "utf8");
+    assert.match(agents, /Template: blank/);
+    const readme = await readFile(path.join(projectDir, "README.md"), "utf8");
+    assert.match(readme, /A blank Sporades capsule\./);
+
+    const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
+    assert.equal(packageJson.dependencies.react, "^19.0.0");
+    assert.equal(packageJson.dependencies["react-dom"], "^19.0.0");
+    assert.equal(packageJson.devDependencies.sporades, `file:${repoRoot}`);
+  });
+});
+
+test("sporades create writes a runnable React todo scaffold when requested", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: true,
+      data: { path: await realpath(path.join(dir, "todo-island")), template: "todo" },
+      error: null,
+    });
+
+    const projectDir = path.join(dir, "todo-island");
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.equal(config.name, "todo-island");
+    assert.equal(config.template, "todo");
+
+    const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
     assert.match(serverEntry, /todos: table\(/);
     assert.match(serverEntry, /String\(\)/);
     assert.match(serverEntry, /Boolean\(\)\.default\(false\)/);
@@ -88,10 +130,66 @@ test("sporades create writes a runnable React todo scaffold", async () => {
     assert.match(clientEntry, /useQuery\("todos"\)/);
     assert.match(clientEntry, /useMutation\("addTodo"\)/);
 
+    const agents = await readFile(path.join(projectDir, "AGENTS.md"), "utf8");
+    assert.match(agents, /Template: todo/);
+    const readme = await readFile(path.join(projectDir, "README.md"), "utf8");
+    assert.match(readme, /A Sporades todo capsule\./);
+  });
+});
+
+test("sporades create --template blank writes the blank scaffold", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "blank-island", "--template", "blank", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: true,
+      data: { path: await realpath(path.join(dir, "blank-island")), template: "blank" },
+      error: null,
+    });
+
+    const projectDir = path.join(dir, "blank-island");
+    const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
+    const clientEntry = await readFile(path.join(projectDir, "client", "index.tsx"), "utf8");
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+
+    assert.equal(config.template, "blank");
+    assert.match(serverEntry, /schema: \{\}/);
+    assert.doesNotMatch(serverEntry, /todos|auth|files|messages/);
+    assert.match(clientEntry, /Blank Sporades Capsule/);
+    assert.doesNotMatch(clientEntry, /useQuery|useMutation|useAuth|files|messages|todo/i);
+  });
+});
+
+test("sporades create --template blank preserves framework selection", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(
+      ["create", "blank-island", "--template", "blank", "--framework", "preact", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: true,
+      data: { path: await realpath(path.join(dir, "blank-island")), template: "blank" },
+      error: null,
+    });
+
+    const projectDir = path.join(dir, "blank-island");
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.equal(config.template, "blank");
+    assert.equal(config.client.framework, "preact");
+
+    const clientEntry = await readFile(path.join(projectDir, "client", "index.tsx"), "utf8");
+    assert.match(clientEntry, /from "preact"/);
+    assert.doesNotMatch(clientEntry, /react-dom|createHooks|useAuth|files|messages|todo/i);
+
     const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
-    assert.equal(packageJson.dependencies.react, "^19.0.0");
-    assert.equal(packageJson.dependencies["react-dom"], "^19.0.0");
-    assert.equal(packageJson.devDependencies.sporades, `file:${repoRoot}`);
+    assert.equal(packageJson.dependencies.preact, "^10.25.0");
+    assert.equal(packageJson.dependencies.react, undefined);
+    assert.equal(packageJson.dependencies["react-dom"], undefined);
   });
 });
 
@@ -140,7 +238,7 @@ test("sporades/server exports the Reference field builder", async () => {
 test("sporades create writes a runnable Preact todo scaffold", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(
-      ["create", "todo-island", "--framework", "preact", "--no-install", "--no-git", "--json"],
+      ["create", "todo-island", "--template", "todo", "--framework", "preact", "--no-install", "--no-git", "--json"],
       {
         cwd: dir,
       },
@@ -149,12 +247,13 @@ test("sporades create writes a runnable Preact todo scaffold", async () => {
     assert.equal(result.code, 0, result.stderr);
     assert.deepEqual(JSON.parse(result.stdout), {
       ok: true,
-      data: { path: await realpath(path.join(dir, "todo-island")) },
+      data: { path: await realpath(path.join(dir, "todo-island")), template: "todo" },
       error: null,
     });
 
     const projectDir = path.join(dir, "todo-island");
     const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.equal(config.template, "todo");
     assert.equal(config.client.framework, "preact");
 
     const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
@@ -210,7 +309,7 @@ test("sporades create rejects unsupported template values with structured JSON",
       data: null,
       error: {
         message: "Unsupported template: blog",
-        hint: "v0 only supports the todo template.",
+        hint: "Use one of: blank, todo.",
       },
     });
   });
@@ -218,7 +317,7 @@ test("sporades create rejects unsupported template values with structured JSON",
 
 test("sporades auth status reports anonymous and Google OAuth configuration state", async () => {
   await withTempDir(async (dir) => {
-    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
     assert.equal(createResult.code, 0, createResult.stderr);

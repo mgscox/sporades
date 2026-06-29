@@ -172,7 +172,7 @@ async function stopChild(child) {
 
 test("sporades deploy --json bundles and starts a container session", async () => {
   await withTempDir(async (dir) => {
-    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
     assert.equal(createResult.code, 0, createResult.stderr);
@@ -229,7 +229,7 @@ test("sporades deploy --json bundles and starts a container session", async () =
 
 test("sporades deploy writes a server bundle that serves the capsule", async () => {
   await withTempDir(async (dir) => {
-    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
     assert.equal(createResult.code, 0, createResult.stderr);
@@ -269,7 +269,7 @@ test("sporades deploy writes a server bundle that serves the capsule", async () 
 
 test("sporades deploy writes a server bundle that serves registered capsule endpoints", async () => {
   await withTempDir(async (dir) => {
-    const createResult = await runCli(["create", "endpoint-island", "--no-install", "--no-git", "--json"], {
+    const createResult = await runCli(["create", "endpoint-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
     assert.equal(createResult.code, 0, createResult.stderr);
@@ -327,7 +327,7 @@ export default capsule({
 
 test("sporades deploy writes a server bundle that applies additive table migrations on Container session startup", async () => {
   await withTempDir(async (dir) => {
-    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
     assert.equal(createResult.code, 0, createResult.stderr);
@@ -471,7 +471,7 @@ test("sporades deploy writes a server bundle that applies additive table migrati
 
 test("sporades deploy writes a server bundle with endpoint context and structured responses", async () => {
   await withTempDir(async (dir) => {
-    const createResult = await runCli(["create", "endpoint-island", "--no-install", "--no-git", "--json"], {
+    const createResult = await runCli(["create", "endpoint-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
     assert.equal(createResult.code, 0, createResult.stderr);
@@ -552,7 +552,7 @@ export default capsule({
 
 test("sporades deploy endpoints resolve linked Google auth from the Sporades session token", async () => {
   await withTempDir(async (dir) => {
-    const createResult = await runCli(["create", "endpoint-island", "--no-install", "--no-git", "--json"], {
+    const createResult = await runCli(["create", "endpoint-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
     assert.equal(createResult.code, 0, createResult.stderr);
@@ -644,7 +644,7 @@ export default capsule({
 
 test("sporades deploy skips the server env mount when the env file is absent", async () => {
   await withTempDir(async (dir) => {
-    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
     assert.equal(createResult.code, 0, createResult.stderr);
@@ -671,7 +671,7 @@ test("sporades deploy skips the server env mount when the env file is absent", a
 
 test("sporades deploy replaces the existing container binding before starting a new one", async () => {
   await withTempDir(async (dir) => {
-    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
     assert.equal(createResult.code, 0, createResult.stderr);
@@ -714,7 +714,7 @@ test("sporades deploy replaces the existing container binding before starting a 
 
 test("sporades deploy --force ignores stale container bindings when the container was deleted manually", async () => {
   await withTempDir(async (dir) => {
-    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
     assert.equal(createResult.code, 0, createResult.stderr);
@@ -754,7 +754,7 @@ test("sporades deploy --force ignores stale container bindings when the containe
 
 test("sporades deploy fails on stale container bindings without --force", async () => {
   await withTempDir(async (dir) => {
-    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
     assert.equal(createResult.code, 0, createResult.stderr);
