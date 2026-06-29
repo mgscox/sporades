@@ -83,6 +83,8 @@ _Avoid_: guest mode (implies fake/transient — these are real sessions), guest 
 A string stored in `localStorage` on the client and sent on the WebSocket connection. The server verifies it via Better Auth on every request. No auth SDK in the client bundle.
 _Avoid_: auth token, JWT (implementation detail of Better Auth)
 
+Custom endpoints accept the Sporades session token in the `x-sporades-session-token` HTTP header. Missing or invalid endpoint tokens resolve to a fresh Anonymous session rather than crashing or rejecting the request.
+
 **Linked account**:
 An anonymous session upgraded with a real authentication method (Google OAuth, etc.). The user's data follows them because the auth method is linked to the existing account, not a new one.
 _Avoid_: upgrade, migration (those are schema concerns, not auth)

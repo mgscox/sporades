@@ -15,6 +15,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   commandError,
   toSqlLiteral,
   createEndpointContext,
+  readEndpointSessionToken,
   createEndpointDatabaseApi,
   createEndpointTableApi,
   serializeFieldValue,
@@ -294,7 +295,7 @@ async function createEndpointContext(database, requestUrl, request) {
     ]),
   );
   const query = Object.fromEntries(requestUrl.searchParams.entries());
-  const session = resolveAnonymousSession(database, query.sessionToken);
+  const session = resolveAnonymousSession(database, readEndpointSessionToken(headers, query));
 
   return {
     db: createEndpointDatabaseApi(database),
@@ -309,6 +310,10 @@ async function createEndpointContext(database, requestUrl, request) {
       body: await readEndpointBody(request, headers),
     },
   };
+}
+
+function readEndpointSessionToken(headers, query) {
+  return headers["x-sporades-session-token"] ?? query.sessionToken;
 }
 
 function createEndpointDatabaseApi(database) {
