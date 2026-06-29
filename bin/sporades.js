@@ -463,8 +463,6 @@ async function startDevSession(options) {
       2,
     )}\n`,
   );
-  emitDevEvent(options, { event: "started", url, port: actualPort });
-
   const watchers = watchDevInputs(options.projectDir, async (change) => {
     try {
       const rebuild = await createBundle(options.projectDir, config);
@@ -495,6 +493,7 @@ async function startDevSession(options) {
       );
     }
   });
+  emitDevEvent(options, { event: "started", url, port: actualPort });
 
   const shutdown = () => {
     for (const watcher of watchers) {
