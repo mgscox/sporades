@@ -15,8 +15,11 @@ export function onMessage(listener) {
 }
 
 export const auth = {
-  signIn(provider) {
-    return connect().signIn(provider);
+  signUp(provider, credentials) {
+    return connect().signUp(provider, credentials);
+  },
+  signIn(provider, credentials) {
+    return connect().signIn(provider, credentials);
   },
   signOut() {
     return connect().signOut();
@@ -104,8 +107,11 @@ export function createHooks(primitives) {
       isAuthenticated() {
         return Boolean(state.auth?.isAuthenticated);
       },
-      signIn(provider) {
-        return connect().signIn(provider);
+      signUp(provider, credentials) {
+        return connect().signUp(provider, credentials);
+      },
+      signIn(provider, credentials) {
+        return connect().signIn(provider, credentials);
       },
       signOut() {
         return connect().signOut();
@@ -272,7 +278,13 @@ function createConnection() {
         },
       };
     },
-    signIn(provider) {
+    signUp(provider, credentials) {
+      return request("auth.signUp", { provider, credentials });
+    },
+    signIn(provider, credentials) {
+      if (credentials) {
+        return request("auth.signIn", { provider, credentials });
+      }
       const returnTo = window.location.href;
       localStorage.setItem("sporades.authReturnTo", returnTo);
       return request("auth.signIn", { provider, returnTo }).then((result) => {

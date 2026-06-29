@@ -19,10 +19,9 @@ Sporades apps can enable multiple auth providers in `sporades.json`:
 }
 ```
 
-`anonymous`, `google`, and the future `email` provider are valid provider names.
-Existing projects using `auth.mode` continue to work; `auth.mode: "anonymous"`
-maps to anonymous sessions, and `auth.mode: "google"` enables Google alongside
-anonymous sessions.
+`anonymous`, `google`, and `email` are valid provider names. Existing projects
+using `auth.mode` continue to work; `auth.mode: "anonymous"` maps to anonymous
+sessions, and `auth.mode: "google"` enables Google alongside anonymous sessions.
 
 Configure Google OAuth from explicit credentials:
 
@@ -66,9 +65,40 @@ the server runtime reloads the updated Server env and auth configuration:
 sporades dev
 ```
 
-Client code signs out through the same provider-neutral auth surface. A
-successful sign-out clears the stored Sporades session token and refreshes auth
-state to a fresh anonymous session, so apps can route immediately:
+Client code signs users up and in through the provider-neutral auth surface.
+Email auth returns structured results and keeps auth details server-owned:
+
+```tsx
+import { auth } from "sporades/client";
+
+const signUp = await auth.signUp("email", {
+  email: "mira@example.com",
+  password: "correct horse battery staple",
+  name: "Mira",
+});
+
+const signIn = await auth.signIn("email", {
+  email: "mira@example.com",
+  password: "correct horse battery staple",
+});
+
+if (signIn.data?.ok) {
+  console.log(signIn.data.auth.provider); // "email"
+} else {
+  console.error(signIn.error?.message, signIn.error?.hint);
+}
+```
+
+Google continues to use the same sign-in surface and starts the server-owned
+redirect flow:
+
+```tsx
+await auth.signIn("google");
+```
+
+Client code signs out through the same auth surface. A successful sign-out
+clears the stored Sporades session token and refreshes auth state to a fresh
+anonymous session, so apps can route immediately:
 
 ```tsx
 import { auth } from "sporades/client";

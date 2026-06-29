@@ -270,6 +270,108 @@ test("client auth.signIn starts a full-page provider redirect and preserves the 
   }
 });
 
+test("client auth.signIn sends email credentials without starting a redirect", async () => {
+  const browser = installBrowserFakes(anonymousAuth, {
+    href: "http://localhost:4000/notes?filter=mine#today",
+    handlers: {
+      "auth.signIn": async (message) => {
+        browser.storage.set("emailSignInMessage", JSON.stringify(message));
+        return {
+          type: "auth.signIn.result",
+          data: {
+            ok: true,
+            auth: {
+              userId: "email-user",
+              displayName: "Mira",
+              email: "mira@example.com",
+              picture: null,
+              isAuthenticated: true,
+              isGuest: false,
+              provider: "email",
+            },
+          },
+          error: null,
+        };
+      },
+    },
+  });
+  try {
+    const runtime = await importClientRuntime();
+    const result = await runtime.auth.signIn("email", {
+      email: "mira@example.com",
+      password: "correct horse battery staple",
+    });
+
+    assert.deepEqual({ ...JSON.parse(browser.storage.get("emailSignInMessage")), id: "request-id" }, {
+      id: "request-id",
+      type: "auth.signIn",
+      provider: "email",
+      credentials: {
+        email: "mira@example.com",
+        password: "correct horse battery staple",
+      },
+    });
+    assert.equal(browser.storage.get("assignedLocation"), undefined);
+    assert.equal(browser.storage.get("sporades.authReturnTo"), undefined);
+    assert.equal(result.type, "auth.signIn.result");
+    assert.equal(result.error, null);
+    assert.equal(result.data.ok, true);
+  } finally {
+    browser.cleanup();
+  }
+});
+
+test("client auth.signUp sends email credentials through the provider-generic auth surface", async () => {
+  const browser = installBrowserFakes(anonymousAuth, {
+    handlers: {
+      "auth.signUp": async (message) => {
+        browser.storage.set("signUpMessage", JSON.stringify(message));
+        return {
+          type: "auth.signUp.result",
+          data: {
+            ok: true,
+            auth: {
+              userId: "email-user",
+              displayName: "Mira",
+              email: "mira@example.com",
+              picture: null,
+              isAuthenticated: true,
+              isGuest: false,
+              provider: "email",
+            },
+          },
+          error: null,
+        };
+      },
+    },
+  });
+  try {
+    const runtime = await importClientRuntime();
+    const result = await runtime.auth.signUp("email", {
+      email: "mira@example.com",
+      password: "correct horse battery staple",
+      name: "Mira",
+    });
+
+    assert.deepEqual({ ...JSON.parse(browser.storage.get("signUpMessage")), id: "request-id" }, {
+      id: "request-id",
+      type: "auth.signUp",
+      provider: "email",
+      credentials: {
+        email: "mira@example.com",
+        password: "correct horse battery staple",
+        name: "Mira",
+      },
+    });
+    assert.equal(result.type, "auth.signUp.result");
+    assert.equal(result.error, null);
+    assert.equal(result.data.ok, true);
+    assert.equal(result.data.auth.provider, "email");
+  } finally {
+    browser.cleanup();
+  }
+});
+
 test("client auth.signOut clears the stored session and refreshes auth state", async () => {
   const linkedAuth = {
     userId: "linked-user",

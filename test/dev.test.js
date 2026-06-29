@@ -2594,6 +2594,246 @@ test("WebSocket auth.get reports enabled providers from multi-provider config", 
   });
 });
 
+test("WebSocket email sign-up authenticates the current session and populates ctx.auth", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "email-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "email-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = {
+      providers: {
+        anonymous: true,
+        email: true,
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, query } from "sporades/server";
+
+export default capsule({
+  name: "email-island",
+  queries: {
+    me: query((ctx) => ctx.auth),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      socket = await openSocket(started.data.url);
+
+      socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+      const anonymousAuth = await readSocketMessage(socket);
+      assert.equal(anonymousAuth.data.auth.provider, "anonymous");
+
+      socket.send(
+        JSON.stringify({
+          id: "signup-1",
+          type: "auth.signUp",
+          provider: "email",
+          credentials: {
+            email: "mira@example.com",
+            password: "correct horse battery staple",
+            name: "Mira",
+          },
+        }),
+      );
+      const signUp = await readSocketMessage(socket);
+      assert.deepEqual(signUp, {
+        id: "signup-1",
+        type: "auth.signUp.result",
+        data: {
+          ok: true,
+          sessionToken: anonymousAuth.data.sessionToken,
+          auth: {
+            userId: anonymousAuth.data.auth.userId,
+            displayName: "Mira",
+            email: "mira@example.com",
+            picture: null,
+            isAuthenticated: true,
+            isGuest: false,
+            provider: "email",
+          },
+        },
+        error: null,
+      });
+
+      socket.send(JSON.stringify({ id: "me-1", type: "query.subscribe", query: "me" }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "me-1",
+        type: "query.result",
+        query: "me",
+        data: signUp.data.auth,
+        error: null,
+      });
+
+      socket.send(
+        JSON.stringify({
+          id: "signup-duplicate",
+          type: "auth.signUp",
+          provider: "email",
+          credentials: {
+            email: "mira@example.com",
+            password: "another good password",
+          },
+        }),
+      );
+      const duplicateSignUp = await readSocketMessage(socket);
+      assert.deepEqual(duplicateSignUp, {
+        id: "signup-duplicate",
+        type: "error",
+        data: null,
+        error: {
+          message: "Email is already registered.",
+          hint: "Use auth.signIn(\"email\", ...) with this email address.",
+        },
+      });
+
+      socket.send(JSON.stringify({ id: "auth-after-duplicate", type: "auth.get" }));
+      assert.deepEqual((await readSocketMessage(socket)).data.auth, signUp.data.auth);
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("WebSocket email sign-in resolves an existing email account and rejects bad credentials", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "email-signin-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "email-signin-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = {
+      providers: {
+        anonymous: true,
+        email: true,
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, query } from "sporades/server";
+
+export default capsule({
+  name: "email-signin-island",
+  queries: {
+    me: query((ctx) => ctx.auth),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      socket = await openSocket(started.data.url);
+
+      socket.send(
+        JSON.stringify({
+          id: "signup-1",
+          type: "auth.signUp",
+          provider: "email",
+          credentials: {
+            email: "mira@example.com",
+            password: "correct horse battery staple",
+            name: "Mira",
+          },
+        }),
+      );
+      const signUp = await readSocketMessage(socket);
+      assert.equal(signUp.type, "auth.signUp.result");
+      const emailUserId = signUp.data.auth.userId;
+
+      socket.send(JSON.stringify({ id: "signout-1", type: "auth.signOut" }));
+      assert.equal((await readSocketMessage(socket)).type, "auth.signOut.result");
+      socket.send(JSON.stringify({ id: "auth-anon", type: "auth.get" }));
+      const anonymousAuth = await readSocketMessage(socket);
+      assert.equal(anonymousAuth.data.auth.provider, "anonymous");
+      assert.notEqual(anonymousAuth.data.auth.userId, emailUserId);
+
+      socket.send(
+        JSON.stringify({
+          id: "signin-bad",
+          type: "auth.signIn",
+          provider: "email",
+          credentials: {
+            email: "mira@example.com",
+            password: "wrong password",
+          },
+        }),
+      );
+      const badSignIn = await readSocketMessage(socket);
+      assert.equal(badSignIn.type, "error");
+      assert.deepEqual(badSignIn.error, {
+        message: "Email or password is incorrect.",
+        hint: "Check the credentials and try email sign-in again.",
+      });
+
+      socket.send(JSON.stringify({ id: "auth-after-bad", type: "auth.get" }));
+      const stillAnonymous = await readSocketMessage(socket);
+      assert.equal(stillAnonymous.data.auth.userId, anonymousAuth.data.auth.userId);
+      assert.equal(stillAnonymous.data.auth.provider, "anonymous");
+
+      socket.send(
+        JSON.stringify({
+          id: "signin-good",
+          type: "auth.signIn",
+          provider: "email",
+          credentials: {
+            email: "mira@example.com",
+            password: "correct horse battery staple",
+          },
+        }),
+      );
+      const goodSignIn = await readSocketMessage(socket);
+      assert.deepEqual(goodSignIn, {
+        id: "signin-good",
+        type: "auth.signIn.result",
+        data: {
+          ok: true,
+          sessionToken: anonymousAuth.data.sessionToken,
+          auth: {
+            userId: emailUserId,
+            displayName: "Mira",
+            email: "mira@example.com",
+            picture: null,
+            isAuthenticated: true,
+            isGuest: false,
+            provider: "email",
+          },
+        },
+        error: null,
+      });
+
+      socket.send(JSON.stringify({ id: "me-1", type: "query.subscribe", query: "me" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, goodSignIn.data.auth);
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("Google auth callback exchanges the code server-side and links the current anonymous account", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

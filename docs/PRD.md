@@ -127,6 +127,8 @@ WebSocket connection to `/__sporades/ws` on the same origin (same port as HTTP):
 - `query.subscribe` → server pushes `query.result` whenever state changes
 - `mutation.run` → request/response with ID correlation
 - `auth.get` → returns current auth state
+- `auth.signUp("email", { email, password, name? })` → creates an email-linked Sporades session and returns structured success/error JSON
+- `auth.signIn("email", { email, password })` → resolves an email-linked Sporades session and returns structured success/error JSON
 - `auth.signIn(provider)` → starts a server-owned provider sign-in flow
 - `auth.signOut()` → ends the current session, clears the client session token, and refreshes auth state to a fresh anonymous session
 - `isAuthenticated()` → resolves whether the current session has a linked authentication method
@@ -172,7 +174,7 @@ Chainable API accumulates filters, sort, and limit. Compilation to SQL happens a
 |---|---|---|
 | **Anonymous** (default) | `auth: { providers: { anonymous: true } }`, `auth: { mode: "anonymous" }`, or unset | Every visitor gets a real session via Better Auth's Anonymous plugin. Persistent account, session token in `localStorage`. Data preserved when linking an auth method. |
 | **Google OAuth** | `auth: { providers: { google: { clientIdEnv, clientSecretEnv } } }` or legacy `auth: { mode: "google", google: { clientIdEnv, clientSecretEnv } }` | Anonymous by default, `auth.signIn("google")` available for linked sign-in. Links Google identity to existing anonymous account — no data loss. |
-| **Email** | `auth: { providers: { email: true } }` | Reserved configuration shape for the future email provider. Accepted in config/status so projects can represent it before runtime sign-in is implemented. |
+| **Email** | `auth: { providers: { email: true } }` | Anonymous by default, `auth.signUp("email", { email, password, name? })` links the current session to an email account, and `auth.signIn("email", { email, password })` resolves that account from a later anonymous session. |
 
 `auth.providers` is the preferred configuration shape for enabling multiple
 providers at once. Existing apps using `auth.mode` remain supported for
@@ -233,7 +235,7 @@ does not accept arbitrary JWTs or provider tokens.
 ### Implementation
 
 - **Server:** `sporades/server` initialises Better Auth with a `node:sqlite` adapter. Manages sessions, OAuth callbacks, and `ctx.auth` population. The user never touches Better Auth directly.
-- **Client:** `sporades/client` calls Sporades auth endpoints, stores session token in `localStorage`, sends it on the WebSocket, and exposes provider-neutral `auth.signIn(provider)` and `auth.signOut()` methods. No Better Auth client SDK in the bundle.
+- **Client:** `sporades/client` calls Sporades auth endpoints, stores session token in `localStorage`, sends it on the WebSocket, and exposes provider-neutral `auth.signUp(provider, credentials)`, `auth.signIn(provider, credentials?)`, and `auth.signOut()` methods. No Better Auth client SDK in the bundle.
 
 ## Build Pipeline
 

@@ -1,4 +1,4 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 
 export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   readJsonRequest,
@@ -73,6 +73,12 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   sessionFromRow,
   authProvidersForClient,
   routeSporadesAuth,
+  signUpWithEmail,
+  signInWithEmail,
+  normalizeEmailCredentials,
+  hashEmailPassword,
+  verifyEmailPassword,
+  emailAuthDisabledError,
   beginGoogleSignIn,
   normalizeReturnTo,
   exchangeGoogleCode,
@@ -152,7 +158,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
   };
   sqlite.exec("PRAGMA journal_mode = WAL");
   sqlite.exec("CREATE TABLE IF NOT EXISTS sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
-  createAnonymousAuthTables(sqlite);
+  createAnonymousAuthTables(sqlite, database.authConfig);
   createFileStorageTables(sqlite);
   assertValidReferenceTargets(schema);
   migrateAppSchema(sqlite, schema);
@@ -1765,8 +1771,41 @@ export function createWebSocketHub(getDatabase) {
       return;
     }
 
+    if (message.type === "auth.signUp") {
+      const result = signUpWithEmail(database, client.session, message.provider, message.credentials ?? {});
+      if (result.ok) {
+        client.session = {
+          token: result.sessionToken,
+          auth: result.auth,
+        };
+      }
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "auth.signUp.result" : "error",
+        data: result.ok ? { ok: true, sessionToken: result.sessionToken, auth: result.auth } : null,
+        error: result.error ?? null,
+      });
+      return;
+    }
+
     if (message.type === "auth.signIn" || message.type === "auth.signInWithGoogle") {
       const provider = message.type === "auth.signInWithGoogle" ? "google" : message.provider;
+      if (provider === "email") {
+        const result = signInWithEmail(database, client.session, message.credentials ?? {});
+        if (result.ok) {
+          client.session = {
+            token: result.sessionToken,
+            auth: result.auth,
+          };
+        }
+        sendJson(client, {
+          id: message.id ?? null,
+          type: result.ok ? "auth.signIn.result" : "error",
+          data: result.ok ? { ok: true, sessionToken: result.sessionToken, auth: result.auth } : null,
+          error: result.error ?? null,
+        });
+        return;
+      }
       if (provider !== "google") {
         sendJson(client, {
           id: message.id ?? null,
@@ -2186,7 +2225,148 @@ function writeRedirect(response, location) {
   response.end();
 }
 
-function createAnonymousAuthTables(sqlite) {
+function signUpWithEmail(database, session, provider, credentials) {
+  if (provider !== "email") {
+    return {
+      ok: false,
+      error: {
+        message: `Unsupported auth provider: ${provider ?? ""}`.trim(),
+        hint: "Use auth.signUp with the email provider.",
+      },
+    };
+  }
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+
+  const normalized = normalizeEmailCredentials(credentials);
+  if (!normalized.ok) {
+    return normalized;
+  }
+
+  const existing = database.sqlite
+    .prepare("SELECT email FROM sporades_auth_email_credentials WHERE email = ?")
+    .get(normalized.email);
+  if (existing) {
+    return {
+      ok: false,
+      error: {
+        message: "Email is already registered.",
+        hint: "Use auth.signIn(\"email\", ...) with this email address.",
+      },
+    };
+  }
+
+  const password = hashEmailPassword(normalized.password);
+  const displayName = normalized.name || normalized.email;
+  const auth = {
+    userId: session.auth.userId,
+    displayName,
+    email: normalized.email,
+    picture: null,
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
+  database.sqlite
+    .prepare(
+      "INSERT INTO sporades_auth_email_credentials (email, userId, passwordHash, passwordSalt, createdAt) VALUES (?, ?, ?, ?, ?)",
+    )
+    .run(normalized.email, auth.userId, password.hash, password.salt, new Date().toISOString());
+  database.sqlite
+    .prepare(
+      "UPDATE sporades_auth_users SET displayName = ?, email = ?, picture = ?, isAuthenticated = ?, isGuest = ?, provider = ? WHERE id = ?",
+    )
+    .run(auth.displayName, auth.email, auth.picture, 1, 0, "email", auth.userId);
+  return { ok: true, sessionToken: session.token, auth };
+}
+
+function signInWithEmail(database, session, credentials) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+
+  const normalized = normalizeEmailCredentials(credentials);
+  if (!normalized.ok) {
+    return normalized;
+  }
+
+  const row = database.sqlite
+    .prepare(
+      "SELECT c.email, c.userId, c.passwordHash, c.passwordSalt, u.displayName, u.picture, u.isAuthenticated, u.isGuest, u.provider " +
+        "FROM sporades_auth_email_credentials c " +
+        "JOIN sporades_auth_users u ON u.id = c.userId " +
+        "WHERE c.email = ?",
+    )
+    .get(normalized.email);
+  if (!row || !verifyEmailPassword(normalized.password, row.passwordSalt, row.passwordHash)) {
+    return {
+      ok: false,
+      error: {
+        message: "Email or password is incorrect.",
+        hint: "Check the credentials and try email sign-in again.",
+      },
+    };
+  }
+
+  database.sqlite.prepare("UPDATE sporades_auth_sessions SET userId = ? WHERE token = ?").run(row.userId, session.token);
+  const auth = {
+    userId: row.userId,
+    displayName: row.displayName,
+    email: row.email,
+    picture: row.picture,
+    isAuthenticated: Boolean(row.isAuthenticated),
+    isGuest: Boolean(row.isGuest),
+    provider: row.provider,
+  };
+  return { ok: true, sessionToken: session.token, auth };
+}
+
+function normalizeEmailCredentials(credentials) {
+  const email = String(credentials.email ?? "").trim().toLowerCase();
+  const password = String(credentials.password ?? "");
+  const name = credentials.name == null ? "" : String(credentials.name).trim();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return {
+      ok: false,
+      error: {
+        message: "Email address is invalid.",
+        hint: "Pass credentials with a valid email address.",
+      },
+    };
+  }
+  if (password.length < 8) {
+    return {
+      ok: false,
+      error: {
+        message: "Password is too short.",
+        hint: "Use a password with at least 8 characters.",
+      },
+    };
+  }
+  return { ok: true, email, password, name };
+}
+
+function hashEmailPassword(password) {
+  const salt = randomBytes(16).toString("base64url");
+  const hash = scryptSync(password, salt, 64).toString("base64url");
+  return { hash, salt };
+}
+
+function verifyEmailPassword(password, salt, expectedHash) {
+  const actual = scryptSync(password, salt, 64);
+  const expected = Buffer.from(expectedHash, "base64url");
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
+function emailAuthDisabledError() {
+  return {
+    message: "Email auth is not enabled.",
+    hint: "Enable auth.providers.email in sporades.json.",
+  };
+}
+
+function createAnonymousAuthTables(sqlite, authConfig = null) {
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
       "id TEXT PRIMARY KEY, " +
@@ -2206,6 +2386,17 @@ function createAnonymousAuthTables(sqlite) {
       "createdAt TEXT NOT NULL" +
       ")",
   );
+  if (authConfig?.providers?.email?.enabled) {
+    sqlite.exec(
+      "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
+        "email TEXT PRIMARY KEY, " +
+        "userId TEXT NOT NULL, " +
+        "passwordHash TEXT NOT NULL, " +
+        "passwordSalt TEXT NOT NULL, " +
+        "createdAt TEXT NOT NULL" +
+        ")",
+    );
+  }
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
       "state TEXT PRIMARY KEY, " +

@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Email Sign-Up And Sign-In
 
@@ -21,3 +21,7 @@ This should be a test-driven design task. Start with one end-to-end behavior thr
 ## Blocked by
 
 - .scratch/sporades-auth-session-controls/issues/01-multi-provider-auth-configuration.md
+
+## Comments
+
+- Implemented email sign-up and sign-in through the provider-generic SDK/WebSocket auth surface. Added runtime tests for successful sign-up, duplicate email, failed credentials, sign-in, and `ctx.auth` population.
