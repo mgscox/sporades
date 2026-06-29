@@ -465,11 +465,13 @@ async function startDevSession(options) {
   );
   emitDevEvent(options, { event: "started", url, port: actualPort });
 
-  const watchers = watchDevInputs(options.projectDir, async () => {
+  const watchers = watchDevInputs(options.projectDir, async (change) => {
     try {
       const rebuild = await createBundle(options.projectDir, config);
-      await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, config);
-      websocketHub.disconnectAll();
+      if (change.affectsServerRuntime) {
+        await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, config);
+        websocketHub.disconnectAll();
+      }
       emitDevEvent(options, {
         event: "rebuild",
         status: "success",
@@ -529,23 +531,31 @@ async function createDevRuntime(options) {
 
 function watchDevInputs(projectDir, onChange) {
   const watchedPaths = [
-    path.join(projectDir, "server"),
-    path.join(projectDir, "client"),
-    path.join(projectDir, "shared"),
-    path.join(projectDir, "index.html"),
-    path.join(projectDir, "sporades.json"),
+    { path: path.join(projectDir, "server"), affectsServerRuntime: true },
+    { path: path.join(projectDir, "client"), affectsServerRuntime: false },
+    { path: path.join(projectDir, "shared"), affectsServerRuntime: true },
+    { path: path.join(projectDir, "index.html"), affectsServerRuntime: false },
+    { path: path.join(projectDir, "sporades.json"), affectsServerRuntime: true },
   ];
   const watchers = [];
   let debounceTimer = null;
+  let pendingChange = null;
 
-  const schedule = () => {
+  const schedule = (change) => {
+    pendingChange = {
+      affectsServerRuntime: Boolean(pendingChange?.affectsServerRuntime || change.affectsServerRuntime),
+    };
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(onChange, DEV_REBUILD_DEBOUNCE_MS);
+    debounceTimer = setTimeout(() => {
+      const currentChange = pendingChange ?? { affectsServerRuntime: true };
+      pendingChange = null;
+      onChange(currentChange);
+    }, DEV_REBUILD_DEBOUNCE_MS);
   };
 
   for (const watchedPath of watchedPaths) {
     try {
-      watchers.push(watch(watchedPath, { recursive: true }, schedule));
+      watchers.push(watch(watchedPath.path, { recursive: true }, () => schedule(watchedPath)));
     } catch (error) {
       if (error?.code !== "ENOENT") {
         throw error;

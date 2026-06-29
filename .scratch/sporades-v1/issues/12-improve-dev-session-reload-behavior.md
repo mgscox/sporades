@@ -1,6 +1,6 @@
 # Improve Dev session reload behavior
 
-Status: ready-for-agent
+Status: done
 
 ## What to build
 
