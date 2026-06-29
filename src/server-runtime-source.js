@@ -48,6 +48,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   tableNameForSingular,
   toSqlBindingValue,
   rowToApiValue,
+  toSqlNumber,
   quoteIdentifier,
 ];
 
@@ -293,13 +294,13 @@ function extractEndpoints(serverSource) {
 }
 
 function extractFields(tableSource) {
-  return [...tableSource.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|Boolean)\(\)(?:\.default\(([^)]*)\))?/g)].map(
+  return [...tableSource.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|Boolean|Number)\(\)(?:\.default\(([^)]*)\))?/g)].map(
     (match) => {
       const kind = match[2];
       return {
         name: match[1],
         kind,
-        sqliteType: kind === "Boolean" ? "INTEGER" : "TEXT",
+        sqliteType: kind === "Boolean" ? "INTEGER" : kind === "Number" ? "REAL" : "TEXT",
         defaultValue: parseFieldDefault(kind, match[3]),
       };
     },
@@ -412,6 +413,9 @@ function serializeFieldValue(field, value) {
   if (field?.kind === "Boolean") {
     return value ? 1 : 0;
   }
+  if (field?.kind === "Number") {
+    return toSqlNumber(value, field.name);
+  }
   return String(value ?? "");
 }
 
@@ -420,6 +424,9 @@ function deserializeRow(table, row) {
   for (const field of table.fields) {
     if (field.kind === "Boolean") {
       output[field.name] = Boolean(output[field.name]);
+    }
+    if (field.kind === "Number") {
+      output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
     }
   }
   return output;
@@ -513,12 +520,22 @@ function parseFieldDefault(kind, rawDefault) {
   if (kind === "Boolean") {
     return rawDefault.trim() === "true";
   }
+  if (kind === "Number") {
+    const value = Number(rawDefault.trim());
+    if (!Number.isFinite(value)) {
+      throw commandError("Invalid Number() default.", "Pass a finite JavaScript number to Number().default(...).");
+    }
+    return value;
+  }
   return rawDefault.trim().replace(/^["']|["']$/g, "");
 }
 
 function toSqlLiteral(value) {
   if (typeof value === "boolean") {
     return value ? "1" : "0";
+  }
+  if (typeof value === "number") {
+    return String(value);
   }
   return `'${String(value).replaceAll("'", "''")}'`;
 }
@@ -967,10 +984,17 @@ function runQuery(database, auth, queryName) {
 }
 
 function runMutation(database, auth, mutationName, args) {
-  if (mutationName.startsWith("update")) {
-    return runUpdateMutation(database, auth, mutationName, args);
+  try {
+    if (mutationName.startsWith("update")) {
+      return runUpdateMutation(database, auth, mutationName, args);
+    }
+    return runInsertMutation(database, auth, mutationName, args);
+  } catch (error) {
+    if (error?.hint) {
+      return { ok: false, error: { message: error.message, hint: error.hint } };
+    }
+    throw error;
   }
-  return runInsertMutation(database, auth, mutationName, args);
 }
 
 function runInsertMutation(database, auth, mutationName, args) {
@@ -1142,6 +1166,9 @@ function toSqlBindingValue(value, field) {
   if (field.kind === "Boolean") {
     return value ? 1 : 0;
   }
+  if (field.kind === "Number") {
+    return toSqlNumber(value, field.name);
+  }
   return value;
 }
 
@@ -1151,6 +1178,16 @@ function rowToApiValue(row, table) {
     if (field.kind === "Boolean") {
       value[field.name] = Boolean(value[field.name]);
     }
+    if (field.kind === "Number") {
+      value[field.name] = value[field.name] === null ? null : Number(value[field.name]);
+    }
+  }
+  return value;
+}
+
+function toSqlNumber(value, fieldName) {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw commandError(`Invalid number for field: ${fieldName}`, "Pass a finite JavaScript number for Number() fields.");
   }
   return value;
 }

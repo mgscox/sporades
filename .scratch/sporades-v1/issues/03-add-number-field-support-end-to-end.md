@@ -1,6 +1,6 @@
 # Add `Number()` field support end-to-end
 
-Status: ready-for-agent
+Status: done
 
 ## What to build
 

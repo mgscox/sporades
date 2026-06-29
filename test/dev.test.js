@@ -991,6 +991,181 @@ test("sporades dev applies additive field migrations without losing existing Cap
   });
 });
 
+test("sporades dev supports Number fields end-to-end through migrations and runtime APIs", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    let migratedSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+      socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+      const sessionToken = (await readSocketMessage(socket)).data.sessionToken;
+
+      socket.send(JSON.stringify({ id: "todos-before", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+
+      socket.send(JSON.stringify({ id: "add-before", type: "mutation.run", mutation: "addTodo", args: ["Keep me"] }));
+      assert.equal((await readSocketMessage(socket)).type, "mutation.result");
+      assert.equal((await readSocketMessage(socket)).data[0].text, "Keep me");
+
+      const serverPath = path.join(projectDir, "server", "index.ts");
+      const originalServer = await readFile(serverPath, "utf8");
+      await writeFile(
+        serverPath,
+        originalServer
+          .replace(
+            'import { Boolean, capsule, mutation, query, String, table } from "sporades/server";',
+            'import { Boolean, capsule, endpoint, mutation, Number, query, String, table } from "sporades/server";',
+          )
+          .replace(
+            "done: Boolean().default(false),",
+            `done: Boolean().default(false),
+      effort: Number().default(1.5),`,
+          )
+          .replace(
+            "queries: {",
+            `endpoints: {
+    todosByEffort: endpoint({ method: "GET", path: "/todos/by-effort" }, (ctx) => ({
+      body: {
+        todos: ctx.db.todos
+          .where("effort", globalThis.Number(ctx.request.query.effort))
+          .orderBy("effort", "desc")
+          .all(),
+      },
+    })),
+  },
+
+  queries: {`,
+          )
+          .replace(
+            "addTodo: mutation((ctx, text: string) => {",
+            `updateTodoEffort: mutation((ctx, id: string, effort: number) => {
+      ctx.db.todos.update(id, { effort });
+    }),
+
+    addTodo: mutation((ctx, text: string, done: boolean, effort: number) => {`,
+          )
+          .replace(
+            "ctx.db.todos.insert({ text, ownerId: ctx.auth.userId });",
+            "ctx.db.todos.insert({ text, done, effort, ownerId: ctx.auth.userId });",
+          ),
+      );
+
+      const [rebuilt] = await Promise.all([
+        waitForJsonEvent(
+          child,
+          (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success",
+        ),
+        waitForSocketClose(socket),
+      ]);
+      assert.equal(rebuilt.error, null);
+      socket = null;
+
+      migratedSocket = await openSocket(started.data.url, sessionToken);
+      migratedSocket.send(JSON.stringify({ id: "todos-after", type: "query.subscribe", query: "todos" }));
+      const migratedRows = await readSocketMessage(migratedSocket);
+      assert.equal(migratedRows.error, null);
+      assert.equal(migratedRows.data.length, 1);
+      assert.equal(migratedRows.data[0].text, "Keep me");
+      assert.equal(migratedRows.data[0].effort, 1.5);
+
+      migratedSocket.send(
+        JSON.stringify({
+          id: "add-number",
+          type: "mutation.run",
+          mutation: "addTodo",
+          args: ["Numeric work", false, 2.25],
+        }),
+      );
+      assert.equal((await readSocketMessage(migratedSocket)).type, "mutation.result");
+      const insertedRows = await waitForSocketMessage(
+        migratedSocket,
+        (message) =>
+          message.id === "todos-after" &&
+          message.type === "query.result" &&
+          message.query === "todos" &&
+          message.data.some((todo) => todo.text === "Numeric work" && todo.effort === 2.25),
+      );
+      const insertedTodo = insertedRows.data.find((todo) => todo.text === "Numeric work");
+
+      migratedSocket.send(
+        JSON.stringify({
+          id: "update-number",
+          type: "mutation.run",
+          mutation: "updateTodoEffort",
+          args: [insertedTodo.id, 3.75],
+        }),
+      );
+      assert.equal((await readSocketMessage(migratedSocket)).type, "mutation.result");
+      const updatedRows = await waitForSocketMessage(
+        migratedSocket,
+        (message) =>
+          message.id === "todos-after" &&
+          message.type === "query.result" &&
+          message.query === "todos" &&
+          message.data.some((todo) => todo.text === "Numeric work" && todo.effort === 3.75),
+      );
+      assert.equal(typeof updatedRows.data.find((todo) => todo.text === "Numeric work").effort, "number");
+
+      const endpointResponse = await fetch(`${started.data.url}/todos/by-effort?effort=3.75`);
+      assert.equal(endpointResponse.status, 200);
+      const endpointBody = await endpointResponse.json();
+      assert.deepEqual(
+        endpointBody.todos.map((todo) => ({ text: todo.text, effort: todo.effort })),
+        [{ text: "Numeric work", effort: 3.75 }],
+      );
+
+      const storageResult = await runCli(
+        ["db", "query", "SELECT effort, typeof(effort) AS kind FROM todos WHERE text = 'Numeric work'", "--json"],
+        { cwd: projectDir },
+      );
+      assert.equal(storageResult.code, 0, storageResult.stderr);
+      assert.deepEqual(JSON.parse(storageResult.stdout).data.rows, [{ effort: 3.75, kind: "real" }]);
+
+      migratedSocket.send(
+        JSON.stringify({
+          id: "invalid-number",
+          type: "mutation.run",
+          mutation: "updateTodoEffort",
+          args: [insertedTodo.id, "not numeric"],
+        }),
+      );
+      assert.deepEqual(await readSocketMessage(migratedSocket), {
+        id: "invalid-number",
+        type: "mutation.result",
+        mutation: "updateTodoEffort",
+        data: null,
+        error: {
+          message: "Invalid number for field: effort",
+          hint: "Pass a finite JavaScript number for Number() fields.",
+        },
+      });
+    } finally {
+      migratedSocket?.close();
+      socket?.close();
+      if (child.exitCode === null) {
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.kill("SIGTERM");
+        await exited;
+      }
+    }
+  });
+});
+
 test("sporades dev rejects unsupported Capsule schema changes with a structured rebuild error", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
