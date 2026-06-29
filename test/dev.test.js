@@ -738,6 +738,56 @@ test("sporades dev streams rebuild success events and serves the rebuilt client 
   });
 });
 
+test("sporades dev keeps existing WebSocket clients connected across client-only rebuilds", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      socket = await openSocket(started.data.url);
+      socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+      const authBefore = await readSocketMessage(socket);
+
+      const clientPath = path.join(projectDir, "client", "index.tsx");
+      const originalClient = await readFile(clientPath, "utf8");
+      await writeFile(clientPath, originalClient.replace("Sporades Todos", "Sporades Less Disruptive Todos"));
+
+      const rebuilt = await waitForJsonEvent(
+        child,
+        (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success",
+      );
+      assert.equal(rebuilt.error, null);
+      assert.equal(rebuilt.data.port, started.data.port);
+
+      socket.send(JSON.stringify({ id: "auth-after", type: "auth.get" }));
+      const authAfter = await readSocketMessage(socket);
+      assert.equal(authAfter.data.sessionToken, authBefore.data.sessionToken);
+      assert.deepEqual(authAfter.data.auth, authBefore.data.auth);
+
+      const clientResponse = await fetch(`${started.data.url}/client.js`);
+      assert.equal(clientResponse.status, 200);
+      assert.match(await clientResponse.text(), /Sporades Less Disruptive Todos/);
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev streams rebuild failure events and keeps serving the last client bundle", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
