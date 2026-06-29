@@ -1,6 +1,6 @@
 # Add context middleware
 
-Status: ready-for-agent
+Status: done
 
 ## What to build
 
@@ -8,12 +8,12 @@ Add Capsule-level context middleware so developers can consistently enrich or gu
 
 ## Acceptance criteria
 
-- [ ] A Capsule can register context middleware through the `capsule()` definition.
-- [ ] Middleware runs for queries, mutations, and endpoints.
-- [ ] Middleware can read the existing context and return an enriched context for the handler.
-- [ ] Middleware can block a request with a structured error.
-- [ ] Middleware ordering is deterministic and documented.
-- [ ] Middleware behavior is covered across WebSocket query/mutation requests and HTTP endpoint requests.
+- [x] A Capsule can register context middleware through the `capsule()` definition.
+- [x] Middleware runs for queries, mutations, and endpoints.
+- [x] Middleware can read the existing context and return an enriched context for the handler.
+- [x] Middleware can block a request with a structured error.
+- [x] Middleware ordering is deterministic and documented.
+- [x] Middleware behavior is covered across WebSocket query/mutation requests and HTTP endpoint requests.
 
 ## Blocked by
 

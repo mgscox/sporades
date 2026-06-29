@@ -5,6 +5,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   openDevDatabase,
   extractSchema,
   extractEndpoints,
+  extractContextMiddleware,
   extractMutationHooks,
   extractHookList,
   extractFields,
@@ -25,6 +26,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   toSqlLiteral,
   findMatchingParen,
   createEndpointContext,
+  applyContextMiddleware,
+  runContextMiddleware,
   readEndpointSessionToken,
   createEndpointDatabaseApi,
   createEndpointTableApi,
@@ -84,12 +87,14 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
   const sqlite = new DatabaseSync(databasePath);
   const schema = extractSchema(serverSource);
   const endpoints = extractEndpoints(serverSource);
+  const contextMiddleware = extractContextMiddleware(serverSource);
   const mutationHooks = extractMutationHooks(serverSource);
   const rowCache = new Map();
   const database = {
     sqlite,
     schema,
     endpoints,
+    contextMiddleware,
     mutationHooks,
     rowCache,
     serverEnv,
@@ -343,6 +348,14 @@ function extractEndpoints(serverSource) {
   return endpoints;
 }
 
+function extractContextMiddleware(serverSource) {
+  const middlewareSource = extractObjectPropertySource(serverSource, "middleware");
+  if (!middlewareSource) {
+    return [];
+  }
+  return extractHookList(`middleware: ${middlewareSource}`, "middleware");
+}
+
 function extractMutationHooks(serverSource) {
   const hooksSource = extractObjectPropertySource(serverSource, "hooks");
   if (!hooksSource) {
@@ -560,7 +573,12 @@ export async function routeEndpoint(database, request, response) {
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const createHandler = new Function(`return (${endpoint.handlerSource});`);
   const handler = createHandler();
-  return handler(await createEndpointContext(database, requestUrl, request));
+  const context = await applyContextMiddleware(
+    database,
+    await createEndpointContext(database, requestUrl, request),
+    "endpoint",
+  );
+  return handler(context);
 }
 
 async function createEndpointContext(database, requestUrl, request) {
@@ -586,6 +604,30 @@ async function createEndpointContext(database, requestUrl, request) {
       body: await readEndpointBody(request, headers),
     },
   };
+}
+
+function applyContextMiddleware(database, baseContext, kind) {
+  let context = {
+    ...baseContext,
+    kind,
+  };
+  for (const middlewareSource of database.contextMiddleware) {
+    const result = runContextMiddleware(middlewareSource, context);
+    if (result && typeof result.then === "function") {
+      throw commandError(
+        "Async context middleware is not supported.",
+        "Use synchronous context middleware for queries, mutations, and endpoints.",
+      );
+    }
+    context = result ?? context;
+  }
+  return context;
+}
+
+function runContextMiddleware(middlewareSource, context) {
+  const createMiddleware = new Function(`return (${middlewareSource});`);
+  const middleware = createMiddleware();
+  return middleware(context);
 }
 
 function readEndpointSessionToken(headers, query) {
@@ -1299,8 +1341,21 @@ function sendJson(client, message) {
 }
 
 function runQuery(database, auth, queryName) {
+  let context;
+  try {
+    context = applyContextMiddleware(database, createMutationContext(database, auth), "query");
+  } catch (error) {
+    return {
+      rows: null,
+      error: {
+        message: error.message,
+        hint: error.hint ?? "Check the Capsule context middleware and retry the query.",
+      },
+    };
+  }
+
   if (queryName === "ctx.env") {
-    return { data: database.serverEnv, error: null };
+    return { data: context.env, error: null };
   }
 
   const table = resolveTableForQuery(database.schema, queryName);
@@ -1314,7 +1369,7 @@ function runQuery(database, auth, queryName) {
     };
   }
 
-  const cacheKey = `${table.name}:${auth.userId}`;
+  const cacheKey = `${table.name}:${context.auth.userId}`;
   if (!database.rowCache.has(cacheKey)) {
     const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
     const ownerScoped = table.fields.some((field) => field.name === "ownerId");
@@ -1324,7 +1379,7 @@ function runQuery(database, auth, queryName) {
       " ORDER BY createdAt DESC";
     const rows = database.sqlite
       .prepare(sql)
-      .all(...(ownerScoped ? [auth.userId] : []))
+      .all(...(ownerScoped ? [context.auth.userId] : []))
       .map((row) => rowToApiValue(row, table));
     database.rowCache.set(cacheKey, rows);
   }
@@ -1333,21 +1388,23 @@ function runQuery(database, auth, queryName) {
 }
 
 function runMutation(database, auth, mutationName, args) {
-  const hookContext = createMutationContext(database, auth);
+  let context;
   let result;
   database.sqlite.exec("BEGIN");
   try {
+    context = applyContextMiddleware(database, createMutationContext(database, auth), "mutation");
+
     for (const hookSource of database.mutationHooks.beforeMutation) {
-      runMutationHook(hookSource, { name: mutationName, args, ctx: hookContext });
+      runMutationHook(hookSource, { name: mutationName, args, ctx: context });
     }
 
     result = mutationName.startsWith("update")
-      ? runUpdateMutation(database, auth, mutationName, args)
-      : runInsertMutation(database, auth, mutationName, args);
+      ? runUpdateMutation(database, context.auth, mutationName, args)
+      : runInsertMutation(database, context.auth, mutationName, args);
 
     if (result.ok) {
       for (const hookSource of database.mutationHooks.afterMutation) {
-        runMutationHook(hookSource, { name: mutationName, args, ctx: hookContext, result });
+        runMutationHook(hookSource, { name: mutationName, args, ctx: context, result });
       }
     }
 

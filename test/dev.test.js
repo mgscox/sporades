@@ -2707,6 +2707,169 @@ export default capsule({
   });
 });
 
+test("sporades dev applies Capsule context middleware to WebSocket requests and endpoints", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "middleware-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "middleware-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "TENANT=blue\n");
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: "middleware-island",
+
+  schema: {
+    todos: table({
+      text: String(),
+      ownerId: String(),
+    }),
+    auditLogs: table({
+      text: String(),
+      ownerId: String(),
+    }),
+  },
+
+  middleware: [
+    (ctx) => ({
+      ...ctx,
+      tenant: ctx.env.TENANT,
+      order: ["first"],
+    }),
+    (ctx) => {
+      if (ctx.request?.headers["x-block"] === "yes") {
+        throw Object.assign(new Error("Request blocked by context middleware."), {
+          hint: "Remove x-block and retry the request.",
+        });
+      }
+      ctx.db.auditLogs.insert({
+        text: ctx.order.concat("second").join(">") + ":" + ctx.tenant + ":" + ctx.kind,
+        ownerId: ctx.auth.userId,
+      });
+      return {
+        ...ctx,
+        order: ctx.order.concat("second"),
+      };
+    },
+  ],
+
+  queries: {
+    todos: query((ctx) =>
+      ctx.db.todos
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "desc")
+        .all()
+    ),
+    auditLogs: query((ctx) =>
+      ctx.db.auditLogs
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "desc")
+        .all()
+    ),
+  },
+
+  mutations: {
+    addTodo: mutation((ctx, text: string) => {
+      ctx.db.todos.insert({ text, ownerId: ctx.auth.userId });
+    }),
+  },
+
+  hooks: {
+    afterMutation: [
+      ({ ctx }) => {
+        ctx.db.auditLogs.insert({
+          text: "hook:" + ctx.tenant + ":" + ctx.order.join(">"),
+          ownerId: ctx.auth.userId,
+        });
+      },
+    ],
+  },
+
+  endpoints: {
+    tenant: endpoint({ method: "GET", path: "/tenant" }, (ctx) => ({
+      status: 200,
+      headers: { "x-order": ctx.order.join(">") },
+      body: {
+        tenant: ctx.tenant,
+        kind: ctx.kind,
+      },
+    })),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+      socket.send(JSON.stringify({ id: "auth", type: "auth.get" }));
+      const authResult = await readSocketMessage(socket);
+
+      socket.send(JSON.stringify({ id: "todos", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+
+      socket.send(JSON.stringify({ id: "add", type: "mutation.run", mutation: "addTodo", args: ["from middleware"] }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "add",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: null,
+        error: null,
+      });
+
+      const endpointResponse = await fetch(`${started.data.url}/tenant`, {
+        headers: { "x-sporades-session-token": authResult.data.sessionToken },
+      });
+      assert.equal(endpointResponse.status, 200);
+      assert.equal(endpointResponse.headers.get("x-order"), "first>second");
+      assert.deepEqual(await endpointResponse.json(), {
+        tenant: "blue",
+        kind: "endpoint",
+      });
+
+      const blockedResponse = await fetch(`${started.data.url}/tenant`, {
+        headers: {
+          "x-block": "yes",
+          "x-sporades-session-token": authResult.data.sessionToken,
+        },
+      });
+      assert.equal(blockedResponse.status, 500);
+      assert.deepEqual(await blockedResponse.json(), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Request blocked by context middleware.",
+          hint: "Remove x-block and retry the request.",
+        },
+      });
+
+      socket.send(JSON.stringify({ id: "audits", type: "query.subscribe", query: "auditLogs" }));
+      const audits = await readSocketMessage(socket);
+      const auditTexts = audits.data.map((row) => row.text);
+      assert.ok(auditTexts.includes("first>second:blue:endpoint"));
+      assert.ok(auditTexts.includes("first>second:blue:mutation"));
+      assert.ok(auditTexts.includes("first>second:blue:query"));
+      assert.ok(auditTexts.includes("hook:blue:first>second"));
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("WebSocket auth.get creates a persistent anonymous session token", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
