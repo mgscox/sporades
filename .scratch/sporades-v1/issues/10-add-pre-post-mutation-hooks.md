@@ -1,6 +1,6 @@
 # Add pre/post mutation hooks
 
-Status: ready-for-agent
+Status: done
 
 ## What to build
 

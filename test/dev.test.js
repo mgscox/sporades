@@ -1574,6 +1574,172 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
   });
 });
 
+test("sporades dev runs Capsule pre and post mutation hooks around WebSocket mutations", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "hook-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "hook-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "AUDIT_PREFIX=hooked\n");
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: "hook-island",
+
+  schema: {
+    todos: table({
+      text: String(),
+      ownerId: String(),
+    }),
+    auditLogs: table({
+      text: String(),
+      ownerId: String(),
+    }),
+  },
+
+  queries: {
+    todos: query((ctx) =>
+      ctx.db.todos
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "desc")
+        .all()
+    ),
+    auditLogs: query((ctx) =>
+      ctx.db.auditLogs
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "desc")
+        .all()
+    ),
+  },
+
+  mutations: {
+    addTodo: mutation((ctx, text: string) => {
+      ctx.db.todos.insert({ text, ownerId: ctx.auth.userId });
+    }),
+  },
+
+  hooks: {
+    beforeMutation: [
+      ({ name, args, ctx }) => {
+        if (name === "addTodo" && args[0] === "blocked") {
+          throw Object.assign(new Error("Todo text is blocked."), {
+            hint: "Choose different todo text and retry the mutation.",
+          });
+        }
+        if (!ctx.auth.userId || ctx.env.AUDIT_PREFIX !== "hooked") {
+          throw new Error("Hook context was incomplete.");
+        }
+      },
+    ],
+    afterMutation: [
+      ({ name, args, ctx, result }) => {
+        if (args[0] === "explode") {
+          throw Object.assign(new Error("Audit hook failed."), {
+            hint: "Fix the audit hook and retry the mutation.",
+          });
+        }
+        ctx.db.auditLogs.insert({
+          text: ctx.env.AUDIT_PREFIX + ":" + name + ":" + args[0] + ":" + result.ok,
+          ownerId: ctx.auth.userId,
+        });
+      },
+    ],
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+
+      socket.send(JSON.stringify({ id: "todos", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+      socket.send(JSON.stringify({ id: "audits", type: "query.subscribe", query: "auditLogs" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+
+      socket.send(JSON.stringify({ id: "blocked", type: "mutation.run", mutation: "addTodo", args: ["blocked"] }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "blocked",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: null,
+        error: {
+          message: "Todo text is blocked.",
+          hint: "Choose different todo text and retry the mutation.",
+        },
+      });
+
+      const allowedResult = waitForSocketMessage(
+        socket,
+        (message) => message.id === "allowed" && message.type === "mutation.result",
+      );
+      const todosRefresh = waitForSocketMessage(
+        socket,
+        (message) => message.id === "todos" && message.type === "query.result" && message.data.length === 1,
+      );
+      const auditRefresh = waitForSocketMessage(
+        socket,
+        (message) => message.id === "audits" && message.type === "query.result" && message.data.length === 1,
+      );
+      socket.send(JSON.stringify({ id: "allowed", type: "mutation.run", mutation: "addTodo", args: ["allowed"] }));
+      assert.deepEqual(await allowedResult, {
+        id: "allowed",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: null,
+        error: null,
+      });
+
+      const todos = await todosRefresh;
+      assert.equal(todos.data[0].text, "allowed");
+
+      const auditLogs = await auditRefresh;
+      assert.equal(auditLogs.data[0].text, "hooked:addTodo:allowed:true");
+
+      socket.send(JSON.stringify({ id: "explode", type: "mutation.run", mutation: "addTodo", args: ["explode"] }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "explode",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: null,
+        error: {
+          message: "Audit hook failed.",
+          hint: "Fix the audit hook and retry the mutation.",
+        },
+      });
+
+      const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
+      assert.equal(dumpResult.code, 0, dumpResult.stderr);
+      const tables = JSON.parse(dumpResult.stdout).data.tables;
+      assert.deepEqual(
+        tables.find((table) => table.name === "todos").rows.map((row) => row.text),
+        ["allowed"],
+      );
+      assert.deepEqual(
+        tables.find((table) => table.name === "auditLogs").rows.map((row) => row.text),
+        ["hooked:addTodo:allowed:true"],
+      );
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("WebSocket auth.get creates a persistent anonymous session token", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
