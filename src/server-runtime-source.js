@@ -10,6 +10,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   migrateAppSchema,
   normalizeSchema,
   hashSchema,
+  assertValidReferenceTargets,
   assertAdditiveSchemaMigration,
   applyAdditiveFieldMigrations,
   addedFieldsForTable,
@@ -19,6 +20,9 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createEndpointContext,
   createEndpointDatabaseApi,
   createEndpointTableApi,
+  fieldValueForWrite,
+  invalidReferenceError,
+  referenceExists,
   serializeFieldValue,
   deserializeRow,
   readEndpointBody,
@@ -46,7 +50,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   resolveTableForAddMutation,
   resolveTableForUpdateMutation,
   tableNameForSingular,
-  toSqlBindingValue,
   rowToApiValue,
   quoteIdentifier,
 ];
@@ -78,6 +81,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
   sqlite.exec("PRAGMA journal_mode = WAL");
   sqlite.exec("CREATE TABLE IF NOT EXISTS sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   createAnonymousAuthTables(sqlite);
+  assertValidReferenceTargets(schema);
   migrateAppSchema(sqlite, schema);
 
   return database;
@@ -127,6 +131,7 @@ function normalizeSchema(schema) {
           name: field.name,
           kind: field.kind,
           sqliteType: field.sqliteType,
+          targetTable: field.targetTable,
           defaultValue: field.defaultValue,
         })),
       }))
@@ -136,6 +141,20 @@ function normalizeSchema(schema) {
 
 function hashSchema(schemaJson) {
   return createHash("sha256").update(schemaJson).digest("hex");
+}
+
+function assertValidReferenceTargets(schema) {
+  const tableNames = new Set(schema.tables.map((table) => table.name));
+  for (const table of schema.tables) {
+    for (const field of table.fields) {
+      if (field.kind === "Reference" && !tableNames.has(field.targetTable)) {
+        throw commandError(
+          `Unknown reference target: ${field.targetTable}`,
+          "Reference fields must point at another table in the Capsule schema.",
+        );
+      }
+    }
+  }
 }
 
 function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
@@ -174,6 +193,9 @@ function applyAdditiveFieldMigrations(sqlite, existingSchema, nextSchema) {
 
     for (const field of addedFieldsForTable(existingTable, nextTable)) {
       const defaultSql = field.defaultValue === undefined ? "" : ` NOT NULL DEFAULT ${toSqlLiteral(field.defaultValue)}`;
+      if (field.kind === "Reference" && field.defaultValue !== undefined && !referenceExists({ sqlite }, field, field.defaultValue)) {
+        throw invalidReferenceError(field);
+      }
       sqlite.exec(
         `ALTER TABLE ${quoteIdentifier(nextTable.name)} ADD COLUMN ${quoteIdentifier(field.name)} ${field.sqliteType}${defaultSql}`,
       );
@@ -293,14 +315,15 @@ function extractEndpoints(serverSource) {
 }
 
 function extractFields(tableSource) {
-  return [...tableSource.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|Boolean)\(\)(?:\.default\(([^)]*)\))?/g)].map(
+  return [...tableSource.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?:(String|Boolean)\(\)|Reference\(\s*["']([^"']+)["']\s*\))(?:\.default\(([^)]*)\))?/g)].map(
     (match) => {
-      const kind = match[2];
+      const kind = match[3] ? "Reference" : match[2];
       return {
         name: match[1],
         kind,
         sqliteType: kind === "Boolean" ? "INTEGER" : "TEXT",
-        defaultValue: parseFieldDefault(kind, match[3]),
+        targetTable: match[3],
+        defaultValue: parseFieldDefault(kind, match[4]),
       };
     },
   );
@@ -371,7 +394,7 @@ function createEndpointTableApi(database, table, query = {}) {
         ...Object.fromEntries(
           table.fields.map((field) => [
             field.name,
-            serializeFieldValue(field, values[field.name] ?? field.defaultValue),
+            fieldValueForWrite(database, field, values[field.name] ?? field.defaultValue),
           ]),
         ),
       };
@@ -408,9 +431,31 @@ function createEndpointTableApi(database, table, query = {}) {
   };
 }
 
+function fieldValueForWrite(database, field, value) {
+  if (field.kind === "Reference" && value !== undefined && value !== null && !referenceExists(database, field, value)) {
+    throw invalidReferenceError(field);
+  }
+  return serializeFieldValue(field, value);
+}
+
+function invalidReferenceError(field) {
+  return commandError(`Invalid reference for field: ${field.name}`, `Pass the id of an existing ${field.targetTable} row.`);
+}
+
+function referenceExists(database, field, value) {
+  return Boolean(
+    database.sqlite
+      .prepare(`SELECT 1 FROM ${quoteIdentifier(field.targetTable)} WHERE id = ? LIMIT 1`)
+      .get(String(value)),
+  );
+}
+
 function serializeFieldValue(field, value) {
   if (field?.kind === "Boolean") {
     return value ? 1 : 0;
+  }
+  if (field?.kind === "Reference") {
+    return value === undefined || value === null ? null : String(value);
   }
   return String(value ?? "");
 }
@@ -991,23 +1036,27 @@ function runInsertMutation(database, auth, mutationName, args) {
     createdAt: now,
     updatedAt: now,
   };
-  for (const field of table.fields) {
-    if (field.name === "ownerId") {
-      values[field.name] = auth.userId;
-      continue;
+  try {
+    for (const field of table.fields) {
+      if (field.name === "ownerId") {
+        values[field.name] = auth.userId;
+        continue;
+      }
+      if (field.name === "text") {
+        values[field.name] = String(args[0] ?? "");
+        continue;
+      }
+      const positionalIndex = table.fields.filter((candidate) => candidate.name !== "ownerId").indexOf(field);
+      if (args[positionalIndex] !== undefined) {
+        values[field.name] = fieldValueForWrite(database, field, args[positionalIndex]);
+        continue;
+      }
+      if (field.defaultValue !== undefined) {
+        values[field.name] = fieldValueForWrite(database, field, field.defaultValue);
+      }
     }
-    if (field.name === "text") {
-      values[field.name] = String(args[0] ?? "");
-      continue;
-    }
-    const positionalIndex = table.fields.filter((candidate) => candidate.name !== "ownerId").indexOf(field);
-    if (args[positionalIndex] !== undefined) {
-      values[field.name] = toSqlBindingValue(args[positionalIndex], field);
-      continue;
-    }
-    if (field.defaultValue !== undefined) {
-      values[field.name] = toSqlBindingValue(field.defaultValue, field);
-    }
+  } catch (error) {
+    return { ok: false, error: { message: error.message, hint: error.hint } };
   }
   const missingField = table.fields.find((field) => values[field.name] === undefined);
   if (missingField) {
@@ -1068,12 +1117,19 @@ function runUpdateMutation(database, auth, mutationName, args) {
 
   const now = new Date().toISOString();
   const ownerScoped = resolved.table.fields.some((field) => field.name === "ownerId");
+  let nextValue;
+  try {
+    nextValue = fieldValueForWrite(database, resolved.field, value);
+  } catch (error) {
+    return { ok: false, error: { message: error.message, hint: error.hint } };
+  }
+
   database.sqlite
     .prepare(
       `UPDATE ${quoteIdentifier(resolved.table.name)} SET ${quoteIdentifier(resolved.field.name)} = ?, updatedAt = ? WHERE id = ?` +
         (ownerScoped ? " AND ownerId = ?" : ""),
     )
-    .run(toSqlBindingValue(value, resolved.field), now, id, ...(ownerScoped ? [auth.userId] : []));
+    .run(nextValue, now, id, ...(ownerScoped ? [auth.userId] : []));
   database.rowCache.clear();
   return { ok: true, error: null };
 }
@@ -1136,13 +1192,6 @@ function resolveTableForUpdateMutation(schema, mutationName) {
 
 function tableNameForSingular(singular) {
   return `${singular[0].toLowerCase()}${singular.slice(1)}s`;
-}
-
-function toSqlBindingValue(value, field) {
-  if (field.kind === "Boolean") {
-    return value ? 1 : 0;
-  }
-  return value;
 }
 
 function rowToApiValue(row, table) {

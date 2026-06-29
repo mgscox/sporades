@@ -42,6 +42,20 @@ export function Boolean() {
   return field("Boolean");
 }
 
+export function Reference(targetTable) {
+  return {
+    kind: "Reference",
+    targetTable,
+    default(defaultValue) {
+      return {
+        kind: "Reference",
+        targetTable,
+        defaultValue,
+      };
+    },
+  };
+}
+
 function field(kind) {
   return {
     kind,
