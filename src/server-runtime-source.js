@@ -10,7 +10,9 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   migrateAppSchema,
   normalizeSchema,
   hashSchema,
-  assertAdditiveTableMigration,
+  assertAdditiveSchemaMigration,
+  applyAdditiveFieldMigrations,
+  addedFieldsForTable,
   createAppTable,
   commandError,
   toSqlLiteral,
@@ -37,9 +39,13 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   linkGoogleAccount,
   runQuery,
   runMutation,
+  runInsertMutation,
+  runUpdateMutation,
   formatMutationResult,
   resolveTableForQuery,
   resolveTableForAddMutation,
+  resolveTableForUpdateMutation,
+  tableNameForSingular,
   toSqlBindingValue,
   rowToApiValue,
   quoteIdentifier,
@@ -82,9 +88,9 @@ function migrateAppSchema(sqlite, schema) {
   const nextSchemaJson = JSON.stringify(nextSchema);
   const nextSchemaHash = hashSchema(nextSchemaJson);
   const existingSchemaRow = sqlite.prepare("SELECT value FROM sporades WHERE key = ?").get("schema");
+  let existingSchema = null;
 
   if (existingSchemaRow) {
-    let existingSchema;
     try {
       existingSchema = JSON.parse(existingSchemaRow.value);
     } catch {
@@ -95,16 +101,19 @@ function migrateAppSchema(sqlite, schema) {
     }
 
     if (hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash) {
-      assertAdditiveTableMigration(existingSchema, nextSchema);
+      assertAdditiveSchemaMigration(existingSchema, nextSchema);
     }
   }
 
   for (const table of schema.tables) {
     createAppTable(sqlite, table);
   }
+  if (existingSchema) {
+    applyAdditiveFieldMigrations(sqlite, existingSchema, nextSchema);
+  }
 
   const upsert = sqlite.prepare("INSERT OR REPLACE INTO sporades (key, value) VALUES (?, ?)");
-  upsert.run("schemaVersion", "v1:additive-tables");
+  upsert.run("schemaVersion", "v1:additive-fields");
   upsert.run("schemaHash", nextSchemaHash);
   upsert.run("schema", nextSchemaJson);
 }
@@ -129,18 +138,52 @@ function hashSchema(schemaJson) {
   return createHash("sha256").update(schemaJson).digest("hex");
 }
 
-function assertAdditiveTableMigration(existingSchema, nextSchema) {
+function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
   const nextTables = new Map(nextSchema.tables.map((table) => [table.name, table]));
 
   for (const existingTable of existingSchema.tables ?? []) {
     const nextTable = nextTables.get(existingTable.name);
-    if (!nextTable || JSON.stringify(existingTable.fields) !== JSON.stringify(nextTable.fields)) {
+    if (!nextTable) {
       throw commandError(
         "Unsupported Capsule schema change.",
-        "Only adding new tables is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
+        "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
+      );
+    }
+
+    const nextFields = new Map(nextTable.fields.map((field) => [field.name, field]));
+    for (const existingField of existingTable.fields ?? []) {
+      const nextField = nextFields.get(existingField.name);
+      if (!nextField || JSON.stringify(existingField) !== JSON.stringify(nextField)) {
+        throw commandError(
+          "Unsupported Capsule schema change.",
+          "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
+        );
+      }
+    }
+  }
+}
+
+function applyAdditiveFieldMigrations(sqlite, existingSchema, nextSchema) {
+  const existingTables = new Map((existingSchema.tables ?? []).map((table) => [table.name, table]));
+
+  for (const nextTable of nextSchema.tables ?? []) {
+    const existingTable = existingTables.get(nextTable.name);
+    if (!existingTable) {
+      continue;
+    }
+
+    for (const field of addedFieldsForTable(existingTable, nextTable)) {
+      const defaultSql = field.defaultValue === undefined ? "" : ` NOT NULL DEFAULT ${toSqlLiteral(field.defaultValue)}`;
+      sqlite.exec(
+        `ALTER TABLE ${quoteIdentifier(nextTable.name)} ADD COLUMN ${quoteIdentifier(field.name)} ${field.sqliteType}${defaultSql}`,
       );
     }
   }
+}
+
+function addedFieldsForTable(existingTable, nextTable) {
+  const existingFields = new Set((existingTable.fields ?? []).map((field) => field.name));
+  return (nextTable.fields ?? []).filter((field) => !existingFields.has(field.name));
 }
 
 function createAppTable(sqlite, table) {
@@ -924,6 +967,13 @@ function runQuery(database, auth, queryName) {
 }
 
 function runMutation(database, auth, mutationName, args) {
+  if (mutationName.startsWith("update")) {
+    return runUpdateMutation(database, auth, mutationName, args);
+  }
+  return runInsertMutation(database, auth, mutationName, args);
+}
+
+function runInsertMutation(database, auth, mutationName, args) {
   const table = resolveTableForAddMutation(database.schema, mutationName);
   if (!table) {
     return {
@@ -948,6 +998,11 @@ function runMutation(database, auth, mutationName, args) {
     }
     if (field.name === "text") {
       values[field.name] = String(args[0] ?? "");
+      continue;
+    }
+    const positionalIndex = table.fields.filter((candidate) => candidate.name !== "ownerId").indexOf(field);
+    if (args[positionalIndex] !== undefined) {
+      values[field.name] = toSqlBindingValue(args[positionalIndex], field);
       continue;
     }
     if (field.defaultValue !== undefined) {
@@ -975,6 +1030,50 @@ function runMutation(database, auth, mutationName, args) {
         ")",
     )
     .run(...columns.map((column) => values[column]));
+  database.rowCache.clear();
+  return { ok: true, error: null };
+}
+
+function runUpdateMutation(database, auth, mutationName, args) {
+  const resolved = resolveTableForUpdateMutation(database.schema, mutationName);
+  if (!resolved) {
+    return {
+      ok: false,
+      error: {
+        message: `Unknown mutation: ${mutationName}`,
+        hint: "Use a mutation defined by the capsule.",
+      },
+    };
+  }
+
+  const [id, value] = args;
+  if (!id) {
+    return {
+      ok: false,
+      error: {
+        message: "Missing value for field: id",
+        hint: "Pass a value accepted by the capsule mutation.",
+      },
+    };
+  }
+  if (value === undefined) {
+    return {
+      ok: false,
+      error: {
+        message: `Missing value for field: ${resolved.field.name}`,
+        hint: "Pass a value accepted by the capsule mutation.",
+      },
+    };
+  }
+
+  const now = new Date().toISOString();
+  const ownerScoped = resolved.table.fields.some((field) => field.name === "ownerId");
+  database.sqlite
+    .prepare(
+      `UPDATE ${quoteIdentifier(resolved.table.name)} SET ${quoteIdentifier(resolved.field.name)} = ?, updatedAt = ? WHERE id = ?` +
+        (ownerScoped ? " AND ownerId = ?" : ""),
+    )
+    .run(toSqlBindingValue(value, resolved.field), now, id, ...(ownerScoped ? [auth.userId] : []));
   database.rowCache.clear();
   return { ok: true, error: null };
 }
@@ -1017,9 +1116,26 @@ function resolveTableForAddMutation(schema, mutationName) {
   if (!mutationName.startsWith("add") || mutationName.length <= 3) {
     return null;
   }
-  const singular = mutationName.slice(3);
-  const tableName = `${singular[0].toLowerCase()}${singular.slice(1)}s`;
+  const tableName = tableNameForSingular(mutationName.slice(3));
   return schema.tables.find((table) => table.name === tableName) ?? null;
+}
+
+function resolveTableForUpdateMutation(schema, mutationName) {
+  const match = mutationName.match(/^update([A-Z][A-Za-z0-9]*?)([A-Z][A-Za-z0-9]*)$/);
+  if (!match) {
+    return null;
+  }
+  const table = schema.tables.find((candidate) => candidate.name === tableNameForSingular(match[1]));
+  if (!table) {
+    return null;
+  }
+  const fieldName = `${match[2][0].toLowerCase()}${match[2].slice(1)}`;
+  const field = table.fields.find((candidate) => candidate.name === fieldName);
+  return field ? { table, field } : null;
+}
+
+function tableNameForSingular(singular) {
+  return `${singular[0].toLowerCase()}${singular.slice(1)}s`;
 }
 
 function toSqlBindingValue(value, field) {

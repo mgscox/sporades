@@ -1,6 +1,6 @@
 # Add additive field migrations
 
-Status: ready-for-agent
+Status: done
 
 ## What to build
 
@@ -8,12 +8,12 @@ Extend incremental migrations so a developer can add a new field to an existing 
 
 ## Acceptance criteria
 
-- [ ] Starting a Capsule with an added field updates the existing SQLite table without dropping rows.
-- [ ] Added fields with defaults populate existing rows consistently with the field builder's default behavior.
-- [ ] Added fields without defaults have a clear nullable or structured-error behavior documented by the implementation.
-- [ ] Query subscriptions return the added field in result rows after migration.
-- [ ] Mutations can insert and update values for the added field after migration.
-- [ ] Unsupported field changes still fail with a structured error and actionable hint instead of silently corrupting or dropping data.
+- [x] Starting a Capsule with an added field updates the existing SQLite table without dropping rows.
+- [x] Added fields with defaults populate existing rows consistently with the field builder's default behavior.
+- [x] Added fields without defaults have a clear nullable behavior for migrated rows.
+- [x] Query subscriptions return the added field in result rows after migration.
+- [x] Mutations can insert and update values for the added field after migration.
+- [x] Unsupported field changes still fail with a structured error and actionable hint instead of silently corrupting or dropping data.
 
 ## Blocked by
 
