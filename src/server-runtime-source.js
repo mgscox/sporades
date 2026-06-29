@@ -14,6 +14,13 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createAppTable,
   commandError,
   toSqlLiteral,
+  createEndpointContext,
+  createEndpointDatabaseApi,
+  createEndpointTableApi,
+  serializeFieldValue,
+  deserializeRow,
+  readEndpointBody,
+  createEndpointLogger,
   authStatus,
   createAnonymousAuthTables,
   resolveAnonymousSession,
@@ -26,6 +33,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   runEndpoint,
   writeEndpointResult,
   writeEndpointError,
+  endpointResponseError,
   linkGoogleAccount,
   runQuery,
   runMutation,
@@ -265,36 +273,194 @@ export async function routeEndpoint(database, request, response) {
   }
 
   try {
-    writeEndpointResult(response, await runEndpoint(endpoint));
-  } catch {
-    writeEndpointError(response);
+    writeEndpointResult(response, await runEndpoint(database, endpoint, requestUrl, request));
+  } catch (error) {
+    writeEndpointError(response, error);
   }
   return true;
 }
 
-async function runEndpoint(endpoint) {
+async function runEndpoint(database, endpoint, requestUrl, request) {
   const createHandler = new Function(`return (${endpoint.handlerSource});`);
   const handler = createHandler();
-  return handler();
+  return handler(await createEndpointContext(database, requestUrl, request));
+}
+
+async function createEndpointContext(database, requestUrl, request) {
+  const headers = Object.fromEntries(
+    Object.entries(request.headers).map(([name, value]) => [
+      name.toLowerCase(),
+      Array.isArray(value) ? value.join(", ") : value,
+    ]),
+  );
+  const query = Object.fromEntries(requestUrl.searchParams.entries());
+  const session = resolveAnonymousSession(database, query.sessionToken);
+
+  return {
+    db: createEndpointDatabaseApi(database),
+    auth: session.auth,
+    env: database.serverEnv,
+    log: createEndpointLogger(),
+    request: {
+      method: request.method,
+      path: requestUrl.pathname,
+      headers,
+      query,
+      body: await readEndpointBody(request, headers),
+    },
+  };
+}
+
+function createEndpointDatabaseApi(database) {
+  return Object.fromEntries(
+    database.schema.tables.map((table) => [table.name, createEndpointTableApi(database, table)]),
+  );
+}
+
+function createEndpointTableApi(database, table, query = {}) {
+  return {
+    insert(values) {
+      const now = new Date().toISOString();
+      const row = {
+        id: randomUUID(),
+        createdAt: now,
+        updatedAt: now,
+        ...Object.fromEntries(
+          table.fields.map((field) => [
+            field.name,
+            serializeFieldValue(field, values[field.name] ?? field.defaultValue),
+          ]),
+        ),
+      };
+      const columns = Object.keys(row);
+      database.sqlite
+        .prepare(
+          `INSERT INTO ${quoteIdentifier(table.name)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns
+            .map(() => "?")
+            .join(", ")})`,
+        )
+        .run(...columns.map((column) => row[column]));
+      database.rowCache.clear();
+      return deserializeRow(table, row);
+    },
+    where(fieldName, value) {
+      return createEndpointTableApi(database, table, { ...query, where: { fieldName, value } });
+    },
+    orderBy(fieldName, direction = "asc") {
+      return createEndpointTableApi(database, table, { ...query, orderBy: { fieldName, direction } });
+    },
+    all() {
+      const whereSql = query.where ? ` WHERE ${quoteIdentifier(query.where.fieldName)} = ?` : "";
+      const orderSql = query.orderBy
+        ? ` ORDER BY ${quoteIdentifier(query.orderBy.fieldName)} ${
+            String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"
+          }`
+        : "";
+      const params = query.where ? [serializeFieldValue(table.fields.find((field) => field.name === query.where.fieldName), query.where.value)] : [];
+      return database.sqlite
+        .prepare(`SELECT * FROM ${quoteIdentifier(table.name)}${whereSql}${orderSql}`)
+        .all(...params)
+        .map((row) => deserializeRow(table, row));
+    },
+  };
+}
+
+function serializeFieldValue(field, value) {
+  if (field?.kind === "Boolean") {
+    return value ? 1 : 0;
+  }
+  return String(value ?? "");
+}
+
+function deserializeRow(table, row) {
+  const output = { ...row };
+  for (const field of table.fields) {
+    if (field.kind === "Boolean") {
+      output[field.name] = Boolean(output[field.name]);
+    }
+  }
+  return output;
+}
+
+async function readEndpointBody(request, headers) {
+  const chunks = [];
+  for await (const chunk of request) {
+    chunks.push(chunk);
+  }
+  const raw = Buffer.concat(chunks).toString("utf8");
+  if (!raw) {
+    return null;
+  }
+  if ((headers["content-type"] ?? "").toLowerCase().includes("application/json")) {
+    return JSON.parse(raw);
+  }
+  return raw;
+}
+
+function createEndpointLogger() {
+  return {
+    info() {},
+    warn() {},
+    error() {},
+  };
 }
 
 function writeEndpointResult(response, result) {
+  if (result && typeof result === "object" && !Buffer.isBuffer(result) && "body" in result) {
+    const status = result.status ?? 200;
+    if (!Number.isInteger(status) || status < 100 || status > 599) {
+      throw endpointResponseError();
+    }
+    if (
+      result.headers !== undefined &&
+      (result.headers === null || typeof result.headers !== "object" || Array.isArray(result.headers))
+    ) {
+      throw endpointResponseError();
+    }
+    const headers = { ...(result.headers ?? {}) };
+    const body = result.body ?? null;
+    if (body !== null && typeof body === "object" && !Buffer.isBuffer(body)) {
+      headers["content-type"] ??= "application/json; charset=utf-8";
+      let payload;
+      try {
+        payload = JSON.stringify(body);
+      } catch {
+        throw endpointResponseError();
+      }
+      response.writeHead(status, headers);
+      response.end(payload);
+      return;
+    }
+    headers["content-type"] ??= "text/plain; charset=utf-8";
+    response.writeHead(status, headers);
+    response.end(String(body ?? ""));
+    return;
+  }
+
   response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
   response.end(String(result ?? ""));
 }
 
-function writeEndpointError(response) {
+function writeEndpointError(response, error) {
   response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
   response.end(
     `${JSON.stringify({
       ok: false,
       data: null,
       error: {
-        message: "Endpoint handler failed.",
-        hint: "Check the endpoint handler and retry the request.",
+        message: error?.sporadesEndpointResponse ? "Invalid endpoint response." : "Endpoint handler failed.",
+        hint: error?.sporadesEndpointResponse
+          ? "Return { status, headers, body } with a numeric status, plain object headers, and a serializable body."
+          : "Check the endpoint handler and retry the request.",
       },
     })}\n`,
   );
+}
+
+function endpointResponseError() {
+  const error = new Error("Invalid endpoint response.");
+  error.sporadesEndpointResponse = true;
+  return error;
 }
 
 function parseFieldDefault(kind, rawDefault) {

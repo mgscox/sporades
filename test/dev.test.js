@@ -305,6 +305,202 @@ export default capsule({
   });
 });
 
+test("sporades dev gives endpoint handlers request context and structured responses", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "endpoint-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "endpoint-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "WEBHOOK_SECRET=dev-secret\n");
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "endpoint-island",
+
+  endpoints: {
+    echo: endpoint({ method: "POST", path: "/integrations/echo" }, (ctx) => ({
+      status: 201,
+      headers: { "x-sporades-endpoint": ctx.env.WEBHOOK_SECRET },
+      body: {
+        method: ctx.request.method,
+        path: ctx.request.path,
+        header: ctx.request.headers["x-source"],
+        query: ctx.request.query.source,
+        body: ctx.request.body,
+        authProvider: ctx.auth.provider,
+        logMethods: Object.keys(ctx.log).sort(),
+      },
+    })),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+
+      const endpointResponse = await fetch(`${started.data.url}/integrations/echo?source=test-suite`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-source": "integration",
+        },
+        body: JSON.stringify({ hello: "endpoint" }),
+      });
+      assert.equal(endpointResponse.status, 201);
+      assert.match(endpointResponse.headers.get("content-type") ?? "", /^application\/json/);
+      assert.equal(endpointResponse.headers.get("x-sporades-endpoint"), "dev-secret");
+      assert.deepEqual(await endpointResponse.json(), {
+        method: "POST",
+        path: "/integrations/echo",
+        header: "integration",
+        query: "test-suite",
+        body: { hello: "endpoint" },
+        authProvider: "anonymous",
+        logMethods: ["error", "info", "warn"],
+      });
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev endpoint handlers can read and write Capsule data with the table API", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "endpoint-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "endpoint-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { Boolean, capsule, endpoint, String, table } from "sporades/server";
+
+export default capsule({
+  name: "endpoint-island",
+
+  schema: {
+    todos: table({
+      text: String(),
+      done: Boolean().default(false),
+      ownerId: String(),
+    }),
+  },
+
+  endpoints: {
+    addTodo: endpoint({ method: "POST", path: "/integrations/todos" }, (ctx) => {
+      ctx.db.todos.insert({
+        text: ctx.request.body.text,
+        done: false,
+        ownerId: ctx.auth.userId,
+      });
+
+      return {
+        status: 200,
+        body: ctx.db.todos
+          .where("ownerId", ctx.auth.userId)
+          .orderBy("createdAt", "desc")
+          .all(),
+      };
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+
+      const endpointResponse = await fetch(`${started.data.url}/integrations/todos`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "From endpoint" }),
+      });
+      assert.equal(endpointResponse.status, 200);
+      const rows = await endpointResponse.json();
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].text, "From endpoint");
+      assert.equal(rows[0].done, false);
+      assert.equal(typeof rows[0].id, "string");
+      assert.equal(typeof rows[0].createdAt, "string");
+      assert.equal(typeof rows[0].updatedAt, "string");
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev returns structured errors for invalid endpoint responses", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "endpoint-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "endpoint-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "endpoint-island",
+
+  endpoints: {
+    invalid: endpoint({ method: "POST", path: "/integrations/invalid" }, () => ({
+      status: "created",
+      body: { ok: true },
+    })),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+
+      const endpointResponse = await fetch(`${started.data.url}/integrations/invalid`, { method: "POST" });
+      assert.equal(endpointResponse.status, 500);
+      assert.match(endpointResponse.headers.get("content-type") ?? "", /^application\/json/);
+      assert.deepEqual(await endpointResponse.json(), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Invalid endpoint response.",
+          hint: "Return { status, headers, body } with a numeric status, plain object headers, and a serializable body.",
+        },
+      });
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev returns structured endpoint errors without crashing the session", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "endpoint-island", "--no-install", "--no-git", "--json"], {

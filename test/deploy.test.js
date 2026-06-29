@@ -469,6 +469,87 @@ test("sporades deploy writes a server bundle that applies additive table migrati
   });
 });
 
+test("sporades deploy writes a server bundle with endpoint context and structured responses", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "endpoint-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "endpoint-island"));
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "WEBHOOK_SECRET=container-secret\n");
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "endpoint-island",
+
+  endpoints: {
+    echo: endpoint({ method: "POST", path: "/integrations/echo" }, (ctx) => ({
+      status: 202,
+      headers: { "x-sporades-endpoint": ctx.env.WEBHOOK_SECRET },
+      body: {
+        method: ctx.request.method,
+        path: ctx.request.path,
+        header: ctx.request.headers["x-source"],
+        query: ctx.request.query.source,
+        body: ctx.request.body,
+        authProvider: ctx.auth.provider,
+      },
+    })),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "container-first");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+
+    const port = await getAvailablePort();
+    const serverBundlePath = path.join(projectDir, ".sporades", "build", "server.mjs");
+    const child = spawn(process.execPath, [serverBundlePath], {
+      cwd: projectDir,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    try {
+      await waitForHttp(`http://127.0.0.1:${port}/`, child);
+      const endpointResponse = await fetch(`http://127.0.0.1:${port}/integrations/echo?source=test-suite`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-source": "integration",
+        },
+        body: JSON.stringify({ hello: "container" }),
+      });
+      assert.equal(endpointResponse.status, 202);
+      assert.match(endpointResponse.headers.get("content-type") ?? "", /^application\/json/);
+      assert.equal(endpointResponse.headers.get("x-sporades-endpoint"), "container-secret");
+      assert.deepEqual(await endpointResponse.json(), {
+        method: "POST",
+        path: "/integrations/echo",
+        header: "integration",
+        query: "test-suite",
+        body: { hello: "container" },
+        authProvider: "anonymous",
+      });
+    } finally {
+      await stopChild(child);
+    }
+  });
+});
+
 test("sporades deploy skips the server env mount when the env file is absent", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
