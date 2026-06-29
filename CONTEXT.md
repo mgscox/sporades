@@ -20,6 +20,10 @@ _Avoid_: deploy (that's the command), deployment (remote connotation)
 The esbuild output — a self-contained JavaScript file with all dependencies inlined. Server bundle (`server.mjs`) and client bundle (`client.js`).
 _Avoid_: build (that's the act), artifact (too abstract)
 
+**Bundle pipeline**:
+The build-time path that turns a Capsule's server entry, client entry, `sporades.json`, `index.html`, and Server env into the server Bundle and client Bundle in the Runtime directory. Used by both Dev session and Container session so they run the same bundled code.
+_Avoid_: build system (too broad), compiler (only part of the work), bundler (esbuild is just one adapter inside it)
+
 **Base image**:
 The Docker image (Node 22 alpine) that all container sessions use. v0 uses the stock image with no hardening. v1 will introduce a locked, hardened image (non-root, read-only FS, seccomp).
 _Avoid_: runtime image, host image
