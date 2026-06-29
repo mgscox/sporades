@@ -107,6 +107,19 @@ test("sporades/server exports the endpoint builder", async () => {
   });
 });
 
+test("sporades/server exports the Json field builder", async () => {
+  const runtime = await import("sporades/server");
+  const field = runtime.Json();
+
+  assert.equal(typeof runtime.Json, "function");
+  assert.equal(field.kind, "Json");
+  assert.equal(typeof field.default, "function");
+  assert.deepEqual(field.default({ tags: ["json"] }), {
+    kind: "Json",
+    defaultValue: { tags: ["json"] },
+  });
+});
+
 test("sporades create writes a runnable Preact todo scaffold", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(

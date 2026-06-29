@@ -50,6 +50,10 @@ export function Date() {
   return field("Date");
 }
 
+export function Json() {
+  return field("Json");
+}
+
 function field(kind) {
   return {
     kind,

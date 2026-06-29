@@ -1516,6 +1516,275 @@ test("sporades dev supports Date fields through migrations, mutations, queries, 
   });
 });
 
+test("sporades dev preserves Json field values through endpoints and WebSocket queries", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "json-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "json-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint, Json, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: "json-island",
+
+  schema: {
+    notes: table({
+      text: String(),
+      meta: Json().default({ tags: [], archived: false }),
+      ownerId: String(),
+    }),
+  },
+
+  queries: {
+    notes: query((ctx) =>
+      ctx.db.notes
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "desc")
+        .all()
+    ),
+  },
+
+  mutations: {
+    addNote: mutation((ctx, text: string, meta: unknown) => {
+      ctx.db.notes.insert({ text, meta, ownerId: ctx.auth.userId });
+    }),
+    updateNoteMeta: mutation((ctx, id: string, meta: unknown) => {
+      ctx.db.notes.update(id, { meta });
+    }),
+  },
+
+  endpoints: {
+    seed: endpoint({ method: "POST", path: "/seed" }, (ctx) => ({
+      status: 200,
+      body: ctx.db.notes.insert({
+        text: ctx.request.body.text,
+        meta: ctx.request.body.meta,
+        ownerId: ctx.auth.userId,
+      }),
+    })),
+    invalid: endpoint({ method: "POST", path: "/invalid-json" }, (ctx) => {
+      ctx.db.notes.insert({
+        text: "bad",
+        meta: () => "not JSON",
+        ownerId: ctx.auth.userId,
+      });
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      const meta = {
+        tags: ["agent", "json"],
+        flags: { reviewed: true, score: 4.5 },
+        values: [null, false, 7, "seven"],
+      };
+      socket = await openSocket(started.data.url);
+      socket.send(JSON.stringify({ id: "auth-1", type: "auth.get" }));
+      const sessionToken = (await readSocketMessage(socket)).data.sessionToken;
+
+      const seedResponse = await fetch(`${started.data.url}/seed?sessionToken=${encodeURIComponent(sessionToken)}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "Seeded", meta }),
+      });
+      assert.equal(seedResponse.status, 200);
+      const seeded = await seedResponse.json();
+      assert.deepEqual(seeded.meta, meta);
+      const compatibleValues = [
+        ["Array", ["top", 1, null]],
+        ["Boolean", true],
+        ["Number", 42.5],
+        ["String", "plain text"],
+        ["Null", null],
+      ];
+      for (const [text, value] of compatibleValues) {
+        const response = await fetch(`${started.data.url}/seed?sessionToken=${encodeURIComponent(sessionToken)}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text, meta: value }),
+        });
+        assert.equal(response.status, 200);
+        assert.deepEqual((await response.json()).meta, value);
+      }
+
+      socket.send(JSON.stringify({ id: "notes-1", type: "query.subscribe", query: "notes" }));
+      const initial = await readSocketMessage(socket);
+      assert.equal(initial.error, null);
+      assert.deepEqual(initial.data.find((row) => row.text === "Seeded").meta, meta);
+      for (const [text, value] of compatibleValues) {
+        assert.deepEqual(initial.data.find((row) => row.text === text).meta, value);
+      }
+
+      socket.send(
+        JSON.stringify({
+          id: "add-1",
+          type: "mutation.run",
+          mutation: "addNote",
+          args: ["Defaulted"],
+        }),
+      );
+      const addResult = await readSocketMessage(socket);
+      assert.equal(addResult.type, "mutation.result");
+      assert.equal(addResult.error, null);
+      const afterDefault = await waitForSocketMessage(
+        socket,
+        (message) => message.id === "notes-1" && message.type === "query.result" && message.data.length === 7,
+      );
+      assert.deepEqual(afterDefault.data[0].meta, { tags: [], archived: false });
+
+      const updatedMeta = { tags: ["edited"], nested: { ok: true }, values: [1, "two", null] };
+      socket.send(
+        JSON.stringify({
+          id: "update-1",
+          type: "mutation.run",
+          mutation: "updateNoteMeta",
+          args: [seeded.id, updatedMeta],
+        }),
+      );
+      const updateResult = await readSocketMessage(socket);
+      assert.equal(updateResult.type, "mutation.result");
+      assert.equal(updateResult.error, null);
+      socket.send(JSON.stringify({ id: "notes-2", type: "query.subscribe", query: "notes" }));
+      const afterUpdate = await waitForSocketMessage(
+        socket,
+        (message) => message.id === "notes-2" && message.type === "query.result",
+      );
+      assert.deepEqual(afterUpdate.data.find((row) => row.text === "Seeded").meta, updatedMeta);
+
+      const invalidResponse = await fetch(`${started.data.url}/invalid-json`, { method: "POST" });
+      assert.equal(invalidResponse.status, 500);
+      assert.deepEqual(await invalidResponse.json(), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Invalid JSON field value.",
+          hint: "Use only JSON-compatible values: objects, arrays, strings, numbers, booleans, or null.",
+        },
+      });
+
+      const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
+      assert.equal(dumpResult.code, 0, dumpResult.stderr);
+      const notesTable = JSON.parse(dumpResult.stdout).data.tables.find((table) => table.name === "notes");
+      assert.match(notesTable.rows.find((row) => row.text === "Seeded").meta, /^\{/);
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev applies additive Json field migrations with decoded defaults", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    let migratedSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      socket = await openSocket(started.data.url);
+      socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+      const sessionToken = (await readSocketMessage(socket)).data.sessionToken;
+      socket.send(JSON.stringify({ id: "todos-before", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+      socket.send(JSON.stringify({ id: "add-before", type: "mutation.run", mutation: "addTodo", args: ["Keep me"] }));
+      assert.equal((await readSocketMessage(socket)).error, null);
+      assert.equal((await readSocketMessage(socket)).data[0].text, "Keep me");
+
+      const serverPath = path.join(projectDir, "server", "index.ts");
+      const originalServer = await readFile(serverPath, "utf8");
+      await writeFile(
+        serverPath,
+        originalServer
+          .replace("import { Boolean,", "import { Boolean, Json,")
+          .replace(
+            "done: Boolean().default(false),",
+            `done: Boolean().default(false),
+      meta: Json().default({ tags: ["migrated"], archived: false }),`,
+          )
+          .replace(
+            "addTodo: mutation((ctx, text: string) => {",
+            `updateTodoMeta: mutation((ctx, id: string, meta: unknown) => {
+      ctx.db.todos.update(id, { meta });
+    }),
+
+    addTodo: mutation((ctx, text: string) => {`,
+          ),
+      );
+
+      const [rebuilt] = await Promise.all([
+        waitForJsonEvent(
+          child,
+          (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success",
+        ),
+        waitForSocketClose(socket),
+      ]);
+      assert.equal(rebuilt.error, null);
+      socket = null;
+
+      migratedSocket = await openSocket(started.data.url, sessionToken);
+      migratedSocket.send(JSON.stringify({ id: "todos-after", type: "query.subscribe", query: "todos" }));
+      const migratedRows = await readSocketMessage(migratedSocket);
+      assert.equal(migratedRows.error, null);
+      assert.deepEqual(migratedRows.data[0].meta, { tags: ["migrated"], archived: false });
+
+      const updatedMeta = { tags: ["after"], nested: { count: 1 }, values: [true, null, "ok"] };
+      migratedSocket.send(
+        JSON.stringify({
+          id: "update-meta",
+          type: "mutation.run",
+          mutation: "updateTodoMeta",
+          args: [migratedRows.data[0].id, updatedMeta],
+        }),
+      );
+      assert.equal((await readSocketMessage(migratedSocket)).error, null);
+      const updatedRows = await waitForSocketMessage(
+        migratedSocket,
+        (message) => message.id === "todos-after" && message.data[0]?.meta?.nested?.count === 1,
+      );
+      assert.deepEqual(updatedRows.data[0].meta, updatedMeta);
+
+      const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
+      assert.equal(dumpResult.code, 0, dumpResult.stderr);
+      const todosTable = JSON.parse(dumpResult.stdout).data.tables.find((table) => table.name === "todos");
+      assert.match(todosTable.rows[0].meta, /^\{/);
+    } finally {
+      migratedSocket?.close();
+      socket?.close();
+      if (child.exitCode === null) {
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.kill("SIGTERM");
+        await exited;
+      }
+    }
+  });
+});
+
 test("sporades dev rejects unsupported Capsule schema changes with a structured rebuild error", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {

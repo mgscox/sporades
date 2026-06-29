@@ -7,6 +7,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   extractEndpoints,
   extractFields,
   parseFieldDefault,
+  parseJsonFieldDefault,
   migrateAppSchema,
   normalizeSchema,
   hashSchema,
@@ -16,6 +17,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createAppTable,
   commandError,
   toSqlLiteral,
+  findMatchingParen,
   createEndpointContext,
   readEndpointSessionToken,
   createEndpointDatabaseApi,
@@ -23,6 +25,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   serializeFieldValue,
   normalizeDateValue,
   dateValueError,
+  assertJsonCompatible,
+  invalidJsonFieldValueError,
   deserializeRow,
   readEndpointBody,
   createEndpointLogger,
@@ -177,7 +181,7 @@ function applyAdditiveFieldMigrations(sqlite, existingSchema, nextSchema) {
     }
 
     for (const field of addedFieldsForTable(existingTable, nextTable)) {
-      const defaultSql = field.defaultValue === undefined ? "" : ` NOT NULL DEFAULT ${toSqlLiteral(field.defaultValue)}`;
+      const defaultSql = field.defaultValue === undefined ? "" : ` NOT NULL DEFAULT ${toSqlLiteral(field.defaultValue, field)}`;
       sqlite.exec(
         `ALTER TABLE ${quoteIdentifier(nextTable.name)} ADD COLUMN ${quoteIdentifier(field.name)} ${field.sqliteType}${defaultSql}`,
       );
@@ -198,7 +202,7 @@ function createAppTable(sqlite, table) {
         "createdAt TEXT NOT NULL",
         "updatedAt TEXT NOT NULL",
         ...table.fields.map((field) => {
-          const defaultSql = field.defaultValue === undefined ? "" : ` DEFAULT ${toSqlLiteral(field.defaultValue)}`;
+          const defaultSql = field.defaultValue === undefined ? "" : ` DEFAULT ${toSqlLiteral(field.defaultValue, field)}`;
           return `${quoteIdentifier(field.name)} ${field.sqliteType} NOT NULL${defaultSql}`;
         }),
       ].join(", ") +
@@ -213,14 +217,66 @@ function commandError(message, hint) {
 }
 
 function extractSchema(serverSource) {
-  return {
-    tables: [...serverSource.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:\s*table\s*\(\s*\{([\s\S]*?)\}\s*\)/g)].map(
-      (match) => ({
-        name: match[1],
-        fields: extractFields(match[2]),
-      }),
-    ),
-  };
+  const tables = [];
+  const tablePattern = /([A-Za-z_][A-Za-z0-9_]*)\s*:\s*table\s*\(/g;
+  let match;
+
+  while ((match = tablePattern.exec(serverSource))) {
+    const argsEnd = findMatchingParen(serverSource, tablePattern.lastIndex - 1);
+    if (argsEnd === -1) {
+      continue;
+    }
+    const argsSource = serverSource.slice(tablePattern.lastIndex, argsEnd).trim();
+    const fieldsSource = argsSource.startsWith("{") && argsSource.endsWith("}") ? argsSource.slice(1, -1) : argsSource;
+    tables.push({
+      name: match[1],
+      fields: extractFields(fieldsSource),
+    });
+    tablePattern.lastIndex = argsEnd + 1;
+  }
+
+  return { tables };
+}
+
+function findMatchingParen(source, openIndex) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === "(") {
+      depth += 1;
+      continue;
+    }
+    if (char === ")") {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+
+  return -1;
 }
 
 function extractEndpoints(serverSource) {
@@ -253,51 +309,10 @@ function extractEndpoints(serverSource) {
   }
 
   return endpoints;
-
-  function findMatchingParen(source, openIndex) {
-    let depth = 0;
-    let quote = null;
-    let escaped = false;
-
-    for (let index = openIndex; index < source.length; index += 1) {
-      const char = source[index];
-      if (quote) {
-        if (escaped) {
-          escaped = false;
-          continue;
-        }
-        if (char === "\\") {
-          escaped = true;
-          continue;
-        }
-        if (char === quote) {
-          quote = null;
-        }
-        continue;
-      }
-
-      if (char === '"' || char === "'" || char === "`") {
-        quote = char;
-        continue;
-      }
-      if (char === "(") {
-        depth += 1;
-        continue;
-      }
-      if (char === ")") {
-        depth -= 1;
-        if (depth === 0) {
-          return index;
-        }
-      }
-    }
-
-    return -1;
-  }
 }
 
 function extractFields(tableSource) {
-  return [...tableSource.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|Boolean|Number|Date)\(\)(?:\.default\(([^)]*)\))?/g)].map(
+  return [...tableSource.matchAll(/([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(String|Boolean|Number|Date|Json)\(\)(?:\.default\(([^)]*)\))?/g)].map(
     (match) => {
       const kind = match[2];
       return {
@@ -379,7 +394,10 @@ function createEndpointTableApi(database, table, query = {}) {
         ...Object.fromEntries(
           table.fields.map((field) => [
             field.name,
-            serializeFieldValue(field, values[field.name] ?? field.defaultValue),
+            serializeFieldValue(
+              field,
+              Object.hasOwn(values, field.name) ? values[field.name] : field.defaultValue,
+            ),
           ]),
         ),
       };
@@ -426,6 +444,10 @@ function serializeFieldValue(field, value) {
   if (field?.kind === "Date") {
     return normalizeDateValue(value, field.name);
   }
+  if (field?.kind === "Json") {
+    assertJsonCompatible(value);
+    return JSON.stringify(value);
+  }
   return String(value ?? "");
 }
 
@@ -453,11 +475,35 @@ function dateValueError(fieldName) {
   );
 }
 
+function assertJsonCompatible(value) {
+  try {
+    const serialized = JSON.stringify(value);
+    if (serialized === undefined) {
+      throw invalidJsonFieldValueError();
+    }
+    JSON.parse(serialized);
+  } catch (error) {
+    if (error?.hint) {
+      throw error;
+    }
+    throw invalidJsonFieldValueError();
+  }
+}
+
+function invalidJsonFieldValueError() {
+  return commandError(
+    "Invalid JSON field value.",
+    "Use only JSON-compatible values: objects, arrays, strings, numbers, booleans, or null.",
+  );
+}
+
 function deserializeRow(table, row) {
   const output = { ...row };
   for (const field of table.fields) {
     if (field.kind === "Boolean") {
       output[field.name] = Boolean(output[field.name]);
+    } else if (field.kind === "Json") {
+      output[field.name] = JSON.parse(output[field.name]);
     }
     if (field.kind === "Number") {
       output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
@@ -571,10 +617,31 @@ function parseFieldDefault(kind, rawDefault) {
   if (kind === "Date") {
     return normalizeDateValue(defaultValue, "default");
   }
+  if (kind === "Json") {
+    return parseJsonFieldDefault(rawDefault);
+  }
   return defaultValue;
 }
 
-function toSqlLiteral(value) {
+function parseJsonFieldDefault(rawDefault) {
+  try {
+    const createDefault = new Function(`return (${rawDefault});`);
+    const value = createDefault();
+    assertJsonCompatible(value);
+    return value;
+  } catch {
+    throw commandError(
+      "Invalid JSON field default.",
+      "Use a JSON-compatible default value for Json().default(...).",
+    );
+  }
+}
+
+function toSqlLiteral(value, field = null) {
+  if (field?.kind === "Json") {
+    assertJsonCompatible(value);
+    return `'${JSON.stringify(value).replaceAll("'", "''")}'`;
+  }
   if (typeof value === "boolean") {
     return value ? "1" : "0";
   }
@@ -1216,6 +1283,10 @@ function toSqlBindingValue(value, field) {
   if (field.kind === "Date") {
     return normalizeDateValue(value, field.name);
   }
+  if (field.kind === "Json") {
+    assertJsonCompatible(value);
+    return JSON.stringify(value);
+  }
   return value;
 }
 
@@ -1224,6 +1295,8 @@ function rowToApiValue(row, table) {
   for (const field of table.fields) {
     if (field.kind === "Boolean") {
       value[field.name] = Boolean(value[field.name]);
+    } else if (field.kind === "Json") {
+      value[field.name] = JSON.parse(value[field.name]);
     }
     if (field.kind === "Number") {
       value[field.name] = value[field.name] === null ? null : Number(value[field.name]);
