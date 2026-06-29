@@ -5,9 +5,14 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   openDevDatabase,
   extractSchema,
   extractEndpoints,
+  extractMutationHooks,
+  extractHookList,
   extractFields,
   parseFieldDefault,
   parseJsonFieldDefault,
+  extractObjectPropertySource,
+  findMatchingDelimiter,
+  splitTopLevelList,
   migrateAppSchema,
   normalizeSchema,
   hashSchema,
@@ -50,6 +55,9 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   linkGoogleAccount,
   runQuery,
   runMutation,
+  runMutationHook,
+  createMutationContext,
+  createHookErrorResult,
   runInsertMutation,
   runUpdateMutation,
   formatMutationResult,
@@ -76,11 +84,13 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
   const sqlite = new DatabaseSync(databasePath);
   const schema = extractSchema(serverSource);
   const endpoints = extractEndpoints(serverSource);
+  const mutationHooks = extractMutationHooks(serverSource);
   const rowCache = new Map();
   const database = {
     sqlite,
     schema,
     endpoints,
+    mutationHooks,
     rowCache,
     serverEnv,
     authConfig: authStatus(config, serverEnv),
@@ -331,6 +341,184 @@ function extractEndpoints(serverSource) {
   }
 
   return endpoints;
+}
+
+function extractMutationHooks(serverSource) {
+  const hooksSource = extractObjectPropertySource(serverSource, "hooks");
+  if (!hooksSource) {
+    return {
+      beforeMutation: [],
+      afterMutation: [],
+    };
+  }
+
+  return {
+    beforeMutation: extractHookList(hooksSource, "beforeMutation"),
+    afterMutation: extractHookList(hooksSource, "afterMutation"),
+  };
+}
+
+function extractHookList(hooksSource, propertyName) {
+  const valueSource = extractObjectPropertySource(hooksSource, propertyName);
+  if (!valueSource) {
+    return [];
+  }
+  const trimmed = valueSource.trim();
+  if (trimmed.startsWith("[")) {
+    const closeIndex = findMatchingDelimiter(trimmed, 0, "[", "]");
+    if (closeIndex === -1) {
+      return [];
+    }
+    return splitTopLevelList(trimmed.slice(1, closeIndex)).map((source) => source.trim()).filter(Boolean);
+  }
+  return [trimmed.replace(/,\s*$/, "")];
+}
+
+function extractObjectPropertySource(source, propertyName) {
+  const pattern = new RegExp(`\\b${propertyName}\\s*:`, "g");
+  const match = pattern.exec(source);
+  if (!match) {
+    return null;
+  }
+  const valueStart = match.index + match[0].length;
+  let index = valueStart;
+  while (/\s/.test(source[index] ?? "")) {
+    index += 1;
+  }
+
+  const firstChar = source[index];
+  if (firstChar === "{") {
+    const endIndex = findMatchingDelimiter(source, index, "{", "}");
+    return endIndex === -1 ? null : source.slice(index, endIndex + 1);
+  }
+  if (firstChar === "[") {
+    const endIndex = findMatchingDelimiter(source, index, "[", "]");
+    return endIndex === -1 ? null : source.slice(index, endIndex + 1);
+  }
+
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+  for (let cursor = index; cursor < source.length; cursor += 1) {
+    const char = source[cursor];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === "(" || char === "{" || char === "[") {
+      depth += 1;
+      continue;
+    }
+    if (char === ")" || char === "}" || char === "]") {
+      if (depth === 0) {
+        return source.slice(index, cursor);
+      }
+      depth -= 1;
+      continue;
+    }
+    if (char === "," && depth === 0) {
+      return source.slice(index, cursor);
+    }
+  }
+  return source.slice(index);
+}
+
+function findMatchingDelimiter(source, openIndex, openChar, closeChar) {
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+
+  for (let index = openIndex; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === openChar) {
+      depth += 1;
+      continue;
+    }
+    if (char === closeChar) {
+      depth -= 1;
+      if (depth === 0) {
+        return index;
+      }
+    }
+  }
+  return -1;
+}
+
+function splitTopLevelList(source) {
+  const items = [];
+  let start = 0;
+  let depth = 0;
+  let quote = null;
+  let escaped = false;
+
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === "(" || char === "{" || char === "[") {
+      depth += 1;
+      continue;
+    }
+    if (char === ")" || char === "}" || char === "]") {
+      depth -= 1;
+      continue;
+    }
+    if (char === "," && depth === 0) {
+      items.push(source.slice(start, index));
+      start = index + 1;
+    }
+  }
+
+  items.push(source.slice(start));
+  return items;
 }
 
 function extractFields(tableSource) {
@@ -1145,17 +1333,56 @@ function runQuery(database, auth, queryName) {
 }
 
 function runMutation(database, auth, mutationName, args) {
+  const hookContext = createMutationContext(database, auth);
+  let result;
+  database.sqlite.exec("BEGIN");
   try {
-    if (mutationName.startsWith("update")) {
-      return runUpdateMutation(database, auth, mutationName, args);
+    for (const hookSource of database.mutationHooks.beforeMutation) {
+      runMutationHook(hookSource, { name: mutationName, args, ctx: hookContext });
     }
-    return runInsertMutation(database, auth, mutationName, args);
+
+    result = mutationName.startsWith("update")
+      ? runUpdateMutation(database, auth, mutationName, args)
+      : runInsertMutation(database, auth, mutationName, args);
+
+    if (result.ok) {
+      for (const hookSource of database.mutationHooks.afterMutation) {
+        runMutationHook(hookSource, { name: mutationName, args, ctx: hookContext, result });
+      }
+    }
+
+    database.sqlite.exec("COMMIT");
+    return result;
   } catch (error) {
-    if (error?.hint) {
-      return { ok: false, error: { message: error.message, hint: error.hint } };
-    }
-    throw error;
+    database.sqlite.exec("ROLLBACK");
+    database.rowCache.clear();
+    return createHookErrorResult(error);
   }
+}
+
+function runMutationHook(hookSource, event) {
+  const createHook = new Function(`return (${hookSource});`);
+  const hook = createHook();
+  return hook(event);
+}
+
+function createMutationContext(database, auth) {
+  return {
+    db: createEndpointDatabaseApi(database),
+    auth,
+    env: database.serverEnv,
+    log: createEndpointLogger(),
+  };
+}
+
+function createHookErrorResult(error) {
+  return {
+    ok: false,
+    error: {
+      message: error?.message || "Mutation hook failed.",
+      hint: error?.hint ?? "Check the Capsule mutation hooks and retry the mutation.",
+    },
+  };
 }
 
 function runInsertMutation(database, auth, mutationName, args) {
