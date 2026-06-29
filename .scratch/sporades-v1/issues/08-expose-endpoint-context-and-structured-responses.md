@@ -1,6 +1,6 @@
 # Expose endpoint context and structured responses
 
-Status: ready-for-agent
+Status: done
 
 ## What to build
 
