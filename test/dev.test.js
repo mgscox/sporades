@@ -847,6 +847,7 @@ test("sporades dev restarts server runtime and accepts new WebSocket connections
     let reconnectedSocket;
     try {
       const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
       socket = await openSocket(started.data.url);
 
       const serverPath = path.join(projectDir, "server", "index.ts");
@@ -888,6 +889,10 @@ test("sporades dev restarts server runtime and accepts new WebSocket connections
         "sporades",
         "sporades_auth_sessions",
         "sporades_auth_users",
+        "sporades_file_buckets",
+        "sporades_file_public_urls",
+        "sporades_file_uploads",
+        "sporades_files",
         "todos",
       ]);
     } finally {
@@ -2113,6 +2118,7 @@ test("sporades dev loads server env into ctx.env without exposing it to the clie
     let socket;
     try {
       const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
       socket = await openSocket(started.data.url);
       socket.send(JSON.stringify({ id: "env-1", type: "query.subscribe", query: "ctx.env" }));
       assert.deepEqual(await readSocketMessage(socket), {
@@ -2365,7 +2371,16 @@ test("sporades db list returns tables from the running dev session database", as
       assert.deepEqual(JSON.parse(listResult.stdout), {
         ok: true,
         data: {
-          tables: ["sporades", "sporades_auth_sessions", "sporades_auth_users", "todos"],
+          tables: [
+            "sporades",
+            "sporades_auth_sessions",
+            "sporades_auth_users",
+            "sporades_file_buckets",
+            "sporades_file_public_urls",
+            "sporades_file_uploads",
+            "sporades_files",
+            "todos",
+          ],
         },
         error: null,
       });
@@ -2433,6 +2448,39 @@ test("sporades db dump returns structured table data from the running dev sessio
               rows: [],
             },
             {
+              name: "sporades_file_buckets",
+              columns: ["id", "ownerId", "name", "createdAt"],
+              rows: [],
+            },
+            {
+              name: "sporades_file_public_urls",
+              columns: ["id", "fileId", "ownerId", "version", "expiresAt", "createdAt", "revokedAt"],
+              rows: [],
+            },
+            {
+              name: "sporades_file_uploads",
+              columns: ["id", "fileId", "ownerId", "version", "expectedSize", "createdAt"],
+              rows: [],
+            },
+            {
+              name: "sporades_files",
+              columns: [
+                "id",
+                "ownerId",
+                "bucketId",
+                "bucketName",
+                "name",
+                "type",
+                "size",
+                "version",
+                "status",
+                "createdAt",
+                "updatedAt",
+                "deletedAt",
+              ],
+              rows: [],
+            },
+            {
               name: "todos",
               columns: ["id", "createdAt", "updatedAt", "text", "done", "ownerId"],
               rows: [],
@@ -2479,6 +2527,10 @@ test("sporades db query runs read-only SQL against the running dev session datab
             { name: "sporades" },
             { name: "sporades_auth_sessions" },
             { name: "sporades_auth_users" },
+            { name: "sporades_file_buckets" },
+            { name: "sporades_file_public_urls" },
+            { name: "sporades_file_uploads" },
+            { name: "sporades_files" },
             { name: "todos" },
           ],
         },
@@ -3042,6 +3094,218 @@ test("WebSocket todo data is isolated by anonymous session token across reconnec
       firstSocket?.close();
       secondSocket?.close();
       reloadedSocket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev persists private file uploads across dev session restarts", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "file-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "file-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    let child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      socket = await openSocket(started.data.url);
+      socket.send(JSON.stringify({ id: "auth", type: "auth.get" }));
+      const auth = await readSocketMessage(socket);
+
+      socket.send(
+        JSON.stringify({
+          id: "upload-url",
+          type: "file.uploadUrl",
+          file: { name: "hello.txt", type: "text/plain", size: 11 },
+        }),
+      );
+      const uploadUrl = await readSocketMessage(socket);
+      assert.equal(uploadUrl.type, "file.uploadUrl.result");
+      assert.equal(uploadUrl.error, null);
+      assert.equal(uploadUrl.data.file.bucket, "default");
+      assert.equal(uploadUrl.data.file.name, "hello.txt");
+      assert.equal(uploadUrl.data.file.size, 11);
+      assert.equal(uploadUrl.data.file.type, "text/plain");
+      assert.match(uploadUrl.data.file.path, /^\/__sporades\/files\/private\//);
+
+      const uploadResponse = await fetch(new URL(uploadUrl.data.uploadUrl, started.data.url), {
+        method: uploadUrl.data.method,
+        body: "hello world",
+      });
+      assert.equal(uploadResponse.status, 200);
+      const uploaded = await uploadResponse.json();
+      assert.equal(uploaded.ok, true);
+      assert.equal(uploaded.data.file.id, uploadUrl.data.file.id);
+
+      socket.send(JSON.stringify({ id: "file-url", type: "file.url", fileId: uploaded.data.file.id }));
+      const privateUrl = await readSocketMessage(socket);
+      assert.equal(privateUrl.error, null);
+
+      const privateResponse = await fetch(new URL(privateUrl.data.url, started.data.url), {
+        headers: { "x-sporades-session-token": auth.data.sessionToken },
+      });
+      assert.equal(privateResponse.status, 200);
+      assert.equal(privateResponse.headers.get("content-type"), "text/plain");
+      assert.equal(await privateResponse.text(), "hello world");
+
+      socket.close();
+      socket = null;
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+
+      child = startCli(["dev", "--json"], { cwd: projectDir });
+      const restarted = await waitForJsonLine(child);
+      const persistedResponse = await fetch(new URL(privateUrl.data.url, restarted.data.url), {
+        headers: { "x-sporades-session-token": auth.data.sessionToken },
+      });
+      assert.equal(persistedResponse.status, 200);
+      assert.equal(await persistedResponse.text(), "hello world");
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev enforces public URL expiry choices, ownership, and replacement cache busting", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "file-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "file-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let ownerSocket;
+    let otherSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      ownerSocket = await openSocket(started.data.url);
+      ownerSocket.send(JSON.stringify({ id: "owner-auth", type: "auth.get" }));
+      const ownerAuth = await waitForSocketMessage(ownerSocket, (message) => message.id === "owner-auth");
+
+      ownerSocket.send(
+        JSON.stringify({
+          id: "upload-url",
+          type: "file.uploadUrl",
+          file: { name: "hello.txt", type: "text/plain", size: 5 },
+        }),
+      );
+      const uploadUrl = await waitForSocketMessage(ownerSocket, (message) => message.id === "upload-url");
+      await fetch(new URL(uploadUrl.data.uploadUrl, started.data.url), {
+        method: uploadUrl.data.method,
+        body: "hello",
+      });
+
+      ownerSocket.send(JSON.stringify({ id: "fresh-private", type: "file.url", fileId: uploadUrl.data.file.id }));
+      const privateUrl = await waitForSocketMessage(ownerSocket, (message) => message.id === "fresh-private");
+      assert.equal(privateUrl.error, null);
+
+      otherSocket = await openSocket(started.data.url);
+      otherSocket.send(JSON.stringify({ id: "other-auth", type: "auth.get" }));
+      const otherAuth = await waitForSocketMessage(otherSocket, (message) => message.id === "other-auth");
+      otherSocket.send(JSON.stringify({ id: "other-private", type: "file.url", fileId: uploadUrl.data.file.id }));
+      const otherPrivate = await waitForSocketMessage(otherSocket, (message) => message.id === "other-private");
+      assert.equal(otherPrivate.type, "error");
+      assert.equal(otherPrivate.error.message, "File not found.");
+      const unauthorizedRead = await fetch(new URL(privateUrl.data.url, started.data.url), {
+        headers: { "x-sporades-session-token": otherAuth.data.sessionToken },
+      });
+      assert.equal(unauthorizedRead.status, 404);
+
+      ownerSocket.send(
+        JSON.stringify({
+          id: "public-missing-expiry",
+          type: "file.publicUrl.create",
+          fileId: uploadUrl.data.file.id,
+          options: {},
+        }),
+      );
+      const missingExpiry = await waitForSocketMessage(ownerSocket, (message) => message.id === "public-missing-expiry");
+      assert.equal(missingExpiry.type, "error");
+      assert.equal(missingExpiry.error.message, "Public file URLs require exactly one expiry choice.");
+
+      ownerSocket.send(
+        JSON.stringify({
+          id: "public-url",
+          type: "file.publicUrl.create",
+          fileId: uploadUrl.data.file.id,
+          options: { ttlSeconds: 60 },
+        }),
+      );
+      const publicUrl = await waitForSocketMessage(ownerSocket, (message) => message.id === "public-url");
+      assert.equal(publicUrl.error, null);
+      assert.match(publicUrl.data.publicUrl.url, /^\/__sporades\/files\/public\//);
+      const publicRead = await fetch(new URL(publicUrl.data.publicUrl.url, started.data.url));
+      assert.equal(publicRead.status, 200);
+      assert.equal(await publicRead.text(), "hello");
+
+      ownerSocket.send(
+        JSON.stringify({
+          id: "replace-url",
+          type: "file.uploadUrl",
+          replace: true,
+          fileId: uploadUrl.data.file.id,
+          file: { name: "goodbye.txt", type: "text/plain", size: 7 },
+        }),
+      );
+      const replaceUrl = await waitForSocketMessage(ownerSocket, (message) => message.id === "replace-url");
+      const replaceResponse = await fetch(new URL(replaceUrl.data.uploadUrl, started.data.url), {
+        method: replaceUrl.data.method,
+        body: "goodbye",
+      });
+      assert.equal(replaceResponse.status, 200);
+      const replaced = await replaceResponse.json();
+      assert.equal(replaced.data.file.id, uploadUrl.data.file.id);
+      assert.equal(replaced.data.file.name, "goodbye.txt");
+      assert.equal(replaced.data.file.size, 7);
+      assert.notEqual(replaced.data.file.version, uploadUrl.data.file.version);
+
+      const stalePrivateRead = await fetch(new URL(privateUrl.data.url, started.data.url), {
+        headers: { "x-sporades-session-token": ownerAuth.data.sessionToken },
+      });
+      assert.equal(stalePrivateRead.status, 404);
+      const stalePublicRead = await fetch(new URL(publicUrl.data.publicUrl.url, started.data.url));
+      assert.equal(stalePublicRead.status, 404);
+
+      ownerSocket.send(JSON.stringify({ id: "next-private", type: "file.url", fileId: uploadUrl.data.file.id }));
+      const nextPrivate = await waitForSocketMessage(ownerSocket, (message) => message.id === "next-private");
+      const nextRead = await fetch(new URL(nextPrivate.data.url, started.data.url), {
+        headers: { "x-sporades-session-token": ownerAuth.data.sessionToken },
+      });
+      assert.equal(nextRead.status, 200);
+      assert.equal(await nextRead.text(), "goodbye");
+
+      ownerSocket.send(JSON.stringify({ id: "delete", type: "file.delete", fileId: uploadUrl.data.file.id }));
+      const deleted = await waitForSocketMessage(ownerSocket, (message) => message.id === "delete");
+      assert.equal(deleted.error, null);
+      const deletedRead = await fetch(new URL(nextPrivate.data.url, started.data.url), {
+        headers: { "x-sporades-session-token": ownerAuth.data.sessionToken },
+      });
+      assert.equal(deletedRead.status, 404);
+    } finally {
+      ownerSocket?.close();
+      otherSocket?.close();
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
     }

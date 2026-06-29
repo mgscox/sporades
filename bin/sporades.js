@@ -10,6 +10,7 @@ import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../
 import {
   createWebSocketHub,
   dumpDatabase,
+  handleFileHttpRoute,
   listDatabaseTables,
   openDevDatabase,
   readJsonRequest,
@@ -408,6 +409,10 @@ async function startDevSession(options) {
       if (request.method === "POST" && requestUrl.pathname === "/__sporades/debug/db/query") {
         const body = await readJsonRequest(request);
         writeJsonResponse(response, 200, runReadOnlyQuery(runtime.database, body.sql));
+        return;
+      }
+
+      if (await handleFileHttpRoute(runtime.database, request, response, websocketHub)) {
         return;
       }
 

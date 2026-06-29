@@ -43,6 +43,26 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   readEndpointBody,
   createEndpointLogger,
   authStatus,
+  createFileStorageTables,
+  handleFileHttpRoute,
+  readRequestBytes,
+  writeJsonHttpResponse,
+  writeNotFound,
+  sendFileHttpResponse,
+  createPendingFileUpload,
+  completePendingFileUpload,
+  getPrivateFileUrl,
+  createPublicFileUrl,
+  revokePublicFileUrl,
+  deletePrivateFile,
+  fileMetadataFromRow,
+  createStructuredFileError,
+  validatePublicUrlExpiry,
+  fileRowForOwner,
+  fileStoragePath,
+  fileVersionPath,
+  removeFileVersionBestEffort,
+  contentTypeForFile,
   createAnonymousAuthTables,
   resolveAnonymousSession,
   sessionFromRow,
@@ -84,6 +104,7 @@ export async function readJsonRequest(request) {
 
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}) {
   const { DatabaseSync } = await import("node:sqlite");
+  const path = await import("node:path");
   const sqlite = new DatabaseSync(databasePath);
   const schema = extractSchema(serverSource);
   const endpoints = extractEndpoints(serverSource);
@@ -99,11 +120,14 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     rowCache,
     serverEnv,
     authConfig: authStatus(config, serverEnv),
+    fileStoragePath: config.files?.storagePath ?? path.join(path.dirname(databasePath), "files"),
+    fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
     close: () => sqlite.close(),
   };
   sqlite.exec("PRAGMA journal_mode = WAL");
   sqlite.exec("CREATE TABLE IF NOT EXISTS sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   createAnonymousAuthTables(sqlite);
+  createFileStorageTables(sqlite);
   assertValidReferenceTargets(schema);
   migrateAppSchema(sqlite, schema);
 
@@ -570,6 +594,443 @@ export async function routeEndpoint(database, request, response) {
   return true;
 }
 
+export async function handleFileHttpRoute(database, request, response, websocketHub = null) {
+  const requestUrl = new URL(request.url, "http://127.0.0.1");
+  const uploadMatch = requestUrl.pathname.match(/^\/__sporades\/uploads\/([^/]+)$/);
+  if (uploadMatch && request.method === "PUT") {
+    const result = await completePendingFileUpload(database, uploadMatch[1], request, websocketHub);
+    writeJsonHttpResponse(response, result.ok ? 200 : 400, result);
+    return true;
+  }
+
+  const privateMatch = requestUrl.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
+  if (privateMatch && request.method === "GET") {
+    const token = request.headers["x-sporades-session-token"] ?? requestUrl.searchParams.get("sessionToken");
+    const session = resolveAnonymousSession(database, token);
+    const row = fileRowForOwner(database, privateMatch[1], session.auth.userId);
+    if (!row || row.version !== requestUrl.searchParams.get("v")) {
+      writeNotFound(response);
+      return true;
+    }
+    await sendFileHttpResponse(database, response, row);
+    return true;
+  }
+
+  const publicMatch = requestUrl.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
+  if (publicMatch && request.method === "GET") {
+    const publicRow = database.sqlite
+      .prepare(
+        "SELECT p.id AS publicUrlId, p.fileId, p.version AS publicVersion, p.expiresAt, p.revokedAt, " +
+          "f.id, f.ownerId, f.bucketId, f.bucketName, f.name, f.type, f.size, f.version, f.status, f.createdAt, f.updatedAt, f.deletedAt " +
+          "FROM sporades_file_public_urls p JOIN sporades_files f ON f.id = p.fileId " +
+          "WHERE p.id = ?",
+      )
+      .get(publicMatch[1]);
+    if (
+      !publicRow ||
+      publicRow.revokedAt ||
+      publicRow.deletedAt ||
+      (publicRow.expiresAt && Date.parse(publicRow.expiresAt) <= Date.now()) ||
+      publicRow.publicVersion !== requestUrl.searchParams.get("v") ||
+      publicRow.publicVersion !== publicRow.version
+    ) {
+      writeNotFound(response);
+      return true;
+    }
+    await sendFileHttpResponse(database, response, publicRow);
+    return true;
+  }
+
+  return false;
+}
+
+function createFileStorageTables(sqlite) {
+  sqlite.exec(
+    "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
+      "id TEXT PRIMARY KEY, " +
+      "ownerId TEXT NOT NULL, " +
+      "name TEXT NOT NULL, " +
+      "createdAt TEXT NOT NULL, " +
+      "UNIQUE(ownerId, name)" +
+      ")",
+  );
+  sqlite.exec(
+    "CREATE TABLE IF NOT EXISTS sporades_files (" +
+      "id TEXT PRIMARY KEY, " +
+      "ownerId TEXT NOT NULL, " +
+      "bucketId TEXT NOT NULL, " +
+      "bucketName TEXT NOT NULL, " +
+      "name TEXT NOT NULL, " +
+      "type TEXT NOT NULL, " +
+      "size INTEGER NOT NULL, " +
+      "version TEXT NOT NULL, " +
+      "status TEXT NOT NULL, " +
+      "createdAt TEXT NOT NULL, " +
+      "updatedAt TEXT NOT NULL, " +
+      "deletedAt TEXT" +
+      ")",
+  );
+  sqlite.exec(
+    "CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
+      "id TEXT PRIMARY KEY, " +
+      "fileId TEXT NOT NULL, " +
+      "ownerId TEXT NOT NULL, " +
+      "version TEXT NOT NULL, " +
+      "expectedSize INTEGER NOT NULL, " +
+      "createdAt TEXT NOT NULL" +
+      ")",
+  );
+  sqlite.exec(
+    "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (" +
+      "id TEXT PRIMARY KEY, " +
+      "fileId TEXT NOT NULL, " +
+      "ownerId TEXT NOT NULL, " +
+      "version TEXT NOT NULL, " +
+      "expiresAt TEXT, " +
+      "createdAt TEXT NOT NULL, " +
+      "revokedAt TEXT" +
+      ")",
+  );
+}
+
+async function readRequestBytes(request, maxBytes) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of request) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      throw createStructuredFileError(
+        "File is too large.",
+        `Choose a file at or below ${maxBytes} bytes, or raise files.maxSizeBytes in sporades.json.`,
+      );
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+function writeJsonHttpResponse(response, status, result) {
+  response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
+  response.end(`${JSON.stringify(result)}\n`);
+}
+
+function writeNotFound(response) {
+  response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+  response.end("Not found");
+}
+
+async function sendFileHttpResponse(database, response, row) {
+  const { readFile } = await import("node:fs/promises");
+  try {
+    const bytes = await readFile(fileVersionPath(database, row.id, row.version));
+    response.writeHead(200, {
+      "content-type": contentTypeForFile(row.type),
+      "cache-control": "private, max-age=31536000, immutable",
+    });
+    response.end(bytes);
+  } catch {
+    writeNotFound(response);
+  }
+}
+
+function contentTypeForFile(type) {
+  return type || "application/octet-stream";
+}
+
+function createPendingFileUpload(database, auth, message) {
+  const input = message.file ?? {};
+  const size = Number(input.size ?? 0);
+  if (!Number.isFinite(size) || size < 0) {
+    return {
+      ok: false,
+      error: createStructuredFileError("Invalid file size.", "Pass a browser File or Blob with a finite size."),
+    };
+  }
+  if (size > database.fileMaxSizeBytes) {
+    return {
+      ok: false,
+      error: createStructuredFileError(
+        "File is too large.",
+        `Choose a file at or below ${database.fileMaxSizeBytes} bytes, or raise files.maxSizeBytes in sporades.json.`,
+      ),
+    };
+  }
+
+  const now = new Date().toISOString();
+  const bucket =
+    database.sqlite.prepare("SELECT * FROM sporades_file_buckets WHERE ownerId = ? AND name = ?").get(auth.userId, "default") ??
+    (() => {
+      const bucketId = randomUUID();
+      database.sqlite
+        .prepare("INSERT INTO sporades_file_buckets (id, ownerId, name, createdAt) VALUES (?, ?, ?, ?)")
+        .run(bucketId, auth.userId, "default", now);
+      return { id: bucketId, ownerId: auth.userId, name: "default", createdAt: now };
+    })();
+
+  const replacing = message.replace === true;
+  const fileId = replacing ? String(message.fileId ?? "") : randomUUID();
+  const existing = replacing ? fileRowForOwner(database, fileId, auth.userId) : null;
+  if (replacing && !existing) {
+    return {
+      ok: false,
+      error: createStructuredFileError("File not found.", "Pass the id of a private file owned by the current user."),
+    };
+  }
+
+  const uploadId = randomUUID();
+  const version = randomUUID();
+  const name = String(input.name ?? "upload");
+  const type = String(input.type ?? "application/octet-stream");
+  if (existing) {
+    database.sqlite
+      .prepare(
+        "UPDATE sporades_files SET name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ?, deletedAt = NULL WHERE id = ?",
+      )
+      .run(name, type, size, version, "pending", now, fileId);
+    database.sqlite
+      .prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE fileId = ? AND revokedAt IS NULL")
+      .run(now, fileId);
+  } else {
+    database.sqlite
+      .prepare(
+        "INSERT INTO sporades_files " +
+          "(id, ownerId, bucketId, bucketName, name, type, size, version, status, createdAt, updatedAt, deletedAt) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+      )
+      .run(fileId, auth.userId, bucket.id, bucket.name, name, type, size, version, "pending", now, now);
+  }
+  database.sqlite
+    .prepare("INSERT INTO sporades_file_uploads (id, fileId, ownerId, version, expectedSize, createdAt) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(uploadId, fileId, auth.userId, version, size, now);
+
+  return {
+    ok: true,
+    data: {
+      uploadUrl: `/__sporades/uploads/${uploadId}`,
+      method: "PUT",
+      headers: {},
+      file: fileMetadataFromRow(
+        database.sqlite.prepare("SELECT * FROM sporades_files WHERE id = ?").get(fileId),
+      ),
+    },
+    error: null,
+  };
+}
+
+async function completePendingFileUpload(database, uploadId, request, websocketHub = null) {
+  const upload = database.sqlite.prepare("SELECT * FROM sporades_file_uploads WHERE id = ?").get(uploadId);
+  if (!upload) {
+    return {
+      ok: false,
+      data: null,
+      error: createStructuredFileError("Upload URL not found.", "Request a fresh upload URL from the Sporades client SDK."),
+    };
+  }
+
+  try {
+    websocketHub?.notifyFileEvent?.(upload.ownerId, {
+      type: "file.upload.progress",
+      fileId: upload.fileId,
+      loaded: 0,
+      total: upload.expectedSize,
+    });
+    const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(fileStoragePath(database, upload.fileId), { recursive: true });
+    await writeFile(fileVersionPath(database, upload.fileId, upload.version), bytes);
+    const now = new Date().toISOString();
+    database.sqlite
+      .prepare("UPDATE sporades_files SET size = ?, status = ?, updatedAt = ? WHERE id = ? AND version = ?")
+      .run(bytes.length, "uploaded", now, upload.fileId, upload.version);
+    database.sqlite.prepare("DELETE FROM sporades_file_uploads WHERE id = ?").run(uploadId);
+    const file = fileMetadataFromRow(database.sqlite.prepare("SELECT * FROM sporades_files WHERE id = ?").get(upload.fileId));
+    websocketHub?.notifyFileEvent?.(upload.ownerId, {
+      type: "file.upload.complete",
+      file,
+    });
+    return { ok: true, data: { file }, error: null };
+  } catch (error) {
+    websocketHub?.notifyFileEvent?.(upload.ownerId, {
+      type: "file.upload.failed",
+      fileId: upload.fileId,
+      error: {
+        message: error.message,
+        hint: error.hint ?? "Request a fresh upload URL and retry.",
+      },
+    });
+    return {
+      ok: false,
+      data: null,
+      error: {
+        message: error.message,
+        hint: error.hint ?? "Request a fresh upload URL and retry.",
+      },
+    };
+  }
+}
+
+function getPrivateFileUrl(database, auth, fileId, sessionToken) {
+  const row = fileRowForOwner(database, fileId, auth.userId);
+  if (!row) {
+    return {
+      ok: false,
+      error: createStructuredFileError("File not found.", "Pass the id of a private file owned by the current user."),
+    };
+  }
+  return {
+    ok: true,
+    data: {
+      url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}&sessionToken=${encodeURIComponent(sessionToken)}`,
+      file: fileMetadataFromRow(row),
+    },
+    error: null,
+  };
+}
+
+function createPublicFileUrl(database, auth, fileId, options = {}) {
+  const row = fileRowForOwner(database, fileId, auth.userId);
+  if (!row) {
+    return {
+      ok: false,
+      error: createStructuredFileError("File not found.", "Pass the id of a private file owned by the current user."),
+    };
+  }
+  const expiry = validatePublicUrlExpiry(options);
+  if (!expiry.ok) {
+    return expiry;
+  }
+  const id = randomUUID();
+  const now = new Date().toISOString();
+  database.sqlite
+    .prepare(
+      "INSERT INTO sporades_file_public_urls (id, fileId, ownerId, version, expiresAt, createdAt, revokedAt) VALUES (?, ?, ?, ?, ?, ?, NULL)",
+    )
+    .run(id, row.id, auth.userId, row.version, expiry.expiresAt, now);
+  return {
+    ok: true,
+    data: {
+      publicUrl: {
+        id,
+        fileId: row.id,
+        url: `/__sporades/files/public/${id}?v=${encodeURIComponent(row.version)}`,
+        expiresAt: expiry.expiresAt,
+        revokedAt: null,
+      },
+    },
+    error: null,
+  };
+}
+
+function revokePublicFileUrl(database, auth, publicUrlId) {
+  const now = new Date().toISOString();
+  const result = database.sqlite
+    .prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE id = ? AND ownerId = ? AND revokedAt IS NULL")
+    .run(now, publicUrlId, auth.userId);
+  if (result.changes === 0) {
+    return {
+      ok: false,
+      error: createStructuredFileError("Public file URL not found.", "Pass a public URL id owned by the current user."),
+    };
+  }
+  return {
+    ok: true,
+    data: { publicUrl: { id: publicUrlId, revokedAt: now } },
+    error: null,
+  };
+}
+
+async function deletePrivateFile(database, auth, fileId) {
+  const row = fileRowForOwner(database, fileId, auth.userId);
+  if (!row) {
+    return {
+      ok: false,
+      error: createStructuredFileError("File not found.", "Pass the id of a private file owned by the current user."),
+    };
+  }
+  const now = new Date().toISOString();
+  database.sqlite.prepare("UPDATE sporades_files SET deletedAt = ?, updatedAt = ? WHERE id = ?").run(now, now, row.id);
+  database.sqlite
+    .prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE fileId = ? AND revokedAt IS NULL")
+    .run(now, row.id);
+  await removeFileVersionBestEffort(database, row.id, row.version);
+  return {
+    ok: true,
+    data: { file: fileMetadataFromRow({ ...row, deletedAt: now }) },
+    error: null,
+  };
+}
+
+function validatePublicUrlExpiry(options) {
+  const choices = [options.ttlSeconds !== undefined, options.expires !== undefined, options.noExpiry === true].filter(Boolean);
+  if (choices.length !== 1) {
+    return {
+      ok: false,
+      error: createStructuredFileError(
+        "Public file URLs require exactly one expiry choice.",
+        "Pass exactly one of ttlSeconds, expires, or noExpiry: true.",
+      ),
+    };
+  }
+  if (options.noExpiry === true) {
+    return { ok: true, expiresAt: null };
+  }
+  if (options.ttlSeconds !== undefined) {
+    const ttlSeconds = Number(options.ttlSeconds);
+    if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+      return {
+        ok: false,
+        error: createStructuredFileError("Invalid public file URL TTL.", "Pass a positive ttlSeconds number."),
+      };
+    }
+    return { ok: true, expiresAt: new Date(Date.now() + ttlSeconds * 1000).toISOString() };
+  }
+  const expiresAt = new Date(options.expires);
+  if (Number.isNaN(expiresAt.getTime())) {
+    return {
+      ok: false,
+      error: createStructuredFileError("Invalid public file URL expiry.", "Pass expires as a valid ISO date string."),
+    };
+  }
+  return { ok: true, expiresAt: expiresAt.toISOString() };
+}
+
+function fileRowForOwner(database, fileId, ownerId) {
+  return (
+    database.sqlite
+      .prepare("SELECT * FROM sporades_files WHERE id = ? AND ownerId = ? AND deletedAt IS NULL AND status = ?")
+      .get(fileId, ownerId, "uploaded") ?? null
+  );
+}
+
+function fileMetadataFromRow(row) {
+  return {
+    id: row.id,
+    bucket: row.bucketName,
+    size: Number(row.size),
+    type: row.type,
+    name: row.name,
+    path: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
+    version: row.version,
+  };
+}
+
+function createStructuredFileError(message, hint) {
+  return { message, hint };
+}
+
+function fileStoragePath(database, fileId) {
+  return `${database.fileStoragePath}/${fileId}`;
+}
+
+function fileVersionPath(database, fileId, version) {
+  return `${fileStoragePath(database, fileId)}/${version}`;
+}
+
+async function removeFileVersionBestEffort(database, fileId, version) {
+  const { rm } = await import("node:fs/promises");
+  await rm(fileVersionPath(database, fileId, version), { force: true });
+}
+
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const createHandler = new Function(`return (${endpoint.handlerSource});`);
   const handler = createHandler();
@@ -1014,6 +1475,19 @@ export function createWebSocketHub(getDatabase) {
       }
       clients.clear();
     },
+    notifyFileEvent(userId, event) {
+      for (const client of clients) {
+        if (client.session.auth.userId !== userId) {
+          continue;
+        }
+        sendJson(client, {
+          id: null,
+          type: "file.event",
+          data: event,
+          error: null,
+        });
+      }
+    },
   };
 
   function handleClientMessage(client, rawMessage) {
@@ -1109,12 +1583,68 @@ export function createWebSocketHub(getDatabase) {
       return;
     }
 
+    if (message.type === "file.uploadUrl") {
+      const result = createPendingFileUpload(database, client.session.auth, message);
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "file.uploadUrl.result" : "error",
+        data: result.data ?? null,
+        error: result.error,
+      });
+      return;
+    }
+
+    if (message.type === "file.url") {
+      const result = getPrivateFileUrl(database, client.session.auth, message.fileId, client.session.token);
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "file.url.result" : "error",
+        data: result.data ?? null,
+        error: result.error,
+      });
+      return;
+    }
+
+    if (message.type === "file.publicUrl.create") {
+      const result = createPublicFileUrl(database, client.session.auth, message.fileId, message.options ?? {});
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "file.publicUrl.result" : "error",
+        data: result.data ?? null,
+        error: result.error,
+      });
+      return;
+    }
+
+    if (message.type === "file.publicUrl.revoke") {
+      const result = revokePublicFileUrl(database, client.session.auth, message.publicUrlId);
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "file.publicUrl.revoke.result" : "error",
+        data: result.data ?? null,
+        error: result.error,
+      });
+      return;
+    }
+
+    if (message.type === "file.delete") {
+      deletePrivateFile(database, client.session.auth, message.fileId).then((result) => {
+        sendJson(client, {
+          id: message.id ?? null,
+          type: result.ok ? "file.delete.result" : "error",
+          data: result.data ?? null,
+          error: result.error,
+        });
+      });
+      return;
+    }
+
     sendJson(client, {
       id: message.id ?? null,
       type: "error",
       error: {
         message: `Unsupported WebSocket message: ${message.type ?? ""}`.trim(),
-        hint: "Use auth.get, auth.signInWithGoogle, query.subscribe, or mutation.run.",
+        hint: "Use auth.get, auth.signInWithGoogle, query.subscribe, mutation.run, or files.* through the Sporades client SDK.",
       },
     });
   }

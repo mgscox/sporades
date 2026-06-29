@@ -24,6 +24,10 @@ const websocketHub = createWebSocketHub(() => database);
 
 const server = createServer(async (request, response) => {
   try {
+    if (await handleFileHttpRoute(database, request, response, websocketHub)) {
+      return;
+    }
+
     if (await routeEndpoint(database, request, response)) {
       return;
     }
