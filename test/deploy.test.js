@@ -550,6 +550,98 @@ export default capsule({
   });
 });
 
+test("sporades deploy endpoints resolve linked Google auth from the Sporades session token", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "endpoint-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "endpoint-island"));
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "endpoint-island",
+
+  endpoints: {
+    authState: endpoint({ method: "GET", path: "/integrations/auth" }, (ctx) => ({
+      status: 200,
+      body: ctx.auth,
+    })),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+    const setResult = await runCli(
+      ["auth", "set", "google", "--client-id", "client-id", "--client-secret", "client-secret", "--json"],
+      { cwd: projectDir },
+    );
+    assert.equal(setResult.code, 0, setResult.stderr);
+    const docker = await installFakeDocker(dir, "container-google-auth");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+
+    const port = await getAvailablePort();
+    const serverBundlePath = path.join(projectDir, ".sporades", "build", "server.mjs");
+    const child = spawn(process.execPath, [serverBundlePath], {
+      cwd: projectDir,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let socket;
+    try {
+      await waitForHttp(`http://127.0.0.1:${port}/`, child);
+      socket = await openSocket(`http://127.0.0.1:${port}`);
+      socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+      const anonymousAuth = await readSocketMessage(socket);
+      const userId = anonymousAuth.data.auth.userId;
+
+      socket.send(
+        JSON.stringify({
+          id: "complete-google",
+          type: "auth.completeGoogleSignIn",
+          profile: {
+            email: "mira@example.com",
+            displayName: "Mira",
+            picture: "https://example.com/mira.png",
+          },
+        }),
+      );
+      const linkedAuth = await readSocketMessage(socket);
+      assert.deepEqual(linkedAuth.data.auth, {
+        userId,
+        displayName: "Mira",
+        email: "mira@example.com",
+        picture: "https://example.com/mira.png",
+        isAuthenticated: true,
+        isGuest: false,
+        provider: "google",
+      });
+
+      const endpointResponse = await fetch(`http://127.0.0.1:${port}/integrations/auth`, {
+        headers: { "x-sporades-session-token": anonymousAuth.data.sessionToken },
+      });
+      const endpointBody = await endpointResponse.json();
+      assert.equal(endpointResponse.status, 200, JSON.stringify(endpointBody));
+      assert.deepEqual(endpointBody, linkedAuth.data.auth);
+    } finally {
+      socket?.close();
+      await stopChild(child);
+    }
+  });
+});
+
 test("sporades deploy skips the server env mount when the env file is absent", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--no-install", "--no-git", "--json"], {

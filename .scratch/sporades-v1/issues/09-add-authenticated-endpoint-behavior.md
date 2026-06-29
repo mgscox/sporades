@@ -1,6 +1,6 @@
 # Add authenticated endpoint behavior
 
-Status: ready-for-agent
+Status: done
 
 ## What to build
 

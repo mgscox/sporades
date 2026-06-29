@@ -449,6 +449,148 @@ export default capsule({
   });
 });
 
+test("sporades dev endpoints resolve an existing anonymous session from the Sporades session token", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "endpoint-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "endpoint-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { Boolean, capsule, endpoint, String, table } from "sporades/server";
+
+export default capsule({
+  name: "endpoint-island",
+
+  schema: {
+    todos: table({
+      text: String(),
+      done: Boolean().default(false),
+      ownerId: String(),
+    }),
+  },
+
+  endpoints: {
+    addTodo: endpoint({ method: "POST", path: "/integrations/todos" }, (ctx) => {
+      ctx.db.todos.insert({
+        text: ctx.request.body.text,
+        done: false,
+        ownerId: ctx.auth.userId,
+      });
+
+      return {
+        status: 200,
+        body: {
+          auth: ctx.auth,
+          rows: ctx.db.todos.where("ownerId", ctx.auth.userId).all(),
+        },
+      };
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      socket = await openSocket(started.data.url);
+      socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+      const authResult = await readSocketMessage(socket);
+
+      const endpointResponse = await fetch(`${started.data.url}/integrations/todos`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-sporades-session-token": authResult.data.sessionToken,
+        },
+        body: JSON.stringify({ text: "Owned by endpoint auth" }),
+      });
+      assert.equal(endpointResponse.status, 200);
+      const result = await endpointResponse.json();
+      assert.deepEqual(result.auth, authResult.data.auth);
+      assert.equal(result.rows.length, 1);
+      assert.equal(result.rows[0].text, "Owned by endpoint auth");
+      assert.equal(result.rows[0].ownerId, authResult.data.auth.userId);
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev endpoints treat missing or invalid session tokens as a new anonymous session", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "endpoint-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "endpoint-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "endpoint-island",
+
+  endpoints: {
+    authState: endpoint({ method: "GET", path: "/integrations/auth" }, (ctx) => ({
+      status: 200,
+      body: ctx.auth,
+    })),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      socket = await openSocket(started.data.url);
+      socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+      const existingAuth = (await readSocketMessage(socket)).data.auth;
+
+      const missingTokenResponse = await fetch(`${started.data.url}/integrations/auth`);
+      assert.equal(missingTokenResponse.status, 200);
+      const missingTokenAuth = await missingTokenResponse.json();
+      assert.equal(missingTokenAuth.provider, "anonymous");
+      assert.equal(missingTokenAuth.isGuest, true);
+      assert.notEqual(missingTokenAuth.userId, existingAuth.userId);
+
+      const invalidTokenResponse = await fetch(`${started.data.url}/integrations/auth`, {
+        headers: { "x-sporades-session-token": "not-a-real-session" },
+      });
+      assert.equal(invalidTokenResponse.status, 200);
+      const invalidTokenAuth = await invalidTokenResponse.json();
+      assert.equal(invalidTokenAuth.provider, "anonymous");
+      assert.equal(invalidTokenAuth.isGuest, true);
+      assert.notEqual(invalidTokenAuth.userId, existingAuth.userId);
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev returns structured errors for invalid endpoint responses", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "endpoint-island", "--no-install", "--no-git", "--json"], {
