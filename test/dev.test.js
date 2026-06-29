@@ -746,6 +746,198 @@ test("sporades auth as email returns a localStorage session payload that resolve
   });
 });
 
+test("sporades auth clients --json lists no connected browser clients", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "auth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "auth-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = { providers: { anonymous: true, email: true } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      const listed = await runCli(["auth", "clients", "--json"], { cwd: projectDir });
+      assert.equal(listed.code, 0, listed.stderr);
+      assert.deepEqual(JSON.parse(listed.stdout), {
+        ok: true,
+        data: {
+          clients: [],
+        },
+        error: null,
+      });
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades auth clients --json lists a connected browser client with safe metadata", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "auth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "auth-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = { providers: { anonymous: true, email: true } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      socket = await openSocket(started.data.url);
+
+      const listed = await runCli(["auth", "clients", "--json"], { cwd: projectDir });
+      assert.equal(listed.code, 0, listed.stderr);
+      const body = JSON.parse(listed.stdout);
+      assert.equal(body.ok, true);
+      assert.equal(body.data.clients.length, 1);
+      assert.match(body.data.clients[0].id, /^client-[a-z0-9]+$/);
+      assert.equal(body.data.clients[0].auth.provider, "anonymous");
+      assert.equal(body.data.clients[0].auth.isAuthenticated, false);
+      assert.equal(body.data.clients[0].auth.email, null);
+      assert.equal(typeof body.data.clients[0].connectedAt, "string");
+      assert.equal(typeof body.data.clients[0].lastSeenAt, "string");
+
+      const rawJson = JSON.stringify(body);
+      assert.equal(rawJson.includes("sessionToken"), false);
+      assert.equal(rawJson.includes("localStorage"), false);
+      assert.equal(rawJson.includes("token"), false);
+      assert.equal(rawJson.includes("password"), false);
+      assert.equal(rawJson.includes("secret"), false);
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades auth clients --json lists multiple clients whose ids target auth as delivery", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "auth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "auth-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = { providers: { anonymous: true, email: true } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let firstSocket;
+    let secondSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      firstSocket = await openSocket(started.data.url);
+      secondSocket = await openSocket(started.data.url);
+
+      const listed = await runCli(["auth", "clients", "--json"], { cwd: projectDir });
+      assert.equal(listed.code, 0, listed.stderr);
+      const clients = JSON.parse(listed.stdout).data.clients;
+      assert.equal(clients.length, 2);
+      assert.notEqual(clients[0].id, clients[1].id);
+      assert.equal(clients[0].auth.provider, "anonymous");
+      assert.equal(clients[1].auth.provider, "anonymous");
+
+      const deliveredToFirst = readSocketMessage(firstSocket);
+      const simulated = await runCli(
+        [
+          "auth",
+          "as",
+          "email",
+          "--email",
+          "mira@example.com",
+          "--display-name",
+          "Mira Vale",
+          "--client",
+          clients[0].id,
+          "--json",
+        ],
+        { cwd: projectDir },
+      );
+      assert.equal(simulated.code, 0, simulated.stderr);
+      const body = JSON.parse(simulated.stdout);
+      assert.deepEqual(body.data.delivery, {
+        target: clients[0].id,
+        delivered: true,
+        clients: 1,
+      });
+      assert.equal((await deliveredToFirst).type, "auth.session.replace");
+
+      firstSocket.send(JSON.stringify({ id: "first-auth", type: "auth.get" }));
+      secondSocket.send(JSON.stringify({ id: "second-auth", type: "auth.get" }));
+      const firstAuth = await waitForSocketMessage(firstSocket, (message) => message.id === "first-auth");
+      const secondAuth = await waitForSocketMessage(secondSocket, (message) => message.id === "second-auth");
+      assert.deepEqual(firstAuth.data.auth, body.data.auth);
+      assert.equal(secondAuth.data.auth.provider, "anonymous");
+    } finally {
+      firstSocket?.close();
+      secondSocket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades auth clients returns a structured error when the dev server lacks client listing support", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "auth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "auth-island");
+
+    const server = createServer((request, response) => {
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+    });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+
+    try {
+      const result = await runCli(["auth", "clients", "--port", String(server.address().port), "--json"], {
+        cwd: projectDir,
+      });
+      assert.equal(result.code, 1);
+      assert.deepEqual(JSON.parse(result.stdout), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Dev session does not support auth client listing.",
+          hint: "Start a current `sporades dev` session for this project, then retry `sporades auth clients`.",
+        },
+      });
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
+
 test("sporades auth as email --client current delivers the session to the most recently connected browser client", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "auth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

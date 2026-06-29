@@ -258,8 +258,8 @@ function parseAuthArgs(args) {
     }
     if (arg === "--client") {
       client = readFlagValue(rest, ++index, "--client");
-      if (!["current", "all"].includes(client)) {
-        throw commandError("Invalid auth client target.", "Use `--client current` or `--client all`.");
+      if (!isValidAuthClientTarget(client)) {
+        throw commandError("Invalid auth client target.", "Use `--client current`, `--client all`, or a client id from `sporades auth clients`.");
       }
       continue;
     }
@@ -268,6 +268,9 @@ function parseAuthArgs(args) {
 
   if (subcommand === "status") {
     return { subcommand, json, projectDir: process.cwd() };
+  }
+  if (subcommand === "clients") {
+    return { subcommand, json, port, projectDir: process.cwd() };
   }
   if (subcommand === "as") {
     if (!simulatedProvider) {
@@ -290,7 +293,10 @@ function parseAuthArgs(args) {
     return { subcommand, provider, clientId, clientSecret, json, projectDir: process.cwd() };
   }
 
-  throw commandError("Unknown auth command.", "Use `sporades auth status`, `sporades auth set google`, or `sporades auth as email`.");
+  throw commandError(
+    "Unknown auth command.",
+    "Use `sporades auth status`, `sporades auth clients`, `sporades auth set google`, or `sporades auth as email`.",
+  );
 }
 
 function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
@@ -414,6 +420,10 @@ function readFlagValue(args, index, flag) {
   return value;
 }
 
+function isValidAuthClientTarget(value) {
+  return value === "current" || value === "all" || /^client-[a-z0-9]+$/.test(value);
+}
+
 async function createProject(options) {
   await mkdir(options.projectDir, { recursive: false });
 
@@ -508,6 +518,15 @@ async function startDevSession(options) {
           result.data.delivery = websocketHub.deliverAuthSession(body.client, result.data);
         }
         writeJsonResponse(response, result.ok ? 200 : 400, result);
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/__sporades/debug/auth/clients") {
+        writeJsonResponse(response, 200, {
+          ok: true,
+          data: { clients: websocketHub.listAuthClients() },
+          error: null,
+        });
         return;
       }
 
@@ -739,6 +758,25 @@ async function manageAuth(options) {
     return;
   }
 
+  if (options.subcommand === "clients") {
+    const session = options.port ? { url: `http://localhost:${options.port}` } : await readDevSession(options.projectDir);
+    const result = await fetchAuthClients(session);
+
+    if (options.json) {
+      writeResult(result, !result.ok);
+      return;
+    }
+
+    if (!result.ok) {
+      throw commandError(result.error.message, result.error.hint);
+    }
+
+    for (const client of result.data.clients) {
+      process.stdout.write(`${client.id}\t${client.auth.provider}\t${client.auth.email ?? ""}\n`);
+    }
+    return;
+  }
+
   const configPath = path.join(options.projectDir, "sporades.json");
   const config = await readProjectConfig(options.projectDir);
   config.auth = {
@@ -964,6 +1002,36 @@ async function fetchLocalIdentitySimulation(session, body) {
     error: {
       message: "Dev session does not support local identity simulation.",
       hint: "Start a current `sporades dev` session for this project, then retry `sporades auth as email`.",
+    },
+  };
+}
+
+async function fetchAuthClients(session) {
+  let response;
+  try {
+    response = await fetch(new URL("/__sporades/debug/auth/clients", session.url));
+  } catch {
+    throw commandError(
+      "Unable to reach the running Sporades dev session.",
+      "Check that `sporades dev` is still running in this project, then retry the command.",
+    );
+  }
+
+  try {
+    const result = await response.json();
+    if (result && typeof result.ok === "boolean") {
+      return result;
+    }
+  } catch {
+    // Fall through to the unsupported-session error below.
+  }
+
+  return {
+    ok: false,
+    data: null,
+    error: {
+      message: "Dev session does not support auth client listing.",
+      hint: "Start a current `sporades dev` session for this project, then retry `sporades auth clients`.",
     },
   };
 }

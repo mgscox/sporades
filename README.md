@@ -42,6 +42,16 @@ keeps only env var names in `sporades.json`.
 `sporades auth status --json` reports enabled providers and configuration state
 without printing OAuth client IDs or secrets.
 
+List currently connected browser clients for a running dev session:
+
+```sh
+sporades auth clients --json
+```
+
+The JSON response includes safe metadata only: stable client IDs, current auth
+summary, connection time, and last-seen time. It does not include session
+tokens, OAuth credentials, passwords, or raw `localStorage` payloads.
+
 For local browser tests and agents, a running dev session can create a simulated
 linked identity and return the same session token shape the SDK stores in
 `localStorage`:
@@ -51,8 +61,9 @@ sporades auth as email --email mira@example.com --display-name "Mira Vale" --jso
 ```
 
 Pass `--client current` to push the simulated session into the most recently
-connected browser client, or `--client all` to push it into every connected
-browser client for the app:
+connected browser client, `--client all` to push it into every connected
+browser client for the app, or `--client <id>` with an ID from
+`sporades auth clients --json` to target one exact browser client:
 
 ```sh
 sporades auth as email --email mira@example.com --client current --json

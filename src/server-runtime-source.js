@@ -1682,6 +1682,7 @@ function normalizeSimulatedText(value) {
 
 export function createWebSocketHub(getDatabase) {
   const clients = new Set();
+  let nextClientId = 1;
 
   return {
     accept(request, socket) {
@@ -1708,9 +1709,20 @@ export function createWebSocketHub(getDatabase) {
       const origin = `${protocol}://${request.headers.host}`;
       const database = getDatabase();
       const session = resolveAnonymousSession(database, sessionToken);
-      const client = { socket, buffer: Buffer.alloc(0), subscriptions: new Map(), session, origin };
+      const now = new Date().toISOString();
+      const client = {
+        id: `client-${(nextClientId++).toString(36)}`,
+        socket,
+        buffer: Buffer.alloc(0),
+        subscriptions: new Map(),
+        session,
+        origin,
+        connectedAt: now,
+        lastSeenAt: now,
+      };
       clients.add(client);
       socket.on("data", (chunk) => {
+        client.lastSeenAt = new Date().toISOString();
         client.buffer = Buffer.concat([client.buffer, chunk]);
         drainWebSocketFrames(client, (message) => handleClientMessage(client, message));
       });
@@ -1722,6 +1734,14 @@ export function createWebSocketHub(getDatabase) {
         client.socket.end();
       }
       clients.clear();
+    },
+    listAuthClients() {
+      return [...clients].map((client) => ({
+        id: client.id,
+        connectedAt: client.connectedAt,
+        lastSeenAt: client.lastSeenAt,
+        auth: summarizeAuthForClientList(client.session.auth),
+      }));
     },
     notifyFileEvent(userId, event) {
       for (const client of clients) {
@@ -1768,7 +1788,19 @@ export function createWebSocketHub(getDatabase) {
     if (target === "current") {
       return [...clients].slice(-1);
     }
-    return [];
+    return [...clients].filter((client) => client.id === target);
+  }
+
+  function summarizeAuthForClientList(auth) {
+    return {
+      userId: auth.userId,
+      displayName: auth.displayName,
+      email: auth.email,
+      picture: auth.picture,
+      isAuthenticated: auth.isAuthenticated,
+      isGuest: auth.isGuest,
+      provider: auth.provider,
+    };
   }
 
   function handleClientMessage(client, rawMessage) {

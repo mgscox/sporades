@@ -416,7 +416,8 @@ Subcommands:
 - `sporades auth status` — show current auth configuration
 - `sporades auth set google --client-id <id> --client-secret <secret>` — configure Google OAuth
 - `sporades auth set google --client-json <path>` — configure Google OAuth from a downloaded provider credentials JSON file
-- `sporades auth as email --email <address> --display-name <name> --client current|all --json` — create a local simulated linked identity against a running dev session, optionally pushing it to connected browser clients while still returning the `localStorage` fallback payload
+- `sporades auth clients --json` — list connected browser clients for the running dev session with stable IDs and safe auth metadata for exact targeting
+- `sporades auth as email --email <address> --display-name <name> --client current|all|<id> --json` — create a local simulated linked identity against a running dev session, optionally pushing it to connected browser clients while still returning the `localStorage` fallback payload
 - After `sporades auth set <provider>`, restart any running `sporades dev` session so the server runtime reloads the updated Server env and auth configuration.
 
 ## Output conventions
