@@ -746,6 +746,206 @@ test("sporades auth as email returns a localStorage session payload that resolve
   });
 });
 
+test("sporades auth as email --client current delivers the session to the most recently connected browser client", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "auth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "auth-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = { providers: { anonymous: true, email: true } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let firstSocket;
+    let currentSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      firstSocket = await openSocket(started.data.url);
+      currentSocket = await openSocket(started.data.url);
+      const deliveredToCurrent = readSocketMessage(currentSocket);
+
+      const simulated = await runCli(
+        [
+          "auth",
+          "as",
+          "email",
+          "--email",
+          "mira@example.com",
+          "--display-name",
+          "Mira Vale",
+          "--client",
+          "current",
+          "--json",
+        ],
+        { cwd: projectDir },
+      );
+      assert.equal(simulated.code, 0, simulated.stderr);
+      const body = JSON.parse(simulated.stdout);
+      assert.equal(body.ok, true);
+      assert.equal(body.data.localStorage.key, "sporades.sessionToken");
+      assert.equal(typeof body.data.localStorage.value, "string");
+      assert.deepEqual(body.data.delivery, {
+        target: "current",
+        delivered: true,
+        clients: 1,
+      });
+
+      const delivery = await deliveredToCurrent;
+      assert.deepEqual(delivery, {
+        id: null,
+        type: "auth.session.replace",
+        data: {
+          sessionToken: body.data.localStorage.value,
+          auth: body.data.auth,
+        },
+        error: null,
+      });
+
+      firstSocket.send(JSON.stringify({ id: "first-auth", type: "auth.get" }));
+      const firstAuth = await readSocketMessage(firstSocket);
+      assert.equal(firstAuth.id, "first-auth");
+      assert.equal(firstAuth.data.auth.provider, "anonymous");
+
+      currentSocket.send(JSON.stringify({ id: "current-auth", type: "auth.get" }));
+      const currentAuth = await readSocketMessage(currentSocket);
+      assert.equal(currentAuth.id, "current-auth");
+      assert.deepEqual(currentAuth.data.auth, body.data.auth);
+      assert.equal(currentAuth.data.sessionToken, body.data.localStorage.value);
+    } finally {
+      firstSocket?.close();
+      currentSocket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades auth as email --client all delivers the session to every connected browser client", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "auth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "auth-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = { providers: { anonymous: true, email: true } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let firstSocket;
+    let secondSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      firstSocket = await openSocket(started.data.url);
+      secondSocket = await openSocket(started.data.url);
+      const deliveredToFirst = readSocketMessage(firstSocket);
+      const deliveredToSecond = readSocketMessage(secondSocket);
+
+      const simulated = await runCli(
+        [
+          "auth",
+          "as",
+          "email",
+          "--email",
+          "mira@example.com",
+          "--display-name",
+          "Mira Vale",
+          "--client",
+          "all",
+          "--json",
+        ],
+        { cwd: projectDir },
+      );
+      assert.equal(simulated.code, 0, simulated.stderr);
+      const body = JSON.parse(simulated.stdout);
+      assert.equal(body.ok, true);
+      assert.deepEqual(body.data.delivery, {
+        target: "all",
+        delivered: true,
+        clients: 2,
+      });
+
+      const firstDelivery = await deliveredToFirst;
+      const secondDelivery = await deliveredToSecond;
+      assert.equal(firstDelivery.type, "auth.session.replace");
+      assert.equal(firstDelivery.data.sessionToken, body.data.localStorage.value);
+      assert.deepEqual(firstDelivery.data.auth, body.data.auth);
+      assert.equal(secondDelivery.type, "auth.session.replace");
+      assert.equal(secondDelivery.data.sessionToken, body.data.localStorage.value);
+      assert.deepEqual(secondDelivery.data.auth, body.data.auth);
+    } finally {
+      firstSocket?.close();
+      secondSocket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades auth as email --client current reports undelivered when no browser client is connected", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "auth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "auth-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = { providers: { anonymous: true, email: true } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      const simulated = await runCli(
+        [
+          "auth",
+          "as",
+          "email",
+          "--email",
+          "mira@example.com",
+          "--display-name",
+          "Mira Vale",
+          "--client",
+          "current",
+          "--json",
+        ],
+        { cwd: projectDir },
+      );
+      assert.equal(simulated.code, 0, simulated.stderr);
+      const body = JSON.parse(simulated.stdout);
+      assert.equal(body.ok, true);
+      assert.equal(body.data.localStorage.key, "sporades.sessionToken");
+      assert.equal(typeof body.data.localStorage.value, "string");
+      assert.deepEqual(body.data.delivery, {
+        target: "current",
+        delivered: false,
+        clients: 0,
+      });
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades auth as email returns a structured error when identity details are invalid", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "auth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -3693,6 +3893,18 @@ export default capsule({
         data: null,
         error: {
           message: "Reserved app message type: app.typing",
+          hint: "Use an unprefixed app message type that does not start with a Sporades platform namespace.",
+        },
+      });
+
+      socket.send(JSON.stringify({ id: "reserved-auth", type: "app.send", message: "auth.session.replace", data: null }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "reserved-auth",
+        type: "app.result",
+        message: "auth.session.replace",
+        data: null,
+        error: {
+          message: "Reserved app message type: auth.session.replace",
           hint: "Use an unprefixed app message type that does not start with a Sporades platform namespace.",
         },
       });

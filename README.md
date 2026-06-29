@@ -50,12 +50,23 @@ linked identity and return the same session token shape the SDK stores in
 sporades auth as email --email mira@example.com --display-name "Mira Vale" --json
 ```
 
-The JSON response is `{ localStorage: { key, value }, auth }`, where `key` is
-`sporades.sessionToken`. This is local identity simulation only: it creates a
-Sporades-owned dev session for `ctx.auth` testing and does not complete OAuth,
-trust arbitrary JWTs, or authenticate against a real provider. `google` can be
-used as a simulated provider shape for browser tests that need Google-like auth
-metadata.
+Pass `--client current` to push the simulated session into the most recently
+connected browser client, or `--client all` to push it into every connected
+browser client for the app:
+
+```sh
+sporades auth as email --email mira@example.com --client current --json
+```
+
+The JSON response includes `{ localStorage: { key, value }, auth, delivery }`,
+where `key` is `sporades.sessionToken`. `delivery` reports the requested target,
+whether any browser client received the session, and how many clients were
+updated. The `localStorage` payload is always returned as a manual fallback even
+when no browser client is connected. This is local identity simulation only: it
+creates a Sporades-owned dev session for `ctx.auth` testing and does not
+complete OAuth, trust arbitrary JWTs, or authenticate against a real provider.
+`google` can be used as a simulated provider shape for browser tests that need
+Google-like auth metadata.
 
 After running `sporades auth set <provider>`, restart any running dev session so
 the server runtime reloads the updated Server env and auth configuration:

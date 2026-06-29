@@ -1736,7 +1736,40 @@ export function createWebSocketHub(getDatabase) {
         });
       }
     },
+    deliverAuthSession(target, sessionData) {
+      const recipients = authSessionRecipients(target);
+      for (const client of recipients) {
+        client.session = {
+          token: sessionData.localStorage.value,
+          auth: sessionData.auth,
+        };
+        sendJson(client, {
+          id: null,
+          type: "auth.session.replace",
+          data: {
+            sessionToken: sessionData.localStorage.value,
+            auth: sessionData.auth,
+          },
+          error: null,
+        });
+      }
+      return {
+        target,
+        delivered: recipients.length > 0,
+        clients: recipients.length,
+      };
+    },
   };
+
+  function authSessionRecipients(target) {
+    if (target === "all") {
+      return [...clients];
+    }
+    if (target === "current") {
+      return [...clients].slice(-1);
+    }
+    return [];
+  }
 
   function handleClientMessage(client, rawMessage) {
     let message;

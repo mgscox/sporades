@@ -164,7 +164,7 @@ function createConnection() {
     });
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
-      if (message.type === "auth.result") {
+      if (message.type === "auth.result" || message.type === "auth.session.replace") {
         storeAuthSession(message);
       }
       if (message.type === "query.result" && subscriptions.has(message.id)) {

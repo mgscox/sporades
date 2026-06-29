@@ -536,6 +536,57 @@ test("useAuth receives refreshed anonymous auth state after sign-out", async () 
   }
 });
 
+test("client applies internal auth session replacement messages to localStorage and auth state", async () => {
+  const simulatedAuth = {
+    userId: "simulated-user",
+    displayName: "Mira Vale",
+    email: "mira@example.com",
+    picture: null,
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
+  const browser = installBrowserFakes(anonymousAuth);
+  const stateUpdates = [];
+  const appMessages = [];
+  try {
+    const runtime = await importClientRuntime();
+    runtime.onMessage((message) => appMessages.push(message));
+    const hooks = runtime.createHooks({
+      useState(initialState) {
+        return [initialState, (nextState) => stateUpdates.push(nextState)];
+      },
+      useEffect(effect) {
+        effect();
+      },
+    });
+
+    hooks.useAuth();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    browser.sockets[0].emit("message", {
+      data: JSON.stringify({
+        id: null,
+        type: "auth.session.replace",
+        data: {
+          sessionToken: "simulated-session-token",
+          auth: simulatedAuth,
+        },
+        error: null,
+      }),
+    });
+
+    assert.equal(browser.storage.get("sporades.sessionToken"), "simulated-session-token");
+    assert.deepEqual(
+      stateUpdates.map((state) => state.auth?.provider),
+      ["anonymous", "email"],
+    );
+    assert.deepEqual(stateUpdates.at(-1).auth, simulatedAuth);
+    assert.deepEqual(appMessages, []);
+  } finally {
+    browser.cleanup();
+  }
+});
+
 test("client files.upload negotiates an upload URL and transfers one file", async () => {
   const browser = installBrowserFakes(anonymousAuth, {
     autoOpen: false,

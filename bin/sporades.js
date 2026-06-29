@@ -220,6 +220,7 @@ function parseAuthArgs(args) {
   let displayName = null;
   let picture = null;
   let port = null;
+  let client = null;
 
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
@@ -255,6 +256,13 @@ function parseAuthArgs(args) {
       port = readPort(readFlagValue(rest, ++index, "--port"));
       continue;
     }
+    if (arg === "--client") {
+      client = readFlagValue(rest, ++index, "--client");
+      if (!["current", "all"].includes(client)) {
+        throw commandError("Invalid auth client target.", "Use `--client current` or `--client all`.");
+      }
+      continue;
+    }
     throw commandError(`Unknown flag: ${arg}`, "Use `sporades auth status`, `sporades auth set google`, or `sporades auth as email`.");
   }
 
@@ -265,7 +273,7 @@ function parseAuthArgs(args) {
     if (!simulatedProvider) {
       throw commandError("Missing simulated auth provider.", "Use `sporades auth as email --email <address> --json`.");
     }
-    return { subcommand, provider: simulatedProvider, email, displayName, picture, port, json, projectDir: process.cwd() };
+    return { subcommand, provider: simulatedProvider, email, displayName, picture, port, client, json, projectDir: process.cwd() };
   }
   if (subcommand === "set" && provider === "google") {
     if (clientJson) {
@@ -496,6 +504,9 @@ async function startDevSession(options) {
       if (request.method === "POST" && requestUrl.pathname === "/__sporades/debug/auth/as") {
         const body = await readJsonRequest(request);
         const result = simulateLocalIdentitySession(runtime.database, body);
+        if (result.ok && body.client) {
+          result.data.delivery = websocketHub.deliverAuthSession(body.client, result.data);
+        }
         writeJsonResponse(response, result.ok ? 200 : 400, result);
         return;
       }
@@ -705,6 +716,7 @@ async function manageAuth(options) {
       email: options.email,
       displayName: options.displayName,
       picture: options.picture,
+      client: options.client,
     });
 
     if (options.json) {
@@ -717,6 +729,12 @@ async function manageAuth(options) {
     }
 
     process.stdout.write(`Simulated ${result.data.auth.provider} identity: ${result.data.auth.email}\n`);
+    if (result.data.delivery) {
+      const noun = result.data.delivery.clients === 1 ? "client" : "clients";
+      process.stdout.write(
+        `Delivered to ${result.data.delivery.clients} ${noun} for --client ${result.data.delivery.target}\n`,
+      );
+    }
     process.stdout.write(`localStorage.${result.data.localStorage.key}=${result.data.localStorage.value}\n`);
     return;
   }
