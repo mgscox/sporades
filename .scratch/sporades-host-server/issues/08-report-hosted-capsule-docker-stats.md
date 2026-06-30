@@ -1,6 +1,6 @@
 # Report Hosted Capsule Docker stats
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
