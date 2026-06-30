@@ -2022,6 +2022,62 @@ test("sporades host helper reports push restart failure after installing the rel
   });
 });
 
+test("sporades host helper preserves install metadata when push restart route reload fails", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const incomingDir = path.join(remoteRoot, "incoming");
+    const runtimeDir = path.join(dir, "runtime-files");
+    const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
+    await mkdir(incomingDir, { recursive: true });
+    await mkdir(runtimeDir, { recursive: true });
+    await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
+    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
+    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
+    await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+    await createTarGz(archivePath, runtimeDir, ["server.mjs", "client.js", "index.html", "sporades.json"]);
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
+    const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_RUNNING: "false", FAKE_DOCKER_CADDY_STATUS: "1" } });
+
+    const install = await runHostHelper(
+      {
+        action: "capsule.release.install",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        release: {
+          id: "20260630T221500Z-feedface",
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          remoteCapsuleId: "capsules.example.dev/team-notes",
+          remoteArchive: archivePath,
+          restart: true,
+          serverEnvIncluded: false,
+          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          directories: {
+            capsule: capsuleDir,
+            releases: path.join(capsuleDir, "releases"),
+            release: path.join(capsuleDir, "releases", "20260630T221500Z-feedface"),
+            data: path.join(capsuleDir, "data"),
+          },
+          currentLink: path.join(capsuleDir, "current"),
+        },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(install.code, 0, install.stderr);
+    const output = JSON.parse(install.stdout);
+    assert.equal(output.ok, false);
+    assert.equal(output.data.installed, true);
+    assert.equal(output.data.restartRequested, true);
+    assert.equal(output.data.restarted, false);
+    assert.equal(output.data.release.id, "20260630T221500Z-feedface");
+    assert.equal(output.error.message, "Failed to apply Hosted Capsule route.");
+    assert.equal(await readlink(path.join(capsuleDir, "current")), path.join(capsuleDir, "releases", "20260630T221500Z-feedface"));
+  });
+});
+
 test("sporades host register leaves local binding untouched when authoritative registration fails", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");

@@ -87,8 +87,13 @@ async function installRelease(request) {
   await updateRegistryCurrentRelease(request, release.id, "released");
 
   let restartResult = null;
+  let restartError = null;
   if (release.restart) {
-    restartResult = await restartCapsule(request, { write: false });
+    try {
+      restartResult = await restartCapsule(request, { write: false });
+    } catch (error) {
+      restartError = error;
+    }
   }
 
   const data = {
@@ -116,8 +121,10 @@ async function installRelease(request) {
       ok: false,
       data,
       error: {
-        message: "Hosted Capsule restart failed.",
-        hint: `Check Docker logs for ${normaliseLifecycle(request).container.name}; the route has been returned to the Hosted Capsule unavailable response.`,
+        message: restartError?.message ?? "Hosted Capsule restart failed.",
+        hint:
+          restartError?.hint ??
+          `Check Docker logs for ${normaliseLifecycle(request).container.name}; the route has been returned to the Hosted Capsule unavailable response.`,
       },
     });
     return;
