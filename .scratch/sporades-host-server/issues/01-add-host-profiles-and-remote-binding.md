@@ -1,6 +1,6 @@
 # Add Host profiles and remote binding
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
