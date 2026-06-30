@@ -24,7 +24,10 @@ const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
 const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
 const CONTAINER_BINDING_FILE = path.join(".sporades", "binding.json");
+const REMOTE_BINDING_FILE = path.join(".sporades", "remote-binding.json");
 const DEV_REBUILD_DEBOUNCE_MS = 100;
+const DEFAULT_HOST_SCHEME = "https";
+const DEFAULT_HOST_REMOTE_ROOT = "/srv/sporades";
 const CLI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 main().catch((error) => {
@@ -68,6 +71,11 @@ async function main() {
 
   if (command === "deploy") {
     await startContainerSession(parseDeployArgs(args));
+    return;
+  }
+
+  if (command === "host") {
+    await manageHost(parseHostArgs(args));
     return;
   }
 
@@ -296,6 +304,110 @@ function parseAuthArgs(args) {
   throw commandError(
     "Unknown auth command.",
     "Use `sporades auth status`, `sporades auth clients`, `sporades auth set google`, or `sporades auth as email`.",
+  );
+}
+
+function parseHostArgs(args) {
+  const [subcommand, ...rest] = args;
+  let json = false;
+  let hostAlias = null;
+  let server = null;
+  let domain = null;
+  let remoteRoot = DEFAULT_HOST_REMOTE_ROOT;
+  const positional = [];
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg === "--host") {
+      hostAlias = readFlagValue(rest, ++index, "--host");
+      continue;
+    }
+    if (arg === "--server") {
+      server = readFlagValue(rest, ++index, "--server");
+      continue;
+    }
+    if (arg === "--domain") {
+      domain = readFlagValue(rest, ++index, "--domain");
+      continue;
+    }
+    if (arg === "--remote-root") {
+      remoteRoot = readFlagValue(rest, ++index, "--remote-root");
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw commandError(`Unknown flag: ${arg}`, "Use `sporades host add`, `sporades host use`, `sporades host current`, or `sporades host bind`.");
+    }
+    positional.push(arg);
+  }
+
+  if (subcommand === "add") {
+    const [alias, ...extra] = positional;
+    if (!alias) {
+      throw commandError(
+        "Missing Host profile alias.",
+        "Use `sporades host add <alias> --server <ssh-target> --domain <hosted-domain>`.",
+      );
+    }
+    if (extra.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host add <alias> --server <ssh-target> --domain <hosted-domain>`.");
+    }
+    validateHostAlias(alias);
+    if (!server) {
+      throw commandError("Missing Host server.", "Pass `--server <ssh-target>`.");
+    }
+    if (!domain) {
+      throw commandError("Missing Hosted domain.", "Pass `--domain <hosted-domain>`.");
+    }
+    validateHostedDomain(domain);
+    validateHostRemoteRoot(remoteRoot);
+    return { subcommand, alias, server, domain, remoteRoot, json, projectDir: process.cwd() };
+  }
+
+  if (subcommand === "use") {
+    const [alias, ...extra] = positional;
+    if (!alias) {
+      throw commandError("Missing Host profile alias.", "Use `sporades host use <alias>`.");
+    }
+    if (extra.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host use <alias>`.");
+    }
+    validateHostAlias(alias);
+    return { subcommand, alias, json, projectDir: process.cwd() };
+  }
+
+  if (subcommand === "current") {
+    if (positional.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host current --host <alias> --json`.");
+    }
+    if (hostAlias) {
+      validateHostAlias(hostAlias);
+    }
+    return { subcommand, hostAlias, json, projectDir: process.cwd() };
+  }
+
+  if (subcommand === "bind") {
+    const [subname, ...extra] = positional;
+    if (!subname) {
+      throw commandError("Missing Capsule subname.", "Use `sporades host bind <subname> --host <alias>`.");
+    }
+    if (extra.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host bind <subname> --host <alias>`.");
+    }
+    if (hostAlias) {
+      validateHostAlias(hostAlias);
+    }
+    validateCapsuleSubname(subname);
+    return { subcommand, subname, hostAlias, json, projectDir: process.cwd() };
+  }
+
+  throw commandError(
+    `Unknown host command: ${subcommand ?? ""}`.trim(),
+    "Use `sporades host add`, `sporades host use`, `sporades host current`, or `sporades host bind`.",
   );
 }
 
@@ -804,6 +916,71 @@ async function manageAuth(options) {
   }
 }
 
+async function manageHost(options) {
+  if (options.subcommand === "add") {
+    const config = await readHostConfig();
+    const profile = {
+      server: options.server,
+      domain: options.domain,
+      scheme: DEFAULT_HOST_SCHEME,
+      remoteRoot: options.remoteRoot,
+    };
+    config.profiles[options.alias] = profile;
+    await writeHostConfig(config);
+
+    if (options.json) {
+      writeResult({ ok: true, data: { alias: options.alias, profile }, error: null });
+    } else {
+      process.stdout.write(`Host profile added: ${options.alias}\n`);
+    }
+    return;
+  }
+
+  if (options.subcommand === "use") {
+    const config = await readHostConfig();
+    const profile = requireHostProfile(config, options.alias);
+    config.currentHostAlias = options.alias;
+    await writeHostConfig(config);
+
+    if (options.json) {
+      writeResult({ ok: true, data: { currentHostAlias: options.alias, profile }, error: null });
+    } else {
+      process.stdout.write(`Current Host profile: ${options.alias}\n`);
+    }
+    return;
+  }
+
+  if (options.subcommand === "current") {
+    const config = await readHostConfig();
+    const resolved = resolveHostProfile(config, options.hostAlias);
+    const binding = await readRemoteBinding(options.projectDir);
+
+    if (options.json) {
+      writeResult({ ok: true, data: { alias: resolved.alias, profile: resolved.profile, binding }, error: null });
+    } else {
+      process.stdout.write(`${resolved.alias}\t${resolved.profile.server}\t${resolved.profile.domain}\n`);
+    }
+    return;
+  }
+
+  if (options.subcommand === "bind") {
+    await readProjectConfig(options.projectDir);
+    const config = await readHostConfig();
+    const resolved = resolveHostProfile(config, options.hostAlias);
+    const binding = createRemoteBinding(resolved.alias, resolved.profile, options.subname);
+    const bindingPath = path.join(options.projectDir, REMOTE_BINDING_FILE);
+    await mkdir(path.dirname(bindingPath), { recursive: true });
+    await writeFile(bindingPath, `${JSON.stringify(binding, null, 2)}\n`);
+
+    if (options.json) {
+      writeResult({ ok: true, data: { bindingPath, binding, localOnly: true, authoritative: false }, error: null });
+    } else {
+      process.stdout.write(`Local remote binding written for ${binding.subname}: ${binding.hostedUrl}\n`);
+      process.stdout.write("This does not register or create a Hosted Capsule on the Host server.\n");
+    }
+  }
+}
+
 async function startContainerSession(options) {
   const config = await readProjectConfig(options.projectDir);
   const port = options.port ?? config.deploy?.port ?? 4000;
@@ -1105,6 +1282,139 @@ async function readContainerBinding(bindingPath) {
       );
     }
     throw error;
+  }
+}
+
+async function readRemoteBinding(projectDir) {
+  try {
+    return JSON.parse(await readFile(path.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return null;
+    }
+    if (error instanceof SyntaxError) {
+      throw commandError(
+        "Invalid project remote binding metadata.",
+        "Delete .sporades/remote-binding.json or fix its JSON, then retry the command.",
+      );
+    }
+    throw error;
+  }
+}
+
+async function readHostConfig() {
+  try {
+    const parsed = JSON.parse(await readFile(hostConfigPath(), "utf8"));
+    return normaliseHostConfig(parsed);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return { profiles: {}, currentHostAlias: null };
+    }
+    if (error instanceof SyntaxError) {
+      throw commandError(
+        "Invalid Host profile configuration.",
+        "Fix or delete the Sporades Host profile config, then retry the command.",
+      );
+    }
+    throw error;
+  }
+}
+
+async function writeHostConfig(config) {
+  const filePath = hostConfigPath();
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${JSON.stringify(normaliseHostConfig(config), null, 2)}\n`);
+}
+
+function hostConfigPath() {
+  const configDir =
+    process.env.SPORADES_CONFIG_DIR ??
+    path.join(process.env.XDG_CONFIG_HOME ?? path.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
+  return path.join(configDir, "hosts.json");
+}
+
+function normaliseHostConfig(value) {
+  return {
+    profiles: value && typeof value.profiles === "object" && value.profiles !== null ? value.profiles : {},
+    currentHostAlias: typeof value?.currentHostAlias === "string" ? value.currentHostAlias : null,
+  };
+}
+
+function resolveHostProfile(config, explicitAlias) {
+  const alias = explicitAlias ?? config.currentHostAlias;
+  if (!alias) {
+    throw commandError(
+      "No current Host profile selected.",
+      "Run `sporades host use <alias>` or pass `--host <alias>`.",
+    );
+  }
+  return { alias, profile: requireHostProfile(config, alias) };
+}
+
+function requireHostProfile(config, alias) {
+  const profile = config.profiles[alias];
+  if (!profile) {
+    throw commandError(
+      `Unknown Host profile alias: ${alias}`,
+      `Add it with \`sporades host add ${alias} --server <ssh-target> --domain <hosted-domain>\`.`,
+    );
+  }
+  return profile;
+}
+
+function createRemoteBinding(hostAlias, profile, subname) {
+  return {
+    hostAlias,
+    domain: profile.domain,
+    scheme: profile.scheme,
+    subname,
+    hostedUrl: `${profile.scheme}://${subname}.${profile.domain}`,
+    remoteCapsuleId: `${profile.domain}/${subname}`,
+  };
+}
+
+function validateHostAlias(alias) {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(alias)) {
+    throw commandError(
+      "Invalid Host profile alias.",
+      "Use letters, numbers, dots, underscores, or dashes, starting with a letter or number.",
+    );
+  }
+}
+
+function validateHostedDomain(domain) {
+  const labels = domain.split(".");
+  const valid =
+    domain.length <= 253 &&
+    labels.length >= 2 &&
+    labels.every((label) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label));
+  if (!valid) {
+    throw commandError(
+      "Invalid Hosted domain.",
+      "Pass a DNS domain such as `example.com` without a scheme, path, or wildcard.",
+    );
+  }
+}
+
+function validateHostRemoteRoot(remoteRoot) {
+  const segments = remoteRoot.split("/").filter(Boolean);
+  const valid =
+    remoteRoot.startsWith("/") &&
+    remoteRoot !== "/" &&
+    !remoteRoot.includes("\0") &&
+    !remoteRoot.includes("\n") &&
+    segments.every((segment) => segment !== "." && segment !== ".." && /^[A-Za-z0-9._-]+$/.test(segment));
+  if (!valid) {
+    throw commandError("Invalid Host remote root.", "Pass an absolute POSIX path such as `/srv/sporades`.");
+  }
+}
+
+function validateCapsuleSubname(subname) {
+  if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(subname)) {
+    throw commandError(
+      "Invalid Capsule subname.",
+      "Use a lowercase DNS-safe label such as `notes` or `team-notes`.",
+    );
   }
 }
 
