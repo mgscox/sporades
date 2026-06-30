@@ -1,6 +1,6 @@
 # Bootstrap a Host server and Hosted domain
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
