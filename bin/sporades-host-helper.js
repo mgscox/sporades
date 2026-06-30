@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { mkdir, readFile, rename, rm, symlink } from "node:fs/promises";
+import { access, mkdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+const HOSTED_CAPSULE_DOCKER_IMAGE = "node:22-alpine";
+const HOSTED_CAPSULE_DOCKER_NETWORK = "sporades-hosted-capsules";
+const HOSTED_CAPSULE_GRACE_CHECK_MS = 500;
 
 main().catch((error) => {
   writeEnvelope(
@@ -21,6 +25,18 @@ async function main() {
   const request = JSON.parse(await readStdin());
   if (request.action === "capsule.release.install") {
     await installRelease(request);
+    return;
+  }
+  if (request.action === "capsule.start") {
+    await startCapsule(request);
+    return;
+  }
+  if (request.action === "capsule.stop") {
+    await stopCapsule(request);
+    return;
+  }
+  if (request.action === "capsule.restart") {
+    await restartCapsule(request);
     return;
   }
 
@@ -68,28 +84,144 @@ async function installRelease(request) {
 
   await symlink(paths.release, tempCurrentLink);
   await rename(tempCurrentLink, paths.currentLink);
+  await updateRegistryCurrentRelease(request, release.id, "released");
 
-  writeEnvelope({
-    ok: true,
-    data: {
-      installed: true,
-      restartRequested: Boolean(release.restart),
-      restarted: false,
-      capsule: {
-        subname: request.capsule.subname,
-        domain: request.host.domain,
-        hostedUrl: release.hostedUrl,
-      },
-      release: {
-        id: release.id,
-        directory: paths.release,
-        currentLink: paths.currentLink,
-        files: release.files,
-        serverEnvIncluded: Boolean(release.serverEnvIncluded),
-      },
+  let restartResult = null;
+  if (release.restart) {
+    restartResult = await restartCapsule(request, { write: false });
+  }
+
+  const data = {
+    installed: true,
+    restartRequested: Boolean(release.restart),
+    restarted: Boolean(restartResult?.restarted),
+    capsule: {
+      subname: request.capsule.subname,
+      domain: request.host.domain,
+      hostedUrl: release.hostedUrl,
     },
-    error: null,
-  });
+    release: {
+      id: release.id,
+      directory: paths.release,
+      currentLink: paths.currentLink,
+      files: release.files,
+      serverEnvIncluded: Boolean(release.serverEnvIncluded),
+    },
+  };
+  if (restartResult) {
+    data.lifecycle = restartResult;
+  }
+  writeEnvelope({ ok: true, data, error: null });
+}
+
+async function startCapsule(request, options = {}) {
+  validateLifecycleRequest(request);
+  await verifyRegisteredCapsule(request, "lifecycle");
+  const paths = canonicalReleasePaths(request);
+  const releaseId = await currentReleaseId(paths.currentLink, request);
+  const lifecycle = normaliseLifecycle(request);
+  await mkdir(paths.data, { recursive: true });
+
+  stopAndRemoveContainer(lifecycle.container.name);
+  const runArgs = await dockerRunArgs(lifecycle, releaseId);
+  const run = runDocker(runArgs);
+  if (!run.ok) {
+    await writeUnavailableRoute(lifecycle);
+    const result = {
+      ok: false,
+      data: null,
+      error: {
+        message: "Hosted Capsule container failed to start.",
+        hint: `Check Docker logs for ${lifecycle.container.name}, then retry \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`.`,
+      },
+    };
+    if (options.write !== false) {
+      writeEnvelope(result);
+    }
+    return null;
+  }
+
+  const running = checkContainerRunning(lifecycle.container.name);
+  if (!running) {
+    await writeUnavailableRoute(lifecycle);
+    const result = {
+      ok: false,
+      data: null,
+      error: {
+        message: "Hosted Capsule container did not stay running.",
+        hint: `Check Docker logs for ${lifecycle.container.name}; the route has been returned to the Hosted Capsule unavailable response.`,
+      },
+    };
+    if (options.write !== false) {
+      writeEnvelope(result);
+    }
+    return null;
+  }
+
+  await writeRunningRoute(lifecycle);
+  await updateRegistryCurrentRelease(request, releaseId, "running");
+  const data = {
+    started: true,
+    restarted: false,
+    capsule: capsuleData(request, lifecycle),
+    release: { id: releaseId },
+    container: {
+      id: run.stdout.trim(),
+      name: lifecycle.container.name,
+      network: lifecycle.container.network,
+      image: lifecycle.container.image,
+      running: true,
+    },
+    route: lifecycle.routes.running,
+  };
+  if (options.write !== false) {
+    writeEnvelope({ ok: true, data, error: null });
+  }
+  return data;
+}
+
+async function stopCapsule(request, options = {}) {
+  validateLifecycleRequest(request);
+  await verifyRegisteredCapsule(request, "lifecycle");
+  const lifecycle = normaliseLifecycle(request);
+  stopAndRemoveContainer(lifecycle.container.name);
+  await writeUnavailableRoute(lifecycle);
+  await updateRegistryStatus(request, "stopped");
+  const data = {
+    stopped: true,
+    capsule: capsuleData(request, lifecycle),
+    container: { name: lifecycle.container.name, running: false },
+    route: lifecycle.routes.unavailable,
+  };
+  if (options.write !== false) {
+    writeEnvelope({ ok: true, data, error: null });
+  }
+  return data;
+}
+
+async function restartCapsule(request, options = {}) {
+  validateLifecycleRequest(request);
+  const lifecycle = normaliseLifecycle(request);
+  stopAndRemoveContainer(lifecycle.container.name);
+  const startResult = await startCapsule(request, { write: false });
+  if (!startResult) {
+    if (options.write !== false) {
+      writeEnvelope({
+        ok: false,
+        data: null,
+        error: {
+          message: "Hosted Capsule restart failed.",
+          hint: `Check Docker logs for ${lifecycle.container.name}; the route has been returned to the Hosted Capsule unavailable response.`,
+        },
+      });
+    }
+    return null;
+  }
+  const data = { ...startResult, restarted: true };
+  if (options.write !== false) {
+    writeEnvelope({ ok: true, data, error: null });
+  }
+  return data;
 }
 
 function canonicalReleasePaths(request) {
@@ -104,10 +236,211 @@ function canonicalReleasePaths(request) {
   return {
     capsule,
     releases,
-    release: path.join(releases, request.release.id),
+    release: request.release?.id ? path.join(releases, request.release.id) : null,
     data: path.join(capsule, "data"),
     currentLink: path.join(capsule, "current"),
   };
+}
+
+function normaliseLifecycle(request) {
+  const provided = request.lifecycle ?? {};
+  const paths = canonicalReleasePaths(request);
+  const subname = request.capsule.subname;
+  const domain = request.host.domain;
+  const hostedUrl = provided.hostedUrl ?? request.release?.hostedUrl ?? `${request.host.scheme ?? "https"}://${subname}.${domain}`;
+  const remoteCapsuleId = provided.remoteCapsuleId ?? `${domain}/${subname}`;
+  const containerName = provided.container?.name ?? createHostedContainerName(domain, subname);
+  const routeFile = provided.routes?.running?.routeFile ?? path.join(request.host.remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
+  const currentLink = provided.currentLink ?? paths.currentLink;
+  return {
+    hostedUrl,
+    remoteCapsuleId,
+    currentLink,
+    directories: {
+      capsule: paths.capsule,
+      releases: paths.releases,
+      data: paths.data,
+    },
+    mounts: provided.mounts ?? {
+      files: [
+        { host: path.join(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
+        { host: path.join(currentLink, "client.js"), container: "/app/client.js", mode: "ro" },
+        { host: path.join(currentLink, "index.html"), container: "/app/index.html", mode: "ro" },
+        { host: path.join(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
+        { host: path.join(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
+      ],
+      data: { host: paths.data, container: "/app/data", mode: "rw" },
+    },
+    container: {
+      name: containerName,
+      network: provided.container?.network ?? HOSTED_CAPSULE_DOCKER_NETWORK,
+      image: provided.container?.image ?? HOSTED_CAPSULE_DOCKER_IMAGE,
+      graceCheckMs: provided.container?.graceCheckMs ?? HOSTED_CAPSULE_GRACE_CHECK_MS,
+      labels: {
+        "com.sporades.managed": "true",
+        "com.sporades.hosted-domain": domain,
+        "com.sporades.capsule-subname": subname,
+        "com.sporades.capsule-id": remoteCapsuleId,
+        ...(provided.container?.labels ?? {}),
+      },
+    },
+    routes: {
+      running: provided.routes?.running ?? {
+        hostname: `${subname}.${domain}`,
+        target: "container",
+        containerName,
+        port: 4000,
+        routeFile,
+      },
+      unavailable: provided.routes?.unavailable ?? {
+        hostname: `${subname}.${domain}`,
+        target: "hosted-capsule-unavailable",
+        statusCode: 503,
+        routeFile,
+      },
+    },
+  };
+}
+
+async function dockerRunArgs(lifecycle, releaseId) {
+  const args = [
+    "run",
+    "--detach",
+    "--name",
+    lifecycle.container.name,
+    "--network",
+    lifecycle.container.network,
+  ];
+  const labels = {
+    ...lifecycle.container.labels,
+    "com.sporades.release-id": releaseId,
+  };
+  for (const [key, value] of Object.entries(labels)) {
+    args.push("--label", `${key}=${value}`);
+  }
+  for (const mount of lifecycle.mounts.files) {
+    if (mount.optional && !(await pathExists(mount.host))) {
+      continue;
+    }
+    args.push("--volume", formatMount(mount));
+    if (mount.container === "/app/.env.sporades.server") {
+      args.push("--env-file", mount.host);
+    }
+  }
+  args.push("--volume", formatMount(lifecycle.mounts.data), "--workdir", "/app", "--env", "PORT=4000");
+  args.push(lifecycle.container.image, "node", "/app/server.mjs");
+  return args;
+}
+
+function stopAndRemoveContainer(containerName) {
+  runDocker(["stop", containerName], { ignoreFailure: true });
+  runDocker(["rm", containerName], { ignoreFailure: true });
+}
+
+function runDocker(args, options = {}) {
+  const result = spawnSync("docker", args, { encoding: "utf8" });
+  if (options.ignoreFailure) {
+    return { ok: result.status === 0, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
+  }
+  return {
+    ok: !result.error && result.status === 0,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? result.error?.message ?? "",
+  };
+}
+
+function checkContainerRunning(containerName) {
+  const result = runDocker(["inspect", "-f", "{{.State.Running}}", containerName]);
+  return result.ok && result.stdout.trim() === "true";
+}
+
+async function currentReleaseId(currentLink, request) {
+  let target;
+  try {
+    target = await readlink(currentLink);
+  } catch (error) {
+    if (error?.code === "ENOENT" || error?.code === "EINVAL") {
+      throw helperError(
+        "No Hosted Capsule release has been pushed.",
+        `Run \`sporades host push --host ${request.host.alias} --subname ${request.capsule.subname}\` before starting the Hosted Capsule.`,
+      );
+    }
+    throw error;
+  }
+  return path.basename(target);
+}
+
+async function writeRunningRoute(lifecycle) {
+  const route = lifecycle.routes.running;
+  await mkdir(path.dirname(route.routeFile), { recursive: true });
+  await writeFile(
+    route.routeFile,
+    `${route.hostname} {\n  reverse_proxy ${route.containerName}:${route.port ?? 4000}\n}\n`,
+  );
+}
+
+async function writeUnavailableRoute(lifecycle) {
+  const route = lifecycle.routes.unavailable;
+  await mkdir(path.dirname(route.routeFile), { recursive: true });
+  await writeFile(
+    route.routeFile,
+    `${route.hostname} {\n  respond "Hosted Capsule unavailable" ${route.statusCode ?? 503}\n}\n`,
+  );
+}
+
+async function updateRegistryCurrentRelease(request, releaseId, status) {
+  const registryRecordPath = registryPath(request);
+  const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
+  record.currentRelease = { ...(record.currentRelease ?? {}), id: releaseId };
+  record.status = status;
+  record.updatedAt = new Date().toISOString();
+  await writeFile(registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+}
+
+async function updateRegistryStatus(request, status) {
+  const registryRecordPath = registryPath(request);
+  const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
+  record.status = status;
+  record.updatedAt = new Date().toISOString();
+  await writeFile(registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+}
+
+function registryPath(request) {
+  return path.join(
+    request.host.remoteRoot,
+    "hosts",
+    request.host.domain,
+    "registry",
+    "capsules",
+    `${request.capsule.subname}.json`,
+  );
+}
+
+function capsuleData(request, lifecycle) {
+  return {
+    subname: request.capsule.subname,
+    domain: request.host.domain,
+    hostedUrl: lifecycle.hostedUrl,
+    remoteCapsuleId: lifecycle.remoteCapsuleId,
+  };
+}
+
+function formatMount(mount) {
+  const mode = mount.mode === "ro" ? ":ro" : "";
+  return `${mount.host}:${mount.container}${mode}`;
+}
+
+async function pathExists(filePath) {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function createHostedContainerName(domain, subname) {
+  return `sporades-${domain.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase()}-${subname}`;
 }
 
 function validateReleaseArchive(request) {
@@ -180,15 +513,8 @@ function isSafeArchiveEntryName(name) {
   return name.split("/").every((segment) => segment && segment !== "." && segment !== "..");
 }
 
-async function verifyRegisteredCapsule(request) {
-  const registryRecordPath = path.join(
-    request.host.remoteRoot,
-    "hosts",
-    request.host.domain,
-    "registry",
-    "capsules",
-    `${request.capsule.subname}.json`,
-  );
+async function verifyRegisteredCapsule(request, purpose = "push") {
+  const registryRecordPath = registryPath(request);
   let record;
   try {
     record = JSON.parse(await readFile(registryRecordPath, "utf8"));
@@ -196,7 +522,9 @@ async function verifyRegisteredCapsule(request) {
     if (error?.code === "ENOENT") {
       throw helperError(
         "Hosted Capsule is not registered.",
-        `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before pushing a release.`,
+        purpose === "push"
+          ? `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before pushing a release.`
+          : `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before managing the Hosted Capsule lifecycle.`,
       );
     }
     if (error instanceof SyntaxError) {
@@ -218,6 +546,18 @@ async function verifyRegisteredCapsule(request) {
       "Hosted Capsule registry record does not match the release request.",
       "Rebind the local project or pass the correct Host profile and Capsule subname.",
     );
+  }
+}
+
+function validateLifecycleRequest(request) {
+  const requiredStrings = [
+    request.host?.domain,
+    request.host?.alias,
+    request.host?.remoteRoot,
+    request.capsule?.subname,
+  ];
+  if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw helperError("Invalid Hosted Capsule lifecycle request.", "Update the Sporades CLI and retry the host lifecycle command.");
   }
 }
 
