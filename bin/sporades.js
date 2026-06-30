@@ -28,6 +28,7 @@ const REMOTE_BINDING_FILE = path.join(".sporades", "remote-binding.json");
 const DEV_REBUILD_DEBOUNCE_MS = 100;
 const DEFAULT_HOST_SCHEME = "https";
 const DEFAULT_HOST_REMOTE_ROOT = "/srv/sporades";
+const RESERVED_CAPSULE_SUBNAMES = new Set(["www", "api", "admin", "root", "host"]);
 const CLI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 main().catch((error) => {
@@ -347,7 +348,7 @@ function parseHostArgs(args) {
     if (arg.startsWith("--")) {
       throw commandError(
         `Unknown flag: ${arg}`,
-        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host bootstrap`, or `sporades host invoke`.",
+        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host bootstrap`, or `sporades host invoke`.",
       );
     }
     positional.push(arg);
@@ -413,6 +414,21 @@ function parseHostArgs(args) {
     return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
   }
 
+  if (subcommand === "register") {
+    const [positionalSubname, ...extra] = positional;
+    if (!positionalSubname) {
+      throw commandError("Missing Capsule subname.", "Use `sporades host register <subname> --host <alias>`.");
+    }
+    if (extra.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host register <subname> --host <alias>`.");
+    }
+    if (hostAlias) {
+      validateHostAlias(hostAlias);
+    }
+    validateCapsuleSubname(positionalSubname);
+    return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
+  }
+
   if (subcommand === "bootstrap") {
     if (positional.length > 0) {
       throw commandError("Too many positional arguments.", "Use `sporades host bootstrap --host <alias> --json`.");
@@ -443,7 +459,7 @@ function parseHostArgs(args) {
 
   throw commandError(
     `Unknown host command: ${subcommand ?? ""}`.trim(),
-    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host bootstrap`, or `sporades host invoke`.",
+    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host bootstrap`, or `sporades host invoke`.",
   );
 }
 
@@ -1017,6 +1033,48 @@ async function manageHost(options) {
     return;
   }
 
+  if (options.subcommand === "register") {
+    await readProjectConfig(options.projectDir);
+    const config = await readHostConfig();
+    const resolved = resolveHostProfile(config, options.hostAlias);
+    const binding = createRemoteBinding(resolved.alias, resolved.profile, options.subname);
+    const result = invokeRemoteHostHelper({
+      alias: resolved.alias,
+      profile: resolved.profile,
+      action: "capsule.register",
+      subname: options.subname,
+      registration: createHostRegistrationRequest(resolved.alias, resolved.profile, options.subname),
+      projectDir: options.projectDir,
+    });
+
+    if (!result.ok) {
+      if (options.json) {
+        writeResult(result, true);
+        return;
+      }
+      throw commandError(result.error.message, result.error.hint);
+    }
+
+    const bindingPath = path.join(options.projectDir, REMOTE_BINDING_FILE);
+    await mkdir(path.dirname(bindingPath), { recursive: true });
+    await writeFile(bindingPath, `${JSON.stringify(binding, null, 2)}\n`);
+
+    const data = {
+      ...result.data,
+      bindingPath,
+      binding,
+      localBinding: true,
+      authoritative: result.data?.authoritative ?? true,
+    };
+    if (options.json) {
+      writeResult({ ok: true, data, error: null });
+    } else {
+      process.stdout.write(`Hosted Capsule registered: ${binding.hostedUrl}\n`);
+      process.stdout.write(`Local remote binding written for ${binding.subname}.\n`);
+    }
+    return;
+  }
+
   if (options.subcommand === "invoke") {
     const config = await readHostConfig();
     const resolved = resolveHostProfile(config, options.hostAlias);
@@ -1470,6 +1528,9 @@ function invokeRemoteHostHelper(options) {
   if (options.bootstrap) {
     request.bootstrap = options.bootstrap;
   }
+  if (options.registration) {
+    request.registration = options.registration;
+  }
   const result = spawnSync("ssh", [options.profile.server, helperPath], {
     cwd: options.projectDir,
     encoding: "utf8",
@@ -1514,6 +1575,33 @@ function createHostBootstrapRequest(profile) {
     caddy: {
       managedInclude: posixJoin(caddyDirectory, "sporades-hosted-domains.caddy"),
       domainInclude: posixJoin(caddyDirectory, "hosts", `${profile.domain}.caddy`),
+    },
+  };
+}
+
+function createHostRegistrationRequest(alias, profile, subname) {
+  const bootstrap = createHostBootstrapRequest(profile);
+  const capsuleDirectory = posixJoin(bootstrap.directories.capsules, subname);
+  return {
+    subname,
+    domain: profile.domain,
+    hostedUrl: `${profile.scheme}://${subname}.${profile.domain}`,
+    remoteCapsuleId: `${profile.domain}/${subname}`,
+    registryRecord: posixJoin(bootstrap.directories.registry, "capsules", `${subname}.json`),
+    directories: {
+      capsule: capsuleDirectory,
+      releases: posixJoin(capsuleDirectory, "releases"),
+      data: posixJoin(capsuleDirectory, "data"),
+    },
+    route: {
+      hostname: `${subname}.${profile.domain}`,
+      target: "hosted-capsule-unavailable",
+      statusCode: 503,
+      routeFile: posixJoin(bootstrap.directories.caddyHosts, profile.domain, `${subname}.caddy`),
+    },
+    bootstrap: {
+      command: `sporades host bootstrap --host ${alias}`,
+      tls: bootstrap.tls,
     },
   };
 }
@@ -1629,6 +1717,12 @@ function validateCapsuleSubname(subname) {
     throw commandError(
       "Invalid Capsule subname.",
       "Use a lowercase DNS-safe label such as `notes` or `team-notes`.",
+    );
+  }
+  if (RESERVED_CAPSULE_SUBNAMES.has(subname)) {
+    throw commandError(
+      "Reserved Capsule subname.",
+      "Choose a Capsule subname other than www, api, admin, root, or host.",
     );
   }
 }
