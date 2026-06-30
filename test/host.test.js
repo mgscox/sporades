@@ -195,7 +195,9 @@ process.exit(0);
 async function installFakeDocker(dir, options = {}) {
   const fakeBinDir = path.join(dir, "fake-docker-bin");
   const logPath = path.join(dir, "docker-calls.jsonl");
+  const caddyLogPath = path.join(dir, "caddy-calls.jsonl");
   const dockerPath = path.join(fakeBinDir, "docker");
+  const caddyPath = path.join(fakeBinDir, "caddy");
   await mkdir(fakeBinDir, { recursive: true });
   await writeFile(
     dockerPath,
@@ -215,13 +217,54 @@ process.exit(0);
 `,
   );
   await chmod(dockerPath, 0o755);
+  await writeFile(
+    caddyPath,
+    `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(process.env.FAKE_DOCKER_CADDY_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
+process.exit(Number(process.env.FAKE_DOCKER_CADDY_STATUS || "0"));
+`,
+  );
+  await chmod(caddyPath, 0o755);
+
+  return {
+    fakeBinDir,
+    logPath,
+    caddyLogPath,
+    env: {
+      PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
+      FAKE_DOCKER_LOG: logPath,
+      FAKE_DOCKER_CADDY_LOG: caddyLogPath,
+      ...options.env,
+    },
+    calls: () => readJsonl(logPath),
+    caddyCalls: () => readJsonl(caddyLogPath),
+  };
+}
+
+async function installFakeCaddy(dir, options = {}) {
+  const fakeBinDir = path.join(dir, "fake-caddy-bin");
+  const logPath = path.join(dir, "caddy-calls.jsonl");
+  const caddyPath = path.join(fakeBinDir, "caddy");
+  await mkdir(fakeBinDir, { recursive: true });
+  await writeFile(
+    caddyPath,
+    `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(process.env.FAKE_CADDY_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
+process.exit(Number(process.env.FAKE_CADDY_STATUS || "0"));
+`,
+  );
+  await chmod(caddyPath, 0o755);
 
   return {
     fakeBinDir,
     logPath,
     env: {
       PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
-      FAKE_DOCKER_LOG: logPath,
+      FAKE_CADDY_LOG: logPath,
       ...options.env,
     },
     calls: () => readJsonl(logPath),
@@ -1392,6 +1435,93 @@ test("sporades host helper stops containers and routes Hosted Capsules to unavai
   });
 });
 
+test("sporades host helper reloads Caddy after lifecycle route changes", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    const routeFile = path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "team-notes.caddy");
+    await mkdir(releaseDir, { recursive: true });
+    await writeFile(path.join(releaseDir, "server.mjs"), "export default 'server';\n");
+    await writeFile(path.join(releaseDir, "client.js"), "console.log('client');\n");
+    await writeFile(path.join(releaseDir, "index.html"), "<div></div>\n");
+    await writeFile(path.join(releaseDir, "sporades.json"), "{}\n");
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
+    await symlink(releaseDir, path.join(capsuleDir, "current"));
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const caddy = await installFakeCaddy(path.join(dir, "caddy"));
+    const env = {
+      ...docker.env,
+      ...caddy.env,
+      PATH: `${caddy.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+    const request = {
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+      capsule: { subname: "team-notes" },
+      lifecycle: {
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        container: { name: "sporades-capsules-example-dev-team-notes" },
+        routes: {
+          running: { hostname: "team-notes.capsules.example.dev", target: "container", containerName: "sporades-capsules-example-dev-team-notes", port: 4000, routeFile },
+          unavailable: { hostname: "team-notes.capsules.example.dev", target: "hosted-capsule-unavailable", statusCode: 503, routeFile },
+        },
+      },
+    };
+
+    const start = await runHostHelper({ ...request, action: "capsule.start" }, { cwd: dir, env });
+    assert.equal(start.code, 0, start.stderr);
+    const stop = await runHostHelper({ ...request, action: "capsule.stop" }, { cwd: dir, env });
+    assert.equal(stop.code, 0, stop.stderr);
+
+    assert.deepEqual(
+      (await caddy.calls()).map((call) => call.args),
+      [
+        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile")],
+        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile")],
+      ],
+    );
+  });
+});
+
+test("sporades host helper reports Caddy reload failures as structured route errors", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    const routeFile = path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "team-notes.caddy");
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
+    const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_CADDY_STATUS: "1" } });
+
+    const stop = await runHostHelper(
+      {
+        action: "capsule.stop",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        lifecycle: {
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          container: { name: "sporades-capsules-example-dev-team-notes" },
+          routes: {
+            unavailable: { hostname: "team-notes.capsules.example.dev", target: "hosted-capsule-unavailable", statusCode: 503, routeFile },
+          },
+        },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(stop.code, 0, stop.stderr);
+    assert.deepEqual(JSON.parse(stop.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Failed to apply Hosted Capsule route.",
+        hint: "Check the Host server Caddy configuration, then retry the lifecycle command.",
+      },
+    });
+  });
+});
+
 test("sporades host helper reports no release and failed starts with unavailable routes", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -1816,6 +1946,79 @@ test("sporades host helper restarts the current release after install when reque
       (await docker.calls()).map((call) => call.args[0]),
       ["stop", "rm", "stop", "rm", "run", "inspect"],
     );
+  });
+});
+
+test("sporades host helper reports push restart failure after installing the release", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const incomingDir = path.join(remoteRoot, "incoming");
+    const runtimeDir = path.join(dir, "runtime-files");
+    const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
+    await mkdir(incomingDir, { recursive: true });
+    await mkdir(runtimeDir, { recursive: true });
+    await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
+    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
+    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
+    await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+    await createTarGz(archivePath, runtimeDir, ["server.mjs", "client.js", "index.html", "sporades.json"]);
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
+    const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_RUNNING: "false" } });
+
+    const install = await runHostHelper(
+      {
+        action: "capsule.release.install",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        release: {
+          id: "20260630T221500Z-feedface",
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          remoteCapsuleId: "capsules.example.dev/team-notes",
+          remoteArchive: archivePath,
+          restart: true,
+          serverEnvIncluded: false,
+          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          directories: {
+            capsule: capsuleDir,
+            releases: path.join(capsuleDir, "releases"),
+            release: path.join(capsuleDir, "releases", "20260630T221500Z-feedface"),
+            data: path.join(capsuleDir, "data"),
+          },
+          currentLink: path.join(capsuleDir, "current"),
+        },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(install.code, 0, install.stderr);
+    assert.deepEqual(JSON.parse(install.stdout), {
+      ok: false,
+      data: {
+        installed: true,
+        restartRequested: true,
+        restarted: false,
+        capsule: {
+          subname: "team-notes",
+          domain: "capsules.example.dev",
+          hostedUrl: "https://team-notes.capsules.example.dev",
+        },
+        release: {
+          id: "20260630T221500Z-feedface",
+          directory: path.join(capsuleDir, "releases", "20260630T221500Z-feedface"),
+          currentLink: path.join(capsuleDir, "current"),
+          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          serverEnvIncluded: false,
+        },
+      },
+      error: {
+        message: "Hosted Capsule restart failed.",
+        hint: "Check Docker logs for sporades-capsules-example-dev-team-notes; the route has been returned to the Hosted Capsule unavailable response.",
+      },
+    });
+    assert.equal(await readlink(path.join(capsuleDir, "current")), path.join(capsuleDir, "releases", "20260630T221500Z-feedface"));
   });
 });
 

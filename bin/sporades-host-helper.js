@@ -111,6 +111,17 @@ async function installRelease(request) {
   if (restartResult) {
     data.lifecycle = restartResult;
   }
+  if (release.restart && !restartResult) {
+    writeEnvelope({
+      ok: false,
+      data,
+      error: {
+        message: "Hosted Capsule restart failed.",
+        hint: `Check Docker logs for ${normaliseLifecycle(request).container.name}; the route has been returned to the Hosted Capsule unavailable response.`,
+      },
+    });
+    return;
+  }
   writeEnvelope({ ok: true, data, error: null });
 }
 
@@ -261,6 +272,7 @@ function normaliseLifecycle(request) {
       releases: paths.releases,
       data: paths.data,
     },
+    remoteRoot: request.host.remoteRoot,
     mounts: provided.mounts ?? {
       files: [
         { host: path.join(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
@@ -377,6 +389,7 @@ async function writeRunningRoute(lifecycle) {
     route.routeFile,
     `${route.hostname} {\n  reverse_proxy ${route.containerName}:${route.port ?? 4000}\n}\n`,
   );
+  reloadCaddy(lifecycle);
 }
 
 async function writeUnavailableRoute(lifecycle) {
@@ -386,6 +399,18 @@ async function writeUnavailableRoute(lifecycle) {
     route.routeFile,
     `${route.hostname} {\n  respond "Hosted Capsule unavailable" ${route.statusCode ?? 503}\n}\n`,
   );
+  reloadCaddy(lifecycle);
+}
+
+function reloadCaddy(lifecycle) {
+  const configPath = path.join(lifecycle.remoteRoot, "caddy", "Caddyfile");
+  const result = spawnSync("caddy", ["reload", "--config", configPath], { encoding: "utf8" });
+  if (result.error || result.status !== 0) {
+    throw helperError(
+      "Failed to apply Hosted Capsule route.",
+      "Check the Host server Caddy configuration, then retry the lifecycle command.",
+    );
+  }
 }
 
 async function updateRegistryCurrentRelease(request, releaseId, status) {
