@@ -563,6 +563,14 @@ async function applyManagedRoute(lifecycle, routeFile, contents) {
     if (hadPreviousRoute) {
       await rename(previousRouteFile, routeFile);
     }
+    try {
+      reloadCaddy(lifecycle);
+    } catch (rollbackError) {
+      throw helperError(
+        "Failed to apply Hosted Capsule route and failed to reload the restored Caddy config.",
+        "The previous route file was restored, but Caddy could not reload it. Check the Host server Caddy service and configuration, then retry the lifecycle command.",
+      );
+    }
     throw error;
   }
 

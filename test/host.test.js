@@ -225,11 +225,19 @@ process.exit(0);
     caddyPath,
     `#!/usr/bin/env node
 const { appendFileSync } = require("node:fs");
+const { existsSync, readFileSync, writeFileSync } = require("node:fs");
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_DOCKER_CADDY_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
-const status = args[0] === "validate"
+let status = args[0] === "validate"
   ? process.env.FAKE_DOCKER_CADDY_VALIDATE_STATUS
   : (process.env.FAKE_DOCKER_CADDY_RELOAD_STATUS || process.env.FAKE_DOCKER_CADDY_STATUS);
+if (args[0] === "reload" && process.env.FAKE_DOCKER_CADDY_RELOAD_STATUSES) {
+  const statePath = process.env.FAKE_DOCKER_CADDY_STATE;
+  const count = statePath && existsSync(statePath) ? Number(readFileSync(statePath, "utf8")) : 0;
+  const statuses = process.env.FAKE_DOCKER_CADDY_RELOAD_STATUSES.split(",");
+  status = statuses[Math.min(count, statuses.length - 1)];
+  if (statePath) writeFileSync(statePath, String(count + 1));
+}
 process.exit(Number(status || "0"));
 `,
   );
@@ -243,6 +251,7 @@ process.exit(Number(status || "0"));
       PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
       FAKE_DOCKER_LOG: logPath,
       FAKE_DOCKER_CADDY_LOG: caddyLogPath,
+      FAKE_DOCKER_CADDY_STATE: path.join(dir, "caddy-state.txt"),
       ...options.env,
     },
     calls: () => readJsonl(logPath),
@@ -259,11 +268,19 @@ async function installFakeCaddy(dir, options = {}) {
     caddyPath,
     `#!/usr/bin/env node
 const { appendFileSync } = require("node:fs");
+const { existsSync, readFileSync, writeFileSync } = require("node:fs");
 const args = process.argv.slice(2);
 appendFileSync(process.env.FAKE_CADDY_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
-const status = args[0] === "validate"
+let status = args[0] === "validate"
   ? process.env.FAKE_CADDY_VALIDATE_STATUS
   : process.env.FAKE_CADDY_RELOAD_STATUS;
+if (args[0] === "reload" && process.env.FAKE_CADDY_RELOAD_STATUSES) {
+  const statePath = process.env.FAKE_CADDY_STATE;
+  const count = statePath && existsSync(statePath) ? Number(readFileSync(statePath, "utf8")) : 0;
+  const statuses = process.env.FAKE_CADDY_RELOAD_STATUSES.split(",");
+  status = statuses[Math.min(count, statuses.length - 1)];
+  if (statePath) writeFileSync(statePath, String(count + 1));
+}
 process.exit(Number(status || process.env.FAKE_CADDY_STATUS || "0"));
 `,
   );
@@ -275,6 +292,7 @@ process.exit(Number(status || process.env.FAKE_CADDY_STATUS || "0"));
     env: {
       PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
       FAKE_CADDY_LOG: logPath,
+      FAKE_CADDY_STATE: path.join(dir, "caddy-state.txt"),
       ...options.env,
     },
     calls: () => readJsonl(logPath),
@@ -1655,7 +1673,7 @@ test("sporades host helper preserves previous route when Caddy validation fails"
   });
 });
 
-test("sporades host helper reports Caddy reload failures as structured route errors and restores the previous route", async () => {
+test("sporades host helper reloads the restored route after candidate reload failure", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
@@ -1665,7 +1683,7 @@ test("sporades host helper reports Caddy reload failures as structured route err
     await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
     await writeFile(routeFile, "team-notes.capsules.example.dev {\n  reverse_proxy old-container:4000\n}\n");
     const docker = await installFakeDocker(path.join(dir, "docker"));
-    const caddy = await installFakeCaddy(path.join(dir, "caddy"), { env: { FAKE_CADDY_RELOAD_STATUS: "1" } });
+    const caddy = await installFakeCaddy(path.join(dir, "caddy"), { env: { FAKE_CADDY_RELOAD_STATUSES: "1,0" } });
     const env = {
       ...docker.env,
       ...caddy.env,
@@ -1698,6 +1716,68 @@ test("sporades host helper reports Caddy reload failures as structured route err
       },
     });
     assert.equal(await readFile(routeFile, "utf8"), "team-notes.capsules.example.dev {\n  reverse_proxy old-container:4000\n}\n");
+    assert.deepEqual(
+      (await caddy.calls()).map((call) => call.args),
+      [
+        ["validate", "--config", `${routeFile}.tmp`],
+        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile")],
+        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile")],
+      ],
+    );
+  });
+});
+
+test("sporades host helper reports candidate and rollback reload failures", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    const routeFile = path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "team-notes.caddy");
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await mkdir(path.dirname(routeFile), { recursive: true });
+    await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
+    await writeFile(routeFile, "team-notes.capsules.example.dev {\n  reverse_proxy old-container:4000\n}\n");
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const caddy = await installFakeCaddy(path.join(dir, "caddy"), { env: { FAKE_CADDY_RELOAD_STATUSES: "1,1" } });
+    const env = {
+      ...docker.env,
+      ...caddy.env,
+      PATH: `${caddy.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+
+    const stop = await runHostHelper(
+      {
+        action: "capsule.stop",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        lifecycle: {
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          container: { name: "sporades-capsules-example-dev-team-notes" },
+          routes: {
+            unavailable: { hostname: "team-notes.capsules.example.dev", target: "hosted-capsule-unavailable", statusCode: 503, routeFile },
+          },
+        },
+      },
+      { cwd: dir, env },
+    );
+
+    assert.equal(stop.code, 0, stop.stderr);
+    assert.deepEqual(JSON.parse(stop.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Failed to apply Hosted Capsule route and failed to reload the restored Caddy config.",
+        hint: "The previous route file was restored, but Caddy could not reload it. Check the Host server Caddy service and configuration, then retry the lifecycle command.",
+      },
+    });
+    assert.equal(await readFile(routeFile, "utf8"), "team-notes.capsules.example.dev {\n  reverse_proxy old-container:4000\n}\n");
+    assert.deepEqual(
+      (await caddy.calls()).map((call) => call.args),
+      [
+        ["validate", "--config", `${routeFile}.tmp`],
+        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile")],
+        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile")],
+      ],
+    );
   });
 });
 
@@ -2298,7 +2378,7 @@ test("sporades host helper preserves install metadata when push restart route re
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
-    const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_RUNNING: "false", FAKE_DOCKER_CADDY_STATUS: "1" } });
+    const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_RUNNING: "false", FAKE_DOCKER_CADDY_RELOAD_STATUSES: "1,0" } });
 
     const install = await runHostHelper(
       {
