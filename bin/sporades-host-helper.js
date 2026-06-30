@@ -32,11 +32,12 @@ async function installRelease(request) {
   validateInstallRequest(request);
   await verifyRegisteredCapsule(request);
   validateReleaseArchive(request);
-  await mkdir(release.directories.releases, { recursive: true });
-  await mkdir(release.directories.data, { recursive: true });
+  const paths = canonicalReleasePaths(request);
+  await mkdir(paths.releases, { recursive: true });
+  await mkdir(paths.data, { recursive: true });
 
-  const tempReleaseDirectory = `${release.directories.release}.tmp-${process.pid}`;
-  const tempCurrentLink = `${release.currentLink}.tmp-${process.pid}`;
+  const tempReleaseDirectory = `${paths.release}.tmp-${process.pid}`;
+  const tempCurrentLink = `${paths.currentLink}.tmp-${process.pid}`;
   await rm(tempReleaseDirectory, { recursive: true, force: true });
   await rm(tempCurrentLink, { force: true });
   await mkdir(tempReleaseDirectory, { recursive: true });
@@ -53,7 +54,7 @@ async function installRelease(request) {
   }
 
   try {
-    await rename(tempReleaseDirectory, release.directories.release);
+    await rename(tempReleaseDirectory, paths.release);
   } catch (error) {
     await rm(tempReleaseDirectory, { recursive: true, force: true });
     if (error?.code === "EEXIST" || error?.code === "ENOTEMPTY") {
@@ -65,8 +66,8 @@ async function installRelease(request) {
     throw error;
   }
 
-  await symlink(release.directories.release, tempCurrentLink);
-  await rename(tempCurrentLink, release.currentLink);
+  await symlink(paths.release, tempCurrentLink);
+  await rename(tempCurrentLink, paths.currentLink);
 
   writeEnvelope({
     ok: true,
@@ -81,14 +82,32 @@ async function installRelease(request) {
       },
       release: {
         id: release.id,
-        directory: release.directories.release,
-        currentLink: release.currentLink,
+        directory: paths.release,
+        currentLink: paths.currentLink,
         files: release.files,
         serverEnvIncluded: Boolean(release.serverEnvIncluded),
       },
     },
     error: null,
   });
+}
+
+function canonicalReleasePaths(request) {
+  const capsule = path.join(
+    request.host.remoteRoot,
+    "hosts",
+    request.host.domain,
+    "capsules",
+    request.capsule.subname,
+  );
+  const releases = path.join(capsule, "releases");
+  return {
+    capsule,
+    releases,
+    release: path.join(releases, request.release.id),
+    data: path.join(capsule, "data"),
+    currentLink: path.join(capsule, "current"),
+  };
 }
 
 function validateReleaseArchive(request) {

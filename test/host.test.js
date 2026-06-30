@@ -1184,6 +1184,76 @@ test("sporades host helper refuses to install a release for an unregistered Host
   });
 });
 
+test("sporades host helper derives install paths from Host state instead of request-supplied directories", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const incomingDir = path.join(remoteRoot, "incoming");
+    const runtimeDir = path.join(dir, "runtime-files");
+    const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
+    const outsideDir = path.join(dir, "outside-target");
+    await mkdir(incomingDir, { recursive: true });
+    await mkdir(runtimeDir, { recursive: true });
+    await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
+    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
+    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
+    await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+    await createTarGz(archivePath, runtimeDir, ["server.mjs", "client.js", "index.html", "sporades.json"]);
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(
+      registryRecordPath,
+      `${JSON.stringify({
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+      })}\n`,
+    );
+
+    const install = await runHostHelper(
+      {
+        action: "capsule.release.install",
+        host: {
+          alias: "personal",
+          domain: "capsules.example.dev",
+          scheme: "https",
+          remoteRoot,
+        },
+        capsule: {
+          subname: "team-notes",
+        },
+        release: {
+          id: "20260630T221500Z-feedface",
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          remoteCapsuleId: "capsules.example.dev/team-notes",
+          remoteArchive: archivePath,
+          restart: false,
+          serverEnvIncluded: false,
+          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          directories: {
+            capsule: outsideDir,
+            releases: path.join(outsideDir, "releases"),
+            release: path.join(outsideDir, "releases", "20260630T221500Z-feedface"),
+            data: path.join(outsideDir, "data"),
+          },
+          currentLink: path.join(outsideDir, "current"),
+        },
+      },
+      { cwd: dir },
+    );
+
+    assert.equal(install.code, 0, install.stderr);
+    const output = JSON.parse(install.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.release.directory, path.join(capsuleDir, "releases", "20260630T221500Z-feedface"));
+    assert.equal(output.data.release.currentLink, path.join(capsuleDir, "current"));
+    assert.equal(await readFile(path.join(capsuleDir, "releases", "20260630T221500Z-feedface", "server.mjs"), "utf8"), "export default 'server bundle';\n");
+    assert.equal(await readlink(path.join(capsuleDir, "current")), path.join(capsuleDir, "releases", "20260630T221500Z-feedface"));
+    await assert.rejects(stat(path.join(outsideDir, "releases", "20260630T221500Z-feedface")), { code: "ENOENT" });
+    await assert.rejects(stat(path.join(outsideDir, "current")), { code: "ENOENT" });
+  });
+});
+
 test("sporades host helper rejects unsafe or unexpected release archive entries before extraction", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
