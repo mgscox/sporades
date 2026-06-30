@@ -1,6 +1,6 @@
 # Install the remote Host helper contract
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
