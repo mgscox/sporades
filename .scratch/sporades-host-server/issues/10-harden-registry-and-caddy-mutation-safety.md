@@ -1,6 +1,6 @@
 # Harden registry and Caddy mutation safety
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
