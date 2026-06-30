@@ -1,6 +1,6 @@
 # Push current releases to Hosted Capsules
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
