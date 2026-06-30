@@ -520,22 +520,63 @@ async function currentReleaseId(currentLink, request) {
 
 async function writeRunningRoute(lifecycle) {
   const route = lifecycle.routes.running;
-  await mkdir(path.dirname(route.routeFile), { recursive: true });
-  await writeFile(
+  await applyManagedRoute(
+    lifecycle,
     route.routeFile,
     `${route.hostname} {\n  reverse_proxy ${route.containerName}:${route.port ?? 4000}\n}\n`,
   );
-  reloadCaddy(lifecycle);
 }
 
 async function writeUnavailableRoute(lifecycle) {
   const route = lifecycle.routes.unavailable;
-  await mkdir(path.dirname(route.routeFile), { recursive: true });
-  await writeFile(
+  await applyManagedRoute(
+    lifecycle,
     route.routeFile,
     `${route.hostname} {\n  respond "Hosted Capsule unavailable" ${route.statusCode ?? 503}\n}\n`,
   );
-  reloadCaddy(lifecycle);
+}
+
+async function applyManagedRoute(lifecycle, routeFile, contents) {
+  await mkdir(path.dirname(routeFile), { recursive: true });
+  const tempRouteFile = `${routeFile}.tmp`;
+  const previousRouteFile = `${routeFile}.previous-${process.pid}`;
+  await rm(tempRouteFile, { force: true });
+  await rm(previousRouteFile, { force: true });
+  await writeFile(tempRouteFile, contents);
+  try {
+    validateCaddyRoute(tempRouteFile);
+  } catch (error) {
+    await rm(tempRouteFile, { force: true });
+    throw error;
+  }
+
+  const hadPreviousRoute = await pathExists(routeFile);
+  if (hadPreviousRoute) {
+    await rename(routeFile, previousRouteFile);
+  }
+
+  try {
+    await rename(tempRouteFile, routeFile);
+    reloadCaddy(lifecycle);
+  } catch (error) {
+    await rm(routeFile, { force: true });
+    if (hadPreviousRoute) {
+      await rename(previousRouteFile, routeFile);
+    }
+    throw error;
+  }
+
+  await rm(previousRouteFile, { force: true });
+}
+
+function validateCaddyRoute(routeFile) {
+  const result = spawnSync("caddy", ["validate", "--config", routeFile], { encoding: "utf8" });
+  if (result.error || result.status !== 0) {
+    throw helperError(
+      "Failed to validate Hosted Capsule route.",
+      "Check the generated Caddy route for this Hosted Capsule, then retry the lifecycle command.",
+    );
+  }
 }
 
 function reloadCaddy(lifecycle) {
@@ -550,20 +591,74 @@ function reloadCaddy(lifecycle) {
 }
 
 async function updateRegistryCurrentRelease(request, releaseId, status) {
-  const registryRecordPath = registryPath(request);
-  const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
-  record.currentRelease = { ...(record.currentRelease ?? {}), id: releaseId };
-  record.status = status;
-  record.updatedAt = new Date().toISOString();
-  await writeFile(registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+  await mutateRegistryRecord(request, (record) => {
+    record.currentRelease = { ...(record.currentRelease ?? {}), id: releaseId };
+    record.status = status;
+    record.updatedAt = new Date().toISOString();
+    return record;
+  });
 }
 
 async function updateRegistryStatus(request, status) {
-  const registryRecordPath = registryPath(request);
-  const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
-  record.status = status;
-  record.updatedAt = new Date().toISOString();
-  await writeFile(registryRecordPath, `${JSON.stringify(record, null, 2)}\n`);
+  await mutateRegistryRecord(request, (record) => {
+    record.status = status;
+    record.updatedAt = new Date().toISOString();
+    return record;
+  });
+}
+
+async function mutateRegistryRecord(request, mutate) {
+  return withRegistryLock(request, async () => {
+    const registryRecordPath = registryPath(request);
+    const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
+    await writeRegistryRecordAtomic(registryRecordPath, mutate(record));
+  });
+}
+
+async function writeRegistryRecordAtomic(registryRecordPath, record) {
+  const tempPath = `${registryRecordPath}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    await writeFile(tempPath, `${JSON.stringify(record, null, 2)}\n`);
+    if (process.env.SPORADES_FAKE_REGISTRY_ATOMIC_WRITE_FAILURE === "1") {
+      throw helperError(
+        "Failed to write Hosted Capsule registry record.",
+        "Check Host server disk permissions and free space, then retry the command.",
+      );
+    }
+    await rename(tempPath, registryRecordPath);
+  } catch (error) {
+    await rm(tempPath, { force: true });
+    throw error;
+  }
+}
+
+async function withRegistryLock(request, fn) {
+  const lockDir = registryLockPath(request);
+  const timeoutMs = Number(process.env.SPORADES_REGISTRY_LOCK_TIMEOUT_MS ?? "5000");
+  const startedAt = Date.now();
+  while (true) {
+    try {
+      await mkdir(lockDir, { recursive: false });
+      break;
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+      if (Date.now() - startedAt >= timeoutMs) {
+        throw helperError(
+          "Hosted domain registry is locked.",
+          "Wait for the other Host server operation to finish, then retry the command.",
+        );
+      }
+      await delay(25);
+    }
+  }
+
+  try {
+    return await fn();
+  } finally {
+    await rm(lockDir, { recursive: true, force: true });
+  }
 }
 
 function registryPath(request) {
@@ -575,6 +670,10 @@ function registryPath(request) {
     "capsules",
     `${request.capsule.subname}.json`,
   );
+}
+
+function registryLockPath(request) {
+  return path.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", ".lock");
 }
 
 function capsuleData(request, lifecycle) {
@@ -788,6 +887,10 @@ function readStdin() {
     process.stdin.on("end", () => resolve(stdin));
     process.stdin.on("error", reject);
   });
+}
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function helperError(message, hint) {
