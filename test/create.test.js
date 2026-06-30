@@ -179,7 +179,9 @@ test("sporades create writes a runnable React guestbook scaffold when requested"
     assert.match(clientEntry, /useQuery\("entries"\)/);
     assert.match(clientEntry, /useMutation\("sign"\)/);
     assert.match(clientEntry, /auth\.signIn\("google"\)/);
+    assert.match(clientEntry, /auth\.signOut\(\)/);
     assert.match(clientEntry, /Sign in with Google/);
+    assert.match(clientEntry, /Sign out/);
     assert.doesNotMatch(clientEntry, /providers\.google\?\.configured/);
     assert.match(clientEntry, /authorPicture/);
     assert.doesNotMatch(clientEntry, /better-auth|googleapis|gapi|oauth|accounts\.google|avatar|upload/i);
@@ -371,7 +373,9 @@ test("sporades create writes a runnable Preact guestbook scaffold", async () => 
     assert.match(clientEntry, /useQuery\("entries"\)/);
     assert.match(clientEntry, /useMutation\("sign"\)/);
     assert.match(clientEntry, /auth\.signIn\("google"\)/);
+    assert.match(clientEntry, /auth\.signOut\(\)/);
     assert.match(clientEntry, /Sign in with Google/);
+    assert.match(clientEntry, /Sign out/);
     assert.doesNotMatch(clientEntry, /providers\.google\?\.configured/);
     assert.match(clientEntry, /onInput=/);
     assert.doesNotMatch(clientEntry, /react-dom|better-auth|googleapis|gapi|oauth|accounts\.google|avatar|upload/i);

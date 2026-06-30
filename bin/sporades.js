@@ -1459,6 +1459,14 @@ function App() {
     }
   }
 
+  async function signOut() {
+    setAuthError("");
+    const result = await auth.signOut();
+    if (result.error) {
+      setAuthError(result.error.message);
+    }
+  }
+
   async function submit(event: Event) {
     event.preventDefault();
     const message = body.trim();
@@ -1481,7 +1489,11 @@ function App() {
             <button type="button" onClick={signInWithGoogle}>
               Sign in with Google
             </button>
-          ) : null}
+          ) : (
+            <button class="secondary-button" type="button" onClick={signOut}>
+              Sign out
+            </button>
+          )}
           {authError ? <p class="error">{authError}</p> : null}
         </div>
       </section>
@@ -1540,6 +1552,7 @@ const styles = \`
   h1 { margin: 0; max-width: 620px; font-size: clamp(2rem, 6vw, 4.8rem); line-height: 0.95; }
   .auth-panel { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; min-width: 220px; }
   button { border: 0; border-radius: 8px; background: #176b61; color: white; cursor: pointer; font: inherit; font-weight: 700; min-height: 42px; padding: 0 16px; }
+  .secondary-button { background: #51483d; }
   button:disabled { cursor: not-allowed; opacity: 0.55; }
   .composer { background: white; border: 1px solid #ded6ca; border-radius: 8px; padding: 16px; margin-bottom: 24px; }
   textarea { width: 100%; min-height: 116px; box-sizing: border-box; resize: vertical; border: 1px solid #cfc6b8; border-radius: 8px; padding: 12px; font: inherit; }
@@ -1580,6 +1593,14 @@ function App() {
     }
   }
 
+  async function signOut() {
+    setAuthError("");
+    const result = await auth.signOut();
+    if (result.error) {
+      setAuthError(result.error.message);
+    }
+  }
+
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const message = body.trim();
@@ -1602,7 +1623,11 @@ function App() {
             <button type="button" onClick={signInWithGoogle}>
               Sign in with Google
             </button>
-          ) : null}
+          ) : (
+            <button className="secondary-button" type="button" onClick={signOut}>
+              Sign out
+            </button>
+          )}
           {authError ? <p className="error">{authError}</p> : null}
         </div>
       </section>
@@ -1661,6 +1686,7 @@ const styles = \`
   h1 { margin: 0; max-width: 620px; font-size: clamp(2rem, 6vw, 4.8rem); line-height: 0.95; }
   .auth-panel { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; min-width: 220px; }
   button { border: 0; border-radius: 8px; background: #176b61; color: white; cursor: pointer; font: inherit; font-weight: 700; min-height: 42px; padding: 0 16px; }
+  .secondary-button { background: #51483d; }
   button:disabled { cursor: not-allowed; opacity: 0.55; }
   .composer { background: white; border: 1px solid #ded6ca; border-radius: 8px; padding: 16px; margin-bottom: 24px; }
   textarea { width: 100%; min-height: 116px; box-sizing: border-box; resize: vertical; border: 1px solid #cfc6b8; border-radius: 8px; padding: 12px; font: inherit; }
