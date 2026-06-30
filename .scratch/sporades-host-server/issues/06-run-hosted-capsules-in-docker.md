@@ -1,6 +1,6 @@
 # Run Hosted Capsules in Docker
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
