@@ -36,6 +36,46 @@ _Avoid_: build directory, cache directory
 A `.sporades/binding.json` file tracking the running container's ID and name. Used by `sporades deploy` to find and replace the existing container. v0 supports one container per project — redeploy replaces, does not multiply.
 _Avoid_: deploy metadata, container record
 
+**Host server**:
+An SSH-reachable machine that runs the remote Sporades hosting stack: Docker, reverse proxying, the remote registry, and Hosted Capsule containers.
+_Avoid_: host, server, box
+
+**Host profile**:
+A local CLI configuration entry that names a Host server plus a Hosted domain, scheme, and remote root. Used so commands can target a configured hosting destination without repeating connection details.
+_Avoid_: host, remote config, environment
+
+**Hosted domain**:
+A DNS domain where Capsule subnames resolve to a Host server, such as `mattgscox.co.uk`.
+_Avoid_: host, hostname, server domain
+
+**Hosted Capsule**:
+A Capsule registered on a Hosted domain and managed by a Host server. Registration reserves the Capsule subname and server-side state before any release is pushed.
+_Avoid_: deployment, app, remote app
+
+**Capsule subname**:
+The DNS-safe name reserved for a Hosted Capsule within a Hosted domain, forming URLs such as `subname.example.com`.
+_Avoid_: app name, project name, hostname
+
+**Hosted Capsule unavailable response**:
+A Host-server-owned HTTP `503 Service Unavailable` response for a registered Hosted Capsule that has no running container, including no-release, stopped, and failed-start states.
+_Avoid_: 404, proxy error, default error page
+
+**Capsule route**:
+A generated reverse-proxy route for one Hosted Capsule's full subdomain, pointing either to its running container or to the Hosted Capsule unavailable response.
+_Avoid_: wildcard route, dynamic route, proxy rule
+
+**Edge TLS**:
+TLS handled by Cloudflare for a Hosted domain before traffic reaches the Host server.
+_Avoid_: app TLS, Caddy TLS
+
+**Origin certificate**:
+The Cloudflare-issued server certificate presented by the Host server to Cloudflare for a Hosted domain.
+_Avoid_: LetsEncrypt certificate, public certificate
+
+**Hosted domain TLS directory**:
+The domain-scoped Host server directory that contains the preinstalled Cloudflare origin certificate and key for a Hosted domain.
+_Avoid_: cert folder, SSL directory
+
 ## Server runtime
 
 **sporades/server**:
