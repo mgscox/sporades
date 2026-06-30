@@ -1,6 +1,6 @@
 # Retrieve Host server Caddy logs
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

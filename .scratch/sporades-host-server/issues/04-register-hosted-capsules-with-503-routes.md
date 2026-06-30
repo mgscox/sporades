@@ -1,6 +1,6 @@
 # Register Hosted Capsules with 503 routes
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
