@@ -32,6 +32,9 @@ const DEFAULT_HOST_REMOTE_ROOT = "/srv/sporades";
 const RESERVED_CAPSULE_SUBNAMES = new Set(["www", "api", "admin", "root", "host"]);
 const DEFAULT_HOST_LOG_LINES = 100;
 const MAX_HOST_LOG_LINES = 10000;
+const HOSTED_CAPSULE_DOCKER_IMAGE = "node:22-alpine";
+const HOSTED_CAPSULE_DOCKER_NETWORK = "sporades-hosted-capsules";
+const HOSTED_CAPSULE_GRACE_CHECK_MS = 500;
 const CLI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 main().catch((error) => {
@@ -460,6 +463,21 @@ function parseHostArgs(args) {
       validateHostAlias(hostAlias);
     }
     return { subcommand, hostAlias, json, projectDir: process.cwd() };
+  }
+
+  if (subcommand === "start" || subcommand === "stop" || subcommand === "restart") {
+    const [positionalSubname, ...extra] = positional;
+    if (!positionalSubname) {
+      throw commandError("Missing Capsule subname.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
+    }
+    if (extra.length > 0) {
+      throw commandError("Too many positional arguments.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
+    }
+    if (hostAlias) {
+      validateHostAlias(hostAlias);
+    }
+    validateCapsuleSubname(positionalSubname);
+    return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
   }
 
   if (subcommand === "push") {
@@ -1182,6 +1200,31 @@ async function manageHost(options) {
     return;
   }
 
+  if (options.subcommand === "start" || options.subcommand === "stop" || options.subcommand === "restart") {
+    const config = await readHostConfig();
+    const resolved = resolveHostProfile(config, options.hostAlias);
+    const lifecycle = createHostLifecycleRequest(resolved.alias, resolved.profile, options.subname);
+    const result = invokeRemoteHostHelper({
+      alias: resolved.alias,
+      profile: resolved.profile,
+      action: `capsule.${options.subcommand}`,
+      subname: options.subname,
+      lifecycle,
+      projectDir: options.projectDir,
+    });
+
+    if (options.json) {
+      writeResult(result, !result.ok);
+      return;
+    }
+
+    if (!result.ok) {
+      throw commandError(result.error.message, result.error.hint);
+    }
+    process.stdout.write(`Hosted Capsule ${options.subcommand} completed: ${lifecycle.hostedUrl}\n`);
+    return;
+  }
+
   if (options.subcommand === "invoke") {
     const config = await readHostConfig();
     const resolved = resolveHostProfile(config, options.hostAlias);
@@ -1710,6 +1753,9 @@ function invokeRemoteHostHelper(options) {
   if (options.release) {
     request.release = options.release;
   }
+  if (options.lifecycle) {
+    request.lifecycle = options.lifecycle;
+  }
   const result = spawnSync("ssh", [options.profile.server, helperPath], {
     cwd: options.projectDir,
     encoding: "utf8",
@@ -1803,6 +1849,61 @@ function createHostReleaseRequest(options) {
     },
     currentLink: posixJoin(registration.directories.capsule, "current"),
   };
+}
+
+function createHostLifecycleRequest(alias, profile, subname) {
+  const registration = createHostRegistrationRequest(alias, profile, subname);
+  const currentLink = posixJoin(registration.directories.capsule, "current");
+  const containerName = createHostedContainerName(profile.domain, subname);
+  const remoteCapsuleId = `${profile.domain}/${subname}`;
+  return {
+    domain: profile.domain,
+    subname,
+    hostedUrl: `${profile.scheme}://${subname}.${profile.domain}`,
+    remoteCapsuleId,
+    currentLink,
+    directories: registration.directories,
+    mounts: {
+      files: [
+        { host: posixJoin(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
+        { host: posixJoin(currentLink, "client.js"), container: "/app/client.js", mode: "ro" },
+        { host: posixJoin(currentLink, "index.html"), container: "/app/index.html", mode: "ro" },
+        { host: posixJoin(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
+        { host: posixJoin(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
+      ],
+      data: {
+        host: registration.directories.data,
+        container: "/app/data",
+        mode: "rw",
+      },
+    },
+    container: {
+      name: containerName,
+      network: HOSTED_CAPSULE_DOCKER_NETWORK,
+      image: HOSTED_CAPSULE_DOCKER_IMAGE,
+      graceCheckMs: HOSTED_CAPSULE_GRACE_CHECK_MS,
+      labels: {
+        "com.sporades.managed": "true",
+        "com.sporades.hosted-domain": profile.domain,
+        "com.sporades.capsule-subname": subname,
+        "com.sporades.capsule-id": remoteCapsuleId,
+      },
+    },
+    routes: {
+      running: {
+        hostname: `${subname}.${profile.domain}`,
+        target: "container",
+        containerName,
+        port: 4000,
+        routeFile: registration.route.routeFile,
+      },
+      unavailable: registration.route,
+    },
+  };
+}
+
+function createHostedContainerName(domain, subname) {
+  return `sporades-${domain.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase()}-${subname}`;
 }
 
 function createHostReleaseId(now = new Date()) {
