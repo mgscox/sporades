@@ -580,6 +580,338 @@ process.exit(0);
   });
 });
 
+test("sporades host register creates authoritative remote state and then writes local binding", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+if (request.action !== "capsule.register") {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected action.", hint: "Use capsule.register." }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    registered: true,
+    authoritative: true,
+    capsule: {
+      subname: request.capsule.subname,
+      domain: request.host.domain,
+      hostedUrl: request.registration.hostedUrl,
+      remoteCapsuleId: request.registration.remoteCapsuleId
+    },
+    registryRecord: request.registration.registryRecord,
+    directories: request.registration.directories,
+    route: request.registration.route
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "todo-island");
+
+    const addHost = await runCli(
+      ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+      { cwd: projectDir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+
+    const register = await runCli(["host", "register", "team-notes", "--host", "personal", "--json"], {
+      cwd: projectDir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(register.code, 0, register.stderr);
+
+    const output = JSON.parse(register.stdout);
+    const bindingPath = path.join(projectDir, ".sporades", "remote-binding.json");
+    const expectedBinding = {
+      hostAlias: "personal",
+      domain: "capsules.example.dev",
+      scheme: "https",
+      subname: "team-notes",
+      hostedUrl: "https://team-notes.capsules.example.dev",
+      remoteCapsuleId: "capsules.example.dev/team-notes",
+    };
+    assert.equal(output.ok, true);
+    assert.equal(output.error, null);
+    assert.equal(output.data.registered, true);
+    assert.equal(output.data.authoritative, true);
+    assert.equal(output.data.localBinding, true);
+    assert.match(output.data.bindingPath, /\.sporades\/remote-binding\.json$/);
+    assert.deepEqual(output.data.binding, expectedBinding);
+    assert.deepEqual(JSON.parse(await readFile(output.data.bindingPath, "utf8")), expectedBinding);
+    assert.deepEqual(JSON.parse(await readFile(bindingPath, "utf8")), expectedBinding);
+    assert.deepEqual(output.data.route, {
+      hostname: "team-notes.capsules.example.dev",
+      target: "hosted-capsule-unavailable",
+      statusCode: 503,
+      routeFile: "/opt/sporades/caddy/hosts/capsules.example.dev/team-notes.caddy",
+    });
+
+    const [sshCall] = await readJsonl(fakeSsh.logPath);
+    assert.deepEqual(sshCall.args, ["root@example.test", "/opt/sporades/bin/sporades-host-helper"]);
+    assert.deepEqual(JSON.parse(sshCall.stdin), {
+      action: "capsule.register",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot: "/opt/sporades",
+      },
+      capsule: {
+        subname: "team-notes",
+      },
+      registration: {
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        registryRecord: "/opt/sporades/hosts/capsules.example.dev/registry/capsules/team-notes.json",
+        directories: {
+          capsule: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes",
+          releases: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/releases",
+          data: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data",
+        },
+        route: {
+          hostname: "team-notes.capsules.example.dev",
+          target: "hosted-capsule-unavailable",
+          statusCode: 503,
+          routeFile: "/opt/sporades/caddy/hosts/capsules.example.dev/team-notes.caddy",
+        },
+        bootstrap: {
+          command: "sporades host bootstrap --host personal",
+          tls: {
+            directory: "/opt/sporades/hosts/capsules.example.dev/tls",
+            certificate: "/opt/sporades/hosts/capsules.example.dev/tls/origin.crt",
+            key: "/opt/sporades/hosts/capsules.example.dev/tls/origin.key",
+          },
+        },
+      },
+    });
+  });
+});
+
+test("sporades host register leaves local binding untouched when authoritative registration fails", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+process.stdout.write(JSON.stringify({
+  ok: false,
+  data: null,
+  error: {
+    message: "Hosted Capsule subname is already registered for this Hosted domain.",
+    hint: "Choose a different Capsule subname for " + request.host.domain + "."
+  }
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "todo-island");
+
+    const addHost = await runCli(
+      ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--json"],
+      { cwd: projectDir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+
+    const register = await runCli(["host", "register", "team-notes", "--host", "personal", "--json"], {
+      cwd: projectDir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(register.code, 1);
+    assert.deepEqual(JSON.parse(register.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Hosted Capsule subname is already registered for this Hosted domain.",
+        hint: "Choose a different Capsule subname for capsules.example.dev.",
+      },
+    });
+    await assert.rejects(readFile(path.join(projectDir, ".sporades", "remote-binding.json"), "utf8"), { code: "ENOENT" });
+  });
+});
+
+test("sporades host register relies on the Host server for domain-scoped uniqueness", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const { existsSync, readFileSync, writeFileSync } = require("node:fs");
+const request = JSON.parse(stdin);
+const statePath = process.env.FAKE_REGISTER_STATE;
+const state = existsSync(statePath) ? JSON.parse(readFileSync(statePath, "utf8")) : {};
+const key = request.host.domain + "/" + request.capsule.subname;
+if (state[key]) {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: {
+      message: "Hosted Capsule subname is already registered for this Hosted domain.",
+      hint: "Choose a different Capsule subname for " + request.host.domain + "."
+    }
+  }) + "\\n");
+  process.exit(0);
+}
+state[key] = true;
+writeFileSync(statePath, JSON.stringify(state));
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    registered: true,
+    authoritative: true,
+    capsule: {
+      subname: request.capsule.subname,
+      domain: request.host.domain,
+      hostedUrl: request.registration.hostedUrl,
+      remoteCapsuleId: request.registration.remoteCapsuleId
+    },
+    route: request.registration.route
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "todo-island");
+    const env = { ...hostEnv(configDir), ...fakeSsh.env, FAKE_REGISTER_STATE: path.join(dir, "register-state.json") };
+
+    assert.equal(
+      (
+        await runCli(
+          ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+          { cwd: projectDir, env },
+        )
+      ).code,
+      0,
+    );
+    assert.equal(
+      (
+        await runCli(
+          ["host", "add", "work", "--server", "root@example.test", "--domain", "apps.work.test", "--remote-root", "/opt/sporades", "--json"],
+          { cwd: projectDir, env },
+        )
+      ).code,
+      0,
+    );
+
+    const first = await runCli(["host", "register", "notes", "--host", "personal", "--json"], { cwd: projectDir, env });
+    assert.equal(first.code, 0, first.stderr);
+
+    const duplicate = await runCli(["host", "register", "notes", "--host", "personal", "--json"], { cwd: projectDir, env });
+    assert.equal(duplicate.code, 1);
+    assert.equal(JSON.parse(duplicate.stdout).error.message, "Hosted Capsule subname is already registered for this Hosted domain.");
+
+    const sameSubnameDifferentDomain = await runCli(["host", "register", "notes", "--host", "work", "--json"], { cwd: projectDir, env });
+    assert.equal(sameSubnameDifferentDomain.code, 0, sameSubnameDifferentDomain.stderr);
+    assert.equal(JSON.parse(sameSubnameDifferentDomain.stdout).data.binding.remoteCapsuleId, "apps.work.test/notes");
+  });
+});
+
+test("sporades host register reports bootstrap-required failures with TLS file hints", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+process.stdout.write(JSON.stringify({
+  ok: false,
+  data: null,
+  error: {
+    message: "Hosted domain has not been bootstrapped.",
+    hint: "Run \`" + request.registration.bootstrap.command + "\` after installing readable Cloudflare origin certificate and key files at " + request.registration.bootstrap.tls.certificate + " and " + request.registration.bootstrap.tls.key + "."
+  }
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "todo-island");
+    const addHost = await runCli(
+      ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+      { cwd: projectDir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+
+    const register = await runCli(["host", "register", "notes", "--host", "personal", "--json"], {
+      cwd: projectDir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(register.code, 1);
+    assert.deepEqual(JSON.parse(register.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Hosted domain has not been bootstrapped.",
+        hint: "Run `sporades host bootstrap --host personal` after installing readable Cloudflare origin certificate and key files at /opt/sporades/hosts/capsules.example.dev/tls/origin.crt and /opt/sporades/hosts/capsules.example.dev/tls/origin.key.",
+      },
+    });
+  });
+});
+
+test("sporades host register validates lowercase DNS-safe non-reserved Capsule subnames before SSH", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installFakeSsh(dir);
+
+    const invalid = await runCli(["host", "register", "Team_Notes", "--json"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(invalid.code, 1);
+    assert.deepEqual(JSON.parse(invalid.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Invalid Capsule subname.",
+        hint: "Use a lowercase DNS-safe label such as `notes` or `team-notes`.",
+      },
+    });
+
+    const reserved = await runCli(["host", "register", "www", "--json"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(reserved.code, 1);
+    assert.deepEqual(JSON.parse(reserved.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Reserved Capsule subname.",
+        hint: "Choose a Capsule subname other than www, api, admin, root, or host.",
+      },
+    });
+
+    await fakeSsh.assertNotCalled();
+  });
+});
+
 test("sporades host validation returns standard JSON errors", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
