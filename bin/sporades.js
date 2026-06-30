@@ -347,7 +347,7 @@ function parseHostArgs(args) {
     if (arg.startsWith("--")) {
       throw commandError(
         `Unknown flag: ${arg}`,
-        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, or `sporades host invoke`.",
+        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host bootstrap`, or `sporades host invoke`.",
       );
     }
     positional.push(arg);
@@ -413,6 +413,16 @@ function parseHostArgs(args) {
     return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
   }
 
+  if (subcommand === "bootstrap") {
+    if (positional.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host bootstrap --host <alias> --json`.");
+    }
+    if (hostAlias) {
+      validateHostAlias(hostAlias);
+    }
+    return { subcommand, hostAlias, json, projectDir: process.cwd() };
+  }
+
   if (subcommand === "invoke") {
     const [action, ...extra] = positional;
     if (!action) {
@@ -433,7 +443,7 @@ function parseHostArgs(args) {
 
   throw commandError(
     `Unknown host command: ${subcommand ?? ""}`.trim(),
-    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, or `sporades host invoke`.",
+    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host bootstrap`, or `sporades host invoke`.",
   );
 }
 
@@ -1027,6 +1037,29 @@ async function manageHost(options) {
       throw commandError(result.error.message, result.error.hint);
     }
     process.stdout.write(`${JSON.stringify(result.data, null, 2)}\n`);
+    return;
+  }
+
+  if (options.subcommand === "bootstrap") {
+    const config = await readHostConfig();
+    const resolved = resolveHostProfile(config, options.hostAlias);
+    const result = invokeRemoteHostHelper({
+      alias: resolved.alias,
+      profile: resolved.profile,
+      action: "host.bootstrap",
+      bootstrap: createHostBootstrapRequest(resolved.profile),
+      projectDir: options.projectDir,
+    });
+
+    if (options.json) {
+      writeResult(result, !result.ok);
+      return;
+    }
+
+    if (!result.ok) {
+      throw commandError(result.error.message, result.error.hint);
+    }
+    process.stdout.write(`Host server bootstrapped for ${resolved.profile.domain}\n`);
   }
 }
 
@@ -1434,6 +1467,9 @@ function invokeRemoteHostHelper(options) {
     },
     capsule: options.subname ? { subname: options.subname } : null,
   };
+  if (options.bootstrap) {
+    request.bootstrap = options.bootstrap;
+  }
   const result = spawnSync("ssh", [options.profile.server, helperPath], {
     cwd: options.projectDir,
     encoding: "utf8",
@@ -1445,6 +1481,54 @@ function invokeRemoteHostHelper(options) {
 
 function remoteHostHelperPath(profile) {
   return `${profile.remoteRoot}/bin/sporades-host-helper`;
+}
+
+function createHostBootstrapRequest(profile) {
+  const caddyDirectory = posixJoin(profile.remoteRoot, "caddy");
+  const hostsDirectory = posixJoin(profile.remoteRoot, "hosts");
+  const domainDirectory = posixJoin(profile.remoteRoot, "hosts", profile.domain);
+  const tlsDirectory = posixJoin(domainDirectory, "tls");
+  return {
+    substrate: {
+      packages: ["docker", "caddy"],
+      services: ["docker", "caddy"],
+    },
+    directories: {
+      remoteRoot: profile.remoteRoot,
+      bin: posixJoin(profile.remoteRoot, "bin"),
+      caddy: caddyDirectory,
+      caddyHosts: posixJoin(caddyDirectory, "hosts"),
+      hosts: hostsDirectory,
+      domain: domainDirectory,
+      tls: tlsDirectory,
+      registry: posixJoin(domainDirectory, "registry"),
+      capsules: posixJoin(domainDirectory, "capsules"),
+    },
+    domainDirectory,
+    tls: {
+      directory: tlsDirectory,
+      certificate: posixJoin(tlsDirectory, "origin.crt"),
+      key: posixJoin(tlsDirectory, "origin.key"),
+    },
+    network: "sporades-hosted-capsules",
+    caddy: {
+      managedInclude: posixJoin(caddyDirectory, "sporades-hosted-domains.caddy"),
+      domainInclude: posixJoin(caddyDirectory, "hosts", `${profile.domain}.caddy`),
+    },
+  };
+}
+
+function posixJoin(...segments) {
+  return segments
+    .map((segment, index) => {
+      const value = String(segment);
+      if (index === 0) {
+        return value.replace(/\/+$/g, "");
+      }
+      return value.replace(/^\/+|\/+$/g, "");
+    })
+    .filter(Boolean)
+    .join("/");
 }
 
 function parseRemoteHostHelperResult(result) {

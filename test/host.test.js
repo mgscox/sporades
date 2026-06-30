@@ -413,6 +413,173 @@ process.exit(127);
   });
 });
 
+test("sporades host bootstrap enables one Hosted domain through the remote helper contract", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+if (request.action !== "host.bootstrap") {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected action.", hint: "Use host.bootstrap." }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    bootstrapped: true,
+    domain: request.host.domain,
+    remoteRoot: request.host.remoteRoot,
+    network: request.bootstrap.network,
+    packages: request.bootstrap.substrate.packages,
+    directories: request.bootstrap.directories,
+    tls: request.bootstrap.tls,
+    caddy: {
+      managedInclude: request.bootstrap.caddy.managedInclude,
+      globalConfigReplaced: false
+    },
+    preservedCapsules: true
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "todo-island");
+
+    const addHost = await runCli(
+      ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+      { cwd: projectDir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+
+    const bootstrap = await runCli(["host", "bootstrap", "--host", "personal", "--json"], {
+      cwd: projectDir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(bootstrap.code, 0, bootstrap.stderr);
+
+    const output = JSON.parse(bootstrap.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.error, null);
+    assert.deepEqual(output.data.tls, {
+      directory: "/opt/sporades/hosts/capsules.example.dev/tls",
+      certificate: "/opt/sporades/hosts/capsules.example.dev/tls/origin.crt",
+      key: "/opt/sporades/hosts/capsules.example.dev/tls/origin.key",
+    });
+    assert.equal(output.data.caddy.managedInclude, "/opt/sporades/caddy/sporades-hosted-domains.caddy");
+    assert.equal(output.data.caddy.globalConfigReplaced, false);
+    assert.deepEqual(output.data.packages, ["docker", "caddy"]);
+    assert.deepEqual(output.data.directories, {
+      remoteRoot: "/opt/sporades",
+      bin: "/opt/sporades/bin",
+      caddy: "/opt/sporades/caddy",
+      caddyHosts: "/opt/sporades/caddy/hosts",
+      hosts: "/opt/sporades/hosts",
+      domain: "/opt/sporades/hosts/capsules.example.dev",
+      tls: "/opt/sporades/hosts/capsules.example.dev/tls",
+      registry: "/opt/sporades/hosts/capsules.example.dev/registry",
+      capsules: "/opt/sporades/hosts/capsules.example.dev/capsules",
+    });
+    assert.equal(output.data.preservedCapsules, true);
+
+    const [sshCall] = await readJsonl(fakeSsh.logPath);
+    assert.deepEqual(sshCall.args, ["root@example.test", "/opt/sporades/bin/sporades-host-helper"]);
+    assert.deepEqual(JSON.parse(sshCall.stdin), {
+      action: "host.bootstrap",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot: "/opt/sporades",
+      },
+      capsule: null,
+      bootstrap: {
+        substrate: {
+          packages: ["docker", "caddy"],
+          services: ["docker", "caddy"],
+        },
+        directories: {
+          remoteRoot: "/opt/sporades",
+          bin: "/opt/sporades/bin",
+          caddy: "/opt/sporades/caddy",
+          caddyHosts: "/opt/sporades/caddy/hosts",
+          hosts: "/opt/sporades/hosts",
+          domain: "/opt/sporades/hosts/capsules.example.dev",
+          tls: "/opt/sporades/hosts/capsules.example.dev/tls",
+          registry: "/opt/sporades/hosts/capsules.example.dev/registry",
+          capsules: "/opt/sporades/hosts/capsules.example.dev/capsules",
+        },
+        domainDirectory: "/opt/sporades/hosts/capsules.example.dev",
+        tls: {
+          directory: "/opt/sporades/hosts/capsules.example.dev/tls",
+          certificate: "/opt/sporades/hosts/capsules.example.dev/tls/origin.crt",
+          key: "/opt/sporades/hosts/capsules.example.dev/tls/origin.key",
+        },
+        network: "sporades-hosted-capsules",
+        caddy: {
+          managedInclude: "/opt/sporades/caddy/sporades-hosted-domains.caddy",
+          domainInclude: "/opt/sporades/caddy/hosts/capsules.example.dev.caddy",
+        },
+      },
+    });
+  });
+});
+
+test("sporades host bootstrap reports missing Cloudflare origin certificate material with an actionable hint", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+process.stdout.write(JSON.stringify({
+  ok: false,
+  data: null,
+  error: {
+    message: "Cloudflare origin certificate material is missing or unusable.",
+    hint: "Install readable Cloudflare origin certificate and key files at " + request.bootstrap.tls.certificate + " and " + request.bootstrap.tls.key + ", then rerun \`sporades host bootstrap --host " + request.host.alias + "\`."
+  }
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "todo-island");
+
+    const addHost = await runCli(
+      ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+      { cwd: projectDir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+
+    const bootstrap = await runCli(["host", "bootstrap", "--host", "personal", "--json"], {
+      cwd: projectDir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(bootstrap.code, 1);
+    assert.deepEqual(JSON.parse(bootstrap.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Cloudflare origin certificate material is missing or unusable.",
+        hint: "Install readable Cloudflare origin certificate and key files at /opt/sporades/hosts/capsules.example.dev/tls/origin.crt and /opt/sporades/hosts/capsules.example.dev/tls/origin.key, then rerun `sporades host bootstrap --host personal`.",
+      },
+    });
+  });
+});
+
 test("sporades host validation returns standard JSON errors", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
