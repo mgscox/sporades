@@ -355,7 +355,7 @@ function parseHostArgs(args) {
     if (arg.startsWith("--")) {
       throw commandError(
         `Unknown flag: ${arg}`,
-        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host bootstrap`, `sporades host logs`, or `sporades host invoke`.",
+        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host bootstrap`, `sporades host list`, `sporades host logs`, or `sporades host invoke`.",
       );
     }
     positional.push(arg);
@@ -446,6 +446,16 @@ function parseHostArgs(args) {
     return { subcommand, hostAlias, json, projectDir: process.cwd() };
   }
 
+  if (subcommand === "list") {
+    if (positional.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host list --host <alias> --json`.");
+    }
+    if (hostAlias) {
+      validateHostAlias(hostAlias);
+    }
+    return { subcommand, hostAlias, json, projectDir: process.cwd() };
+  }
+
   if (subcommand === "logs") {
     if (positional.length > 0) {
       throw commandError("Too many positional arguments.", "Use `sporades host logs --host <alias> --lines <n> --json`.");
@@ -476,7 +486,7 @@ function parseHostArgs(args) {
 
   throw commandError(
     `Unknown host command: ${subcommand ?? ""}`.trim(),
-    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host bootstrap`, `sporades host logs`, or `sporades host invoke`.",
+    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host bootstrap`, `sporades host list`, `sporades host logs`, or `sporades host invoke`.",
   );
 }
 
@@ -1154,6 +1164,29 @@ async function manageHost(options) {
     process.stdout.write(`Host server bootstrapped for ${resolved.profile.domain}\n`);
   }
 
+  if (options.subcommand === "list") {
+    const config = await readHostConfig();
+    const resolved = resolveHostProfile(config, options.hostAlias);
+    const result = invokeRemoteHostHelper({
+      alias: resolved.alias,
+      profile: resolved.profile,
+      action: "capsule.list",
+      projectDir: options.projectDir,
+    });
+
+    if (options.json) {
+      writeResult(result, !result.ok);
+      return;
+    }
+
+    if (!result.ok) {
+      throw commandError(result.error.message, result.error.hint);
+    }
+
+    process.stdout.write(formatHostedCapsuleList(result.data, resolved.profile));
+    return;
+  }
+
   if (options.subcommand === "logs") {
     const config = await readHostConfig();
     const resolved = resolveHostProfile(config, options.hostAlias);
@@ -1610,6 +1643,77 @@ function normaliseHostLogEntries(data) {
     return [];
   }
   return data.entries.map((entry) => String(entry));
+}
+
+function formatHostedCapsuleList(data, profile) {
+  const capsules = normaliseHostedCapsules(data);
+  const domain = data?.host?.domain ?? profile.domain;
+  if (capsules.length === 0) {
+    return `No Hosted Capsules registered for ${domain}.\n`;
+  }
+
+  const rows = capsules.map((capsule) => ({
+    subname: capsule.subname,
+    hostedUrl: capsule.hostedUrl,
+    registry: formatCapsuleRegistryStatus(capsule.registry),
+    release: formatCapsuleRelease(capsule.currentRelease),
+    docker: formatCapsuleDockerStatus(capsule.docker),
+  }));
+  const headers = {
+    subname: "SUBNAME",
+    hostedUrl: "URL",
+    registry: "REGISTRY",
+    release: "RELEASE",
+    docker: "DOCKER",
+  };
+  const widths = Object.fromEntries(
+    Object.keys(headers).map((key) => [key, Math.max(headers[key].length, ...rows.map((row) => row[key].length))]),
+  );
+  const line = (row) =>
+    [row.subname, row.hostedUrl, row.registry, row.release, row.docker]
+      .map((value, index) => {
+        const key = ["subname", "hostedUrl", "registry", "release", "docker"][index];
+        return index === 4 ? value : value.padEnd(widths[key] + 2);
+      })
+      .join("");
+
+  return `${line(headers)}\n${rows.map(line).join("\n")}\n`;
+}
+
+function normaliseHostedCapsules(data) {
+  if (!Array.isArray(data?.capsules)) {
+    return [];
+  }
+  return data.capsules.map((capsule) => ({
+    subname: String(capsule?.subname ?? ""),
+    hostedUrl: String(capsule?.hostedUrl ?? ""),
+    registry: capsule?.registry ?? null,
+    currentRelease: capsule?.currentRelease ?? null,
+    docker: capsule?.docker ?? null,
+  }));
+}
+
+function formatCapsuleRegistryStatus(registry) {
+  return String(registry?.status ?? registry?.state ?? registry?.lifecycleStatus ?? "registered");
+}
+
+function formatCapsuleRelease(release) {
+  return String(release?.id ?? release?.releaseId ?? release?.version ?? "none");
+}
+
+function formatCapsuleDockerStatus(docker) {
+  if (!docker) {
+    return "unavailable";
+  }
+  const state = String(docker.state ?? docker.status ?? "unknown").toLowerCase();
+  let label = state;
+  if (docker.running === true || state === "running") {
+    label = "running";
+  } else if (docker.running === false || state === "exited" || state === "stopped") {
+    label = "stopped";
+  }
+  const detail = typeof docker.status === "string" && docker.status.trim() ? docker.status.trim() : "";
+  return detail ? `${label} (${detail})` : label;
 }
 
 function remoteHostHelperPath(profile) {
