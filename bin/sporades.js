@@ -314,6 +314,7 @@ function parseHostArgs(args) {
   let server = null;
   let domain = null;
   let remoteRoot = DEFAULT_HOST_REMOTE_ROOT;
+  let subname = null;
   const positional = [];
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -339,8 +340,15 @@ function parseHostArgs(args) {
       remoteRoot = readFlagValue(rest, ++index, "--remote-root");
       continue;
     }
+    if (arg === "--subname") {
+      subname = readFlagValue(rest, ++index, "--subname");
+      continue;
+    }
     if (arg.startsWith("--")) {
-      throw commandError(`Unknown flag: ${arg}`, "Use `sporades host add`, `sporades host use`, `sporades host current`, or `sporades host bind`.");
+      throw commandError(
+        `Unknown flag: ${arg}`,
+        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, or `sporades host invoke`.",
+      );
     }
     positional.push(arg);
   }
@@ -391,8 +399,8 @@ function parseHostArgs(args) {
   }
 
   if (subcommand === "bind") {
-    const [subname, ...extra] = positional;
-    if (!subname) {
+    const [positionalSubname, ...extra] = positional;
+    if (!positionalSubname) {
       throw commandError("Missing Capsule subname.", "Use `sporades host bind <subname> --host <alias>`.");
     }
     if (extra.length > 0) {
@@ -401,13 +409,31 @@ function parseHostArgs(args) {
     if (hostAlias) {
       validateHostAlias(hostAlias);
     }
-    validateCapsuleSubname(subname);
-    return { subcommand, subname, hostAlias, json, projectDir: process.cwd() };
+    validateCapsuleSubname(positionalSubname);
+    return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
+  }
+
+  if (subcommand === "invoke") {
+    const [action, ...extra] = positional;
+    if (!action) {
+      throw commandError("Missing remote Host helper action.", "Use `sporades host invoke <action> --host <alias> --json`.");
+    }
+    if (extra.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host invoke <action> --host <alias> --json`.");
+    }
+    if (hostAlias) {
+      validateHostAlias(hostAlias);
+    }
+    validateRemoteHelperAction(action);
+    if (subname) {
+      validateCapsuleSubname(subname);
+    }
+    return { subcommand, action, subname, hostAlias, json, projectDir: process.cwd() };
   }
 
   throw commandError(
     `Unknown host command: ${subcommand ?? ""}`.trim(),
-    "Use `sporades host add`, `sporades host use`, `sporades host current`, or `sporades host bind`.",
+    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, or `sporades host invoke`.",
   );
 }
 
@@ -978,6 +1004,29 @@ async function manageHost(options) {
       process.stdout.write(`Local remote binding written for ${binding.subname}: ${binding.hostedUrl}\n`);
       process.stdout.write("This does not register or create a Hosted Capsule on the Host server.\n");
     }
+    return;
+  }
+
+  if (options.subcommand === "invoke") {
+    const config = await readHostConfig();
+    const resolved = resolveHostProfile(config, options.hostAlias);
+    const result = invokeRemoteHostHelper({
+      alias: resolved.alias,
+      profile: resolved.profile,
+      action: options.action,
+      subname: options.subname,
+      projectDir: options.projectDir,
+    });
+
+    if (options.json) {
+      writeResult(result, !result.ok);
+      return;
+    }
+
+    if (!result.ok) {
+      throw commandError(result.error.message, result.error.hint);
+    }
+    process.stdout.write(`${JSON.stringify(result.data, null, 2)}\n`);
   }
 }
 
@@ -1373,6 +1422,88 @@ function createRemoteBinding(hostAlias, profile, subname) {
   };
 }
 
+function invokeRemoteHostHelper(options) {
+  const helperPath = remoteHostHelperPath(options.profile);
+  const request = {
+    action: options.action,
+    host: {
+      alias: options.alias,
+      domain: options.profile.domain,
+      scheme: options.profile.scheme,
+      remoteRoot: options.profile.remoteRoot,
+    },
+    capsule: options.subname ? { subname: options.subname } : null,
+  };
+  const result = spawnSync("ssh", [options.profile.server, helperPath], {
+    cwd: options.projectDir,
+    encoding: "utf8",
+    input: `${JSON.stringify(request)}\n`,
+  });
+
+  return parseRemoteHostHelperResult(result);
+}
+
+function remoteHostHelperPath(profile) {
+  return `${profile.remoteRoot}/bin/sporades-host-helper`;
+}
+
+function parseRemoteHostHelperResult(result) {
+  const parsed = parseSporadesJsonEnvelope(result.stdout);
+
+  if (result.error || result.status === 255 || result.signal) {
+    return {
+      ok: false,
+      data: null,
+      error: {
+        message: "SSH transport failed.",
+        hint: "Check the Host profile SSH target, network connectivity, and SSH key access.",
+      },
+    };
+  }
+
+  if (parsed) {
+    return parsed.ok ? parsed : { ...parsed, ok: false };
+  }
+
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      data: null,
+      error: {
+        message: "Remote Host helper command failed.",
+        hint: "Check the Host server helper installation and retry the command.",
+      },
+    };
+  }
+
+  return {
+    ok: false,
+    data: null,
+    error: {
+      message: "Remote Host helper returned invalid JSON.",
+      hint: "Update or reinstall the Sporades Host helper on the Host server.",
+    },
+  };
+}
+
+function parseSporadesJsonEnvelope(raw) {
+  try {
+    const value = JSON.parse(raw);
+    if (
+      value &&
+      typeof value === "object" &&
+      typeof value.ok === "boolean" &&
+      Object.hasOwn(value, "data") &&
+      Object.hasOwn(value, "error")
+    ) {
+      return value;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
 function validateHostAlias(alias) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(alias)) {
     throw commandError(
@@ -1414,6 +1545,15 @@ function validateCapsuleSubname(subname) {
     throw commandError(
       "Invalid Capsule subname.",
       "Use a lowercase DNS-safe label such as `notes` or `team-notes`.",
+    );
+  }
+}
+
+function validateRemoteHelperAction(action) {
+  if (!/^[a-z][a-z0-9.-]*$/.test(action)) {
+    throw commandError(
+      "Invalid remote Host helper action.",
+      "Use a lowercase action name such as `contract.echo`.",
     );
   }
 }
