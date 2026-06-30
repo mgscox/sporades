@@ -364,7 +364,7 @@ function parseHostArgs(args) {
     if (arg.startsWith("--")) {
       throw commandError(
         `Unknown flag: ${arg}`,
-        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host logs`, or `sporades host invoke`.",
+        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
       );
     }
     positional.push(arg);
@@ -465,7 +465,7 @@ function parseHostArgs(args) {
     return { subcommand, hostAlias, json, projectDir: process.cwd() };
   }
 
-  if (subcommand === "start" || subcommand === "stop" || subcommand === "restart") {
+  if (subcommand === "start" || subcommand === "stop" || subcommand === "restart" || subcommand === "stats") {
     const [positionalSubname, ...extra] = positional;
     if (!positionalSubname) {
       throw commandError("Missing Capsule subname.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
@@ -523,7 +523,7 @@ function parseHostArgs(args) {
 
   throw commandError(
     `Unknown host command: ${subcommand ?? ""}`.trim(),
-    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host logs`, or `sporades host invoke`.",
+    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
   );
 }
 
@@ -1225,6 +1225,31 @@ async function manageHost(options) {
     return;
   }
 
+  if (options.subcommand === "stats") {
+    const config = await readHostConfig();
+    const resolved = resolveHostProfile(config, options.hostAlias);
+    const stats = createHostStatsRequest(resolved.profile, options.subname);
+    const result = invokeRemoteHostHelper({
+      alias: resolved.alias,
+      profile: resolved.profile,
+      action: "capsule.stats",
+      subname: options.subname,
+      stats,
+      projectDir: options.projectDir,
+    });
+
+    if (options.json) {
+      writeResult(result, !result.ok);
+      return;
+    }
+
+    if (!result.ok) {
+      throw commandError(result.error.message, result.error.hint);
+    }
+    process.stdout.write(`${JSON.stringify(result.data, null, 2)}\n`);
+    return;
+  }
+
   if (options.subcommand === "invoke") {
     const config = await readHostConfig();
     const resolved = resolveHostProfile(config, options.hostAlias);
@@ -1750,6 +1775,9 @@ function invokeRemoteHostHelper(options) {
   if (options.logs) {
     request.logs = options.logs;
   }
+  if (options.stats) {
+    request.stats = options.stats;
+  }
   if (options.release) {
     request.release = options.release;
   }
@@ -1898,6 +1926,18 @@ function createHostLifecycleRequest(alias, profile, subname) {
         routeFile: registration.route.routeFile,
       },
       unavailable: registration.route,
+    },
+  };
+}
+
+function createHostStatsRequest(profile, subname) {
+  return {
+    domain: profile.domain,
+    subname,
+    hostedUrl: `${profile.scheme}://${subname}.${profile.domain}`,
+    remoteCapsuleId: `${profile.domain}/${subname}`,
+    container: {
+      name: createHostedContainerName(profile.domain, subname),
     },
   };
 }

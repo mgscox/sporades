@@ -39,6 +39,10 @@ async function main() {
     await restartCapsule(request);
     return;
   }
+  if (request.action === "capsule.stats") {
+    await statsCapsule(request);
+    return;
+  }
 
   throw helperError("Unsupported Host helper action.", "Update the Host helper or use a supported Sporades host command.");
 }
@@ -242,6 +246,53 @@ async function restartCapsule(request, options = {}) {
   return data;
 }
 
+async function statsCapsule(request) {
+  validateStatsRequest(request);
+  await verifyRegisteredCapsule(request, "stats");
+  const stats = normaliseStats(request);
+  const running = checkContainerRunning(stats.container.name);
+  if (!running) {
+    throw helperError(
+      "Hosted Capsule has no running container.",
+      `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry stats.`,
+    );
+  }
+
+  const result = runDocker(["stats", "--no-stream", "--format", "json", stats.container.name]);
+  if (!result.ok) {
+    throw helperError(
+      "Failed to read Hosted Capsule Docker stats.",
+      `Check Docker on the Host server and retry \`sporades host stats ${request.capsule.subname} --host ${request.host.alias}\`.`,
+    );
+  }
+
+  let raw;
+  try {
+    raw = JSON.parse(result.stdout);
+  } catch {
+    throw helperError(
+      "Hosted Capsule Docker stats were not valid JSON.",
+      "Update Docker or reinstall the Sporades Host helper on the Host server.",
+    );
+  }
+
+  const data = {
+    capsule: {
+      subname: request.capsule.subname,
+      domain: request.host.domain,
+      hostedUrl: stats.hostedUrl,
+      remoteCapsuleId: stats.remoteCapsuleId,
+    },
+    container: {
+      name: stats.container.name,
+      running: true,
+    },
+    stats: normaliseDockerStats(raw),
+    raw,
+  };
+  writeEnvelope({ ok: true, data, error: null });
+}
+
 function canonicalReleasePaths(request) {
   const capsule = path.join(
     request.host.remoteRoot,
@@ -319,6 +370,84 @@ function normaliseLifecycle(request) {
       },
     },
   };
+}
+
+function normaliseStats(request) {
+  const provided = request.stats ?? {};
+  const subname = request.capsule.subname;
+  const domain = request.host.domain;
+  const hostedUrl = provided.hostedUrl ?? `${request.host.scheme ?? "https"}://${subname}.${domain}`;
+  const remoteCapsuleId = provided.remoteCapsuleId ?? `${domain}/${subname}`;
+  return {
+    hostedUrl,
+    remoteCapsuleId,
+    container: {
+      name: provided.container?.name ?? createHostedContainerName(domain, subname),
+    },
+  };
+}
+
+function normaliseDockerStats(raw) {
+  const [memoryUsageBytes, memoryLimitBytes] = parsePair(raw.MemUsage, parseDockerByteSize);
+  const [networkInputBytes, networkOutputBytes] = parsePair(raw.NetIO, parseDockerByteSize);
+  const [blockInputBytes, blockOutputBytes] = parsePair(raw.BlockIO, parseDockerByteSize);
+  return {
+    cpuPercent: parseDockerPercent(raw.CPUPerc),
+    memoryUsageBytes,
+    memoryLimitBytes,
+    memoryPercent: parseDockerPercent(raw.MemPerc),
+    networkInputBytes,
+    networkOutputBytes,
+    blockInputBytes,
+    blockOutputBytes,
+    pids: parseDockerInteger(raw.PIDs),
+  };
+}
+
+function parsePair(value, parser) {
+  const [left, right] = String(value ?? "").split("/").map((part) => part.trim());
+  return [parser(left), parser(right)];
+}
+
+function parseDockerPercent(value) {
+  const parsed = Number.parseFloat(String(value ?? "").replace("%", "").trim());
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseDockerInteger(value) {
+  const parsed = Number.parseInt(String(value ?? "").trim(), 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseDockerByteSize(value) {
+  const match = String(value ?? "").trim().match(/^([\d.]+)\s*([KMGTPE]?i?B|B)$/i);
+  if (!match) {
+    return null;
+  }
+  const amount = Number.parseFloat(match[1]);
+  if (!Number.isFinite(amount)) {
+    return null;
+  }
+  const unit = match[2].toLowerCase();
+  const multipliers = {
+    b: 1,
+    kb: 1_000,
+    mb: 1_000_000,
+    gb: 1_000_000_000,
+    tb: 1_000_000_000_000,
+    pb: 1_000_000_000_000_000,
+    eb: 1_000_000_000_000_000_000,
+    kib: 1024,
+    mib: 1024 ** 2,
+    gib: 1024 ** 3,
+    tib: 1024 ** 4,
+    pib: 1024 ** 5,
+    eib: 1024 ** 6,
+  };
+  if (!multipliers[unit]) {
+    return null;
+  }
+  return Math.round(amount * multipliers[unit]);
 }
 
 async function dockerRunArgs(lifecycle, releaseId) {
@@ -554,9 +683,7 @@ async function verifyRegisteredCapsule(request, purpose = "push") {
     if (error?.code === "ENOENT") {
       throw helperError(
         "Hosted Capsule is not registered.",
-        purpose === "push"
-          ? `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before pushing a release.`
-          : `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before managing the Hosted Capsule lifecycle.`,
+        missingCapsuleHint(request, purpose),
       );
     }
     if (error instanceof SyntaxError) {
@@ -581,6 +708,16 @@ async function verifyRegisteredCapsule(request, purpose = "push") {
   }
 }
 
+function missingCapsuleHint(request, purpose) {
+  if (purpose === "push") {
+    return `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before pushing a release.`;
+  }
+  if (purpose === "stats") {
+    return `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before reading stats.`;
+  }
+  return `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before managing the Hosted Capsule lifecycle.`;
+}
+
 function validateLifecycleRequest(request) {
   const requiredStrings = [
     request.host?.domain,
@@ -590,6 +727,18 @@ function validateLifecycleRequest(request) {
   ];
   if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule lifecycle request.", "Update the Sporades CLI and retry the host lifecycle command.");
+  }
+}
+
+function validateStatsRequest(request) {
+  const requiredStrings = [
+    request.host?.domain,
+    request.host?.alias,
+    request.host?.remoteRoot,
+    request.capsule?.subname,
+  ];
+  if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw helperError("Invalid Hosted Capsule stats request.", "Update the Sporades CLI and retry the host stats command.");
   }
 }
 
