@@ -29,6 +29,8 @@ const DEV_REBUILD_DEBOUNCE_MS = 100;
 const DEFAULT_HOST_SCHEME = "https";
 const DEFAULT_HOST_REMOTE_ROOT = "/srv/sporades";
 const RESERVED_CAPSULE_SUBNAMES = new Set(["www", "api", "admin", "root", "host"]);
+const DEFAULT_HOST_LOG_LINES = 100;
+const MAX_HOST_LOG_LINES = 10000;
 const CLI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 main().catch((error) => {
@@ -316,6 +318,7 @@ function parseHostArgs(args) {
   let domain = null;
   let remoteRoot = DEFAULT_HOST_REMOTE_ROOT;
   let subname = null;
+  let lines = DEFAULT_HOST_LOG_LINES;
   const positional = [];
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -345,10 +348,14 @@ function parseHostArgs(args) {
       subname = readFlagValue(rest, ++index, "--subname");
       continue;
     }
+    if (arg === "--lines") {
+      lines = readHostLogLineCount(readFlagValue(rest, ++index, "--lines"));
+      continue;
+    }
     if (arg.startsWith("--")) {
       throw commandError(
         `Unknown flag: ${arg}`,
-        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host bootstrap`, or `sporades host invoke`.",
+        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host bootstrap`, `sporades host logs`, or `sporades host invoke`.",
       );
     }
     positional.push(arg);
@@ -439,6 +446,16 @@ function parseHostArgs(args) {
     return { subcommand, hostAlias, json, projectDir: process.cwd() };
   }
 
+  if (subcommand === "logs") {
+    if (positional.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host logs --host <alias> --lines <n> --json`.");
+    }
+    if (hostAlias) {
+      validateHostAlias(hostAlias);
+    }
+    return { subcommand, hostAlias, lines, json, projectDir: process.cwd() };
+  }
+
   if (subcommand === "invoke") {
     const [action, ...extra] = positional;
     if (!action) {
@@ -459,7 +476,7 @@ function parseHostArgs(args) {
 
   throw commandError(
     `Unknown host command: ${subcommand ?? ""}`.trim(),
-    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host bootstrap`, or `sporades host invoke`.",
+    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host bootstrap`, `sporades host logs`, or `sporades host invoke`.",
   );
 }
 
@@ -574,6 +591,23 @@ function readPort(value) {
     throw commandError("Invalid port.", "Pass --port <number>.");
   }
   return port;
+}
+
+function readHostLogLineCount(value) {
+  if (!/^\d+$/.test(value)) {
+    throw commandError(
+      "Invalid Host log line count.",
+      `Pass \`--lines <n>\` with a whole number between 1 and ${MAX_HOST_LOG_LINES}.`,
+    );
+  }
+  const lines = Number.parseInt(value, 10);
+  if (lines < 1 || lines > MAX_HOST_LOG_LINES) {
+    throw commandError(
+      "Invalid Host log line count.",
+      `Pass \`--lines <n>\` with a whole number between 1 and ${MAX_HOST_LOG_LINES}.`,
+    );
+  }
+  return lines;
 }
 
 function readFlagValue(args, index, flag) {
@@ -1119,6 +1153,34 @@ async function manageHost(options) {
     }
     process.stdout.write(`Host server bootstrapped for ${resolved.profile.domain}\n`);
   }
+
+  if (options.subcommand === "logs") {
+    const config = await readHostConfig();
+    const resolved = resolveHostProfile(config, options.hostAlias);
+    const result = invokeRemoteHostHelper({
+      alias: resolved.alias,
+      profile: resolved.profile,
+      action: "host.logs",
+      logs: {
+        source: "caddy-combined",
+        lines: options.lines,
+      },
+      projectDir: options.projectDir,
+    });
+
+    if (options.json) {
+      writeResult(result, !result.ok);
+      return;
+    }
+
+    if (!result.ok) {
+      throw commandError(result.error.message, result.error.hint);
+    }
+
+    for (const entry of normaliseHostLogEntries(result.data)) {
+      process.stdout.write(`${entry}\n`);
+    }
+  }
 }
 
 async function startContainerSession(options) {
@@ -1531,6 +1593,9 @@ function invokeRemoteHostHelper(options) {
   if (options.registration) {
     request.registration = options.registration;
   }
+  if (options.logs) {
+    request.logs = options.logs;
+  }
   const result = spawnSync("ssh", [options.profile.server, helperPath], {
     cwd: options.projectDir,
     encoding: "utf8",
@@ -1538,6 +1603,13 @@ function invokeRemoteHostHelper(options) {
   });
 
   return parseRemoteHostHelperResult(result);
+}
+
+function normaliseHostLogEntries(data) {
+  if (!Array.isArray(data?.entries)) {
+    return [];
+  }
+  return data.entries.map((entry) => String(entry));
 }
 
 function remoteHostHelperPath(profile) {

@@ -912,6 +912,228 @@ test("sporades host register validates lowercase DNS-safe non-reserved Capsule s
   });
 });
 
+test("sporades host logs retrieves default Caddy combined log lines as JSON", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+if (request.action !== "host.logs" || request.logs?.source !== "caddy-combined") {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected log request.", hint: "Use host.logs for Caddy combined logs." }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    lineCount: request.logs.lines,
+    entries: ["203.0.113.9 - - [01/Jan/2026:00:00:01 +0000] \\"GET / HTTP/1.1\\" 200 12"]
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "todo-island");
+
+    const addHost = await runCli(
+      ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+      { cwd: projectDir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+    assert.equal((await runCli(["host", "use", "personal", "--json"], { cwd: projectDir, env: hostEnv(configDir) })).code, 0);
+
+    const logs = await runCli(["host", "logs", "--json"], {
+      cwd: projectDir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(logs.code, 0, logs.stderr);
+    assert.deepEqual(JSON.parse(logs.stdout), {
+      ok: true,
+      data: {
+        lineCount: 100,
+        entries: ['203.0.113.9 - - [01/Jan/2026:00:00:01 +0000] "GET / HTTP/1.1" 200 12'],
+      },
+      error: null,
+    });
+
+    const [sshCall] = await readJsonl(fakeSsh.logPath);
+    assert.deepEqual(sshCall.args, ["root@example.test", "/opt/sporades/bin/sporades-host-helper"]);
+    assert.deepEqual(JSON.parse(sshCall.stdin), {
+      action: "host.logs",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot: "/opt/sporades",
+      },
+      capsule: null,
+      logs: {
+        source: "caddy-combined",
+        lines: 100,
+      },
+    });
+  });
+});
+
+test("sporades host logs prints only recent Caddy combined log lines in plain output", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    lineCount: request.logs.lines,
+    entries: [
+      "198.51.100.4 - - [01/Jan/2026:00:00:02 +0000] \\"GET /one HTTP/1.1\\" 200 10",
+      "198.51.100.4 - - [01/Jan/2026:00:00:03 +0000] \\"GET /two HTTP/1.1\\" 404 0"
+    ]
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "todo-island");
+
+    const addHost = await runCli(
+      ["host", "add", "work", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+      { cwd: projectDir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+
+    const logs = await runCli(["host", "logs", "--host", "work", "--lines", "2"], {
+      cwd: projectDir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(logs.code, 0, logs.stderr);
+    assert.equal(
+      logs.stdout,
+      '198.51.100.4 - - [01/Jan/2026:00:00:02 +0000] "GET /one HTTP/1.1" 200 10\n198.51.100.4 - - [01/Jan/2026:00:00:03 +0000] "GET /two HTTP/1.1" 404 0\n',
+    );
+
+    const [sshCall] = await readJsonl(fakeSsh.logPath);
+    assert.equal(JSON.parse(sshCall.stdin).logs.lines, 2);
+  });
+});
+
+test("sporades host logs validates invalid line counts without calling SSH", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installFakeSsh(dir);
+
+    const invalid = await runCli(["host", "logs", "--lines", "0", "--json"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(invalid.code, 1);
+    assert.deepEqual(JSON.parse(invalid.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Invalid Host log line count.",
+        hint: "Pass `--lines <n>` with a whole number between 1 and 10000.",
+      },
+    });
+    await fakeSsh.assertNotCalled();
+  });
+});
+
+test("sporades host logs handles empty logs, SSH failure, and remote helper failure", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "todo-island");
+
+    const addHost = async (env) => {
+      const result = await runCli(
+        ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--json"],
+        { cwd: projectDir, env: { ...hostEnv(configDir), ...env } },
+      );
+      assert.equal(result.code, 0, result.stderr);
+    };
+
+    const emptyLogsSsh = await installContractFakeSsh(
+      path.join(dir, "empty-logs"),
+      `process.stdout.write(JSON.stringify({ ok: true, data: { lineCount: JSON.parse(stdin).logs.lines, entries: [] }, error: null }) + "\\n");
+process.exit(0);
+`,
+    );
+    await addHost(emptyLogsSsh.env);
+    const emptyLogs = await runCli(["host", "logs", "--host", "personal"], {
+      cwd: projectDir,
+      env: { ...hostEnv(configDir), ...emptyLogsSsh.env },
+    });
+    assert.equal(emptyLogs.code, 0, emptyLogs.stderr);
+    assert.equal(emptyLogs.stdout, "");
+
+    const transportFailureSsh = await installContractFakeSsh(
+      path.join(dir, "transport-failure"),
+      `process.stderr.write("ssh: connect to host example.test port 22: Operation timed out\\n");
+process.exit(255);
+`,
+    );
+    const transportFailure = await runCli(["host", "logs", "--host", "personal", "--json"], {
+      cwd: projectDir,
+      env: { ...hostEnv(configDir), ...transportFailureSsh.env },
+    });
+    assert.equal(transportFailure.code, 1);
+    assert.deepEqual(JSON.parse(transportFailure.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "SSH transport failed.",
+        hint: "Check the Host profile SSH target, network connectivity, and SSH key access.",
+      },
+    });
+
+    const helperFailureSsh = await installContractFakeSsh(
+      path.join(dir, "helper-failure"),
+      `process.stdout.write(JSON.stringify({
+  ok: false,
+  data: null,
+  error: {
+    message: "Host server Caddy combined logs are unavailable.",
+    hint: "Run \`sporades host bootstrap --host personal\` and check Caddy on the Host server."
+  }
+}) + "\\n");
+process.exit(0);
+`,
+    );
+    const helperFailure = await runCli(["host", "logs", "--host", "personal", "--json"], {
+      cwd: projectDir,
+      env: { ...hostEnv(configDir), ...helperFailureSsh.env },
+    });
+    assert.equal(helperFailure.code, 1);
+    assert.deepEqual(JSON.parse(helperFailure.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Host server Caddy combined logs are unavailable.",
+        hint: "Run `sporades host bootstrap --host personal` and check Caddy on the Host server.",
+      },
+    });
+  });
+});
+
 test("sporades host validation returns standard JSON errors", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
