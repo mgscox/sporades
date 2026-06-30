@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { readFileSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -319,6 +320,7 @@ function parseHostArgs(args) {
   let remoteRoot = DEFAULT_HOST_REMOTE_ROOT;
   let subname = null;
   let lines = DEFAULT_HOST_LOG_LINES;
+  let restart = false;
   const positional = [];
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -352,10 +354,14 @@ function parseHostArgs(args) {
       lines = readHostLogLineCount(readFlagValue(rest, ++index, "--lines"));
       continue;
     }
+    if (arg === "--restart") {
+      restart = true;
+      continue;
+    }
     if (arg.startsWith("--")) {
       throw commandError(
         `Unknown flag: ${arg}`,
-        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host bootstrap`, `sporades host list`, `sporades host logs`, or `sporades host invoke`.",
+        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host logs`, or `sporades host invoke`.",
       );
     }
     positional.push(arg);
@@ -456,6 +462,19 @@ function parseHostArgs(args) {
     return { subcommand, hostAlias, json, projectDir: process.cwd() };
   }
 
+  if (subcommand === "push") {
+    if (positional.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host push --host <alias> --subname <capsule-subname> --json`.");
+    }
+    if (hostAlias) {
+      validateHostAlias(hostAlias);
+    }
+    if (subname) {
+      validateCapsuleSubname(subname);
+    }
+    return { subcommand, hostAlias, subname, restart, json, projectDir: process.cwd() };
+  }
+
   if (subcommand === "logs") {
     if (positional.length > 0) {
       throw commandError("Too many positional arguments.", "Use `sporades host logs --host <alias> --lines <n> --json`.");
@@ -486,7 +505,7 @@ function parseHostArgs(args) {
 
   throw commandError(
     `Unknown host command: ${subcommand ?? ""}`.trim(),
-    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host bootstrap`, `sporades host list`, `sporades host logs`, or `sporades host invoke`.",
+    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host logs`, or `sporades host invoke`.",
   );
 }
 
@@ -1119,6 +1138,50 @@ async function manageHost(options) {
     return;
   }
 
+  if (options.subcommand === "push") {
+    const config = await readHostConfig();
+    const target = await resolveHostPushTarget(config, options);
+    const projectConfig = await readProjectConfig(options.projectDir);
+    const bundle = await createBundle(options.projectDir, projectConfig);
+    const release = await createHostReleaseArchive({
+      projectDir: options.projectDir,
+      alias: target.alias,
+      profile: target.profile,
+      subname: target.subname,
+      binding: target.binding,
+      bundle,
+      restart: options.restart,
+    });
+    uploadHostReleaseArchive({
+      profile: target.profile,
+      projectDir: options.projectDir,
+      archivePath: release.localArchive,
+      remoteArchive: release.remoteArchive,
+    });
+    const result = invokeRemoteHostHelper({
+      alias: target.alias,
+      profile: target.profile,
+      action: "capsule.release.install",
+      subname: target.subname,
+      release: release.request,
+      projectDir: options.projectDir,
+    });
+
+    if (options.json) {
+      writeResult(result, !result.ok);
+      return;
+    }
+
+    if (!result.ok) {
+      throw commandError(result.error.message, result.error.hint);
+    }
+    process.stdout.write(`Hosted Capsule release pushed: ${target.binding.hostedUrl}\n`);
+    if (!options.restart) {
+      process.stdout.write("The Hosted Capsule was not restarted.\n");
+    }
+    return;
+  }
+
   if (options.subcommand === "invoke") {
     const config = await readHostConfig();
     const resolved = resolveHostProfile(config, options.hostAlias);
@@ -1537,6 +1600,21 @@ async function readRemoteBinding(projectDir) {
   }
 }
 
+async function resolveHostPushTarget(config, options) {
+  const localBinding = await readRemoteBinding(options.projectDir);
+  const resolved = resolveHostProfile(config, options.hostAlias ?? localBinding?.hostAlias ?? null);
+  const subname = options.subname ?? localBinding?.subname;
+  if (!subname) {
+    throw commandError(
+      "No Hosted Capsule binding found.",
+      "Run `sporades host register <subname> --host <alias>` or pass `--host <alias> --subname <subname>`.",
+    );
+  }
+  validateCapsuleSubname(subname);
+  const binding = createRemoteBinding(resolved.alias, resolved.profile, subname);
+  return { alias: resolved.alias, profile: resolved.profile, subname, binding };
+}
+
 async function readHostConfig() {
   try {
     const parsed = JSON.parse(await readFile(hostConfigPath(), "utf8"));
@@ -1629,6 +1707,9 @@ function invokeRemoteHostHelper(options) {
   if (options.logs) {
     request.logs = options.logs;
   }
+  if (options.release) {
+    request.release = options.release;
+  }
   const result = spawnSync("ssh", [options.profile.server, helperPath], {
     cwd: options.projectDir,
     encoding: "utf8",
@@ -1636,6 +1717,97 @@ function invokeRemoteHostHelper(options) {
   });
 
   return parseRemoteHostHelperResult(result);
+}
+
+async function createHostReleaseArchive(options) {
+  const releaseId = createHostReleaseId();
+  const hostPushDir = path.join(options.projectDir, ".sporades", "host-push");
+  await mkdir(hostPushDir, { recursive: true });
+  const localArchive = path.join(hostPushDir, `${releaseId}.tar.gz`);
+  const remoteArchive = posixJoin(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
+  const releaseRequest = createHostReleaseRequest({
+    alias: options.alias,
+    profile: options.profile,
+    subname: options.subname,
+    binding: options.binding,
+    releaseId,
+    remoteArchive,
+    bundle: options.bundle,
+    restart: options.restart,
+  });
+  const tarArgs = [
+    "-czf",
+    localArchive,
+    "-C",
+    options.bundle.buildDir,
+    "server.mjs",
+    "client.js",
+    "-C",
+    options.projectDir,
+    "index.html",
+    "sporades.json",
+  ];
+  if (options.bundle.containerMounts.serverEnv) {
+    tarArgs.push("-C", options.projectDir, ".env.sporades.server");
+  }
+  const result = spawnSync("tar", tarArgs, { cwd: options.projectDir, encoding: "utf8" });
+  if (result.error || result.status !== 0) {
+    throw commandError(
+      "Failed to package Hosted Capsule release.",
+      "Check that tar is available and the Capsule runtime files are readable, then retry `sporades host push`.",
+    );
+  }
+  return {
+    id: releaseId,
+    localArchive,
+    remoteArchive,
+    request: releaseRequest,
+  };
+}
+
+function uploadHostReleaseArchive(options) {
+  const result = spawnSync("scp", [options.archivePath, `${options.profile.server}:${options.remoteArchive}`], {
+    cwd: options.projectDir,
+    encoding: "utf8",
+  });
+  if (result.error || result.status !== 0) {
+    throw commandError(
+      "Failed to upload Hosted Capsule release archive.",
+      "Check the Host profile SSH target, network connectivity, SSH key access, and remote incoming directory.",
+    );
+  }
+}
+
+function createHostReleaseRequest(options) {
+  const registration = createHostRegistrationRequest(options.alias, options.profile, options.subname);
+  const releaseDirectory = posixJoin(registration.directories.releases, options.releaseId);
+  const files = ["server.mjs", "client.js", "index.html", "sporades.json"];
+  if (options.bundle.containerMounts.serverEnv) {
+    files.push(".env.sporades.server");
+  }
+  return {
+    id: options.releaseId,
+    domain: options.profile.domain,
+    subname: options.subname,
+    hostedUrl: options.binding.hostedUrl,
+    remoteCapsuleId: options.binding.remoteCapsuleId,
+    remoteArchive: options.remoteArchive,
+    restart: options.restart,
+    serverEnvIncluded: Boolean(options.bundle.containerMounts.serverEnv),
+    files,
+    directories: {
+      capsule: registration.directories.capsule,
+      releases: registration.directories.releases,
+      release: releaseDirectory,
+      data: registration.directories.data,
+    },
+    currentLink: posixJoin(registration.directories.capsule, "current"),
+  };
+}
+
+function createHostReleaseId(now = new Date()) {
+  const timestamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+  return `${timestamp}-${randomBytes(4).toString("hex")}`;
 }
 
 function normaliseHostLogEntries(data) {
