@@ -912,6 +912,271 @@ test("sporades host register validates lowercase DNS-safe non-reserved Capsule s
   });
 });
 
+test("sporades host list works from outside a project and reports an empty registry", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+if (request.action !== "capsule.list") {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected action.", hint: "Use capsule.list." }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    host: request.host,
+    capsules: []
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    const addHost = await runCli(
+      ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+      { cwd: dir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+    assert.equal((await runCli(["host", "use", "personal", "--json"], { cwd: dir, env: hostEnv(configDir) })).code, 0);
+
+    const list = await runCli(["host", "list", "--json"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(list.code, 0, list.stderr);
+    assert.deepEqual(JSON.parse(list.stdout), {
+      ok: true,
+      data: {
+        host: {
+          alias: "personal",
+          domain: "capsules.example.dev",
+          scheme: "https",
+          remoteRoot: "/opt/sporades",
+        },
+        capsules: [],
+      },
+      error: null,
+    });
+
+    const plain = await runCli(["host", "list", "--host", "personal"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(plain.code, 0, plain.stderr);
+    assert.equal(plain.stdout, "No Hosted Capsules registered for capsules.example.dev.\n");
+
+    const calls = await readJsonl(fakeSsh.logPath);
+    assert.deepEqual(JSON.parse(calls[0].stdin), {
+      action: "capsule.list",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot: "/opt/sporades",
+      },
+      capsule: null,
+    });
+  });
+});
+
+test("sporades host list combines registry release metadata and fake Docker state", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    host: request.host,
+    capsules: [
+      {
+        subname: "drafts",
+        hostedUrl: "https://drafts.capsules.example.dev",
+        registry: {
+          remoteCapsuleId: "capsules.example.dev/drafts",
+          registeredAt: "2026-01-01T00:00:00.000Z",
+          updatedAt: "2026-01-02T00:00:00.000Z",
+          status: "registered"
+        },
+        currentRelease: null,
+        docker: null
+      },
+      {
+        subname: "notes",
+        hostedUrl: "https://notes.capsules.example.dev",
+        registry: {
+          remoteCapsuleId: "capsules.example.dev/notes",
+          registeredAt: "2026-01-03T00:00:00.000Z",
+          updatedAt: "2026-01-04T00:00:00.000Z",
+          status: "released"
+        },
+        currentRelease: {
+          id: "20260104T000000Z",
+          createdAt: "2026-01-04T00:00:00.000Z",
+          bundleHash: "sha256:abc123"
+        },
+        docker: {
+          containerId: "abc123def456",
+          containerName: "sporades-capsules-example-dev-notes",
+          state: "running",
+          status: "Up 2 hours",
+          running: true,
+          image: "node:22-alpine"
+        }
+      },
+      {
+        subname: "archive",
+        hostedUrl: "https://archive.capsules.example.dev",
+        registry: {
+          remoteCapsuleId: "capsules.example.dev/archive",
+          registeredAt: "2026-01-05T00:00:00.000Z",
+          updatedAt: "2026-01-06T00:00:00.000Z",
+          status: "stopped"
+        },
+        currentRelease: {
+          id: "20260106T000000Z",
+          createdAt: "2026-01-06T00:00:00.000Z"
+        },
+        docker: {
+          containerId: "fedcba654321",
+          containerName: "sporades-capsules-example-dev-archive",
+          state: "exited",
+          status: "Exited (0) 3 minutes ago",
+          running: false,
+          image: "node:22-alpine"
+        }
+      }
+    ]
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    assert.equal(
+      (
+        await runCli(
+          ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+          { cwd: dir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+        )
+      ).code,
+      0,
+    );
+
+    const list = await runCli(["host", "list", "--host", "personal", "--json"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(list.code, 0, list.stderr);
+    const data = JSON.parse(list.stdout).data;
+    assert.equal(data.capsules.length, 3);
+    assert.equal(data.capsules[0].subname, "drafts");
+    assert.equal(data.capsules[0].currentRelease, null);
+    assert.equal(data.capsules[0].docker, null);
+    assert.equal(data.capsules[1].currentRelease.bundleHash, "sha256:abc123");
+    assert.equal(data.capsules[1].docker.running, true);
+    assert.equal(data.capsules[2].docker.running, false);
+
+    const plain = await runCli(["host", "list", "--host", "personal"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(plain.code, 0, plain.stderr);
+    assert.match(plain.stdout, /SUBNAME\s+URL\s+REGISTRY\s+RELEASE\s+DOCKER/);
+    assert.match(plain.stdout, /drafts\s+https:\/\/drafts\.capsules\.example\.dev\s+registered\s+none\s+unavailable/);
+    assert.match(plain.stdout, /notes\s+https:\/\/notes\.capsules\.example\.dev\s+released\s+20260104T000000Z\s+running \(Up 2 hours\)/);
+    assert.match(plain.stdout, /archive\s+https:\/\/archive\.capsules\.example\.dev\s+stopped\s+20260106T000000Z\s+stopped \(Exited \(0\) 3 minutes ago\)/);
+  });
+});
+
+test("sporades host list trusts the Host server registry over a local project binding", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    host: request.host,
+    capsules: [{
+      subname: "registry-notes",
+      hostedUrl: "https://registry-notes.capsules.example.dev",
+      registry: {
+        remoteCapsuleId: "capsules.example.dev/registry-notes",
+        registeredAt: "2026-01-01T00:00:00.000Z",
+        status: "registered"
+      },
+      currentRelease: null,
+      docker: null
+    }]
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "todo-island");
+    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
+    await writeFile(
+      path.join(projectDir, ".sporades", "remote-binding.json"),
+      `${JSON.stringify({
+        hostAlias: "personal",
+        domain: "wrong.example.dev",
+        scheme: "https",
+        subname: "local-notes",
+        hostedUrl: "https://local-notes.wrong.example.dev",
+        remoteCapsuleId: "wrong.example.dev/local-notes",
+      })}\n`,
+    );
+
+    assert.equal(
+      (
+        await runCli(
+          ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+          { cwd: projectDir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+        )
+      ).code,
+      0,
+    );
+
+    const list = await runCli(["host", "list", "--host", "personal", "--json"], {
+      cwd: projectDir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(list.code, 0, list.stderr);
+    const output = JSON.parse(list.stdout);
+    assert.equal(output.data.capsules[0].subname, "registry-notes");
+    assert.doesNotMatch(list.stdout, /local-notes/);
+    assert.doesNotMatch(list.stdout, /wrong\.example\.dev/);
+
+    const [sshCall] = await readJsonl(fakeSsh.logPath);
+    assert.deepEqual(JSON.parse(sshCall.stdin), {
+      action: "capsule.list",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot: "/opt/sporades",
+      },
+      capsule: null,
+    });
+  });
+});
+
 test("sporades host logs retrieves default Caddy combined log lines as JSON", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
