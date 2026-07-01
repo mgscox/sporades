@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { access, mkdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const HOSTED_CAPSULE_DOCKER_IMAGE = "node:22-alpine";
 const HOSTED_CAPSULE_DOCKER_NETWORK = "sporades-hosted-capsules";
 const HOSTED_CAPSULE_GRACE_CHECK_MS = 500;
+const DEFAULT_HOST_LOG_LINES = 100;
+const MAX_HOST_LOG_LINES = 10000;
 
 main().catch((error) => {
   writeEnvelope(
@@ -48,6 +50,10 @@ async function main() {
     await statsCapsule(request);
     return;
   }
+  if (request.action === "host.logs") {
+    await logsHost(request);
+    return;
+  }
   if (request.action === "host.bootstrap") {
     await bootstrapHost(request);
     return;
@@ -62,6 +68,7 @@ async function bootstrapHost(request) {
   await ensureBootstrapDirectories(bootstrap);
   await validateBootstrapTls(request, bootstrap);
   const network = ensureDockerNetwork(bootstrap.network);
+  const accessLog = await provisionCaddyAccessLog(request, bootstrap);
   const caddy = await installCaddyBootstrapConfig(request, bootstrap);
 
   writeEnvelope({
@@ -75,7 +82,7 @@ async function bootstrapHost(request) {
       services: bootstrap.substrate.services,
       directories: bootstrap.directories,
       tls: bootstrap.tls,
-      caddy,
+      caddy: { ...caddy, accessLog },
       preservedCapsules: true,
     },
     error: null,
@@ -368,6 +375,24 @@ async function statsCapsule(request) {
   writeEnvelope({ ok: true, data, error: null });
 }
 
+async function logsHost(request) {
+  validateHostLogsRequest(request);
+  const logs = normaliseHostLogs(request);
+  const fileEntries = await readManagedCaddyAccessLog(logs);
+  if (fileEntries) {
+    writeEnvelope({ ok: true, data: { lineCount: logs.lines, entries: fileEntries }, error: null });
+    return;
+  }
+
+  const journalEntries = readCaddyJournalLogs(logs);
+  if (journalEntries) {
+    writeEnvelope({ ok: true, data: { lineCount: logs.lines, entries: journalEntries }, error: null });
+    return;
+  }
+
+  throw unavailableCaddyLogsError(request);
+}
+
 function canonicalReleasePaths(request) {
   const capsule = path.join(
     request.host.remoteRoot,
@@ -396,6 +421,7 @@ function normaliseLifecycle(request) {
   const containerName = provided.container?.name ?? createHostedContainerName(domain, subname);
   const routeFile = provided.routes?.running?.routeFile ?? path.join(request.host.remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
   const currentLink = provided.currentLink ?? paths.currentLink;
+  const accessLog = provided.routes?.accessLog ?? provided.accessLog ?? defaultCaddyAccessLogPath(request.host.remoteRoot);
   return {
     hostedUrl,
     remoteCapsuleId,
@@ -430,20 +456,36 @@ function normaliseLifecycle(request) {
       },
     },
     routes: {
-      running: provided.routes?.running ?? {
-        hostname: `${subname}.${domain}`,
-        target: "container",
-        containerName,
-        port: 4000,
-        routeFile,
-      },
-      unavailable: provided.routes?.unavailable ?? {
-        hostname: `${subname}.${domain}`,
-        target: "hosted-capsule-unavailable",
-        statusCode: 503,
-        routeFile,
-      },
+      running: withRouteAccessLog(
+        provided.routes?.running ?? {
+          hostname: `${subname}.${domain}`,
+          target: "container",
+          containerName,
+          port: 4000,
+          routeFile,
+        },
+        accessLog,
+      ),
+      unavailable: withRouteAccessLog(
+        provided.routes?.unavailable ?? {
+          hostname: `${subname}.${domain}`,
+          target: "hosted-capsule-unavailable",
+          statusCode: 503,
+          routeFile,
+        },
+        accessLog,
+      ),
     },
+  };
+}
+
+function withRouteAccessLog(route, accessLog) {
+  if (route.log === null) {
+    return route;
+  }
+  return {
+    ...route,
+    log: route.log ?? { file: accessLog },
   };
 }
 
@@ -463,7 +505,6 @@ function normaliseStats(request) {
 }
 
 function normaliseRegistration(request) {
-  const provided = request.registration ?? {};
   const subname = request.capsule.subname;
   const domain = request.host.domain;
   const remoteRoot = request.host.remoteRoot;
@@ -544,6 +585,18 @@ function createRegistrationRecord(registration) {
   };
 }
 
+function normaliseHostLogs(request) {
+  const provided = request.logs ?? {};
+  const lines = provided.lines ?? DEFAULT_HOST_LOG_LINES;
+  const explicitFile = Boolean(provided.file ?? provided.path ?? provided.accessLog?.file);
+  return {
+    source: provided.source ?? "caddy-combined",
+    lines,
+    file: provided.file ?? provided.path ?? provided.accessLog?.file ?? defaultCaddyAccessLogPath(request.host.remoteRoot),
+    explicitFile,
+  };
+}
+
 function normaliseDockerStats(raw) {
   const [memoryUsageBytes, memoryLimitBytes] = parsePair(raw.MemUsage, parseDockerByteSize);
   const [networkInputBytes, networkOutputBytes] = parsePair(raw.NetIO, parseDockerByteSize);
@@ -603,6 +656,7 @@ function normaliseBootstrap(request) {
       managedInclude: provided.caddy?.managedInclude ?? path.join(directories.caddy, "sporades-hosted-domains.caddy"),
       domainInclude: provided.caddy?.domainInclude ?? path.join(directories.caddyHosts, `${domain}.caddy`),
       routesDirectory: path.join(directories.caddyHosts, domain),
+      accessLog: provided.caddy?.accessLog ?? defaultCaddyAccessLogPath(remoteRoot),
     },
   };
 }
@@ -613,6 +667,7 @@ async function ensureBootstrapDirectories(bootstrap) {
     bootstrap.directories.bin,
     bootstrap.directories.incoming,
     bootstrap.directories.caddy,
+    path.dirname(bootstrap.caddy.accessLog),
     bootstrap.directories.caddyHosts,
     bootstrap.directories.hosts,
     bootstrap.directories.domain,
@@ -625,6 +680,46 @@ async function ensureBootstrapDirectories(bootstrap) {
   for (const directory of directories) {
     await mkdir(directory, { recursive: true });
   }
+}
+
+async function provisionCaddyAccessLog(request, bootstrap) {
+  const logFile = bootstrap.caddy.accessLog;
+  const logDirectory = path.dirname(logFile);
+  const caddyUser = resolveCaddyServiceUser();
+  if (!caddyUser) {
+    throw helperError(
+      "Caddy service user could not be found.",
+      "Install Caddy with its system service user available, then rerun `sporades host bootstrap`.",
+    );
+  }
+
+  await mkdir(logDirectory, { recursive: true });
+  await writeFile(logFile, "", { flag: "a" });
+  await chmod(logDirectory, 0o750);
+  await chmod(logFile, 0o640);
+  const chown = spawnSync("chown", [`${caddyUser.uid}:${caddyUser.gid}`, logDirectory, logFile], { encoding: "utf8" });
+  if (chown.error || chown.status !== 0) {
+    throw helperError(
+      "Failed to provision the Caddy access log for the service user.",
+      `Ensure the Host helper runs with permission to chown ${logDirectory} and ${logFile}, then rerun \`sporades host bootstrap --host ${request.host.alias}\`.`,
+    );
+  }
+
+  return {
+    file: logFile,
+    directory: logDirectory,
+    owner: caddyUser.name,
+    writableByService: true,
+  };
+}
+
+function resolveCaddyServiceUser() {
+  const user = spawnSync("id", ["-u", "caddy"], { encoding: "utf8" });
+  const group = spawnSync("id", ["-g", "caddy"], { encoding: "utf8" });
+  if (user.error || user.status !== 0 || group.error || group.status !== 0) {
+    return null;
+  }
+  return { name: "caddy", uid: user.stdout.trim(), gid: group.stdout.trim() };
 }
 
 async function validateBootstrapTls(request, bootstrap) {
@@ -871,7 +966,8 @@ async function writeUnavailableRoute(lifecycle) {
 
 function renderRoute(route, handlerLine) {
   const tlsLine = renderRouteTlsLine(route.tls);
-  return `${route.hostname} {\n${tlsLine}  ${handlerLine}\n}\n`;
+  const logBlock = renderRouteLogBlock(route.log);
+  return `${route.hostname} {\n${tlsLine}${logBlock}  ${handlerLine}\n}\n`;
 }
 
 function renderRouteTlsLine(tls) {
@@ -879,6 +975,13 @@ function renderRouteTlsLine(tls) {
     return "";
   }
   return `  tls ${tls.certificate} ${tls.key}\n`;
+}
+
+function renderRouteLogBlock(log) {
+  if (!log?.file) {
+    return "";
+  }
+  return `  log {\n    output file ${log.file}\n  }\n`;
 }
 
 async function applyManagedRoute(lifecycle, routeFile, contents) {
@@ -1064,6 +1167,45 @@ async function pathReadable(filePath) {
   }
 }
 
+async function readManagedCaddyAccessLog(logs) {
+  const readable = await pathReadable(logs.file);
+  if (!readable) {
+    if (logs.explicitFile) {
+      throw helperError(
+        "Host server Caddy combined logs are unavailable.",
+        `Check that ${logs.file} exists and is readable by the Host helper, then retry \`sporades host logs\`.`,
+      );
+    }
+    return null;
+  }
+  const contents = await readFile(logs.file, "utf8");
+  return lastLogEntries(contents, logs.lines);
+}
+
+function readCaddyJournalLogs(logs) {
+  const result = spawnSync("journalctl", ["-u", "caddy", "-n", String(logs.lines), "--no-pager", "-o", "cat"], {
+    encoding: "utf8",
+  });
+  if (result.error || result.status !== 0) {
+    return null;
+  }
+  return lastLogEntries(result.stdout ?? "", logs.lines);
+}
+
+function lastLogEntries(contents, lines) {
+  return String(contents ?? "")
+    .split(/\r?\n/)
+    .filter((line) => line.length > 0)
+    .slice(-lines);
+}
+
+function unavailableCaddyLogsError(request) {
+  return helperError(
+    "Host server Caddy combined logs are unavailable.",
+    `Run \`sporades host bootstrap --host ${request.host.alias}\` and check Caddy on the Host server.`,
+  );
+}
+
 function trimForHint(value) {
   const trimmed = String(value ?? "").trim();
   return trimmed || "no stderr output";
@@ -1075,6 +1217,10 @@ function escapeRegExp(value) {
 
 function createHostedContainerName(domain, subname) {
   return `sporades-${domain.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase()}-${subname}`;
+}
+
+function defaultCaddyAccessLogPath(remoteRoot) {
+  return path.join(remoteRoot, "caddy", "logs", "access.log");
 }
 
 function validateReleaseArchive(request) {
@@ -1212,6 +1358,31 @@ function validateStatsRequest(request) {
   ];
   if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule stats request.", "Update the Sporades CLI and retry the host stats command.");
+  }
+}
+
+function validateHostLogsRequest(request) {
+  const requiredStrings = [
+    request.host?.alias,
+    request.host?.domain,
+    request.host?.remoteRoot,
+  ];
+  if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw helperError("Invalid Host logs request.", "Update the Sporades CLI and retry `sporades host logs`.");
+  }
+  const source = request.logs?.source ?? "caddy-combined";
+  if (source !== "caddy-combined") {
+    throw helperError(
+      "Invalid Host log source.",
+      "Use the default Caddy combined log source for `sporades host logs`.",
+    );
+  }
+  const lines = request.logs?.lines ?? DEFAULT_HOST_LOG_LINES;
+  if (!Number.isInteger(lines) || lines < 1 || lines > MAX_HOST_LOG_LINES) {
+    throw helperError(
+      "Invalid Host log line count.",
+      `Pass \`--lines <n>\` with a whole number between 1 and ${MAX_HOST_LOG_LINES}.`,
+    );
   }
 }
 

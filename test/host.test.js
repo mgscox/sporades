@@ -305,6 +305,87 @@ process.exit(Number(status || process.env.FAKE_CADDY_STATUS || "0"));
   };
 }
 
+async function installFakeJournalctl(dir, options = {}) {
+  const fakeBinDir = path.join(dir, "fake-journalctl-bin");
+  const logPath = path.join(dir, "journalctl-calls.jsonl");
+  const journalctlPath = path.join(fakeBinDir, "journalctl");
+  await mkdir(fakeBinDir, { recursive: true });
+  await writeFile(
+    journalctlPath,
+    `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(process.env.FAKE_JOURNALCTL_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
+process.stdout.write(process.env.FAKE_JOURNALCTL_STDOUT || "");
+process.stderr.write(process.env.FAKE_JOURNALCTL_STDERR || "");
+process.exit(Number(process.env.FAKE_JOURNALCTL_STATUS || "0"));
+`,
+  );
+  await chmod(journalctlPath, 0o755);
+
+  return {
+    fakeBinDir,
+    logPath,
+    env: {
+      PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
+      FAKE_JOURNALCTL_LOG: logPath,
+      ...options.env,
+    },
+    calls: () => readJsonl(logPath),
+  };
+}
+
+async function installFakeCaddyUserCommands(dir, options = {}) {
+  const fakeBinDir = path.join(dir, "fake-caddy-user-bin");
+  const idLogPath = path.join(dir, "id-calls.jsonl");
+  const chownLogPath = path.join(dir, "chown-calls.jsonl");
+  const idPath = path.join(fakeBinDir, "id");
+  const chownPath = path.join(fakeBinDir, "chown");
+  await mkdir(fakeBinDir, { recursive: true });
+  await writeFile(
+    idPath,
+    `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(process.env.FAKE_CADDY_USER_ID_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
+if (args[0] === "-u" && args[1] === "caddy") {
+  process.stdout.write(process.env.FAKE_CADDY_UID || "123");
+  process.exit(Number(process.env.FAKE_CADDY_ID_STATUS || "0"));
+}
+if (args[0] === "-g" && args[1] === "caddy") {
+  process.stdout.write(process.env.FAKE_CADDY_GID || "456");
+  process.exit(Number(process.env.FAKE_CADDY_ID_STATUS || "0"));
+}
+process.exit(1);
+`,
+  );
+  await writeFile(
+    chownPath,
+    `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(process.env.FAKE_CADDY_USER_CHOWN_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
+process.exit(Number(process.env.FAKE_CADDY_CHOWN_STATUS || "0"));
+`,
+  );
+  await chmod(idPath, 0o755);
+  await chmod(chownPath, 0o755);
+
+  return {
+    fakeBinDir,
+    idLogPath,
+    chownLogPath,
+    env: {
+      PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
+      FAKE_CADDY_USER_ID_LOG: idLogPath,
+      FAKE_CADDY_USER_CHOWN_LOG: chownLogPath,
+      ...options.env,
+    },
+    idCalls: () => readJsonl(idLogPath),
+    chownCalls: () => readJsonl(chownLogPath),
+  };
+}
+
 async function readJsonl(filePath) {
   return (await readFile(filePath, "utf8"))
     .trim()
@@ -351,6 +432,27 @@ async function readHostRegisterSmokeEnv() {
     throw new Error("SPORADES_HOST_SMOKE_TEMPLATE must be todo or guestbook.");
   }
   return { ...smoke, subname, template };
+}
+
+async function readHostLogsSmokeEnv() {
+  const dotEnv = await readDotEnv(path.join(repoRoot, ".env"));
+  const values = { ...dotEnv, ...process.env };
+  const server = values.SPORADES_HOST_LOGS_SMOKE_SSH_TARGET;
+  const domain = values.SPORADES_HOST_LOGS_SMOKE_DOMAIN;
+  const remoteRoot = values.SPORADES_HOST_LOGS_SMOKE_REMOTE_ROOT;
+  const subname = values.SPORADES_HOST_LOGS_SMOKE_SUBNAME;
+  if (!server || !domain || !remoteRoot || !subname) {
+    return null;
+  }
+  return {
+    alias: values.SPORADES_HOST_LOGS_SMOKE_ALIAS || "logs-smoke",
+    server,
+    domain,
+    remoteRoot,
+    subname,
+    tls: values.SPORADES_HOST_LOGS_SMOKE_TLS || "automatic",
+    lines: Number.parseInt(values.SPORADES_HOST_LOGS_SMOKE_LINES || "200", 10),
+  };
 }
 
 async function readDotEnv(filePath) {
@@ -1011,6 +1113,62 @@ test("sporades host register can run against an opt-in real SSH Host server and 
   });
 });
 
+test("sporades host logs can read a real Host server after requesting an opt-in Capsule route", async (t) => {
+  const smoke = await readHostLogsSmokeEnv();
+  if (!smoke) {
+    t.skip(
+      "Set SPORADES_HOST_LOGS_SMOKE_SSH_TARGET, SPORADES_HOST_LOGS_SMOKE_DOMAIN, SPORADES_HOST_LOGS_SMOKE_REMOTE_ROOT, and SPORADES_HOST_LOGS_SMOKE_SUBNAME to run this smoke test.",
+    );
+    return;
+  }
+
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const addHost = await runCli(
+      [
+        "host",
+        "add",
+        smoke.alias,
+        "--server",
+        smoke.server,
+        "--domain",
+        smoke.domain,
+        "--remote-root",
+        smoke.remoteRoot,
+        "--tls",
+        smoke.tls,
+        "--json",
+      ],
+      { cwd: dir, env: hostEnv(configDir) },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+
+    const marker = `sporades-log-smoke-${Date.now()}`;
+    const routeUrl = `https://${smoke.subname}.${smoke.domain}/?${marker}`;
+    const response = await fetch(routeUrl, {
+      redirect: "manual",
+      signal: AbortSignal.timeout(15_000),
+    });
+    assert(response.status >= 100, `Expected ${routeUrl} to return an HTTP response`);
+
+    const logs = await runCli(["host", "logs", "--host", smoke.alias, "--lines", String(smoke.lines), "--json"], {
+      cwd: dir,
+      env: hostEnv(configDir),
+    });
+    assert.equal(logs.code, 0, `${logs.stderr}\n${logs.stdout}`);
+    const output = JSON.parse(logs.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.error, null);
+    assert.equal(output.data.lineCount, smoke.lines);
+    assert(Array.isArray(output.data.entries));
+    const joinedEntries = output.data.entries.join("\n");
+    assert(
+      joinedEntries.includes(marker) || joinedEntries.includes(`${smoke.subname}.${smoke.domain}`),
+      "Expected recent Caddy log entries to include the triggered Capsule route or marker",
+    );
+  });
+});
+
 test("sporades host helper bootstraps a Hosted domain idempotently without deleting Capsule state", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -1020,6 +1178,12 @@ test("sporades host helper bootstraps a Hosted domain idempotently without delet
     await mkdir(path.join(remoteRoot, "caddy"), { recursive: true });
     await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "unrelated.example.dev {\n  respond \"still here\"\n}\n");
     const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_NETWORK_INSPECT_STATUS: "1" } });
+    const caddyUser = await installFakeCaddyUserCommands(path.join(dir, "caddy-user"));
+    const env = {
+      ...docker.env,
+      ...caddyUser.env,
+      PATH: `${caddyUser.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
 
     const request = {
       action: "host.bootstrap",
@@ -1062,7 +1226,7 @@ test("sporades host helper bootstraps a Hosted domain idempotently without delet
       },
     };
 
-    const bootstrap = await runHostHelper(request, { cwd: dir, env: docker.env });
+    const bootstrap = await runHostHelper(request, { cwd: dir, env });
 
     assert.equal(bootstrap.code, 0, bootstrap.stderr);
     const output = JSON.parse(bootstrap.stdout);
@@ -1076,10 +1240,18 @@ test("sporades host helper bootstraps a Hosted domain idempotently without delet
     assert.equal(output.data.caddy.managedInclude, path.join(remoteRoot, "caddy", "sporades-hosted-domains.caddy"));
     assert.equal(output.data.caddy.domainInclude, path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev.caddy"));
     assert.equal(output.data.caddy.globalConfigReplaced, false);
+    assert.deepEqual(output.data.caddy.accessLog, {
+      file: path.join(remoteRoot, "caddy", "logs", "access.log"),
+      directory: path.join(remoteRoot, "caddy", "logs"),
+      owner: "caddy",
+      writableByService: true,
+    });
 
     assert.equal(await readFile(preservedCapsuleFile, "utf8"), "existing capsule data\n");
     assert.equal((await stat(path.join(remoteRoot, "bin"))).isDirectory(), true);
     assert.equal((await stat(path.join(remoteRoot, "incoming"))).isDirectory(), true);
+    assert.equal((await stat(path.join(remoteRoot, "caddy", "logs"))).isDirectory(), true);
+    assert.equal(await readFile(path.join(remoteRoot, "caddy", "logs", "access.log"), "utf8"), "");
     assert.equal((await stat(path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules"))).isDirectory(), true);
     assert.equal((await stat(path.join(remoteRoot, "hosts", "capsules.example.dev", "tls"))).isDirectory(), true);
     const caddyfile = await readFile(path.join(remoteRoot, "caddy", "Caddyfile"), "utf8");
@@ -1102,6 +1274,10 @@ test("sporades host helper bootstraps a Hosted domain idempotently without delet
       ],
     );
     assert.deepEqual(
+      (await caddyUser.chownCalls()).map((call) => call.args),
+      [["123:456", path.join(remoteRoot, "caddy", "logs"), path.join(remoteRoot, "caddy", "logs", "access.log")]],
+    );
+    assert.deepEqual(
       (await docker.caddyCalls()).map((call) => call.args),
       [
         ["validate", "--config", path.join(remoteRoot, "caddy", "Caddyfile"), "--adapter", "caddyfile"],
@@ -1116,6 +1292,12 @@ test("sporades host helper requires readable Cloudflare origin certificate files
     const remoteRoot = path.join(dir, "remote-root");
     const tlsDirectory = path.join(remoteRoot, "hosts", "capsules.example.dev", "tls");
     const docker = await installFakeDocker(dir);
+    const caddyUser = await installFakeCaddyUserCommands(path.join(dir, "caddy-user"));
+    const env = {
+      ...docker.env,
+      ...caddyUser.env,
+      PATH: `${caddyUser.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
     const request = {
       action: "host.bootstrap",
       host: {
@@ -1152,7 +1334,7 @@ test("sporades host helper requires readable Cloudflare origin certificate files
       },
     };
 
-    const missing = await runHostHelper(request, { cwd: dir, env: docker.env });
+    const missing = await runHostHelper(request, { cwd: dir, env });
 
     assert.equal(missing.code, 0, missing.stderr);
     assert.deepEqual(JSON.parse(missing.stdout), {
@@ -1167,7 +1349,7 @@ test("sporades host helper requires readable Cloudflare origin certificate files
 
     await writeFile(path.join(tlsDirectory, "origin.crt"), "certificate\n");
     await writeFile(path.join(tlsDirectory, "origin.key"), "key\n");
-    const present = await runHostHelper(request, { cwd: dir, env: docker.env });
+    const present = await runHostHelper(request, { cwd: dir, env });
     assert.equal(present.code, 0, present.stderr);
     const output = JSON.parse(present.stdout);
     assert.equal(output.ok, true);
@@ -1215,6 +1397,12 @@ test("sporades host helper reports Docker and Caddy bootstrap substrate failures
         FAKE_DOCKER_CADDY_VALIDATE_STATUS: "1",
       },
     });
+    const caddyUser = await installFakeCaddyUserCommands(path.join(dir, "caddy-failure-user"));
+    const caddyFailureEnv = {
+      ...caddy.env,
+      ...caddyUser.env,
+      PATH: `${caddyUser.fakeBinDir}${path.delimiter}${caddy.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
     const caddyFailure = await runHostHelper(
       {
         ...baseRequest,
@@ -1224,7 +1412,7 @@ test("sporades host helper reports Docker and Caddy bootstrap substrate failures
           network: "sporades-hosted-capsules",
         },
       },
-      { cwd: dir, env: caddy.env },
+      { cwd: dir, env: caddyFailureEnv },
     );
 
     assert.equal(caddyFailure.code, 0, caddyFailure.stderr);
@@ -2048,7 +2236,9 @@ test("sporades host helper starts the current release in Docker and routes to th
     assert.equal(runCall.args[runCall.args.indexOf("--env-file") + 1], path.join(capsuleDir, "current", ".env.sporades.server"));
     assert(runCall.args.includes(`${path.join(capsuleDir, "data")}:/app/data`));
     assert.deepEqual(runCall.args.slice(runCall.args.indexOf("node:22-alpine")), ["node:22-alpine", "node", "/app/server.mjs"]);
-    assert.match(await readFile(routeFile, "utf8"), /reverse_proxy sporades-capsules-example-dev-team-notes:4000/);
+    const routeContents = await readFile(routeFile, "utf8");
+    assert.match(routeContents, /log \{\n    output file .*remote-root\/caddy\/logs\/access\.log\n  \}/);
+    assert.match(routeContents, /reverse_proxy sporades-capsules-example-dev-team-notes:4000/);
   });
 });
 
@@ -2086,7 +2276,9 @@ test("sporades host helper stops containers and routes Hosted Capsules to unavai
         ["rm", "sporades-capsules-example-dev-team-notes"],
       ],
     );
-    assert.match(await readFile(routeFile, "utf8"), /respond "Hosted Capsule unavailable" 503/);
+    const routeContents = await readFile(routeFile, "utf8");
+    assert.match(routeContents, /log \{\n    output file .*remote-root\/caddy\/logs\/access\.log\n  \}/);
+    assert.match(routeContents, /respond "Hosted Capsule unavailable" 503/);
     assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).status, "stopped");
   });
 });
@@ -2197,6 +2389,106 @@ test("sporades host helper reports missing and stopped Hosted Capsules for stats
       error: {
         message: "Hosted Capsule has no running container.",
         hint: "Run `sporades host start team-notes --host personal`, then retry stats.",
+      },
+    });
+  });
+});
+
+test("sporades host helper reads recent Caddy access log entries from the managed log file", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const accessLog = path.join(remoteRoot, "caddy", "logs", "access.log");
+    await mkdir(path.dirname(accessLog), { recursive: true });
+    await writeFile(
+      accessLog,
+      [
+        "2026/01/01 00:00:01 GET /old",
+        "2026/01/01 00:00:02 GET /one",
+        "2026/01/01 00:00:03 GET /two",
+      ].join("\n") + "\n",
+    );
+
+    const logs = await runHostHelper(
+      {
+        action: "host.logs",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: null,
+        logs: { source: "caddy-combined", lines: 2 },
+      },
+      { cwd: dir },
+    );
+
+    assert.equal(logs.code, 0, logs.stderr);
+    assert.deepEqual(JSON.parse(logs.stdout), {
+      ok: true,
+      data: {
+        lineCount: 2,
+        entries: ["2026/01/01 00:00:02 GET /one", "2026/01/01 00:00:03 GET /two"],
+      },
+      error: null,
+    });
+  });
+});
+
+test("sporades host helper falls back to Caddy journald logs when the managed log file is absent", async () => {
+  await withTempDir(async (dir) => {
+    const journalctl = await installFakeJournalctl(dir, {
+      env: {
+        FAKE_JOURNALCTL_STDOUT: "caddy service started\nhandled request for team-notes.capsules.example.dev\n",
+      },
+    });
+
+    const logs = await runHostHelper(
+      {
+        action: "host.logs",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: path.join(dir, "remote-root") },
+        capsule: null,
+        logs: { source: "caddy-combined", lines: 50 },
+      },
+      { cwd: dir, env: journalctl.env },
+    );
+
+    assert.equal(logs.code, 0, logs.stderr);
+    assert.deepEqual(JSON.parse(logs.stdout), {
+      ok: true,
+      data: {
+        lineCount: 50,
+        entries: ["caddy service started", "handled request for team-notes.capsules.example.dev"],
+      },
+      error: null,
+    });
+    assert.deepEqual((await journalctl.calls()).map((call) => call.args), [
+      ["-u", "caddy", "-n", "50", "--no-pager", "-o", "cat"],
+    ]);
+  });
+});
+
+test("sporades host helper reports unavailable Caddy logs as a structured error", async () => {
+  await withTempDir(async (dir) => {
+    const journalctl = await installFakeJournalctl(dir, {
+      env: {
+        FAKE_JOURNALCTL_STATUS: "1",
+        FAKE_JOURNALCTL_STDERR: "No journal files were found.\n",
+      },
+    });
+
+    const logs = await runHostHelper(
+      {
+        action: "host.logs",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: path.join(dir, "remote-root") },
+        capsule: null,
+        logs: { source: "caddy-combined", lines: 100 },
+      },
+      { cwd: dir, env: journalctl.env },
+    );
+
+    assert.equal(logs.code, 0, logs.stderr);
+    assert.deepEqual(JSON.parse(logs.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Host server Caddy combined logs are unavailable.",
+        hint: "Run `sporades host bootstrap --host personal` and check Caddy on the Host server.",
       },
     });
   });

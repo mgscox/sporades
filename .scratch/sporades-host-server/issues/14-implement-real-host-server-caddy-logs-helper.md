@@ -1,6 +1,6 @@
 # Implement real Host server Caddy log retrieval
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
