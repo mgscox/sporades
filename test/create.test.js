@@ -239,6 +239,18 @@ test("sporades create writes a minimal React photo library scaffold when request
     assert.equal(config.name, "photos-island");
     assert.equal(config.template, "photo-library");
     assert.equal(config.client.framework, "react");
+    assert.deepEqual(config.auth, {
+      providers: {
+        anonymous: true,
+        google: {
+          clientIdEnv: "GOOGLE_CLIENT_ID",
+          clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+        },
+      },
+    });
+    const envFile = await readFile(path.join(projectDir, ".env.sporades.server"), "utf8");
+    assert.match(envFile, /^GOOGLE_CLIENT_ID=replace-with-google-client-id$/m);
+    assert.match(envFile, /^GOOGLE_CLIENT_SECRET=replace-with-google-client-secret$/m);
 
     const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
     assert.match(serverEntry, /photos: table\(/);
@@ -285,6 +297,7 @@ test("sporades create writes a minimal React photo library scaffold when request
     const readme = await readFile(path.join(projectDir, "README.md"), "utf8");
     assert.match(readme, /A Sporades photo library capsule\./);
     assert.match(readme, /Uploads use `files\.upload\(\)`/);
+    assert.match(readme, /Replace them with real OAuth credentials via `sporades auth set google`/);
 
     const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
     assert.equal(packageJson.dependencies.react, "^19.0.0");

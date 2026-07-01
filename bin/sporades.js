@@ -2443,13 +2443,27 @@ function scaffoldFiles(options) {
           ? photoLibraryTemplateFiles(options)
           : blankTemplateFiles(options);
 
+  const isPhotoLibraryTemplate = options.template === "photo-library";
+  const authConfig =
+    isPhotoLibraryTemplate
+      ? {
+          providers: {
+            anonymous: true,
+            google: {
+              clientIdEnv: "GOOGLE_CLIENT_ID",
+              clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+            },
+          },
+        }
+      : { mode: "anonymous" };
+
   return {
     "sporades.json": `${JSON.stringify(
       {
         name: options.name,
         template: options.template,
         client: { framework: options.framework },
-        auth: { mode: "anonymous" },
+        auth: authConfig,
         deploy: { port: 4000 },
         dev: { port: null },
       },
@@ -2477,7 +2491,9 @@ function scaffoldFiles(options) {
     "AGENTS.md": agentsTemplate(options.template),
     "CLAUDE.md": agentsTemplate(options.template),
     ".gitignore": "node_modules/\n.sporades/\n.env*.local\n",
-    ".env.sporades.server": "# Server-only environment variables for Sporades.\n",
+    ".env.sporades.server": isPhotoLibraryTemplate
+      ? "# Server-only environment variables for Sporades.\nGOOGLE_CLIENT_ID=replace-with-google-client-id\nGOOGLE_CLIENT_SECRET=replace-with-google-client-secret\n"
+      : "# Server-only environment variables for Sporades.\n",
     "index.html": `<!doctype html>
 <html lang="en">
   <head>
@@ -2629,6 +2645,8 @@ function photoLibraryTemplateFiles(options) {
 A Sporades photo library capsule.
 
 Uploads use \`files.upload()\` from \`sporades/client\`, then store the returned File metadata through a normal Capsule mutation. Anonymous uploads are public immediately; Google-linked uploads are private unless you choose to publish them.
+
+Google is enabled in \`sporades.json\` with placeholder server env values so the Capsule starts immediately. Replace them with real OAuth credentials via \`sporades auth set google\` before using real Google sign-in.
 `,
     "server/index.ts": `import { Boolean, capsule, mutation, Number, query, String, table } from "sporades/server";
 
