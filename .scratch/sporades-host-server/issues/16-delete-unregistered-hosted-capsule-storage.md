@@ -1,6 +1,6 @@
 # Delete unregistered Hosted Capsule storage
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -12,12 +12,12 @@ Add irreversible deletion for Hosted Capsules, but only after they have already 
 
 ## Acceptance criteria
 
-- [ ] `sporades host delete <subname> --host <alias> --json` deletes only Hosted Capsules whose registry state is already unregistered.
-- [ ] Delete refuses registered, running, stopped, or released Hosted Capsules that have not first gone through `host unregister`.
-- [ ] Delete removes the unregistered Capsule registry/tombstone record, release directories, persistent data directory, and any remaining route file.
-- [ ] Delete is safe to retry after partial cleanup and returns structured JSON describing what was removed or already absent.
-- [ ] Delete never removes unrelated Hosted domain directories or other Capsule state.
-- [ ] Tests cover refusal for registered Capsules, successful deletion after unregister, idempotent retry, partial cleanup recovery, and JSON/plain output.
+- [x] `sporades host delete <subname> --host <alias> --json` deletes only Hosted Capsules whose registry state is already unregistered.
+- [x] Delete refuses registered, running, stopped, or released Hosted Capsules that have not first gone through `host unregister`.
+- [x] Delete removes the unregistered Capsule registry/tombstone record, release directories, persistent data directory, and any remaining route file.
+- [x] Delete is safe to retry after partial cleanup and returns structured JSON describing what was removed or already absent.
+- [x] Delete never removes unrelated Hosted domain directories or other Capsule state.
+- [x] Tests cover refusal for registered Capsules, successful deletion after unregister, idempotent retry, partial cleanup recovery, and JSON/plain output.
 
 ## Blocked by
 

@@ -3567,6 +3567,218 @@ test("sporades host helper unregisters a Hosted Capsule without deleting release
   });
 });
 
+test("sporades host helper deletes unregistered Hosted Capsule storage only", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
+    const dataDir = path.join(capsuleDir, "data");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    const routeFile = path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "team-notes.caddy");
+    const otherCapsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "other-notes");
+    const otherDomainCapsuleDir = path.join(remoteRoot, "hosts", "other.example.dev", "capsules", "team-notes");
+    await mkdir(releaseDir, { recursive: true });
+    await mkdir(dataDir, { recursive: true });
+    await mkdir(otherCapsuleDir, { recursive: true });
+    await mkdir(otherDomainCapsuleDir, { recursive: true });
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await mkdir(path.dirname(routeFile), { recursive: true });
+    await mkdir(path.join(remoteRoot, "caddy"), { recursive: true });
+    await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import hosts/*.caddy\n");
+    await writeFile(path.join(releaseDir, "server.mjs"), "export default 'server bundle';\n");
+    await writeFile(path.join(dataDir, "data.db"), "persistent sqlite bytes\n");
+    await writeFile(path.join(otherCapsuleDir, "keep.txt"), "same domain, different Capsule\n");
+    await writeFile(path.join(otherDomainCapsuleDir, "keep.txt"), "same subname, different domain\n");
+    await writeFile(routeFile, "team-notes.capsules.example.dev {\n  respond \"removed\" 410\n}\n");
+    await writeFile(
+      registryRecordPath,
+      `${JSON.stringify(
+        {
+          subname: "team-notes",
+          domain: "capsules.example.dev",
+          remoteCapsuleId: "capsules.example.dev/team-notes",
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          status: "unregistered",
+          unregistered: true,
+          unregisteredAt: "2026-07-01T12:00:00.000Z",
+          deleteAfter: "2026-09-29T12:00:00.000Z",
+          currentRelease: { id: "20260630T221500Z-feedface" },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const docker = await installFakeDocker(dir);
+
+    const deleted = await runHostHelper(
+      {
+        action: "capsule.delete",
+        host: {
+          alias: "personal",
+          domain: "capsules.example.dev",
+          scheme: "https",
+          remoteRoot,
+        },
+        capsule: {
+          subname: "team-notes",
+        },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(deleted.code, 0, deleted.stderr);
+    const output = JSON.parse(deleted.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.error, null);
+    assert.equal(output.data.deleted, true);
+    assert.equal(output.data.capsule.hostedUrl, "https://team-notes.capsules.example.dev");
+    assert.equal(output.data.registryRecord.path, registryRecordPath);
+    assert.equal(output.data.registryRecord.removed, true);
+    assert.equal(output.data.directories.capsule.path, capsuleDir);
+    assert.equal(output.data.directories.capsule.removed, true);
+    assert.equal(output.data.directories.releases.path, path.join(capsuleDir, "releases"));
+    assert.equal(output.data.directories.releases.removed, true);
+    assert.equal(output.data.directories.data.path, dataDir);
+    assert.equal(output.data.directories.data.removed, true);
+    assert.equal(output.data.route.path, routeFile);
+    assert.equal(output.data.route.removed, true);
+    await assert.rejects(stat(registryRecordPath), { code: "ENOENT" });
+    await assert.rejects(stat(capsuleDir), { code: "ENOENT" });
+    await assert.rejects(stat(routeFile), { code: "ENOENT" });
+    assert.equal(await readFile(path.join(otherCapsuleDir, "keep.txt"), "utf8"), "same domain, different Capsule\n");
+    assert.equal(await readFile(path.join(otherDomainCapsuleDir, "keep.txt"), "utf8"), "same subname, different domain\n");
+    await assert.rejects(stat(docker.logPath), { code: "ENOENT" });
+    assert.deepEqual((await docker.caddyCalls()).map((call) => call.args), [
+      ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile"), "--adapter", "caddyfile"],
+    ]);
+  });
+});
+
+test("sporades host helper refuses to delete active Hosted Capsule registry states", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await mkdir(path.join(capsuleDir, "data"), { recursive: true });
+
+    for (const status of ["registered", "running", "stopped", "released"]) {
+      await writeFile(
+        registryRecordPath,
+        `${JSON.stringify({
+          subname: "team-notes",
+          domain: "capsules.example.dev",
+          remoteCapsuleId: "capsules.example.dev/team-notes",
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          status,
+        })}\n`,
+      );
+      const deleted = await runHostHelper(
+        {
+          action: "capsule.delete",
+          host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+          capsule: { subname: "team-notes" },
+        },
+        { cwd: dir },
+      );
+      assert.equal(deleted.code, 0, deleted.stderr);
+      const output = JSON.parse(deleted.stdout);
+      assert.equal(output.ok, false);
+      assert.equal(output.error.message, "Hosted Capsule must be unregistered before deletion.");
+      assert.match(output.error.hint, /sporades host unregister team-notes/);
+      assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).status, status);
+      assert.equal((await stat(path.join(capsuleDir, "data"))).isDirectory(), true);
+    }
+  });
+});
+
+test("sporades host helper delete recovers partial cleanup and is idempotent", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const dataDir = path.join(capsuleDir, "data");
+    const routeFile = path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "team-notes.caddy");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    await mkdir(dataDir, { recursive: true });
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await mkdir(path.join(remoteRoot, "caddy"), { recursive: true });
+    await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import hosts/*.caddy\n");
+    await writeFile(path.join(dataDir, "leftover.db"), "partial cleanup leftover\n");
+    await writeFile(
+      registryRecordPath,
+      `${JSON.stringify({
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        status: "unregistered",
+      })}\n`,
+    );
+    const docker = await installFakeDocker(dir);
+
+    const partial = await runHostHelper(
+      {
+        action: "capsule.delete",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+      },
+      { cwd: dir, env: docker.env },
+    );
+    assert.equal(partial.code, 0, partial.stderr);
+    const partialOutput = JSON.parse(partial.stdout);
+    assert.equal(partialOutput.ok, true);
+    assert.equal(partialOutput.data.idempotent, false);
+    assert.equal(partialOutput.data.registryRecord.removed, true);
+    assert.equal(partialOutput.data.registryRecord.alreadyAbsent, false);
+    assert.equal(partialOutput.data.directories.capsule.removed, true);
+    assert.equal(partialOutput.data.route.removed, false);
+    assert.equal(partialOutput.data.route.alreadyAbsent, true);
+    await assert.rejects(stat(capsuleDir), { code: "ENOENT" });
+    await assert.rejects(stat(routeFile), { code: "ENOENT" });
+
+    const retry = await runHostHelper(
+      {
+        action: "capsule.delete",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+      },
+      { cwd: dir, env: docker.env },
+    );
+    assert.equal(retry.code, 0, retry.stderr);
+    const retryOutput = JSON.parse(retry.stdout);
+    assert.equal(retryOutput.ok, true);
+    assert.equal(retryOutput.data.idempotent, true);
+    assert.equal(retryOutput.data.registryRecord.alreadyAbsent, true);
+    assert.equal(retryOutput.data.directories.capsule.alreadyAbsent, true);
+    assert.equal(retryOutput.data.route.alreadyAbsent, true);
+  });
+});
+
+test("sporades host helper delete refuses missing tombstone when storage remains", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    await mkdir(path.join(capsuleDir, "data"), { recursive: true });
+    await writeFile(path.join(capsuleDir, "data", "live.db"), "must not delete without tombstone proof\n");
+
+    const deleted = await runHostHelper(
+      {
+        action: "capsule.delete",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+      },
+      { cwd: dir },
+    );
+
+    assert.equal(deleted.code, 0, deleted.stderr);
+    const output = JSON.parse(deleted.stdout);
+    assert.equal(output.ok, false);
+    assert.equal(output.error.message, "Hosted Capsule must be unregistered before deletion.");
+    assert.match(output.error.hint, /sporades host unregister team-notes/);
+    assert.equal(await readFile(path.join(capsuleDir, "data", "live.db"), "utf8"), "must not delete without tombstone proof\n");
+  });
+});
+
 test("sporades host helper restores the route when unregister tombstone write fails", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -4468,6 +4680,117 @@ process.exit(0);
         },
         container: {
           name: "sporades-capsules-example-dev-team-notes",
+        },
+        routes: {
+          removed: {
+            hostname: "team-notes.capsules.example.dev",
+            target: "removed",
+            routeFile: "/opt/sporades/caddy/hosts/capsules.example.dev/team-notes.caddy",
+          },
+        },
+      },
+    });
+  });
+});
+
+test("sporades host delete invokes the Hosted Capsule delete helper contract", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+if (request.action !== "capsule.delete") {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected action.", hint: "Use capsule.delete." }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    deleted: true,
+    idempotent: false,
+    capsule: {
+      subname: request.capsule.subname,
+      domain: request.host.domain,
+      hostedUrl: request.delete.hostedUrl,
+      remoteCapsuleId: request.delete.remoteCapsuleId
+    },
+    registryRecord: {
+      path: request.delete.registryRecord,
+      removed: true,
+      alreadyAbsent: false
+    },
+    directories: {
+      capsule: { path: request.delete.directories.capsule, removed: true, alreadyAbsent: false },
+      releases: { path: request.delete.directories.releases, removed: true, alreadyAbsent: false },
+      data: { path: request.delete.directories.data, removed: true, alreadyAbsent: false }
+    },
+    route: {
+      path: request.delete.routes.removed.routeFile,
+      removed: true,
+      alreadyAbsent: false
+    }
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    assert.equal(
+      (
+        await runCli(
+          ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+          { cwd: dir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+        )
+      ).code,
+      0,
+    );
+
+    const deleted = await runCli(["host", "delete", "team-notes", "--host", "personal", "--json"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(deleted.code, 0, deleted.stderr);
+    const output = JSON.parse(deleted.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.error, null);
+    assert.equal(output.data.deleted, true);
+    assert.equal(output.data.capsule.hostedUrl, "https://team-notes.capsules.example.dev");
+
+    const plain = await runCli(["host", "delete", "team-notes", "--host", "personal"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(plain.code, 0, plain.stderr);
+    assert.equal(plain.stdout, "Hosted Capsule storage deleted: https://team-notes.capsules.example.dev\n");
+
+    const calls = await readJsonl(fakeSsh.logPath);
+    const request = JSON.parse(calls[0].stdin);
+    assert.deepEqual(request, {
+      action: "capsule.delete",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot: "/opt/sporades",
+      },
+      capsule: {
+        subname: "team-notes",
+      },
+      delete: {
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        registryRecord: "/opt/sporades/hosts/capsules.example.dev/registry/capsules/team-notes.json",
+        directories: {
+          capsule: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes",
+          releases: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/releases",
+          data: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data",
         },
         routes: {
           removed: {

@@ -371,7 +371,7 @@ function parseHostArgs(args) {
     if (arg.startsWith("--")) {
       throw commandError(
         `Unknown flag: ${arg}`,
-        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
+        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
       );
     }
     positional.push(arg);
@@ -473,7 +473,7 @@ function parseHostArgs(args) {
     return { subcommand, hostAlias, json, projectDir: process.cwd() };
   }
 
-  if (subcommand === "start" || subcommand === "stop" || subcommand === "restart" || subcommand === "stats" || subcommand === "unregister") {
+  if (subcommand === "start" || subcommand === "stop" || subcommand === "restart" || subcommand === "stats" || subcommand === "unregister" || subcommand === "delete") {
     const [positionalSubname, ...extra] = positional;
     if (!positionalSubname) {
       throw commandError("Missing Capsule subname.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
@@ -531,7 +531,7 @@ function parseHostArgs(args) {
 
   throw commandError(
     `Unknown host command: ${subcommand ?? ""}`.trim(),
-    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
+    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
   );
 }
 
@@ -1259,6 +1259,31 @@ async function manageHost(options) {
     return;
   }
 
+  if (options.subcommand === "delete") {
+    const config = await readHostConfig();
+    const resolved = resolveHostProfile(config, options.hostAlias);
+    const deletion = createHostDeleteRequest(resolved.profile, options.subname);
+    const result = invokeRemoteHostHelper({
+      alias: resolved.alias,
+      profile: resolved.profile,
+      action: "capsule.delete",
+      subname: options.subname,
+      delete: deletion,
+      projectDir: options.projectDir,
+    });
+
+    if (options.json) {
+      writeResult(result, !result.ok);
+      return;
+    }
+
+    if (!result.ok) {
+      throw commandError(result.error.message, result.error.hint);
+    }
+    process.stdout.write(`Hosted Capsule storage deleted: ${deletion.hostedUrl}\n`);
+    return;
+  }
+
   if (options.subcommand === "stats") {
     const config = await readHostConfig();
     const resolved = resolveHostProfile(config, options.hostAlias);
@@ -1841,6 +1866,9 @@ function invokeRemoteHostHelper(options) {
   if (options.unregister) {
     request.unregister = options.unregister;
   }
+  if (options.delete) {
+    request.delete = options.delete;
+  }
   const result = spawnSync("ssh", [options.profile.server, helperPath], {
     cwd: options.projectDir,
     encoding: "utf8",
@@ -2173,6 +2201,30 @@ function createHostUnregisterRequest(profile, subname) {
     },
     container: {
       name: createHostedContainerName(profile.domain, subname),
+    },
+    routes: {
+      removed: {
+        hostname: `${subname}.${profile.domain}`,
+        target: "removed",
+        routeFile: posixJoin(bootstrap.directories.caddyHosts, profile.domain, `${subname}.caddy`),
+      },
+    },
+  };
+}
+
+function createHostDeleteRequest(profile, subname) {
+  const bootstrap = createHostBootstrapRequest(profile);
+  const capsuleDirectory = posixJoin(bootstrap.directories.capsules, subname);
+  return {
+    subname,
+    domain: profile.domain,
+    hostedUrl: `${profile.scheme}://${subname}.${profile.domain}`,
+    remoteCapsuleId: `${profile.domain}/${subname}`,
+    registryRecord: posixJoin(bootstrap.directories.registry, "capsules", `${subname}.json`),
+    directories: {
+      capsule: capsuleDirectory,
+      releases: posixJoin(capsuleDirectory, "releases"),
+      data: posixJoin(capsuleDirectory, "data"),
     },
     routes: {
       removed: {

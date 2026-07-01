@@ -34,6 +34,10 @@ async function main() {
     await unregisterCapsule(request);
     return;
   }
+  if (request.action === "capsule.delete") {
+    await deleteCapsule(request);
+    return;
+  }
   if (request.action === "capsule.release.install") {
     await installRelease(request);
     return;
@@ -188,6 +192,47 @@ async function unregisterCapsule(request) {
   });
 
   writeEnvelope({ ok: true, data, error: null });
+}
+
+async function deleteCapsule(request) {
+  validateDeleteRequest(request);
+  const deletion = normaliseDeletion(request);
+  await mkdir(path.dirname(registryLockPath(request)), { recursive: true });
+
+  let data;
+  await withRegistryLock(request, async () => {
+    const record = await readOptionalRegistryRecordForCapsule(request);
+    if (record) {
+      assertRegistryRecordMatchesRequest(request, record);
+      if (record.status !== "unregistered") {
+        throw deletionRequiresUnregisterError(request);
+      }
+    } else if ((await pathExists(deletion.route.routeFile)) || (await pathExists(deletion.directories.capsule))) {
+      throw deletionRequiresUnregisterError(request);
+    }
+
+    const route = await removePathIfPresent(deletion.route.routeFile);
+    if (route.removed) {
+      reloadCaddy(deletion.lifecycle);
+    }
+    const capsuleDirectory = await removePathIfPresent(deletion.directories.capsule, { recursive: true });
+    const registryRecord = await removePathIfPresent(deletion.registryRecord);
+    data = createDeleteResult(request, deletion, {
+      route,
+      capsuleDirectory,
+      registryRecord,
+      idempotent: !record && !route.removed && !capsuleDirectory.removed && !registryRecord.removed,
+    });
+  });
+
+  writeEnvelope({ ok: true, data, error: null });
+}
+
+function deletionRequiresUnregisterError(request) {
+  return helperError(
+    "Hosted Capsule must be unregistered before deletion.",
+    `Run \`sporades host unregister ${request.capsule.subname} --host ${request.host.alias}\` before deleting Hosted Capsule storage.`,
+  );
 }
 
 async function installRelease(request) {
@@ -514,6 +559,47 @@ function createUnregisterResult(request, unregister, record, idempotent, route =
   };
 }
 
+function createDeleteResult(request, deletion, removals) {
+  const capsuleRemoved = removals.capsuleDirectory.removed;
+  return {
+    deleted: true,
+    idempotent: removals.idempotent,
+    capsule: {
+      subname: request.capsule.subname,
+      domain: request.host.domain,
+      hostedUrl: deletion.hostedUrl,
+      remoteCapsuleId: deletion.remoteCapsuleId,
+    },
+    registryRecord: {
+      path: deletion.registryRecord,
+      removed: removals.registryRecord.removed,
+      alreadyAbsent: !removals.registryRecord.removed,
+    },
+    directories: {
+      capsule: {
+        path: deletion.directories.capsule,
+        removed: capsuleRemoved,
+        alreadyAbsent: !capsuleRemoved,
+      },
+      releases: {
+        path: deletion.directories.releases,
+        removed: capsuleRemoved,
+        alreadyAbsent: !capsuleRemoved,
+      },
+      data: {
+        path: deletion.directories.data,
+        removed: capsuleRemoved,
+        alreadyAbsent: !capsuleRemoved,
+      },
+    },
+    route: {
+      path: deletion.route.routeFile,
+      removed: removals.route.removed,
+      alreadyAbsent: !removals.route.removed,
+    },
+  };
+}
+
 function canonicalReleasePaths(request) {
   const capsule = path.join(
     request.host.remoteRoot,
@@ -812,6 +898,33 @@ function normaliseUnregister(request) {
       remoteRoot,
     },
     provided,
+  };
+}
+
+function normaliseDeletion(request) {
+  const subname = request.capsule.subname;
+  const domain = request.host.domain;
+  const remoteRoot = request.host.remoteRoot;
+  const scheme = request.host.scheme ?? "https";
+  const capsuleDirectory = path.join(remoteRoot, "hosts", domain, "capsules", subname);
+  return {
+    subname,
+    domain,
+    hostedUrl: `${scheme}://${subname}.${domain}`,
+    remoteCapsuleId: `${domain}/${subname}`,
+    registryRecord: path.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
+    directories: {
+      capsule: capsuleDirectory,
+      releases: path.join(capsuleDirectory, "releases"),
+      data: path.join(capsuleDirectory, "data"),
+    },
+    route: {
+      hostname: `${subname}.${domain}`,
+      routeFile: path.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`),
+    },
+    lifecycle: {
+      remoteRoot,
+    },
   };
 }
 
@@ -1355,6 +1468,15 @@ async function restoreRemovedRoute(lifecycle, route) {
   reloadCaddy(lifecycle);
 }
 
+async function removePathIfPresent(targetPath, options = {}) {
+  const existed = await pathExists(targetPath);
+  if (!existed) {
+    return { path: targetPath, removed: false };
+  }
+  await rm(targetPath, { recursive: Boolean(options.recursive), force: true });
+  return { path: targetPath, removed: true };
+}
+
 function validateCaddyRoute(routeFile) {
   const result = spawnSync("caddy", ["validate", "--config", routeFile, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
@@ -1409,6 +1531,17 @@ async function readRegistryRecordForCapsule(request, purpose) {
         "Hosted Capsule registry record is invalid.",
         "Repair the Host server registry record before retrying the command.",
       );
+    }
+    throw error;
+  }
+}
+
+async function readOptionalRegistryRecordForCapsule(request) {
+  try {
+    return await readRegistryRecordForCapsule(request, "delete");
+  } catch (error) {
+    if (error.message === "Hosted Capsule is not registered.") {
+      return null;
     }
     throw error;
   }
@@ -1826,6 +1959,29 @@ function validateUnregisterRequest(request) {
   if (mismatchedIdentity) {
     throw helperError(
       "Hosted Capsule unregister request does not match the Host profile.",
+      "Rebind the local project or pass the correct Host profile and Capsule subname.",
+    );
+  }
+}
+
+function validateDeleteRequest(request) {
+  const requiredStrings = [
+    request.host?.domain,
+    request.host?.alias,
+    request.host?.remoteRoot,
+    request.capsule?.subname,
+  ];
+  if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw helperError("Invalid Hosted Capsule delete request.", "Update the Sporades CLI and retry `sporades host delete`.");
+  }
+  const deletion = request.delete ?? {};
+  const mismatchedIdentity =
+    (deletion.subname && deletion.subname !== request.capsule.subname) ||
+    (deletion.domain && deletion.domain !== request.host.domain) ||
+    (deletion.remoteCapsuleId && deletion.remoteCapsuleId !== `${request.host.domain}/${request.capsule.subname}`);
+  if (mismatchedIdentity) {
+    throw helperError(
+      "Hosted Capsule delete request does not match the Host profile.",
       "Rebind the local project or pass the correct Host profile and Capsule subname.",
     );
   }
