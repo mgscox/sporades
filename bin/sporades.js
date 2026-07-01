@@ -22,7 +22,7 @@ import {
 } from "../src/server-runtime-source.js";
 
 const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
-const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook"]);
+const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
 const CONTAINER_BINDING_FILE = path.join(".sporades", "binding.json");
 const REMOTE_BINDING_FILE = path.join(".sporades", "remote-binding.json");
@@ -174,7 +174,7 @@ function parseCreateArgs(args) {
     throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact.");
   }
   if (!SUPPORTED_TEMPLATES.has(template)) {
-    throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook.");
+    throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
   }
 
   return {
@@ -2439,7 +2439,9 @@ function scaffoldFiles(options) {
       ? todoTemplateFiles(options)
       : options.template === "guestbook"
         ? guestbookTemplateFiles(options)
-        : blankTemplateFiles(options);
+        : options.template === "photo-library"
+          ? photoLibraryTemplateFiles(options)
+          : blankTemplateFiles(options);
 
   return {
     "sporades.json": `${JSON.stringify(
@@ -2613,6 +2615,52 @@ export default capsule({
   authorId: string;
   authorName: string;
   authorPicture: string;
+  createdAt: string;
+  updatedAt: string;
+};
+`,
+  };
+}
+
+function photoLibraryTemplateFiles(options) {
+  return {
+    "README.md": `# ${options.name}
+
+A Sporades photo library capsule.
+
+This scaffold is intentionally minimal: it models photo metadata and a public gallery query. Add Sporades upload behavior when you are ready to build the full photo library workflow.
+`,
+    "server/index.ts": `import { Boolean, capsule, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: ${JSON.stringify(options.name)},
+
+  schema: {
+    photos: table({
+      title: String(),
+      ownerId: String(),
+      isPublic: Boolean().default(true),
+    }),
+  },
+
+  queries: {
+    publicPhotos: query((ctx) =>
+      ctx.db.photos
+        .where("isPublic", true)
+        .orderBy("createdAt", "desc")
+        .all(),
+    ),
+  },
+
+  mutations: {},
+});
+`,
+    "client/index.tsx": photoLibraryClientTemplate(options.framework),
+    "shared/types.ts": `export type Photo = {
+  id: string;
+  title: string;
+  ownerId: string;
+  isPublic: boolean;
   createdAt: string;
   updatedAt: string;
 };
@@ -3015,6 +3063,62 @@ const styles = \`
   .entry p { margin: 8px 0 0; white-space: pre-wrap; }
   @media (max-width: 680px) { .intro, .composer-row { display: grid; } .auth-panel { justify-content: flex-start; } }
 \`;
+`;
+}
+
+function photoLibraryClientTemplate(framework) {
+  if (framework === "preact") {
+    return `import { render } from "preact";
+import { useState, useEffect } from "preact/hooks";
+import { createHooks } from "sporades/client";
+
+const { useQuery } = createHooks({ useState, useEffect });
+
+function App() {
+  const publicPhotos = useQuery("publicPhotos");
+  const photos = publicPhotos.data ?? [];
+
+  return (
+    <main>
+      <h1>Photo Library</h1>
+      <p>Public photos will appear here.</p>
+      <ul>
+        {photos.map((photo) => (
+          <li key={photo.id}>{photo.title}</li>
+        ))}
+      </ul>
+    </main>
+  );
+}
+
+render(<App />, document.getElementById("app")!);
+`;
+  }
+
+  return `import { useEffect, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { createHooks } from "sporades/client";
+
+const { useQuery } = createHooks({ useState, useEffect });
+
+function App() {
+  const publicPhotos = useQuery("publicPhotos");
+  const photos = publicPhotos.data ?? [];
+
+  return (
+    <main>
+      <h1>Photo Library</h1>
+      <p>Public photos will appear here.</p>
+      <ul>
+        {photos.map((photo) => (
+          <li key={photo.id}>{photo.title}</li>
+        ))}
+      </ul>
+    </main>
+  );
+}
+
+createRoot(document.getElementById("app")!).render(<App />);
 `;
 }
 

@@ -218,6 +218,56 @@ test("sporades create writes a runnable React guestbook scaffold when requested"
   });
 });
 
+test("sporades create writes a minimal React photo library scaffold when requested", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(
+      ["create", "photos-island", "--template", "photo-library", "--no-install", "--no-git", "--json"],
+      {
+        cwd: dir,
+      },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: true,
+      data: { path: await realpath(path.join(dir, "photos-island")), template: "photo-library" },
+      error: null,
+    });
+
+    const projectDir = path.join(dir, "photos-island");
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.equal(config.name, "photos-island");
+    assert.equal(config.template, "photo-library");
+    assert.equal(config.client.framework, "react");
+
+    const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
+    assert.match(serverEntry, /photos: table\(/);
+    assert.match(serverEntry, /title: String\(\)/);
+    assert.match(serverEntry, /ownerId: String\(\)/);
+    assert.match(serverEntry, /isPublic: Boolean\(\)\.default\(true\)/);
+    assert.match(serverEntry, /publicPhotos: query/);
+    assert.match(serverEntry, /orderBy\("createdAt", "desc"\)/);
+    assert.doesNotMatch(serverEntry, /upload|storage|file/i);
+
+    const clientEntry = await readFile(path.join(projectDir, "client", "index.tsx"), "utf8");
+    assert.match(clientEntry, /createRoot/);
+    assert.match(clientEntry, /createHooks/);
+    assert.match(clientEntry, /useQuery\("publicPhotos"\)/);
+    assert.match(clientEntry, /Photo Library/);
+    assert.doesNotMatch(clientEntry, /upload|storage|file/i);
+
+    const agents = await readFile(path.join(projectDir, "AGENTS.md"), "utf8");
+    assert.match(agents, /Template: photo-library/);
+    const readme = await readFile(path.join(projectDir, "README.md"), "utf8");
+    assert.match(readme, /A Sporades photo library capsule\./);
+
+    const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
+    assert.equal(packageJson.dependencies.react, "^19.0.0");
+    assert.equal(packageJson.dependencies["react-dom"], "^19.0.0");
+    assert.equal(packageJson.dependencies.preact, undefined);
+  });
+});
+
 test("sporades create --template blank writes the blank scaffold", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(["create", "blank-island", "--template", "blank", "--no-install", "--no-git", "--json"], {
@@ -411,6 +461,42 @@ test("sporades create writes a runnable Preact guestbook scaffold", async () => 
   });
 });
 
+test("sporades create writes a runnable Preact photo library scaffold", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(
+      ["create", "photos-island", "--template", "photo-library", "--framework", "preact", "--no-install", "--no-git", "--json"],
+      {
+        cwd: dir,
+      },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: true,
+      data: { path: await realpath(path.join(dir, "photos-island")), template: "photo-library" },
+      error: null,
+    });
+
+    const projectDir = path.join(dir, "photos-island");
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.equal(config.template, "photo-library");
+    assert.equal(config.client.framework, "preact");
+
+    const clientEntry = await readFile(path.join(projectDir, "client", "index.tsx"), "utf8");
+    assert.match(clientEntry, /from "preact"/);
+    assert.match(clientEntry, /from "preact\/hooks"/);
+    assert.match(clientEntry, /createHooks\(\{ useState, useEffect \}\)/);
+    assert.match(clientEntry, /useQuery\("publicPhotos"\)/);
+    assert.match(clientEntry, /Photo Library/);
+    assert.doesNotMatch(clientEntry, /react-dom|upload|storage|file/i);
+
+    const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
+    assert.equal(packageJson.dependencies.preact, "^10.25.0");
+    assert.equal(packageJson.dependencies.react, undefined);
+    assert.equal(packageJson.dependencies["react-dom"], undefined);
+  });
+});
+
 test("sporades create rejects unsupported framework values with structured JSON", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(
@@ -443,7 +529,7 @@ test("sporades create rejects unsupported template values with structured JSON",
       data: null,
       error: {
         message: "Unsupported template: blog",
-        hint: "Use one of: blank, todo, guestbook.",
+        hint: "Use one of: blank, todo, guestbook, photo-library.",
       },
     });
   });
