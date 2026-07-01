@@ -2628,9 +2628,9 @@ function photoLibraryTemplateFiles(options) {
 
 A Sporades photo library capsule.
 
-This scaffold is intentionally minimal: it models photo metadata and a public gallery query. Add Sporades upload behavior when you are ready to build the full photo library workflow.
+Uploads use \`files.upload()\` from \`sporades/client\`, then store the returned File metadata through a normal Capsule mutation. Anonymous uploads are public immediately; Google-linked uploads are private unless you choose to publish them.
 `,
-    "server/index.ts": `import { Boolean, capsule, query, String, table } from "sporades/server";
+    "server/index.ts": `import { Boolean, capsule, mutation, Number, query, String, table } from "sporades/server";
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
@@ -2638,8 +2638,17 @@ export default capsule({
   schema: {
     photos: table({
       title: String(),
+      fileId: String(),
+      fileName: String(),
+      fileType: String(),
+      fileSize: Number(),
+      filePath: String(),
+      fileVersion: String(),
+      imageUrl: String(),
+      publicUrlId: String(),
       ownerId: String(),
-      isPublic: Boolean().default(true),
+      ownerName: String(),
+      isPublic: Boolean().default(false),
     }),
   },
 
@@ -2648,19 +2657,77 @@ export default capsule({
       ctx.db.photos
         .where("isPublic", true)
         .orderBy("createdAt", "desc")
-        .all(),
+        .all()
+        .filter((photo) => photo.imageUrl),
     ),
+    personalPhotos: query((ctx) => {
+      if (ctx.auth.provider !== "google") {
+        return [];
+      }
+
+      return ctx.db.photos
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "desc")
+        .all()
+        .map((photo) => ({
+          ...photo,
+          status: photo.isPublic ? "public" : "private",
+        }));
+    }),
   },
 
-  mutations: {},
+  mutations: {
+    recordPhoto: mutation((ctx, input) => {
+      const file = input?.file;
+      if (!file?.id || !file?.name || !file?.type || typeof file?.size !== "number") {
+        throw new Error("Upload an image before saving the photo.");
+      }
+      if (!file.type.startsWith("image/")) {
+        throw new Error("Photo uploads must be image files.");
+      }
+
+      const title = String(input.title ?? file.name).trim() || file.name;
+      const isPublic = ctx.auth.provider === "google" ? Boolean(input.isPublic) : true;
+      const imageUrl = isPublic ? String(input.publicUrl?.url ?? "") : "";
+      const publicUrlId = isPublic ? String(input.publicUrl?.id ?? "") : "";
+      if (isPublic && !imageUrl) {
+        throw new Error("Public photos need a public file URL.");
+      }
+
+      ctx.db.photos.insert({
+        title,
+        fileId: file.id,
+        fileName: file.name,
+        fileType: file.type,
+        fileSize: file.size,
+        filePath: file.path ?? "",
+        fileVersion: file.version ?? "",
+        imageUrl,
+        publicUrlId,
+        ownerId: ctx.auth.userId,
+        ownerName: ctx.auth.displayName,
+        isPublic,
+      });
+    }),
+  },
 });
 `,
     "client/index.tsx": photoLibraryClientTemplate(options.framework),
     "shared/types.ts": `export type Photo = {
   id: string;
   title: string;
+  fileId: string;
+  fileName: string;
+  fileType: string;
+  fileSize: number;
+  filePath: string;
+  fileVersion: string;
+  imageUrl: string;
+  publicUrlId: string;
   ownerId: string;
+  ownerName: string;
   isPublic: boolean;
+  status?: "public" | "private";
   createdAt: string;
   updatedAt: string;
 };
@@ -3070,55 +3137,411 @@ function photoLibraryClientTemplate(framework) {
   if (framework === "preact") {
     return `import { render } from "preact";
 import { useState, useEffect } from "preact/hooks";
-import { createHooks } from "sporades/client";
+import { auth, createHooks, files } from "sporades/client";
 
-const { useQuery } = createHooks({ useState, useEffect });
+const { useAuth, useQuery, useMutation } = createHooks({ useState, useEffect });
 
 function App() {
+  const session = useAuth();
   const publicPhotos = useQuery("publicPhotos");
-  const photos = publicPhotos.data ?? [];
+  const personalPhotos = useQuery("personalPhotos");
+  const recordPhoto = useMutation("recordPhoto");
+  const updatePhotoIsPublic = useMutation("updatePhotoIsPublic");
+  const updatePhotoImageUrl = useMutation("updatePhotoImageUrl");
+  const updatePhotoPublicUrlId = useMutation("updatePhotoPublicUrlId");
+  const [title, setTitle] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [publish, setPublish] = useState(false);
+  const [message, setMessage] = useState("");
+  const isGoogleUser = session.auth?.provider === "google";
+
+  async function signInWithGoogle() {
+    setMessage("");
+    const result = await auth.signIn("google");
+    if (result.error) setMessage(result.error.message);
+  }
+
+  async function signOut() {
+    setMessage("");
+    const result = await auth.signOut();
+    if (result.error) setMessage(result.error.message);
+  }
+
+  async function submit(event: Event) {
+    event.preventDefault();
+    if (!selectedFile) return;
+    setMessage("Uploading...");
+    try {
+      const file = await files.upload(selectedFile);
+      const shouldPublish = !session.isAuthenticated() || publish;
+      const publicUrl = shouldPublish ? await files.publicUrl(file.id, { noExpiry: true }) : null;
+      const result = await recordPhoto.run({
+        title,
+        file,
+        isPublic: shouldPublish,
+        publicUrl,
+      });
+      if (result.error) {
+        setMessage(result.error.message);
+        return;
+      }
+      setTitle("");
+      setSelectedFile(null);
+      setPublish(false);
+      setMessage(shouldPublish ? "Photo added to the public gallery." : "Photo saved privately.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Upload failed.");
+    }
+  }
+
+  async function makePublic(photo) {
+    setMessage("");
+    try {
+      const publicUrl = await files.publicUrl(photo.fileId, { noExpiry: true });
+      await updatePhotoImageUrl.run(photo.id, publicUrl.url);
+      await updatePhotoPublicUrlId.run(photo.id, publicUrl.id);
+      await updatePhotoIsPublic.run(photo.id, true);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not publish photo.");
+    }
+  }
+
+  async function makePrivate(photo) {
+    setMessage("");
+    try {
+      if (photo.publicUrlId) await files.revokePublicUrl(photo.publicUrlId);
+      await updatePhotoIsPublic.run(photo.id, false);
+      await updatePhotoImageUrl.run(photo.id, "");
+      await updatePhotoPublicUrlId.run(photo.id, "");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not hide photo.");
+    }
+  }
+
+  const gallery = publicPhotos.data ?? [];
+  const mine = isGoogleUser ? personalPhotos.data ?? [] : [];
 
   return (
-    <main>
-      <h1>Photo Library</h1>
-      <p>Public photos will appear here.</p>
-      <ul>
-        {photos.map((photo) => (
-          <li key={photo.id}>{photo.title}</li>
-        ))}
-      </ul>
+    <main class="shell">
+      <style>{styles}</style>
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">Sporades Storage</p>
+          <h1>Photo Library</h1>
+        </div>
+        <div class="auth-panel">
+          <span>{session.auth?.displayName ?? "Anonymous"}</span>
+          {isGoogleUser ? (
+            <button class="secondary-button" type="button" onClick={signOut}>
+              Sign out
+            </button>
+          ) : (
+            <button type="button" onClick={signInWithGoogle}>
+              Sign in with Google
+            </button>
+          )}
+        </div>
+      </header>
+
+      <form class="uploader" onSubmit={submit}>
+        <input value={title} placeholder="Caption" onInput={(event) => setTitle(event.currentTarget.value)} />
+        <input
+          type="file"
+          accept="image/*"
+          onChange={(event) => setSelectedFile(event.currentTarget.files?.[0] ?? null)}
+        />
+        <label class={session.isAuthenticated() ? "check" : "check muted"}>
+          <input
+            type="checkbox"
+            checked={!session.isAuthenticated() || publish}
+            disabled={!session.isAuthenticated()}
+            onChange={(event) => setPublish(event.currentTarget.checked)}
+          />
+          {session.isAuthenticated() ? "Publish to gallery" : "Anonymous uploads are public"}
+        </label>
+        <button type="submit" disabled={!selectedFile || recordPhoto.loading}>
+          Upload photo
+        </button>
+        {message ? <p class="message">{message}</p> : null}
+      </form>
+
+      <section>
+        <h2>Public gallery</h2>
+        <div class="grid">
+          {gallery.map((photo) => (
+            <article class="photo" key={photo.id}>
+              <img src={photo.imageUrl} alt={photo.title} />
+              <div>
+                <strong>{photo.title}</strong>
+                <span>{photo.ownerName}</span>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      {isGoogleUser ? (
+        <section>
+          <h2>My library</h2>
+          <div class="list">
+            {mine.map((photo) => (
+              <article class="library-row" key={photo.id}>
+                <div>
+                  <strong>{photo.title}</strong>
+                  <span>{photo.status}</span>
+                </div>
+                {photo.isPublic ? (
+                  <button class="secondary-button" type="button" onClick={() => makePrivate(photo)}>
+                    Make private
+                  </button>
+                ) : (
+                  <button type="button" onClick={() => makePublic(photo)}>
+                    Make public
+                  </button>
+                )}
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
     </main>
   );
 }
 
 render(<App />, document.getElementById("app")!);
+
+const styles = \`
+  :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  body { margin: 0; background: #f7f7f2; color: #20231f; }
+  .shell { width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 40px 0; }
+  .topbar { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; margin-bottom: 24px; }
+  .eyebrow { margin: 0 0 6px; color: #35605a; font-size: 0.78rem; font-weight: 800; text-transform: uppercase; }
+  h1 { margin: 0; font-size: clamp(2.2rem, 7vw, 5rem); line-height: 0.95; }
+  h2 { margin: 32px 0 14px; font-size: 1.1rem; }
+  .auth-panel, .uploader, .check, .library-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .auth-panel { justify-content: flex-end; }
+  .uploader { border: 1px solid #d8ddd2; background: white; border-radius: 8px; padding: 14px; }
+  input:not([type="checkbox"]) { min-height: 40px; border: 1px solid #cfd7cc; border-radius: 8px; padding: 0 10px; font: inherit; }
+  button { border: 0; border-radius: 8px; min-height: 40px; padding: 0 14px; background: #245f73; color: white; font: inherit; font-weight: 800; cursor: pointer; }
+  .secondary-button { background: #4d5148; }
+  button:disabled { cursor: not-allowed; opacity: 0.55; }
+  .muted { color: #677065; }
+  .message { flex-basis: 100%; margin: 0; color: #8a3f2d; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+  .photo { border: 1px solid #d8ddd2; border-radius: 8px; background: white; overflow: hidden; }
+  .photo img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: #dfe5dc; }
+  .photo div, .library-row { padding: 12px; }
+  .photo strong, .photo span, .library-row strong, .library-row span { display: block; }
+  .photo span, .library-row span { color: #687266; font-size: 0.9rem; margin-top: 3px; }
+  .list { display: grid; gap: 10px; }
+  .library-row { justify-content: space-between; border: 1px solid #d8ddd2; border-radius: 8px; background: white; }
+  @media (max-width: 700px) { .topbar { display: grid; } .auth-panel { justify-content: flex-start; } }
+\`;
 `;
   }
 
   return `import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
-import { createHooks } from "sporades/client";
+import { auth, createHooks, files } from "sporades/client";
 
-const { useQuery } = createHooks({ useState, useEffect });
+const { useAuth, useQuery, useMutation } = createHooks({ useState, useEffect });
 
 function App() {
+  const session = useAuth();
   const publicPhotos = useQuery("publicPhotos");
-  const photos = publicPhotos.data ?? [];
+  const personalPhotos = useQuery("personalPhotos");
+  const recordPhoto = useMutation("recordPhoto");
+  const updatePhotoIsPublic = useMutation("updatePhotoIsPublic");
+  const updatePhotoImageUrl = useMutation("updatePhotoImageUrl");
+  const updatePhotoPublicUrlId = useMutation("updatePhotoPublicUrlId");
+  const [title, setTitle] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [publish, setPublish] = useState(false);
+  const [message, setMessage] = useState("");
+  const isGoogleUser = session.auth?.provider === "google";
+
+  async function signInWithGoogle() {
+    setMessage("");
+    const result = await auth.signIn("google");
+    if (result.error) setMessage(result.error.message);
+  }
+
+  async function signOut() {
+    setMessage("");
+    const result = await auth.signOut();
+    if (result.error) setMessage(result.error.message);
+  }
+
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selectedFile) return;
+    setMessage("Uploading...");
+    try {
+      const file = await files.upload(selectedFile);
+      const shouldPublish = !session.isAuthenticated() || publish;
+      const publicUrl = shouldPublish ? await files.publicUrl(file.id, { noExpiry: true }) : null;
+      const result = await recordPhoto.run({
+        title,
+        file,
+        isPublic: shouldPublish,
+        publicUrl,
+      });
+      if (result.error) {
+        setMessage(result.error.message);
+        return;
+      }
+      setTitle("");
+      setSelectedFile(null);
+      setPublish(false);
+      setMessage(shouldPublish ? "Photo added to the public gallery." : "Photo saved privately.");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Upload failed.");
+    }
+  }
+
+  async function makePublic(photo) {
+    setMessage("");
+    try {
+      const publicUrl = await files.publicUrl(photo.fileId, { noExpiry: true });
+      await updatePhotoImageUrl.run(photo.id, publicUrl.url);
+      await updatePhotoPublicUrlId.run(photo.id, publicUrl.id);
+      await updatePhotoIsPublic.run(photo.id, true);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not publish photo.");
+    }
+  }
+
+  async function makePrivate(photo) {
+    setMessage("");
+    try {
+      if (photo.publicUrlId) await files.revokePublicUrl(photo.publicUrlId);
+      await updatePhotoIsPublic.run(photo.id, false);
+      await updatePhotoImageUrl.run(photo.id, "");
+      await updatePhotoPublicUrlId.run(photo.id, "");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not hide photo.");
+    }
+  }
+
+  const gallery = publicPhotos.data ?? [];
+  const mine = isGoogleUser ? personalPhotos.data ?? [] : [];
 
   return (
-    <main>
-      <h1>Photo Library</h1>
-      <p>Public photos will appear here.</p>
-      <ul>
-        {photos.map((photo) => (
-          <li key={photo.id}>{photo.title}</li>
-        ))}
-      </ul>
+    <main className="shell">
+      <style>{styles}</style>
+      <header className="topbar">
+        <div>
+          <p className="eyebrow">Sporades Storage</p>
+          <h1>Photo Library</h1>
+        </div>
+        <div className="auth-panel">
+          <span>{session.auth?.displayName ?? "Anonymous"}</span>
+          {isGoogleUser ? (
+            <button className="secondary-button" type="button" onClick={signOut}>
+              Sign out
+            </button>
+          ) : (
+            <button type="button" onClick={signInWithGoogle}>
+              Sign in with Google
+            </button>
+          )}
+        </div>
+      </header>
+
+      <form className="uploader" onSubmit={submit}>
+        <input value={title} placeholder="Caption" onChange={(event) => setTitle(event.currentTarget.value)} />
+        <input
+          type="file"
+          accept="image/*"
+          onChange={(event) => setSelectedFile(event.currentTarget.files?.[0] ?? null)}
+        />
+        <label className={session.isAuthenticated() ? "check" : "check muted"}>
+          <input
+            type="checkbox"
+            checked={!session.isAuthenticated() || publish}
+            disabled={!session.isAuthenticated()}
+            onChange={(event) => setPublish(event.currentTarget.checked)}
+          />
+          {session.isAuthenticated() ? "Publish to gallery" : "Anonymous uploads are public"}
+        </label>
+        <button type="submit" disabled={!selectedFile || recordPhoto.loading}>
+          Upload photo
+        </button>
+        {message ? <p className="message">{message}</p> : null}
+      </form>
+
+      <section>
+        <h2>Public gallery</h2>
+        <div className="grid">
+          {gallery.map((photo) => (
+            <article className="photo" key={photo.id}>
+              <img src={photo.imageUrl} alt={photo.title} />
+              <div>
+                <strong>{photo.title}</strong>
+                <span>{photo.ownerName}</span>
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      {isGoogleUser ? (
+        <section>
+          <h2>My library</h2>
+          <div className="list">
+            {mine.map((photo) => (
+              <article className="library-row" key={photo.id}>
+                <div>
+                  <strong>{photo.title}</strong>
+                  <span>{photo.status}</span>
+                </div>
+                {photo.isPublic ? (
+                  <button className="secondary-button" type="button" onClick={() => makePrivate(photo)}>
+                    Make private
+                  </button>
+                ) : (
+                  <button type="button" onClick={() => makePublic(photo)}>
+                    Make public
+                  </button>
+                )}
+              </article>
+            ))}
+          </div>
+        </section>
+      ) : null}
     </main>
   );
 }
 
 createRoot(document.getElementById("app")!).render(<App />);
+
+const styles = \`
+  :root { color-scheme: light; font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  body { margin: 0; background: #f7f7f2; color: #20231f; }
+  .shell { width: min(1080px, calc(100% - 32px)); margin: 0 auto; padding: 40px 0; }
+  .topbar { display: flex; justify-content: space-between; gap: 24px; align-items: flex-start; margin-bottom: 24px; }
+  .eyebrow { margin: 0 0 6px; color: #35605a; font-size: 0.78rem; font-weight: 800; text-transform: uppercase; }
+  h1 { margin: 0; font-size: clamp(2.2rem, 7vw, 5rem); line-height: 0.95; }
+  h2 { margin: 32px 0 14px; font-size: 1.1rem; }
+  .auth-panel, .uploader, .check, .library-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .auth-panel { justify-content: flex-end; }
+  .uploader { border: 1px solid #d8ddd2; background: white; border-radius: 8px; padding: 14px; }
+  input:not([type="checkbox"]) { min-height: 40px; border: 1px solid #cfd7cc; border-radius: 8px; padding: 0 10px; font: inherit; }
+  button { border: 0; border-radius: 8px; min-height: 40px; padding: 0 14px; background: #245f73; color: white; font: inherit; font-weight: 800; cursor: pointer; }
+  .secondary-button { background: #4d5148; }
+  button:disabled { cursor: not-allowed; opacity: 0.55; }
+  .muted { color: #677065; }
+  .message { flex-basis: 100%; margin: 0; color: #8a3f2d; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+  .photo { border: 1px solid #d8ddd2; border-radius: 8px; background: white; overflow: hidden; }
+  .photo img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: #dfe5dc; }
+  .photo div, .library-row { padding: 12px; }
+  .photo strong, .photo span, .library-row strong, .library-row span { display: block; }
+  .photo span, .library-row span { color: #687266; font-size: 0.9rem; margin-top: 3px; }
+  .list { display: grid; gap: 10px; }
+  .library-row { justify-content: space-between; border: 1px solid #d8ddd2; border-radius: 8px; background: white; }
+  @media (max-width: 700px) { .topbar { display: grid; } .auth-panel { justify-content: flex-start; } }
+\`;
 `;
 }
 

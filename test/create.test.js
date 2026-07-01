@@ -242,24 +242,49 @@ test("sporades create writes a minimal React photo library scaffold when request
 
     const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
     assert.match(serverEntry, /photos: table\(/);
-    assert.match(serverEntry, /title: String\(\)/);
+    assert.match(serverEntry, /fileId: String\(\)/);
+    assert.match(serverEntry, /fileName: String\(\)/);
+    assert.match(serverEntry, /fileType: String\(\)/);
+    assert.match(serverEntry, /fileSize: Number\(\)/);
+    assert.match(serverEntry, /imageUrl: String\(\)/);
+    assert.match(serverEntry, /publicUrlId: String\(\)/);
     assert.match(serverEntry, /ownerId: String\(\)/);
-    assert.match(serverEntry, /isPublic: Boolean\(\)\.default\(true\)/);
+    assert.match(serverEntry, /ownerName: String\(\)/);
+    assert.match(serverEntry, /isPublic: Boolean\(\)\.default\(false\)/);
     assert.match(serverEntry, /publicPhotos: query/);
-    assert.match(serverEntry, /orderBy\("createdAt", "desc"\)/);
-    assert.doesNotMatch(serverEntry, /upload|storage|file/i);
+    assert.match(serverEntry, /\.where\("isPublic", true\)/);
+    assert.match(serverEntry, /personalPhotos: query/);
+    assert.match(serverEntry, /ctx\.auth\.provider !== "google"/);
+    assert.match(serverEntry, /recordPhoto: mutation/);
+    assert.match(serverEntry, /ctx\.auth\.provider === "google" \? Boolean\(input\.isPublic\) : true/);
+    assert.match(serverEntry, /throw new Error\("Public photos need a public file URL\."\)/);
+    assert.match(serverEntry, /ctx\.db\.photos\.insert/);
 
     const clientEntry = await readFile(path.join(projectDir, "client", "index.tsx"), "utf8");
     assert.match(clientEntry, /createRoot/);
-    assert.match(clientEntry, /createHooks/);
+    assert.match(clientEntry, /auth, createHooks, files/);
+    assert.match(clientEntry, /useAuth/);
     assert.match(clientEntry, /useQuery\("publicPhotos"\)/);
+    assert.match(clientEntry, /useQuery\("personalPhotos"\)/);
+    assert.match(clientEntry, /useMutation\("recordPhoto"\)/);
+    assert.match(clientEntry, /useMutation\("updatePhotoIsPublic"\)/);
+    assert.match(clientEntry, /useMutation\("updatePhotoImageUrl"\)/);
+    assert.match(clientEntry, /useMutation\("updatePhotoPublicUrlId"\)/);
+    assert.match(clientEntry, /files\.upload/);
+    assert.match(clientEntry, /files\.publicUrl/);
+    assert.match(clientEntry, /files\.revokePublicUrl/);
+    assert.match(clientEntry, /auth\.signIn\("google"\)/);
+    assert.match(clientEntry, /auth\.signOut\(\)/);
+    assert.match(clientEntry, /Public gallery/);
+    assert.match(clientEntry, /My library/);
     assert.match(clientEntry, /Photo Library/);
-    assert.doesNotMatch(clientEntry, /upload|storage|file/i);
+    assert.doesNotMatch(clientEntry, /better-auth|googleapis|gapi|oauth|accounts\.google/i);
 
     const agents = await readFile(path.join(projectDir, "AGENTS.md"), "utf8");
     assert.match(agents, /Template: photo-library/);
     const readme = await readFile(path.join(projectDir, "README.md"), "utf8");
     assert.match(readme, /A Sporades photo library capsule\./);
+    assert.match(readme, /Uploads use `files\.upload\(\)`/);
 
     const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
     assert.equal(packageJson.dependencies.react, "^19.0.0");
@@ -485,10 +510,19 @@ test("sporades create writes a runnable Preact photo library scaffold", async ()
     const clientEntry = await readFile(path.join(projectDir, "client", "index.tsx"), "utf8");
     assert.match(clientEntry, /from "preact"/);
     assert.match(clientEntry, /from "preact\/hooks"/);
+    assert.match(clientEntry, /auth, createHooks, files/);
     assert.match(clientEntry, /createHooks\(\{ useState, useEffect \}\)/);
+    assert.match(clientEntry, /useAuth/);
     assert.match(clientEntry, /useQuery\("publicPhotos"\)/);
+    assert.match(clientEntry, /useQuery\("personalPhotos"\)/);
+    assert.match(clientEntry, /useMutation\("recordPhoto"\)/);
+    assert.match(clientEntry, /useMutation\("updatePhotoIsPublic"\)/);
+    assert.match(clientEntry, /files\.upload/);
+    assert.match(clientEntry, /files\.publicUrl/);
+    assert.match(clientEntry, /auth\.signIn\("google"\)/);
+    assert.match(clientEntry, /auth\.signOut\(\)/);
     assert.match(clientEntry, /Photo Library/);
-    assert.doesNotMatch(clientEntry, /react-dom|upload|storage|file/i);
+    assert.doesNotMatch(clientEntry, /react-dom|better-auth|googleapis|gapi|oauth|accounts\.google/i);
 
     const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
     assert.equal(packageJson.dependencies.preact, "^10.25.0");

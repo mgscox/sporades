@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 ## What to build
 
@@ -6,14 +6,14 @@ Implement the generated photo library Capsule end to end. The server should mode
 
 ## Acceptance criteria
 
-- [ ] The generated server Capsule stores photo metadata for each uploaded image using File metadata returned by the Storage API Upload call.
-- [ ] Anonymous uploads are made public immediately and appear in the public gallery.
-- [ ] Google-authenticated uploads are private by default unless the uploader chooses public during upload.
-- [ ] Google-authenticated users can toggle their own photos between public and private.
-- [ ] The public gallery query returns only public photos and includes usable image URLs.
-- [ ] The personal library query returns only the current Google-authenticated user's photos and includes a public/private status indicator.
-- [ ] Anonymous users cannot see or use the personal library as an authenticated owner view.
-- [ ] Generated React and Preact clients build without importing auth provider SDKs directly.
+- [x] The generated server Capsule stores photo metadata for each uploaded image using File metadata returned by the Storage API Upload call.
+- [x] Anonymous uploads are made public immediately and appear in the public gallery.
+- [x] Google-authenticated uploads are private by default unless the uploader chooses public during upload.
+- [x] Google-authenticated users can toggle their own photos between public and private.
+- [x] The public gallery query returns only public photos and includes usable image URLs.
+- [x] The personal library query returns only the current Google-authenticated user's photos and includes a public/private status indicator.
+- [x] Anonymous users cannot see or use the personal library as an authenticated owner view.
+- [x] Generated React and Preact clients build without importing auth provider SDKs directly.
 
 ## Blocked by
 

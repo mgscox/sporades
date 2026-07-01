@@ -196,6 +196,24 @@ async function installFakeReact(projectDir) {
   );
 }
 
+async function installFakePreact(projectDir) {
+  await writePackage(
+    projectDir,
+    "preact",
+    {
+      ".": "./index.js",
+      "./hooks": "./hooks.js",
+      "./jsx-runtime": "./jsx-runtime.js",
+    },
+    {
+      "index.js": "export function render() {}\n",
+      "hooks.js": "export function useEffect() {}\nexport function useState(value) { return [value, () => {}]; }\n",
+      "jsx-runtime.js":
+        "export const Fragment = Symbol.for('preact.fragment');\nexport function jsx(type, props) { return { type, props }; }\nexport const jsxs = jsx;\n",
+    },
+  );
+}
+
 async function writePackage(projectDir, packageName, exports, files) {
   const packageDir = path.join(projectDir, "node_modules", packageName);
   await mkdir(packageDir, { recursive: true });
@@ -343,6 +361,318 @@ test("sporades dev bundles and serves the default blank React capsule", async ()
       assert.match(html, /<div id="app"><\/div>/);
     } finally {
       child.kill("SIGTERM");
+    }
+  });
+});
+
+test("sporades dev bundles and serves a scaffolded React photo library capsule", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(
+      ["create", "photos-island", "--template", "photo-library", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "photos-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
+      const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
+      assert.match(serverBundle, /recordPhoto/);
+      assert.match(serverBundle, /personalPhotos/);
+      assert.match(clientBundle, /Photo Library/);
+      assert.match(clientBundle, /upload\(/);
+      assert.match(clientBundle, /Sign in with Google/);
+      assert.doesNotMatch(clientBundle, /better-auth|googleapis|gapi|accounts\.google/);
+
+      const rootResponse = await fetch(started.data.url);
+      assert.equal(rootResponse.status, 200);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev bundles and serves a scaffolded Preact photo library capsule", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(
+      ["create", "photos-island", "--template", "photo-library", "--framework", "preact", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "photos-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakePreact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
+      assert.match(clientBundle, /Photo Library/);
+      assert.match(clientBundle, /My library/);
+      assert.match(clientBundle, /Sign in with Google/);
+      assert.doesNotMatch(clientBundle, /react-dom|better-auth|googleapis|gapi|accounts\.google/);
+
+      const rootResponse = await fetch(started.data.url);
+      assert.equal(rootResponse.status, 200);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("a scaffolded photo library stores uploads, public gallery rows, and Google-owned private library rows", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(
+      ["create", "photos-island", "--template", "photo-library", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "photos-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = {
+      mode: "google",
+      google: {
+        clientIdEnv: "GOOGLE_CLIENT_ID",
+        clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n");
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let anonymousSocket;
+    let googleSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      async function waitForPhotoMessage(socket, label, predicate) {
+        try {
+          return await waitForSocketMessage(socket, predicate);
+        } catch (error) {
+          throw new Error(`${label}: ${error.message}`);
+        }
+      }
+
+      async function uploadImage(socket, id, name, body) {
+        socket.send(
+          JSON.stringify({
+            id: `${id}-upload-url`,
+            type: "file.uploadUrl",
+            file: { name, type: "image/png", size: body.length },
+          }),
+        );
+        const uploadUrl = await waitForPhotoMessage(socket, `${id} upload URL`, (message) => message.id === `${id}-upload-url`);
+        assert.equal(uploadUrl.error, null);
+        const uploadResponse = await fetch(new URL(uploadUrl.data.uploadUrl, started.data.url), {
+          method: uploadUrl.data.method,
+          body,
+        });
+        assert.equal(uploadResponse.status, 200);
+        const uploaded = await uploadResponse.json();
+        assert.equal(uploaded.ok, true);
+        return uploaded.data.file;
+      }
+
+      anonymousSocket = await openSocket(started.data.url);
+      anonymousSocket.send(JSON.stringify({ id: "anon-auth", type: "auth.get" }));
+      const anonymousAuth = await waitForPhotoMessage(anonymousSocket, "anonymous auth", (message) => message.id === "anon-auth");
+      assert.equal(anonymousAuth.data.auth.provider, "anonymous");
+
+      anonymousSocket.send(JSON.stringify({ id: "anon-public", type: "query.subscribe", query: "publicPhotos" }));
+      assert.deepEqual((await waitForPhotoMessage(anonymousSocket, "anonymous public initial", (message) => message.id === "anon-public")).data, []);
+      anonymousSocket.send(JSON.stringify({ id: "anon-personal", type: "query.subscribe", query: "personalPhotos" }));
+      assert.deepEqual((await waitForPhotoMessage(anonymousSocket, "anonymous personal initial", (message) => message.id === "anon-personal")).data, []);
+
+      const anonymousFile = await uploadImage(anonymousSocket, "anon", "shore.png", "anonymous-image");
+      anonymousSocket.send(
+        JSON.stringify({
+          id: "anon-url",
+          type: "file.publicUrl.create",
+          fileId: anonymousFile.id,
+          options: { noExpiry: true },
+        }),
+      );
+      const anonymousPublicUrl = await waitForPhotoMessage(anonymousSocket, "anonymous public URL", (message) => message.id === "anon-url");
+      assert.equal(anonymousPublicUrl.error, null);
+      anonymousSocket.send(
+        JSON.stringify({
+          id: "anon-record",
+          type: "mutation.run",
+          mutation: "recordPhoto",
+          args: [{ title: "Shoreline", file: anonymousFile, isPublic: false, publicUrl: anonymousPublicUrl.data.publicUrl }],
+        }),
+      );
+      assert.equal((await waitForPhotoMessage(anonymousSocket, "anonymous record", (message) => message.id === "anon-record")).error, null);
+      const anonymousGallery = await waitForPhotoMessage(
+        anonymousSocket,
+        "anonymous gallery refresh",
+        (message) => message.id === "anon-public" && message.data.length === 1,
+      );
+      assert.deepEqual(
+        anonymousGallery.data.map((photo) => ({
+          title: photo.title,
+          isPublic: photo.isPublic,
+          imageUrl: photo.imageUrl,
+          fileId: photo.fileId,
+        })),
+        [
+          {
+            title: "Shoreline",
+            isPublic: true,
+            imageUrl: anonymousPublicUrl.data.publicUrl.url,
+            fileId: anonymousFile.id,
+          },
+        ],
+      );
+
+      const simulated = await runCli(
+        [
+          "auth",
+          "as",
+          "google",
+          "--email",
+          "mira@example.com",
+          "--display-name",
+          "Mira",
+          "--json",
+        ],
+        { cwd: projectDir },
+      );
+      assert.equal(simulated.code, 0, simulated.stderr);
+      const googleToken = JSON.parse(simulated.stdout).data.localStorage.value;
+      googleSocket = await openSocket(started.data.url, googleToken);
+      googleSocket.send(JSON.stringify({ id: "google-auth", type: "auth.get" }));
+      const googleAuth = await waitForPhotoMessage(googleSocket, "google auth", (message) => message.id === "google-auth");
+      assert.equal(googleAuth.data.auth.provider, "google");
+
+      googleSocket.send(JSON.stringify({ id: "google-public", type: "query.subscribe", query: "publicPhotos" }));
+      const googleInitialGallery = await waitForPhotoMessage(googleSocket, "google gallery initial", (message) => message.id === "google-public");
+      assert.deepEqual(googleInitialGallery.data.map((photo) => photo.title), ["Shoreline"]);
+      googleSocket.send(JSON.stringify({ id: "google-personal", type: "query.subscribe", query: "personalPhotos" }));
+      assert.deepEqual((await waitForPhotoMessage(googleSocket, "google personal initial", (message) => message.id === "google-personal")).data, []);
+
+      const googleFile = await uploadImage(googleSocket, "google", "cove.png", "google-image");
+      googleSocket.send(
+        JSON.stringify({
+          id: "google-record",
+          type: "mutation.run",
+          mutation: "recordPhoto",
+          args: [{ title: "Hidden cove", file: googleFile, isPublic: false, publicUrl: null }],
+        }),
+      );
+      assert.equal((await waitForPhotoMessage(googleSocket, "google record", (message) => message.id === "google-record")).error, null);
+      const privateLibrary = await waitForPhotoMessage(
+        googleSocket,
+        "google private library refresh",
+        (message) => message.id === "google-personal" && message.data.length === 1,
+      );
+      const googlePhoto = privateLibrary.data[0];
+      assert.equal(googlePhoto.title, "Hidden cove");
+      assert.equal(googlePhoto.status, "private");
+      assert.equal(googlePhoto.isPublic, false);
+      assert.equal(googlePhoto.imageUrl, "");
+
+      googleSocket.send(
+        JSON.stringify({
+          id: "google-url",
+          type: "file.publicUrl.create",
+          fileId: googleFile.id,
+          options: { noExpiry: true },
+        }),
+      );
+      const googlePublicUrl = await waitForPhotoMessage(googleSocket, "google public URL", (message) => message.id === "google-url");
+      assert.equal(googlePublicUrl.error, null);
+      googleSocket.send(
+        JSON.stringify({
+          id: "publish-url",
+          type: "mutation.run",
+          mutation: "updatePhotoImageUrl",
+          args: [googlePhoto.id, googlePublicUrl.data.publicUrl.url],
+        }),
+      );
+      assert.equal((await waitForPhotoMessage(googleSocket, "publish image URL", (message) => message.id === "publish-url")).error, null);
+      googleSocket.send(
+        JSON.stringify({
+          id: "publish-url-id",
+          type: "mutation.run",
+          mutation: "updatePhotoPublicUrlId",
+          args: [googlePhoto.id, googlePublicUrl.data.publicUrl.id],
+        }),
+      );
+      assert.equal((await waitForPhotoMessage(googleSocket, "publish public URL id", (message) => message.id === "publish-url-id")).error, null);
+      googleSocket.send(
+        JSON.stringify({
+          id: "publish",
+          type: "mutation.run",
+          mutation: "updatePhotoIsPublic",
+          args: [googlePhoto.id, true],
+        }),
+      );
+      assert.equal((await waitForPhotoMessage(googleSocket, "publish visibility", (message) => message.id === "publish")).error, null);
+      const publicLibrary = await waitForPhotoMessage(
+        googleSocket,
+        "google public library refresh",
+        (message) => message.id === "google-personal" && message.data.some((photo) => photo.status === "public"),
+      );
+      assert.equal(publicLibrary.data[0].status, "public");
+      googleSocket.send(JSON.stringify({ id: "google-public-after-publish", type: "query.subscribe", query: "publicPhotos" }));
+      const expandedGallery = await waitForPhotoMessage(
+        googleSocket,
+        "google expanded gallery refresh",
+        (message) => message.id === "google-public-after-publish",
+      );
+      assert.deepEqual(expandedGallery.data.map((photo) => photo.title).toSorted(), ["Hidden cove", "Shoreline"]);
+
+      googleSocket.send(
+        JSON.stringify({
+          id: "hide",
+          type: "mutation.run",
+          mutation: "updatePhotoIsPublic",
+          args: [googlePhoto.id, false],
+        }),
+      );
+      assert.equal((await waitForPhotoMessage(googleSocket, "hide visibility", (message) => message.id === "hide")).error, null);
+      const hiddenLibrary = await waitForPhotoMessage(
+        googleSocket,
+        "google hidden library refresh",
+        (message) => message.id === "google-personal" && message.data.some((photo) => photo.status === "private"),
+      );
+      assert.equal(hiddenLibrary.data[0].status, "private");
+      googleSocket.send(JSON.stringify({ id: "google-public-after-hide", type: "query.subscribe", query: "publicPhotos" }));
+      const reducedGallery = await waitForPhotoMessage(
+        googleSocket,
+        "google reduced gallery refresh",
+        (message) => message.id === "google-public-after-hide",
+      );
+      assert.deepEqual(reducedGallery.data.map((photo) => photo.title), ["Shoreline"]);
+    } finally {
+      anonymousSocket?.close();
+      googleSocket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
     }
   });
 });
