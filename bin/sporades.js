@@ -56,6 +56,11 @@ main().catch((error) => {
 async function main() {
   const [command, ...args] = process.argv.slice(2);
 
+  if (command === "--help" || command === "-h") {
+    printHelp();
+    return;
+  }
+
   if (command === "create") {
     const options = parseCreateArgs(args);
     await createProject(options);
@@ -101,6 +106,24 @@ async function main() {
   {
     throw commandError(`Unknown command: ${command ?? ""}`.trim(), "Use `sporades create <name>`.");
   }
+}
+
+function printHelp() {
+  process.stdout.write(`Usage: sporades <command> [options]
+
+Commands:
+  create <name>  Scaffold a new Capsule
+  dev            Start a local Dev session
+  auth           Manage local auth configuration and simulation
+  deploy         Start a local Container session
+  host           Manage Host profiles and Hosted Capsules
+  logs           Print Dev session logs
+  db             Inspect the Dev session database
+
+Options:
+  --help, -h     Show this help
+  --json         Write JSON output when supported by the command
+`);
 }
 
 function parseCreateArgs(args) {

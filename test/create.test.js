@@ -40,6 +40,30 @@ function runCli(args, options = {}) {
   });
 }
 
+test("sporades --help prints top-level CLI help", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["--help"], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    assert.match(result.stdout, /^Usage: sporades <command> \[options\]/);
+    assert.match(result.stdout, /Commands:/);
+    assert.match(result.stdout, /create <name>/);
+    assert.match(result.stdout, /--help, -h/);
+  });
+});
+
+test("sporades -h prints top-level CLI help", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["-h"], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    assert.match(result.stdout, /^Usage: sporades <command> \[options\]/);
+    assert.match(result.stdout, /--help, -h/);
+  });
+});
+
 test("sporades create writes a runnable React blank scaffold by default", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(["create", "blank-island", "--no-install", "--no-git", "--json"], {
