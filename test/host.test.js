@@ -1549,6 +1549,7 @@ test("sporades host helper registers Hosted Capsules with registry state and una
         certificate: null,
         key: null,
       },
+      log: { file: path.join(remoteRoot, "caddy", "logs", "access.log") },
     };
 
     const register = await runHostHelper(request, { cwd: dir, env: caddy.env });

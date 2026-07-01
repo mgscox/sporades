@@ -668,12 +668,14 @@ function normaliseRegistration(request) {
   const capsuleDirectory = path.join(remoteRoot, "hosts", domain, "capsules", subname);
   const routeFile = path.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
   const routeTls = normaliseRegistrationTls(request);
+  const accessLog = request.registration?.route?.log?.file ?? defaultCaddyAccessLogPath(remoteRoot);
   const route = {
     hostname: `${subname}.${domain}`,
     target: "hosted-capsule-unavailable",
     statusCode: 503,
     routeFile,
     tls: routeTls,
+    log: { file: accessLog },
   };
   return {
     subname,
