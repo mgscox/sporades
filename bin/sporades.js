@@ -32,8 +32,9 @@ const DEFAULT_HOST_REMOTE_ROOT = "/srv/sporades";
 const DEFAULT_HOST_TLS_MODE = "automatic";
 const HOST_TLS_MODES = new Set(["automatic", "cloudflare-origin"]);
 const RESERVED_CAPSULE_SUBNAMES = new Set(["www", "api", "admin", "root", "host"]);
-const DEFAULT_HOST_LOG_LINES = 100;
+const DEFAULT_HOST_LOG_LINES = 200;
 const MAX_HOST_LOG_LINES = 10000;
+const HOST_LOG_SOURCES = new Set(["http", "stdout", "stderr"]);
 const HOSTED_CAPSULE_DOCKER_IMAGE = "node:22-alpine";
 const HOSTED_CAPSULE_DOCKER_NETWORK = "sporades-hosted-capsules";
 const HOSTED_CAPSULE_GRACE_CHECK_MS = 500;
@@ -383,8 +384,8 @@ function parseHostArgs(args) {
       subname = readFlagValue(rest, ++index, "--subname");
       continue;
     }
-    if (arg === "--lines") {
-      lines = readHostLogLineCount(readFlagValue(rest, ++index, "--lines"));
+    if (arg === "--lines" || arg === "-n") {
+      lines = readHostLogLineCount(readFlagValue(rest, ++index, arg));
       continue;
     }
     if (arg === "--restart") {
@@ -525,13 +526,18 @@ function parseHostArgs(args) {
   }
 
   if (subcommand === "logs") {
-    if (positional.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host logs --host <alias> --lines <n> --json`.");
+    const [source = "http", ...extra] = positional;
+    if (extra.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host logs [http|stdout|stderr] --host <alias> --subname <capsule-subname> -n <lines> --json`.");
     }
     if (hostAlias) {
       validateHostAlias(hostAlias);
     }
-    return { subcommand, hostAlias, lines, json, projectDir: process.cwd() };
+    validateHostLogSource(source);
+    if (subname) {
+      validateCapsuleSubname(subname);
+    }
+    return { subcommand, source, hostAlias, subname, lines, json, projectDir: process.cwd() };
   }
 
   if (subcommand === "invoke") {
@@ -686,6 +692,15 @@ function readHostLogLineCount(value) {
     );
   }
   return lines;
+}
+
+function validateHostLogSource(source) {
+  if (!HOST_LOG_SOURCES.has(source)) {
+    throw commandError(
+      "Invalid Host log source.",
+      "Use `sporades host logs [http|stdout|stderr] --host <alias> --subname <capsule-subname> -n <lines>`.",
+    );
+  }
 }
 
 function readFlagValue(args, index, flag) {
@@ -1402,13 +1417,19 @@ async function manageHost(options) {
 
   if (options.subcommand === "logs") {
     const config = await readHostConfig();
-    const resolved = resolveHostProfile(config, options.hostAlias);
+    const source = options.source ?? "http";
+    const target =
+      source === "http"
+        ? { ...resolveHostProfile(config, options.hostAlias), subname: options.subname ?? null }
+        : await resolveHostPushTarget(config, options);
+    const resolved = source === "http" ? target : { alias: target.alias, profile: target.profile };
     const result = invokeRemoteHostHelper({
       alias: resolved.alias,
       profile: resolved.profile,
       action: "host.logs",
+      subname: target.subname,
       logs: {
-        source: "caddy-combined",
+        source,
         lines: options.lines,
       },
       projectDir: options.projectDir,
@@ -2183,6 +2204,7 @@ function createHostBootstrapRequest(profile) {
 function createHostRegistrationRequest(alias, profile, subname) {
   const bootstrap = createHostBootstrapRequest(profile);
   const capsuleDirectory = posixJoin(bootstrap.directories.capsules, subname);
+  const capsuleLog = posixJoin(capsuleDirectory, "logs", "http.log");
   return {
     subname,
     domain: profile.domain,
@@ -2193,6 +2215,7 @@ function createHostRegistrationRequest(alias, profile, subname) {
       capsule: capsuleDirectory,
       releases: posixJoin(capsuleDirectory, "releases"),
       data: posixJoin(capsuleDirectory, "data"),
+      logs: posixJoin(capsuleDirectory, "logs"),
     },
     route: {
       hostname: `${subname}.${profile.domain}`,
@@ -2200,6 +2223,7 @@ function createHostRegistrationRequest(alias, profile, subname) {
       statusCode: 503,
       routeFile: posixJoin(bootstrap.directories.caddyHosts, profile.domain, `${subname}.caddy`),
       tls: bootstrap.tls,
+      log: { file: capsuleLog },
     },
     bootstrap: {
       command: `sporades host bootstrap --host ${alias}`,

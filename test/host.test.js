@@ -221,6 +221,11 @@ if (args[0] === "stats") {
   process.stdout.write(process.env.FAKE_DOCKER_STATS_JSON || "{}");
   process.exit(Number(process.env.FAKE_DOCKER_STATS_STATUS || "0"));
 }
+if (args[0] === "logs") {
+  process.stdout.write(process.env.FAKE_DOCKER_LOGS_STDOUT || "");
+  process.stderr.write(process.env.FAKE_DOCKER_LOGS_STDERR || "");
+  process.exit(Number(process.env.FAKE_DOCKER_LOGS_STATUS || "0"));
+}
 if (args[0] === "ps") {
   process.stdout.write(process.env.FAKE_DOCKER_PS_JSONL || "");
   process.exit(Number(process.env.FAKE_DOCKER_PS_STATUS || "0"));
@@ -1634,6 +1639,7 @@ test("sporades host helper registers Hosted Capsules with registry state and una
           capsule: path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes"),
           releases: path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes", "releases"),
           data: path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes", "data"),
+          logs: path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes", "logs"),
         },
         route: {
           hostname: "team-notes.capsules.example.dev",
@@ -1660,7 +1666,7 @@ test("sporades host helper registers Hosted Capsules with registry state and una
         certificate: null,
         key: null,
       },
-      log: { file: path.join(remoteRoot, "caddy", "logs", "access.log") },
+      log: { file: path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes", "logs", "http.log") },
     };
 
     const register = await runHostHelper(request, { cwd: dir, env: caddy.env });
@@ -1691,9 +1697,11 @@ test("sporades host helper registers Hosted Capsules with registry state and una
     assert.equal(record.updatedAt, record.createdAt);
     assert.equal((await stat(request.registration.directories.releases)).isDirectory(), true);
     assert.equal((await stat(request.registration.directories.data)).isDirectory(), true);
+    assert.equal((await stat(request.registration.directories.logs)).isDirectory(), true);
     const routeContents = await readFile(expectedRoute.routeFile, "utf8");
     assert.match(routeContents, /team-notes\.capsules\.example\.dev/);
     assert.match(routeContents, /respond "Hosted Capsule unavailable" 503/);
+    assert.match(routeContents, /hosts\/capsules\.example\.dev\/capsules\/team-notes\/logs\/http\.log/);
     assert.doesNotMatch(routeContents, /418|caller-controlled|tls /);
     await assert.rejects(readFile(request.registration.route.routeFile, "utf8"), { code: "ENOENT" });
     assert.deepEqual(
@@ -1892,6 +1900,9 @@ process.exit(0);
         certificate: null,
         key: null,
       },
+      log: {
+        file: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/logs/http.log",
+      },
     });
 
     const [sshCall] = await readJsonl(fakeSsh.logPath);
@@ -1917,6 +1928,7 @@ process.exit(0);
           capsule: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes",
           releases: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/releases",
           data: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data",
+          logs: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/logs",
         },
         route: {
           hostname: "team-notes.capsules.example.dev",
@@ -1928,6 +1940,9 @@ process.exit(0);
             directory: "/opt/sporades/hosts/capsules.example.dev/tls",
             certificate: null,
             key: null,
+          },
+          log: {
+            file: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/logs/http.log",
           },
         },
         bootstrap: {
@@ -2416,6 +2431,9 @@ test("sporades host helper starts the current release in Docker and routes throu
     const runCall = calls[2];
     assert.equal(runCall.args[runCall.args.indexOf("--name") + 1], "sporades-capsules-example-dev-team-notes");
     assert.equal(runCall.args[runCall.args.indexOf("--network") + 1], "sporades-hosted-capsules");
+    assert.equal(runCall.args[runCall.args.indexOf("--log-driver") + 1], "json-file");
+    assert(runCall.args.includes("max-size=10m"));
+    assert(runCall.args.includes("max-file=5"));
     assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");
     assert(runCall.args.includes("--label"));
     assert(runCall.args.includes("com.sporades.release-id=20260630T221500Z-feedface"));
@@ -2426,7 +2444,8 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert.deepEqual(runCall.args.slice(runCall.args.indexOf("node:22-alpine")), ["node:22-alpine", "node", "/app/server.mjs"]);
     assert.match(calls[4].args.join(" "), /NetworkSettings\.Ports/);
     const routeContents = await readFile(routeFile, "utf8");
-    assert.match(routeContents, /log \{\n    output file .*remote-root\/caddy\/logs\/access\.log\n  \}/);
+    assert.match(routeContents, /log \{\n    output file .*remote-root\/hosts\/capsules\.example\.dev\/capsules\/team-notes\/logs\/http\.log \{/);
+    assert.match(routeContents, /roll_size 10MiB/);
     assert.match(routeContents, /reverse_proxy 127\.0\.0\.1:49153/);
   });
 });
@@ -2466,7 +2485,8 @@ test("sporades host helper stops containers and routes Hosted Capsules to unavai
       ],
     );
     const routeContents = await readFile(routeFile, "utf8");
-    assert.match(routeContents, /log \{\n    output file .*remote-root\/caddy\/logs\/access\.log\n  \}/);
+    assert.match(routeContents, /log \{\n    output file .*remote-root\/hosts\/capsules\.example\.dev\/capsules\/team-notes\/logs\/http\.log \{/);
+    assert.match(routeContents, /roll_keep 5/);
     assert.match(routeContents, /respond "Hosted Capsule unavailable" 503/);
     assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).status, "stopped");
   });
@@ -3020,7 +3040,48 @@ test("sporades host helper reads recent Caddy access log entries from the manage
       ok: true,
       data: {
         lineCount: 2,
+        source: "http",
         entries: ["2026/01/01 00:00:02 GET /one", "2026/01/01 00:00:03 GET /two"],
+      },
+      error: null,
+    });
+  });
+});
+
+test("sporades host helper reads capsule-scoped HTTP logs from the Hosted Capsule log file", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleLog = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes", "logs", "http.log");
+    await mkdir(path.dirname(capsuleLog), { recursive: true });
+    await writeFile(
+      capsuleLog,
+      [
+        '{"request":{"host":"team-notes.capsules.example.dev","uri":"/old"},"status":200}',
+        '{"request":{"host":"team-notes.capsules.example.dev","uri":"/one"},"status":200}',
+        '{"request":{"host":"team-notes.capsules.example.dev","uri":"/two"},"status":404}',
+      ].join("\n") + "\n",
+    );
+
+    const logs = await runHostHelper(
+      {
+        action: "host.logs",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        logs: { source: "http", lines: 2 },
+      },
+      { cwd: dir },
+    );
+
+    assert.equal(logs.code, 0, logs.stderr);
+    assert.deepEqual(JSON.parse(logs.stdout), {
+      ok: true,
+      data: {
+        lineCount: 2,
+        source: "http",
+        entries: [
+          '{"request":{"host":"team-notes.capsules.example.dev","uri":"/one"},"status":200}',
+          '{"request":{"host":"team-notes.capsules.example.dev","uri":"/two"},"status":404}',
+        ],
       },
       error: null,
     });
@@ -3050,12 +3111,71 @@ test("sporades host helper falls back to Caddy journald logs when the managed lo
       ok: true,
       data: {
         lineCount: 50,
+        source: "http",
         entries: ["caddy service started", "handled request for team-notes.capsules.example.dev"],
       },
       error: null,
     });
     assert.deepEqual((await journalctl.calls()).map((call) => call.args), [
       ["-u", "caddy", "-n", "50", "--no-pager", "-o", "cat"],
+    ]);
+  });
+});
+
+test("sporades host helper reads Hosted Capsule stdout and stderr from Docker logs", async () => {
+  await withTempDir(async (dir) => {
+    const docker = await installFakeDocker(path.join(dir, "docker"), {
+      env: {
+        FAKE_DOCKER_LOGS_STDOUT: "stdout old\nstdout one\nstdout two\n",
+        FAKE_DOCKER_LOGS_STDERR: "stderr old\nstderr one\nstderr two\n",
+      },
+    });
+
+    const stdout = await runHostHelper(
+      {
+        action: "host.logs",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: path.join(dir, "remote-root") },
+        capsule: { subname: "team-notes" },
+        logs: { source: "stdout", lines: 2 },
+      },
+      { cwd: dir, env: docker.env },
+    );
+    assert.equal(stdout.code, 0, stdout.stderr);
+    assert.deepEqual(JSON.parse(stdout.stdout), {
+      ok: true,
+      data: {
+        lineCount: 2,
+        source: "stdout",
+        container: "sporades-capsules-example-dev-team-notes",
+        entries: ["stdout one", "stdout two"],
+      },
+      error: null,
+    });
+
+    const stderr = await runHostHelper(
+      {
+        action: "host.logs",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot: path.join(dir, "remote-root") },
+        capsule: { subname: "team-notes" },
+        logs: { source: "stderr", lines: 2 },
+      },
+      { cwd: dir, env: docker.env },
+    );
+    assert.equal(stderr.code, 0, stderr.stderr);
+    assert.deepEqual(JSON.parse(stderr.stdout), {
+      ok: true,
+      data: {
+        lineCount: 2,
+        source: "stderr",
+        container: "sporades-capsules-example-dev-team-notes",
+        entries: ["stderr one", "stderr two"],
+      },
+      error: null,
+    });
+
+    assert.deepEqual((await docker.calls()).map((call) => call.args), [
+      ["logs", "--tail", "2", "sporades-capsules-example-dev-team-notes"],
+      ["logs", "--tail", "2", "sporades-capsules-example-dev-team-notes"],
     ]);
   });
 });
@@ -3524,7 +3644,7 @@ test("sporades host helper fails start when Docker does not report a usable loop
       [
         ["stop", "sporades-capsules-example-dev-team-notes"],
         ["rm", "sporades-capsules-example-dev-team-notes"],
-        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "client.js")}:/app/client.js:ro`, "--volume", `${path.join(capsuleDir, "current", "index.html")}:/app/index.html:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data`, "--workdir", "/app", "--env", "PORT=4000", "--publish", "127.0.0.1::4000", "node:22-alpine", "node", "/app/server.mjs"],
+        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "client.js")}:/app/client.js:ro`, "--volume", `${path.join(capsuleDir, "current", "index.html")}:/app/index.html:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data`, "--workdir", "/app", "--env", "PORT=4000", "--publish", "127.0.0.1::4000", "node:22-alpine", "node", "/app/server.mjs"],
         ["inspect", "-f", "{{.State.Running}}", "sporades-capsules-example-dev-team-notes"],
         ["inspect", "-f", "{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostIp}}:{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostPort}}", "sporades-capsules-example-dev-team-notes"],
         ["stop", "sporades-capsules-example-dev-team-notes"],
@@ -5437,13 +5557,13 @@ process.exit(0);
   });
 });
 
-test("sporades host logs retrieves default Caddy combined log lines as JSON", async () => {
+test("sporades host logs retrieves default HTTP log lines as JSON", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       dir,
       `const request = JSON.parse(stdin);
-if (request.action !== "host.logs" || request.logs?.source !== "caddy-combined") {
+if (request.action !== "host.logs" || request.logs?.source !== "http") {
   process.stdout.write(JSON.stringify({
     ok: false,
     data: null,
@@ -5455,6 +5575,7 @@ process.stdout.write(JSON.stringify({
   ok: true,
   data: {
     lineCount: request.logs.lines,
+    source: request.logs.source,
     entries: ["203.0.113.9 - - [01/Jan/2026:00:00:01 +0000] \\"GET / HTTP/1.1\\" 200 12"]
   },
   error: null
@@ -5484,7 +5605,8 @@ process.exit(0);
     assert.deepEqual(JSON.parse(logs.stdout), {
       ok: true,
       data: {
-        lineCount: 100,
+        lineCount: 200,
+        source: "http",
         entries: ['203.0.113.9 - - [01/Jan/2026:00:00:01 +0000] "GET / HTTP/1.1" 200 12'],
       },
       error: null,
@@ -5502,14 +5624,14 @@ process.exit(0);
       },
       capsule: null,
       logs: {
-        source: "caddy-combined",
-        lines: 100,
+        source: "http",
+        lines: 200,
       },
     });
   });
 });
 
-test("sporades host logs prints only recent Caddy combined log lines in plain output", async () => {
+test("sporades host logs prints only recent HTTP log lines in plain output", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
@@ -5542,7 +5664,7 @@ process.exit(0);
     );
     assert.equal(addHost.code, 0, addHost.stderr);
 
-    const logs = await runCli(["host", "logs", "--host", "work", "--lines", "2"], {
+    const logs = await runCli(["host", "logs", "http", "--host", "work", "-n", "2"], {
       cwd: projectDir,
       env: { ...hostEnv(configDir), ...fakeSsh.env },
     });
@@ -5554,6 +5676,124 @@ process.exit(0);
 
     const [sshCall] = await readJsonl(fakeSsh.logPath);
     assert.equal(JSON.parse(sshCall.stdin).logs.lines, 2);
+    assert.equal(JSON.parse(sshCall.stdin).logs.source, "http");
+  });
+});
+
+test("sporades host logs can request HTTP logs for one Hosted Capsule", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    lineCount: request.logs.lines,
+    source: request.logs.source,
+    entries: [request.capsule.subname + " http"]
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "todo-island");
+
+    const addHost = await runCli(
+      ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+      { cwd: projectDir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+
+    const logs = await runCli(["host", "logs", "http", "--host", "personal", "--subname", "team-notes", "-n", "4", "--json"], {
+      cwd: projectDir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(logs.code, 0, logs.stderr);
+    assert.deepEqual(JSON.parse(logs.stdout).data, {
+      lineCount: 4,
+      source: "http",
+      entries: ["team-notes http"],
+    });
+
+    const [sshCall] = await readJsonl(fakeSsh.logPath);
+    assert.equal(JSON.parse(sshCall.stdin).logs.source, "http");
+    assert.equal(JSON.parse(sshCall.stdin).capsule.subname, "team-notes");
+  });
+});
+
+test("sporades host logs requests capsule stdout and stderr using a Hosted Capsule binding", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    lineCount: request.logs.lines,
+    source: request.logs.source,
+    container: "sporades-capsules-example-dev-team-notes",
+    entries: [request.logs.source + " one", request.capsule.subname]
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "todo-island");
+
+    const addHost = await runCli(
+      ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+      { cwd: projectDir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+    const bind = await runCli(["host", "bind", "team-notes", "--host", "personal", "--json"], {
+      cwd: projectDir,
+      env: hostEnv(configDir),
+    });
+    assert.equal(bind.code, 0, bind.stderr);
+
+    const stdout = await runCli(["host", "logs", "stdout", "-n", "7", "--json"], {
+      cwd: projectDir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(stdout.code, 0, stdout.stderr);
+    assert.deepEqual(JSON.parse(stdout.stdout).data, {
+      lineCount: 7,
+      source: "stdout",
+      container: "sporades-capsules-example-dev-team-notes",
+      entries: ["stdout one", "team-notes"],
+    });
+
+    const stderr = await runCli(["host", "logs", "stderr", "--host", "personal", "--subname", "team-notes", "--lines", "3", "--json"], {
+      cwd: projectDir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(stderr.code, 0, stderr.stderr);
+    assert.deepEqual(JSON.parse(stderr.stdout).data, {
+      lineCount: 3,
+      source: "stderr",
+      container: "sporades-capsules-example-dev-team-notes",
+      entries: ["stderr one", "team-notes"],
+    });
+
+    const calls = await readJsonl(fakeSsh.logPath);
+    assert.equal(JSON.parse(calls[0].stdin).logs.source, "stdout");
+    assert.equal(JSON.parse(calls[0].stdin).capsule.subname, "team-notes");
+    assert.equal(JSON.parse(calls[1].stdin).logs.source, "stderr");
+    assert.equal(JSON.parse(calls[1].stdin).capsule.subname, "team-notes");
   });
 });
 

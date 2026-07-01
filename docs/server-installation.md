@@ -222,6 +222,13 @@ Capsule in one command:
 sporades host push --host personal --subname team-notes --restart --json
 ```
 
+On macOS, set `COPYFILE_DISABLE=1` when pushing if tar includes AppleDouble
+`._*` metadata files; those files are not valid Hosted Capsule runtime files.
+
+```sh
+COPYFILE_DISABLE=1 sporades host push --host personal --subname team-notes --restart --json
+```
+
 Rollback is explicit: repush the release you want to become current.
 
 ### Opt-in Real Host Smoke Tests
@@ -284,12 +291,18 @@ Inventory and diagnostics:
 ```sh
 sporades host list --host personal --json
 sporades host stats team-notes --host personal --json
-sporades host logs --host personal --lines 200 --json
+sporades host logs --host personal -n 200 --json
+sporades host logs http --host personal --subname team-notes -n 200 --json
+sporades host logs stdout --host personal --subname team-notes -n 200 --json
+sporades host logs stderr --host personal --subname team-notes -n 200 --json
 ```
 
 `host stats` returns normalized Docker stats for one Hosted Capsule. `host logs`
-returns recent Caddy combined log entries for the Host server; it does not read
-Capsule app logs or Docker logs.
+defaults to `http`, returning recent Caddy access log entries for the Host
+server. Add a Hosted Capsule subname to `http` to read that Capsule's separate
+Caddy access log. Use `stdout` or `stderr` with a Hosted Capsule subname to read
+recent Docker `json-file` container logs, including logs for stopped containers
+that still exist. `-n`/`--lines` caps returned lines and defaults to 200.
 
 Plain output is available by omitting `--json`, but automation should prefer
 structured JSON.

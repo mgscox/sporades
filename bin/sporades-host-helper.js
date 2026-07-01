@@ -7,7 +7,7 @@ import path from "node:path";
 const HOSTED_CAPSULE_DOCKER_IMAGE = "node:22-alpine";
 const HOSTED_CAPSULE_DOCKER_NETWORK = "sporades-hosted-capsules";
 const HOSTED_CAPSULE_GRACE_CHECK_MS = 500;
-const DEFAULT_HOST_LOG_LINES = 100;
+const DEFAULT_HOST_LOG_LINES = 200;
 const MAX_HOST_LOG_LINES = 10000;
 
 main().catch((error) => {
@@ -130,6 +130,7 @@ async function registerCapsule(request) {
     await mkdir(path.dirname(registration.registryRecord), { recursive: true });
     await mkdir(registration.directories.releases, { recursive: true });
     await mkdir(registration.directories.data, { recursive: true });
+    await mkdir(registration.directories.logs, { recursive: true });
     await writeUnavailableRoute(registration.lifecycle);
     await writeRegistryRecordAtomic(registration.registryRecord, createRegistrationRecord(registration));
   });
@@ -243,6 +244,7 @@ async function installRelease(request) {
   const paths = canonicalReleasePaths(request);
   await mkdir(paths.releases, { recursive: true });
   await mkdir(paths.data, { recursive: true });
+  await mkdir(paths.logs, { recursive: true });
 
   const tempReleaseDirectory = `${paths.release}.tmp-${process.pid}`;
   const tempCurrentLink = `${paths.currentLink}.tmp-${process.pid}`;
@@ -504,15 +506,25 @@ async function statsCapsule(request) {
 async function logsHost(request) {
   validateHostLogsRequest(request);
   const logs = normaliseHostLogs(request);
+  if (logs.source === "stdout" || logs.source === "stderr") {
+    const entries = readDockerStreamLogs(logs);
+    writeEnvelope({ ok: true, data: { lineCount: logs.lines, source: logs.source, container: logs.container.name, entries }, error: null });
+    return;
+  }
+
   const fileEntries = await readManagedCaddyAccessLog(logs);
   if (fileEntries) {
-    writeEnvelope({ ok: true, data: { lineCount: logs.lines, entries: fileEntries }, error: null });
+    writeEnvelope({ ok: true, data: { lineCount: logs.lines, source: "http", entries: fileEntries }, error: null });
     return;
+  }
+
+  if (logs.capsuleScoped) {
+    throw unavailableCapsuleHttpLogsError(logs);
   }
 
   const journalEntries = readCaddyJournalLogs(logs);
   if (journalEntries) {
-    writeEnvelope({ ok: true, data: { lineCount: logs.lines, entries: journalEntries }, error: null });
+    writeEnvelope({ ok: true, data: { lineCount: logs.lines, source: "http", entries: journalEntries }, error: null });
     return;
   }
 
@@ -634,6 +646,7 @@ function canonicalReleasePaths(request) {
     releases,
     release: request.release?.id ? path.join(releases, request.release.id) : null,
     data: path.join(capsule, "data"),
+    logs: path.join(capsule, "logs"),
     currentLink: path.join(capsule, "current"),
   };
 }
@@ -648,7 +661,7 @@ function normaliseLifecycle(request) {
   const containerName = provided.container?.name ?? createHostedContainerName(domain, subname);
   const routeFile = provided.routes?.running?.routeFile ?? path.join(request.host.remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
   const currentLink = provided.currentLink ?? paths.currentLink;
-  const accessLog = provided.routes?.accessLog ?? provided.accessLog ?? defaultCaddyAccessLogPath(request.host.remoteRoot);
+  const accessLog = provided.routes?.accessLog ?? provided.accessLog ?? defaultCapsuleHttpLogPath(request.host.remoteRoot, domain, subname);
   return {
     hostedUrl,
     remoteCapsuleId,
@@ -657,6 +670,7 @@ function normaliseLifecycle(request) {
       capsule: paths.capsule,
       releases: paths.releases,
       data: paths.data,
+      logs: paths.logs,
     },
     remoteRoot: request.host.remoteRoot,
     mounts: provided.mounts ?? {
@@ -856,7 +870,7 @@ function normaliseRegistration(request) {
   const capsuleDirectory = path.join(remoteRoot, "hosts", domain, "capsules", subname);
   const routeFile = path.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
   const routeTls = normaliseRegistrationTls(request);
-  const accessLog = request.registration?.route?.log?.file ?? defaultCaddyAccessLogPath(remoteRoot);
+  const accessLog = request.registration?.route?.log?.file ?? defaultCapsuleHttpLogPath(remoteRoot, domain, subname);
   const route = {
     hostname: `${subname}.${domain}`,
     target: "hosted-capsule-unavailable",
@@ -875,6 +889,7 @@ function normaliseRegistration(request) {
       capsule: capsuleDirectory,
       releases: path.join(capsuleDirectory, "releases"),
       data: path.join(capsuleDirectory, "data"),
+      logs: path.join(capsuleDirectory, "logs"),
     },
     route,
     lifecycle: {
@@ -1007,11 +1022,24 @@ function normaliseHostLogs(request) {
   const provided = request.logs ?? {};
   const lines = provided.lines ?? DEFAULT_HOST_LOG_LINES;
   const explicitFile = Boolean(provided.file ?? provided.path ?? provided.accessLog?.file);
+  const source = provided.source === "caddy-combined" ? "http" : (provided.source ?? "http");
+  const subname = request.capsule?.subname;
+  const containerName = provided.container?.name ?? (subname ? createHostedContainerName(request.host.domain, subname) : null);
+  const capsuleScoped = source === "http" && typeof subname === "string" && subname.length > 0;
   return {
-    source: provided.source ?? "caddy-combined",
+    source,
     lines,
-    file: provided.file ?? provided.path ?? provided.accessLog?.file ?? defaultCaddyAccessLogPath(request.host.remoteRoot),
+    file:
+      provided.file ??
+      provided.path ??
+      provided.accessLog?.file ??
+      (capsuleScoped
+        ? defaultCapsuleHttpLogPath(request.host.remoteRoot, request.host.domain, subname)
+        : defaultCaddyAccessLogPath(request.host.remoteRoot)),
     explicitFile,
+    capsuleScoped,
+    subname,
+    container: containerName ? { name: containerName } : null,
   };
 }
 
@@ -1129,6 +1157,30 @@ async function provisionCaddyAccessLog(request, bootstrap) {
     owner: caddyUser.name,
     writableByService: true,
   };
+}
+
+async function provisionRouteLogFile(route) {
+  const logFile = route.log?.file;
+  if (!logFile) {
+    return;
+  }
+  const logDirectory = path.dirname(logFile);
+  await mkdir(logDirectory, { recursive: true });
+  await writeFile(logFile, "", { flag: "a" });
+  await chmod(logDirectory, 0o750);
+  await chmod(logFile, 0o640);
+
+  const caddyUser = resolveCaddyServiceUser();
+  if (!caddyUser) {
+    return;
+  }
+  const chown = spawnSync("chown", [`${caddyUser.uid}:${caddyUser.gid}`, logDirectory, logFile], { encoding: "utf8" });
+  if (chown.error || chown.status !== 0) {
+    throw helperError(
+      "Failed to provision the Hosted Capsule HTTP log for the Caddy service user.",
+      `Ensure the Host helper runs with permission to chown ${logDirectory} and ${logFile}, then retry the Hosted Capsule command.`,
+    );
+  }
 }
 
 function resolveCaddyServiceUser() {
@@ -1304,6 +1356,12 @@ async function dockerRunArgs(lifecycle, releaseId) {
     lifecycle.container.name,
     "--network",
     lifecycle.container.network,
+    "--log-driver",
+    "json-file",
+    "--log-opt",
+    "max-size=10m",
+    "--log-opt",
+    "max-file=5",
   ];
   const labels = {
     ...lifecycle.container.labels,
@@ -1396,6 +1454,7 @@ function loopbackRunningRoute(route, publishedPort) {
 }
 
 async function writeRunningRoute(lifecycle, route = lifecycle.routes.running) {
+  await provisionRouteLogFile(route);
   await applyManagedRoute(
     lifecycle,
     route.routeFile,
@@ -1405,6 +1464,7 @@ async function writeRunningRoute(lifecycle, route = lifecycle.routes.running) {
 
 async function writeUnavailableRoute(lifecycle) {
   const route = lifecycle.routes.unavailable;
+  await provisionRouteLogFile(route);
   await applyManagedRoute(
     lifecycle,
     route.routeFile,
@@ -1429,7 +1489,7 @@ function renderRouteLogBlock(log) {
   if (!log?.file) {
     return "";
   }
-  return `  log {\n    output file ${log.file}\n  }\n`;
+  return `  log {\n    output file ${log.file} {\n      roll_size 10MiB\n      roll_keep 5\n      roll_keep_for 720h\n    }\n  }\n`;
 }
 
 async function applyManagedRoute(lifecycle, routeFile, contents) {
@@ -1740,6 +1800,19 @@ function readCaddyJournalLogs(logs) {
   return lastLogEntries(result.stdout ?? "", logs.lines);
 }
 
+function readDockerStreamLogs(logs) {
+  const result = spawnSync("docker", ["logs", "--tail", String(logs.lines), logs.container.name], {
+    encoding: "utf8",
+  });
+  if (result.error || result.status !== 0) {
+    throw helperError(
+      "Hosted Capsule container logs are unavailable.",
+      `Check that Docker container ${logs.container.name} still exists, then retry \`sporades host logs ${logs.source}\`.`,
+    );
+  }
+  return lastLogEntries(logs.source === "stdout" ? result.stdout : result.stderr, logs.lines);
+}
+
 function lastLogEntries(contents, lines) {
   return String(contents ?? "")
     .split(/\r?\n/)
@@ -1751,6 +1824,13 @@ function unavailableCaddyLogsError(request) {
   return helperError(
     "Host server Caddy combined logs are unavailable.",
     `Run \`sporades host bootstrap --host ${request.host.alias}\` and check Caddy on the Host server.`,
+  );
+}
+
+function unavailableCapsuleHttpLogsError(logs) {
+  return helperError(
+    "Hosted Capsule HTTP logs are unavailable.",
+    `Check that ${logs.file} exists and is readable, then retry \`sporades host logs http --subname ${logs.subname}\`.`,
   );
 }
 
@@ -1769,6 +1849,10 @@ function createHostedContainerName(domain, subname) {
 
 function defaultCaddyAccessLogPath(remoteRoot) {
   return path.join(remoteRoot, "caddy", "logs", "access.log");
+}
+
+function defaultCapsuleHttpLogPath(remoteRoot, domain, subname) {
+  return path.join(remoteRoot, "hosts", domain, "capsules", subname, "logs", "http.log");
 }
 
 function validateReleaseArchive(request) {
@@ -1899,10 +1983,16 @@ function validateHostLogsRequest(request) {
     throw helperError("Invalid Host logs request.", "Update the Sporades CLI and retry `sporades host logs`.");
   }
   const source = request.logs?.source ?? "caddy-combined";
-  if (source !== "caddy-combined") {
+  if (!["http", "caddy-combined", "stdout", "stderr"].includes(source)) {
     throw helperError(
       "Invalid Host log source.",
-      "Use the default Caddy combined log source for `sporades host logs`.",
+      "Use `http`, `stdout`, or `stderr` for `sporades host logs`.",
+    );
+  }
+  if ((source === "stdout" || source === "stderr") && (typeof request.capsule?.subname !== "string" || request.capsule.subname.length === 0)) {
+    throw helperError(
+      "Missing Capsule subname for container logs.",
+      "Pass `--subname <capsule-subname>` or run the command from a project with a Hosted Capsule binding.",
     );
   }
   const lines = request.logs?.lines ?? DEFAULT_HOST_LOG_LINES;
