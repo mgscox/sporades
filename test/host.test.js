@@ -403,6 +403,7 @@ test("sporades host stores Host profiles outside projects and resolves the curre
           domain: "capsules.example.dev",
           scheme: "https",
           remoteRoot: "/srv/sporades",
+          tls: { mode: "automatic" },
         },
       },
       error: null,
@@ -438,6 +439,7 @@ test("sporades host stores Host profiles outside projects and resolves the curre
       domain: "islands.other.test",
       scheme: "https",
       remoteRoot: "/srv/sporades",
+      tls: { mode: "automatic" },
     });
     await assert.rejects(readFile(path.join(projectDir, ".sporades", "hosts.json"), "utf8"), { code: "ENOENT" });
   });
@@ -713,9 +715,10 @@ process.exit(0);
     assert.equal(output.ok, true);
     assert.equal(output.error, null);
     assert.deepEqual(output.data.tls, {
+      mode: "automatic",
       directory: "/opt/sporades/hosts/capsules.example.dev/tls",
-      certificate: "/opt/sporades/hosts/capsules.example.dev/tls/origin.crt",
-      key: "/opt/sporades/hosts/capsules.example.dev/tls/origin.key",
+      certificate: null,
+      key: null,
     });
     assert.equal(output.data.caddy.managedInclude, "/opt/sporades/caddy/sporades-hosted-domains.caddy");
     assert.equal(output.data.caddy.globalConfigReplaced, false);
@@ -762,9 +765,10 @@ process.exit(0);
         },
         domainDirectory: "/opt/sporades/hosts/capsules.example.dev",
         tls: {
+          mode: "automatic",
           directory: "/opt/sporades/hosts/capsules.example.dev/tls",
-          certificate: "/opt/sporades/hosts/capsules.example.dev/tls/origin.crt",
-          key: "/opt/sporades/hosts/capsules.example.dev/tls/origin.key",
+          certificate: null,
+          key: null,
         },
         network: "sporades-hosted-capsules",
         caddy: {
@@ -801,7 +805,20 @@ process.exit(0);
     const projectDir = path.join(dir, "todo-island");
 
     const addHost = await runCli(
-      ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+      [
+        "host",
+        "add",
+        "personal",
+        "--server",
+        "root@example.test",
+        "--domain",
+        "capsules.example.dev",
+        "--remote-root",
+        "/opt/sporades",
+        "--tls",
+        "cloudflare-origin",
+        "--json",
+      ],
       { cwd: projectDir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
     );
     assert.equal(addHost.code, 0, addHost.stderr);
@@ -899,6 +916,12 @@ process.exit(0);
       target: "hosted-capsule-unavailable",
       statusCode: 503,
       routeFile: "/opt/sporades/caddy/hosts/capsules.example.dev/team-notes.caddy",
+      tls: {
+        mode: "automatic",
+        directory: "/opt/sporades/hosts/capsules.example.dev/tls",
+        certificate: null,
+        key: null,
+      },
     });
 
     const [sshCall] = await readJsonl(fakeSsh.logPath);
@@ -930,13 +953,20 @@ process.exit(0);
           target: "hosted-capsule-unavailable",
           statusCode: 503,
           routeFile: "/opt/sporades/caddy/hosts/capsules.example.dev/team-notes.caddy",
+          tls: {
+            mode: "automatic",
+            directory: "/opt/sporades/hosts/capsules.example.dev/tls",
+            certificate: null,
+            key: null,
+          },
         },
         bootstrap: {
           command: "sporades host bootstrap --host personal",
           tls: {
+            mode: "automatic",
             directory: "/opt/sporades/hosts/capsules.example.dev/tls",
-            certificate: "/opt/sporades/hosts/capsules.example.dev/tls/origin.crt",
-            key: "/opt/sporades/hosts/capsules.example.dev/tls/origin.key",
+            certificate: null,
+            key: null,
           },
         },
       },
@@ -1617,11 +1647,68 @@ test("sporades host helper reloads Caddy after lifecycle route changes", async (
     assert.deepEqual(
       (await caddy.calls()).map((call) => call.args),
       [
-        ["validate", "--config", `${routeFile}.tmp`],
-        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile")],
-        ["validate", "--config", `${routeFile}.tmp`],
-        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile")],
+        ["validate", "--config", `${routeFile}.tmp`, "--adapter", "caddyfile"],
+        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile"), "--adapter", "caddyfile"],
+        ["validate", "--config", `${routeFile}.tmp`, "--adapter", "caddyfile"],
+        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile"), "--adapter", "caddyfile"],
       ],
+    );
+  });
+});
+
+test("sporades host helper writes explicit Cloudflare origin TLS routes when requested", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    const routeFile = path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "team-notes.caddy");
+    await mkdir(releaseDir, { recursive: true });
+    await writeFile(path.join(releaseDir, "server.mjs"), "export default 'server';\n");
+    await writeFile(path.join(releaseDir, "client.js"), "console.log('client');\n");
+    await writeFile(path.join(releaseDir, "index.html"), "<div></div>\n");
+    await writeFile(path.join(releaseDir, "sporades.json"), "{}\n");
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
+    await symlink(releaseDir, path.join(capsuleDir, "current"));
+    const docker = await installFakeDocker(path.join(dir, "docker"));
+    const caddy = await installFakeCaddy(path.join(dir, "caddy"));
+    const env = {
+      ...docker.env,
+      ...caddy.env,
+      PATH: `${caddy.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+
+    const start = await runHostHelper(
+      {
+        action: "capsule.start",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        lifecycle: {
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          container: { name: "sporades-capsules-example-dev-team-notes" },
+          routes: {
+            running: {
+              hostname: "team-notes.capsules.example.dev",
+              target: "container",
+              containerName: "sporades-capsules-example-dev-team-notes",
+              port: 4000,
+              routeFile,
+              tls: {
+                mode: "cloudflare-origin",
+                certificate: path.join(remoteRoot, "hosts", "capsules.example.dev", "tls", "origin.crt"),
+                key: path.join(remoteRoot, "hosts", "capsules.example.dev", "tls", "origin.key"),
+              },
+            },
+          },
+        },
+      },
+      { cwd: dir, env },
+    );
+    assert.equal(start.code, 0, start.stderr);
+    assert.match(
+      await readFile(routeFile, "utf8"),
+      /tls .*hosts\/capsules\.example\.dev\/tls\/origin\.crt .*hosts\/capsules\.example\.dev\/tls\/origin\.key/,
     );
   });
 });
@@ -1669,7 +1756,7 @@ test("sporades host helper preserves previous route when Caddy validation fails"
       },
     });
     assert.equal(await readFile(routeFile, "utf8"), "team-notes.capsules.example.dev {\n  reverse_proxy old-container:4000\n}\n");
-    assert.deepEqual((await caddy.calls()).map((call) => call.args), [["validate", "--config", `${routeFile}.tmp`]]);
+    assert.deepEqual((await caddy.calls()).map((call) => call.args), [["validate", "--config", `${routeFile}.tmp`, "--adapter", "caddyfile"]]);
   });
 });
 
@@ -1719,9 +1806,9 @@ test("sporades host helper reloads the restored route after candidate reload fai
     assert.deepEqual(
       (await caddy.calls()).map((call) => call.args),
       [
-        ["validate", "--config", `${routeFile}.tmp`],
-        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile")],
-        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile")],
+        ["validate", "--config", `${routeFile}.tmp`, "--adapter", "caddyfile"],
+        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile"), "--adapter", "caddyfile"],
+        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile"), "--adapter", "caddyfile"],
       ],
     );
   });
@@ -1773,9 +1860,9 @@ test("sporades host helper reports candidate and rollback reload failures", asyn
     assert.deepEqual(
       (await caddy.calls()).map((call) => call.args),
       [
-        ["validate", "--config", `${routeFile}.tmp`],
-        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile")],
-        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile")],
+        ["validate", "--config", `${routeFile}.tmp`, "--adapter", "caddyfile"],
+        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile"), "--adapter", "caddyfile"],
+        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile"), "--adapter", "caddyfile"],
       ],
     );
   });
@@ -2569,7 +2656,20 @@ process.exit(0);
     assert.equal(createResult.code, 0, createResult.stderr);
     const projectDir = path.join(dir, "todo-island");
     const addHost = await runCli(
-      ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+      [
+        "host",
+        "add",
+        "personal",
+        "--server",
+        "root@example.test",
+        "--domain",
+        "capsules.example.dev",
+        "--remote-root",
+        "/opt/sporades",
+        "--tls",
+        "cloudflare-origin",
+        "--json",
+      ],
       { cwd: projectDir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
     );
     assert.equal(addHost.code, 0, addHost.stderr);

@@ -29,6 +29,8 @@ const REMOTE_BINDING_FILE = path.join(".sporades", "remote-binding.json");
 const DEV_REBUILD_DEBOUNCE_MS = 100;
 const DEFAULT_HOST_SCHEME = "https";
 const DEFAULT_HOST_REMOTE_ROOT = "/srv/sporades";
+const DEFAULT_HOST_TLS_MODE = "automatic";
+const HOST_TLS_MODES = new Set(["automatic", "cloudflare-origin"]);
 const RESERVED_CAPSULE_SUBNAMES = new Set(["www", "api", "admin", "root", "host"]);
 const DEFAULT_HOST_LOG_LINES = 100;
 const MAX_HOST_LOG_LINES = 10000;
@@ -321,6 +323,7 @@ function parseHostArgs(args) {
   let server = null;
   let domain = null;
   let remoteRoot = DEFAULT_HOST_REMOTE_ROOT;
+  let tlsMode = DEFAULT_HOST_TLS_MODE;
   let subname = null;
   let lines = DEFAULT_HOST_LOG_LINES;
   let restart = false;
@@ -347,6 +350,10 @@ function parseHostArgs(args) {
     }
     if (arg === "--remote-root") {
       remoteRoot = readFlagValue(rest, ++index, "--remote-root");
+      continue;
+    }
+    if (arg === "--tls") {
+      tlsMode = readFlagValue(rest, ++index, "--tls");
       continue;
     }
     if (arg === "--subname") {
@@ -390,7 +397,8 @@ function parseHostArgs(args) {
     }
     validateHostedDomain(domain);
     validateHostRemoteRoot(remoteRoot);
-    return { subcommand, alias, server, domain, remoteRoot, json, projectDir: process.cwd() };
+    validateHostTlsMode(tlsMode);
+    return { subcommand, alias, server, domain, remoteRoot, tlsMode, json, projectDir: process.cwd() };
   }
 
   if (subcommand === "use") {
@@ -1057,6 +1065,7 @@ async function manageHost(options) {
       domain: options.domain,
       scheme: DEFAULT_HOST_SCHEME,
       remoteRoot: options.remoteRoot,
+      tls: { mode: options.tlsMode },
     };
     config.profiles[options.alias] = profile;
     await writeHostConfig(config);
@@ -1716,9 +1725,29 @@ function hostConfigPath() {
 
 function normaliseHostConfig(value) {
   return {
-    profiles: value && typeof value.profiles === "object" && value.profiles !== null ? value.profiles : {},
+    profiles: normaliseHostProfiles(value?.profiles),
     currentHostAlias: typeof value?.currentHostAlias === "string" ? value.currentHostAlias : null,
   };
+}
+
+function normaliseHostProfiles(value) {
+  if (!value || typeof value !== "object") {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([alias, profile]) => [
+      alias,
+      {
+        ...profile,
+        tls: normaliseHostTls(profile?.tls),
+      },
+    ]),
+  );
+}
+
+function normaliseHostTls(value) {
+  const mode = typeof value?.mode === "string" && HOST_TLS_MODES.has(value.mode) ? value.mode : DEFAULT_HOST_TLS_MODE;
+  return { mode };
 }
 
 function resolveHostProfile(config, explicitAlias) {
@@ -1924,6 +1953,7 @@ function createHostLifecycleRequest(alias, profile, subname) {
         containerName,
         port: 4000,
         routeFile: registration.route.routeFile,
+        tls: registration.route.tls,
       },
       unavailable: registration.route,
     },
@@ -2038,6 +2068,7 @@ function createHostBootstrapRequest(profile) {
   const hostsDirectory = posixJoin(profile.remoteRoot, "hosts");
   const domainDirectory = posixJoin(profile.remoteRoot, "hosts", profile.domain);
   const tlsDirectory = posixJoin(domainDirectory, "tls");
+  const tlsMode = normaliseHostTls(profile.tls).mode;
   return {
     substrate: {
       packages: ["docker", "caddy"],
@@ -2056,9 +2087,10 @@ function createHostBootstrapRequest(profile) {
     },
     domainDirectory,
     tls: {
+      mode: tlsMode,
       directory: tlsDirectory,
-      certificate: posixJoin(tlsDirectory, "origin.crt"),
-      key: posixJoin(tlsDirectory, "origin.key"),
+      certificate: tlsMode === "cloudflare-origin" ? posixJoin(tlsDirectory, "origin.crt") : null,
+      key: tlsMode === "cloudflare-origin" ? posixJoin(tlsDirectory, "origin.key") : null,
     },
     network: "sporades-hosted-capsules",
     caddy: {
@@ -2087,6 +2119,7 @@ function createHostRegistrationRequest(alias, profile, subname) {
       target: "hosted-capsule-unavailable",
       statusCode: 503,
       routeFile: posixJoin(bootstrap.directories.caddyHosts, profile.domain, `${subname}.caddy`),
+      tls: bootstrap.tls,
     },
     bootstrap: {
       command: `sporades host bootstrap --host ${alias}`,
@@ -2198,6 +2231,15 @@ function validateHostRemoteRoot(remoteRoot) {
     segments.every((segment) => segment !== "." && segment !== ".." && /^[A-Za-z0-9._-]+$/.test(segment));
   if (!valid) {
     throw commandError("Invalid Host remote root.", "Pass an absolute POSIX path such as `/srv/sporades`.");
+  }
+}
+
+function validateHostTlsMode(tlsMode) {
+  if (!HOST_TLS_MODES.has(tlsMode)) {
+    throw commandError(
+      "Invalid Host TLS mode.",
+      "Use `--tls automatic` for Caddy-managed certificates or `--tls cloudflare-origin` for preinstalled Cloudflare origin certificates.",
+    );
   }
 }
 

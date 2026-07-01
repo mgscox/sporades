@@ -41,7 +41,7 @@ An SSH-reachable machine that runs the remote Sporades hosting stack: Docker, re
 _Avoid_: host, server, box
 
 **Host profile**:
-A local CLI configuration entry that names a Host server plus a Hosted domain, scheme, and remote root. Used so commands can target a configured hosting destination without repeating connection details.
+A local CLI configuration entry that names a Host server plus a Hosted domain, scheme, remote root, and TLS mode. Used so commands can target a configured hosting destination without repeating connection details.
 _Avoid_: host, remote config, environment
 
 **Hosted domain**:
@@ -68,12 +68,16 @@ _Avoid_: wildcard route, dynamic route, proxy rule
 TLS handled by Cloudflare for a Hosted domain before traffic reaches the Host server.
 _Avoid_: app TLS, Caddy TLS
 
+**Automatic TLS**:
+Caddy-managed certificate issuance and renewal for a Hosted domain route. This is the default Host profile TLS mode.
+_Avoid_: no TLS, self-signed TLS
+
 **Origin certificate**:
-The Cloudflare-issued server certificate presented by the Host server to Cloudflare for a Hosted domain.
+The Cloudflare-issued server certificate presented by the Host server to Cloudflare for a Hosted domain when the Host profile uses `cloudflare-origin` TLS mode.
 _Avoid_: LetsEncrypt certificate, public certificate
 
 **Hosted domain TLS directory**:
-The domain-scoped Host server directory that contains the preinstalled Cloudflare origin certificate and key for a Hosted domain.
+The domain-scoped Host server directory that contains optional preinstalled Cloudflare origin certificate material for a Hosted domain.
 _Avoid_: cert folder, SSL directory
 
 ## Server runtime

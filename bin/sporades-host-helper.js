@@ -523,7 +523,7 @@ async function writeRunningRoute(lifecycle) {
   await applyManagedRoute(
     lifecycle,
     route.routeFile,
-    `${route.hostname} {\n  reverse_proxy ${route.containerName}:${route.port ?? 4000}\n}\n`,
+    renderRoute(route, `reverse_proxy ${route.containerName}:${route.port ?? 4000}`),
   );
 }
 
@@ -532,8 +532,20 @@ async function writeUnavailableRoute(lifecycle) {
   await applyManagedRoute(
     lifecycle,
     route.routeFile,
-    `${route.hostname} {\n  respond "Hosted Capsule unavailable" ${route.statusCode ?? 503}\n}\n`,
+    renderRoute(route, `respond "Hosted Capsule unavailable" ${route.statusCode ?? 503}`),
   );
+}
+
+function renderRoute(route, handlerLine) {
+  const tlsLine = renderRouteTlsLine(route.tls);
+  return `${route.hostname} {\n${tlsLine}  ${handlerLine}\n}\n`;
+}
+
+function renderRouteTlsLine(tls) {
+  if (tls?.mode !== "cloudflare-origin") {
+    return "";
+  }
+  return `  tls ${tls.certificate} ${tls.key}\n`;
 }
 
 async function applyManagedRoute(lifecycle, routeFile, contents) {
@@ -578,7 +590,7 @@ async function applyManagedRoute(lifecycle, routeFile, contents) {
 }
 
 function validateCaddyRoute(routeFile) {
-  const result = spawnSync("caddy", ["validate", "--config", routeFile], { encoding: "utf8" });
+  const result = spawnSync("caddy", ["validate", "--config", routeFile, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw helperError(
       "Failed to validate Hosted Capsule route.",
@@ -589,7 +601,7 @@ function validateCaddyRoute(routeFile) {
 
 function reloadCaddy(lifecycle) {
   const configPath = path.join(lifecycle.remoteRoot, "caddy", "Caddyfile");
-  const result = spawnSync("caddy", ["reload", "--config", configPath], { encoding: "utf8" });
+  const result = spawnSync("caddy", ["reload", "--config", configPath, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw helperError(
       "Failed to apply Hosted Capsule route.",
