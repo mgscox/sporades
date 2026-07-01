@@ -335,6 +335,24 @@ async function readHostBootstrapSmokeEnv() {
   };
 }
 
+async function readHostRegisterSmokeEnv() {
+  const smoke = await readHostBootstrapSmokeEnv();
+  if (!smoke) {
+    return null;
+  }
+  const dotEnv = await readDotEnv(path.join(repoRoot, ".env"));
+  const values = { ...dotEnv, ...process.env };
+  const subname = values.SPORADES_HOST_SMOKE_SUBNAME;
+  const template = values.SPORADES_HOST_SMOKE_TEMPLATE || "todo";
+  if (!subname) {
+    return null;
+  }
+  if (template !== "todo" && template !== "guestbook") {
+    throw new Error("SPORADES_HOST_SMOKE_TEMPLATE must be todo or guestbook.");
+  }
+  return { ...smoke, subname, template };
+}
+
 async function readDotEnv(filePath) {
   let contents;
   try {
@@ -939,6 +957,60 @@ test("sporades host bootstrap can run against an opt-in real SSH Host server", a
   });
 });
 
+test("sporades host register can run against an opt-in real SSH Host server and returns the unavailable response", async (t) => {
+  const smoke = await readHostRegisterSmokeEnv();
+  if (!smoke) {
+    t.skip("Set SPORADES_HOST_SMOKE_SSH_TARGET, SPORADES_HOST_SMOKE_DOMAIN, SPORADES_HOST_SMOKE_REMOTE_ROOT, and SPORADES_HOST_SMOKE_SUBNAME to run this smoke test.");
+    return;
+  }
+
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const projectName = `${smoke.template}-host-smoke`;
+    const createResult = await runCli(["create", projectName, "--template", smoke.template, "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, projectName);
+
+    const addHost = await runCli(
+      [
+        "host",
+        "add",
+        smoke.alias,
+        "--server",
+        smoke.server,
+        "--domain",
+        smoke.domain,
+        "--remote-root",
+        smoke.remoteRoot,
+        "--tls",
+        smoke.tls,
+        "--json",
+      ],
+      { cwd: projectDir, env: hostEnv(configDir) },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+
+    const register = await runCli(["host", "register", smoke.subname, "--host", smoke.alias, "--json"], {
+      cwd: projectDir,
+      env: hostEnv(configDir),
+    });
+
+    assert.equal(register.code, 0, `${register.stderr}\n${register.stdout}`);
+    const output = JSON.parse(register.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.capsule.subname, smoke.subname);
+    assert.equal(output.data.capsule.domain, smoke.domain);
+    assert.equal(output.data.capsule.remoteCapsuleId, `${smoke.domain}/${smoke.subname}`);
+    assert.equal(output.data.binding.hostedUrl, output.data.capsule.hostedUrl);
+
+    const response = await fetch(output.data.capsule.hostedUrl);
+    assert.equal(response.status, 503);
+    assert.match(await response.text(), /Hosted Capsule unavailable/);
+  });
+});
+
 test("sporades host helper bootstraps a Hosted domain idempotently without deleting Capsule state", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -1160,6 +1232,208 @@ test("sporades host helper reports Docker and Caddy bootstrap substrate failures
     assert.equal(caddyFailureOutput.ok, false);
     assert.equal(caddyFailureOutput.error.message, "Failed to validate the Sporades Caddy bootstrap configuration.");
     assert.match(caddyFailureOutput.error.hint, /Check Caddy on the Host server/);
+  });
+});
+
+test("sporades host helper registers Hosted Capsules with registry state and unavailable routes", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const caddy = await installFakeCaddy(dir);
+    await mkdir(path.join(remoteRoot, "caddy", "hosts"), { recursive: true });
+    await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import ./sporades-hosted-domains.caddy\n");
+    await writeFile(path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev.caddy"), "import ./capsules.example.dev/*.caddy\n");
+    const request = {
+      action: "capsule.register",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot,
+      },
+      capsule: {
+        subname: "team-notes",
+      },
+      registration: {
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        registryRecord: path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json"),
+        directories: {
+          capsule: path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes"),
+          releases: path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes", "releases"),
+          data: path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes", "data"),
+        },
+        route: {
+          hostname: "team-notes.capsules.example.dev",
+          target: "hosted-capsule-unavailable",
+          statusCode: 418,
+          routeFile: path.join(dir, "caller-controlled", "team-notes.caddy"),
+          tls: {
+            mode: "cloudflare-origin",
+            directory: path.join(dir, "caller-controlled", "tls"),
+            certificate: path.join(dir, "caller-controlled", "tls", "origin.crt"),
+            key: path.join(dir, "caller-controlled", "tls", "origin.key"),
+          },
+        },
+      },
+    };
+    const expectedRoute = {
+      hostname: "team-notes.capsules.example.dev",
+      target: "hosted-capsule-unavailable",
+      statusCode: 503,
+      routeFile: path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "team-notes.caddy"),
+      tls: {
+        mode: "automatic",
+        directory: path.join(remoteRoot, "hosts", "capsules.example.dev", "tls"),
+        certificate: null,
+        key: null,
+      },
+    };
+
+    const register = await runHostHelper(request, { cwd: dir, env: caddy.env });
+
+    assert.equal(register.code, 0, register.stderr);
+    const output = JSON.parse(register.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.registered, true);
+    assert.equal(output.data.authoritative, true);
+    assert.deepEqual(output.data.capsule, {
+      subname: "team-notes",
+      domain: "capsules.example.dev",
+      hostedUrl: "https://team-notes.capsules.example.dev",
+      remoteCapsuleId: "capsules.example.dev/team-notes",
+    });
+    assert.equal(output.data.registryRecord, request.registration.registryRecord);
+    assert.deepEqual(output.data.directories, request.registration.directories);
+    assert.deepEqual(output.data.route, expectedRoute);
+
+    const record = JSON.parse(await readFile(request.registration.registryRecord, "utf8"));
+    assert.equal(record.subname, "team-notes");
+    assert.equal(record.domain, "capsules.example.dev");
+    assert.equal(record.remoteCapsuleId, "capsules.example.dev/team-notes");
+    assert.equal(record.hostedUrl, "https://team-notes.capsules.example.dev");
+    assert.equal(record.status, "registered");
+    assert.equal(record.currentRelease, null);
+    assert.match(record.createdAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(record.updatedAt, record.createdAt);
+    assert.equal((await stat(request.registration.directories.releases)).isDirectory(), true);
+    assert.equal((await stat(request.registration.directories.data)).isDirectory(), true);
+    const routeContents = await readFile(expectedRoute.routeFile, "utf8");
+    assert.match(routeContents, /team-notes\.capsules\.example\.dev/);
+    assert.match(routeContents, /respond "Hosted Capsule unavailable" 503/);
+    assert.doesNotMatch(routeContents, /418|caller-controlled|tls /);
+    await assert.rejects(readFile(request.registration.route.routeFile, "utf8"), { code: "ENOENT" });
+    assert.deepEqual(
+      (await caddy.calls()).map((call) => call.args),
+      [
+        ["validate", "--config", `${expectedRoute.routeFile}.tmp`, "--adapter", "caddyfile"],
+        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile"), "--adapter", "caddyfile"],
+      ],
+    );
+
+    const duplicate = await runHostHelper(request, { cwd: dir, env: caddy.env });
+    assert.equal(duplicate.code, 0, duplicate.stderr);
+    assert.deepEqual(JSON.parse(duplicate.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Hosted Capsule subname is already registered for this Hosted domain.",
+        hint: "Choose a different Capsule subname for capsules.example.dev.",
+      },
+    });
+
+    const otherDomainRoot = path.join(dir, "other-domain-root");
+    await mkdir(path.join(otherDomainRoot, "caddy", "hosts"), { recursive: true });
+    await writeFile(path.join(otherDomainRoot, "caddy", "Caddyfile"), "import ./sporades-hosted-domains.caddy\n");
+    await writeFile(path.join(otherDomainRoot, "caddy", "hosts", "apps.work.test.caddy"), "import ./apps.work.test/*.caddy\n");
+    const otherDomainRequest = {
+      ...request,
+      host: {
+        ...request.host,
+        domain: "apps.work.test",
+        remoteRoot: otherDomainRoot,
+      },
+      registration: {
+        ...request.registration,
+        domain: "apps.work.test",
+        hostedUrl: "https://team-notes.apps.work.test",
+        remoteCapsuleId: "apps.work.test/team-notes",
+        registryRecord: path.join(otherDomainRoot, "hosts", "apps.work.test", "registry", "capsules", "team-notes.json"),
+        directories: {
+          capsule: path.join(otherDomainRoot, "hosts", "apps.work.test", "capsules", "team-notes"),
+          releases: path.join(otherDomainRoot, "hosts", "apps.work.test", "capsules", "team-notes", "releases"),
+          data: path.join(otherDomainRoot, "hosts", "apps.work.test", "capsules", "team-notes", "data"),
+        },
+        route: {
+          ...request.registration.route,
+          hostname: "team-notes.apps.work.test",
+          routeFile: path.join(otherDomainRoot, "caddy", "hosts", "apps.work.test", "team-notes.caddy"),
+          tls: {
+            mode: "automatic",
+            directory: path.join(otherDomainRoot, "hosts", "apps.work.test", "tls"),
+            certificate: null,
+            key: null,
+          },
+        },
+      },
+    };
+
+    const sameSubnameOtherDomain = await runHostHelper(otherDomainRequest, { cwd: dir, env: caddy.env });
+    assert.equal(sameSubnameOtherDomain.code, 0, sameSubnameOtherDomain.stderr);
+    assert.equal(JSON.parse(sameSubnameOtherDomain.stdout).data.capsule.remoteCapsuleId, "apps.work.test/team-notes");
+  });
+});
+
+test("sporades host helper does not commit registration when the unavailable route cannot be applied", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    await mkdir(path.join(remoteRoot, "caddy", "hosts"), { recursive: true });
+    await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "import ./sporades-hosted-domains.caddy\n");
+    await writeFile(path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev.caddy"), "import ./capsules.example.dev/*.caddy\n");
+    const failingCaddy = await installFakeCaddy(path.join(dir, "failing-caddy"), { env: { FAKE_CADDY_RELOAD_STATUS: "1" } });
+    const routeFile = path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "team-notes.caddy");
+    const registryRecord = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    const request = {
+      action: "capsule.register",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+      capsule: { subname: "team-notes" },
+      registration: {
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        registryRecord,
+        directories: {
+          capsule: path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes"),
+          releases: path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes", "releases"),
+          data: path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes", "data"),
+        },
+        route: {
+          hostname: "team-notes.capsules.example.dev",
+          target: "hosted-capsule-unavailable",
+          statusCode: 503,
+          routeFile,
+          tls: { mode: "automatic", directory: path.join(remoteRoot, "hosts", "capsules.example.dev", "tls"), certificate: null, key: null },
+        },
+      },
+    };
+
+    const failed = await runHostHelper(request, { cwd: dir, env: failingCaddy.env });
+    assert.equal(failed.code, 0, failed.stderr);
+    const failedOutput = JSON.parse(failed.stdout);
+    assert.equal(failedOutput.ok, false);
+    assert.equal(failedOutput.data, null);
+    assert.match(failedOutput.error.message, /^Failed to apply Hosted Capsule route/);
+    await assert.rejects(readFile(registryRecord, "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(routeFile, "utf8"), { code: "ENOENT" });
+
+    const repairedCaddy = await installFakeCaddy(path.join(dir, "repaired-caddy"));
+    const repaired = await runHostHelper(request, { cwd: dir, env: repairedCaddy.env });
+    assert.equal(repaired.code, 0, repaired.stderr);
+    assert.equal(JSON.parse(repaired.stdout).ok, true);
+    assert.equal(JSON.parse(await readFile(registryRecord, "utf8")).status, "registered");
+    assert.match(await readFile(routeFile, "utf8"), /respond "Hosted Capsule unavailable" 503/);
   });
 });
 

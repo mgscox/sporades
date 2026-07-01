@@ -24,6 +24,10 @@ main().catch((error) => {
 
 async function main() {
   const request = JSON.parse(await readStdin());
+  if (request.action === "capsule.register") {
+    await registerCapsule(request);
+    return;
+  }
   if (request.action === "capsule.release.install") {
     await installRelease(request);
     return;
@@ -73,6 +77,46 @@ async function bootstrapHost(request) {
       tls: bootstrap.tls,
       caddy,
       preservedCapsules: true,
+    },
+    error: null,
+  });
+}
+
+async function registerCapsule(request) {
+  validateRegisterRequest(request);
+  const registration = normaliseRegistration(request);
+  await ensureHostedDomainBootstrapped(request, registration);
+
+  await mkdir(path.dirname(registryLockPath(request)), { recursive: true });
+  await withRegistryLock(request, async () => {
+    if (await pathExists(registration.registryRecord)) {
+      throw helperError(
+        "Hosted Capsule subname is already registered for this Hosted domain.",
+        `Choose a different Capsule subname for ${request.host.domain}.`,
+      );
+    }
+
+    await mkdir(path.dirname(registration.registryRecord), { recursive: true });
+    await mkdir(registration.directories.releases, { recursive: true });
+    await mkdir(registration.directories.data, { recursive: true });
+    await writeUnavailableRoute(registration.lifecycle);
+    await writeRegistryRecordAtomic(registration.registryRecord, createRegistrationRecord(registration));
+  });
+
+  writeEnvelope({
+    ok: true,
+    data: {
+      registered: true,
+      authoritative: true,
+      capsule: {
+        subname: registration.subname,
+        domain: registration.domain,
+        hostedUrl: registration.hostedUrl,
+        remoteCapsuleId: registration.remoteCapsuleId,
+      },
+      registryRecord: registration.registryRecord,
+      directories: registration.directories,
+      route: registration.route,
     },
     error: null,
   });
@@ -415,6 +459,88 @@ function normaliseStats(request) {
     container: {
       name: provided.container?.name ?? createHostedContainerName(domain, subname),
     },
+  };
+}
+
+function normaliseRegistration(request) {
+  const provided = request.registration ?? {};
+  const subname = request.capsule.subname;
+  const domain = request.host.domain;
+  const remoteRoot = request.host.remoteRoot;
+  const scheme = request.host.scheme ?? "https";
+  const hostedUrl = `${scheme}://${subname}.${domain}`;
+  const remoteCapsuleId = `${domain}/${subname}`;
+  const capsuleDirectory = path.join(remoteRoot, "hosts", domain, "capsules", subname);
+  const routeFile = path.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
+  const routeTls = normaliseRegistrationTls(request);
+  const route = {
+    hostname: `${subname}.${domain}`,
+    target: "hosted-capsule-unavailable",
+    statusCode: 503,
+    routeFile,
+    tls: routeTls,
+  };
+  return {
+    subname,
+    domain,
+    hostedUrl,
+    remoteCapsuleId,
+    registryRecord: path.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
+    directories: {
+      capsule: capsuleDirectory,
+      releases: path.join(capsuleDirectory, "releases"),
+      data: path.join(capsuleDirectory, "data"),
+    },
+    route,
+    lifecycle: {
+      remoteRoot,
+      routes: { unavailable: route },
+    },
+  };
+}
+
+function normaliseRegistrationTls(request) {
+  const remoteRoot = request.host.remoteRoot;
+  const domain = request.host.domain;
+  const tlsMode = request.registration?.bootstrap?.tls?.mode ?? request.bootstrap?.tls?.mode ?? "automatic";
+  const tlsDirectory = path.join(remoteRoot, "hosts", domain, "tls");
+  return {
+    mode: tlsMode,
+    directory: tlsDirectory,
+    certificate: tlsMode === "cloudflare-origin" ? path.join(tlsDirectory, "origin.crt") : null,
+    key: tlsMode === "cloudflare-origin" ? path.join(tlsDirectory, "origin.key") : null,
+  };
+}
+
+async function ensureHostedDomainBootstrapped(request, registration) {
+  const caddyfile = path.join(request.host.remoteRoot, "caddy", "Caddyfile");
+  const domainInclude = path.join(request.host.remoteRoot, "caddy", "hosts", `${request.host.domain}.caddy`);
+  const bootstrapped = (await pathExists(caddyfile)) && (await pathExists(domainInclude));
+  if (bootstrapped) {
+    return;
+  }
+  const tls = registration.route.tls;
+  const tlsHint =
+    tls?.mode === "cloudflare-origin"
+      ? ` after installing readable Cloudflare origin certificate and key files at ${tls.certificate} and ${tls.key}`
+      : "";
+  throw helperError(
+    "Hosted domain has not been bootstrapped.",
+    `Run \`sporades host bootstrap --host ${request.host.alias}\`${tlsHint}.`,
+  );
+}
+
+function createRegistrationRecord(registration) {
+  const now = new Date().toISOString();
+  return {
+    subname: registration.subname,
+    domain: registration.domain,
+    remoteCapsuleId: registration.remoteCapsuleId,
+    hostedUrl: registration.hostedUrl,
+    status: "registered",
+    createdAt: now,
+    updatedAt: now,
+    currentRelease: null,
   };
 }
 
@@ -1099,6 +1225,36 @@ function validateBootstrapRequest(request) {
     throw helperError("Invalid Host bootstrap request.", "Update the Sporades CLI and retry `sporades host bootstrap`.");
   }
   const tlsMode = request.bootstrap?.tls?.mode ?? "automatic";
+  if (tlsMode !== "automatic" && tlsMode !== "cloudflare-origin") {
+    throw helperError(
+      "Invalid Host TLS mode.",
+      "Use `--tls automatic` for Caddy-managed certificates or `--tls cloudflare-origin` for preinstalled Cloudflare origin certificates.",
+    );
+  }
+}
+
+function validateRegisterRequest(request) {
+  const requiredStrings = [
+    request.host?.domain,
+    request.host?.alias,
+    request.host?.remoteRoot,
+    request.capsule?.subname,
+  ];
+  if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw helperError("Invalid Hosted Capsule registration request.", "Update the Sporades CLI and retry `sporades host register`.");
+  }
+  const registration = request.registration ?? {};
+  const mismatchedIdentity =
+    (registration.subname && registration.subname !== request.capsule.subname) ||
+    (registration.domain && registration.domain !== request.host.domain) ||
+    (registration.remoteCapsuleId && registration.remoteCapsuleId !== `${request.host.domain}/${request.capsule.subname}`);
+  if (mismatchedIdentity) {
+    throw helperError(
+      "Hosted Capsule registration request does not match the Host profile.",
+      "Rebind the local project or pass the correct Host profile and Capsule subname.",
+    );
+  }
+  const tlsMode = request.registration?.bootstrap?.tls?.mode ?? request.bootstrap?.tls?.mode ?? "automatic";
   if (tlsMode !== "automatic" && tlsMode !== "cloudflare-origin") {
     throw helperError(
       "Invalid Host TLS mode.",

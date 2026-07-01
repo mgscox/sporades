@@ -1,6 +1,6 @@
 # Implement real Hosted Capsule registration and unavailable routes
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
