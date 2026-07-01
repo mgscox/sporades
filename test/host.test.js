@@ -217,6 +217,12 @@ if (args[0] === "stats") {
   process.stdout.write(process.env.FAKE_DOCKER_STATS_JSON || "{}");
   process.exit(Number(process.env.FAKE_DOCKER_STATS_STATUS || "0"));
 }
+if (args[0] === "network" && args[1] === "inspect") {
+  process.exit(Number(process.env.FAKE_DOCKER_NETWORK_INSPECT_STATUS || "0"));
+}
+if (args[0] === "network" && args[1] === "create") {
+  process.exit(Number(process.env.FAKE_DOCKER_NETWORK_CREATE_STATUS || "0"));
+}
 process.exit(0);
 `,
   );
@@ -305,6 +311,57 @@ async function readJsonl(filePath) {
     .split("\n")
     .filter(Boolean)
     .map((line) => JSON.parse(line));
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function readHostBootstrapSmokeEnv() {
+  const dotEnv = await readDotEnv(path.join(repoRoot, ".env"));
+  const values = { ...dotEnv, ...process.env };
+  const server = values.SPORADES_HOST_SMOKE_SSH_TARGET;
+  const domain = values.SPORADES_HOST_SMOKE_DOMAIN;
+  const remoteRoot = values.SPORADES_HOST_SMOKE_REMOTE_ROOT;
+  if (!server || !domain || !remoteRoot) {
+    return null;
+  }
+  return {
+    alias: values.SPORADES_HOST_SMOKE_ALIAS || "smoke",
+    server,
+    domain,
+    remoteRoot,
+    tls: values.SPORADES_HOST_SMOKE_TLS || "automatic",
+  };
+}
+
+async function readDotEnv(filePath) {
+  let contents;
+  try {
+    contents = await readFile(filePath, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return {};
+    }
+    throw error;
+  }
+  const values = {};
+  for (const line of contents.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) {
+      continue;
+    }
+    const match = trimmed.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!match) {
+      continue;
+    }
+    let value = match[2].trim();
+    if ((value.startsWith("\"") && value.endsWith("\"")) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    values[match[1]] = value;
+  }
+  return values;
 }
 
 async function listArchiveEntries(archivePath, cwd) {
@@ -726,6 +783,7 @@ process.exit(0);
     assert.deepEqual(output.data.directories, {
       remoteRoot: "/opt/sporades",
       bin: "/opt/sporades/bin",
+      incoming: "/opt/sporades/incoming",
       caddy: "/opt/sporades/caddy",
       caddyHosts: "/opt/sporades/caddy/hosts",
       hosts: "/opt/sporades/hosts",
@@ -755,6 +813,7 @@ process.exit(0);
         directories: {
           remoteRoot: "/opt/sporades",
           bin: "/opt/sporades/bin",
+          incoming: "/opt/sporades/incoming",
           caddy: "/opt/sporades/caddy",
           caddyHosts: "/opt/sporades/caddy/hosts",
           hosts: "/opt/sporades/hosts",
@@ -836,6 +895,271 @@ process.exit(0);
         hint: "Install readable Cloudflare origin certificate and key files at /opt/sporades/hosts/capsules.example.dev/tls/origin.crt and /opt/sporades/hosts/capsules.example.dev/tls/origin.key, then rerun `sporades host bootstrap --host personal`.",
       },
     });
+  });
+});
+
+test("sporades host bootstrap can run against an opt-in real SSH Host server", async (t) => {
+  const smoke = await readHostBootstrapSmokeEnv();
+  if (!smoke) {
+    t.skip("Set SPORADES_HOST_SMOKE_SSH_TARGET, SPORADES_HOST_SMOKE_DOMAIN, and SPORADES_HOST_SMOKE_REMOTE_ROOT to run this smoke test.");
+    return;
+  }
+
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const addArgs = [
+      "host",
+      "add",
+      smoke.alias,
+      "--server",
+      smoke.server,
+      "--domain",
+      smoke.domain,
+      "--remote-root",
+      smoke.remoteRoot,
+      "--tls",
+      smoke.tls,
+      "--json",
+    ];
+    const addHost = await runCli(addArgs, { cwd: dir, env: hostEnv(configDir) });
+    assert.equal(addHost.code, 0, addHost.stderr);
+
+    const bootstrap = await runCli(["host", "bootstrap", "--host", smoke.alias, "--json"], {
+      cwd: dir,
+      env: hostEnv(configDir),
+    });
+
+    assert.equal(bootstrap.code, 0, `${bootstrap.stderr}\n${bootstrap.stdout}`);
+    const output = JSON.parse(bootstrap.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.domain, smoke.domain);
+    assert.equal(output.data.remoteRoot, smoke.remoteRoot);
+    assert.equal(output.data.tls.mode, smoke.tls);
+    assert.equal(output.data.preservedCapsules, true);
+  });
+});
+
+test("sporades host helper bootstraps a Hosted domain idempotently without deleting Capsule state", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const preservedCapsuleFile = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes", "data", "data.db");
+    await mkdir(path.dirname(preservedCapsuleFile), { recursive: true });
+    await writeFile(preservedCapsuleFile, "existing capsule data\n");
+    await mkdir(path.join(remoteRoot, "caddy"), { recursive: true });
+    await writeFile(path.join(remoteRoot, "caddy", "Caddyfile"), "unrelated.example.dev {\n  respond \"still here\"\n}\n");
+    const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_NETWORK_INSPECT_STATUS: "1" } });
+
+    const request = {
+      action: "host.bootstrap",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot,
+      },
+      capsule: null,
+      bootstrap: {
+        substrate: {
+          packages: ["docker", "caddy"],
+          services: ["docker", "caddy"],
+        },
+        directories: {
+          remoteRoot,
+          bin: path.join(remoteRoot, "bin"),
+          incoming: path.join(remoteRoot, "incoming"),
+          caddy: path.join(remoteRoot, "caddy"),
+          caddyHosts: path.join(remoteRoot, "caddy", "hosts"),
+          hosts: path.join(remoteRoot, "hosts"),
+          domain: path.join(remoteRoot, "hosts", "capsules.example.dev"),
+          tls: path.join(remoteRoot, "hosts", "capsules.example.dev", "tls"),
+          registry: path.join(remoteRoot, "hosts", "capsules.example.dev", "registry"),
+          capsules: path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules"),
+        },
+        domainDirectory: path.join(remoteRoot, "hosts", "capsules.example.dev"),
+        tls: {
+          mode: "automatic",
+          directory: path.join(remoteRoot, "hosts", "capsules.example.dev", "tls"),
+          certificate: null,
+          key: null,
+        },
+        network: "sporades-hosted-capsules",
+        caddy: {
+          managedInclude: path.join(remoteRoot, "caddy", "sporades-hosted-domains.caddy"),
+          domainInclude: path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev.caddy"),
+        },
+      },
+    };
+
+    const bootstrap = await runHostHelper(request, { cwd: dir, env: docker.env });
+
+    assert.equal(bootstrap.code, 0, bootstrap.stderr);
+    const output = JSON.parse(bootstrap.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.bootstrapped, true);
+    assert.equal(output.data.preservedCapsules, true);
+    assert.deepEqual(output.data.network, {
+      name: "sporades-hosted-capsules",
+      created: true,
+    });
+    assert.equal(output.data.caddy.managedInclude, path.join(remoteRoot, "caddy", "sporades-hosted-domains.caddy"));
+    assert.equal(output.data.caddy.domainInclude, path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev.caddy"));
+    assert.equal(output.data.caddy.globalConfigReplaced, false);
+
+    assert.equal(await readFile(preservedCapsuleFile, "utf8"), "existing capsule data\n");
+    assert.equal((await stat(path.join(remoteRoot, "bin"))).isDirectory(), true);
+    assert.equal((await stat(path.join(remoteRoot, "incoming"))).isDirectory(), true);
+    assert.equal((await stat(path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules"))).isDirectory(), true);
+    assert.equal((await stat(path.join(remoteRoot, "hosts", "capsules.example.dev", "tls"))).isDirectory(), true);
+    const caddyfile = await readFile(path.join(remoteRoot, "caddy", "Caddyfile"), "utf8");
+    assert.match(caddyfile, /unrelated\.example\.dev \{\n  respond "still here"\n\}/);
+    assert.match(caddyfile, new RegExp(`import ${escapeRegExp(path.join(remoteRoot, "caddy", "sporades-hosted-domains.caddy"))}`));
+    assert.match(
+      await readFile(path.join(remoteRoot, "caddy", "sporades-hosted-domains.caddy"), "utf8"),
+      new RegExp(`import ${escapeRegExp(path.join(remoteRoot, "caddy", "hosts", "*.caddy"))}`),
+    );
+    assert.match(
+      await readFile(path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev.caddy"), "utf8"),
+      new RegExp(`import ${escapeRegExp(path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "*.caddy"))}`),
+    );
+
+    assert.deepEqual(
+      (await docker.calls()).map((call) => call.args),
+      [
+        ["network", "inspect", "sporades-hosted-capsules"],
+        ["network", "create", "sporades-hosted-capsules"],
+      ],
+    );
+    assert.deepEqual(
+      (await docker.caddyCalls()).map((call) => call.args),
+      [
+        ["validate", "--config", path.join(remoteRoot, "caddy", "Caddyfile"), "--adapter", "caddyfile"],
+        ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile"), "--adapter", "caddyfile"],
+      ],
+    );
+  });
+});
+
+test("sporades host helper requires readable Cloudflare origin certificate files only for cloudflare-origin TLS", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const tlsDirectory = path.join(remoteRoot, "hosts", "capsules.example.dev", "tls");
+    const docker = await installFakeDocker(dir);
+    const request = {
+      action: "host.bootstrap",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot,
+      },
+      capsule: null,
+      bootstrap: {
+        directories: {
+          remoteRoot,
+          bin: path.join(remoteRoot, "bin"),
+          incoming: path.join(remoteRoot, "incoming"),
+          caddy: path.join(remoteRoot, "caddy"),
+          caddyHosts: path.join(remoteRoot, "caddy", "hosts"),
+          hosts: path.join(remoteRoot, "hosts"),
+          domain: path.join(remoteRoot, "hosts", "capsules.example.dev"),
+          tls: tlsDirectory,
+          registry: path.join(remoteRoot, "hosts", "capsules.example.dev", "registry"),
+          capsules: path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules"),
+        },
+        tls: {
+          mode: "cloudflare-origin",
+          directory: tlsDirectory,
+          certificate: path.join(tlsDirectory, "origin.crt"),
+          key: path.join(tlsDirectory, "origin.key"),
+        },
+        network: "sporades-hosted-capsules",
+        caddy: {
+          managedInclude: path.join(remoteRoot, "caddy", "sporades-hosted-domains.caddy"),
+          domainInclude: path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev.caddy"),
+        },
+      },
+    };
+
+    const missing = await runHostHelper(request, { cwd: dir, env: docker.env });
+
+    assert.equal(missing.code, 0, missing.stderr);
+    assert.deepEqual(JSON.parse(missing.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Cloudflare origin certificate material is missing or unusable.",
+        hint: `Install readable Cloudflare origin certificate and key files at ${path.join(tlsDirectory, "origin.crt")} and ${path.join(tlsDirectory, "origin.key")}, then rerun \`sporades host bootstrap --host personal\`.`,
+      },
+    });
+    await assert.rejects(readFile(docker.logPath, "utf8"), { code: "ENOENT" });
+
+    await writeFile(path.join(tlsDirectory, "origin.crt"), "certificate\n");
+    await writeFile(path.join(tlsDirectory, "origin.key"), "key\n");
+    const present = await runHostHelper(request, { cwd: dir, env: docker.env });
+    assert.equal(present.code, 0, present.stderr);
+    const output = JSON.parse(present.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.tls.mode, "cloudflare-origin");
+    assert.equal(output.data.tls.certificate, path.join(tlsDirectory, "origin.crt"));
+    assert.equal(output.data.tls.key, path.join(tlsDirectory, "origin.key"));
+  });
+});
+
+test("sporades host helper reports Docker and Caddy bootstrap substrate failures as JSON errors", async () => {
+  await withTempDir(async (dir) => {
+    const dockerFailureRoot = path.join(dir, "docker-failure-root");
+    const docker = await installFakeDocker(path.join(dir, "docker-failure"), {
+      env: {
+        FAKE_DOCKER_NETWORK_INSPECT_STATUS: "1",
+        FAKE_DOCKER_NETWORK_CREATE_STATUS: "1",
+      },
+    });
+    const baseRequest = {
+      action: "host.bootstrap",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot: dockerFailureRoot,
+      },
+      capsule: null,
+      bootstrap: {
+        tls: { mode: "automatic", directory: path.join(dockerFailureRoot, "hosts", "capsules.example.dev", "tls"), certificate: null, key: null },
+        network: "sporades-hosted-capsules",
+      },
+    };
+
+    const dockerFailure = await runHostHelper(baseRequest, { cwd: dir, env: docker.env });
+
+    assert.equal(dockerFailure.code, 0, dockerFailure.stderr);
+    const dockerFailureOutput = JSON.parse(dockerFailure.stdout);
+    assert.equal(dockerFailureOutput.ok, false);
+    assert.equal(dockerFailureOutput.error.message, "Failed to create the Hosted Capsule Docker network.");
+    assert.match(dockerFailureOutput.error.hint, /Check Docker on the Host server/);
+
+    const caddyFailureRoot = path.join(dir, "caddy-failure-root");
+    const caddy = await installFakeDocker(path.join(dir, "caddy-failure"), {
+      env: {
+        FAKE_DOCKER_CADDY_VALIDATE_STATUS: "1",
+      },
+    });
+    const caddyFailure = await runHostHelper(
+      {
+        ...baseRequest,
+        host: { ...baseRequest.host, remoteRoot: caddyFailureRoot },
+        bootstrap: {
+          tls: { mode: "automatic", directory: path.join(caddyFailureRoot, "hosts", "capsules.example.dev", "tls"), certificate: null, key: null },
+          network: "sporades-hosted-capsules",
+        },
+      },
+      { cwd: dir, env: caddy.env },
+    );
+
+    assert.equal(caddyFailure.code, 0, caddyFailure.stderr);
+    const caddyFailureOutput = JSON.parse(caddyFailure.stdout);
+    assert.equal(caddyFailureOutput.ok, false);
+    assert.equal(caddyFailureOutput.error.message, "Failed to validate the Sporades Caddy bootstrap configuration.");
+    assert.match(caddyFailureOutput.error.hint, /Check Caddy on the Host server/);
   });
 });
 

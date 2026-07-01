@@ -1,6 +1,6 @@
 # Implement real Hosted domain bootstrap in the Host helper
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

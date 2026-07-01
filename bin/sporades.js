@@ -2077,6 +2077,7 @@ function createHostBootstrapRequest(profile) {
     directories: {
       remoteRoot: profile.remoteRoot,
       bin: posixJoin(profile.remoteRoot, "bin"),
+      incoming: posixJoin(profile.remoteRoot, "incoming"),
       caddy: caddyDirectory,
       caddyHosts: posixJoin(caddyDirectory, "hosts"),
       hosts: hostsDirectory,

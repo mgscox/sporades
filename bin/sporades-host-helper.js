@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
+import { constants as fsConstants } from "node:fs";
 import { access, mkdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
@@ -43,8 +44,38 @@ async function main() {
     await statsCapsule(request);
     return;
   }
+  if (request.action === "host.bootstrap") {
+    await bootstrapHost(request);
+    return;
+  }
 
   throw helperError("Unsupported Host helper action.", "Update the Host helper or use a supported Sporades host command.");
+}
+
+async function bootstrapHost(request) {
+  validateBootstrapRequest(request);
+  const bootstrap = normaliseBootstrap(request);
+  await ensureBootstrapDirectories(bootstrap);
+  await validateBootstrapTls(request, bootstrap);
+  const network = ensureDockerNetwork(bootstrap.network);
+  const caddy = await installCaddyBootstrapConfig(request, bootstrap);
+
+  writeEnvelope({
+    ok: true,
+    data: {
+      bootstrapped: true,
+      domain: request.host.domain,
+      remoteRoot: request.host.remoteRoot,
+      network,
+      packages: bootstrap.substrate.packages,
+      services: bootstrap.substrate.services,
+      directories: bootstrap.directories,
+      tls: bootstrap.tls,
+      caddy,
+      preservedCapsules: true,
+    },
+    error: null,
+  });
 }
 
 async function installRelease(request) {
@@ -404,6 +435,182 @@ function normaliseDockerStats(raw) {
   };
 }
 
+function normaliseBootstrap(request) {
+  const provided = request.bootstrap ?? {};
+  const remoteRoot = request.host.remoteRoot;
+  const domain = request.host.domain;
+  const caddyDirectory = path.join(remoteRoot, "caddy");
+  const domainDirectory = path.join(remoteRoot, "hosts", domain);
+  const tlsDirectory = path.join(domainDirectory, "tls");
+  const tlsMode = provided.tls?.mode ?? "automatic";
+  const directories = {
+    remoteRoot,
+    bin: path.join(remoteRoot, "bin"),
+    incoming: path.join(remoteRoot, "incoming"),
+    caddy: caddyDirectory,
+    caddyHosts: path.join(caddyDirectory, "hosts"),
+    hosts: path.join(remoteRoot, "hosts"),
+    domain: domainDirectory,
+    tls: tlsDirectory,
+    registry: path.join(domainDirectory, "registry"),
+    capsules: path.join(domainDirectory, "capsules"),
+    ...(provided.directories ?? {}),
+  };
+  directories.incoming = provided.directories?.incoming ?? path.join(remoteRoot, "incoming");
+  const tls = {
+    mode: tlsMode,
+    directory: provided.tls?.directory ?? directories.tls,
+    certificate: tlsMode === "cloudflare-origin" ? (provided.tls?.certificate ?? path.join(directories.tls, "origin.crt")) : null,
+    key: tlsMode === "cloudflare-origin" ? (provided.tls?.key ?? path.join(directories.tls, "origin.key")) : null,
+  };
+  return {
+    substrate: {
+      packages: provided.substrate?.packages ?? ["docker", "caddy"],
+      services: provided.substrate?.services ?? ["docker", "caddy"],
+    },
+    directories,
+    domainDirectory: provided.domainDirectory ?? directories.domain,
+    tls,
+    network: provided.network ?? HOSTED_CAPSULE_DOCKER_NETWORK,
+    caddy: {
+      caddyfile: path.join(directories.caddy, "Caddyfile"),
+      managedInclude: provided.caddy?.managedInclude ?? path.join(directories.caddy, "sporades-hosted-domains.caddy"),
+      domainInclude: provided.caddy?.domainInclude ?? path.join(directories.caddyHosts, `${domain}.caddy`),
+      routesDirectory: path.join(directories.caddyHosts, domain),
+    },
+  };
+}
+
+async function ensureBootstrapDirectories(bootstrap) {
+  const directories = [
+    bootstrap.directories.remoteRoot,
+    bootstrap.directories.bin,
+    bootstrap.directories.incoming,
+    bootstrap.directories.caddy,
+    bootstrap.directories.caddyHosts,
+    bootstrap.directories.hosts,
+    bootstrap.directories.domain,
+    bootstrap.directories.tls,
+    bootstrap.directories.registry,
+    path.join(bootstrap.directories.registry, "capsules"),
+    bootstrap.directories.capsules,
+    bootstrap.caddy.routesDirectory,
+  ];
+  for (const directory of directories) {
+    await mkdir(directory, { recursive: true });
+  }
+}
+
+async function validateBootstrapTls(request, bootstrap) {
+  if (bootstrap.tls.mode === "automatic") {
+    return;
+  }
+  if (bootstrap.tls.mode !== "cloudflare-origin") {
+    throw helperError(
+      "Invalid Host TLS mode.",
+      "Use `--tls automatic` for Caddy-managed certificates or `--tls cloudflare-origin` for preinstalled Cloudflare origin certificates.",
+    );
+  }
+  const readable = await Promise.all([
+    pathReadable(bootstrap.tls.certificate),
+    pathReadable(bootstrap.tls.key),
+  ]);
+  if (!readable.every(Boolean)) {
+    throw helperError(
+      "Cloudflare origin certificate material is missing or unusable.",
+      `Install readable Cloudflare origin certificate and key files at ${bootstrap.tls.certificate} and ${bootstrap.tls.key}, then rerun \`sporades host bootstrap --host ${request.host.alias}\`.`,
+    );
+  }
+}
+
+function ensureDockerNetwork(networkName) {
+  const inspect = spawnSync("docker", ["network", "inspect", networkName], { encoding: "utf8" });
+  if (inspect.error) {
+    throw helperError(
+      "Docker is unavailable on the Host server.",
+      "Install Docker, ensure the Docker daemon is running, then rerun `sporades host bootstrap`.",
+    );
+  }
+  if (inspect.status === 0) {
+    return { name: networkName, created: false };
+  }
+
+  const create = spawnSync("docker", ["network", "create", networkName], { encoding: "utf8" });
+  if (create.error || create.status !== 0) {
+    throw helperError(
+      "Failed to create the Hosted Capsule Docker network.",
+      `Check Docker on the Host server, then rerun \`sporades host bootstrap\`. Docker stderr: ${trimForHint(create.stderr)}`,
+    );
+  }
+  return { name: networkName, created: true };
+}
+
+async function installCaddyBootstrapConfig(request, bootstrap) {
+  const caddyfile = bootstrap.caddy.caddyfile;
+  const managedInclude = bootstrap.caddy.managedInclude;
+  const domainInclude = bootstrap.caddy.domainInclude;
+  const placeholderRoute = path.join(bootstrap.caddy.routesDirectory, ".sporades-placeholder.caddy");
+  await writeFile(placeholderRoute, "# Sporades keeps this placeholder so Caddy route imports are valid before Capsules are registered.\n");
+  await writeManagedCaddyfile(caddyfile, `import ${managedInclude}`);
+  await writeFile(managedInclude, `# Sporades-managed Hosted domain include list.\nimport ${path.join(bootstrap.directories.caddyHosts, "*.caddy")}\n`);
+  await writeFile(domainInclude, `# Sporades-managed routes for ${request.host.domain}.\nimport ${path.join(bootstrap.caddy.routesDirectory, "*.caddy")}\n`);
+
+  validateCaddyBootstrap(caddyfile);
+  reloadCaddyBootstrap(caddyfile);
+  return {
+    caddyfile,
+    managedInclude,
+    domainInclude,
+    routesDirectory: bootstrap.caddy.routesDirectory,
+    globalConfigReplaced: false,
+    reloaded: true,
+  };
+}
+
+async function writeManagedCaddyfile(caddyfile, importLine) {
+  const begin = "# BEGIN Sporades hosted domains";
+  const end = "# END Sporades hosted domains";
+  const block = `${begin}\n${importLine}\n${end}\n`;
+  let existing = "";
+  try {
+    existing = await readFile(caddyfile, "utf8");
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  let next;
+  const markerPattern = new RegExp(`${escapeRegExp(begin)}\\n[\\s\\S]*?${escapeRegExp(end)}\\n?`);
+  if (markerPattern.test(existing)) {
+    next = existing.replace(markerPattern, block);
+  } else {
+    const prefix = existing && !existing.endsWith("\n") ? `${existing}\n` : existing;
+    next = `${prefix}${existing ? "\n" : ""}${block}`;
+  }
+  await writeFile(caddyfile, next);
+}
+
+function validateCaddyBootstrap(caddyfile) {
+  const result = spawnSync("caddy", ["validate", "--config", caddyfile, "--adapter", "caddyfile"], { encoding: "utf8" });
+  if (result.error || result.status !== 0) {
+    throw helperError(
+      "Failed to validate the Sporades Caddy bootstrap configuration.",
+      `Check Caddy on the Host server, then rerun \`sporades host bootstrap\`. Caddy stderr: ${trimForHint(result.stderr)}`,
+    );
+  }
+}
+
+function reloadCaddyBootstrap(caddyfile) {
+  const result = spawnSync("caddy", ["reload", "--config", caddyfile, "--adapter", "caddyfile"], { encoding: "utf8" });
+  if (result.error || result.status !== 0) {
+    throw helperError(
+      "Failed to reload the Sporades Caddy bootstrap configuration.",
+      `Check the Host server Caddy service, then rerun \`sporades host bootstrap\`. Caddy stderr: ${trimForHint(result.stderr)}`,
+    );
+  }
+}
+
 function parsePair(value, parser) {
   const [left, right] = String(value ?? "").split("/").map((part) => part.trim());
   return [parser(left), parser(right)];
@@ -719,6 +926,27 @@ async function pathExists(filePath) {
   }
 }
 
+async function pathReadable(filePath) {
+  if (!filePath) {
+    return false;
+  }
+  try {
+    await access(filePath, fsConstants.R_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function trimForHint(value) {
+  const trimmed = String(value ?? "").trim();
+  return trimmed || "no stderr output";
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function createHostedContainerName(domain, subname) {
   return `sporades-${domain.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase()}-${subname}`;
 }
@@ -858,6 +1086,24 @@ function validateStatsRequest(request) {
   ];
   if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule stats request.", "Update the Sporades CLI and retry the host stats command.");
+  }
+}
+
+function validateBootstrapRequest(request) {
+  const requiredStrings = [
+    request.host?.domain,
+    request.host?.alias,
+    request.host?.remoteRoot,
+  ];
+  if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw helperError("Invalid Host bootstrap request.", "Update the Sporades CLI and retry `sporades host bootstrap`.");
+  }
+  const tlsMode = request.bootstrap?.tls?.mode ?? "automatic";
+  if (tlsMode !== "automatic" && tlsMode !== "cloudflare-origin") {
+    throw helperError(
+      "Invalid Host TLS mode.",
+      "Use `--tls automatic` for Caddy-managed certificates or `--tls cloudflare-origin` for preinstalled Cloudflare origin certificates.",
+    );
   }
 }
 
