@@ -368,7 +368,26 @@ async function startCapsule(request, options = {}) {
     return null;
   }
 
-  await writeRunningRoute(lifecycle);
+  const publishedPort = inspectLoopbackPublishedPort(lifecycle.container.name, lifecycle.routes.running.port ?? 4000);
+  if (!publishedPort) {
+    stopAndRemoveContainer(lifecycle.container.name);
+    await writeUnavailableRoute(lifecycle);
+    const result = {
+      ok: false,
+      data: null,
+      error: {
+        message: "Docker did not report a loopback published port for Hosted Capsule.",
+        hint: `Ensure Docker published container port 4000 on 127.0.0.1, then retry \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`.`,
+      },
+    };
+    if (options.write !== false) {
+      writeEnvelope(result);
+    }
+    return null;
+  }
+
+  const runningRoute = loopbackRunningRoute(lifecycle.routes.running, publishedPort);
+  await writeRunningRoute(lifecycle, runningRoute);
   await updateRegistryCurrentRelease(request, releaseId, "running");
   const data = {
     started: true,
@@ -381,8 +400,9 @@ async function startCapsule(request, options = {}) {
       network: lifecycle.container.network,
       image: lifecycle.container.image,
       running: true,
+      publishedPort,
     },
-    route: lifecycle.routes.running,
+    route: runningRoute,
   };
   if (options.write !== false) {
     writeEnvelope({ ok: true, data, error: null });
@@ -1302,6 +1322,7 @@ async function dockerRunArgs(lifecycle, releaseId) {
     }
   }
   args.push("--volume", formatMount(lifecycle.mounts.data), "--workdir", "/app", "--env", "PORT=4000");
+  args.push("--publish", `127.0.0.1::${lifecycle.routes.running.port ?? 4000}`);
   args.push(lifecycle.container.image, "node", "/app/server.mjs");
   return args;
 }
@@ -1328,6 +1349,27 @@ function checkContainerRunning(containerName) {
   return result.ok && result.stdout.trim() === "true";
 }
 
+function inspectLoopbackPublishedPort(containerName, containerPort) {
+  const result = runDocker([
+    "inspect",
+    "-f",
+    `{{(index (index .NetworkSettings.Ports "${containerPort}/tcp") 0).HostIp}}:{{(index (index .NetworkSettings.Ports "${containerPort}/tcp") 0).HostPort}}`,
+    containerName,
+  ]);
+  if (!result.ok) {
+    return null;
+  }
+  const match = result.stdout.trim().match(/^(127\.0\.0\.1):([1-9][0-9]*)$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    containerPort,
+    hostIp: match[1],
+    hostPort: Number(match[2]),
+  };
+}
+
 async function currentReleaseId(currentLink, request) {
   let target;
   try {
@@ -1344,12 +1386,20 @@ async function currentReleaseId(currentLink, request) {
   return path.basename(target);
 }
 
-async function writeRunningRoute(lifecycle) {
-  const route = lifecycle.routes.running;
+function loopbackRunningRoute(route, publishedPort) {
+  return {
+    ...route,
+    target: "loopback",
+    upstream: `${publishedPort.hostIp}:${publishedPort.hostPort}`,
+    publishedPort,
+  };
+}
+
+async function writeRunningRoute(lifecycle, route = lifecycle.routes.running) {
   await applyManagedRoute(
     lifecycle,
     route.routeFile,
-    renderRoute(route, `reverse_proxy ${route.containerName}:${route.port ?? 4000}`),
+    renderRoute(route, `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4000}`}`),
   );
 }
 

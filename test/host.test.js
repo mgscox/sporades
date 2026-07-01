@@ -213,6 +213,10 @@ if (args[0] === "inspect" && args.includes("{{.State.Running}}")) {
   process.stdout.write(process.env.FAKE_DOCKER_RUNNING || "true");
   process.exit(0);
 }
+if (args[0] === "inspect" && args.some((arg) => arg.includes("NetworkSettings.Ports"))) {
+  process.stdout.write(process.env.FAKE_DOCKER_PUBLISHED_PORT || "127.0.0.1:49153");
+  process.exit(Number(process.env.FAKE_DOCKER_PUBLISHED_PORT_STATUS || "0"));
+}
 if (args[0] === "stats") {
   process.stdout.write(process.env.FAKE_DOCKER_STATS_JSON || "{}");
   process.exit(Number(process.env.FAKE_DOCKER_STATS_STATUS || "0"));
@@ -2212,7 +2216,7 @@ test("sporades host helper installs a release atomically and updates the current
   });
 });
 
-test("sporades host helper starts the current release in Docker and routes to the container", async () => {
+test("sporades host helper starts the current release in Docker and routes through a loopback-published port", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
     const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
@@ -2295,13 +2299,17 @@ test("sporades host helper starts the current release in Docker and routes to th
     assert.equal(output.ok, true);
     assert.equal(output.data.started, true);
     assert.equal(output.data.release.id, "20260630T221500Z-feedface");
-    assert.equal(output.data.route.target, "container");
+    assert.equal(output.data.container.publishedPort.hostIp, "127.0.0.1");
+    assert.equal(output.data.container.publishedPort.hostPort, 49153);
+    assert.equal(output.data.route.target, "loopback");
+    assert.equal(output.data.route.upstream, "127.0.0.1:49153");
 
     const calls = await docker.calls();
-    assert.deepEqual(calls.map((call) => call.args[0]), ["stop", "rm", "run", "inspect"]);
+    assert.deepEqual(calls.map((call) => call.args[0]), ["stop", "rm", "run", "inspect", "inspect"]);
     const runCall = calls[2];
     assert.equal(runCall.args[runCall.args.indexOf("--name") + 1], "sporades-capsules-example-dev-team-notes");
     assert.equal(runCall.args[runCall.args.indexOf("--network") + 1], "sporades-hosted-capsules");
+    assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");
     assert(runCall.args.includes("--label"));
     assert(runCall.args.includes("com.sporades.release-id=20260630T221500Z-feedface"));
     assert(runCall.args.includes(`${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`));
@@ -2309,9 +2317,10 @@ test("sporades host helper starts the current release in Docker and routes to th
     assert.equal(runCall.args[runCall.args.indexOf("--env-file") + 1], path.join(capsuleDir, "current", ".env.sporades.server"));
     assert(runCall.args.includes(`${path.join(capsuleDir, "data")}:/app/data`));
     assert.deepEqual(runCall.args.slice(runCall.args.indexOf("node:22-alpine")), ["node:22-alpine", "node", "/app/server.mjs"]);
+    assert.match(calls[4].args.join(" "), /NetworkSettings\.Ports/);
     const routeContents = await readFile(routeFile, "utf8");
     assert.match(routeContents, /log \{\n    output file .*remote-root\/caddy\/logs\/access\.log\n  \}/);
-    assert.match(routeContents, /reverse_proxy sporades-capsules-example-dev-team-notes:4000/);
+    assert.match(routeContents, /reverse_proxy 127\.0\.0\.1:49153/);
   });
 });
 
@@ -3362,6 +3371,62 @@ test("sporades host helper reports no release and failed starts with unavailable
   });
 });
 
+test("sporades host helper fails start when Docker does not report a usable loopback published port", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    const routeFile = path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "team-notes.caddy");
+    await mkdir(releaseDir, { recursive: true });
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
+    await symlink(releaseDir, path.join(capsuleDir, "current"));
+    const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_PUBLISHED_PORT: "0.0.0.0:49153" } });
+
+    const start = await runHostHelper(
+      {
+        action: "capsule.start",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        lifecycle: {
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          container: { name: "sporades-capsules-example-dev-team-notes" },
+          routes: {
+            running: { hostname: "team-notes.capsules.example.dev", target: "container", containerName: "sporades-capsules-example-dev-team-notes", port: 4000, routeFile },
+            unavailable: { hostname: "team-notes.capsules.example.dev", target: "hosted-capsule-unavailable", statusCode: 503, routeFile },
+          },
+        },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(start.code, 0, start.stderr);
+    assert.deepEqual(JSON.parse(start.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Docker did not report a loopback published port for Hosted Capsule.",
+        hint: "Ensure Docker published container port 4000 on 127.0.0.1, then retry `sporades host start team-notes --host personal`.",
+      },
+    });
+    assert.match(await readFile(routeFile, "utf8"), /respond "Hosted Capsule unavailable" 503/);
+    assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).status, undefined);
+    assert.deepEqual(
+      (await docker.calls()).map((call) => call.args),
+      [
+        ["stop", "sporades-capsules-example-dev-team-notes"],
+        ["rm", "sporades-capsules-example-dev-team-notes"],
+        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "client.js")}:/app/client.js:ro`, "--volume", `${path.join(capsuleDir, "current", "index.html")}:/app/index.html:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data`, "--workdir", "/app", "--env", "PORT=4000", "--publish", "127.0.0.1::4000", "node:22-alpine", "node", "/app/server.mjs"],
+        ["inspect", "-f", "{{.State.Running}}", "sporades-capsules-example-dev-team-notes"],
+        ["inspect", "-f", "{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostIp}}:{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostPort}}", "sporades-capsules-example-dev-team-notes"],
+        ["stop", "sporades-capsules-example-dev-team-notes"],
+        ["rm", "sporades-capsules-example-dev-team-notes"],
+      ],
+    );
+  });
+});
+
 test("sporades host helper refuses to install a release for an unregistered Hosted Capsule", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -4233,8 +4298,12 @@ test("sporades host helper restarts the current release after install when reque
     assert.equal(output.data.lifecycle.release.id, "20260630T221500Z-feedface");
     assert.deepEqual(
       (await docker.calls()).map((call) => call.args[0]),
-      ["stop", "rm", "stop", "rm", "run", "inspect"],
+      ["stop", "rm", "stop", "rm", "run", "inspect", "inspect"],
     );
+    const runCall = (await docker.calls())[4];
+    assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");
+    assert.equal(output.data.lifecycle.container.publishedPort.hostPort, 49153);
+    assert.equal(output.data.lifecycle.route.upstream, "127.0.0.1:49153");
   });
 });
 
