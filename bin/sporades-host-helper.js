@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { access, chmod, mkdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const HOSTED_CAPSULE_DOCKER_IMAGE = "node:22-alpine";
@@ -48,6 +48,10 @@ async function main() {
   }
   if (request.action === "capsule.stats") {
     await statsCapsule(request);
+    return;
+  }
+  if (request.action === "capsule.list") {
+    await listCapsules(request);
     return;
   }
   if (request.action === "host.logs") {
@@ -393,6 +397,41 @@ async function logsHost(request) {
   throw unavailableCaddyLogsError(request);
 }
 
+async function listCapsules(request) {
+  validateListRequest(request);
+  const records = await readCapsuleRegistryRecords(request);
+  const capsules = [];
+  for (const record of records) {
+    capsules.push({
+      subname: record.subname,
+      domain: record.domain,
+      hostedUrl: record.hostedUrl ?? `${request.host.scheme ?? "https"}://${record.subname}.${request.host.domain}`,
+      registry: {
+        remoteCapsuleId: record.remoteCapsuleId ?? `${request.host.domain}/${record.subname}`,
+        createdAt: record.createdAt ?? null,
+        updatedAt: record.updatedAt ?? null,
+        status: record.status ?? "registered",
+      },
+      currentRelease: record.currentRelease ?? null,
+      docker: lookupCapsuleDockerState(request, record),
+    });
+  }
+
+  writeEnvelope({
+    ok: true,
+    data: {
+      host: {
+        alias: request.host.alias,
+        domain: request.host.domain,
+        scheme: request.host.scheme ?? "https",
+        remoteRoot: request.host.remoteRoot,
+      },
+      capsules,
+    },
+    error: null,
+  });
+}
+
 function canonicalReleasePaths(request) {
   const capsule = path.join(
     request.host.remoteRoot,
@@ -501,6 +540,121 @@ function normaliseStats(request) {
     container: {
       name: provided.container?.name ?? createHostedContainerName(domain, subname),
     },
+  };
+}
+
+async function readCapsuleRegistryRecords(request) {
+  const registryDirectory = path.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", "capsules");
+  let entries;
+  try {
+    entries = await readdir(registryDirectory, { withFileTypes: true });
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return [];
+    }
+    throw error;
+  }
+
+  const records = [];
+  const files = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
+    .map((entry) => entry.name)
+    .sort();
+  for (const file of files) {
+    const recordPath = path.join(registryDirectory, file);
+    let record;
+    try {
+      record = JSON.parse(await readFile(recordPath, "utf8"));
+    } catch (error) {
+      if (error instanceof SyntaxError) {
+        throw helperError(
+          "Hosted Capsule registry record is invalid.",
+          `Repair the Host server registry record at ${recordPath}, then retry \`sporades host list --host ${request.host.alias}\`.`,
+        );
+      }
+      throw error;
+    }
+    validateListRegistryRecord(request, record, recordPath);
+    records.push(record);
+  }
+  return records;
+}
+
+function lookupCapsuleDockerState(request, record) {
+  const subname = record.subname;
+  const containerName = createHostedContainerName(request.host.domain, subname);
+  const result = runDocker([
+    "ps",
+    "-a",
+    "--filter",
+    "label=com.sporades.managed=true",
+    "--filter",
+    `label=com.sporades.hosted-domain=${request.host.domain}`,
+    "--filter",
+    `label=com.sporades.capsule-subname=${subname}`,
+    "--format",
+    "json",
+  ]);
+  if (!result.ok) {
+    return null;
+  }
+
+  const containers = parseDockerPsJsonLines(result.stdout);
+  const remoteCapsuleId = record.remoteCapsuleId ?? `${request.host.domain}/${subname}`;
+  const match = containers.find((container) => dockerPsContainerMatches(container, containerName, remoteCapsuleId, subname));
+  return match ? normaliseDockerPsContainer(match, containerName) : null;
+}
+
+function parseDockerPsJsonLines(output) {
+  return String(output ?? "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return null;
+      }
+    })
+    .filter(Boolean);
+}
+
+function dockerPsContainerMatches(container, containerName, remoteCapsuleId, subname) {
+  const names = String(container.Names ?? container.Name ?? "");
+  const labels = parseDockerLabels(container.Labels);
+  return (
+    names.split(",").map((name) => name.trim()).includes(containerName) ||
+    labels["com.sporades.capsule-id"] === remoteCapsuleId ||
+    labels["com.sporades.capsule-subname"] === subname
+  );
+}
+
+function parseDockerLabels(value) {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return Object.fromEntries(Object.entries(value).map(([key, labelValue]) => [key, String(labelValue)]));
+  }
+  const labels = {};
+  for (const label of String(value ?? "").split(",")) {
+    const [key, ...rest] = label.split("=");
+    if (key && rest.length > 0) {
+      labels[key.trim()] = rest.join("=").trim();
+    }
+  }
+  return labels;
+}
+
+function normaliseDockerPsContainer(container, fallbackContainerName) {
+  const state = String(container.State ?? container.state ?? "").toLowerCase();
+  const containerName = String(container.Names ?? container.Name ?? fallbackContainerName).split(",")[0].trim();
+  const status = String(container.Status ?? container.status ?? "");
+  return {
+    containerId: String(container.ID ?? container.Id ?? container.id ?? ""),
+    containerName,
+    image: String(container.Image ?? container.image ?? ""),
+    state: state || "unknown",
+    status,
+    running: state === "running",
   };
 }
 
@@ -1382,6 +1536,35 @@ function validateHostLogsRequest(request) {
     throw helperError(
       "Invalid Host log line count.",
       `Pass \`--lines <n>\` with a whole number between 1 and ${MAX_HOST_LOG_LINES}.`,
+    );
+  }
+}
+
+function validateListRequest(request) {
+  const requiredStrings = [
+    request.host?.domain,
+    request.host?.alias,
+    request.host?.remoteRoot,
+  ];
+  if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw helperError("Invalid Hosted Capsule list request.", "Update the Sporades CLI and retry `sporades host list`.");
+  }
+}
+
+function validateListRegistryRecord(request, record, recordPath) {
+  const expectedSubname = path.basename(recordPath, ".json");
+  const expectedRemoteCapsuleId = `${request.host.domain}/${record?.subname ?? expectedSubname}`;
+  const valid =
+    record &&
+    typeof record.subname === "string" &&
+    record.subname.length > 0 &&
+    record.subname === expectedSubname &&
+    record.domain === request.host.domain &&
+    (record.remoteCapsuleId ?? expectedRemoteCapsuleId) === expectedRemoteCapsuleId;
+  if (!valid) {
+    throw helperError(
+      "Hosted Capsule registry record is invalid.",
+      `Repair the Host server registry record at ${recordPath}, then retry \`sporades host list --host ${request.host.alias}\`.`,
     );
   }
 }

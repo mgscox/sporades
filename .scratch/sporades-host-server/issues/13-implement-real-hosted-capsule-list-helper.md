@@ -1,6 +1,6 @@
 # Implement real Hosted Capsule listing from registry and Docker
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

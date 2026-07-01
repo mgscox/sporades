@@ -217,6 +217,10 @@ if (args[0] === "stats") {
   process.stdout.write(process.env.FAKE_DOCKER_STATS_JSON || "{}");
   process.exit(Number(process.env.FAKE_DOCKER_STATS_STATUS || "0"));
 }
+if (args[0] === "ps") {
+  process.stdout.write(process.env.FAKE_DOCKER_PS_JSONL || "");
+  process.exit(Number(process.env.FAKE_DOCKER_PS_STATUS || "0"));
+}
 if (args[0] === "network" && args[1] === "inspect") {
   process.exit(Number(process.env.FAKE_DOCKER_NETWORK_INSPECT_STATUS || "0"));
 }
@@ -1166,6 +1170,74 @@ test("sporades host logs can read a real Host server after requesting an opt-in 
       joinedEntries.includes(marker) || joinedEntries.includes(`${smoke.subname}.${smoke.domain}`),
       "Expected recent Caddy log entries to include the triggered Capsule route or marker",
     );
+  });
+});
+
+test("sporades host list can run against an opt-in real SSH Host server after disposable registration", async (t) => {
+  const smoke = await readHostRegisterSmokeEnv();
+  if (!smoke) {
+    t.skip("Set SPORADES_HOST_SMOKE_SSH_TARGET, SPORADES_HOST_SMOKE_DOMAIN, SPORADES_HOST_SMOKE_REMOTE_ROOT, and SPORADES_HOST_SMOKE_SUBNAME to run this smoke test.");
+    return;
+  }
+
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const projectName = `${smoke.template}-host-list-smoke`;
+    const createResult = await runCli(["create", projectName, "--template", smoke.template, "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, projectName);
+
+    const addHost = await runCli(
+      [
+        "host",
+        "add",
+        smoke.alias,
+        "--server",
+        smoke.server,
+        "--domain",
+        smoke.domain,
+        "--remote-root",
+        smoke.remoteRoot,
+        "--tls",
+        smoke.tls,
+        "--json",
+      ],
+      { cwd: projectDir, env: hostEnv(configDir) },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+
+    const register = await runCli(["host", "register", smoke.subname, "--host", smoke.alias, "--json"], {
+      cwd: projectDir,
+      env: hostEnv(configDir),
+    });
+    let registeredThisRun = false;
+    if (register.code === 0) {
+      registeredThisRun = true;
+    } else {
+      const output = JSON.parse(register.stdout);
+      assert.equal(output.error.message, "Hosted Capsule subname is already registered for this Hosted domain.");
+    }
+
+    const list = await runCli(["host", "list", "--host", smoke.alias, "--json"], {
+      cwd: dir,
+      env: hostEnv(configDir),
+    });
+
+    assert.equal(list.code, 0, `${list.stderr}\n${list.stdout}`);
+    const output = JSON.parse(list.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.host.domain, smoke.domain);
+    const capsule = output.data.capsules.find((candidate) => candidate.subname === smoke.subname);
+    assert.ok(capsule, `Expected ${smoke.subname} to appear in host list output.`);
+    assert.equal(capsule.domain, smoke.domain);
+    assert.equal(capsule.hostedUrl, `https://${smoke.subname}.${smoke.domain}`);
+    assert.equal(capsule.registry.remoteCapsuleId, `${smoke.domain}/${smoke.subname}`);
+    assert.equal(typeof capsule.registry.status, "string");
+    if (registeredThisRun) {
+      assert.equal(capsule.currentRelease, null);
+    }
   });
 });
 
@@ -2349,6 +2421,277 @@ test("sporades host helper reports normalized Docker no-stream stats with raw pa
       ["inspect", "-f", "{{.State.Running}}", "sporades-capsules-example-dev-team-notes"],
       ["stats", "--no-stream", "--format", "json", "sporades-capsules-example-dev-team-notes"],
     ]);
+  });
+});
+
+test("sporades host helper lists an empty Hosted Capsule registry", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote");
+    await mkdir(path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules"), { recursive: true });
+
+    const list = await runHostHelper({
+      action: "capsule.list",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot,
+      },
+      capsule: null,
+    });
+
+    assert.equal(list.code, 0, list.stderr);
+    assert.deepEqual(JSON.parse(list.stdout), {
+      ok: true,
+      data: {
+        host: {
+          alias: "personal",
+          domain: "capsules.example.dev",
+          scheme: "https",
+          remoteRoot,
+        },
+        capsules: [],
+      },
+      error: null,
+    });
+  });
+});
+
+test("sporades host helper lists registry records enriched with Docker container state", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote");
+    const registryDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules");
+    await mkdir(registryDir, { recursive: true });
+    await writeFile(
+      path.join(registryDir, "drafts.json"),
+      `${JSON.stringify({
+        subname: "drafts",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/drafts",
+        hostedUrl: "https://drafts.capsules.example.dev",
+        status: "registered",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        currentRelease: null,
+      })}\n`,
+    );
+    await writeFile(
+      path.join(registryDir, "notes.json"),
+      `${JSON.stringify({
+        subname: "notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/notes",
+        hostedUrl: "https://notes.capsules.example.dev",
+        status: "running",
+        createdAt: "2026-01-02T00:00:00.000Z",
+        updatedAt: "2026-01-03T00:00:00.000Z",
+        currentRelease: {
+          id: "20260103T000000Z-abcdef12",
+          createdAt: "2026-01-03T00:00:00.000Z",
+          bundleHash: "sha256:abc123",
+        },
+      })}\n`,
+    );
+    await writeFile(
+      path.join(registryDir, "archive.json"),
+      `${JSON.stringify({
+        subname: "archive",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/archive",
+        hostedUrl: "https://archive.capsules.example.dev",
+        status: "stopped",
+        createdAt: "2026-01-04T00:00:00.000Z",
+        updatedAt: "2026-01-05T00:00:00.000Z",
+        currentRelease: { id: "20260105T000000Z-fedcba98" },
+      })}\n`,
+    );
+    const docker = await installFakeDocker(dir, {
+      env: {
+        FAKE_DOCKER_PS_JSONL: [
+          JSON.stringify({
+            ID: "abc123def456",
+            Names: "sporades-capsules-example-dev-notes",
+            Image: "node:22-alpine",
+            State: "running",
+            Status: "Up 2 hours",
+          }),
+          JSON.stringify({
+            ID: "fedcba654321",
+            Names: "sporades-capsules-example-dev-archive",
+            Image: "node:22-alpine",
+            State: "exited",
+            Status: "Exited (0) 3 minutes ago",
+          }),
+        ].join("\n") + "\n",
+      },
+    });
+
+    const list = await runHostHelper(
+      {
+        action: "capsule.list",
+        host: {
+          alias: "personal",
+          domain: "capsules.example.dev",
+          scheme: "https",
+          remoteRoot,
+        },
+        capsule: null,
+      },
+      { env: docker.env },
+    );
+
+    assert.equal(list.code, 0, list.stderr);
+    assert.deepEqual(JSON.parse(list.stdout), {
+      ok: true,
+      data: {
+        host: {
+          alias: "personal",
+          domain: "capsules.example.dev",
+          scheme: "https",
+          remoteRoot,
+        },
+        capsules: [
+          {
+            subname: "archive",
+            domain: "capsules.example.dev",
+            hostedUrl: "https://archive.capsules.example.dev",
+            registry: {
+              remoteCapsuleId: "capsules.example.dev/archive",
+              createdAt: "2026-01-04T00:00:00.000Z",
+              updatedAt: "2026-01-05T00:00:00.000Z",
+              status: "stopped",
+            },
+            currentRelease: { id: "20260105T000000Z-fedcba98" },
+            docker: {
+              containerId: "fedcba654321",
+              containerName: "sporades-capsules-example-dev-archive",
+              image: "node:22-alpine",
+              state: "exited",
+              status: "Exited (0) 3 minutes ago",
+              running: false,
+            },
+          },
+          {
+            subname: "drafts",
+            domain: "capsules.example.dev",
+            hostedUrl: "https://drafts.capsules.example.dev",
+            registry: {
+              remoteCapsuleId: "capsules.example.dev/drafts",
+              createdAt: "2026-01-01T00:00:00.000Z",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+              status: "registered",
+            },
+            currentRelease: null,
+            docker: null,
+          },
+          {
+            subname: "notes",
+            domain: "capsules.example.dev",
+            hostedUrl: "https://notes.capsules.example.dev",
+            registry: {
+              remoteCapsuleId: "capsules.example.dev/notes",
+              createdAt: "2026-01-02T00:00:00.000Z",
+              updatedAt: "2026-01-03T00:00:00.000Z",
+              status: "running",
+            },
+            currentRelease: {
+              id: "20260103T000000Z-abcdef12",
+              createdAt: "2026-01-03T00:00:00.000Z",
+              bundleHash: "sha256:abc123",
+            },
+            docker: {
+              containerId: "abc123def456",
+              containerName: "sporades-capsules-example-dev-notes",
+              image: "node:22-alpine",
+              state: "running",
+              status: "Up 2 hours",
+              running: true,
+            },
+          },
+        ],
+      },
+      error: null,
+    });
+
+    const dockerCalls = await readJsonl(docker.logPath);
+    assert.deepEqual(dockerCalls.map((call) => call.args), [
+      [
+        "ps",
+        "-a",
+        "--filter",
+        "label=com.sporades.managed=true",
+        "--filter",
+        "label=com.sporades.hosted-domain=capsules.example.dev",
+        "--filter",
+        "label=com.sporades.capsule-subname=archive",
+        "--format",
+        "json",
+      ],
+      [
+        "ps",
+        "-a",
+        "--filter",
+        "label=com.sporades.managed=true",
+        "--filter",
+        "label=com.sporades.hosted-domain=capsules.example.dev",
+        "--filter",
+        "label=com.sporades.capsule-subname=drafts",
+        "--format",
+        "json",
+      ],
+      [
+        "ps",
+        "-a",
+        "--filter",
+        "label=com.sporades.managed=true",
+        "--filter",
+        "label=com.sporades.hosted-domain=capsules.example.dev",
+        "--filter",
+        "label=com.sporades.capsule-subname=notes",
+        "--format",
+        "json",
+      ],
+    ]);
+  });
+});
+
+test("sporades host helper keeps listing registry records when Docker lookup fails", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote");
+    const registryDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules");
+    await mkdir(registryDir, { recursive: true });
+    await writeFile(
+      path.join(registryDir, "notes.json"),
+      `${JSON.stringify({
+        subname: "notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/notes",
+        hostedUrl: "https://notes.capsules.example.dev",
+        status: "registered",
+        currentRelease: null,
+      })}\n`,
+    );
+    const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_PS_STATUS: "1" } });
+
+    const list = await runHostHelper(
+      {
+        action: "capsule.list",
+        host: {
+          alias: "personal",
+          domain: "capsules.example.dev",
+          scheme: "https",
+          remoteRoot,
+        },
+        capsule: null,
+      },
+      { env: docker.env },
+    );
+
+    assert.equal(list.code, 0, list.stderr);
+    const output = JSON.parse(list.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.capsules[0].subname, "notes");
+    assert.equal(output.data.capsules[0].docker, null);
   });
 });
 
