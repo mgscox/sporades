@@ -442,6 +442,21 @@ async function readHostRegisterSmokeEnv() {
   return { ...smoke, subname, template };
 }
 
+async function readHostPushRoutingSmokeEnv() {
+  const smoke = await readHostRegisterSmokeEnv();
+  if (!smoke) {
+    return null;
+  }
+  const dotEnv = await readDotEnv(path.join(repoRoot, ".env"));
+  const values = { ...dotEnv, ...process.env };
+  const publicUrl = values.SPORADES_HOST_SMOKE_PUBLIC_URL;
+  const expectedText = values.SPORADES_HOST_SMOKE_EXPECTED_TEXT;
+  if (!publicUrl || !expectedText) {
+    return null;
+  }
+  return { ...smoke, publicUrl, expectedText };
+}
+
 async function readHostLogsSmokeEnv() {
   const dotEnv = await readDotEnv(path.join(repoRoot, ".env"));
   const values = { ...dotEnv, ...process.env };
@@ -509,6 +524,12 @@ async function listArchiveEntries(archivePath, cwd) {
   });
   assert.equal(result.code, 0, result.stderr);
   return result.stdout.trim().split("\n").filter(Boolean).sort();
+}
+
+function withCacheBust(url) {
+  const parsed = new URL(url);
+  parsed.searchParams.set("sporades-smoke", String(Date.now()));
+  return parsed.toString();
 }
 
 async function createTarGz(archivePath, sourceDir, entries) {
@@ -1242,6 +1263,92 @@ test("sporades host list can run against an opt-in real SSH Host server after di
     if (registeredThisRun) {
       assert.equal(capsule.currentRelease, null);
     }
+  });
+});
+
+test("sporades host push can restart a real Hosted Capsule and serve it through the public route", async (t) => {
+  const smoke = await readHostPushRoutingSmokeEnv();
+  if (!smoke) {
+    t.skip(
+      "Set SPORADES_HOST_SMOKE_SSH_TARGET, SPORADES_HOST_SMOKE_DOMAIN, SPORADES_HOST_SMOKE_REMOTE_ROOT, SPORADES_HOST_SMOKE_SUBNAME, SPORADES_HOST_SMOKE_PUBLIC_URL, and SPORADES_HOST_SMOKE_EXPECTED_TEXT to run this smoke test.",
+    );
+    return;
+  }
+
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const projectName = `${smoke.template}-host-push-routing-smoke`;
+    const createResult = await runCli(["create", projectName, "--template", smoke.template, "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, projectName);
+
+    const addHost = await runCli(
+      [
+        "host",
+        "add",
+        smoke.alias,
+        "--server",
+        smoke.server,
+        "--domain",
+        smoke.domain,
+        "--remote-root",
+        smoke.remoteRoot,
+        "--tls",
+        smoke.tls,
+        "--json",
+      ],
+      { cwd: projectDir, env: hostEnv(configDir) },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+
+    const register = await runCli(["host", "register", smoke.subname, "--host", smoke.alias, "--json"], {
+      cwd: projectDir,
+      env: hostEnv(configDir),
+    });
+    if (register.code === 0) {
+      const output = JSON.parse(register.stdout);
+      assert.equal(output.ok, true);
+      assert.equal(output.data.capsule.subname, smoke.subname);
+      assert.equal(output.data.capsule.domain, smoke.domain);
+      assert.equal(output.data.capsule.remoteCapsuleId, `${smoke.domain}/${smoke.subname}`);
+    } else {
+      const output = JSON.parse(register.stdout);
+      assert.equal(output.error.message, "Hosted Capsule subname is already registered for this Hosted domain.");
+
+      const list = await runCli(["host", "list", "--host", smoke.alias, "--json"], {
+        cwd: projectDir,
+        env: hostEnv(configDir),
+      });
+      assert.equal(list.code, 0, `${list.stderr}\n${list.stdout}`);
+      const capsule = JSON.parse(list.stdout).data.capsules.find((candidate) => candidate.subname === smoke.subname);
+      assert.ok(capsule, `Expected existing Hosted Capsule ${smoke.subname} to be listed for ${smoke.domain}.`);
+      assert.equal(capsule.domain, smoke.domain);
+      assert.equal(capsule.registry.remoteCapsuleId, `${smoke.domain}/${smoke.subname}`);
+    }
+
+    const push = await runCli(["host", "push", "--host", smoke.alias, "--subname", smoke.subname, "--restart", "--json"], {
+      cwd: projectDir,
+      env: hostEnv(configDir),
+    });
+    assert.equal(push.code, 0, `${push.stderr}\n${push.stdout}`);
+    const pushOutput = JSON.parse(push.stdout);
+    assert.equal(pushOutput.ok, true);
+    assert.equal(pushOutput.error, null);
+    assert.equal(pushOutput.data.installed, true);
+    assert.equal(pushOutput.data.restartRequested, true);
+    assert.equal(pushOutput.data.restarted, true);
+    assert.equal(pushOutput.data.capsule.subname, smoke.subname);
+    assert.equal(pushOutput.data.capsule.domain, smoke.domain);
+
+    const response = await fetch(withCacheBust(smoke.publicUrl), {
+      redirect: "manual",
+      signal: AbortSignal.timeout(30_000),
+    });
+    const body = await response.text();
+    assert.equal(response.status, 200, body);
+    assert.match(body, new RegExp(escapeRegExp(smoke.expectedText)));
   });
 });
 

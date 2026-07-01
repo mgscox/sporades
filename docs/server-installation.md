@@ -224,6 +224,51 @@ sporades host push --host personal --subname team-notes --restart --json
 
 Rollback is explicit: repush the release you want to become current.
 
+### Opt-in Real Host Smoke Tests
+
+The Host tests include opt-in smoke coverage for disposable Host servers. These
+tests run real SSH, mutate real Host server state, create or reuse a real Hosted
+Capsule, push a real release, restart it, and fetch the public route. Use a
+disposable Host server and Capsule subname.
+
+The bootstrap smoke test runs when these variables are present:
+
+```sh
+SPORADES_HOST_SMOKE_SSH_TARGET=root@example.com
+SPORADES_HOST_SMOKE_DOMAIN=example.com
+SPORADES_HOST_SMOKE_REMOTE_ROOT=/srv/sporades
+```
+
+Registration, list, and push-routing smoke tests also require:
+
+```sh
+SPORADES_HOST_SMOKE_SUBNAME=my-disposable-capsule
+```
+
+The push-routing smoke test additionally requires a public HTTP(S) URL and the
+expected response text. The URL can point at the page route, such as
+`https://my-disposable-capsule.example.com/`, or at a client asset route, such as
+`https://my-disposable-capsule.example.com/client.js`.
+
+```sh
+SPORADES_HOST_SMOKE_PUBLIC_URL=https://my-disposable-capsule.example.com/client.js
+SPORADES_HOST_SMOKE_EXPECTED_TEXT="Sporades Todos"
+```
+
+Optional variables:
+
+```sh
+SPORADES_HOST_SMOKE_ALIAS=smoke
+SPORADES_HOST_SMOKE_TEMPLATE=todo # todo or guestbook
+SPORADES_HOST_SMOKE_TLS=automatic # automatic or cloudflare-origin
+```
+
+Run the smoke tests with:
+
+```sh
+npm test -- test/host.test.js
+```
+
 ## 8. Operate Hosted Capsules
 
 Lifecycle commands:
