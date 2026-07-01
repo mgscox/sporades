@@ -30,6 +30,10 @@ async function main() {
     await registerCapsule(request);
     return;
   }
+  if (request.action === "capsule.unregister") {
+    await unregisterCapsule(request);
+    return;
+  }
   if (request.action === "capsule.release.install") {
     await installRelease(request);
     return;
@@ -98,9 +102,21 @@ async function registerCapsule(request) {
   const registration = normaliseRegistration(request);
   await ensureHostedDomainBootstrapped(request, registration);
 
+  let reactivated = false;
   await mkdir(path.dirname(registryLockPath(request)), { recursive: true });
   await withRegistryLock(request, async () => {
     if (await pathExists(registration.registryRecord)) {
+      const existing = await readRegistryRecordForCapsule(request, "register");
+      assertRegistryRecordMatchesRequest(request, existing);
+      if (existing.status === "unregistered") {
+        await mkdir(path.dirname(registration.registryRecord), { recursive: true });
+        await mkdir(registration.directories.releases, { recursive: true });
+        await mkdir(registration.directories.data, { recursive: true });
+        await writeUnavailableRoute(registration.lifecycle);
+        await writeRegistryRecordAtomic(registration.registryRecord, reactivateRegistrationRecord(existing));
+        reactivated = true;
+        return;
+      }
       throw helperError(
         "Hosted Capsule subname is already registered for this Hosted domain.",
         `Choose a different Capsule subname for ${request.host.domain}.`,
@@ -118,6 +134,7 @@ async function registerCapsule(request) {
     ok: true,
     data: {
       registered: true,
+      reactivated,
       authoritative: true,
       capsule: {
         subname: registration.subname,
@@ -131,6 +148,46 @@ async function registerCapsule(request) {
     },
     error: null,
   });
+}
+
+async function unregisterCapsule(request) {
+  validateUnregisterRequest(request);
+  const unregister = normaliseUnregister(request);
+  await mkdir(path.dirname(registryLockPath(request)), { recursive: true });
+
+  let data;
+  await withRegistryLock(request, async () => {
+    const record = await readRegistryRecordForCapsule(request, "unregister");
+    assertRegistryRecordMatchesRequest(request, record);
+
+    if (record.status === "unregistered") {
+      data = createUnregisterResult(request, unregister, record, true);
+      return;
+    }
+
+    stopAndRemoveContainer(unregister.container.name);
+    const route = await removeManagedRoute(unregister.lifecycle, unregister.route.routeFile);
+    const now = new Date();
+    const deleteAfter = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000).toISOString();
+    const nextRecord = {
+      ...record,
+      status: "unregistered",
+      unregistered: true,
+      unregisteredAt: now.toISOString(),
+      deleteAfter,
+      updatedAt: now.toISOString(),
+    };
+    try {
+      await writeRegistryRecordAtomic(unregister.registryRecord, nextRecord);
+    } catch (error) {
+      await restoreRemovedRoute(unregister.lifecycle, route);
+      throw error;
+    }
+    await finalizeRemovedRoute(route);
+    data = createUnregisterResult(request, unregister, nextRecord, false, route);
+  });
+
+  writeEnvelope({ ok: true, data, error: null });
 }
 
 async function installRelease(request) {
@@ -402,6 +459,9 @@ async function listCapsules(request) {
   const records = await readCapsuleRegistryRecords(request);
   const capsules = [];
   for (const record of records) {
+    if (record.status === "unregistered") {
+      continue;
+    }
     capsules.push({
       subname: record.subname,
       domain: record.domain,
@@ -430,6 +490,28 @@ async function listCapsules(request) {
     },
     error: null,
   });
+}
+
+function createUnregisterResult(request, unregister, record, idempotent, route = null) {
+  return {
+    unregistered: true,
+    idempotent,
+    capsule: {
+      subname: request.capsule.subname,
+      domain: request.host.domain,
+      hostedUrl: unregister.hostedUrl,
+      remoteCapsuleId: unregister.remoteCapsuleId,
+    },
+    registryRecord: unregister.registryRecord,
+    directories: unregister.directories,
+    preserved: {
+      releases: record.currentRelease?.id ? path.join(unregister.directories.releases, record.currentRelease.id) : unregister.directories.releases,
+      data: unregister.directories.data,
+    },
+    deleteAfter: record.deleteAfter ?? null,
+    container: { name: unregister.container.name, running: false, removed: true },
+    route: route ?? { ...unregister.route, removed: true },
+  };
 }
 
 function canonicalReleasePaths(request) {
@@ -696,6 +778,43 @@ function normaliseRegistration(request) {
   };
 }
 
+function normaliseUnregister(request) {
+  const provided = request.unregister ?? {};
+  const subname = request.capsule.subname;
+  const domain = request.host.domain;
+  const remoteRoot = request.host.remoteRoot;
+  const scheme = request.host.scheme ?? "https";
+  const hostedUrl = `${scheme}://${subname}.${domain}`;
+  const remoteCapsuleId = `${domain}/${subname}`;
+  const capsuleDirectory = path.join(remoteRoot, "hosts", domain, "capsules", subname);
+  const routeFile = path.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
+  const containerName = createHostedContainerName(domain, subname);
+  return {
+    subname,
+    domain,
+    hostedUrl,
+    remoteCapsuleId,
+    registryRecord: path.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
+    directories: {
+      capsule: capsuleDirectory,
+      releases: path.join(capsuleDirectory, "releases"),
+      data: path.join(capsuleDirectory, "data"),
+    },
+    container: {
+      name: containerName,
+    },
+    route: {
+      hostname: `${subname}.${domain}`,
+      target: "removed",
+      routeFile,
+    },
+    lifecycle: {
+      remoteRoot,
+    },
+    provided,
+  };
+}
+
 function normaliseRegistrationTls(request) {
   const remoteRoot = request.host.remoteRoot;
   const domain = request.host.domain;
@@ -738,6 +857,16 @@ function createRegistrationRecord(registration) {
     createdAt: now,
     updatedAt: now,
     currentRelease: null,
+  };
+}
+
+function reactivateRegistrationRecord(record) {
+  const now = new Date().toISOString();
+  const { unregistered, unregisteredAt, deleteAfter, ...activeRecord } = record;
+  return {
+    ...activeRecord,
+    status: "registered",
+    updatedAt: now,
   };
 }
 
@@ -1181,6 +1310,51 @@ async function applyManagedRoute(lifecycle, routeFile, contents) {
   await rm(previousRouteFile, { force: true });
 }
 
+async function removeManagedRoute(lifecycle, routeFile) {
+  const previousRouteFile = `${routeFile}.previous-${process.pid}`;
+  await rm(previousRouteFile, { force: true });
+  const hadRoute = await pathExists(routeFile);
+  if (!hadRoute) {
+    return { routeFile, removed: false };
+  }
+
+  await rename(routeFile, previousRouteFile);
+  try {
+    reloadCaddy(lifecycle);
+  } catch (error) {
+    await rename(previousRouteFile, routeFile);
+    try {
+      reloadCaddy(lifecycle);
+    } catch {
+      throw helperError(
+        "Failed to remove Hosted Capsule route and failed to reload the restored Caddy config.",
+        "The previous route file was restored, but Caddy could not reload it. Check the Host server Caddy service and configuration, then retry unregister.",
+      );
+    }
+    throw helperError(
+      "Failed to remove Hosted Capsule route.",
+      "The previous route file was restored. Check the Host server Caddy service and configuration, then retry unregister.",
+    );
+  }
+
+  return { routeFile, removed: true, previousRouteFile };
+}
+
+async function finalizeRemovedRoute(route) {
+  if (route?.previousRouteFile) {
+    await rm(route.previousRouteFile, { force: true });
+  }
+}
+
+async function restoreRemovedRoute(lifecycle, route) {
+  if (!route?.previousRouteFile) {
+    return;
+  }
+  await rm(route.routeFile, { force: true });
+  await rename(route.previousRouteFile, route.routeFile);
+  reloadCaddy(lifecycle);
+}
+
 function validateCaddyRoute(routeFile) {
   const result = spawnSync("caddy", ["validate", "--config", routeFile, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
@@ -1217,6 +1391,41 @@ async function updateRegistryStatus(request, status) {
     record.updatedAt = new Date().toISOString();
     return record;
   });
+}
+
+async function readRegistryRecordForCapsule(request, purpose) {
+  const registryRecordPath = registryPath(request);
+  try {
+    return JSON.parse(await readFile(registryRecordPath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw helperError(
+        "Hosted Capsule is not registered.",
+        missingCapsuleHint(request, purpose),
+      );
+    }
+    if (error instanceof SyntaxError) {
+      throw helperError(
+        "Hosted Capsule registry record is invalid.",
+        "Repair the Host server registry record before retrying the command.",
+      );
+    }
+    throw error;
+  }
+}
+
+function assertRegistryRecordMatchesRequest(request, record) {
+  const expectedRemoteCapsuleId = `${request.host.domain}/${request.capsule.subname}`;
+  const matches =
+    record?.subname === request.capsule.subname &&
+    record?.domain === request.host.domain &&
+    (record?.remoteCapsuleId ?? expectedRemoteCapsuleId) === expectedRemoteCapsuleId;
+  if (!matches) {
+    throw helperError(
+      "Hosted Capsule registry record does not match the release request.",
+      "Rebind the local project or pass the correct Host profile and Capsule subname.",
+    );
+  }
 }
 
 async function mutateRegistryRecord(request, mutate) {
@@ -1450,35 +1659,12 @@ function isSafeArchiveEntryName(name) {
 }
 
 async function verifyRegisteredCapsule(request, purpose = "push") {
-  const registryRecordPath = registryPath(request);
-  let record;
-  try {
-    record = JSON.parse(await readFile(registryRecordPath, "utf8"));
-  } catch (error) {
-    if (error?.code === "ENOENT") {
-      throw helperError(
-        "Hosted Capsule is not registered.",
-        missingCapsuleHint(request, purpose),
-      );
-    }
-    if (error instanceof SyntaxError) {
-      throw helperError(
-        "Hosted Capsule registry record is invalid.",
-        "Repair the Host server registry record before pushing a release.",
-      );
-    }
-    throw error;
-  }
-
-  const expectedRemoteCapsuleId = `${request.host.domain}/${request.capsule.subname}`;
-  const matches =
-    record?.subname === request.capsule.subname &&
-    record?.domain === request.host.domain &&
-    (record?.remoteCapsuleId ?? expectedRemoteCapsuleId) === expectedRemoteCapsuleId;
-  if (!matches) {
+  const record = await readRegistryRecordForCapsule(request, purpose);
+  assertRegistryRecordMatchesRequest(request, record);
+  if (record.status === "unregistered") {
     throw helperError(
-      "Hosted Capsule registry record does not match the release request.",
-      "Rebind the local project or pass the correct Host profile and Capsule subname.",
+      "Hosted Capsule is unregistered.",
+      `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before retrying this command.`,
     );
   }
 }
@@ -1489,6 +1675,9 @@ function missingCapsuleHint(request, purpose) {
   }
   if (purpose === "stats") {
     return `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before reading stats.`;
+  }
+  if (purpose === "unregister") {
+    return `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before unregistering the Hosted Capsule.`;
   }
   return `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before managing the Hosted Capsule lifecycle.`;
 }
@@ -1615,6 +1804,29 @@ function validateRegisterRequest(request) {
     throw helperError(
       "Invalid Host TLS mode.",
       "Use `--tls automatic` for Caddy-managed certificates or `--tls cloudflare-origin` for preinstalled Cloudflare origin certificates.",
+    );
+  }
+}
+
+function validateUnregisterRequest(request) {
+  const requiredStrings = [
+    request.host?.domain,
+    request.host?.alias,
+    request.host?.remoteRoot,
+    request.capsule?.subname,
+  ];
+  if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw helperError("Invalid Hosted Capsule unregister request.", "Update the Sporades CLI and retry `sporades host unregister`.");
+  }
+  const unregister = request.unregister ?? {};
+  const mismatchedIdentity =
+    (unregister.subname && unregister.subname !== request.capsule.subname) ||
+    (unregister.domain && unregister.domain !== request.host.domain) ||
+    (unregister.remoteCapsuleId && unregister.remoteCapsuleId !== `${request.host.domain}/${request.capsule.subname}`);
+  if (mismatchedIdentity) {
+    throw helperError(
+      "Hosted Capsule unregister request does not match the Host profile.",
+      "Rebind the local project or pass the correct Host profile and Capsule subname.",
     );
   }
 }

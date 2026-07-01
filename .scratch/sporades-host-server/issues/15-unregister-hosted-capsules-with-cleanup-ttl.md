@@ -1,6 +1,6 @@
 # Unregister Hosted Capsules with a cleanup TTL
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
