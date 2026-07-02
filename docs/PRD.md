@@ -275,16 +275,9 @@ Client bundle:
 
 ### Runtime directory
 
-All build output and runtime artefacts live in `.sporades/` (gitignored):
-
-```
-.sporades/
-├── build/
-│   ├── server.mjs
-│   └── client.js
-├── data.db
-└── binding.json    # container binding (deploy only)
-```
+All build output and runtime artefacts live in `.sporades/` (gitignored). The
+canonical project Runtime directory layout is maintained in
+[runtime-layout.md](./runtime-layout.md#project-runtime-directory).
 
 ## Container Architecture (v0)
 
@@ -296,18 +289,11 @@ FROM node:22-alpine
 
 Stock image, no hardening in v0. v1 will introduce: non-root user, read-only FS, seccomp, cgroups, no-shell.
 
-### Per-app runtime
+### Per-Capsule runtime
 
-```
-Container
-├── Base image (node:22-alpine)
-├── /app/server.mjs     ← mounted read-only
-├── /app/client.js      ← mounted read-only
-├── /app/index.html     ← mounted read-only
-├── /app/sporades.json  ← mounted read-only (passed as arg, not read by server)
-├── /app/.env.sporades.server ← mounted read-only
-└── /app/data/          ← mounted read-write (SQLite volume)
-```
+Container sessions mount release files read-only and persistent data read-write.
+The canonical mount layout is maintained in
+[runtime-layout.md](./runtime-layout.md#local-container-mounts).
 
 ### Container lifecycle
 

@@ -1,5 +1,15 @@
 # Sporades
 
+## Documentation
+
+- [User guide](docs/user-guide.md) - quick start and day-to-day Capsule usage.
+- [Architecture](docs/architecture.md) - platform ethos, runtime layout, Host
+  routing, storage, and client transport.
+- [Runtime layout](docs/runtime-layout.md) - canonical filesystem paths,
+  runtime mounts, and Host server directory structures.
+- [Host server installation](docs/server-installation.md) - preparing a Linux
+  Host server for Hosted Capsules.
+
 ## Auth
 
 Sporades apps can enable multiple auth providers in `sporades.json`:

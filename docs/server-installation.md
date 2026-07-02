@@ -345,36 +345,10 @@ structured JSON.
 
 ## Directory Layout
 
-With `remoteRoot=/srv/sporades` and `domain=example.com`, the Host server uses:
-
-```text
-/srv/sporades/
-  bin/
-    sporades-host-helper
-  incoming/
-  caddy/
-    Caddyfile
-    sporades-hosted-domains.caddy
-    hosts/
-      example.com.caddy
-      example.com/
-        <subname>.caddy
-  hosts/
-    example.com/
-      tls/
-        origin.crt
-        origin.key
-      registry/
-      capsules/
-        <subname>/
-          releases/
-          current -> releases/<release-id>
-          data/
-```
-
-Hosted Capsule containers use deterministic names based on the domain and
-subname, for example `sporades-example-com-team-notes`, and include Docker
-labels for Sporades ownership, Hosted domain, Capsule subname, and Capsule ID.
+The canonical Host server directory structure, Hosted Capsule data location,
+Caddy file layout, and container naming rules live in
+[runtime-layout.md](./runtime-layout.md#host-server-layout). Keep that reference
+updated instead of copying the tree into procedural install docs.
 
 ## Troubleshooting
 
