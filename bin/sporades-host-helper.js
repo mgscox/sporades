@@ -262,6 +262,7 @@ async function installRelease(request) {
       "Upload the release again with `sporades host push` and check that tar is installed on the Host server.",
     );
   }
+  await removeDiscardedArchiveMetadata(tempReleaseDirectory);
 
   try {
     await rename(tempReleaseDirectory, paths.release);
@@ -1859,15 +1860,17 @@ function validateReleaseArchive(request) {
   const release = request.release;
   const entries = listArchiveEntries(release.remoteArchive);
   const expectedFiles = expectedReleaseFiles(release);
-  const actualNames = entries.map((entry) => normaliseArchiveEntryName(entry.name));
+  const allNames = entries.map((entry) => normaliseArchiveEntryName(entry.name));
+  const runtimeEntries = entries.filter((entry) => !isDiscardableArchiveMetadata(entry.name));
+  const actualNames = runtimeEntries.map((entry) => normaliseArchiveEntryName(entry.name));
 
-  if (entries.some((entry) => entry.type !== "-")) {
+  if (entries.some((entry) => !isSafeArchiveEntryType(entry))) {
     throw helperError(
       "Hosted Capsule release archive contains unsafe entries.",
       "Push again so Sporades can package regular runtime files only.",
     );
   }
-  if (actualNames.some((name) => !isSafeArchiveEntryName(name))) {
+  if (allNames.some((name) => !isSafeArchiveEntryName(name))) {
     throw helperError(
       "Hosted Capsule release archive contains unsafe paths.",
       "Push again so Sporades can package runtime files without absolute or parent-relative paths.",
@@ -1881,6 +1884,19 @@ function validateReleaseArchive(request) {
       "Hosted Capsule release archive contains unexpected files.",
       "Push again so Sporades can package only runtime files.",
     );
+  }
+}
+
+async function removeDiscardedArchiveMetadata(directory) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.name === "__MACOSX" || entry.name.startsWith("._")) {
+      await rm(entryPath, { recursive: entry.isDirectory(), force: true });
+      continue;
+    }
+    if (entry.isDirectory()) {
+      await removeDiscardedArchiveMetadata(entryPath);
+    }
   }
 }
 
@@ -1915,7 +1931,19 @@ function expectedReleaseFiles(release) {
 }
 
 function normaliseArchiveEntryName(name) {
-  return String(name).replace(/^\.\//, "");
+  return String(name).replace(/^\.\//, "").replace(/\/+$/, "");
+}
+
+function isDiscardableArchiveMetadata(name) {
+  const normalisedName = normaliseArchiveEntryName(name);
+  return normalisedName === "__MACOSX" || normalisedName.startsWith("__MACOSX/") || normalisedName.startsWith("._");
+}
+
+function isSafeArchiveEntryType(entry) {
+  if (entry.type === "-") {
+    return true;
+  }
+  return entry.type === "d" && isDiscardableArchiveMetadata(entry.name);
 }
 
 function isSafeArchiveEntryName(name) {

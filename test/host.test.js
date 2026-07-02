@@ -4277,6 +4277,81 @@ test("sporades host helper derives install paths from Host state instead of requ
   });
 });
 
+test("sporades host helper discards known macOS archive metadata during release install", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const incomingDir = path.join(remoteRoot, "incoming");
+    const runtimeDir = path.join(dir, "runtime-files");
+    const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
+    await mkdir(incomingDir, { recursive: true });
+    await mkdir(path.join(runtimeDir, "__MACOSX"), { recursive: true });
+    await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
+    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
+    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
+    await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+    await writeFile(path.join(runtimeDir, "._server.mjs"), "appledouble metadata\n");
+    await writeFile(path.join(runtimeDir, "__MACOSX", "._server.mjs"), "appledouble metadata\n");
+    await createTarGz(archivePath, runtimeDir, [
+      "server.mjs",
+      "client.js",
+      "index.html",
+      "sporades.json",
+      "._server.mjs",
+      "__MACOSX",
+    ]);
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(
+      registryRecordPath,
+      `${JSON.stringify({
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+      })}\n`,
+    );
+
+    const install = await runHostHelper(
+      {
+        action: "capsule.release.install",
+        host: {
+          alias: "personal",
+          domain: "capsules.example.dev",
+          scheme: "https",
+          remoteRoot,
+        },
+        capsule: {
+          subname: "team-notes",
+        },
+        release: {
+          id: "20260630T221500Z-feedface",
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          remoteCapsuleId: "capsules.example.dev/team-notes",
+          remoteArchive: archivePath,
+          restart: false,
+          serverEnvIncluded: false,
+          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          directories: {
+            capsule: capsuleDir,
+            releases: path.join(capsuleDir, "releases"),
+            release: path.join(capsuleDir, "releases", "20260630T221500Z-feedface"),
+            data: path.join(capsuleDir, "data"),
+          },
+          currentLink: path.join(capsuleDir, "current"),
+        },
+      },
+      { cwd: dir },
+    );
+
+    assert.equal(install.code, 0, install.stderr);
+    const output = JSON.parse(install.stdout);
+    assert.equal(output.ok, true);
+    const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
+    assert.equal(await readFile(path.join(releaseDir, "server.mjs"), "utf8"), "export default 'server bundle';\n");
+    assert.deepEqual((await readdir(releaseDir)).toSorted(), ["client.js", "index.html", "server.mjs", "sporades.json"]);
+  });
+});
+
 test("sporades host helper rejects unsafe or unexpected release archive entries before extraction", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
