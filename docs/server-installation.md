@@ -20,7 +20,8 @@ Local machine:
 - A checked-out Sporades repo or installed `sporades` CLI.
 - Node.js 22+ and npm.
 - `tar`, `scp`, and `ssh` available on `PATH`.
-- SSH key access to the Host server, for example `ssh root@168.119.161.21`.
+- SSH key access (i.e. no SSH password) to the Host server, for example `ssh root@example.com`.
+- Optional: Docker for deployment of packaged capsules on local host
 
 Host server:
 
@@ -34,6 +35,8 @@ Host server:
   for Capsule subdomains, for example `*.example.com`.
 - Caddy-managed automatic HTTPS by default, or Cloudflare wildcard Edge TLS in
   front of the Host server when using `--tls cloudflare-origin`.
+
+**Note:** Example bash commands to install server dependencies from a fresh Debian/ Ubuntu-type installation are detailed in section 2 below.
 
 When a Host profile is added with `--tls cloudflare-origin`, each Hosted domain
 must have readable Cloudflare origin certificate files at:
@@ -77,12 +80,19 @@ The exact package commands depend on the server distribution. On Debian or
 Ubuntu-style hosts, the shape is:
 
 ```sh
-ssh root@<server-ip>
+ssh root@<server-ip-or-hostname>
 
 apt-get update
-apt-get install -y nodejs npm docker.io caddy tar
+apt-get install -y ca-certificates curl gnupg tar
+
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt-get install -y nodejs docker.io caddy
+
 systemctl enable --now docker
 systemctl enable --now caddy
+
+ufw allow 80/tcp
+ufw allow 443/tcp
 ```
 
 Confirm the tools are available:
@@ -114,6 +124,30 @@ The helper path must match the Host profile `remoteRoot`. If you later create a
 profile with `--remote-root /opt/sporades`, the helper must live at
 `/opt/sporades/bin/sporades-host-helper`.
 
+Optional production defaults can be set in
+`$REMOTE_ROOT/sporades-host-helper.json`. The file is JSON rather than TOML so
+the dependency-free Node helper can parse it directly:
+
+```json
+{
+  "hostedCapsule": {
+    "dockerImage": "node:22-alpine",
+    "dockerNetwork": "sporades-hosted-capsules",
+    "graceCheckMs": 500
+  },
+  "logs": {
+    "defaultLines": 200,
+    "maxLines": 10000
+  }
+}
+```
+
+All fields are optional.
+
+**Precedence**: Explicit CLI/request values win over the JSON configuration file; the
+JSON file wins over the helper's built-in defaults. For non-standard installs, set
+`SPORADES_HOST_HELPER_CONFIG=/path/to/config.json` when running the helper.
+
 ## 4. Optionally Install Cloudflare Origin Certificate Files
 
 Skip this step when using the default Caddy automatic HTTPS mode.
@@ -143,7 +177,7 @@ routes.
 
 ```sh
 sporades host add personal \
-  --server root@<server-ip> \
+  --server root@<server-ip-or-hostname> \
   --domain example.com \
   --remote-root /srv/sporades \
   --json
@@ -158,8 +192,8 @@ has propagated:
 
 ```sh
 sporades host add personal \
-  --server root@168.119.161.21 \
-  --domain mattgscox.co.uk \
+  --server root@example.com \
+  --domain example.com \
   --remote-root /srv/sporades \
   --json
 ```
@@ -169,8 +203,8 @@ force Cloudflare origin certificates instead:
 
 ```sh
 sporades host add personal \
-  --server root@168.119.161.21 \
-  --domain mattgscox.co.uk \
+  --server root@example.com \
+  --domain example.com \
   --remote-root /srv/sporades \
   --tls cloudflare-origin \
   --json
@@ -222,14 +256,16 @@ Capsule in one command:
 sporades host push --host personal --subname team-notes --restart --json
 ```
 
-On macOS, set `COPYFILE_DISABLE=1` when pushing if tar includes AppleDouble
+**Important:** On macOS, set `COPYFILE_DISABLE=1` when pushing if tar includes AppleDouble
 `._*` metadata files; those files are not valid Hosted Capsule runtime files.
+Whilst the server helper will silently discard known metadata files, it is preferable 
+to avoid sending them.
 
 ```sh
 COPYFILE_DISABLE=1 sporades host push --host personal --subname team-notes --restart --json
 ```
 
-Rollback is explicit: repush the release you want to become current.
+Rollback is explicit: repush the release you want to become current. Previous releases are saved locally under `./.sporades/host-push`.
 
 ### Opt-in Real Host Smoke Tests
 

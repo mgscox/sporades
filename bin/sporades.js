@@ -33,12 +33,8 @@ const DEFAULT_HOST_REMOTE_ROOT = "/srv/sporades";
 const DEFAULT_HOST_TLS_MODE = "automatic";
 const HOST_TLS_MODES = new Set(["automatic", "cloudflare-origin"]);
 const RESERVED_CAPSULE_SUBNAMES = new Set(["www", "api", "admin", "root", "host"]);
-const DEFAULT_HOST_LOG_LINES = 200;
 const MAX_HOST_LOG_LINES = 10000;
 const HOST_LOG_SOURCES = new Set(["http", "stdout", "stderr"]);
-const HOSTED_CAPSULE_DOCKER_IMAGE = "node:22-alpine";
-const HOSTED_CAPSULE_DOCKER_NETWORK = "sporades-hosted-capsules";
-const HOSTED_CAPSULE_GRACE_CHECK_MS = 500;
 const CLI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 main().catch((error) => {
@@ -350,7 +346,7 @@ function parseHostArgs(args) {
   let remoteRoot = DEFAULT_HOST_REMOTE_ROOT;
   let tlsMode = DEFAULT_HOST_TLS_MODE;
   let subname = null;
-  let lines = DEFAULT_HOST_LOG_LINES;
+  let lines = null;
   let restart = false;
   const positional = [];
 
@@ -1434,7 +1430,7 @@ async function manageHost(options) {
       subname: target.subname,
       logs: {
         source,
-        lines: options.lines,
+        ...(options.lines === null ? {} : { lines: options.lines }),
       },
       projectDir: options.projectDir,
     });
@@ -2040,9 +2036,6 @@ function createHostLifecycleRequest(alias, profile, subname) {
     },
     container: {
       name: containerName,
-      network: HOSTED_CAPSULE_DOCKER_NETWORK,
-      image: HOSTED_CAPSULE_DOCKER_IMAGE,
-      graceCheckMs: HOSTED_CAPSULE_GRACE_CHECK_MS,
       labels: {
         "com.sporades.managed": "true",
         "com.sporades.hosted-domain": profile.domain,
@@ -2197,7 +2190,6 @@ function createHostBootstrapRequest(profile) {
       certificate: tlsMode === "cloudflare-origin" ? posixJoin(tlsDirectory, "origin.crt") : null,
       key: tlsMode === "cloudflare-origin" ? posixJoin(tlsDirectory, "origin.key") : null,
     },
-    network: "sporades-hosted-capsules",
     caddy: {
       managedInclude: posixJoin(caddyDirectory, "sporades-hosted-domains.caddy"),
       domainInclude: posixJoin(caddyDirectory, "hosts", `${profile.domain}.caddy`),

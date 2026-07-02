@@ -983,7 +983,6 @@ process.exit(0);
           certificate: null,
           key: null,
         },
-        network: "sporades-hosted-capsules",
         caddy: {
           managedInclude: "/opt/sporades/caddy/sporades-hosted-domains.caddy",
           domainInclude: "/opt/sporades/caddy/hosts/capsules.example.dev.caddy",
@@ -1472,6 +1471,136 @@ test("sporades host helper bootstraps a Hosted domain idempotently without delet
         ["reload", "--config", path.join(remoteRoot, "caddy", "Caddyfile"), "--adapter", "caddyfile"],
       ],
     );
+  });
+});
+
+test("sporades host helper reads configurable production defaults from remoteRoot JSON", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    await mkdir(remoteRoot, { recursive: true });
+    await writeFile(
+      path.join(remoteRoot, "sporades-host-helper.json"),
+      `${JSON.stringify(
+        {
+          hostedCapsule: {
+            dockerNetwork: "sporades-custom-network",
+          },
+          logs: {
+            defaultLines: 2,
+            maxLines: 50,
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+
+    const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_NETWORK_INSPECT_STATUS: "1" } });
+    const caddyUser = await installFakeCaddyUserCommands(path.join(dir, "caddy-user"));
+    const env = {
+      ...docker.env,
+      ...caddyUser.env,
+      PATH: `${caddyUser.fakeBinDir}${path.delimiter}${docker.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+
+    const bootstrap = await runHostHelper(
+      {
+        action: "host.bootstrap",
+        host: {
+          alias: "personal",
+          domain: "capsules.example.dev",
+          scheme: "https",
+          remoteRoot,
+        },
+        capsule: null,
+      },
+      { cwd: dir, env },
+    );
+
+    assert.equal(bootstrap.code, 0, bootstrap.stderr);
+    assert.deepEqual(JSON.parse(bootstrap.stdout).data.network, {
+      name: "sporades-custom-network",
+      created: true,
+    });
+    assert.deepEqual(
+      (await docker.calls()).map((call) => call.args).slice(0, 2),
+      [
+        ["network", "inspect", "sporades-custom-network"],
+        ["network", "create", "sporades-custom-network"],
+      ],
+    );
+
+    const accessLog = path.join(remoteRoot, "caddy", "logs", "access.log");
+    await writeFile(accessLog, ["old", "one", "two"].join("\n") + "\n");
+    const logs = await runHostHelper(
+      {
+        action: "host.logs",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: null,
+        logs: { source: "caddy-combined" },
+      },
+      { cwd: dir },
+    );
+
+    assert.equal(logs.code, 0, logs.stderr);
+    assert.deepEqual(JSON.parse(logs.stdout), {
+      ok: true,
+      data: {
+        lineCount: 2,
+        source: "http",
+        entries: ["one", "two"],
+      },
+      error: null,
+    });
+
+    const explicitLogs = await runHostHelper(
+      {
+        action: "host.logs",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: null,
+        logs: { source: "caddy-combined", lines: 1 },
+      },
+      { cwd: dir },
+    );
+
+    assert.equal(explicitLogs.code, 0, explicitLogs.stderr);
+    assert.deepEqual(JSON.parse(explicitLogs.stdout), {
+      ok: true,
+      data: {
+        lineCount: 1,
+        source: "http",
+        entries: ["two"],
+      },
+      error: null,
+    });
+  });
+});
+
+test("sporades host helper returns a structured error for invalid config JSON", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    await mkdir(remoteRoot, { recursive: true });
+    await writeFile(path.join(remoteRoot, "sporades-host-helper.json"), "{ nope\n");
+
+    const logs = await runHostHelper(
+      {
+        action: "host.logs",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: null,
+        logs: { source: "caddy-combined" },
+      },
+      { cwd: dir },
+    );
+
+    assert.equal(logs.code, 0, logs.stderr);
+    assert.deepEqual(JSON.parse(logs.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Host helper config is invalid JSON.",
+        hint: `Fix ${path.join(remoteRoot, "sporades-host-helper.json")}, then retry the Host helper command.`,
+      },
+    });
   });
 });
 
@@ -2187,13 +2316,10 @@ process.exit(0);
     const startOutput = JSON.parse(start.stdout);
     assert.equal(startOutput.data.action, "capsule.start");
     assert.equal(startOutput.data.container.name, "sporades-capsules-example-dev-team-notes");
-    assert.equal(startOutput.data.container.network, "sporades-hosted-capsules");
-    assert.equal(startOutput.data.container.image, "node:22-alpine");
     assert.equal(startOutput.data.container.labels["com.sporades.managed"], "true");
     assert.equal(startOutput.data.container.labels["com.sporades.hosted-domain"], "capsules.example.dev");
     assert.equal(startOutput.data.container.labels["com.sporades.capsule-subname"], "team-notes");
     assert.equal(startOutput.data.container.labels["com.sporades.capsule-id"], "capsules.example.dev/team-notes");
-    assert.equal(startOutput.data.container.graceCheckMs, 500);
     assert.equal(startOutput.data.route.target, "container");
 
     const stop = await runCli(["host", "stop", "team-notes", "--host", "personal", "--json"], {
@@ -2387,9 +2513,6 @@ test("sporades host helper starts the current release in Docker and routes throu
           },
           container: {
             name: "sporades-capsules-example-dev-team-notes",
-            network: "sporades-hosted-capsules",
-            image: "node:22-alpine",
-            graceCheckMs: 500,
             labels: {
               "com.sporades.managed": "true",
               "com.sporades.hosted-domain": "capsules.example.dev",
@@ -5649,7 +5772,7 @@ if (request.action !== "host.logs" || request.logs?.source !== "http") {
 process.stdout.write(JSON.stringify({
   ok: true,
   data: {
-    lineCount: request.logs.lines,
+    lineCount: request.logs.lines ?? 200,
     source: request.logs.source,
     entries: ["203.0.113.9 - - [01/Jan/2026:00:00:01 +0000] \\"GET / HTTP/1.1\\" 200 12"]
   },
@@ -5700,7 +5823,6 @@ process.exit(0);
       capsule: null,
       logs: {
         source: "http",
-        lines: 200,
       },
     });
   });
