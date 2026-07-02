@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -3702,6 +3704,53 @@ test("Google auth callback exchanges the code server-side and links the current 
   });
 });
 
+test("Google auth sign-in uses forwarded https origin behind a proxy", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    const setResult = await runCli(
+      ["auth", "set", "google", "--client-id", "client-id", "--client-secret", "client-secret", "--json"],
+      { cwd: projectDir },
+    );
+    assert.equal(setResult.code, 0, setResult.stderr);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocketWithHeaders(started.data.url, {
+        "x-forwarded-host": "photos.example.test",
+        "x-forwarded-proto": "https",
+      });
+
+      socket.sendJson({
+        id: "signin",
+        type: "auth.signIn",
+        provider: "google",
+        returnTo: "https://photos.example.test/library",
+      });
+      const signIn = await socket.readJson();
+      assert.equal(signIn.type, "auth.redirect");
+      const signInUrl = new URL(signIn.data.url);
+      assert.equal(signInUrl.searchParams.get("redirect_uri"), "https://photos.example.test/__sporades/auth/google/callback");
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades logs returns captured ctx.log entries from the running dev session", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -5231,6 +5280,131 @@ function openSocket(baseUrl, sessionToken = null) {
     const socket = new WebSocket(url);
     socket.addEventListener("open", () => resolve(socket), { once: true });
     socket.addEventListener("error", reject, { once: true });
+  });
+}
+
+function openSocketWithHeaders(baseUrl, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const url = new URL("/__sporades/ws", baseUrl);
+    const socket = connect(Number(url.port), url.hostname);
+    const key = randomBytes(16).toString("base64");
+    let buffer = Buffer.alloc(0);
+    const timeout = setTimeout(() => {
+      cleanup();
+      socket.destroy();
+      reject(new Error("Timed out opening raw WebSocket."));
+    }, 5000);
+
+    function cleanup() {
+      clearTimeout(timeout);
+      socket.off("data", onHandshakeData);
+      socket.off("error", onError);
+    }
+    function onError(error) {
+      cleanup();
+      reject(error);
+    }
+    function onHandshakeData(chunk) {
+      buffer = Buffer.concat([buffer, chunk]);
+      const marker = buffer.indexOf("\r\n\r\n");
+      if (marker === -1) return;
+      const response = buffer.subarray(0, marker).toString("utf8");
+      if (!response.startsWith("HTTP/1.1 101")) {
+        cleanup();
+        socket.destroy();
+        reject(new Error(`Unexpected WebSocket handshake response: ${response}`));
+        return;
+      }
+      const remaining = buffer.subarray(marker + 4);
+      buffer = remaining;
+      cleanup();
+      resolve({
+        sendJson(payload) {
+          socket.write(encodeClientWebSocketFrame(JSON.stringify(payload)));
+        },
+        readJson() {
+          return readRawWebSocketJson(socket, buffer);
+        },
+        close() {
+          socket.end();
+        },
+      });
+    }
+
+    socket.on("error", onError);
+    socket.on("data", onHandshakeData);
+    socket.on("connect", () => {
+      const requestHeaders = {
+        host: url.host,
+        upgrade: "websocket",
+        connection: "Upgrade",
+        "sec-websocket-key": key,
+        "sec-websocket-version": "13",
+        ...headers,
+      };
+      socket.write(
+        [`GET ${url.pathname}${url.search} HTTP/1.1`, ...Object.entries(requestHeaders).map(([name, value]) => `${name}: ${value}`), "", ""].join(
+          "\r\n",
+        ),
+      );
+    });
+  });
+}
+
+function encodeClientWebSocketFrame(text) {
+  const payload = Buffer.from(text);
+  const mask = randomBytes(4);
+  const header =
+    payload.length < 126
+      ? Buffer.from([0x81, 0x80 | payload.length])
+      : Buffer.concat([Buffer.from([0x81, 0x80 | 126]), Buffer.from([(payload.length >> 8) & 0xff, payload.length & 0xff])]);
+  const encoded = Buffer.alloc(payload.length);
+  for (let index = 0; index < payload.length; index += 1) {
+    encoded[index] = payload[index] ^ mask[index % 4];
+  }
+  return Buffer.concat([header, mask, encoded]);
+}
+
+function readRawWebSocketJson(socket, initialBuffer = Buffer.alloc(0)) {
+  return new Promise((resolve, reject) => {
+    let buffer = initialBuffer;
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out waiting for raw WebSocket message."));
+    }, 5000);
+
+    function cleanup() {
+      clearTimeout(timeout);
+      socket.off("data", onData);
+      socket.off("error", onError);
+    }
+    function onError(error) {
+      cleanup();
+      reject(error);
+    }
+    function onData(chunk) {
+      buffer = Buffer.concat([buffer, chunk]);
+      if (buffer.length < 2) return;
+      const lengthCode = buffer[1] & 0x7f;
+      let offset = 2;
+      let length = lengthCode;
+      if (lengthCode === 126) {
+        if (buffer.length < 4) return;
+        length = buffer.readUInt16BE(2);
+        offset = 4;
+      } else if (lengthCode === 127) {
+        cleanup();
+        reject(new Error("Raw WebSocket helper only supports 16-bit message lengths."));
+        return;
+      }
+      if (buffer.length < offset + length) return;
+      cleanup();
+      resolve(JSON.parse(buffer.subarray(offset, offset + length).toString("utf8")));
+    }
+
+    socket.on("data", onData);
+    socket.on("error", onError);
+    onData(Buffer.alloc(0));
   });
 }
 

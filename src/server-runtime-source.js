@@ -1705,8 +1705,7 @@ export function createWebSocketHub(getDatabase) {
 
       const requestUrl = new URL(request.url, "http://127.0.0.1");
       const sessionToken = requestUrl.searchParams.get("sessionToken");
-      const protocol = request.socket?.encrypted ? "https" : "http";
-      const origin = `${protocol}://${request.headers.host}`;
+      const origin = requestOrigin(request);
       const database = getDatabase();
       const session = resolveAnonymousSession(database, sessionToken);
       const now = new Date().toISOString();
@@ -1789,6 +1788,22 @@ export function createWebSocketHub(getDatabase) {
       return [...clients].slice(-1);
     }
     return [...clients].filter((client) => client.id === target);
+  }
+
+  function requestOrigin(request) {
+    const forwardedProto = firstForwardedHeader(request.headers["x-forwarded-proto"]);
+    const forwardedHost = firstForwardedHeader(request.headers["x-forwarded-host"]);
+    const protocol = forwardedProto === "https" || forwardedProto === "http" ? forwardedProto : request.socket?.encrypted ? "https" : "http";
+    const host = forwardedHost || request.headers.host;
+    return `${protocol}://${host}`;
+  }
+
+  function firstForwardedHeader(value) {
+    const raw = Array.isArray(value) ? value[0] : value;
+    return String(raw ?? "")
+      .split(",")[0]
+      .trim()
+      .toLowerCase();
   }
 
   function summarizeAuthForClientList(auth) {
