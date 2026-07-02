@@ -1,0 +1,157 @@
+export type SporadesError = {
+  message: string;
+  hint?: string;
+  [key: string]: unknown;
+};
+
+export type SporadesResult<Data = unknown> = {
+  data: Data | null;
+  error: SporadesError | null;
+};
+
+export type AuthState = {
+  userId: string;
+  displayName: string;
+  email: string | null;
+  picture: string | null;
+  isAuthenticated: boolean;
+  isGuest: boolean;
+  provider: string;
+};
+
+export type ProviderState = {
+  enabled: boolean;
+  configured?: boolean;
+};
+
+export type AuthProviders = Record<string, ProviderState> & {
+  anonymous?: ProviderState;
+  google?: ProviderState;
+  email?: ProviderState;
+};
+
+export type EmailCredentials = {
+  email: string;
+  password: string;
+  name?: string;
+};
+
+export type AuthApi = {
+  signUp(provider: "email", credentials: EmailCredentials): Promise<SporadesResult>;
+  signUp(provider: string, credentials?: unknown): Promise<SporadesResult>;
+  signIn(provider: "email", credentials: EmailCredentials): Promise<SporadesResult>;
+  signIn(provider: string, credentials?: unknown): Promise<SporadesResult>;
+  signOut(): Promise<SporadesResult<{ ok: boolean }>>;
+};
+
+export type Subscription = {
+  unsubscribe(): void;
+};
+
+export type AppMessage<Data = unknown> = {
+  type: string;
+  data: Data | null;
+};
+
+export type AppMessageStream<Data = unknown> = {
+  filter(predicate: (message: AppMessage<Data>) => boolean): AppMessageStream<Data>;
+  subscribe(listener: (message: AppMessage<Data>) => void): Subscription;
+};
+
+export type FileMetadata = {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  path?: string;
+  version?: string;
+  url?: string;
+  [key: string]: unknown;
+};
+
+export type PublicFileUrl = {
+  id: string;
+  fileId: string;
+  url: string;
+  expiresAt: string | null;
+  revokedAt?: string | null;
+  [key: string]: unknown;
+};
+
+export type UploadProgressEvent = {
+  type: "progress";
+  fileId: string;
+  loaded: number;
+  total: number;
+};
+
+export type UploadCompleteEvent = {
+  type: "complete";
+  file: FileMetadata;
+};
+
+export type UploadOptions = {
+  replace?: boolean;
+  fileId?: string;
+  onProgress?(event: UploadProgressEvent): void;
+  onComplete?(event: UploadCompleteEvent): void;
+};
+
+export type PublicUrlOptions = {
+  expiresAt?: string | Date | null;
+  ttlSeconds?: number;
+  noExpiry?: boolean;
+};
+
+export type FilesApi = {
+  upload(file: Blob | File, options?: UploadOptions): Promise<FileMetadata>;
+  upload(files: Array<Blob | File>, options?: UploadOptions): Promise<FileMetadata[]>;
+  url(fileId: string): Promise<string>;
+  download(fileId: string): Promise<Blob>;
+  delete(fileId: string): Promise<FileMetadata>;
+  publicUrl(fileId: string, options?: PublicUrlOptions): Promise<PublicFileUrl>;
+  revokePublicUrl(publicUrlId: string): Promise<PublicFileUrl>;
+};
+
+export type QueryState<Data = any> = {
+  data: Data | null;
+  error: SporadesError | null;
+  loading: boolean;
+};
+
+export type MutationState<Result = unknown> = {
+  error: SporadesError | null;
+  loading: boolean;
+  run(...args: any[]): Promise<SporadesResult<Result>>;
+};
+
+export type UseAuthState = {
+  auth: AuthState | null;
+  providers: AuthProviders;
+  loading: boolean;
+  error: SporadesError | null;
+  isAuthenticated(): boolean;
+  signUp: AuthApi["signUp"];
+  signIn: AuthApi["signIn"];
+  signOut: AuthApi["signOut"];
+};
+
+export type HookPrimitives = {
+  useState<State>(initialState: State | (() => State)): [State, (nextState: State) => void];
+  useEffect(effect: () => void | (() => void), deps?: unknown[]): void;
+};
+
+export type SporadesHooks = {
+  useQuery<Data = any>(name: string): QueryState<Data>;
+  useMutation<Result = unknown>(name: string): MutationState<Result>;
+  useAuth(): UseAuthState;
+};
+
+export const auth: AuthApi;
+export const files: FilesApi;
+
+export function isAuthenticated(): Promise<boolean>;
+export function sendMessage(type: string, data?: unknown): Promise<SporadesResult>;
+export function onMessage<Data = unknown>(): AppMessageStream<Data>;
+export function onMessage<Data = unknown>(listener: (message: AppMessage<Data>) => void): Subscription;
+export function createHooks(primitives: HookPrimitives): SporadesHooks;

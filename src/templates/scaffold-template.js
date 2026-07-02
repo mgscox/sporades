@@ -13,6 +13,13 @@ export function scaffoldFiles(options) {
       : {
           preact: "^10.25.0",
         };
+  const frameworkDevDependencies =
+    framework === "react"
+      ? {
+          "@types/react": "^19.0.0",
+          "@types/react-dom": "^19.0.0",
+        }
+      : {};
   const templateFiles = templateOptions.files(renderOptions);
 
   return {
@@ -39,6 +46,7 @@ export function scaffoldFiles(options) {
         },
         dependencies: frameworkDependencies,
         devDependencies: {
+          ...frameworkDevDependencies,
           sporades: sporadesDependency,
           typescript: "^5.8.0",
         },

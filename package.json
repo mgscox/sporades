@@ -7,7 +7,14 @@
     "sporades": "./bin/sporades.js"
   },
   "exports": {
-    "./server": "./server.js"
+    "./server": {
+      "types": "./src/types/server.d.ts",
+      "default": "./src/server.js"
+    },
+    "./client": {
+      "types": "./src/types/client.d.ts",
+      "default": "./src/client.js"
+    }
   },
   "scripts": {
     "test": "node --test"
@@ -17,5 +24,8 @@
   },
   "dependencies": {
     "esbuild": "^0.25.12"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
   }
 }

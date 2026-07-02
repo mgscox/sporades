@@ -122,6 +122,8 @@ test("sporades create writes a runnable React blank scaffold by default", async 
     const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
     assert.equal(packageJson.dependencies.react, "^19.0.0");
     assert.equal(packageJson.dependencies["react-dom"], "^19.0.0");
+    assert.equal(packageJson.devDependencies["@types/react"], "^19.0.0");
+    assert.equal(packageJson.devDependencies["@types/react-dom"], "^19.0.0");
     assert.equal(packageJson.devDependencies.sporades, `file:${repoRoot}`);
   });
 });
@@ -303,6 +305,8 @@ test("sporades create writes a minimal React photo library scaffold when request
     assert.equal(packageJson.dependencies.react, "^19.0.0");
     assert.equal(packageJson.dependencies["react-dom"], "^19.0.0");
     assert.equal(packageJson.dependencies.preact, undefined);
+    assert.equal(packageJson.devDependencies["@types/react"], "^19.0.0");
+    assert.equal(packageJson.devDependencies["@types/react-dom"], "^19.0.0");
   });
 });
 
@@ -359,6 +363,8 @@ test("sporades create --template blank preserves framework selection", async () 
     assert.equal(packageJson.dependencies.preact, "^10.25.0");
     assert.equal(packageJson.dependencies.react, undefined);
     assert.equal(packageJson.dependencies["react-dom"], undefined);
+    assert.equal(packageJson.devDependencies["@types/react"], undefined);
+    assert.equal(packageJson.devDependencies["@types/react-dom"], undefined);
   });
 });
 
@@ -453,6 +459,8 @@ test("sporades create writes a runnable Preact todo scaffold", async () => {
     assert.equal(packageJson.dependencies.preact, "^10.25.0");
     assert.equal(packageJson.dependencies.react, undefined);
     assert.equal(packageJson.dependencies["react-dom"], undefined);
+    assert.equal(packageJson.devDependencies["@types/react"], undefined);
+    assert.equal(packageJson.devDependencies["@types/react-dom"], undefined);
     assert.equal(packageJson.devDependencies.sporades, `file:${repoRoot}`);
   });
 });
@@ -496,6 +504,8 @@ test("sporades create writes a runnable Preact guestbook scaffold", async () => 
     assert.equal(packageJson.dependencies.preact, "^10.25.0");
     assert.equal(packageJson.dependencies.react, undefined);
     assert.equal(packageJson.dependencies["react-dom"], undefined);
+    assert.equal(packageJson.devDependencies["@types/react"], undefined);
+    assert.equal(packageJson.devDependencies["@types/react-dom"], undefined);
   });
 });
 
@@ -541,6 +551,8 @@ test("sporades create writes a runnable Preact photo library scaffold", async ()
     assert.equal(packageJson.dependencies.preact, "^10.25.0");
     assert.equal(packageJson.dependencies.react, undefined);
     assert.equal(packageJson.dependencies["react-dom"], undefined);
+    assert.equal(packageJson.devDependencies["@types/react"], undefined);
+    assert.equal(packageJson.devDependencies["@types/react-dom"], undefined);
   });
 });
 
