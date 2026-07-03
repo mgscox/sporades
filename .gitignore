@@ -1,5 +1,8 @@
 .env
 .sporades/
+sporades-host.env
+sporades-*-host.env
+.playwright-mcp/
 node_modules/
 client_secret_*
 dummy/
