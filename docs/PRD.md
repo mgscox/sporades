@@ -42,10 +42,12 @@ The repository currently includes:
   Docker ownership labels, and a Host-server-owned unavailable response for
   registered Capsules without a running release.
 - Practical Docker hardening defaults for local and hosted Container sessions:
-  release files and Server env mount read-only, mutable SQLite/file state lives
-  under read-write data mounts, hosted traffic reaches containers through Caddy
-  loopback routes rather than public container ports, and Hosted Capsule logs
-  use bounded Docker `json-file` settings.
+  the thin Sporades-owned Base image runs Node 22 as non-root user
+  `10001:10001`, release files and Server env mount read-only, mutable
+  SQLite/file state lives under read-write data mounts, hosted traffic reaches
+  containers through Caddy loopback routes rather than public container ports,
+  Hosted Capsule logs use bounded Docker `json-file` settings, and Host
+  inspection reports Base image version/update policy.
 - Per-Capsule HTTP security policy defaults in `sporades.json`, including
   same-origin CORS by default, Dev-session localhost/127.0.0.1 ergonomics,
   explicit Public Dev mode, conservative security headers, technology-header
@@ -75,9 +77,6 @@ The repository currently includes:
 
 The following work is intentionally deferred:
 
-- Deeper hardened Base image and filesystem model, including non-root runtime,
-  read-only root filesystem, seccomp, and any broader Docker isolation posture:
-  `.scratch/post-v2-platform-hardening-and-ops/issues/02-harden-base-image-and-container-filesystem.md`.
 - Automatic OpenTelemetry and centralized JSON logging:
   `.scratch/post-v2-platform-hardening-and-ops/issues/04-add-automatic-opentelemetry.md` and
   `.scratch/post-v2-platform-hardening-and-ops/issues/05-centralize-json-server-logging.md`.

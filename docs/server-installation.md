@@ -131,7 +131,7 @@ the dependency-free Node helper can parse it directly:
 ```json
 {
   "hostedCapsule": {
-    "dockerImage": "node:22-alpine",
+    "dockerImage": "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
     "dockerNetwork": "sporades-hosted-capsules",
     "graceCheckMs": 500
   },
@@ -143,6 +143,12 @@ the dependency-free Node helper can parse it directly:
 ```
 
 All fields are optional.
+
+The built-in `dockerImage` default is the thin Sporades Base image. It runs
+Node 22 as non-root user `10001:10001`; release files mount read-only and
+Capsule data mounts read-write at `/app/data`. Override `dockerImage` only for
+Host-server experiments where you also own compatibility with that filesystem
+contract.
 
 **Precedence**: Explicit CLI/request values win over the JSON configuration file; the
 JSON file wins over the helper's built-in defaults. For non-standard installs, set
@@ -344,6 +350,14 @@ subname to `http` to read that Capsule's separate Caddy access log. Use `stdout`
 or `stderr` with a Hosted Capsule subname to read recent Docker `json-file`
 container logs, including logs for stopped containers that still exist.
 `-n`/`--lines` caps returned lines and defaults to 200.
+
+`host list --json` includes each Hosted Capsule's Base image version and update
+policy. Capsules created before Base image metadata existed report `unknown`
+image/version values with the default `host-managed` policy until their next
+release or container replacement records richer metadata. `manual` reports state
+without automatic mutation; `auto-patch` currently reports that in-container
+patching is unsupported because Base image updates happen by container
+replacement.
 
 Plain output is available by omitting `--json`, but automation should prefer
 structured JSON.

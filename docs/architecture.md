@@ -144,7 +144,8 @@ while the agent fixes the error.
 
 ### Local Container Session
 
-`sporades deploy` runs the bundled Capsule in Docker using the Node base image.
+`sporades deploy` runs the bundled Capsule in Docker using the Sporades Base
+image.
 It mounts release files read-only and persistent data read-write, following the
 canonical [Local Container Mounts](./runtime-layout.md#local-container-mounts).
 
@@ -234,11 +235,12 @@ The container mounts:
 This lets releases be replaced without treating user data as part of the
 release package.
 
-Local Container sessions and Hosted Capsules share the same practical Docker
-hardening defaults while they use the stock Node Base image: read-only root
-filesystem, a writable hardened `/tmp` tmpfs, all Linux capabilities dropped,
-and `no-new-privileges`. Mutable SQLite state and uploaded file bytes stay in
-the explicit `/app/data` read-write mount.
+Local Container sessions and Hosted Capsules share the same Docker hardening
+defaults with the Sporades Base image: non-root user `10001:10001`, read-only
+root filesystem, a writable hardened `/tmp` tmpfs, all Linux capabilities
+dropped, and `no-new-privileges`. Mutable SQLite state, uploaded file bytes,
+and required runtime metadata stay in the explicit `/app/data` read-write
+mount.
 
 ## Database Architecture
 
@@ -440,9 +442,12 @@ Sporades keeps a few strong boundaries:
 - Host-server registry state is authoritative over local binding files.
 - Release files are mounted read-only; mutable state lives in data volumes.
 
-Current container hardening is intentionally minimal: the base image is the
-stock Node image. A later hardened base image can change Docker-level isolation
-without changing the Capsule authoring model.
+Container hardening is implemented through a thin Sporades-owned Base image,
+read-only release mounts, an explicit writable data mount, Base image labels,
+and Host inspection of Base image version/update policy. Docker's default
+seccomp profile remains in use; Sporades adds capability drop,
+`no-new-privileges`, read-only root filesystems, and a hardened `/tmp` tmpfs
+without requiring Capsule authors to change their code.
 
 ## Design Tradeoffs
 

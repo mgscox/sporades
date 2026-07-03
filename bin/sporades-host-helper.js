@@ -1,13 +1,20 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { access, chmod, mkdir, readdir, readFile, readlink, rename, rm, statfs, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, chown, lstat, mkdir, readdir, readFile, readlink, rename, rm, stat, statfs, symlink, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
 import path from "node:path";
+import {
+  SPORADES_BASE_IMAGE,
+  baseImageLabels,
+  baseImageMetadata,
+  baseImageRuntimeUser,
+  normaliseBaseImageUpdatePolicy,
+} from "../src/base-image.js";
 
 const HOST_HELPER_CONFIG_FILE = "sporades-host-helper.json";
-const DEFAULT_HOSTED_CAPSULE_DOCKER_IMAGE = "node:22-alpine";
+const DEFAULT_HOSTED_CAPSULE_DOCKER_IMAGE = SPORADES_BASE_IMAGE.image;
 const DEFAULT_HOSTED_CAPSULE_DOCKER_NETWORK = "sporades-hosted-capsules";
 const DEFAULT_HOSTED_CAPSULE_GRACE_CHECK_MS = 500;
 const DEFAULT_HOST_LOG_LINES_VALUE = 200;
@@ -400,6 +407,7 @@ async function installRelease(request) {
   validateSealedServerEnvPrivateKeyPath(release, paths);
   await mkdir(paths.releases, { recursive: true });
   await mkdir(paths.data, { recursive: true });
+  await prepareWritableDataPath(paths.data);
   await mkdir(paths.logs, { recursive: true });
 
   const tempReleaseDirectory = `${paths.release}.tmp-${process.pid}`;
@@ -623,11 +631,12 @@ function verificationHealthSummary(result) {
 
 async function startCapsule(request, options = {}) {
   validateLifecycleRequest(request);
-  await verifyRegisteredCapsule(request, "lifecycle");
+  const registryRecord = await verifyRegisteredCapsule(request, "lifecycle");
   const paths = canonicalReleasePaths(request);
   const releaseId = await currentReleaseId(paths.currentLink, request);
-  const lifecycle = normaliseLifecycle(request);
+  const lifecycle = normaliseLifecycle(request, registryRecord);
   await mkdir(paths.data, { recursive: true });
+  await prepareWritableDataPath(paths.data);
   await recordReleaseStartAttempt(request, releaseId);
 
   stopAndRemoveContainer(lifecycle.container.name);
@@ -703,6 +712,9 @@ async function startCapsule(request, options = {}) {
       name: lifecycle.container.name,
       network: lifecycle.container.network,
       image: lifecycle.container.image,
+      user: lifecycle.container.user,
+      labels: lifecycle.container.labels,
+      baseImage: lifecycle.container.baseImage,
       running: true,
       publishedPort,
     },
@@ -1161,7 +1173,7 @@ async function listCapsules(request) {
     if (record.status === "unregistered") {
       continue;
     }
-    capsules.push({
+    const capsule = {
       subname: record.subname,
       domain: record.domain,
       hostedUrl: record.hostedUrl ?? `${request.host.scheme ?? "https"}://${record.subname}.${request.host.domain}`,
@@ -1173,7 +1185,9 @@ async function listCapsules(request) {
       },
       currentRelease: record.currentRelease ?? null,
       docker: lookupCapsuleDockerState(request, record),
-    });
+    };
+    capsule.baseImage = normaliseRecordBaseImage(record, capsule.docker);
+    capsules.push(capsule);
   }
 
   writeEnvelope({
@@ -1281,7 +1295,7 @@ function canonicalRollbackPaths(request, releaseId) {
   };
 }
 
-function normaliseLifecycle(request) {
+function normaliseLifecycle(request, registryRecord = null) {
   const provided = request.lifecycle ?? {};
   const paths = canonicalReleasePaths(request);
   const subname = request.capsule.subname;
@@ -1292,6 +1306,16 @@ function normaliseLifecycle(request) {
   const routeFile = provided.routes?.running?.routeFile ?? path.join(request.host.remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
   const currentLink = provided.currentLink ?? paths.currentLink;
   const accessLog = provided.routes?.accessLog ?? provided.accessLog ?? defaultCapsuleHttpLogPath(request.host.remoteRoot, domain, subname);
+  const authoritativeBaseImage = request.release?.baseImage ?? registryRecord?.baseImage ?? null;
+  const updatePolicyMode = normaliseBaseImageUpdatePolicy(
+    authoritativeBaseImage?.updatePolicy ?? provided.container?.baseImage?.updatePolicy,
+  );
+  const baseImage = {
+    ...baseImageMetadata(updatePolicyMode),
+    name: authoritativeBaseImage?.name ?? provided.container?.baseImage?.name ?? SPORADES_BASE_IMAGE.name,
+    image: authoritativeBaseImage?.image ?? provided.container?.baseImage?.image ?? provided.container?.image ?? HOSTED_CAPSULE_DOCKER_IMAGE,
+    version: authoritativeBaseImage?.version ?? provided.container?.baseImage?.version ?? SPORADES_BASE_IMAGE.version,
+  };
   return {
     hostedUrl,
     remoteCapsuleId,
@@ -1328,14 +1352,17 @@ function normaliseLifecycle(request) {
     container: {
       name: containerName,
       network: provided.container?.network ?? HOSTED_CAPSULE_DOCKER_NETWORK,
-      image: provided.container?.image ?? HOSTED_CAPSULE_DOCKER_IMAGE,
+      image: provided.container?.image ?? baseImage.image,
+      user: provided.container?.user ?? baseImageRuntimeUser(),
+      baseImage,
       graceCheckMs: provided.container?.graceCheckMs ?? HOSTED_CAPSULE_GRACE_CHECK_MS,
       labels: {
+        ...(provided.container?.labels ?? {}),
         "com.sporades.managed": "true",
         "com.sporades.hosted-domain": domain,
         "com.sporades.capsule-subname": subname,
         "com.sporades.capsule-id": remoteCapsuleId,
-        ...(provided.container?.labels ?? {}),
+        ...baseImageLabels(updatePolicyMode),
       },
     },
     routes: {
@@ -1689,13 +1716,64 @@ function normaliseDockerPsContainer(container, fallbackContainerName) {
   const state = String(container.State ?? container.state ?? "").toLowerCase();
   const containerName = String(container.Names ?? container.Name ?? fallbackContainerName).split(",")[0].trim();
   const status = String(container.Status ?? container.status ?? "");
-  return {
+  const labels = parseDockerLabels(container.Labels);
+  const normalised = {
     containerId: String(container.ID ?? container.Id ?? container.id ?? ""),
     containerName,
     image: String(container.Image ?? container.image ?? ""),
     state: state || "unknown",
     status,
     running: state === "running",
+  };
+  const baseImage = normaliseDockerBaseImage(labels);
+  if (baseImage) {
+    normalised.baseImage = baseImage;
+  }
+  return normalised;
+}
+
+function normaliseDockerBaseImage(labels) {
+  if (!labels["com.sporades.base-image.name"] && !labels["com.sporades.base-image.version"]) {
+    return null;
+  }
+  return {
+    name: labels["com.sporades.base-image.name"] ?? SPORADES_BASE_IMAGE.name,
+    version: labels["com.sporades.base-image.version"] ?? "unknown",
+    updatePolicy: {
+      mode: normaliseBaseImageUpdatePolicy(labels["com.sporades.base-image.update-policy"]),
+    },
+  };
+}
+
+function normaliseRecordBaseImage(record, docker = null) {
+  const provided = record.baseImage ?? {};
+  const dockerBaseImage = docker?.baseImage ?? null;
+  const hasKnownBaseImage = Boolean(record.baseImage || dockerBaseImage);
+  const mode = normaliseBaseImageUpdatePolicy(provided.updatePolicy ?? dockerBaseImage?.updatePolicy);
+  const metadata = baseImageMetadata(mode);
+  if (!hasKnownBaseImage) {
+    return {
+      ...metadata,
+      name: "unknown",
+      image: docker?.image ?? "unknown",
+      version: "unknown",
+    };
+  }
+  return {
+    ...metadata,
+    image: provided.image ?? docker?.image ?? SPORADES_BASE_IMAGE.image,
+    name: provided.name ?? dockerBaseImage?.name ?? SPORADES_BASE_IMAGE.name,
+    version: provided.version ?? dockerBaseImage?.version ?? SPORADES_BASE_IMAGE.version,
+  };
+}
+
+function normaliseProvidedBaseImage(value) {
+  const mode = normaliseBaseImageUpdatePolicy(value?.updatePolicy?.mode);
+  return {
+    ...baseImageMetadata(mode),
+    image: value?.image ?? SPORADES_BASE_IMAGE.image,
+    name: value?.name ?? SPORADES_BASE_IMAGE.name,
+    version: value?.version ?? SPORADES_BASE_IMAGE.version,
   };
 }
 
@@ -1730,6 +1808,7 @@ function normaliseRegistration(request) {
       data: path.join(capsuleDirectory, "data"),
       logs: path.join(capsuleDirectory, "logs"),
     },
+    baseImage: normaliseProvidedBaseImage(request.registration?.baseImage),
     route,
     lifecycle: {
       remoteRoot,
@@ -1844,6 +1923,7 @@ function createRegistrationRecord(registration) {
     createdAt: now,
     updatedAt: now,
     currentRelease: null,
+    baseImage: registration.baseImage,
   };
 }
 
@@ -2231,6 +2311,8 @@ async function dockerRunArgs(lifecycle, releaseId) {
     "ALL",
     "--security-opt",
     "no-new-privileges",
+    "--user",
+    lifecycle.container.user,
     "--log-driver",
     "json-file",
     "--log-opt",
@@ -2504,6 +2586,66 @@ async function removePathIfPresent(targetPath, options = {}) {
   return { path: targetPath, removed: true };
 }
 
+async function prepareWritableDataPath(targetPath) {
+  let stats;
+  try {
+    stats = await lstat(targetPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  if (stats.isSymbolicLink()) {
+    throw helperError(
+      "Hosted Capsule data path contains a symbolic link.",
+      `Remove the symbolic link at ${targetPath}, then retry the Host lifecycle command.`,
+    );
+  }
+
+  await prepareRuntimeDataOwnership(targetPath, stats);
+
+  if (stats.isDirectory()) {
+    await chmod(targetPath, 0o700);
+    const entries = await readdir(targetPath, { withFileTypes: true });
+    for (const entry of entries) {
+      await prepareWritableDataPath(path.join(targetPath, entry.name));
+    }
+    return;
+  }
+
+  if (stats.isFile()) {
+    await chmod(targetPath, 0o600);
+  }
+}
+
+async function prepareRuntimeDataOwnership(targetPath, stats) {
+  const uid = SPORADES_BASE_IMAGE.runtimeUid;
+  const gid = SPORADES_BASE_IMAGE.runtimeGid;
+  if (process.env.SPORADES_TEST_FORCE_RUNTIME_DATA_CHOWN_FAILURE === "1") {
+    throw runtimeDataOwnershipError(targetPath, uid, gid);
+  }
+  if (stats.uid === uid && stats.gid === gid) {
+    return;
+  }
+  try {
+    await chown(targetPath, uid, gid);
+  } catch (error) {
+    if (process.env.SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK === "1" && ["EPERM", "EINVAL"].includes(error?.code)) {
+      return;
+    }
+    throw runtimeDataOwnershipError(targetPath, uid, gid);
+  }
+}
+
+function runtimeDataOwnershipError(targetPath, uid, gid) {
+  return helperError(
+    "Unable to prepare Hosted Capsule data ownership for the non-root runtime user.",
+    `Run the Host helper as a user that can chown Capsule data to ${uid}:${gid}, or repair ownership with \`sudo chown -R ${uid}:${gid} ${targetPath}\` and retry.`,
+  );
+}
+
 function validateCaddyRoute(routeFile) {
   const result = spawnSync("caddy", ["validate", "--config", routeFile, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
@@ -2547,6 +2689,7 @@ async function recordReleaseUploaded(request, release) {
   await mutateRegistryRecord(request, (record) => {
     const now = new Date().toISOString();
     record.currentRelease = { ...(record.currentRelease ?? {}), id: release.id };
+    record.baseImage = normaliseProvidedBaseImage(release.baseImage ?? record.baseImage);
     record.status = "released";
     record.updatedAt = now;
     record.releases = upsertReleaseEntry(record, release.id, (entry) => ({

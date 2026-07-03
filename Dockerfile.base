@@ -1,0 +1,19 @@
+FROM node:22-alpine
+
+LABEL org.opencontainers.image.title="Sporades Base Image"
+LABEL org.opencontainers.image.description="Thin Node 22 Base image for Sporades Container sessions and Hosted Capsules"
+LABEL org.opencontainers.image.version="0.1.0-node22-alpine"
+LABEL org.opencontainers.image.source="https://github.com/sporades/sporades"
+LABEL com.sporades.base-image.name="sporades-base"
+LABEL com.sporades.base-image.version="0.1.0-node22-alpine"
+LABEL com.sporades.base-image.node="22"
+
+RUN addgroup -g 10001 -S sporades \
+  && adduser -u 10001 -S sporades -G sporades \
+  && mkdir -p /app /app/data \
+  && chown -R 10001:10001 /app
+
+WORKDIR /app
+USER 10001:10001
+
+CMD ["node", "/app/server.mjs"]

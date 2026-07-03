@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -72,6 +72,7 @@ if (call.args[0] === "run") {
       FAKE_DOCKER_LOG: logPath,
       FAKE_DOCKER_CONTAINER_ID: containerId,
       FAKE_DOCKER_MISSING_CONTAINER_ACTIONS: options.missingContainerActions?.join(",") ?? "",
+      SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
     },
     async calls() {
       const raw = await readFile(logPath, "utf8");
@@ -223,6 +224,14 @@ test("sporades deploy --json bundles and starts a container session", async () =
 
     const projectDir = await realpath(path.join(dir, "todo-island"));
     await installFakeReact(projectDir);
+    const dataDir = path.join(projectDir, ".sporades", "data");
+    await mkdir(path.join(dataDir, "uploads"), { recursive: true });
+    await writeFile(path.join(dataDir, "data.db"), "sqlite bytes\n");
+    await writeFile(path.join(dataDir, "uploads", "file.bin"), "uploaded bytes\n");
+    await chmod(dataDir, 0o755);
+    await chmod(path.join(dataDir, "uploads"), 0o755);
+    await chmod(path.join(dataDir, "data.db"), 0o644);
+    await chmod(path.join(dataDir, "uploads", "file.bin"), 0o644);
     const docker = await installFakeDocker(dir, "container-first");
 
     const deployResult = await runCli(["deploy", "--port", "4321", "--json"], {
@@ -269,9 +278,31 @@ test("sporades deploy --json bundles and starts a container session", async () =
     assertVolume(runCall.args, `${path.join(projectDir, ".env.sporades.server")}:/app/.env.sporades.server:ro`);
     assert.equal(runCall.args[runCall.args.indexOf("--env-file") + 1], path.join(projectDir, ".env.sporades.server"));
     assertVolume(runCall.args, `${path.join(projectDir, ".sporades", "data")}:/app/data:rw`);
-    const imageIndex = runCall.args.indexOf("node:22-alpine");
+    assert.equal(runCall.args[runCall.args.indexOf("--user") + 1], "10001:10001");
+    assert(runCall.args.includes("com.sporades.base-image.name=sporades-base"));
+    assert(runCall.args.includes("com.sporades.base-image.version=0.1.0-node22-alpine"));
+    assert(runCall.args.includes("com.sporades.base-image.update-policy=host-managed"));
+    const imageIndex = runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.1.0-node22-alpine");
     assert(imageIndex > -1);
-    assert.deepEqual(runCall.args.slice(imageIndex), ["node:22-alpine", "node", "/app/server.mjs"]);
+    assert.deepEqual(runCall.args.slice(imageIndex), [
+      "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+      "node",
+      "/app/server.mjs",
+    ]);
+    const preparedDataDir = await stat(dataDir);
+    const preparedUploadsDir = await stat(path.join(dataDir, "uploads"));
+    const preparedDatabase = await stat(path.join(dataDir, "data.db"));
+    const preparedUpload = await stat(path.join(dataDir, "uploads", "file.bin"));
+    assert.equal(preparedDataDir.mode & 0o777, 0o700);
+    assert.equal(preparedUploadsDir.mode & 0o777, 0o700);
+    assert.equal(preparedDatabase.mode & 0o777, 0o600);
+    assert.equal(preparedUpload.mode & 0o777, 0o600);
+    if (process.getuid?.() === 0) {
+      assert.equal(preparedDataDir.uid, 10001);
+      assert.equal(preparedDataDir.gid, 10001);
+      assert.equal(preparedDatabase.uid, 10001);
+      assert.equal(preparedDatabase.gid, 10001);
+    }
   });
 });
 
@@ -391,6 +422,32 @@ export default capsule({
     } finally {
       await stopChild(child);
     }
+  });
+});
+
+test("sporades deploy accepts object-shaped Base image update policy config", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.baseImage = { updatePolicy: { mode: "manual" } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const docker = await installFakeDocker(dir, "container-manual-policy");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+    const [runCall] = await docker.calls();
+    assert(runCall.args.includes("com.sporades.base-image.update-policy=manual"));
   });
 });
 

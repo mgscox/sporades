@@ -1,6 +1,6 @@
 # Add hardened Base image and filesystem model
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

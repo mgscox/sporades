@@ -64,7 +64,8 @@ read-only and persistent data mounted read-write.
 
 ```text
 Container
-  Base image: node:22-alpine
+  Base image: ghcr.io/sporades/sporades-base:0.1.0-node22-alpine
+  Runtime user: sporades (10001:10001)
   /app/server.mjs              read-only
   /app/client.js               read-only
   /app/index.html              read-only
@@ -84,16 +85,39 @@ Inside the container, the default SQLite path is:
 File bytes also live under the mounted persistent data area.
 
 Local Container sessions also run with Docker hardening defaults that are
-compatible with the stock `node:22-alpine` Base image:
+compatible with the Sporades Base image:
 
 - read-only container root filesystem,
 - writable `/tmp` tmpfs with `nosuid`, `nodev`, and `noexec`,
 - all Linux capabilities dropped,
 - `no-new-privileges` security option.
+- non-root runtime user `10001:10001`.
 
-Sporades intentionally does not force a non-root user while using the stock
-Base image because host bind-mounted data directories need predictable write
-access. A future hardened Base image can own that user and directory contract.
+The Base image is a thin Sporades-owned Node 22 image. It does not bake in
+Capsule app dependencies. Release files are mounted into known read-only paths,
+and only `/app/data` plus `/tmp` are writable at runtime. Sporades labels
+containers with the Base image name, version, and update policy so Host
+inspection can report the runtime substrate.
+
+## Base Image Updates
+
+Capsules use a Base image update policy. Supported policy values are:
+
+- `host-managed`: default. The Host server/operator replaces containers with a
+  newer Base image as part of normal lifecycle management.
+- `manual`: inspection reports the Base image state, but Sporades does not
+  mutate or replace the running container automatically.
+- `auto-patch`: accepted as a policy value for forward compatibility, but the
+  current Base image reports in-container patching as unsupported. Sporades
+  applies security updates by replacing containers rather than running package
+  updates inside a live Capsule.
+
+Project config may set either `baseImage.updatePolicy: "manual"` or the shared
+metadata shape `baseImage.updatePolicy.mode: "manual"`.
+
+Persistent Capsule data is outside the image and outside immutable release
+directories, so Base image replacement preserves SQLite data, uploaded file
+bytes, and runtime metadata under the explicit data mount.
 
 ## Host Server Layout
 
@@ -154,7 +178,8 @@ Hosted Capsules use the same Docker hardening posture as local Container
 sessions: read-only root filesystem, writable hardened `/tmp` tmpfs, dropped
 Linux capabilities, and `no-new-privileges`. Release files and optional Server
 env inputs remain read-only mounts; only the Hosted Capsule `data/` directory is
-mounted read-write. Host-profile Sealed Server env private keys live in Hosted
+mounted read-write. Hosted Capsule containers run as `10001:10001` from the
+Sporades Base image. Host-profile Sealed Server env private keys live in Hosted
 Capsule data state, not in exported sealed envelopes.
 
 ## Host Caddy Files
@@ -180,4 +205,5 @@ sporades-example-com-team-notes
 ```
 
 Containers also carry Docker labels for Sporades ownership, Hosted domain,
-Capsule subname, and Capsule ID.
+Capsule subname, Capsule ID, release ID, Base image name, Base image version,
+and Base image update policy.

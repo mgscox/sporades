@@ -3,11 +3,18 @@ import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, chown, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../src/bundle-pipeline.js";
+import {
+  SPORADES_BASE_IMAGE,
+  baseImageLabels,
+  baseImageMetadata,
+  baseImageRuntimeUser,
+  normaliseBaseImageUpdatePolicy,
+} from "../src/base-image.js";
 import {
   ensureSealedServerEnvKeyPair,
   envelopeSummary,
@@ -1813,6 +1820,7 @@ async function manageHost(options) {
       binding: target.binding,
       bundle,
       restart: options.restart,
+      projectConfig,
     });
     uploadHostReleaseArchive({
       profile: target.profile,
@@ -1826,7 +1834,11 @@ async function manageHost(options) {
       action: "capsule.release.install",
       subname: target.subname,
       release: release.request,
-      lifecycle: options.verify ? createHostLifecycleRequest(target.alias, target.profile, target.subname) : null,
+      lifecycle: options.verify
+        ? createHostLifecycleRequest(target.alias, target.profile, target.subname, {
+            updatePolicyMode: readBaseImageUpdatePolicy(projectConfig),
+          })
+        : null,
       health: options.verify ? createHostRuntimeHealthRequest(target.profile, target.subname) : null,
       verification: options.verify ? { enabled: true, health: createHostRuntimeHealthRequest(target.profile, target.subname) } : null,
       projectDir: options.projectDir,
@@ -2123,10 +2135,12 @@ async function startContainerSession(options) {
   const runtimeDir = path.join(options.projectDir, ".sporades");
   const dataDir = path.join(runtimeDir, "data");
   await mkdir(dataDir, { recursive: true });
+  await prepareRuntimeDataPath(dataDir);
 
   const containerName = `sporades-${config.name ?? path.basename(options.projectDir)}`;
   const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
   const existingBinding = await readContainerBinding(bindingPath);
+  const updatePolicyMode = readBaseImageUpdatePolicy(config);
 
   if (existingBinding?.containerId) {
     runDockerCleanup(
@@ -2179,6 +2193,9 @@ async function startContainerSession(options) {
       "ALL",
       "--security-opt",
       "no-new-privileges",
+      "--user",
+      baseImageRuntimeUser(),
+      ...Object.entries(baseImageLabels(updatePolicyMode)).flatMap(([key, value]) => ["--label", `${key}=${value}`]),
       "--publish",
       `${port}:4000`,
       ...bundleMountArgs,
@@ -2190,7 +2207,7 @@ async function startContainerSession(options) {
       "/app",
       "--env",
       "PORT=4000",
-      "node:22-alpine",
+      SPORADES_BASE_IMAGE.image,
       "node",
       "/app/server.mjs",
     ],
@@ -2497,6 +2514,10 @@ function withRuntimeSecuritySession(config, session) {
   };
 }
 
+function readBaseImageUpdatePolicy(config) {
+  return normaliseBaseImageUpdatePolicy(config?.baseImage?.updatePolicy ?? config?.deploy?.baseImageUpdatePolicy);
+}
+
 async function readRequiredFile(filePath, message, hint) {
   try {
     return await readFile(filePath, "utf8");
@@ -2734,6 +2755,7 @@ async function createHostReleaseArchive(options) {
     bundle: options.bundle,
     restart: options.restart,
     sealedServerEnv,
+    updatePolicyMode: readBaseImageUpdatePolicy(options.projectConfig),
   });
   await rm(packageDir, { recursive: true, force: true });
   await mkdir(path.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
@@ -2860,6 +2882,7 @@ function createHostReleaseRequest(options) {
           privateKeyPath: options.sealedServerEnv.releaseKeyPath,
         }
       : null,
+    baseImage: baseImageMetadata(options.updatePolicyMode),
     files,
     directories: {
       capsule: registration.directories.capsule,
@@ -2871,11 +2894,12 @@ function createHostReleaseRequest(options) {
   };
 }
 
-function createHostLifecycleRequest(alias, profile, subname) {
+function createHostLifecycleRequest(alias, profile, subname, options = {}) {
   const registration = createHostRegistrationRequest(alias, profile, subname);
   const currentLink = posixJoin(registration.directories.capsule, "current");
   const containerName = createHostedContainerName(profile.domain, subname);
   const remoteCapsuleId = `${profile.domain}/${subname}`;
+  const baseImage = baseImageMetadata(options.updatePolicyMode);
   return {
     domain: profile.domain,
     subname,
@@ -2911,11 +2935,15 @@ function createHostLifecycleRequest(alias, profile, subname) {
     },
     container: {
       name: containerName,
+      image: baseImage.image,
+      user: baseImageRuntimeUser(),
+      baseImage,
       labels: {
         "com.sporades.managed": "true",
         "com.sporades.hosted-domain": profile.domain,
         "com.sporades.capsule-subname": subname,
         "com.sporades.capsule-id": remoteCapsuleId,
+        ...baseImageLabels(baseImage.updatePolicy.mode),
       },
     },
     routes: {
@@ -3255,6 +3283,7 @@ function createHostRegistrationRequest(alias, profile, subname) {
       tls: bootstrap.tls,
       log: { file: capsuleLog },
     },
+    baseImage: baseImageMetadata(),
     bootstrap: {
       command: `sporades host bootstrap --host ${alias}`,
       tls: bootstrap.tls,
@@ -3762,6 +3791,59 @@ function runDockerCleanup(args, cwd, message, hint, force = false) {
 
 function formatMount(mount) {
   return `${mount.host}:${mount.container}${mount.mode ? `:${mount.mode}` : ""}`;
+}
+
+async function prepareRuntimeDataPath(targetPath) {
+  let stats;
+  try {
+    stats = await lstat(targetPath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  if (stats.isSymbolicLink()) {
+    throw commandError(
+      "Container session data path contains a symbolic link.",
+      `Remove the symbolic link at ${targetPath}, then retry \`sporades deploy\`.`,
+    );
+  }
+
+  await prepareRuntimeDataOwnership(targetPath, stats);
+
+  if (stats.isDirectory()) {
+    await chmod(targetPath, 0o700);
+    const entries = await readdir(targetPath, { withFileTypes: true });
+    for (const entry of entries) {
+      await prepareRuntimeDataPath(path.join(targetPath, entry.name));
+    }
+    return;
+  }
+
+  if (stats.isFile()) {
+    await chmod(targetPath, 0o600);
+  }
+}
+
+async function prepareRuntimeDataOwnership(targetPath, stats) {
+  const uid = SPORADES_BASE_IMAGE.runtimeUid;
+  const gid = SPORADES_BASE_IMAGE.runtimeGid;
+  if (stats.uid === uid && stats.gid === gid) {
+    return;
+  }
+  try {
+    await chown(targetPath, uid, gid);
+  } catch (error) {
+    if (process.env.SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK === "1" && ["EPERM", "EINVAL"].includes(error?.code)) {
+      return;
+    }
+    throw commandError(
+      "Unable to prepare Container session data ownership for the non-root runtime user.",
+      `Run \`sudo chown -R ${uid}:${gid} ${targetPath}\`, then retry \`sporades deploy\`.`,
+    );
+  }
 }
 
 function isMissingDockerContainerError(result) {

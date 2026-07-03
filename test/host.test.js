@@ -73,7 +73,7 @@ function runHostHelper(input, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [hostHelperPath], {
       cwd: options.cwd,
-      env: { ...process.env, ...options.env },
+      env: { ...process.env, SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1", ...options.env },
       stdio: ["pipe", "pipe", "pipe"],
     });
 
@@ -308,6 +308,7 @@ process.exit(Number(status || "0"));
       FAKE_DOCKER_LOG: logPath,
       FAKE_DOCKER_CADDY_LOG: caddyLogPath,
       FAKE_DOCKER_CADDY_STATE: path.join(dir, "caddy-state.txt"),
+      SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
       ...options.env,
     },
     calls: () => readJsonl(logPath),
@@ -2585,6 +2586,15 @@ process.exit(0);
             file: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/logs/http.log",
           },
         },
+        baseImage: {
+          name: "sporades-base",
+          image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+          version: "0.1.0-node22-alpine",
+          updatePolicy: {
+            mode: "host-managed",
+            autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
+          },
+        },
         bootstrap: {
           command: "sporades host bootstrap --host personal",
           tls: {
@@ -2943,6 +2953,10 @@ process.exit(0);
     const projectDir = path.join(dir, "todo-island");
     await installFakeReact(projectDir);
     await rm(path.join(projectDir, ".env.sporades.server"), { force: true });
+    const projectConfigPath = path.join(projectDir, "sporades.json");
+    const projectConfig = JSON.parse(await readFile(projectConfigPath, "utf8"));
+    projectConfig.baseImage = { updatePolicy: { mode: "manual" } };
+    await writeFile(projectConfigPath, `${JSON.stringify(projectConfig, null, 2)}\n`);
 
     const env = {
       ...hostEnv(configDir),
@@ -2975,9 +2989,12 @@ process.exit(0);
     const request = JSON.parse(sshCall.stdin);
     assert.equal(request.action, "capsule.release.install");
     assert.equal(request.release.restart, true);
+    assert.equal(request.release.baseImage.updatePolicy.mode, "manual");
     assert.equal(request.verification.enabled, true);
     assert.equal(request.verification.health.runtimeHealthUrl, "https://team-notes.capsules.example.dev/__sporades/health/runtime");
     assert.equal(request.lifecycle.container.name, "sporades-capsules-example-dev-team-notes");
+    assert.equal(request.lifecycle.container.baseImage.updatePolicy.mode, "manual");
+    assert.equal(request.lifecycle.container.labels["com.sporades.base-image.update-policy"], "manual");
   });
 });
 
@@ -3027,6 +3044,18 @@ process.exit(0);
     assert.equal(startOutput.data.container.labels["com.sporades.hosted-domain"], "capsules.example.dev");
     assert.equal(startOutput.data.container.labels["com.sporades.capsule-subname"], "team-notes");
     assert.equal(startOutput.data.container.labels["com.sporades.capsule-id"], "capsules.example.dev/team-notes");
+    assert.equal(startOutput.data.container.labels["com.sporades.base-image.name"], "sporades-base");
+    assert.equal(startOutput.data.container.labels["com.sporades.base-image.version"], "0.1.0-node22-alpine");
+    assert.equal(startOutput.data.container.labels["com.sporades.base-image.update-policy"], "host-managed");
+    assert.deepEqual(startOutput.data.container.baseImage, {
+      name: "sporades-base",
+      image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+      version: "0.1.0-node22-alpine",
+      updatePolicy: {
+        mode: "host-managed",
+        autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
+      },
+    });
     assert.equal(startOutput.data.route.target, "container");
 
     const stop = await runCli(["host", "stop", "team-notes", "--host", "personal", "--json"], {
@@ -3079,6 +3108,17 @@ process.exit(0);
       host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data",
       container: "/app/data",
       mode: "rw",
+    });
+    assert.equal(startRequest.lifecycle.container.image, "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine");
+    assert.equal(startRequest.lifecycle.container.user, "10001:10001");
+    assert.deepEqual(startRequest.lifecycle.container.baseImage, {
+      name: "sporades-base",
+      image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+      version: "0.1.0-node22-alpine",
+      updatePolicy: {
+        mode: "host-managed",
+        autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
+      },
     });
   });
 });
@@ -3272,6 +3312,67 @@ test("sporades host helper rejects non-canonical Sealed Server env private key p
   });
 });
 
+test("sporades host helper reports remediation when data ownership cannot be prepared", async (t) => {
+  if (process.getuid?.() === 0) {
+    t.skip("root can chown test data to the runtime UID");
+    return;
+  }
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const archivePath = path.join(remoteRoot, "incoming", "20260630T221500Z-feedface.tar.gz");
+    const runtimeDir = path.join(dir, "runtime-files");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    await mkdir(path.dirname(archivePath), { recursive: true });
+    await mkdir(runtimeDir, { recursive: true });
+    await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
+    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
+    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
+    await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+    await createTarGz(archivePath, runtimeDir, ["server.mjs", "client.js", "index.html", "sporades.json"]);
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(
+      registryRecordPath,
+      `${JSON.stringify({
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+      })}\n`,
+    );
+
+    const install = await runHostHelper(
+      {
+        action: "capsule.release.install",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        release: {
+          id: "20260630T221500Z-feedface",
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          remoteArchive: archivePath,
+          restart: false,
+          serverEnvIncluded: false,
+          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          directories: {
+            capsule: capsuleDir,
+            releases: path.join(capsuleDir, "releases"),
+            release: path.join(capsuleDir, "releases", "20260630T221500Z-feedface"),
+            data: path.join(capsuleDir, "data"),
+          },
+          currentLink: path.join(capsuleDir, "current"),
+        },
+      },
+      { cwd: dir, env: { SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "0", SPORADES_TEST_FORCE_RUNTIME_DATA_CHOWN_FAILURE: "1" } },
+    );
+
+    assert.equal(install.code, 0, install.stderr);
+    const output = JSON.parse(install.stdout);
+    assert.equal(output.ok, false);
+    assert.equal(output.error.message, "Unable to prepare Hosted Capsule data ownership for the non-root runtime user.");
+    assert.match(output.error.hint, /sudo chown -R 10001:10001/);
+  });
+});
+
 test("sporades host helper marks previous releases non-current and records start attempts", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -3351,6 +3452,14 @@ test("sporades host helper starts the current release in Docker and routes throu
     await writeFile(path.join(releaseDir, "index.html"), "<div></div>\n");
     await writeFile(path.join(releaseDir, "sporades.json"), "{}\n");
     await writeFile(path.join(releaseDir, ".env.sporades.server"), "SECRET_TOKEN=swordfish\n");
+    const dataDir = path.join(capsuleDir, "data");
+    await mkdir(path.join(dataDir, "uploads"), { recursive: true });
+    await writeFile(path.join(dataDir, "data.db"), "sqlite bytes\n");
+    await writeFile(path.join(dataDir, "uploads", "file.bin"), "uploaded bytes\n");
+    await chmod(dataDir, 0o755);
+    await chmod(path.join(dataDir, "uploads"), 0o755);
+    await chmod(path.join(dataDir, "data.db"), 0o644);
+    await chmod(path.join(dataDir, "uploads", "file.bin"), 0o644);
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     await writeFile(
       registryRecordPath,
@@ -3360,6 +3469,9 @@ test("sporades host helper starts the current release in Docker and routes throu
         remoteCapsuleId: "capsules.example.dev/team-notes",
         hostedUrl: "https://team-notes.capsules.example.dev",
         currentRelease: { id: "20260630T221500Z-feedface" },
+        baseImage: {
+          updatePolicy: { mode: "manual" },
+        },
       })}\n`,
     );
     await symlink(releaseDir, path.join(capsuleDir, "current"));
@@ -3392,6 +3504,7 @@ test("sporades host helper starts the current release in Docker and routes throu
               "com.sporades.hosted-domain": "capsules.example.dev",
               "com.sporades.capsule-subname": "team-notes",
               "com.sporades.capsule-id": "capsules.example.dev/team-notes",
+              "com.sporades.base-image.update-policy": "host-managed",
             },
           },
           routes: {
@@ -3432,17 +3545,25 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert.equal(runCall.args[runCall.args.indexOf("--tmpfs") + 1], "/tmp:rw,nosuid,nodev,noexec");
     assert.equal(runCall.args[runCall.args.indexOf("--cap-drop") + 1], "ALL");
     assert.equal(runCall.args[runCall.args.indexOf("--security-opt") + 1], "no-new-privileges");
+    assert.equal(runCall.args[runCall.args.indexOf("--user") + 1], "10001:10001");
     assert.equal(runCall.args[runCall.args.indexOf("--log-driver") + 1], "json-file");
     assert(runCall.args.includes("max-size=10m"));
     assert(runCall.args.includes("max-file=5"));
     assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");
     assert(runCall.args.includes("--label"));
     assert(runCall.args.includes("com.sporades.release-id=20260630T221500Z-feedface"));
+    assert(runCall.args.includes("com.sporades.base-image.name=sporades-base"));
+    assert(runCall.args.includes("com.sporades.base-image.version=0.1.0-node22-alpine"));
+    assert(runCall.args.includes("com.sporades.base-image.update-policy=manual"));
     assert(runCall.args.includes(`${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`));
     assert(runCall.args.includes(`${path.join(capsuleDir, "current", ".env.sporades.server")}:/app/.env.sporades.server:ro`));
     assert.equal(runCall.args[runCall.args.indexOf("--env-file") + 1], path.join(capsuleDir, "current", ".env.sporades.server"));
     assert(runCall.args.includes(`${path.join(capsuleDir, "data")}:/app/data:rw`));
-    assert.deepEqual(runCall.args.slice(runCall.args.indexOf("node:22-alpine")), ["node:22-alpine", "node", "/app/server.mjs"]);
+    assert.deepEqual(runCall.args.slice(runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.1.0-node22-alpine")), [
+      "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+      "node",
+      "/app/server.mjs",
+    ]);
     assert.match(calls[4].args.join(" "), /NetworkSettings\.Ports/);
     const routeContents = await readFile(routeFile, "utf8");
     assert.match(routeContents, /log \{\n    output file .*remote-root\/hosts\/capsules\.example\.dev\/capsules\/team-notes\/logs\/http\.log \{/);
@@ -3456,6 +3577,20 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert.match(record.runtimeProbe.token, /^[a-f0-9]{64}$/);
     assert.equal(JSON.stringify(output).includes(record.runtimeProbe.token), false);
     assert.equal(JSON.stringify(output).includes("SECRET_TOKEN"), false);
+    const preparedDataDir = await stat(dataDir);
+    const preparedUploadsDir = await stat(path.join(dataDir, "uploads"));
+    const preparedDatabase = await stat(path.join(dataDir, "data.db"));
+    const preparedUpload = await stat(path.join(dataDir, "uploads", "file.bin"));
+    assert.equal(preparedDataDir.mode & 0o777, 0o700);
+    assert.equal(preparedUploadsDir.mode & 0o777, 0o700);
+    assert.equal(preparedDatabase.mode & 0o777, 0o600);
+    assert.equal(preparedUpload.mode & 0o777, 0o600);
+    if (process.getuid?.() === 0) {
+      assert.equal(preparedDataDir.uid, 10001);
+      assert.equal(preparedDataDir.gid, 10001);
+      assert.equal(preparedDatabase.uid, 10001);
+      assert.equal(preparedDatabase.gid, 10001);
+    }
   });
 });
 
@@ -4118,6 +4253,9 @@ test("sporades host helper lists registry records enriched with Docker container
           createdAt: "2026-01-03T00:00:00.000Z",
           bundleHash: "sha256:abc123",
         },
+        baseImage: {
+          updatePolicy: { mode: "manual" },
+        },
       })}\n`,
     );
     await writeFile(
@@ -4139,9 +4277,11 @@ test("sporades host helper lists registry records enriched with Docker container
           JSON.stringify({
             ID: "abc123def456",
             Names: "sporades-capsules-example-dev-notes",
-            Image: "node:22-alpine",
+            Image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
             State: "running",
             Status: "Up 2 hours",
+            Labels:
+              "com.sporades.managed=true,com.sporades.hosted-domain=capsules.example.dev,com.sporades.capsule-subname=notes,com.sporades.base-image.name=sporades-base,com.sporades.base-image.version=0.1.0-node22-alpine,com.sporades.base-image.update-policy=manual",
           }),
           JSON.stringify({
             ID: "fedcba654321",
@@ -4198,6 +4338,15 @@ test("sporades host helper lists registry records enriched with Docker container
               status: "Exited (0) 3 minutes ago",
               running: false,
             },
+            baseImage: {
+              name: "unknown",
+              image: "node:22-alpine",
+              version: "unknown",
+              updatePolicy: {
+                mode: "host-managed",
+                autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
+              },
+            },
           },
           {
             subname: "drafts",
@@ -4211,6 +4360,15 @@ test("sporades host helper lists registry records enriched with Docker container
             },
             currentRelease: null,
             docker: null,
+            baseImage: {
+              name: "unknown",
+              image: "unknown",
+              version: "unknown",
+              updatePolicy: {
+                mode: "host-managed",
+                autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
+              },
+            },
           },
           {
             subname: "notes",
@@ -4230,10 +4388,24 @@ test("sporades host helper lists registry records enriched with Docker container
             docker: {
               containerId: "abc123def456",
               containerName: "sporades-capsules-example-dev-notes",
-              image: "node:22-alpine",
+              image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
               state: "running",
               status: "Up 2 hours",
               running: true,
+              baseImage: {
+                name: "sporades-base",
+                version: "0.1.0-node22-alpine",
+                updatePolicy: { mode: "manual" },
+              },
+            },
+            baseImage: {
+              name: "sporades-base",
+              image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+              version: "0.1.0-node22-alpine",
+              updatePolicy: {
+                mode: "manual",
+                autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
+              },
             },
           },
         ],
@@ -4320,6 +4492,15 @@ test("sporades host helper keeps listing registry records when Docker lookup fai
     assert.equal(output.ok, true);
     assert.equal(output.data.capsules[0].subname, "notes");
     assert.equal(output.data.capsules[0].docker, null);
+    assert.deepEqual(output.data.capsules[0].baseImage, {
+      name: "unknown",
+      image: "unknown",
+      version: "unknown",
+      updatePolicy: {
+        mode: "host-managed",
+        autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
+      },
+    });
   });
 });
 
@@ -5276,7 +5457,7 @@ test("sporades host helper fails start when Docker does not report a usable loop
       [
         ["stop", "sporades-capsules-example-dev-team-notes"],
         ["rm", "sporades-capsules-example-dev-team-notes"],
-        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "client.js")}:/app/client.js:ro`, "--volume", `${path.join(capsuleDir, "current", "index.html")}:/app/index.html:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--publish", "127.0.0.1::4000", "node:22-alpine", "node", "/app/server.mjs"],
+        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.1.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "client.js")}:/app/client.js:ro`, "--volume", `${path.join(capsuleDir, "current", "index.html")}:/app/index.html:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine", "node", "/app/server.mjs"],
         ["inspect", "-f", "{{.State.Running}}", "sporades-capsules-example-dev-team-notes"],
         ["inspect", "-f", "{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostIp}}:{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostPort}}", "sporades-capsules-example-dev-team-notes"],
         ["stop", "sporades-capsules-example-dev-team-notes"],
@@ -7573,11 +7754,25 @@ process.exit(0);
         },
         container: {
           name: "sporades-capsules-example-dev-team-notes",
+          image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+          user: "10001:10001",
+          baseImage: {
+            name: "sporades-base",
+            image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+            version: "0.1.0-node22-alpine",
+            updatePolicy: {
+              mode: "host-managed",
+              autoPatch: { supported: false, reason: "Base image updates are applied by replacing containers, not mutating them in place." },
+            },
+          },
           labels: {
             "com.sporades.managed": "true",
             "com.sporades.hosted-domain": "capsules.example.dev",
             "com.sporades.capsule-subname": "team-notes",
             "com.sporades.capsule-id": "capsules.example.dev/team-notes",
+            "com.sporades.base-image.name": "sporades-base",
+            "com.sporades.base-image.version": "0.1.0-node22-alpine",
+            "com.sporades.base-image.update-policy": "host-managed",
           },
         },
         routes: {

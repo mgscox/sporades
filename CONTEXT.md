@@ -29,7 +29,7 @@ The build-time path that turns a Capsule's server entry, client entry, `sporades
 _Avoid_: build system (too broad), compiler (only part of the work), bundler (esbuild is just one adapter inside it)
 
 **Base image**:
-The Docker image (Node 22 alpine) that local Container sessions and Hosted Capsules use today. Current practical Docker hardening defaults live in the runtime layout and lifecycle: release files mount read-only, Capsule data mounts read-write, Hosted Capsules publish only loopback ports behind Caddy, and Hosted containers carry Sporades ownership labels. A custom hardened Base image, non-root runtime, read-only root filesystem, seccomp profile, and deeper filesystem model remain future hardening work.
+The thin Sporades-owned Docker image used by local Container sessions and Hosted Capsules: `ghcr.io/sporades/sporades-base:0.1.0-node22-alpine`. It provides Node 22, the non-root `sporades` runtime user (`10001:10001`), known read-only release paths, and the `/app/data` writable data contract. Runtime hardening lives in the container lifecycle: read-only root filesystem, hardened `/tmp`, dropped capabilities, Docker's default seccomp profile, `no-new-privileges`, loopback-only Hosted Capsule ports behind Caddy, and Docker labels for Base image version/update policy.
 _Avoid_: runtime image, host image
 
 **Runtime directory**:
