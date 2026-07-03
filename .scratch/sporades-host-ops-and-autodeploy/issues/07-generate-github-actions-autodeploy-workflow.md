@@ -1,6 +1,6 @@
 # Generate GitHub Actions autodeploy workflow
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
