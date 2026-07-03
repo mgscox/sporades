@@ -8298,6 +8298,98 @@ test("sporades host github workflow write dry-runs an inspectable autodeploy wor
   });
 });
 
+test("sporades host github workflow reports successful deploys to GitHub summaries", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(
+      ["host", "github", "workflow", "write", "--host", "personal", "--subname", "team-notes", "--branch", "main", "--dry-run", "--json"],
+      { cwd: dir },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    const workflow = JSON.parse(result.stdout).data.workflow;
+    assert.match(workflow, /SPORADES_AUTODEPLOY_SUMMARY: \$\{\{ runner\.temp \}\}\/sporades-autodeploy-summary\.md/);
+    assert.match(workflow, /GITHUB_STEP_SUMMARY/);
+    assert.match(workflow, /Hosted Capsule/);
+    assert.match(workflow, /Release ID/);
+    assert.match(workflow, /Verification/);
+    assert.match(workflow, /data\.capsule\?\.hostedUrl/);
+    assert.match(workflow, /data\.release\?\.id/);
+    assert.match(workflow, /verification\?\.state/);
+  });
+});
+
+test("sporades host github workflow reports verification failures without automatic rollback", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(
+      ["host", "github", "workflow", "write", "--host", "personal", "--subname", "team-notes", "--branch", "main", "--dry-run", "--json"],
+      { cwd: dir },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    const workflow = JSON.parse(result.stdout).data.workflow;
+    assert.match(workflow, /Verification failed/);
+    assert.match(workflow, /rollbackGuidance\?\.command/);
+    assert.match(workflow, /previousCurrentRelease\?\.id/);
+    assert.match(workflow, /sporades host rollback/);
+    assert.match(workflow, /Sporades did not roll back automatically/);
+    assert.doesNotMatch(workflow, /npx sporades host rollback/);
+  });
+});
+
+test("sporades host github workflow reports command failures without exposing sensitive values", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(
+      ["host", "github", "workflow", "write", "--host", "personal", "--subname", "team-notes", "--branch", "main", "--dry-run", "--json"],
+      { cwd: dir },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    const workflow = JSON.parse(result.stdout).data.workflow;
+    assert.match(workflow, /Command failed/);
+    assert.match(workflow, /No structured Sporades deploy output was available/);
+    assert.match(workflow, /SPORADES_HOST_SSH_PRIVATE_KEY/);
+    assert.doesNotMatch(workflow, /secrets\.SPORADES_HOST_SSH_PRIVATE_KEY[^\n]*>>/);
+    assert.doesNotMatch(workflow, /SPORADES_HOST_SSH_PRIVATE_KEY[^\n]*GITHUB_STEP_SUMMARY/);
+    assert.doesNotMatch(workflow, /session token/i);
+    assert.doesNotMatch(workflow, /Server env values/);
+  });
+});
+
+test("sporades host github workflow associates pull request deploy results", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(
+      ["host", "github", "workflow", "write", "--host", "personal", "--subname", "team-notes", "--branch", "main", "--dry-run", "--json"],
+      { cwd: dir },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    const workflow = JSON.parse(result.stdout).data.workflow;
+    assert.match(workflow, /pull_request:\n    branches: \["main"\]/);
+    assert.match(workflow, /pull-requests: write/);
+    assert.match(workflow, /if: always\(\) && github\.event_name == 'pull_request'/);
+    assert.match(workflow, /actions\/github-script@v7/);
+    assert.match(workflow, /github\.rest\.pulls\.createReview/);
+    assert.match(workflow, /pull_number: context\.payload\.pull_request\.number/);
+    assert.match(workflow, /SPORADES_AUTODEPLOY_SUMMARY/);
+  });
+});
+
+test("sporades host github workflow associates branch push deploy results with the workflow run summary", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(
+      ["host", "github", "workflow", "write", "--host", "personal", "--subname", "team-notes", "--branch", "release/stable", "--dry-run", "--json"],
+      { cwd: dir },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    const workflow = JSON.parse(result.stdout).data.workflow;
+    assert.match(workflow, /push:\n    branches: \["release\/stable"\]/);
+    assert.match(workflow, /workflow_dispatch:/);
+    assert.match(workflow, /fs\.appendFileSync\(process\.env\.GITHUB_STEP_SUMMARY/);
+    assert.match(workflow, /fs\.writeFileSync\(process\.env\.SPORADES_AUTODEPLOY_SUMMARY/);
+  });
+});
+
 test("sporades host github workflow write writes a workflow and refuses accidental overwrite", async () => {
   await withTempDir(async (dir) => {
     const file = ".github/workflows/custom-sporades.yml";
