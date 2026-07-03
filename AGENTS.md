@@ -16,3 +16,7 @@ The repo uses the default mattpocock/skills triage vocabulary. See `docs/agents/
 ### Domain docs
 
 This is a single-context repo with root `CONTEXT.md` and `docs/adr/`. See `docs/agents/domain.md`.
+
+### Host provisioning
+
+Cloud Host server creation and Sporades installation use the common contract in `docs/agents/host-provisioning.md`.
