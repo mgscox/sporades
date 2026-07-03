@@ -2590,6 +2590,7 @@ test("sporades host helper installs a release atomically and updates the current
         domain: "capsules.example.dev",
         remoteCapsuleId: "capsules.example.dev/team-notes",
         hostedUrl: "https://team-notes.capsules.example.dev",
+        releases: { malformed: true },
       })}\n`,
     );
 
@@ -2654,6 +2655,83 @@ test("sporades host helper installs a release atomically and updates the current
     await assert.rejects(readFile(path.join(capsuleDir, "releases", "20260630T221500Z-feedface", "server", "index.ts"), "utf8"), {
       code: "ENOENT",
     });
+    const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
+    assert.equal(record.currentRelease.id, "20260630T221500Z-feedface");
+    assert.equal(record.releases.length, 1);
+    assert.equal(record.releases[0].id, "20260630T221500Z-feedface");
+    assert.equal(record.releases[0].state, "uploaded");
+    assert.equal(record.releases[0].current, true);
+    assert.equal(record.releases[0].source.hostedUrl, "https://team-notes.capsules.example.dev");
+    assert.equal(record.releases[0].source.serverEnvIncluded, true);
+    assert.deepEqual(record.releases[0].source.files, ["server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"]);
+    assert.match(record.releases[0].createdAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(record.releases[0].uploadedAt, record.releases[0].createdAt);
+  });
+});
+
+test("sporades host helper marks previous releases non-current and records start attempts", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    await mkdir(releaseDir, { recursive: true });
+    await writeFile(path.join(releaseDir, "server.mjs"), "export default 'server';\n");
+    await writeFile(path.join(releaseDir, "client.js"), "console.log('client');\n");
+    await writeFile(path.join(releaseDir, "index.html"), "<div></div>\n");
+    await writeFile(path.join(releaseDir, "sporades.json"), "{}\n");
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(
+      registryRecordPath,
+      `${JSON.stringify({
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        currentRelease: { id: "20260630T221500Z-feedface" },
+        releases: [
+          {
+            id: "20260629T120000Z-deadbeef",
+            createdAt: "2026-06-29T12:00:00.000Z",
+            uploadedAt: "2026-06-29T12:00:00.000Z",
+            state: "uploaded",
+            current: true,
+            source: { hostedUrl: "https://team-notes.capsules.example.dev" },
+          },
+          {
+            id: "20260630T221500Z-feedface",
+            createdAt: "2026-06-30T22:15:00.000Z",
+            uploadedAt: "2026-06-30T22:15:00.000Z",
+            state: "uploaded",
+            current: true,
+            source: { hostedUrl: "https://team-notes.capsules.example.dev" },
+          },
+        ],
+      })}\n`,
+    );
+    await symlink(releaseDir, path.join(capsuleDir, "current"));
+    const docker = await installFakeDocker(dir);
+
+    const start = await runHostHelper(
+      {
+        action: "capsule.start",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(start.code, 0, start.stderr);
+    const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
+    assert.deepEqual(
+      record.releases.map((release) => ({ id: release.id, state: release.state, current: release.current })),
+      [
+        { id: "20260629T120000Z-deadbeef", state: "uploaded", current: false },
+        { id: "20260630T221500Z-feedface", state: "started", current: true },
+      ],
+    );
+    assert.equal(record.releases[1].startAttempts.length, 1);
+    assert.match(record.releases[1].startAttempts[0].startedAt, /^\d{4}-\d{2}-\d{2}T/);
   });
 });
 
@@ -3289,6 +3367,112 @@ test("sporades host helper keeps listing registry records when Docker lookup fai
   });
 });
 
+test("sporades host helper lists Hosted Capsule releases in deterministic order", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote");
+    const registryDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules");
+    await mkdir(registryDir, { recursive: true });
+    await writeFile(
+      path.join(registryDir, "team-notes.json"),
+      `${JSON.stringify({
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        status: "running",
+        currentRelease: { id: "20260630T221500Z-feedface" },
+        releases: [
+          {
+            id: "20260629T120000Z-deadbeef",
+            createdAt: "2026-06-29T12:00:00.000Z",
+            uploadedAt: "2026-06-29T12:00:00.000Z",
+            state: "verified",
+            current: true,
+            verificationAttempts: [{ verifiedAt: "2026-06-29T12:02:00.000Z" }],
+            source: { hostedUrl: "https://team-notes.capsules.example.dev" },
+          },
+          { id: "", state: "nonsense" },
+          {
+            id: "20260630T221500Z-feedface",
+            createdAt: "2026-06-30T22:15:00.000Z",
+            uploadedAt: "2026-06-30T22:15:00.000Z",
+            state: "started",
+            current: false,
+            startAttempts: [{ startedAt: "2026-06-30T22:16:00.000Z" }],
+            source: { hostedUrl: "https://team-notes.capsules.example.dev", files: ["server.mjs"] },
+          },
+        ],
+      })}\n`,
+    );
+
+    const releases = await runHostHelper({
+      action: "capsule.release.list",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+      capsule: { subname: "team-notes" },
+    });
+
+    assert.equal(releases.code, 0, releases.stderr);
+    const output = JSON.parse(releases.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.currentRelease.id, "20260630T221500Z-feedface");
+    assert.deepEqual(
+      output.data.releases.map((release) => ({ id: release.id, state: release.state, current: release.current })),
+      [
+        { id: "20260630T221500Z-feedface", state: "started", current: true },
+        { id: "20260629T120000Z-deadbeef", state: "verified", current: false },
+      ],
+    );
+    assert.deepEqual(output.data.releases[0].startAttempts, [{ startedAt: "2026-06-30T22:16:00.000Z" }]);
+    assert.deepEqual(output.data.releases[1].verificationAttempts, [{ verifiedAt: "2026-06-29T12:02:00.000Z" }]);
+  });
+});
+
+test("sporades host helper lists legacy current release metadata without release history", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote");
+    const registryDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules");
+    await mkdir(registryDir, { recursive: true });
+    await writeFile(
+      path.join(registryDir, "team-notes.json"),
+      `${JSON.stringify({
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        status: "running",
+        currentRelease: { id: "20260630T221500Z-feedface", createdAt: "2026-06-30T22:15:00.000Z" },
+      })}\n`,
+    );
+
+    const releases = await runHostHelper({
+      action: "capsule.release.list",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+      capsule: { subname: "team-notes" },
+    });
+
+    assert.equal(releases.code, 0, releases.stderr);
+    const output = JSON.parse(releases.stdout);
+    assert.deepEqual(
+      output.data.releases.map((release) => ({
+        id: release.id,
+        createdAt: release.createdAt,
+        state: release.state,
+        current: release.current,
+        legacy: release.legacy,
+      })),
+      [
+        {
+          id: "20260630T221500Z-feedface",
+          createdAt: "2026-06-30T22:15:00.000Z",
+          state: "uploaded",
+          current: true,
+          legacy: true,
+        },
+      ],
+    );
+  });
+});
+
 test("sporades host helper reports missing and stopped Hosted Capsules for stats", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -3915,6 +4099,15 @@ test("sporades host helper reports no release and failed starts with unavailable
     assert.equal(JSON.parse(failedStart.stdout).ok, false);
     assert.equal(JSON.parse(failedStart.stdout).error.message, "Hosted Capsule container did not stay running.");
     assert.match(await readFile(routeFile, "utf8"), /respond "Hosted Capsule unavailable" 503/);
+    const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
+    assert.equal(record.releases.length, 1);
+    assert.equal(record.releases[0].id, "20260630T221500Z-feedface");
+    assert.equal(record.releases[0].state, "failed");
+    assert.equal(record.releases[0].current, true);
+    assert.equal(record.releases[0].startAttempts.length, 1);
+    assert.match(record.releases[0].startAttempts[0].startedAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(record.releases[0].failure.message, "Hosted Capsule container did not stay running.");
+    assert.match(record.releases[0].failure.failedAt, /^\d{4}-\d{2}-\d{2}T/);
   });
 });
 
@@ -3958,7 +4151,11 @@ test("sporades host helper fails start when Docker does not report a usable loop
       },
     });
     assert.match(await readFile(routeFile, "utf8"), /respond "Hosted Capsule unavailable" 503/);
-    assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).status, undefined);
+    const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
+    assert.equal(record.status, "failed");
+    assert.equal(record.releases[0].id, "20260630T221500Z-feedface");
+    assert.equal(record.releases[0].state, "failed");
+    assert.equal(record.releases[0].failure.message, "Docker did not report a loopback published port for Hosted Capsule.");
     assert.deepEqual(
       (await docker.calls()).map((call) => call.args),
       [
@@ -5055,6 +5252,15 @@ test("sporades host helper preserves install metadata when push restart route re
     assert.equal(output.data.release.id, "20260630T221500Z-feedface");
     assert.equal(output.error.message, "Failed to apply Hosted Capsule route.");
     assert.equal(await readlink(path.join(capsuleDir, "current")), path.join(capsuleDir, "releases", "20260630T221500Z-feedface"));
+    const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
+    assert.equal(record.status, "failed");
+    assert.equal(record.releases.length, 1);
+    assert.equal(record.releases[0].id, "20260630T221500Z-feedface");
+    assert.equal(record.releases[0].state, "failed");
+    assert.equal(record.releases[0].current, true);
+    assert.equal(record.releases[0].startAttempts.length, 1);
+    assert.equal(record.releases[0].failure.message, "Failed to apply Hosted Capsule route.");
+    assert.match(record.releases[0].failure.failedAt, /^\d{4}-\d{2}-\d{2}T/);
   });
 });
 
@@ -5564,6 +5770,99 @@ process.exit(0);
         remoteRoot: "/opt/sporades",
       },
       capsule: null,
+    });
+  });
+});
+
+test("sporades host releases lists release history for one Hosted Capsule", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+if (request.action !== "capsule.release.list") {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected action.", hint: "Use capsule.release.list." }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    capsule: {
+      subname: request.capsule.subname,
+      domain: request.host.domain,
+      hostedUrl: "https://team-notes.capsules.example.dev",
+      remoteCapsuleId: "capsules.example.dev/team-notes"
+    },
+    currentRelease: { id: "20260630T221500Z-feedface" },
+    releases: [
+      {
+        id: "20260630T221500Z-feedface",
+        createdAt: "2026-06-30T22:15:00.000Z",
+        uploadedAt: "2026-06-30T22:15:00.000Z",
+        state: "started",
+        current: true,
+        source: { hostedUrl: "https://team-notes.capsules.example.dev" },
+        startAttempts: [{ startedAt: "2026-06-30T22:16:00.000Z" }],
+        verificationAttempts: [],
+        failure: null
+      },
+      {
+        id: "20260629T120000Z-deadbeef",
+        createdAt: "2026-06-29T12:00:00.000Z",
+        uploadedAt: "2026-06-29T12:00:00.000Z",
+        state: "verified",
+        current: false,
+        source: { hostedUrl: "https://team-notes.capsules.example.dev" },
+        startAttempts: [{ startedAt: "2026-06-29T12:01:00.000Z" }],
+        verificationAttempts: [{ verifiedAt: "2026-06-29T12:02:00.000Z" }],
+        failure: null
+      }
+    ]
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    const addHost = await runCli(
+      ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+      { cwd: dir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+
+    const releases = await runCli(["host", "releases", "team-notes", "--host", "personal", "--json"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(releases.code, 0, releases.stderr);
+    const output = JSON.parse(releases.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.currentRelease.id, "20260630T221500Z-feedface");
+    assert.deepEqual(
+      output.data.releases.map((release) => ({ id: release.id, state: release.state, current: release.current })),
+      [
+        { id: "20260630T221500Z-feedface", state: "started", current: true },
+        { id: "20260629T120000Z-deadbeef", state: "verified", current: false },
+      ],
+    );
+
+    const calls = await readJsonl(fakeSsh.logPath);
+    assert.deepEqual(JSON.parse(calls[0].stdin), {
+      action: "capsule.release.list",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot: "/opt/sporades",
+      },
+      capsule: {
+        subname: "team-notes",
+      },
     });
   });
 });

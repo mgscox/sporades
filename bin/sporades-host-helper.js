@@ -50,6 +50,10 @@ async function main() {
     await installRelease(request);
     return;
   }
+  if (request.action === "capsule.release.list") {
+    await listReleases(request);
+    return;
+  }
   if (request.action === "capsule.start") {
     await startCapsule(request);
     return;
@@ -413,7 +417,7 @@ async function installRelease(request) {
 
   await symlink(paths.release, tempCurrentLink);
   await rename(tempCurrentLink, paths.currentLink);
-  await updateRegistryCurrentRelease(request, release.id, "released");
+  await recordReleaseUploaded(request, release);
 
   let restartResult = null;
   let restartError = null;
@@ -468,12 +472,13 @@ async function startCapsule(request, options = {}) {
   const releaseId = await currentReleaseId(paths.currentLink, request);
   const lifecycle = normaliseLifecycle(request);
   await mkdir(paths.data, { recursive: true });
+  await recordReleaseStartAttempt(request, releaseId);
 
   stopAndRemoveContainer(lifecycle.container.name);
   const runArgs = await dockerRunArgs(lifecycle, releaseId);
   const run = runDocker(runArgs);
   if (!run.ok) {
-    await writeUnavailableRoute(lifecycle);
+    await recordFailedStartAndUnavailableRoute(request, lifecycle, releaseId, "Hosted Capsule container failed to start.");
     const result = {
       ok: false,
       data: null,
@@ -490,7 +495,7 @@ async function startCapsule(request, options = {}) {
 
   const running = checkContainerRunning(lifecycle.container.name);
   if (!running) {
-    await writeUnavailableRoute(lifecycle);
+    await recordFailedStartAndUnavailableRoute(request, lifecycle, releaseId, "Hosted Capsule container did not stay running.");
     const result = {
       ok: false,
       data: null,
@@ -508,7 +513,7 @@ async function startCapsule(request, options = {}) {
   const publishedPort = inspectLoopbackPublishedPort(lifecycle.container.name, lifecycle.routes.running.port ?? 4000);
   if (!publishedPort) {
     stopAndRemoveContainer(lifecycle.container.name);
-    await writeUnavailableRoute(lifecycle);
+    await recordFailedStartAndUnavailableRoute(request, lifecycle, releaseId, "Docker did not report a loopback published port for Hosted Capsule.");
     const result = {
       ok: false,
       data: null,
@@ -524,8 +529,13 @@ async function startCapsule(request, options = {}) {
   }
 
   const runningRoute = loopbackRunningRoute(lifecycle.routes.running, publishedPort);
-  await writeRunningRoute(lifecycle, runningRoute);
-  await updateRegistryCurrentRelease(request, releaseId, "running");
+  try {
+    await writeRunningRoute(lifecycle, runningRoute);
+  } catch (error) {
+    await recordReleaseFailure(request, releaseId, error?.message ?? "Failed to apply Hosted Capsule route.");
+    throw error;
+  }
+  await recordReleaseStarted(request, releaseId);
   const data = {
     started: true,
     restarted: false,
@@ -636,6 +646,30 @@ async function statsCapsule(request) {
     raw,
   };
   writeEnvelope({ ok: true, data, error: null });
+}
+
+async function listReleases(request) {
+  validateReleaseListRequest(request);
+  const record = await readRegistryRecordForCapsule(request, "releases");
+  assertRegistryRecordMatchesRequest(request, record);
+  const releases = normaliseReleaseHistory(record)
+    .map((release) => markCurrentReleaseEntry(release, record.currentRelease?.id ?? null))
+    .sort(compareReleasesNewestFirst);
+
+  writeEnvelope({
+    ok: true,
+    data: {
+      capsule: {
+        subname: record.subname,
+        domain: record.domain,
+        hostedUrl: record.hostedUrl ?? `${request.host.scheme ?? "https"}://${record.subname}.${request.host.domain}`,
+        remoteCapsuleId: record.remoteCapsuleId ?? `${request.host.domain}/${record.subname}`,
+      },
+      currentRelease: record.currentRelease ?? null,
+      releases,
+    },
+    error: null,
+  });
 }
 
 async function logsHost(request) {
@@ -1772,21 +1806,198 @@ function reloadCaddy(lifecycle) {
   }
 }
 
-async function updateRegistryCurrentRelease(request, releaseId, status) {
-  await mutateRegistryRecord(request, (record) => {
-    record.currentRelease = { ...(record.currentRelease ?? {}), id: releaseId };
-    record.status = status;
-    record.updatedAt = new Date().toISOString();
-    return record;
-  });
-}
-
 async function updateRegistryStatus(request, status) {
   await mutateRegistryRecord(request, (record) => {
     record.status = status;
     record.updatedAt = new Date().toISOString();
     return record;
   });
+}
+
+async function recordFailedStartAndUnavailableRoute(request, lifecycle, releaseId, failureMessage) {
+  try {
+    await writeUnavailableRoute(lifecycle);
+  } catch (error) {
+    await recordReleaseFailure(request, releaseId, error?.message ?? "Failed to apply Hosted Capsule route.");
+    throw error;
+  }
+  await recordReleaseFailure(request, releaseId, failureMessage);
+}
+
+async function recordReleaseUploaded(request, release) {
+  await mutateRegistryRecord(request, (record) => {
+    const now = new Date().toISOString();
+    record.currentRelease = { ...(record.currentRelease ?? {}), id: release.id };
+    record.status = "released";
+    record.updatedAt = now;
+    record.releases = upsertReleaseEntry(record, release.id, (entry) => ({
+      ...entry,
+      id: release.id,
+      createdAt: entry.createdAt ?? now,
+      uploadedAt: entry.uploadedAt ?? now,
+      state: "uploaded",
+      current: true,
+      source: {
+        ...(entry.source ?? {}),
+        hostedUrl: release.hostedUrl ?? entry.source?.hostedUrl ?? null,
+        remoteCapsuleId: release.remoteCapsuleId ?? entry.source?.remoteCapsuleId ?? null,
+        files: Array.isArray(release.files) ? [...release.files] : [],
+        serverEnvIncluded: Boolean(release.serverEnvIncluded),
+      },
+    }));
+    return record;
+  });
+}
+
+async function recordReleaseStartAttempt(request, releaseId) {
+  await mutateRegistryRecord(request, (record) => {
+    const now = new Date().toISOString();
+    record.updatedAt = now;
+    record.releases = upsertReleaseEntry(record, releaseId, (entry) => ({
+      ...entry,
+      id: releaseId,
+      createdAt: entry.createdAt ?? record.currentRelease?.createdAt ?? now,
+      uploadedAt: entry.uploadedAt ?? null,
+      current: true,
+      startAttempts: [...normaliseReleaseEventList(entry.startAttempts), { startedAt: now }],
+    }));
+    return record;
+  });
+}
+
+async function recordReleaseStarted(request, releaseId) {
+  await mutateRegistryRecord(request, (record) => {
+    const now = new Date().toISOString();
+    record.currentRelease = { ...(record.currentRelease ?? {}), id: releaseId };
+    record.status = "running";
+    record.updatedAt = now;
+    record.releases = upsertReleaseEntry(record, releaseId, (entry) => ({
+      ...entry,
+      id: releaseId,
+      createdAt: entry.createdAt ?? now,
+      uploadedAt: entry.uploadedAt ?? null,
+      state: "started",
+      current: true,
+      failure: null,
+    }));
+    return record;
+  });
+}
+
+async function recordReleaseFailure(request, releaseId, message) {
+  await mutateRegistryRecord(request, (record) => {
+    const now = new Date().toISOString();
+    record.status = "failed";
+    record.updatedAt = now;
+    record.releases = upsertReleaseEntry(record, releaseId, (entry) => ({
+      ...entry,
+      id: releaseId,
+      createdAt: entry.createdAt ?? now,
+      uploadedAt: entry.uploadedAt ?? null,
+      state: "failed",
+      current: (record.currentRelease?.id ?? null) === releaseId,
+      failure: {
+        failedAt: now,
+        message,
+      },
+    }));
+    return record;
+  });
+}
+
+function upsertReleaseEntry(record, releaseId, mutateEntry) {
+  const releases = normaliseReleaseHistory(record);
+  const existing = releases.find((release) => release.id === releaseId) ?? createLegacyReleaseEntry(releaseId, record);
+  const next = mutateEntry(existing);
+  const withoutRelease = releases.filter((release) => release.id !== releaseId);
+  return [...withoutRelease, next].map((release) => markCurrentReleaseEntry(release, releaseId));
+}
+
+function normaliseReleaseHistory(record) {
+  const currentReleaseId = record?.currentRelease?.id ?? null;
+  const releases = Array.isArray(record?.releases)
+    ? record.releases
+        .filter((release) => release && typeof release === "object" && typeof release.id === "string" && release.id.length > 0)
+        .map((release) => normaliseReleaseEntry(release, currentReleaseId))
+    : [];
+  if (releases.length === 0 && currentReleaseId) {
+    releases.push(createLegacyReleaseEntry(currentReleaseId, record));
+  }
+  const seen = new Set();
+  return releases.filter((release) => {
+    if (seen.has(release.id)) {
+      return false;
+    }
+    seen.add(release.id);
+    return true;
+  });
+}
+
+function normaliseReleaseEntry(release, currentReleaseId) {
+  const state = ["uploaded", "started", "verified", "failed"].includes(release.state) ? release.state : "uploaded";
+  return {
+    id: release.id,
+    createdAt: typeof release.createdAt === "string" ? release.createdAt : null,
+    uploadedAt: typeof release.uploadedAt === "string" ? release.uploadedAt : null,
+    state,
+    current: release.id === currentReleaseId,
+    source: normaliseReleaseSource(release.source),
+    startAttempts: normaliseReleaseEventList(release.startAttempts),
+    verificationAttempts: normaliseReleaseEventList(release.verificationAttempts),
+    failure: normaliseReleaseFailure(release.failure),
+  };
+}
+
+function createLegacyReleaseEntry(releaseId, record) {
+  return {
+    id: releaseId,
+    createdAt: typeof record?.currentRelease?.createdAt === "string" ? record.currentRelease.createdAt : null,
+    uploadedAt: null,
+    state: "uploaded",
+    current: true,
+    source: normaliseReleaseSource(record?.currentRelease?.source),
+    startAttempts: [],
+    verificationAttempts: [],
+    failure: null,
+    legacy: true,
+  };
+}
+
+function markCurrentReleaseEntry(release, currentReleaseId) {
+  return {
+    ...release,
+    current: release.id === currentReleaseId,
+  };
+}
+
+function normaliseReleaseSource(source) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return {};
+  }
+  return Object.fromEntries(
+    Object.entries(source).filter(([, value]) => value !== undefined),
+  );
+}
+
+function normaliseReleaseEventList(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.filter((event) => event && typeof event === "object" && !Array.isArray(event));
+}
+
+function normaliseReleaseFailure(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  return {
+    failedAt: typeof value.failedAt === "string" ? value.failedAt : null,
+    message: typeof value.message === "string" ? value.message : "Hosted Capsule release failed.",
+  };
+}
+
+function compareReleasesNewestFirst(left, right) {
+  return String(right.createdAt ?? right.id).localeCompare(String(left.createdAt ?? left.id)) || right.id.localeCompare(left.id);
 }
 
 async function readRegistryRecordForCapsule(request, purpose) {
@@ -2161,6 +2372,18 @@ function validateStatsRequest(request) {
   ];
   if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule stats request.", "Update the Sporades CLI and retry the host stats command.");
+  }
+}
+
+function validateReleaseListRequest(request) {
+  const requiredStrings = [
+    request.host?.domain,
+    request.host?.alias,
+    request.host?.remoteRoot,
+    request.capsule?.subname,
+  ];
+  if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw helperError("Invalid Hosted Capsule releases request.", "Update the Sporades CLI and retry `sporades host releases`.");
   }
 }
 

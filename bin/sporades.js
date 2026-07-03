@@ -393,7 +393,7 @@ function parseHostArgs(args) {
     if (arg.startsWith("--")) {
       throw commandError(
         `Unknown flag: ${arg}`,
-        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
+        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
       );
     }
     positional.push(arg);
@@ -520,6 +520,21 @@ function parseHostArgs(args) {
     return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
   }
 
+  if (subcommand === "releases") {
+    const [positionalSubname, ...extra] = positional;
+    if (!positionalSubname) {
+      throw commandError("Missing Capsule subname.", "Use `sporades host releases <subname> --host <alias>`.");
+    }
+    if (extra.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host releases <subname> --host <alias>`.");
+    }
+    if (hostAlias) {
+      validateHostAlias(hostAlias);
+    }
+    validateCapsuleSubname(positionalSubname);
+    return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
+  }
+
   if (subcommand === "push") {
     if (positional.length > 0) {
       throw commandError("Too many positional arguments.", "Use `sporades host push --host <alias> --subname <capsule-subname> --json`.");
@@ -568,7 +583,7 @@ function parseHostArgs(args) {
 
   throw commandError(
     `Unknown host command: ${subcommand ?? ""}`.trim(),
-    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
+    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
   );
 }
 
@@ -1540,6 +1555,30 @@ async function manageHost(options) {
     return;
   }
 
+  if (options.subcommand === "releases") {
+    const config = await readHostConfig();
+    const resolved = resolveHostProfile(config, options.hostAlias);
+    const result = invokeRemoteHostHelper({
+      alias: resolved.alias,
+      profile: resolved.profile,
+      action: "capsule.release.list",
+      subname: options.subname,
+      projectDir: options.projectDir,
+    });
+
+    if (options.json) {
+      writeResult(result, !result.ok);
+      return;
+    }
+
+    if (!result.ok) {
+      throw commandError(result.error.message, result.error.hint);
+    }
+
+    process.stdout.write(formatHostedCapsuleReleases(result.data));
+    return;
+  }
+
   if (options.subcommand === "logs") {
     const config = await readHostConfig();
     const source = options.source ?? "http";
@@ -2271,6 +2310,39 @@ function formatCapsuleRegistryStatus(registry) {
 
 function formatCapsuleRelease(release) {
   return String(release?.id ?? release?.releaseId ?? release?.version ?? "none");
+}
+
+function formatHostedCapsuleReleases(data) {
+  const releases = Array.isArray(data?.releases) ? data.releases : [];
+  const subname = data?.capsule?.subname ?? "Hosted Capsule";
+  if (releases.length === 0) {
+    return `No releases recorded for ${subname}.\n`;
+  }
+
+  const rows = releases.map((release) => ({
+    id: String(release.id ?? ""),
+    state: String(release.state ?? "uploaded"),
+    current: release.current ? "yes" : "no",
+    createdAt: String(release.createdAt ?? "unknown"),
+  }));
+  const headers = {
+    id: "RELEASE",
+    state: "STATE",
+    current: "CURRENT",
+    createdAt: "CREATED",
+  };
+  const widths = Object.fromEntries(
+    Object.keys(headers).map((key) => [key, Math.max(headers[key].length, ...rows.map((row) => row[key].length))]),
+  );
+  const line = (row) =>
+    [row.id, row.state, row.current, row.createdAt]
+      .map((value, index) => {
+        const key = ["id", "state", "current", "createdAt"][index];
+        return index === 3 ? value : value.padEnd(widths[key] + 2);
+      })
+      .join("");
+
+  return `${line(headers)}\n${rows.map(line).join("\n")}\n`;
 }
 
 function formatCapsuleDockerStatus(docker) {
