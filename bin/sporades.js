@@ -37,6 +37,7 @@ const MAX_HOST_LOG_LINES = 10000;
 const HOST_LOG_SOURCES = new Set(["http", "stdout", "stderr"]);
 const HOST_HEALTH_PATH = "/__sporades/health";
 const CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
+const DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW = ".github/workflows/sporades-autodeploy.yml";
 const CLI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 main().catch((error) => {
@@ -351,6 +352,10 @@ function parseHostArgs(args) {
   let lines = null;
   let restart = false;
   let verify = false;
+  let branch = "main";
+  let file = DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW;
+  let dryRun = false;
+  let force = false;
   const positional = [];
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -395,6 +400,22 @@ function parseHostArgs(args) {
     if (arg === "--verify") {
       verify = true;
       restart = true;
+      continue;
+    }
+    if (arg === "--branch") {
+      branch = readFlagValue(rest, ++index, "--branch");
+      continue;
+    }
+    if (arg === "--file") {
+      file = readFlagValue(rest, ++index, "--file");
+      continue;
+    }
+    if (arg === "--dry-run") {
+      dryRun = true;
+      continue;
+    }
+    if (arg === "--force") {
+      force = true;
       continue;
     }
     if (arg.startsWith("--")) {
@@ -590,6 +611,33 @@ function parseHostArgs(args) {
       validateCapsuleSubname(subname);
     }
     return { subcommand, hostAlias, subname, restart, verify, json, projectDir: process.cwd() };
+  }
+
+  if (subcommand === "github") {
+    const [area, action, ...extra] = positional;
+    if (area !== "workflow" || action !== "write") {
+      throw commandError(
+        "Unknown GitHub Host command.",
+        "Use `sporades host github workflow write --host <alias> --subname <capsule-subname>`.",
+      );
+    }
+    if (extra.length > 0) {
+      throw commandError(
+        "Too many positional arguments.",
+        "Use `sporades host github workflow write --host <alias> --subname <capsule-subname>`.",
+      );
+    }
+    if (!hostAlias) {
+      throw commandError("Missing Host profile alias.", "Pass `--host <alias>`.");
+    }
+    if (!subname) {
+      throw commandError("Missing Capsule subname.", "Pass `--subname <capsule-subname>`.");
+    }
+    validateHostAlias(hostAlias);
+    validateCapsuleSubname(subname);
+    validateGithubWorkflowBranch(branch);
+    validateGithubWorkflowFile(file);
+    return { subcommand, github: { area, action }, hostAlias, subname, branch, file, dryRun, force, json, projectDir: process.cwd() };
   }
 
   if (subcommand === "logs") {
@@ -1453,6 +1501,22 @@ async function manageHost(options) {
     process.stdout.write(`Hosted Capsule release pushed: ${target.binding.hostedUrl}\n`);
     if (!options.restart) {
       process.stdout.write("The Hosted Capsule was not restarted.\n");
+    }
+    return;
+  }
+
+  if (options.subcommand === "github" && options.github?.area === "workflow" && options.github?.action === "write") {
+    const result = await writeGithubAutodeployWorkflow(options);
+    if (options.json) {
+      writeResult(result, false);
+      return;
+    }
+    process.stdout.write(`${options.dryRun ? "Generated" : "Wrote"} GitHub Actions workflow: ${result.data.file}\n`);
+    process.stdout.write("Required GitHub secret: SPORADES_HOST_SSH_PRIVATE_KEY\n");
+    process.stdout.write(`Required GitHub variables: ${result.data.github.variables.join(", ")}\n`);
+    if (options.dryRun) {
+      process.stdout.write("\n");
+      process.stdout.write(result.data.workflow);
     }
     return;
   }
@@ -2714,6 +2778,152 @@ function createHostDeleteRequest(profile, subname) {
   };
 }
 
+async function writeGithubAutodeployWorkflow(options) {
+  const workflow = createGithubAutodeployWorkflow({
+    hostAlias: options.hostAlias,
+    subname: options.subname,
+    branch: options.branch,
+  });
+  const outputPath = path.resolve(options.projectDir, options.file);
+  const relativeFile = path.relative(options.projectDir, outputPath) || options.file;
+  if (relativeFile === ".." || relativeFile.startsWith(`..${path.sep}`) || path.isAbsolute(relativeFile)) {
+    throw commandError(
+      "Invalid GitHub workflow file path.",
+      "Pass a relative path inside the project, such as `.github/workflows/sporades-autodeploy.yml`.",
+    );
+  }
+  const github = {
+    secrets: ["SPORADES_HOST_SSH_PRIVATE_KEY"],
+    variables: [
+      "SPORADES_HOST_SERVER",
+      "SPORADES_HOST_DOMAIN",
+      "SPORADES_HOST_REMOTE_ROOT",
+    ],
+  };
+
+  if (options.dryRun) {
+    return {
+      ok: true,
+      data: {
+        file: normalisePathForOutput(relativeFile),
+        written: false,
+        workflow,
+        github,
+      },
+      error: null,
+    };
+  }
+
+  try {
+    await readFile(outputPath, "utf8");
+    if (!options.force) {
+      throw commandError(
+        "GitHub Actions workflow already exists.",
+        "Pass `--force` to overwrite it, or choose another path with `--file <path>`.",
+      );
+    }
+  } catch (error) {
+    if (error.code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  await writeFile(outputPath, workflow);
+
+  return {
+    ok: true,
+    data: {
+      file: normalisePathForOutput(relativeFile),
+      written: true,
+      workflow,
+      github,
+    },
+    error: null,
+  };
+}
+
+function createGithubAutodeployWorkflow({ hostAlias, subname, branch }) {
+  return `name: Sporades Autodeploy
+
+on:
+  push:
+    branches: [${JSON.stringify(branch)}]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SPORADES_HOST_ALIAS: ${hostAlias}
+  SPORADES_HOST_SUBNAME: ${subname}
+  SPORADES_HOST_SERVER: \${{ vars.SPORADES_HOST_SERVER }}
+  SPORADES_HOST_DOMAIN: \${{ vars.SPORADES_HOST_DOMAIN }}
+  SPORADES_HOST_REMOTE_ROOT: \${{ vars.SPORADES_HOST_REMOTE_ROOT }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Run project tests
+        run: |
+          if node -e "const p = require('./package.json'); process.exit(p.scripts && p.scripts.test ? 0 : 1)"; then
+            npm test
+          else
+            echo "No npm test script declared; skipping project tests."
+          fi
+
+      - name: Configure Host SSH key
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\\n' "\${{ secrets.SPORADES_HOST_SSH_PRIVATE_KEY }}" > ~/.ssh/sporades_host_key
+          chmod 600 ~/.ssh/sporades_host_key
+          cat >> ~/.ssh/config <<'SSH_CONFIG'
+          Host *
+            IdentityFile ~/.ssh/sporades_host_key
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+          SSH_CONFIG
+
+      - name: Configure Sporades Host profile
+        run: |
+          npx sporades host add "$SPORADES_HOST_ALIAS" \\
+            --server "$SPORADES_HOST_SERVER" \\
+            --domain "$SPORADES_HOST_DOMAIN" \\
+            --remote-root "$SPORADES_HOST_REMOTE_ROOT" \\
+            --json
+
+      - name: Sporades release preflight
+        run: |
+          npx sporades host current --host "$SPORADES_HOST_ALIAS" --json
+          npx sporades host health --host "$SPORADES_HOST_ALIAS" --json
+
+      - name: Push verified Hosted Capsule release
+        run: |
+          npx sporades host push --host "$SPORADES_HOST_ALIAS" --subname "$SPORADES_HOST_SUBNAME" --verify --json
+`;
+}
+
+function normalisePathForOutput(filePath) {
+  return filePath.split(path.sep).join("/");
+}
+
 function posixJoin(...segments) {
   return segments
     .map((segment, index) => {
@@ -2835,6 +3045,25 @@ function validateHostReleaseId(releaseId) {
       "Invalid Hosted Capsule release ID.",
       "Use a recorded release ID from `sporades host releases <subname> --json`.",
     );
+  }
+}
+
+function validateGithubWorkflowBranch(branch) {
+  if (
+    !branch ||
+    branch.length > 255 ||
+    branch.startsWith("-") ||
+    branch.includes("..") ||
+    branch.includes("\\") ||
+    /[\0\s~^:?*[\\\]]/.test(branch)
+  ) {
+    throw commandError("Invalid GitHub workflow branch.", "Pass a branch name such as `main` or `release/stable`.");
+  }
+}
+
+function validateGithubWorkflowFile(filePath) {
+  if (!filePath || path.isAbsolute(filePath) || filePath.includes("\0")) {
+    throw commandError("Invalid GitHub workflow file path.", "Pass a relative path such as `.github/workflows/sporades-autodeploy.yml`.");
   }
 }
 

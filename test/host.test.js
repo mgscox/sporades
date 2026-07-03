@@ -8264,6 +8264,97 @@ process.exit(0);
   });
 });
 
+test("sporades host github workflow write dry-runs an inspectable autodeploy workflow", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(
+      ["host", "github", "workflow", "write", "--host", "personal", "--subname", "team-notes", "--branch", "main", "--dry-run", "--json"],
+      { cwd: dir },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.file, ".github/workflows/sporades-autodeploy.yml");
+    assert.equal(output.data.written, false);
+    assert.match(output.data.workflow, /branches: \["main"\]/);
+    assert.match(output.data.workflow, /node-version: 22/);
+    assert.match(output.data.workflow, /npm ci/);
+    assert.match(output.data.workflow, /npm install/);
+    assert.match(output.data.workflow, /npm test/);
+    assert.match(output.data.workflow, /SPORADES_HOST_ALIAS: personal/);
+    assert.match(output.data.workflow, /SPORADES_HOST_SUBNAME: team-notes/);
+    assert.match(output.data.workflow, /secrets\.SPORADES_HOST_SSH_PRIVATE_KEY/);
+    assert.match(output.data.workflow, /vars\.SPORADES_HOST_SERVER/);
+    assert.match(output.data.workflow, /npx sporades host current --host "\$SPORADES_HOST_ALIAS" --json/);
+    assert.match(output.data.workflow, /npx sporades host health --host "\$SPORADES_HOST_ALIAS" --json/);
+    assert.match(output.data.workflow, /npx sporades host push --host "\$SPORADES_HOST_ALIAS" --subname "\$SPORADES_HOST_SUBNAME" --verify --json/);
+    assert.deepEqual(output.data.github.secrets, ["SPORADES_HOST_SSH_PRIVATE_KEY"]);
+    assert.deepEqual(output.data.github.variables, [
+      "SPORADES_HOST_SERVER",
+      "SPORADES_HOST_DOMAIN",
+      "SPORADES_HOST_REMOTE_ROOT",
+    ]);
+    await assert.rejects(readFile(path.join(dir, ".github", "workflows", "sporades-autodeploy.yml"), "utf8"), { code: "ENOENT" });
+  });
+});
+
+test("sporades host github workflow write writes a workflow and refuses accidental overwrite", async () => {
+  await withTempDir(async (dir) => {
+    const file = ".github/workflows/custom-sporades.yml";
+    const first = await runCli(
+      ["host", "github", "workflow", "write", "--host", "work", "--subname", "field-notes", "--branch", "feat,main", "--file", file, "--json"],
+      { cwd: dir },
+    );
+
+    assert.equal(first.code, 0, first.stderr);
+    const firstOutput = JSON.parse(first.stdout);
+    assert.equal(firstOutput.ok, true);
+    assert.equal(firstOutput.data.file, file);
+    assert.equal(firstOutput.data.written, true);
+
+    const workflowPath = path.join(dir, file);
+    const workflow = await readFile(workflowPath, "utf8");
+    assert.match(workflow, /branches: \["feat,main"\]/);
+    assert.match(workflow, /SPORADES_HOST_ALIAS: work/);
+    assert.match(workflow, /SPORADES_HOST_SUBNAME: field-notes/);
+
+    const second = await runCli(
+      ["host", "github", "workflow", "write", "--host", "work", "--subname", "field-notes", "--branch", "release/stable", "--file", file, "--json"],
+      { cwd: dir },
+    );
+    assert.equal(second.code, 1);
+    assert.deepEqual(JSON.parse(second.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "GitHub Actions workflow already exists.",
+        hint: "Pass `--force` to overwrite it, or choose another path with `--file <path>`.",
+      },
+    });
+
+    const forced = await runCli(
+      ["host", "github", "workflow", "write", "--host", "work", "--subname", "field-notes", "--branch", "main", "--file", file, "--force", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(forced.code, 0, forced.stderr);
+    assert.match(await readFile(workflowPath, "utf8"), /branches: \["main"\]/);
+
+    const outsideProject = await runCli(
+      ["host", "github", "workflow", "write", "--host", "work", "--subname", "field-notes", "--file", "../outside.yml", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(outsideProject.code, 1);
+    assert.deepEqual(JSON.parse(outsideProject.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Invalid GitHub workflow file path.",
+        hint: "Pass a relative path inside the project, such as `.github/workflows/sporades-autodeploy.yml`.",
+      },
+    });
+  });
+});
+
 test("sporades host validation returns standard JSON errors", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
