@@ -1,19 +1,20 @@
 import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../server-runtime-source.js";
 
-export function createServerBundleSource({ config, serverEnv, serverSource, serverModuleSource }) {
+export function createServerBundleSource({ config, serverEnv, sealedServerEnv = { enabled: false }, serverSource, serverModuleSource }) {
   const runtimeFunctions = SERVER_RUNTIME_SOURCE_FUNCTIONS
     .map((fn) => fn.toString())
     .join("\n\n");
   const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
 
   return `// Sporades server bundle
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createDecipheriv, createHash, privateDecrypt, randomBytes, randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 
 export const sporadesConfig = ${JSON.stringify(config, null, 2)};
 export const sporadesServerEnv = ${JSON.stringify(serverEnv, null, 2)};
+export const sporadesSealedServerEnv = ${JSON.stringify(sealedServerEnv, null, 2)};
 export const sporadesServerSource = ${JSON.stringify(serverSource)};
 const sporadesCapsuleModule = await import(${JSON.stringify(serverModuleDataUrl)});
 const sporadesCapsuleDefinition = sporadesCapsuleModule.default ?? null;
@@ -22,7 +23,8 @@ ${runtimeFunctions}
 
 const port = Number(process.env.PORT ?? sporadesConfig.deploy?.port ?? 4000);
 const databasePath = process.env.SPORADES_DATABASE_PATH ?? path.join(process.cwd(), "data", "data.db");
-const database = await openDevDatabase(databasePath, sporadesServerSource, sporadesServerEnv, sporadesConfig, sporadesCapsuleDefinition);
+const runtimeServerEnv = await readRuntimeServerEnv(sporadesServerEnv, sporadesSealedServerEnv);
+const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, sporadesConfig, sporadesCapsuleDefinition);
 const websocketHub = createWebSocketHub(() => database);
 
 const server = createServer(async (request, response) => {
@@ -102,6 +104,30 @@ async function readRuntimeFile(containerFileName, fallbackPath) {
     }
     return readFile(fallbackPath, "utf8");
   }
+}
+
+async function readRuntimeServerEnv(fallbackEnv, sealed) {
+  if (!sealed?.enabled) {
+    return fallbackEnv;
+  }
+  const envelopePath = process.env.SPORADES_SEALED_SERVER_ENV_PATH ?? path.join(process.cwd(), ".sporades", "sealed-server-env", "server-env.sealed.json");
+  const privateKeyPath = process.env.SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH ?? path.join(process.cwd(), ".sporades", "sealed-server-env", "server-env.private.pem");
+  const [envelopeRaw, privateKey] = await Promise.all([readFile(envelopePath, "utf8"), readFile(privateKeyPath, "utf8")]);
+  return unsealRuntimeServerEnv(JSON.parse(envelopeRaw), privateKey);
+}
+
+function unsealRuntimeServerEnv(envelope, privateKey) {
+  const values = {};
+  for (const [key, entry] of Object.entries(envelope.entries ?? {})) {
+    const dataKey = privateDecrypt(privateKey, Buffer.from(entry.encryptedKey, "base64"));
+    const decipher = createDecipheriv("aes-256-gcm", dataKey, Buffer.from(entry.iv, "base64"));
+    decipher.setAuthTag(Buffer.from(entry.tag, "base64"));
+    values[key] = Buffer.concat([
+      decipher.update(Buffer.from(entry.ciphertext, "base64")),
+      decipher.final(),
+    ]).toString("utf8");
+  }
+  return values;
 }
 `;
 }

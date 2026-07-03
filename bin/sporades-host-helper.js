@@ -397,6 +397,7 @@ async function installRelease(request) {
   const previousCurrentRelease = previousRecord.currentRelease?.id ? { id: previousRecord.currentRelease.id } : null;
   validateReleaseArchive(request);
   const paths = canonicalReleasePaths(request);
+  validateSealedServerEnvPrivateKeyPath(release, paths);
   await mkdir(paths.releases, { recursive: true });
   await mkdir(paths.data, { recursive: true });
   await mkdir(paths.logs, { recursive: true });
@@ -434,6 +435,7 @@ async function installRelease(request) {
 
   await symlink(paths.release, tempCurrentLink);
   await rename(tempCurrentLink, paths.currentLink);
+  await installSealedServerEnvPrivateKey(release);
   await recordReleaseUploaded(request, release);
 
   let restartResult = null;
@@ -461,6 +463,7 @@ async function installRelease(request) {
       currentLink: paths.currentLink,
       files: release.files,
       serverEnvIncluded: Boolean(release.serverEnvIncluded),
+      ...(release.sealedServerEnvIncluded ? { sealedServerEnvIncluded: true } : {}),
     },
   };
   if (restartResult) {
@@ -709,6 +712,30 @@ async function startCapsule(request, options = {}) {
     writeEnvelope({ ok: true, data, error: null });
   }
   return data;
+}
+
+async function installSealedServerEnvPrivateKey(release) {
+  const privateKey = release.sealedServerEnv?.privateKey;
+  const privateKeyPath = release.sealedServerEnv?.privateKeyPath;
+  if (!release.sealedServerEnvIncluded || !privateKey || !privateKeyPath) {
+    return;
+  }
+  await mkdir(path.dirname(privateKeyPath), { recursive: true });
+  await writeFile(privateKeyPath, privateKey, { mode: 0o600 });
+}
+
+function validateSealedServerEnvPrivateKeyPath(release, paths) {
+  if (!release.sealedServerEnvIncluded) {
+    return;
+  }
+  const privateKeyPath = release.sealedServerEnv?.privateKeyPath;
+  const expectedPrivateKeyPath = path.join(paths.data, "sealed-server-env", "server-env.private.pem");
+  if (typeof privateKeyPath !== "string" || path.resolve(privateKeyPath) !== path.resolve(expectedPrivateKeyPath)) {
+    throw helperError(
+      "Invalid Sealed Server env private key path.",
+      "Update the Sporades CLI and retry `sporades host push`.",
+    );
+  }
 }
 
 async function healthCapsule(request) {
@@ -1283,6 +1310,18 @@ function normaliseLifecycle(request) {
         { host: path.join(currentLink, "index.html"), container: "/app/index.html", mode: "ro" },
         { host: path.join(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
         { host: path.join(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
+        {
+          host: path.join(currentLink, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+          container: "/app/.sporades/sealed-server-env/server-env.sealed.json",
+          mode: "ro",
+          optional: true,
+        },
+        {
+          host: path.join(paths.data, "sealed-server-env", "server-env.private.pem"),
+          container: "/app/.sporades/sealed-server-env/server-env.private.pem",
+          mode: "ro",
+          optional: true,
+        },
       ],
       data: { host: paths.data, container: "/app/data", mode: "rw" },
     },
@@ -2214,6 +2253,12 @@ async function dockerRunArgs(lifecycle, releaseId) {
     if (mount.container === "/app/.env.sporades.server") {
       args.push("--env-file", mount.host);
     }
+    if (mount.container === "/app/.sporades/sealed-server-env/server-env.sealed.json") {
+      args.push("--env", `SPORADES_SEALED_SERVER_ENV_PATH=${mount.container}`);
+    }
+    if (mount.container === "/app/.sporades/sealed-server-env/server-env.private.pem") {
+      args.push("--env", `SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH=${mount.container}`);
+    }
   }
   args.push("--volume", formatMount(lifecycle.mounts.data), "--workdir", "/app", "--env", "PORT=4000");
   args.push("--publish", `127.0.0.1::${lifecycle.routes.running.port ?? 4000}`);
@@ -2517,6 +2562,7 @@ async function recordReleaseUploaded(request, release) {
         remoteCapsuleId: release.remoteCapsuleId ?? entry.source?.remoteCapsuleId ?? null,
         files: Array.isArray(release.files) ? [...release.files] : [],
         serverEnvIncluded: Boolean(release.serverEnvIncluded),
+        sealedServerEnvIncluded: Boolean(release.sealedServerEnvIncluded),
       },
     }));
     return record;
@@ -3036,9 +3082,14 @@ function listArchiveEntries(archivePath) {
 }
 
 function expectedReleaseFiles(release) {
-  return release.serverEnvIncluded
-    ? ["server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"]
-    : ["server.mjs", "client.js", "index.html", "sporades.json"];
+  const files = ["server.mjs", "client.js", "index.html", "sporades.json"];
+  if (release.serverEnvIncluded) {
+    files.push(".env.sporades.server");
+  }
+  if (release.sealedServerEnvIncluded) {
+    files.push(".sporades/sealed-server-env/server-env.sealed.json");
+  }
+  return files;
 }
 
 async function assertRollbackReleaseFiles(request, releaseDirectory) {
@@ -3354,7 +3405,7 @@ function validateInstallRequest(request) {
   if (!/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(release.id)) {
     throw helperError("Invalid Hosted Capsule release ID.", "Push again to generate a fresh UTC-sortable release ID.");
   }
-  if (!Array.isArray(release.files) || release.files.some((file) => typeof file !== "string" || file.includes("/") || file === "..")) {
+  if (!Array.isArray(release.files) || release.files.some((file) => !isExpectedClaimedReleaseFile(file))) {
     throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
   }
   const expectedFiles = expectedReleaseFiles(release);
@@ -3367,6 +3418,17 @@ function validateInstallRequest(request) {
   if (path.resolve(release.directories.release) !== path.resolve(expectedReleaseDirectory)) {
     throw helperError("Invalid Hosted Capsule release directory.", "Update the Sporades CLI and retry `sporades host push`.");
   }
+}
+
+function isExpectedClaimedReleaseFile(file) {
+  return [
+    "server.mjs",
+    "client.js",
+    "index.html",
+    "sporades.json",
+    ".env.sporades.server",
+    ".sporades/sealed-server-env/server-env.sealed.json",
+  ].includes(file);
 }
 
 function readStdin() {

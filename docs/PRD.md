@@ -75,8 +75,6 @@ The repository currently includes:
 
 The following work is intentionally deferred:
 
-- Hardened secrets to replace `.env.sporades.server` files:
-  `.scratch/post-v2-platform-hardening-and-ops/issues/01-replace-server-env-files-with-hardened-secrets.md`.
 - Deeper hardened Base image and filesystem model, including non-root runtime,
   read-only root filesystem, seccomp, and any broader Docker isolation posture:
   `.scratch/post-v2-platform-hardening-and-ops/issues/02-harden-base-image-and-container-filesystem.md`.
@@ -381,11 +379,11 @@ does not discover project configuration by walking the filesystem.
 }
 ```
 
-Server env lives in `.env.sporades.server`. It is loaded for Dev sessions,
-mounted into local Container sessions, packaged into Hosted Capsule releases
-when present, exposed to server code as `ctx.env`, and never bundled into
-`client.js`. This env-file shape is an intentionally deferred hardening item;
-see `.scratch/post-v2-platform-hardening-and-ops/issues/01-replace-server-env-files-with-hardened-secrets.md`.
+Sealed Server env lives in ignored Runtime or Host state, is decrypted for Dev
+sessions, local Container sessions, and Hosted Capsules, is exposed to server
+code as `ctx.env`, and is never bundled into `client.js`. Legacy
+`.env.sporades.server` files remain supported for import and fallback when no
+sealed envelope exists.
 
 ## Non-Goals
 

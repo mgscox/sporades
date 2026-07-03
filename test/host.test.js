@@ -2707,6 +2707,108 @@ process.exit(0);
   });
 });
 
+test("sporades host push packages Host-profile re-encrypted Sealed Server env without plaintext values", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      path.join(dir, "fake-ssh"),
+      `const request = JSON.parse(stdin);
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    installed: true,
+    restarted: false,
+    release: {
+      id: request.release.id,
+      files: request.release.files,
+      serverEnvIncluded: request.release.serverEnvIncluded,
+      sealedServerEnvIncluded: request.release.sealedServerEnvIncluded
+    }
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+    const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
+    const createResult = await runCli(["create", "sealed-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "sealed-island");
+    await installFakeReact(projectDir);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "SECRET_TOKEN=swordfish\nPUBLIC_LABEL=not-client\n");
+
+    const env = {
+      ...hostEnv(configDir),
+      ...fakeSsh.env,
+      ...fakeScp.env,
+      PATH: `${fakeSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+    assert.equal(
+      (
+        await runCli(
+          ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+          { cwd: projectDir, env },
+        )
+      ).code,
+      0,
+    );
+    assert.equal((await runCli(["host", "bind", "team-notes", "--host", "personal", "--json"], { cwd: projectDir, env })).code, 0);
+    assert.equal((await runCli(["env", "import", "--json"], { cwd: projectDir, env })).code, 0);
+    const reencrypted = await runCli(["env", "reencrypt", "--host", "personal", "--json"], { cwd: projectDir, env });
+    assert.equal(reencrypted.code, 0, reencrypted.stderr);
+    assert.doesNotMatch(reencrypted.stdout, /swordfish|not-client|PRIVATE KEY/);
+
+    const push = await runCli(["host", "push", "--json"], { cwd: projectDir, env });
+    assert.equal(push.code, 0, `${push.stderr}\n${push.stdout}`);
+    assert.doesNotMatch(push.stdout, /swordfish|not-client|PRIVATE KEY/);
+    const output = JSON.parse(push.stdout);
+    assert.equal(output.data.release.serverEnvIncluded, false);
+    assert.equal(output.data.release.sealedServerEnvIncluded, true);
+    assert.deepEqual(output.data.release.files, [
+      "server.mjs",
+      "client.js",
+      "index.html",
+      "sporades.json",
+      ".sporades/sealed-server-env/server-env.sealed.json",
+    ]);
+
+    const [scpCall] = await readJsonl(fakeScp.logPath);
+    const entries = await listArchiveEntries(scpCall.copiedTo, projectDir);
+    assert.deepEqual(entries, [
+      ".sporades/sealed-server-env/server-env.sealed.json",
+      "client.js",
+      "index.html",
+      "server.mjs",
+      "sporades.json",
+    ]);
+    const archiveEnvelope = await new Promise((resolve, reject) => {
+      const child = spawn("tar", ["-xOzf", scpCall.copiedTo, ".sporades/sealed-server-env/server-env.sealed.json"], {
+        cwd: projectDir,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.on("close", (code) => (code === 0 ? resolve(stdout) : reject(new Error(stderr))));
+    });
+    assert.doesNotMatch(archiveEnvelope, /swordfish|not-client|PRIVATE KEY/);
+
+    const [sshCall] = await readJsonl(fakeSsh.logPath);
+    const request = JSON.parse(sshCall.stdin);
+    assert.equal(request.release.sealedServerEnvIncluded, true);
+    assert.equal(typeof request.release.sealedServerEnv.privateKey, "string");
+    assert.match(request.release.sealedServerEnv.privateKey, /PRIVATE KEY/);
+    assert.doesNotMatch(JSON.stringify(request.release).replace(request.release.sealedServerEnv.privateKey, ""), /swordfish|not-client/);
+  });
+});
+
 test("sporades host push can target an explicit Hosted Capsule and request restart", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
@@ -2960,6 +3062,18 @@ process.exit(0);
         mode: "ro",
         optional: true,
       },
+      {
+        host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/.sporades/sealed-server-env/server-env.sealed.json",
+        container: "/app/.sporades/sealed-server-env/server-env.sealed.json",
+        mode: "ro",
+        optional: true,
+      },
+      {
+        host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data/sealed-server-env/server-env.private.pem",
+        container: "/app/.sporades/sealed-server-env/server-env.private.pem",
+        mode: "ro",
+        optional: true,
+      },
     ]);
     assert.deepEqual(startRequest.lifecycle.mounts.data, {
       host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data",
@@ -3078,6 +3192,83 @@ test("sporades host helper installs a release atomically and updates the current
     assert.deepEqual(record.releases[0].source.files, ["server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"]);
     assert.match(record.releases[0].createdAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.equal(record.releases[0].uploadedAt, record.releases[0].createdAt);
+  });
+});
+
+test("sporades host helper rejects non-canonical Sealed Server env private key paths", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const incomingDir = path.join(remoteRoot, "incoming");
+    const runtimeDir = path.join(dir, "runtime-files");
+    const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
+    const escapedPrivateKeyPath = path.join(dir, "escaped-private.pem");
+    await mkdir(path.join(runtimeDir, ".sporades", "sealed-server-env"), { recursive: true });
+    await mkdir(incomingDir, { recursive: true });
+    await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
+    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
+    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
+    await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+    await writeFile(path.join(runtimeDir, ".sporades", "sealed-server-env", "server-env.sealed.json"), "{\"version\":1,\"valueAlgorithm\":\"aes-256-gcm\",\"entries\":{}}\n");
+    await createTarGz(archivePath, runtimeDir, [
+      "server.mjs",
+      "client.js",
+      "index.html",
+      "sporades.json",
+      ".sporades/sealed-server-env/server-env.sealed.json",
+    ]);
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(
+      registryRecordPath,
+      `${JSON.stringify({
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+      })}\n`,
+    );
+
+    const install = await runHostHelper(
+      {
+        action: "capsule.release.install",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        release: {
+          id: "20260630T221500Z-feedface",
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          remoteArchive: archivePath,
+          restart: false,
+          serverEnvIncluded: false,
+          sealedServerEnvIncluded: true,
+          sealedServerEnv: {
+            privateKey: "-----BEGIN PRIVATE KEY-----\\nnot-real\\n-----END PRIVATE KEY-----\\n",
+            privateKeyPath: escapedPrivateKeyPath,
+          },
+          files: ["server.mjs", "client.js", "index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
+          directories: {
+            capsule: capsuleDir,
+            releases: path.join(capsuleDir, "releases"),
+            release: path.join(capsuleDir, "releases", "20260630T221500Z-feedface"),
+            data: path.join(capsuleDir, "data"),
+          },
+          currentLink: path.join(capsuleDir, "current"),
+        },
+      },
+      { cwd: dir },
+    );
+
+    assert.equal(install.code, 0, install.stderr);
+    assert.deepEqual(JSON.parse(install.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Invalid Sealed Server env private key path.",
+        hint: "Update the Sporades CLI and retry `sporades host push`.",
+      },
+    });
+    await assert.rejects(readFile(escapedPrivateKeyPath, "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(path.join(capsuleDir, "current"), "utf8"), { code: "ENOENT" });
   });
 });
 
@@ -7361,6 +7552,18 @@ process.exit(0);
             { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/index.html", container: "/app/index.html", mode: "ro" },
             { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/sporades.json", container: "/app/sporades.json", mode: "ro" },
             { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/.env.sporades.server", container: "/app/.env.sporades.server", mode: "ro", optional: true },
+            {
+              host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/.sporades/sealed-server-env/server-env.sealed.json",
+              container: "/app/.sporades/sealed-server-env/server-env.sealed.json",
+              mode: "ro",
+              optional: true,
+            },
+            {
+              host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data/sealed-server-env/server-env.private.pem",
+              container: "/app/.sporades/sealed-server-env/server-env.private.pem",
+              mode: "ro",
+              optional: true,
+            },
           ],
           data: {
             host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data",

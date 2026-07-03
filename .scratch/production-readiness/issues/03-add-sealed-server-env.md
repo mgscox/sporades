@@ -1,6 +1,6 @@
 # Add Sealed Server env
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

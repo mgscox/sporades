@@ -16,6 +16,10 @@ by Sporades.
     client.js
   data.db
   files/
+  sealed-server-env/
+    server-env.sealed.json
+    server-env.private.pem
+    server-env.public.pem
   binding.json
   remote-binding.json
   host-push/
@@ -27,6 +31,7 @@ Common entries:
 - `build/client.js`: bundled browser client.
 - `data.db`: SQLite database for Dev sessions.
 - `files/`: uploaded file bytes for Dev sessions.
+- `sealed-server-env/`: Sealed Server env envelopes and local key material.
 - `binding.json`: local Container session binding.
 - `remote-binding.json`: local convenience binding for a Hosted Capsule.
 - `host-push/`: locally saved Hosted Capsule release archives.
@@ -43,11 +48,14 @@ server.mjs
 client.js
 index.html
 sporades.json
+.sporades/sealed-server-env/server-env.sealed.json
 .env.sporades.server
 ```
 
-`.env.sporades.server` is optional. When present, it is server-only runtime
-input and must not be bundled into `client.js`.
+Sealed Server env is optional but is the long-term default for server-only
+values. `.env.sporades.server` is still supported as a legacy/import-friendly
+source when no sealed envelope exists. Server-only values must not be bundled
+into `client.js`.
 
 ## Local Container Mounts
 
@@ -61,6 +69,8 @@ Container
   /app/client.js               read-only
   /app/index.html              read-only
   /app/sporades.json           read-only
+  /app/.sporades/sealed-server-env/server-env.sealed.json  read-only, optional
+  /app/.sporades/sealed-server-env/server-env.private.pem   read-only, optional
   /app/.env.sporades.server    read-only, optional
   /app/data/                   read-write
 ```
@@ -115,9 +125,12 @@ With `remoteRoot=/srv/sporades` and `domain=example.com`, a Host server uses:
               client.js
               index.html
               sporades.json
+              .sporades/sealed-server-env/server-env.sealed.json
               .env.sporades.server
           current -> releases/<release-id>
           data/
+            sealed-server-env/
+              server-env.private.pem
 ```
 
 `tls/` is only required for Host profiles that use
@@ -140,8 +153,9 @@ of any immutable release.
 Hosted Capsules use the same Docker hardening posture as local Container
 sessions: read-only root filesystem, writable hardened `/tmp` tmpfs, dropped
 Linux capabilities, and `no-new-privileges`. Release files and optional Server
-env remain read-only mounts; only the Hosted Capsule `data/` directory is
-mounted read-write.
+env inputs remain read-only mounts; only the Hosted Capsule `data/` directory is
+mounted read-write. Host-profile Sealed Server env private keys live in Hosted
+Capsule data state, not in exported sealed envelopes.
 
 ## Host Caddy Files
 

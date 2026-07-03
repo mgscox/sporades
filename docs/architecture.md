@@ -76,8 +76,8 @@ Conceptually, each runtime contains:
 - `index.html`: user-owned HTML shell.
 - `sporades.json`: project configuration read by the CLI and passed into the
   runtime.
-- `.env.sporades.server`: server-only values mounted or loaded outside the
-  client Bundle.
+- Sealed Server env: encrypted server-only values mounted or loaded outside the
+  client Bundle and exposed through `ctx.env`.
 - persistent data: SQLite database plus file bytes.
 
 ## Capsule Model
@@ -399,15 +399,17 @@ provider configuration, not secret values.
 `sporades.json` is read by the CLI and passed to the runtime. The server runtime
 does not wander through project files looking for configuration.
 
-Server env lives in `.env.sporades.server`. It is:
+Sealed Server env lives under ignored Sporades Runtime or Host state. It is:
 
-- read during Dev session startup,
+- decrypted during Dev session startup,
 - mounted read-only into Container sessions,
-- included in Hosted Capsule release packages when present,
+- packaged as a sealed envelope for Hosted Capsule releases,
 - exposed to server code as `ctx.env`,
 - never bundled into the browser client.
 
-This keeps secrets out of `client.js` and gives agents one predictable file for
+Legacy `.env.sporades.server` files remain supported for import and fallback
+when no sealed envelope exists. This keeps secrets out of `client.js` and gives
+agents one predictable CLI-managed path for
 server-only configuration.
 
 ## Observability and Operations

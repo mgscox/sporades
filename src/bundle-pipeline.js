@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv } from "./sealed-server-env.js";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 import { createServerBundleSource } from "./templates/server-bundle-template.js";
 
@@ -30,8 +31,12 @@ export async function createBundle(projectDir, config) {
     serverBundle: path.join(buildDir, "server.mjs"),
     clientBundle: path.join(buildDir, "client.js"),
   };
-  const serverEnvFile = await readServerEnvFile(paths.serverEnv);
-  const serverEnv = parseServerEnv(serverEnvFile);
+  const sealedPaths = sealedServerEnvPaths(projectDir);
+  const sealedEnvelope = await readSealedServerEnv(sealedPaths);
+  const serverEnvFile = sealedEnvelope ? { exists: false, raw: "" } : await readServerEnvFile(paths.serverEnv);
+  const serverEnv = sealedEnvelope
+    ? unsealServerEnv(sealedEnvelope, (await readRequiredSealedPrivateKey(sealedPaths)).privateKey)
+    : parseServerEnv(serverEnvFile);
   validateAuthConfig(config, serverEnv);
 
   const [serverSource, clientSource] = await Promise.all([
@@ -52,7 +57,13 @@ export async function createBundle(projectDir, config) {
   await Promise.all([
     writeFile(
       paths.serverBundle,
-      createServerBundleSource({ config, serverEnv, serverSource, serverModuleSource: serverCapsuleModule }),
+      createServerBundleSource({
+        config,
+        serverEnv: sealedEnvelope ? {} : serverEnv,
+        sealedServerEnv: sealedEnvelope ? { enabled: true } : { enabled: false },
+        serverSource,
+        serverModuleSource: serverCapsuleModule,
+      }),
     ),
     writeFile(paths.clientBundle, clientBundle),
   ]);
@@ -79,8 +90,25 @@ export async function createBundle(projectDir, config) {
       serverEnv: serverEnvFile.exists
         ? { host: paths.serverEnv, container: "/app/.env.sporades.server", mode: "ro" }
         : null,
+      sealedServerEnv: sealedEnvelope
+        ? {
+            envelope: { host: sealedPaths.envelope, container: "/app/.sporades/sealed-server-env/server-env.sealed.json", mode: "ro" },
+            privateKey: { host: sealedPaths.privateKey, container: "/app/.sporades/sealed-server-env/server-env.private.pem", mode: "ro" },
+          }
+        : null,
     },
   };
+}
+
+async function readRequiredSealedPrivateKey(paths) {
+  const keyPair = await readKeyPair(paths);
+  if (!keyPair) {
+    throw commandError(
+      "Sealed Server env private key is missing.",
+      "Restore .sporades/sealed-server-env/server-env.private.pem or re-import the Server env values.",
+    );
+  }
+  return keyPair;
 }
 
 async function bundleServerCapsuleModule(options) {

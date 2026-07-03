@@ -234,11 +234,11 @@ _Avoid_: security middleware, helmet config
 `sporades.json` → CLI flag → default. CLI flags override config values; config values override defaults. Applied to: ports, framework, auth providers, and legacy auth mode.
 
 **Server env**:
-A `.env.sporades.server` file at the project root containing server-only environment variables. Loaded for Dev sessions, mounted read-only in local Container sessions, included in Hosted Capsule release packages when present, and exposed via `ctx.env`. Max 64 keys, 64KB total. No `SPORADES_` prefix (reserved). This env-file shape is intentionally deferred hardening work.
+A legacy/import-friendly `.env.sporades.server` file at the project root containing server-only environment variables. Sporades still reads it when no Sealed Server env exists and `sporades env import` can migrate it into encrypted Runtime state. Max 64 keys, 64KB total. No `SPORADES_` prefix (reserved).
 _Avoid_: environment file, dot-env (implementation detail)
 
 **Sealed Server env**:
-Encrypted server-only configuration values managed by Sporades, decryptable by configured local or Host keys, and exposed to Capsule code through `ctx.env`. It is the planned hardened successor to plaintext Server env files.
+Encrypted server-only configuration values managed by Sporades, decryptable by configured local or Host keys, delivered to Dev sessions, Container sessions, and Hosted Capsules at runtime, and exposed to Capsule code through `ctx.env`. It is the hardened successor to plaintext Server env files.
 _Avoid_: secrets API, vault, encrypted dot-env
 
 ## CLI output

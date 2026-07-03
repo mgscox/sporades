@@ -200,8 +200,9 @@ APIs, Server env, and Sporades runtime imports.
 `sporades.json` configures the Capsule name, template, client framework, auth,
 and default ports.
 
-`.env.sporades.server` stores server-only values. It is available as `ctx.env`
-inside server handlers and is mounted read-only in Container sessions.
+Sealed Server env stores server-only values in `.sporades/sealed-server-env/`
+and exposes them as `ctx.env` inside server handlers. `.env.sporades.server`
+remains supported as a legacy/import-friendly source.
 
 `.sporades/` is the Runtime directory. Sporades owns it. It contains Bundles,
 SQLite data, uploaded files, and local binding metadata. Do not edit it by hand.
@@ -410,13 +411,25 @@ mutations: {
 Throw normal errors for user-facing failures. When an error has a `hint`
 property, Sporades includes it in structured error output.
 
-### Use Server Env
+### Use Sealed Server Env
 
-Put server-only values in `.env.sporades.server`:
+Use Sealed Server env for server-only values:
+
+```sh
+sporades env init
+```
+
+To migrate existing plaintext values, put them in `.env.sporades.server` and
+import them:
 
 ```text
 OPENAI_API_KEY=sk-...
 STRIPE_WEBHOOK_SECRET=whsec_...
+```
+
+```sh
+sporades env import --file .env.sporades.server
+sporades env status --json
 ```
 
 Read them from `ctx.env`:
@@ -426,13 +439,38 @@ endpoint({ method: "POST", path: "/billing/webhook" }, (ctx) => {
   const secret = ctx.env.STRIPE_WEBHOOK_SECRET;
   if (!secret) {
     throw Object.assign(new Error("Billing is not configured."), {
-      hint: "Set STRIPE_WEBHOOK_SECRET in .env.sporades.server.",
+      hint: "Import STRIPE_WEBHOOK_SECRET with `sporades env import`.",
     });
   }
 });
 ```
 
-Restart a running Dev session after changing `.env.sporades.server`.
+Restart a running Dev session after changing Sealed Server env.
+
+For portability, export the sealed envelope without private keys or plaintext
+values:
+
+```sh
+sporades env export --output sealed-server-env.json --json
+```
+
+Import an exported sealed envelope explicitly with:
+
+```sh
+sporades env import --sealed --file sealed-server-env.json --json
+```
+
+For Hosted Capsules, re-encrypt local values for a Host profile before pushing:
+
+```sh
+sporades env reencrypt --host personal --json
+sporades host push --host personal --subname team-notes --json
+```
+
+Sporades stores local sealed material under `.sporades/sealed-server-env/`,
+which is ignored Runtime state. Host-profile private keys are stored in local
+Host profile configuration and delivered to Host state during push; exported
+sealed envelopes never include private keys.
 
 ### Add Middleware
 
@@ -445,7 +483,7 @@ export default capsule({
     (ctx) => {
       if (!ctx.tenant) {
         throw Object.assign(new Error("Missing tenant."), {
-          hint: "Set TENANT in .env.sporades.server.",
+          hint: "Import TENANT with `sporades env import`.",
         });
       }
       return ctx;
@@ -563,9 +601,10 @@ Or use a downloaded Google OAuth web client JSON file:
 sporades auth set google --client-json ./client_secret_google.json
 ```
 
-Sporades writes the secret values to `.env.sporades.server` and keeps env var
-names in `sporades.json`. Restart any running Dev session after changing auth
-configuration.
+Sporades writes Google auth values to legacy `.env.sporades.server` today and
+keeps env var names in `sporades.json`. Run `sporades env import` after setting
+auth values if you want them in Sealed Server env. Restart any running Dev
+session after changing auth configuration.
 
 Client sign-in uses the provider name:
 
@@ -831,7 +870,7 @@ The command:
 1. Bundles the server and client.
 2. Stops and removes the previously bound local container, if one exists.
 3. Runs the Capsule in Docker using the Node base image.
-4. Mounts the Server env read-only.
+4. Mounts Sealed Server env or legacy Server env read-only.
 5. Persists SQLite data through the Runtime directory.
 6. Writes the container binding to `.sporades/binding.json`.
 
@@ -922,10 +961,11 @@ Do not accept `ownerId` from the client.
 
 ### Add a Server Secret
 
-1. Add the value to `.env.sporades.server`.
+1. Add the value to `.env.sporades.server` and run `sporades env import`.
 2. Read it with `ctx.env`.
 3. Restart `sporades dev`.
-4. For Hosted Capsules, push and restart the Capsule.
+4. For Hosted Capsules, run `sporades env reencrypt --host <alias>`, then push
+   and restart the Capsule.
 
 Do not put secrets in `client/`, `shared/`, `index.html`, or `sporades.json`.
 

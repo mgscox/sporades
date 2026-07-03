@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -8,6 +8,17 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../src/bundle-pipeline.js";
+import {
+  ensureSealedServerEnvKeyPair,
+  envelopeSummary,
+  exportedEnvelope,
+  readKeyPair,
+  readSealedServerEnv,
+  sealServerEnv,
+  sealedServerEnvPaths,
+  unsealServerEnv,
+  writeSealedServerEnv,
+} from "../src/sealed-server-env.js";
 import {
   createWebSocketHub,
   dumpDatabase,
@@ -102,6 +113,11 @@ async function main() {
     return;
   }
 
+  if (command === "env") {
+    await manageEnv(parseEnvArgs(args));
+    return;
+  }
+
   if (command === "deploy") {
     await startContainerSession(parseDeployArgs(args));
     return;
@@ -135,6 +151,7 @@ Commands:
   dev            Start a local Dev session
   auth           Manage local auth configuration and simulation
   security       Inspect effective Capsule security policy
+  env            Manage Sealed Server env
   deploy         Start a local Container session
   host           Manage Host profiles and Hosted Capsules
   logs           Print Dev session logs
@@ -396,6 +413,62 @@ function parseAuthArgs(args) {
   throw commandError(
     "Unknown auth command.",
     "Use `sporades auth status`, `sporades auth clients`, `sporades auth set google`, or `sporades auth as email`.",
+  );
+}
+
+function parseEnvArgs(args) {
+  const [subcommand, ...rest] = args;
+  let json = false;
+  let file = null;
+  let hostAlias = null;
+  let output = null;
+  let sealed = false;
+  const positional = [];
+
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg === "--file") {
+      file = readFlagValue(rest, ++index, "--file");
+      continue;
+    }
+    if (arg === "--host") {
+      hostAlias = readFlagValue(rest, ++index, "--host");
+      continue;
+    }
+    if (arg === "--output") {
+      output = readFlagValue(rest, ++index, "--output");
+      continue;
+    }
+    if (arg === "--sealed") {
+      sealed = true;
+      continue;
+    }
+    if (arg.startsWith("--")) {
+      throw commandError(
+        `Unknown flag: ${arg}`,
+        "Use `sporades env init`, `sporades env import`, `sporades env status`, `sporades env export`, or `sporades env reencrypt`.",
+      );
+    }
+    positional.push(arg);
+  }
+
+  if (["init", "import", "status", "export", "reencrypt"].includes(subcommand)) {
+    if (positional.length > 0) {
+      throw commandError("Too many positional arguments.", `Use \`sporades env ${subcommand} --json\`.`);
+    }
+    if (hostAlias) {
+      validateHostAlias(hostAlias);
+    }
+    return { subcommand, file, hostAlias, output, sealed, json, projectDir: process.cwd() };
+  }
+
+  throw commandError(
+    `Unknown env command: ${subcommand ?? ""}`.trim(),
+    "Use `sporades env init`, `sporades env import`, `sporades env status`, `sporades env export`, or `sporades env reencrypt`.",
   );
 }
 
@@ -1399,6 +1472,181 @@ async function inspectSecurity(options) {
   process.stdout.write(`CSP: ${security.csp.mode}\n`);
 }
 
+async function manageEnv(options) {
+  const paths = sealedServerEnvPaths(options.projectDir);
+
+  if (options.subcommand === "init") {
+    const keyPair = await ensureSealedServerEnvKeyPair(paths);
+    const existing = await readSealedServerEnv(paths);
+    if (!existing) {
+      await writeSealedServerEnv(paths, sealServerEnv({}, keyPair.publicKey, { source: "init" }));
+    }
+    await writeEnvResult(options, {
+      ...envelopeSummary(await readSealedServerEnv(paths), paths),
+      privateKeyConfigured: true,
+    });
+    return;
+  }
+
+  if (options.subcommand === "import") {
+    const envPath = path.resolve(options.projectDir, options.file ?? ".env.sporades.server");
+    if (options.sealed) {
+      const envelope = await readPortableSealedServerEnvEnvelope(envPath);
+      await writeSealedServerEnv(paths, envelope);
+      await writeEnvResult(options, {
+        ...envelopeSummary(envelope, paths),
+        imported: true,
+        sealed: true,
+        source: normalisePathForOutput(path.relative(options.projectDir, envPath) || envPath),
+      });
+      return;
+    }
+    const env = parseServerEnv(await readServerEnvFile(envPath));
+    const keyPair = await ensureSealedServerEnvKeyPair(paths);
+    const envelope = sealServerEnv(env, keyPair.publicKey, {
+      source: normalisePathForOutput(path.relative(options.projectDir, envPath) || envPath),
+    });
+    await writeSealedServerEnv(paths, envelope);
+    await writeEnvResult(options, {
+      ...envelopeSummary(envelope, paths),
+      imported: true,
+      source: normalisePathForOutput(path.relative(options.projectDir, envPath) || envPath),
+      privateKeyConfigured: true,
+    });
+    return;
+  }
+
+  if (options.subcommand === "status") {
+    const envelope = await readSealedServerEnv(paths);
+    const keyPair = await readKeyPair(paths);
+    await writeEnvResult(options, {
+      ...envelopeSummary(envelope, paths),
+      privateKeyConfigured: Boolean(keyPair?.privateKey),
+      legacyServerEnvFilePresent: (await readServerEnvFile(path.join(options.projectDir, ".env.sporades.server"))).exists,
+    });
+    return;
+  }
+
+  if (options.subcommand === "export") {
+    const envelope = await readSealedServerEnv(paths);
+    if (!envelope) {
+      throw commandError("No Sealed Server env configured.", "Run `sporades env import --file .env.sporades.server` first.");
+    }
+    const exported = exportedEnvelope(envelope);
+    if (options.output) {
+      const outputPath = path.resolve(options.projectDir, options.output);
+      await mkdir(path.dirname(outputPath), { recursive: true });
+      await writeFile(outputPath, `${JSON.stringify(exported, null, 2)}\n`, { mode: 0o600 });
+    }
+    await writeEnvResult(options, {
+      ...envelopeSummary(envelope, paths),
+      exported: true,
+      outputPath: options.output ? path.resolve(options.projectDir, options.output) : null,
+      envelope: options.output ? null : exported,
+    });
+    return;
+  }
+
+  if (options.subcommand === "reencrypt") {
+    if (!options.hostAlias) {
+      throw commandError("Missing Host profile alias.", "Pass `--host <alias>`.");
+    }
+    const envelope = await readSealedServerEnv(paths);
+    const localKeyPair = await readKeyPair(paths);
+    if (!envelope || !localKeyPair) {
+      throw commandError("No local Sealed Server env configured.", "Run `sporades env import --file .env.sporades.server` first.");
+    }
+    const values = unsealServerEnv(envelope, localKeyPair.privateKey);
+    const hostConfig = await readHostConfig();
+    const profile = requireHostProfile(hostConfig, options.hostAlias);
+    const hostKey = await ensureHostProfileEnvKey(hostConfig, options.hostAlias);
+    const hostEnvelope = sealServerEnv(values, hostKey.publicKey, {
+      source: "host-profile-reencrypt",
+      hostAlias: options.hostAlias,
+      hostDomain: profile.domain,
+    });
+    const hostEnvelopePath = path.join(paths.hosts, `${options.hostAlias}.server-env.sealed.json`);
+    await mkdir(path.dirname(hostEnvelopePath), { recursive: true, mode: 0o700 });
+    await writeFile(hostEnvelopePath, `${JSON.stringify(hostEnvelope, null, 2)}\n`, { mode: 0o600 });
+    await writeHostConfig(hostConfig);
+    await writeEnvResult(options, {
+      reencrypted: true,
+      hostAlias: options.hostAlias,
+      hostDomain: profile.domain,
+      keyCount: Object.keys(hostEnvelope.entries).length,
+      publicKeyFingerprint: hostEnvelope.publicKeyFingerprint,
+      envelopePath: hostEnvelopePath,
+      privateKeyConfigured: true,
+    });
+  }
+}
+
+async function readPortableSealedServerEnvEnvelope(filePath) {
+  let envelope;
+  try {
+    envelope = JSON.parse(await readFile(filePath, "utf8"));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw commandError(
+        "Sealed Server env export file was not found.",
+        "Pass `--file <path>` pointing at a `sporades env export` JSON file.",
+      );
+    }
+    throw commandError(
+      "Invalid Sealed Server env export file.",
+      "Pass a JSON file created by `sporades env export`.",
+    );
+  }
+  if (
+    !envelope ||
+    typeof envelope !== "object" ||
+    envelope.version !== 1 ||
+    envelope.valueAlgorithm !== "aes-256-gcm" ||
+    !envelope.entries ||
+    typeof envelope.entries !== "object" ||
+    Array.isArray(envelope.entries)
+  ) {
+    throw commandError(
+      "Invalid Sealed Server env export file.",
+      "Pass a JSON file created by `sporades env export`.",
+    );
+  }
+  if (JSON.stringify(envelope).includes("PRIVATE KEY") || Object.hasOwn(envelope, "privateKey")) {
+    throw commandError(
+      "Invalid Sealed Server env export file.",
+      "Sealed envelope imports must not contain private keys.",
+    );
+  }
+  return envelope;
+}
+
+async function writeEnvResult(options, data) {
+  if (options.json) {
+    writeResult({ ok: true, data, error: null });
+    return;
+  }
+  process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
+}
+
+async function ensureHostProfileEnvKey(config, alias) {
+  const current = config.profiles[alias].sealedServerEnv;
+  if (current?.publicKey && current?.privateKey) {
+    return current;
+  }
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  const hostKey = {
+    publicKey,
+    privateKey,
+    publicKeyFingerprint: createHash("sha256").update(publicKey).digest("hex").slice(0, 16),
+  };
+  config.profiles[alias].sealedServerEnv = hostKey;
+  return hostKey;
+}
+
 async function manageHost(options) {
   if (options.subcommand === "add") {
     const config = await readHostConfig();
@@ -1413,7 +1661,7 @@ async function manageHost(options) {
     await writeHostConfig(config);
 
     if (options.json) {
-      writeResult({ ok: true, data: { alias: options.alias, profile }, error: null });
+      writeResult({ ok: true, data: { alias: options.alias, profile: publicHostProfile(profile) }, error: null });
     } else {
       process.stdout.write(`Host profile added: ${options.alias}\n`);
     }
@@ -1427,7 +1675,7 @@ async function manageHost(options) {
     await writeHostConfig(config);
 
     if (options.json) {
-      writeResult({ ok: true, data: { currentHostAlias: options.alias, profile }, error: null });
+      writeResult({ ok: true, data: { currentHostAlias: options.alias, profile: publicHostProfile(profile) }, error: null });
     } else {
       process.stdout.write(`Current Host profile: ${options.alias}\n`);
     }
@@ -1441,7 +1689,11 @@ async function manageHost(options) {
     const security = await readOptionalProjectSecurity(options.projectDir, "hosted");
 
     if (options.json) {
-      writeResult({ ok: true, data: { alias: resolved.alias, profile: resolved.profile, binding, security }, error: null });
+      writeResult({
+        ok: true,
+        data: { alias: resolved.alias, profile: publicHostProfile(resolved.profile), binding, security },
+        error: null,
+      });
     } else {
       process.stdout.write(`${resolved.alias}\t${resolved.profile.server}\t${resolved.profile.domain}\n`);
     }
@@ -1901,6 +2153,18 @@ async function startContainerSession(options) {
         bundle.containerMounts.serverEnv.host,
       ]
     : [];
+  const sealedEnvArgs = bundle.containerMounts.sealedServerEnv
+    ? [
+        "--volume",
+        formatMount(bundle.containerMounts.sealedServerEnv.envelope),
+        "--volume",
+        formatMount(bundle.containerMounts.sealedServerEnv.privateKey),
+        "--env",
+        `SPORADES_SEALED_SERVER_ENV_PATH=${bundle.containerMounts.sealedServerEnv.envelope.container}`,
+        "--env",
+        `SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH=${bundle.containerMounts.sealedServerEnv.privateKey.container}`,
+      ]
+    : [];
   const bundleMountArgs = bundle.containerMounts.files.flatMap((mount) => ["--volume", formatMount(mount)]);
   const containerId = runDocker(
     [
@@ -1919,6 +2183,7 @@ async function startContainerSession(options) {
       `${port}:4000`,
       ...bundleMountArgs,
       ...envArgs,
+      ...sealedEnvArgs,
       "--volume",
       `${dataDir}:/app/data:rw`,
       "--workdir",
@@ -2372,6 +2637,20 @@ function requireHostProfile(config, alias) {
   return profile;
 }
 
+function publicHostProfile(profile) {
+  if (!profile?.sealedServerEnv) {
+    return profile;
+  }
+  const { sealedServerEnv, ...rest } = profile;
+  return {
+    ...rest,
+    sealedServerEnv: {
+      configured: true,
+      publicKeyFingerprint: sealedServerEnv.publicKeyFingerprint ?? null,
+    },
+  };
+}
+
 function createRemoteBinding(hostAlias, profile, subname) {
   return {
     hostAlias,
@@ -2442,7 +2721,9 @@ async function createHostReleaseArchive(options) {
   const hostPushDir = path.join(options.projectDir, ".sporades", "host-push");
   await mkdir(hostPushDir, { recursive: true });
   const localArchive = path.join(hostPushDir, `${releaseId}.tar.gz`);
+  const packageDir = path.join(hostPushDir, `${releaseId}-files`);
   const remoteArchive = posixJoin(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
+  const sealedServerEnv = await createHostReleaseSealedServerEnv(options, packageDir);
   const releaseRequest = createHostReleaseRequest({
     alias: options.alias,
     profile: options.profile,
@@ -2452,23 +2733,40 @@ async function createHostReleaseArchive(options) {
     remoteArchive,
     bundle: options.bundle,
     restart: options.restart,
+    sealedServerEnv,
   });
+  await rm(packageDir, { recursive: true, force: true });
+  await mkdir(path.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
+  await Promise.all([
+    writeFile(path.join(packageDir, "server.mjs"), await readFile(path.join(options.bundle.buildDir, "server.mjs"), "utf8")),
+    writeFile(path.join(packageDir, "client.js"), await readFile(path.join(options.bundle.buildDir, "client.js"), "utf8")),
+    writeFile(path.join(packageDir, "index.html"), await readFile(path.join(options.projectDir, "index.html"), "utf8")),
+    writeFile(path.join(packageDir, "sporades.json"), await readFile(path.join(options.projectDir, "sporades.json"), "utf8")),
+  ]);
+  if (options.bundle.containerMounts.serverEnv) {
+    await writeFile(path.join(packageDir, ".env.sporades.server"), await readFile(options.bundle.containerMounts.serverEnv.host, "utf8"));
+  }
+  if (sealedServerEnv) {
+    await writeFile(
+      path.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+      await readFile(sealedServerEnv.envelopePath, "utf8"),
+    );
+  }
   const tarArgs = [
     "-czf",
     localArchive,
-    "-C",
-    options.bundle.buildDir,
     "server.mjs",
     "client.js",
-    "-C",
-    options.projectDir,
     "index.html",
     "sporades.json",
   ];
   if (options.bundle.containerMounts.serverEnv) {
-    tarArgs.push("-C", options.projectDir, ".env.sporades.server");
+    tarArgs.push(".env.sporades.server");
   }
-  const result = spawnSync("tar", tarArgs, { cwd: options.projectDir, encoding: "utf8" });
+  if (sealedServerEnv) {
+    tarArgs.push(".sporades/sealed-server-env/server-env.sealed.json");
+  }
+  const result = spawnSync("tar", tarArgs, { cwd: packageDir, encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw commandError(
       "Failed to package Hosted Capsule release.",
@@ -2480,6 +2778,46 @@ async function createHostReleaseArchive(options) {
     localArchive,
     remoteArchive,
     request: releaseRequest,
+  };
+}
+
+async function createHostReleaseSealedServerEnv(options, packageDir) {
+  if (!options.bundle.containerMounts.sealedServerEnv) {
+    return null;
+  }
+  const localPaths = sealedServerEnvPaths(options.projectDir);
+  const hostEnvelopePath = path.join(localPaths.hosts, `${options.alias}.server-env.sealed.json`);
+  let envelopePath = hostEnvelopePath;
+  let privateKey = options.profile.sealedServerEnv?.privateKey ?? null;
+  try {
+    await readFile(envelopePath, "utf8");
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+    envelopePath = options.bundle.containerMounts.sealedServerEnv.envelope.host;
+    privateKey = await readFile(options.bundle.containerMounts.sealedServerEnv.privateKey.host, "utf8");
+  }
+  if (!privateKey) {
+    throw commandError(
+      "Host Sealed Server env private key is missing.",
+      `Run \`sporades env reencrypt --host ${options.alias}\` before \`sporades host push\`.`,
+    );
+  }
+  return {
+    included: true,
+    envelopePath,
+    privateKey,
+    releaseKeyPath: posixJoin(
+      options.profile.remoteRoot,
+      "hosts",
+      options.profile.domain,
+      "capsules",
+      options.subname,
+      "data",
+      "sealed-server-env",
+      "server-env.private.pem",
+    ),
   };
 }
 
@@ -2503,6 +2841,9 @@ function createHostReleaseRequest(options) {
   if (options.bundle.containerMounts.serverEnv) {
     files.push(".env.sporades.server");
   }
+  if (options.sealedServerEnv) {
+    files.push(".sporades/sealed-server-env/server-env.sealed.json");
+  }
   return {
     id: options.releaseId,
     domain: options.profile.domain,
@@ -2512,6 +2853,13 @@ function createHostReleaseRequest(options) {
     remoteArchive: options.remoteArchive,
     restart: options.restart,
     serverEnvIncluded: Boolean(options.bundle.containerMounts.serverEnv),
+    sealedServerEnvIncluded: Boolean(options.sealedServerEnv),
+    sealedServerEnv: options.sealedServerEnv
+      ? {
+          privateKey: options.sealedServerEnv.privateKey,
+          privateKeyPath: options.sealedServerEnv.releaseKeyPath,
+        }
+      : null,
     files,
     directories: {
       capsule: registration.directories.capsule,
@@ -2542,6 +2890,18 @@ function createHostLifecycleRequest(alias, profile, subname) {
         { host: posixJoin(currentLink, "index.html"), container: "/app/index.html", mode: "ro" },
         { host: posixJoin(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
         { host: posixJoin(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
+        {
+          host: posixJoin(currentLink, ".sporades/sealed-server-env/server-env.sealed.json"),
+          container: "/app/.sporades/sealed-server-env/server-env.sealed.json",
+          mode: "ro",
+          optional: true,
+        },
+        {
+          host: posixJoin(registration.directories.data, "sealed-server-env/server-env.private.pem"),
+          container: "/app/.sporades/sealed-server-env/server-env.private.pem",
+          mode: "ro",
+          optional: true,
+        },
       ],
       data: {
         host: registration.directories.data,

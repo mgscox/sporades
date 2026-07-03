@@ -1,4 +1,5 @@
 .env
+.sporades/
 node_modules/
 client_secret_*
 dummy/
