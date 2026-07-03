@@ -1,6 +1,6 @@
 # Report GitHub autodeploy results back to commits or PRs
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
