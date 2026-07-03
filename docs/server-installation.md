@@ -326,6 +326,7 @@ Inventory and diagnostics:
 
 ```sh
 sporades host list --host personal --json
+sporades host stats --host personal --json
 sporades host stats team-notes --host personal --json
 sporades host logs --host personal -n 200 --json
 sporades host logs http --host personal --subname team-notes -n 200 --json
@@ -333,12 +334,16 @@ sporades host logs stdout --host personal --subname team-notes -n 200 --json
 sporades host logs stderr --host personal --subname team-notes -n 200 --json
 ```
 
-`host stats` returns normalized Docker stats for one Hosted Capsule. `host logs`
-defaults to `http`, returning recent Caddy access log entries for the Host
-server. Add a Hosted Capsule subname to `http` to read that Capsule's separate
-Caddy access log. Use `stdout` or `stderr` with a Hosted Capsule subname to read
-recent Docker `json-file` container logs, including logs for stopped containers
-that still exist. `-n`/`--lines` caps returned lines and defaults to 200.
+`host stats --json` returns Host server disk, memory, load, Docker/Caddy
+availability, and Hosted Capsule counts for the selected Host profile. `host
+stats <subname> --json` returns normalized Docker Container stats for one Hosted
+Capsule under the `stats` key, plus lifecycle details from Host-server-owned
+registry state and Docker inspect. `host logs` defaults to `http`, returning
+recent Caddy access log entries for the Host server. Add a Hosted Capsule
+subname to `http` to read that Capsule's separate Caddy access log. Use `stdout`
+or `stderr` with a Hosted Capsule subname to read recent Docker `json-file`
+container logs, including logs for stopped containers that still exist.
+`-n`/`--lines` caps returned lines and defaults to 200.
 
 Plain output is available by omitting `--json`, but automation should prefer
 structured JSON.

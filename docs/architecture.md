@@ -417,7 +417,9 @@ Sporades exposes operational surfaces through the CLI:
 - `sporades logs` reads Dev session logs.
 - `sporades db list`, `dump`, and `query` inspect the Dev session database.
 - `sporades host list` reads Host-server registry state.
-- `sporades host stats` reports Docker stats for a Hosted Capsule.
+- `sporades host stats` reports Host server resource state, while
+  `sporades host stats <subname>` reports Container stats and lifecycle state
+  for a Hosted Capsule.
 - `sporades host logs http` reads Caddy access logs.
 - `sporades host logs stdout` and `stderr` read container logs.
 

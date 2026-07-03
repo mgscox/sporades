@@ -244,7 +244,11 @@ if (args[0] === "run") {
 }
 if (args[0] === "inspect" && args.includes("{{.State.Running}}")) {
   process.stdout.write(process.env.FAKE_DOCKER_RUNNING || "true");
-  process.exit(0);
+  process.exit(Number(process.env.FAKE_DOCKER_RUNNING_STATUS || "0"));
+}
+if (args[0] === "inspect" && args.includes("{{json .}}")) {
+  process.stdout.write(process.env.FAKE_DOCKER_INSPECT_JSON || "{}");
+  process.exit(Number(process.env.FAKE_DOCKER_INSPECT_STATUS || "0"));
 }
 if (args[0] === "inspect" && args.some((arg) => arg.includes("NetworkSettings.Ports"))) {
   process.stdout.write(process.env.FAKE_DOCKER_PUBLISHED_PORT || "127.0.0.1:49153");
@@ -3498,10 +3502,20 @@ test("sporades host helper reports normalized Docker no-stream stats with raw pa
         domain: "capsules.example.dev",
         remoteCapsuleId: "capsules.example.dev/team-notes",
         hostedUrl: "https://team-notes.capsules.example.dev",
+        status: "running",
+        currentRelease: { id: "20260101T000000Z-abcdef12" },
       })}\n`,
     );
     const docker = await installFakeDocker(dir, {
       env: {
+        FAKE_DOCKER_INSPECT_JSON: `${JSON.stringify({
+          State: {
+            Running: true,
+            Status: "running",
+            StartedAt: "2026-01-01T00:00:00.000Z",
+          },
+          RestartCount: 2,
+        })}\n`,
         FAKE_DOCKER_STATS_JSON: `${JSON.stringify({
           Container: "abc123",
           Name: "sporades-capsules-example-dev-team-notes",
@@ -3546,11 +3560,20 @@ test("sporades host helper reports normalized Docker no-stream stats with raw pa
     assert.equal(output.data.raw.CPUPerc, "12.34%");
     assert.equal(output.data.raw.MemUsage, "128MiB / 1GiB");
     assert.equal(output.data.container.name, "sporades-capsules-example-dev-team-notes");
+    assert.equal(output.data.lifecycle.registered, true);
+    assert.equal(output.data.lifecycle.registryStatus, "running");
+    assert.equal(output.data.lifecycle.running, true);
+    assert.equal(output.data.lifecycle.restartCount, 2);
+    assert.equal(output.data.lifecycle.startedAt, "2026-01-01T00:00:00.000Z");
+    assert.equal(typeof output.data.lifecycle.uptimeSeconds, "number");
+    assert.equal(output.data.lifecycle.currentReleaseId, "20260101T000000Z-abcdef12");
+    assert.equal(output.data.lifecycle.routeTarget, "container");
 
     const calls = await docker.calls();
     assert.deepEqual(calls.map((call) => call.args), [
       ["inspect", "-f", "{{.State.Running}}", "sporades-capsules-example-dev-team-notes"],
       ["stats", "--no-stream", "--format", "json", "sporades-capsules-example-dev-team-notes"],
+      ["inspect", "--format", "{{json .}}", "sporades-capsules-example-dev-team-notes"],
     ]);
   });
 });
@@ -3969,6 +3992,165 @@ test("sporades host helper reports missing and stopped Hosted Capsules for stats
       error: {
         message: "Hosted Capsule has no running container.",
         hint: "Run `sporades host start team-notes --host personal`, then retry stats.",
+      },
+    });
+
+    const dockerInspectUnavailable = await installFakeDocker(path.join(dir, "docker-inspect-unavailable"), {
+      env: { FAKE_DOCKER_RUNNING_STATUS: "1" },
+    });
+    const inspectUnavailable = await runHostHelper(request, { cwd: dir, env: dockerInspectUnavailable.env });
+    assert.equal(inspectUnavailable.code, 0, inspectUnavailable.stderr);
+    assert.deepEqual(JSON.parse(inspectUnavailable.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Failed to read Hosted Capsule Docker stats.",
+        hint: "Check Docker on the Host server and retry `sporades host stats team-notes --host personal`.",
+      },
+    });
+
+    const dockerUnavailable = await installFakeDocker(path.join(dir, "docker-unavailable"), { env: { FAKE_DOCKER_STATS_STATUS: "1" } });
+    const unavailable = await runHostHelper(request, { cwd: dir, env: dockerUnavailable.env });
+    assert.equal(unavailable.code, 0, unavailable.stderr);
+    assert.deepEqual(JSON.parse(unavailable.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Failed to read Hosted Capsule Docker stats.",
+        hint: "Check Docker on the Host server and retry `sporades host stats team-notes --host personal`.",
+      },
+    });
+  });
+});
+
+test("sporades host helper reports Host server resource and Hosted Capsule counts", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const registryDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules");
+    await mkdir(registryDir, { recursive: true });
+    await writeFile(
+      path.join(registryDir, "drafts.json"),
+      `${JSON.stringify({
+        subname: "drafts",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/drafts",
+        hostedUrl: "https://drafts.capsules.example.dev",
+        status: "registered",
+        currentRelease: null,
+      })}\n`,
+    );
+    await writeFile(
+      path.join(registryDir, "notes.json"),
+      `${JSON.stringify({
+        subname: "notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/notes",
+        hostedUrl: "https://notes.capsules.example.dev",
+        status: "running",
+        currentRelease: { id: "20260103T000000Z-abcdef12" },
+      })}\n`,
+    );
+
+    const docker = await installFakeDocker(dir, {
+      env: {
+        FAKE_DOCKER_PS_JSONL: `${JSON.stringify({
+          ID: "abc123def456",
+          Names: "sporades-capsules-example-dev-notes",
+          Image: "node:22-alpine",
+          State: "running",
+          Status: "Up 2 hours",
+        })}\n`,
+      },
+    });
+
+    const stats = await runHostHelper(
+      {
+        action: "host.stats",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: null,
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(stats.code, 0, stats.stderr);
+    const output = JSON.parse(stats.stdout);
+    assert.equal(output.ok, true);
+    assert.deepEqual(output.data.host, {
+      alias: "personal",
+      domain: "capsules.example.dev",
+      scheme: "https",
+      remoteRoot,
+    });
+    assert.equal(output.data.resources.disk.path, remoteRoot);
+    assert.equal(typeof output.data.resources.disk.totalBytes, "number");
+    assert.equal(typeof output.data.resources.memory.totalBytes, "number");
+    assert.deepEqual(Object.keys(output.data.resources.load), ["oneMinute", "fiveMinutes", "fifteenMinutes"]);
+    assert.deepEqual(output.data.services, {
+      docker: { available: true },
+      caddy: { available: true },
+    });
+    assert.deepEqual(output.data.capsules, {
+      total: 2,
+      registered: 1,
+      running: 1,
+      stopped: 0,
+      unavailable: 1,
+    });
+
+    const dockerCalls = await docker.calls();
+    assert.deepEqual(dockerCalls.map((call) => call.args), [
+      ["version", "--format", "{{.Server.Version}}"],
+      [
+        "ps",
+        "-a",
+        "--filter",
+        "label=com.sporades.managed=true",
+        "--filter",
+        "label=com.sporades.hosted-domain=capsules.example.dev",
+        "--filter",
+        "label=com.sporades.capsule-subname=drafts",
+        "--format",
+        "json",
+      ],
+      [
+        "ps",
+        "-a",
+        "--filter",
+        "label=com.sporades.managed=true",
+        "--filter",
+        "label=com.sporades.hosted-domain=capsules.example.dev",
+        "--filter",
+        "label=com.sporades.capsule-subname=notes",
+        "--format",
+        "json",
+      ],
+    ]);
+    const caddyCalls = await docker.caddyCalls();
+    assert.deepEqual(caddyCalls.map((call) => call.args), [["version"]]);
+  });
+});
+
+test("sporades host helper reports malformed registry state for Host server stats", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const registryDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules");
+    await mkdir(registryDir, { recursive: true });
+    const recordPath = path.join(registryDir, "broken.json");
+    await writeFile(recordPath, "{not-json}\n");
+
+    const stats = await runHostHelper({
+      action: "host.stats",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+      capsule: null,
+    });
+
+    assert.equal(stats.code, 0, stats.stderr);
+    assert.deepEqual(JSON.parse(stats.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Hosted Capsule registry record is invalid.",
+        hint: `Repair the Host server registry record at ${recordPath}, then retry \`sporades host stats --host personal\`.`,
       },
     });
   });
@@ -6556,6 +6738,16 @@ process.stdout.write(JSON.stringify({
       blockOutputBytes: 16384,
       pids: 7
     },
+    lifecycle: {
+      registered: true,
+      registryStatus: "running",
+      running: true,
+      startedAt: "2026-01-01T00:00:00.000Z",
+      uptimeSeconds: 7200,
+      restartCount: 1,
+      currentReleaseId: "20260101T000000Z-abcdef12",
+      routeTarget: "container"
+    },
     raw: {
       Name: "sporades-capsules-example-dev-team-notes",
       CPUPerc: "3.14%",
@@ -6612,6 +6804,16 @@ process.exit(0);
           blockOutputBytes: 16384,
           pids: 7,
         },
+        lifecycle: {
+          registered: true,
+          registryStatus: "running",
+          running: true,
+          startedAt: "2026-01-01T00:00:00.000Z",
+          uptimeSeconds: 7200,
+          restartCount: 1,
+          currentReleaseId: "20260101T000000Z-abcdef12",
+          routeTarget: "container",
+        },
         raw: {
           Name: "sporades-capsules-example-dev-team-notes",
           CPUPerc: "3.14%",
@@ -6643,6 +6845,125 @@ process.exit(0);
         container: {
           name: "sporades-capsules-example-dev-team-notes",
         },
+      },
+    });
+  });
+});
+
+test("sporades host stats without a subname resolves the selected Host profile and returns Host server stats as JSON", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+if (request.action !== "host.stats" || request.capsule !== null) {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected action.", hint: "Use host.stats without a Capsule." }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    host: request.host,
+    resources: {
+      disk: { totalBytes: 1000, usedBytes: 400, availableBytes: 600, usedPercent: 40 },
+      memory: { totalBytes: 2000, usedBytes: 500, availableBytes: 1500, usedPercent: 25 },
+      load: { oneMinute: 0.1, fiveMinutes: 0.2, fifteenMinutes: 0.3 }
+    },
+    services: { docker: { available: true }, caddy: { available: true } },
+    capsules: { total: 2, registered: 1, running: 1, stopped: 0 }
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    assert.equal(
+      (
+        await runCli(
+          ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+          { cwd: dir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+        )
+      ).code,
+      0,
+    );
+    assert.equal((await runCli(["host", "use", "personal", "--json"], { cwd: dir, env: hostEnv(configDir) })).code, 0);
+
+    const stats = await runCli(["host", "stats", "--json"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(stats.code, 0, stats.stderr);
+    assert.deepEqual(JSON.parse(stats.stdout), {
+      ok: true,
+      data: {
+        host: {
+          alias: "personal",
+          domain: "capsules.example.dev",
+          scheme: "https",
+          remoteRoot: "/opt/sporades",
+        },
+        resources: {
+          disk: { totalBytes: 1000, usedBytes: 400, availableBytes: 600, usedPercent: 40 },
+          memory: { totalBytes: 2000, usedBytes: 500, availableBytes: 1500, usedPercent: 25 },
+          load: { oneMinute: 0.1, fiveMinutes: 0.2, fifteenMinutes: 0.3 },
+        },
+        services: { docker: { available: true }, caddy: { available: true } },
+        capsules: { total: 2, registered: 1, running: 1, stopped: 0 },
+      },
+      error: null,
+    });
+
+    const [sshCall] = await readJsonl(fakeSsh.logPath);
+    assert.deepEqual(JSON.parse(sshCall.stdin), {
+      action: "host.stats",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot: "/opt/sporades",
+      },
+      capsule: null,
+    });
+  });
+});
+
+test("sporades host stats without a Host profile reports a structured JSON failure", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+
+    const stats = await runCli(["host", "stats", "--json"], {
+      cwd: dir,
+      env: hostEnv(configDir),
+    });
+
+    assert.equal(stats.code, 1);
+    assert.deepEqual(JSON.parse(stats.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "No current Host profile selected.",
+        hint: "Run `sporades host use <alias>` or pass `--host <alias>`.",
+      },
+    });
+  });
+});
+
+test("sporades host stats help text shows the optional Capsule subname form", async () => {
+  await withTempDir(async (dir) => {
+    const stats = await runCli(["host", "stats", "one", "two", "--json"], { cwd: dir });
+
+    assert.equal(stats.code, 1);
+    assert.deepEqual(JSON.parse(stats.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Too many positional arguments.",
+        hint: "Use `sporades host stats [subname] --host <alias>`.",
       },
     });
   });

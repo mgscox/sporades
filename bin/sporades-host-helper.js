@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
-import { access, chmod, mkdir, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readdir, readFile, readlink, rename, rm, statfs, symlink, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
+import { freemem, loadavg, totalmem } from "node:os";
 import path from "node:path";
 
 const HOST_HELPER_CONFIG_FILE = "sporades-host-helper.json";
@@ -75,6 +76,10 @@ async function main() {
   }
   if (request.action === "capsule.health") {
     await healthCapsule(request);
+    return;
+  }
+  if (request.action === "host.stats") {
+    await statsHost(request);
     return;
   }
   if (request.action === "capsule.list") {
@@ -796,10 +801,16 @@ async function restartCapsule(request, options = {}) {
 
 async function statsCapsule(request) {
   validateStatsRequest(request);
-  await verifyRegisteredCapsule(request, "stats");
+  const registryRecord = await verifyRegisteredCapsule(request, "stats");
   const stats = normaliseStats(request);
-  const running = checkContainerRunning(stats.container.name);
-  if (!running) {
+  const runningState = inspectContainerRunning(stats.container.name);
+  if (!runningState.ok) {
+    throw helperError(
+      "Failed to read Hosted Capsule Docker stats.",
+      `Check Docker on the Host server and retry \`sporades host stats ${request.capsule.subname} --host ${request.host.alias}\`.`,
+    );
+  }
+  if (!runningState.running) {
     throw helperError(
       "Hosted Capsule has no running container.",
       `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry stats.`,
@@ -836,6 +847,7 @@ async function statsCapsule(request) {
       running: true,
     },
     stats: normaliseDockerStats(raw),
+    lifecycle: readCapsuleLifecycle(request, registryRecord, stats.container.name, true),
     raw,
   };
   writeEnvelope({ ok: true, data, error: null });
@@ -863,6 +875,34 @@ async function listReleases(request) {
     },
     error: null,
   });
+}
+
+async function statsHost(request) {
+  validateHostStatsRequest(request);
+  const records = await readCapsuleRegistryRecords(request);
+  const dockerAvailable = checkDockerAvailable();
+  const caddyAvailable = checkCaddyAvailable();
+  const dockerStates = dockerAvailable ? records.map((record) => lookupCapsuleDockerState(request, record)) : [];
+
+  const data = {
+    host: {
+      alias: request.host.alias,
+      domain: request.host.domain,
+      scheme: request.host.scheme ?? "https",
+      remoteRoot: request.host.remoteRoot,
+    },
+    resources: {
+      disk: await readHostDiskStats(request.host.remoteRoot),
+      memory: readHostMemoryStats(),
+      load: readHostLoadStats(),
+    },
+    services: {
+      docker: { available: dockerAvailable },
+      caddy: { available: caddyAvailable },
+    },
+    capsules: countHostedCapsules(records, dockerStates),
+  };
+  writeEnvelope({ ok: true, data, error: null });
 }
 
 async function logsHost(request) {
@@ -1195,6 +1235,111 @@ function publicRouteData(route) {
   return safeRoute;
 }
 
+async function readHostDiskStats(targetPath) {
+  let stats;
+  try {
+    stats = await statfs(targetPath);
+  } catch {
+    throw helperError(
+      "Failed to read Host server disk stats.",
+      `Check that ${targetPath} exists and is readable by the Host helper, then retry \`sporades host stats --host <alias>\`.`,
+    );
+  }
+  const blockSize = Number(stats.bsize);
+  const totalBytes = Number(stats.blocks) * blockSize;
+  const freeBytes = Number(stats.bfree) * blockSize;
+  const availableBytes = Number(stats.bavail) * blockSize;
+  const usedBytes = Math.max(0, totalBytes - freeBytes);
+  return {
+    path: targetPath,
+    totalBytes,
+    usedBytes,
+    availableBytes,
+    usedPercent: percentage(usedBytes, totalBytes),
+  };
+}
+
+function readHostMemoryStats() {
+  const totalBytes = totalmem();
+  const availableBytes = freemem();
+  const usedBytes = Math.max(0, totalBytes - availableBytes);
+  return {
+    totalBytes,
+    usedBytes,
+    availableBytes,
+    usedPercent: percentage(usedBytes, totalBytes),
+  };
+}
+
+function readHostLoadStats() {
+  const [oneMinute, fiveMinutes, fifteenMinutes] = loadavg();
+  return { oneMinute, fiveMinutes, fifteenMinutes };
+}
+
+function checkDockerAvailable() {
+  return runDocker(["version", "--format", "{{.Server.Version}}"]).ok;
+}
+
+function checkCaddyAvailable() {
+  const result = spawnSync("caddy", ["version"], { encoding: "utf8" });
+  return !result.error && result.status === 0;
+}
+
+function countHostedCapsules(records, dockerStates) {
+  let running = 0;
+  let stopped = 0;
+  for (let index = 0; index < records.length; index += 1) {
+    const docker = dockerStates[index] ?? null;
+    if (docker?.running === true) {
+      running += 1;
+      continue;
+    }
+    if (docker?.running === false || records[index].status === "stopped") {
+      stopped += 1;
+    }
+  }
+  return {
+    total: records.length,
+    registered: records.filter((record) => (record.status ?? "registered") === "registered").length,
+    running,
+    stopped,
+    unavailable: records.length - running,
+  };
+}
+
+function readCapsuleLifecycle(request, registryRecord, containerName, running) {
+  const inspected = inspectContainerLifecycle(containerName);
+  return {
+    registered: true,
+    registryStatus: registryRecord.status ?? "registered",
+    running,
+    startedAt: inspected.startedAt,
+    uptimeSeconds: inspected.uptimeSeconds,
+    restartCount: inspected.restartCount,
+    currentReleaseId: registryRecord.currentRelease?.id ?? null,
+    routeTarget: registryRecord.route?.target ?? (running ? "container" : "hosted-capsule-unavailable"),
+  };
+}
+
+function inspectContainerLifecycle(containerName) {
+  const result = runDocker(["inspect", "--format", "{{json .}}", containerName]);
+  if (!result.ok) {
+    return { startedAt: null, uptimeSeconds: null, restartCount: null };
+  }
+  let raw;
+  try {
+    raw = JSON.parse(result.stdout);
+  } catch {
+    return { startedAt: null, uptimeSeconds: null, restartCount: null };
+  }
+  const startedAt = typeof raw.State?.StartedAt === "string" && raw.State.StartedAt !== "0001-01-01T00:00:00Z" ? raw.State.StartedAt : null;
+  return {
+    startedAt,
+    uptimeSeconds: startedAt ? Math.max(0, Math.floor((Date.now() - Date.parse(startedAt)) / 1000)) : null,
+    restartCount: Number.isFinite(raw.RestartCount) ? raw.RestartCount : null,
+  };
+}
+
 async function readCapsuleRegistryRecords(request) {
   const registryDirectory = path.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", "capsules");
   let entries;
@@ -1221,7 +1366,7 @@ async function readCapsuleRegistryRecords(request) {
       if (error instanceof SyntaxError) {
         throw helperError(
           "Hosted Capsule registry record is invalid.",
-          `Repair the Host server registry record at ${recordPath}, then retry \`sporades host list --host ${request.host.alias}\`.`,
+          `Repair the Host server registry record at ${recordPath}, then retry \`${hostRegistryRetryCommand(request)}\`.`,
         );
       }
       throw error;
@@ -1255,6 +1400,10 @@ function lookupCapsuleDockerState(request, record) {
   const remoteCapsuleId = record.remoteCapsuleId ?? `${request.host.domain}/${subname}`;
   const match = containers.find((container) => dockerPsContainerMatches(container, containerName, remoteCapsuleId, subname));
   return match ? normaliseDockerPsContainer(match, containerName) : null;
+}
+
+function hostRegistryRetryCommand(request) {
+  return request.action === "host.stats" ? `sporades host stats --host ${request.host.alias}` : `sporades host list --host ${request.host.alias}`;
 }
 
 function parseDockerPsJsonLines(output) {
@@ -1508,6 +1657,13 @@ function normaliseDockerStats(raw) {
     blockOutputBytes,
     pids: parseDockerInteger(raw.PIDs),
   };
+}
+
+function percentage(numerator, denominator) {
+  if (!Number.isFinite(numerator) || !Number.isFinite(denominator) || denominator <= 0) {
+    return 0;
+  }
+  return Math.round((numerator / denominator) * 10000) / 100;
 }
 
 function normaliseBootstrap(request) {
@@ -1882,8 +2038,16 @@ function runDocker(args, options = {}) {
 }
 
 function checkContainerRunning(containerName) {
+  return inspectContainerRunning(containerName).running;
+}
+
+function inspectContainerRunning(containerName) {
   const result = runDocker(["inspect", "-f", "{{.State.Running}}", containerName]);
-  return result.ok && result.stdout.trim() === "true";
+  if (!result.ok) {
+    return { ok: false, running: false };
+  }
+  const value = result.stdout.trim();
+  return { ok: true, running: value === "true" };
 }
 
 function inspectLoopbackPublishedPort(containerName, containerPort) {
@@ -2645,6 +2809,7 @@ async function verifyRegisteredCapsule(request, purpose = "push") {
       `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before retrying this command.`,
     );
   }
+  return record;
 }
 
 function missingCapsuleHint(request, purpose) {
@@ -2708,6 +2873,17 @@ function validateHealthRequest(request) {
   }
 }
 
+function validateHostStatsRequest(request) {
+  const requiredStrings = [
+    request.host?.domain,
+    request.host?.alias,
+    request.host?.remoteRoot,
+  ];
+  if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw helperError("Invalid Host stats request.", "Update the Sporades CLI and retry `sporades host stats`.");
+  }
+}
+
 function validateHostLogsRequest(request) {
   const requiredStrings = [
     request.host?.alias,
@@ -2763,7 +2939,7 @@ function validateListRegistryRecord(request, record, recordPath) {
   if (!valid) {
     throw helperError(
       "Hosted Capsule registry record is invalid.",
-      `Repair the Host server registry record at ${recordPath}, then retry \`sporades host list --host ${request.host.alias}\`.`,
+      `Repair the Host server registry record at ${recordPath}, then retry \`${hostRegistryRetryCommand(request)}\`.`,
     );
   }
 }

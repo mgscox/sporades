@@ -510,7 +510,21 @@ function parseHostArgs(args) {
     return { subcommand, hostAlias, json, projectDir: process.cwd() };
   }
 
-  if (subcommand === "start" || subcommand === "stop" || subcommand === "restart" || subcommand === "stats" || subcommand === "unregister" || subcommand === "delete") {
+  if (subcommand === "stats") {
+    const [positionalSubname, ...extra] = positional;
+    if (extra.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host stats [subname] --host <alias>`.");
+    }
+    if (hostAlias) {
+      validateHostAlias(hostAlias);
+    }
+    if (positionalSubname) {
+      validateCapsuleSubname(positionalSubname);
+    }
+    return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
+  }
+
+  if (subcommand === "start" || subcommand === "stop" || subcommand === "restart" || subcommand === "unregister" || subcommand === "delete") {
     const [positionalSubname, ...extra] = positional;
     if (!positionalSubname) {
       throw commandError("Missing Capsule subname.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
@@ -1493,11 +1507,11 @@ async function manageHost(options) {
   if (options.subcommand === "stats") {
     const config = await readHostConfig();
     const resolved = resolveHostProfile(config, options.hostAlias);
-    const stats = createHostStatsRequest(resolved.profile, options.subname);
+    const stats = options.subname ? createHostStatsRequest(resolved.profile, options.subname) : null;
     const result = invokeRemoteHostHelper({
       alias: resolved.alias,
       profile: resolved.profile,
-      action: "capsule.stats",
+      action: options.subname ? "capsule.stats" : "host.stats",
       subname: options.subname,
       stats,
       projectDir: options.projectDir,

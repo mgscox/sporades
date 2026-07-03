@@ -799,6 +799,7 @@ Useful Hosted Capsule operations:
 
 ```sh
 sporades host list --host personal --json
+sporades host stats --host personal --json
 sporades host stats team-notes --host personal --json
 sporades host logs http --host personal --subname team-notes -n 200 --json
 sporades host logs stdout --host personal --subname team-notes -n 200 --json
@@ -880,4 +881,4 @@ definition.
   the structured error hint.
 - Hosted Capsule route returns `503`: the Capsule is registered, but has no
   running container or the current release failed to start. Check
-  `sporades host stats` and `sporades host logs stdout`.
+  `sporades host stats <subname>` and `sporades host logs stdout`.

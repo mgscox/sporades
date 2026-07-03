@@ -73,3 +73,22 @@ test("canonical docs describe the implemented platform scope", async () => {
   assert.doesNotMatch(scaffoldTemplate, /WebSocket only/i);
   assert.match(scaffoldTemplate, /Use endpoints only for HTTP integrations/i);
 });
+
+test("canonical docs describe Host stats without introducing host status", async () => {
+  const [userGuide, serverInstallation, architecture] = await Promise.all([
+    readProjectFile("docs/user-guide.md"),
+    readProjectFile("docs/server-installation.md"),
+    readProjectFile("docs/architecture.md"),
+  ]);
+
+  assert.match(userGuide, /sporades host stats --host personal --json/);
+  assert.match(userGuide, /sporades host stats team-notes --host personal --json/);
+  assert.match(serverInstallation, /host stats --json` returns Host server disk, memory, load, Docker\/Caddy\s+availability/);
+  assert.match(serverInstallation, /host\s+stats <subname> --json` returns normalized Docker Container stats/);
+  assert.match(architecture, /`sporades host stats` reports Host server resource state/);
+  assert.match(architecture, /`sporades host stats <subname>` reports Container stats and lifecycle state/);
+
+  for (const contents of [userGuide, serverInstallation, architecture]) {
+    assert.doesNotMatch(contents, /sporades host status/);
+  }
+});
