@@ -444,6 +444,84 @@ async function readJsonl(filePath) {
     .map((line) => JSON.parse(line));
 }
 
+async function writeHostedCapsuleRollbackFixture(dir, options = {}) {
+  const remoteRoot = path.join(dir, "remote-root");
+  const domain = "capsules.example.dev";
+  const subname = "team-notes";
+  const capsuleDir = path.join(remoteRoot, "hosts", domain, "capsules", subname);
+  const releasesDir = path.join(capsuleDir, "releases");
+  const dataDir = path.join(capsuleDir, "data");
+  const registryRecordPath = path.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`);
+  const currentReleaseId = Object.hasOwn(options, "currentReleaseId") ? options.currentReleaseId : "20260630T221500Z-feedface";
+  const rollbackReleaseId = Object.hasOwn(options, "rollbackReleaseId") ? options.rollbackReleaseId : "20260629T120000Z-deadbeef";
+  const releaseIds = options.releaseIds ?? [currentReleaseId, rollbackReleaseId];
+  const missingFiles = new Set(options.missingFiles ?? []);
+  await mkdir(path.join(dataDir, "uploads"), { recursive: true });
+  await mkdir(path.dirname(registryRecordPath), { recursive: true });
+  for (const releaseId of releaseIds) {
+    const releaseDir = path.join(releasesDir, releaseId);
+    await mkdir(releaseDir, { recursive: true });
+    const files = {
+      "server.mjs": `export default ${JSON.stringify(releaseId)};\n`,
+      "client.js": "console.log('client bundle');\n",
+      "index.html": "<div id=\"root\"></div>\n",
+      "sporades.json": "{\"name\":\"team-notes\"}\n",
+    };
+    for (const [file, contents] of Object.entries(files)) {
+      if (!missingFiles.has(`${releaseId}/${file}`) && !missingFiles.has(file)) {
+        await writeFile(path.join(releaseDir, file), contents);
+      }
+    }
+  }
+  if (currentReleaseId) {
+    await symlink(path.join(releasesDir, currentReleaseId), path.join(capsuleDir, "current"));
+  }
+  await writeFile(path.join(dataDir, "data.db"), "sqlite bytes\n");
+  await writeFile(path.join(dataDir, "uploads", "photo.bin"), "uploaded bytes\n");
+
+  const releases = options.noReleaseHistory
+    ? []
+    : releaseIds.map((releaseId) => ({
+        id: releaseId,
+        createdAt: releaseId === currentReleaseId ? "2026-06-30T22:15:00.000Z" : "2026-06-29T12:00:00.000Z",
+        uploadedAt: releaseId === currentReleaseId ? "2026-06-30T22:15:00.000Z" : "2026-06-29T12:00:00.000Z",
+        state: releaseId === currentReleaseId ? "started" : "verified",
+        current: releaseId === currentReleaseId,
+        source: {
+          hostedUrl: `https://${subname}.${domain}`,
+          remoteCapsuleId: `${domain}/${subname}`,
+          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+        },
+        startAttempts: releaseId === currentReleaseId ? [{ startedAt: "2026-06-30T22:16:00.000Z" }] : [],
+        verificationAttempts: releaseId === currentReleaseId ? [] : [{ verifiedAt: "2026-06-29T12:02:00.000Z" }],
+        failure: null,
+      }));
+  await writeFile(
+    registryRecordPath,
+    `${JSON.stringify({
+      subname,
+      domain,
+      remoteCapsuleId: `${domain}/${subname}`,
+      hostedUrl: `https://${subname}.${domain}`,
+      status: options.status ?? "running",
+      currentRelease: currentReleaseId ? { id: currentReleaseId } : null,
+      releases,
+    })}\n`,
+  );
+  return {
+    remoteRoot,
+    domain,
+    subname,
+    capsuleDir,
+    releasesDir,
+    dataDir,
+    registryRecordPath,
+    currentReleaseId,
+    rollbackReleaseId,
+    rollbackReleaseDir: path.join(releasesDir, rollbackReleaseId),
+  };
+}
+
 function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -5905,6 +5983,299 @@ test("sporades host helper preserves install metadata when push restart route re
   });
 });
 
+test("sporades host helper rolls back to a recorded release and preserves persistent Capsule data", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const releasesDir = path.join(capsuleDir, "releases");
+    const currentReleaseDir = path.join(releasesDir, "20260630T221500Z-feedface");
+    const rollbackReleaseDir = path.join(releasesDir, "20260629T120000Z-deadbeef");
+    const dataDir = path.join(capsuleDir, "data");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    await mkdir(currentReleaseDir, { recursive: true });
+    await mkdir(rollbackReleaseDir, { recursive: true });
+    await mkdir(path.join(dataDir, "uploads"), { recursive: true });
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    for (const releaseDir of [currentReleaseDir, rollbackReleaseDir]) {
+      await writeFile(path.join(releaseDir, "server.mjs"), `export default ${JSON.stringify(path.basename(releaseDir))};\n`);
+      await writeFile(path.join(releaseDir, "client.js"), "console.log('client bundle');\n");
+      await writeFile(path.join(releaseDir, "index.html"), "<div id=\"root\"></div>\n");
+      await writeFile(path.join(releaseDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+    }
+    await symlink(currentReleaseDir, path.join(capsuleDir, "current"));
+    await writeFile(path.join(dataDir, "data.db"), "sqlite bytes\n");
+    await writeFile(path.join(dataDir, "uploads", "photo.bin"), "uploaded bytes\n");
+    await writeFile(
+      registryRecordPath,
+      `${JSON.stringify({
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        status: "running",
+        currentRelease: { id: "20260630T221500Z-feedface" },
+        releases: [
+          {
+            id: "20260630T221500Z-feedface",
+            createdAt: "2026-06-30T22:15:00.000Z",
+            uploadedAt: "2026-06-30T22:15:00.000Z",
+            state: "started",
+            current: true,
+            source: { hostedUrl: "https://team-notes.capsules.example.dev", files: ["server.mjs", "client.js", "index.html", "sporades.json"] },
+            startAttempts: [{ startedAt: "2026-06-30T22:16:00.000Z" }],
+          },
+          {
+            id: "20260629T120000Z-deadbeef",
+            createdAt: "2026-06-29T12:00:00.000Z",
+            uploadedAt: "2026-06-29T12:00:00.000Z",
+            state: "verified",
+            current: false,
+            source: { hostedUrl: "https://team-notes.capsules.example.dev", files: ["server.mjs", "client.js", "index.html", "sporades.json"] },
+            startAttempts: [],
+            verificationAttempts: [{ verifiedAt: "2026-06-29T12:02:00.000Z" }],
+          },
+        ],
+      })}\n`,
+    );
+    const docker = await installFakeDocker(dir);
+
+    const rollback = await runHostHelper(
+      {
+        action: "capsule.release.rollback",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        rollback: { releaseId: "20260629T120000Z-deadbeef" },
+        lifecycle: {
+          remoteRoot,
+        },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(rollback.code, 0, rollback.stderr);
+    const output = JSON.parse(rollback.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.rolledBack, true);
+    assert.equal(output.data.previousCurrentRelease.id, "20260630T221500Z-feedface");
+    assert.equal(output.data.currentRelease.id, "20260629T120000Z-deadbeef");
+    assert.equal(output.data.lifecycle.started, true);
+    assert.equal(output.data.lifecycle.restarted, true);
+    assert.equal(output.data.lifecycle.release.id, "20260629T120000Z-deadbeef");
+    assert.equal(await readlink(path.join(capsuleDir, "current")), rollbackReleaseDir);
+    assert.equal(await readFile(path.join(dataDir, "data.db"), "utf8"), "sqlite bytes\n");
+    assert.equal(await readFile(path.join(dataDir, "uploads", "photo.bin"), "utf8"), "uploaded bytes\n");
+    const runCall = (await docker.calls()).find((call) => call.args[0] === "run");
+    assert.ok(runCall);
+    assert.ok(runCall.args.includes(`${dataDir}:/app/data:rw`));
+    const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
+    assert.equal(record.status, "running");
+    assert.equal(record.currentRelease.id, "20260629T120000Z-deadbeef");
+    assert.deepEqual(
+      record.releases.map((release) => ({ id: release.id, state: release.state, current: release.current })),
+      [
+        { id: "20260630T221500Z-feedface", state: "started", current: false },
+        { id: "20260629T120000Z-deadbeef", state: "started", current: true },
+      ],
+    );
+    assert.equal(record.releases[1].startAttempts.length, 1);
+  });
+});
+
+test("sporades host helper rejects rollback to an unknown release", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir);
+    const docker = await installFakeDocker(dir);
+
+    const rollback = await runHostHelper(
+      {
+        action: "capsule.release.rollback",
+        host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname },
+        rollback: { releaseId: "20260628T120000Z-cafebabe" },
+        lifecycle: { remoteRoot: fixture.remoteRoot },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(rollback.code, 0, rollback.stderr);
+    assert.deepEqual(JSON.parse(rollback.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Hosted Capsule release is not recorded.",
+        hint: "Run `sporades host releases team-notes --host personal --json` and choose a recorded release ID.",
+      },
+    });
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), path.join(fixture.releasesDir, fixture.currentReleaseId));
+  });
+});
+
+test("sporades host helper rejects rollback when selected release files are missing", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir, {
+      missingFiles: ["20260629T120000Z-deadbeef/server.mjs"],
+    });
+    const docker = await installFakeDocker(dir);
+
+    const rollback = await runHostHelper(
+      {
+        action: "capsule.release.rollback",
+        host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname },
+        rollback: { releaseId: fixture.rollbackReleaseId },
+        lifecycle: { remoteRoot: fixture.remoteRoot },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(rollback.code, 0, rollback.stderr);
+    const output = JSON.parse(rollback.stdout);
+    assert.equal(output.ok, false);
+    assert.equal(output.error.message, "Hosted Capsule release files are missing.");
+    assert.match(output.error.hint, /recorded release cannot be started/);
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), path.join(fixture.releasesDir, fixture.currentReleaseId));
+  });
+});
+
+test("sporades host helper starts a stopped Capsule during rollback", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir, { status: "stopped" });
+    const docker = await installFakeDocker(dir);
+
+    const rollback = await runHostHelper(
+      {
+        action: "capsule.release.rollback",
+        host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname },
+        rollback: { releaseId: fixture.rollbackReleaseId },
+        lifecycle: { remoteRoot: fixture.remoteRoot },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(rollback.code, 0, rollback.stderr);
+    const output = JSON.parse(rollback.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.lifecycle.started, true);
+    assert.equal(output.data.lifecycle.release.id, fixture.rollbackReleaseId);
+    assert.ok((await docker.calls()).some((call) => call.args[0] === "run"));
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    assert.equal(record.status, "running");
+    assert.equal(record.currentRelease.id, fixture.rollbackReleaseId);
+  });
+});
+
+test("sporades host helper rejects rollback for unregistered Capsules and empty release history", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir, { noReleaseHistory: true, currentReleaseId: null, releaseIds: [] });
+    const missing = await runHostHelper(
+      {
+        action: "capsule.release.rollback",
+        host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: "missing" },
+        rollback: { releaseId: fixture.rollbackReleaseId },
+      },
+      { cwd: dir },
+    );
+    assert.deepEqual(JSON.parse(missing.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Hosted Capsule is not registered.",
+        hint: "Run `sporades host register missing --host personal` before managing the Hosted Capsule lifecycle.",
+      },
+    });
+
+    const noHistory = await runHostHelper(
+      {
+        action: "capsule.release.rollback",
+        host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname },
+        rollback: { releaseId: fixture.rollbackReleaseId },
+      },
+      { cwd: dir },
+    );
+    assert.deepEqual(JSON.parse(noHistory.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Hosted Capsule has no release history.",
+        hint: "Push a release before running `sporades host rollback team-notes <release-id> --host personal`.",
+      },
+    });
+  });
+});
+
+test("sporades host helper records failed rollback starts and leaves the route unavailable", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir);
+    const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_RUNNING: "false" } });
+
+    const rollback = await runHostHelper(
+      {
+        action: "capsule.release.rollback",
+        host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname },
+        rollback: { releaseId: fixture.rollbackReleaseId },
+        lifecycle: { remoteRoot: fixture.remoteRoot },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(rollback.code, 0, rollback.stderr);
+    const output = JSON.parse(rollback.stdout);
+    assert.equal(output.ok, false);
+    assert.equal(output.data.previousCurrentRelease.id, fixture.currentReleaseId);
+    assert.equal(output.data.currentRelease.id, fixture.rollbackReleaseId);
+    assert.equal(output.error.message, "Hosted Capsule rollback start failed.");
+    assert.match(output.error.hint, new RegExp(`Previous current release was ${fixture.currentReleaseId}`));
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), fixture.rollbackReleaseDir);
+    const route = await readFile(path.join(fixture.remoteRoot, "caddy", "hosts", fixture.domain, `${fixture.subname}.caddy`), "utf8");
+    assert.match(route, /respond "Hosted Capsule unavailable" 503/);
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    assert.equal(record.status, "failed");
+    assert.equal(record.currentRelease.id, fixture.rollbackReleaseId);
+    const release = record.releases.find((entry) => entry.id === fixture.rollbackReleaseId);
+    assert.equal(release.state, "failed");
+    assert.equal(release.current, true);
+    assert.equal(release.startAttempts.length, 1);
+    assert.equal(release.failure.message, "Hosted Capsule container did not stay running.");
+  });
+});
+
+test("sporades host helper returns rollback route reload failures to the unavailable route", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleRollbackFixture(dir);
+    const docker = await installFakeDocker(dir, { env: { FAKE_DOCKER_CADDY_RELOAD_STATUSES: "1,0" } });
+
+    const rollback = await runHostHelper(
+      {
+        action: "capsule.release.rollback",
+        host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname },
+        rollback: { releaseId: fixture.rollbackReleaseId },
+        lifecycle: { remoteRoot: fixture.remoteRoot },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(rollback.code, 0, rollback.stderr);
+    const output = JSON.parse(rollback.stdout);
+    assert.equal(output.ok, false);
+    assert.equal(output.data.previousCurrentRelease.id, fixture.currentReleaseId);
+    assert.equal(output.data.currentRelease.id, fixture.rollbackReleaseId);
+    assert.equal(output.error.message, "Failed to apply Hosted Capsule route.");
+    const route = await readFile(path.join(fixture.remoteRoot, "caddy", "hosts", fixture.domain, `${fixture.subname}.caddy`), "utf8");
+    assert.match(route, /respond "Hosted Capsule unavailable" 503/);
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    assert.equal(record.status, "failed");
+    const release = record.releases.find((entry) => entry.id === fixture.rollbackReleaseId);
+    assert.equal(release.state, "failed");
+    assert.equal(release.current, true);
+    assert.equal(release.failure.message, "Failed to apply Hosted Capsule route.");
+  });
+});
+
 test("sporades host register leaves local binding untouched when authoritative registration fails", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
@@ -6503,6 +6874,135 @@ process.exit(0);
       },
       capsule: {
         subname: "team-notes",
+      },
+    });
+  });
+});
+
+test("sporades host rollback invokes the Hosted Capsule rollback helper contract", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+if (request.action !== "capsule.release.rollback") {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected action.", hint: "Use capsule.release.rollback." }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    rolledBack: true,
+    capsule: {
+      subname: request.capsule.subname,
+      domain: request.host.domain,
+      hostedUrl: "https://team-notes.capsules.example.dev",
+      remoteCapsuleId: "capsules.example.dev/team-notes"
+    },
+    previousCurrentRelease: { id: "20260630T221500Z-feedface" },
+    currentRelease: { id: request.rollback.releaseId },
+    lifecycle: {
+      started: true,
+      restarted: true,
+      release: { id: request.rollback.releaseId },
+      container: { name: "sporades-capsules-example-dev-team-notes", running: true }
+    }
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    const addHost = await runCli(
+      ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+      { cwd: dir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+
+    const rollback = await runCli(
+      ["host", "rollback", "team-notes", "20260629T120000Z-deadbeef", "--host", "personal", "--json"],
+      { cwd: dir, env: { ...hostEnv(configDir), ...fakeSsh.env } },
+    );
+    assert.equal(rollback.code, 0, rollback.stderr);
+    const output = JSON.parse(rollback.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.previousCurrentRelease.id, "20260630T221500Z-feedface");
+    assert.equal(output.data.currentRelease.id, "20260629T120000Z-deadbeef");
+    assert.equal(output.data.lifecycle.started, true);
+
+    const calls = await readJsonl(fakeSsh.logPath);
+    assert.deepEqual(JSON.parse(calls[0].stdin), {
+      action: "capsule.release.rollback",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot: "/opt/sporades",
+      },
+      capsule: {
+        subname: "team-notes",
+      },
+      rollback: {
+        releaseId: "20260629T120000Z-deadbeef",
+      },
+      lifecycle: {
+        domain: "capsules.example.dev",
+        subname: "team-notes",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        currentLink: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current",
+        directories: {
+          capsule: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes",
+          releases: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/releases",
+          data: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data",
+          logs: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/logs",
+        },
+        mounts: {
+          files: [
+            { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/server.mjs", container: "/app/server.mjs", mode: "ro" },
+            { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/client.js", container: "/app/client.js", mode: "ro" },
+            { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/index.html", container: "/app/index.html", mode: "ro" },
+            { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/sporades.json", container: "/app/sporades.json", mode: "ro" },
+            { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/.env.sporades.server", container: "/app/.env.sporades.server", mode: "ro", optional: true },
+          ],
+          data: {
+            host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data",
+            container: "/app/data",
+            mode: "rw",
+          },
+        },
+        container: {
+          name: "sporades-capsules-example-dev-team-notes",
+          labels: {
+            "com.sporades.managed": "true",
+            "com.sporades.hosted-domain": "capsules.example.dev",
+            "com.sporades.capsule-subname": "team-notes",
+            "com.sporades.capsule-id": "capsules.example.dev/team-notes",
+          },
+        },
+        routes: {
+          running: {
+            hostname: "team-notes.capsules.example.dev",
+            target: "container",
+            containerName: "sporades-capsules-example-dev-team-notes",
+            port: 4000,
+            routeFile: "/opt/sporades/caddy/hosts/capsules.example.dev/team-notes.caddy",
+            tls: { mode: "automatic", directory: "/opt/sporades/hosts/capsules.example.dev/tls", certificate: null, key: null },
+          },
+          unavailable: {
+            hostname: "team-notes.capsules.example.dev",
+            target: "hosted-capsule-unavailable",
+            statusCode: 503,
+            routeFile: "/opt/sporades/caddy/hosts/capsules.example.dev/team-notes.caddy",
+            tls: { mode: "automatic", directory: "/opt/sporades/hosts/capsules.example.dev/tls", certificate: null, key: null },
+            log: { file: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/logs/http.log" },
+          },
+        },
       },
     });
   });

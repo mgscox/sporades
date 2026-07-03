@@ -394,7 +394,7 @@ function parseHostArgs(args) {
     if (arg.startsWith("--")) {
       throw commandError(
         `Unknown flag: ${arg}`,
-        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
+        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
       );
     }
     positional.push(arg);
@@ -554,6 +554,25 @@ function parseHostArgs(args) {
     return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
   }
 
+  if (subcommand === "rollback") {
+    const [positionalSubname, releaseId, ...extra] = positional;
+    if (!positionalSubname) {
+      throw commandError("Missing Capsule subname.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
+    }
+    if (!releaseId) {
+      throw commandError("Missing Hosted Capsule release ID.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
+    }
+    if (extra.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
+    }
+    if (hostAlias) {
+      validateHostAlias(hostAlias);
+    }
+    validateCapsuleSubname(positionalSubname);
+    validateHostReleaseId(releaseId);
+    return { subcommand, subname: positionalSubname, releaseId, hostAlias, json, projectDir: process.cwd() };
+  }
+
   if (subcommand === "push") {
     if (positional.length > 0) {
       throw commandError("Too many positional arguments.", "Use `sporades host push --host <alias> --subname <capsule-subname> --json`.");
@@ -602,7 +621,7 @@ function parseHostArgs(args) {
 
   throw commandError(
     `Unknown host command: ${subcommand ?? ""}`.trim(),
-    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
+    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
   );
 }
 
@@ -1454,6 +1473,32 @@ async function manageHost(options) {
     return;
   }
 
+  if (options.subcommand === "rollback") {
+    const config = await readHostConfig();
+    const resolved = resolveHostProfile(config, options.hostAlias);
+    const lifecycle = createHostLifecycleRequest(resolved.alias, resolved.profile, options.subname);
+    const result = invokeRemoteHostHelper({
+      alias: resolved.alias,
+      profile: resolved.profile,
+      action: "capsule.release.rollback",
+      subname: options.subname,
+      rollback: { releaseId: options.releaseId },
+      lifecycle,
+      projectDir: options.projectDir,
+    });
+
+    if (options.json) {
+      writeResult(result, !result.ok);
+      return;
+    }
+
+    if (!result.ok) {
+      throw commandError(result.error.message, result.error.hint);
+    }
+    process.stdout.write(`Hosted Capsule rolled back: ${lifecycle.hostedUrl}\n`);
+    return;
+  }
+
   if (options.subcommand === "unregister") {
     const config = await readHostConfig();
     const resolved = resolveHostProfile(config, options.hostAlias);
@@ -2120,6 +2165,9 @@ function invokeRemoteHostHelper(options) {
   if (options.release) {
     request.release = options.release;
   }
+  if (options.rollback) {
+    request.rollback = options.rollback;
+  }
   if (options.lifecycle) {
     request.lifecycle = options.lifecycle;
   }
@@ -2765,6 +2813,15 @@ function validateHostTlsMode(tlsMode) {
     throw commandError(
       "Invalid Host TLS mode.",
       "Use `--tls automatic` for Caddy-managed certificates or `--tls cloudflare-origin` for preinstalled Cloudflare origin certificates.",
+    );
+  }
+}
+
+function validateHostReleaseId(releaseId) {
+  if (!/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(releaseId)) {
+    throw commandError(
+      "Invalid Hosted Capsule release ID.",
+      "Use a recorded release ID from `sporades host releases <subname> --json`.",
     );
   }
 }

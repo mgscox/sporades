@@ -58,6 +58,10 @@ async function main() {
     await listReleases(request);
     return;
   }
+  if (request.action === "capsule.release.rollback") {
+    await rollbackRelease(request);
+    return;
+  }
   if (request.action === "capsule.start") {
     await startCapsule(request);
     return;
@@ -877,6 +881,86 @@ async function listReleases(request) {
   });
 }
 
+async function rollbackRelease(request) {
+  validateRollbackRequest(request);
+  const record = await readRegistryRecordForCapsule(request, "rollback");
+  assertRegistryRecordMatchesRequest(request, record);
+  if (record.status === "unregistered") {
+    throw helperError(
+      "Hosted Capsule is unregistered.",
+      `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before retrying this command.`,
+    );
+  }
+
+  const releases = normaliseReleaseHistory(record);
+  if (releases.length === 0) {
+    throw helperError(
+      "Hosted Capsule has no release history.",
+      `Push a release before running \`sporades host rollback ${request.capsule.subname} <release-id> --host ${request.host.alias}\`.`,
+    );
+  }
+
+  const releaseId = request.rollback.releaseId;
+  const selectedRelease = releases.find((release) => release.id === releaseId);
+  if (!selectedRelease) {
+    throw helperError(
+      "Hosted Capsule release is not recorded.",
+      `Run \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\` and choose a recorded release ID.`,
+    );
+  }
+
+  const paths = canonicalRollbackPaths(request, releaseId);
+  await assertRollbackReleaseFiles(request, paths.release);
+  const previousCurrentRelease = record.currentRelease ?? null;
+  const tempCurrentLink = `${paths.currentLink}.tmp-${process.pid}`;
+  await rm(tempCurrentLink, { force: true });
+  await symlink(paths.release, tempCurrentLink);
+  await rename(tempCurrentLink, paths.currentLink);
+  await recordReleaseRollbackSelected(request, releaseId);
+
+  let lifecycle = null;
+  let restartError = null;
+  try {
+    lifecycle = await restartCapsule(request, { write: false });
+  } catch (error) {
+    restartError = error;
+  }
+
+  const data = {
+    rolledBack: Boolean(lifecycle),
+    capsule: {
+      subname: request.capsule.subname,
+      domain: request.host.domain,
+      hostedUrl: selectedRelease.source.hostedUrl ?? `${request.host.scheme ?? "https"}://${request.capsule.subname}.${request.host.domain}`,
+      remoteCapsuleId: selectedRelease.source.remoteCapsuleId ?? `${request.host.domain}/${request.capsule.subname}`,
+    },
+    previousCurrentRelease,
+    currentRelease: { ...(record.currentRelease ?? {}), id: releaseId },
+  };
+  if (lifecycle) {
+    data.lifecycle = lifecycle;
+    writeEnvelope({ ok: true, data, error: null });
+    return;
+  }
+
+  try {
+    await writeUnavailableRoute(normaliseLifecycle(request));
+  } catch (error) {
+    restartError = restartError ?? error;
+  }
+  data.rolledBack = false;
+  writeEnvelope({
+    ok: false,
+    data,
+    error: {
+      message: restartError?.message ?? "Hosted Capsule rollback start failed.",
+      hint:
+        restartError?.hint ??
+        `Previous current release was ${previousCurrentRelease?.id ?? "none"}. Check Docker logs for ${normaliseLifecycle(request).container.name}; the route has been returned to the Hosted Capsule unavailable response.`,
+    },
+  });
+}
+
 async function statsHost(request) {
   validateHostStatsRequest(request);
   const records = await readCapsuleRegistryRecords(request);
@@ -1050,6 +1134,14 @@ function canonicalReleasePaths(request) {
     data: path.join(capsule, "data"),
     logs: path.join(capsule, "logs"),
     currentLink: path.join(capsule, "current"),
+  };
+}
+
+function canonicalRollbackPaths(request, releaseId) {
+  const paths = canonicalReleasePaths({ ...request, release: { id: releaseId } });
+  return {
+    ...paths,
+    release: path.join(paths.releases, releaseId),
   };
 }
 
@@ -2378,6 +2470,24 @@ async function recordReleaseFailure(request, releaseId, message) {
   });
 }
 
+async function recordReleaseRollbackSelected(request, releaseId) {
+  await mutateRegistryRecord(request, (record) => {
+    const now = new Date().toISOString();
+    record.currentRelease = { ...(record.currentRelease ?? {}), id: releaseId };
+    record.status = "released";
+    record.updatedAt = now;
+    record.releases = upsertReleaseEntry(record, releaseId, (entry) => ({
+      ...entry,
+      id: releaseId,
+      createdAt: entry.createdAt ?? now,
+      uploadedAt: entry.uploadedAt ?? null,
+      current: true,
+      failure: null,
+    }));
+    return record;
+  });
+}
+
 function upsertReleaseEntry(record, releaseId, mutateEntry) {
   const releases = normaliseReleaseHistory(record);
   const existing = releases.find((release) => release.id === releaseId) ?? createLegacyReleaseEntry(releaseId, record);
@@ -2777,6 +2887,18 @@ function expectedReleaseFiles(release) {
     : ["server.mjs", "client.js", "index.html", "sporades.json"];
 }
 
+async function assertRollbackReleaseFiles(request, releaseDirectory) {
+  const requiredFiles = ["server.mjs", "client.js", "index.html", "sporades.json"];
+  for (const file of requiredFiles) {
+    if (!(await pathReadable(path.join(releaseDirectory, file)))) {
+      throw helperError(
+        "Hosted Capsule release files are missing.",
+        `The recorded release cannot be started from ${releaseDirectory}. Push a new release or choose another release from \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\`.`,
+      );
+    }
+  }
+}
+
 function normaliseArchiveEntryName(name) {
   return String(name).replace(/^\.\//, "").replace(/\/+$/, "");
 }
@@ -2881,6 +3003,25 @@ function validateHostStatsRequest(request) {
   ];
   if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Host stats request.", "Update the Sporades CLI and retry `sporades host stats`.");
+  }
+}
+
+function validateRollbackRequest(request) {
+  const requiredStrings = [
+    request.host?.domain,
+    request.host?.alias,
+    request.host?.remoteRoot,
+    request.capsule?.subname,
+    request.rollback?.releaseId,
+  ];
+  if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw helperError("Invalid Hosted Capsule rollback request.", "Update the Sporades CLI and retry `sporades host rollback`.");
+  }
+  if (!/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(request.rollback.releaseId)) {
+    throw helperError(
+      "Invalid Hosted Capsule release ID.",
+      `Choose a recorded release ID from \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\`.`,
+    );
   }
 }
 
