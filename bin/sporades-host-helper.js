@@ -1491,6 +1491,13 @@ async function dockerRunArgs(lifecycle, releaseId) {
     lifecycle.container.name,
     "--network",
     lifecycle.container.network,
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,nosuid,nodev,noexec",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
     "--log-driver",
     "json-file",
     "--log-opt",
@@ -1885,7 +1892,7 @@ function capsuleData(request, lifecycle) {
 }
 
 function formatMount(mount) {
-  const mode = mount.mode === "ro" ? ":ro" : "";
+  const mode = mount.mode === "ro" ? ":ro" : mount.mode === "rw" ? ":rw" : "";
   return `${mount.host}:${mount.container}${mode}`;
 }
 

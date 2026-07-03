@@ -86,6 +86,12 @@ const app = capsule({
       ownerId: String(),
     }),
   },
+  middleware: [
+    async (ctx) => {
+      await Promise.resolve();
+      return { ...ctx, requestKind: ctx.kind };
+    },
+  ],
   queries: {
     todos: query((ctx) =>
       ctx.db.todos
@@ -94,11 +100,16 @@ const app = capsule({
         .limit(50)
         .all(),
     ),
+    asyncTodos: query(async (ctx) => {
+      await Promise.resolve();
+      return ctx.db.todos.where("ownerId", ctx.auth.userId).all();
+    }),
   },
   mutations: {
-    addTodo: mutation((ctx, text) => {
+    addTodo: mutation(async (ctx, text) => {
+      await Promise.resolve();
       ctx.log.info("adding", text.trim());
-      ctx.db.todos.insert({
+      return ctx.db.todos.insert({
         text: text.trim(),
         ownerId: ctx.auth.userId,
         dueAt: new globalThis.Date(),
@@ -108,16 +119,34 @@ const app = capsule({
     }),
   },
   endpoints: {
-    ping: endpoint({ method: "GET", path: "/ping" }, (ctx) => ({
-      path: ctx.request.path,
-      userId: ctx.auth.userId,
-      count: ctx.db.todos.all().length,
-    })),
+    ping: endpoint({ method: "GET", path: "/ping" }, async (ctx) => {
+      await Promise.resolve();
+      return {
+        path: ctx.request.path,
+        userId: ctx.auth.userId,
+        count: ctx.db.todos.all().length,
+      };
+    }),
   },
   messages: {
-    typing: message((ctx, data) => {
-      ctx.messages.send({ type: "typing", data, scope: "currentUser" });
+    typing: message(async (ctx, data) => {
+      await ctx.messages.send({ type: "typing", data, scope: "currentUser" });
+      return { ok: true };
     }),
+  },
+  hooks: {
+    beforeMutation: [
+      async ({ ctx, name, args }) => {
+        await Promise.resolve();
+        ctx.log.info("before", name, args.length);
+      },
+    ],
+    afterMutation: [
+      async ({ ctx, result }) => {
+        await Promise.resolve();
+        ctx.log.info("after", result?.ok);
+      },
+    ],
   },
 });
 

@@ -73,6 +73,18 @@ Inside the container, the default SQLite path is:
 
 File bytes also live under the mounted persistent data area.
 
+Local Container sessions also run with Docker hardening defaults that are
+compatible with the stock `node:22-alpine` Base image:
+
+- read-only container root filesystem,
+- writable `/tmp` tmpfs with `nosuid`, `nodev`, and `noexec`,
+- all Linux capabilities dropped,
+- `no-new-privileges` security option.
+
+Sporades intentionally does not force a non-root user while using the stock
+Base image because host bind-mounted data directories need predictable write
+access. A future hardened Base image can own that user and directory contract.
+
 ## Host Server Layout
 
 With `remoteRoot=/srv/sporades` and `domain=example.com`, a Host server uses:
@@ -125,6 +137,12 @@ That directory is mounted read-write into the Hosted Capsule container and
 contains the Capsule's SQLite database and uploaded file bytes. It is not part
 of any immutable release.
 
+Hosted Capsules use the same Docker hardening posture as local Container
+sessions: read-only root filesystem, writable hardened `/tmp` tmpfs, dropped
+Linux capabilities, and `no-new-privileges`. Release files and optional Server
+env remain read-only mounts; only the Hosted Capsule `data/` directory is
+mounted read-write.
+
 ## Host Caddy Files
 
 Sporades-managed Caddy files live under:
@@ -149,4 +167,3 @@ sporades-example-com-team-notes
 
 Containers also carry Docker labels for Sporades ownership, Hosted domain,
 Capsule subname, and Capsule ID.
-

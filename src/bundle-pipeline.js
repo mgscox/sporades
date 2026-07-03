@@ -40,6 +40,10 @@ export async function createBundle(projectDir, config) {
     readRequiredFile(paths.indexHtml, "Missing HTML shell: index.html", "Restore index.html or run `sporades create`."),
   ]);
 
+  const serverCapsuleModule = await bundleServerCapsuleModule({
+    serverSource,
+    serverSourcePath: paths.serverEntry,
+  });
   const clientBundle = await bundleClientSource(clientSource, {
     clientSourcePath: paths.clientEntry,
     frameworkBundleConfig,
@@ -48,7 +52,7 @@ export async function createBundle(projectDir, config) {
   await Promise.all([
     writeFile(
       paths.serverBundle,
-      createServerBundleSource({ config, serverEnv, serverSource }),
+      createServerBundleSource({ config, serverEnv, serverSource, serverModuleSource: serverCapsuleModule }),
     ),
     writeFile(paths.clientBundle, clientBundle),
   ]);
@@ -59,6 +63,7 @@ export async function createBundle(projectDir, config) {
     serverRuntime: {
       source: serverSource,
       env: serverEnv,
+      capsuleModuleSource: serverCapsuleModule,
     },
     staticFiles: {
       indexHtml: paths.indexHtml,
@@ -76,6 +81,33 @@ export async function createBundle(projectDir, config) {
         : null,
     },
   };
+}
+
+async function bundleServerCapsuleModule(options) {
+  const { build } = await import("esbuild");
+
+  try {
+    const result = await build({
+      bundle: true,
+      format: "esm",
+      platform: "node",
+      write: false,
+      logLevel: "silent",
+      sourcemap: "inline",
+      stdin: {
+        contents: options.serverSource,
+        sourcefile: options.serverSourcePath,
+        resolveDir: path.dirname(options.serverSourcePath),
+        loader: "ts",
+      },
+      plugins: [sporadesServerPlugin()],
+    });
+
+    return result.outputFiles[0].text;
+  } catch (error) {
+    const message = error.errors?.[0]?.text ?? error.message;
+    throw commandError(`Server bundle failed: ${message}`, "Fix server/index.ts and save again.");
+  }
 }
 
 export async function readServerEnvFile(envPath) {
@@ -291,6 +323,22 @@ function sporadesClientPlugin() {
       build.onLoad({ filter: /^sporades\/client$/, namespace: "sporades-runtime" }, () => ({
         loader: "js",
         contents: createClientRuntimeSource(),
+      }));
+    },
+  };
+}
+
+function sporadesServerPlugin() {
+  return {
+    name: "sporades-server",
+    setup(build) {
+      build.onResolve({ filter: /^sporades\/server$/ }, () => ({
+        path: "sporades/server",
+        namespace: "sporades-runtime",
+      }));
+      build.onLoad({ filter: /^sporades\/server$/, namespace: "sporades-runtime" }, async () => ({
+        loader: "js",
+        contents: await readFile(new URL("./server.js", import.meta.url), "utf8"),
       }));
     },
   };

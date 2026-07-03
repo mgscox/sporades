@@ -234,6 +234,12 @@ The container mounts:
 This lets releases be replaced without treating user data as part of the
 release package.
 
+Local Container sessions and Hosted Capsules share the same practical Docker
+hardening defaults while they use the stock Node Base image: read-only root
+filesystem, a writable hardened `/tmp` tmpfs, all Linux capabilities dropped,
+and `no-new-privileges`. Mutable SQLite state and uploaded file bytes stay in
+the explicit `/app/data` read-write mount.
+
 ## Database Architecture
 
 Each Capsule owns a SQLite database. SQLite is the source of truth for:
@@ -307,10 +313,11 @@ Internally, upload is a two-step flow:
 The app does not manage presigned URLs or storage paths. It stores returned file
 metadata in domain tables through normal mutations.
 
-Private file reads require a valid Sporades session token. Public file URLs are
-explicit records with an expiry or `noExpiry: true`, and can be revoked. Missing,
-deleted, expired, revoked, or unauthorized direct file reads return `404` to
-avoid leaking existence.
+Private file reads require a valid Sporades session token in the
+`x-sporades-session-token` request header. Private file URLs do not carry
+session tokens. Public file URLs are explicit records with an expiry or
+`noExpiry: true`, and can be revoked. Missing, deleted, expired, revoked, or
+unauthorized direct file reads return `404` to avoid leaking existence.
 
 ## HTTP Surface
 

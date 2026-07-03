@@ -87,7 +87,17 @@ when no browser client is connected. This is local identity simulation only: it
 creates a Sporades-owned dev session for `ctx.auth` testing and does not
 complete OAuth, trust arbitrary JWTs, or authenticate against a real provider.
 `google` can be used as a simulated provider shape for browser tests that need
-Google-like auth metadata.
+Google-like auth metadata. Simulated sessions use the same session lifetime as
+normal Sporades sessions.
+
+Sporades session records store creation and expiry metadata. Sessions expire 30
+days after they are created or refreshed. Missing, invalid, or expired session
+tokens resolve to a fresh anonymous session instead of authenticating the old
+user forever. Email sign-up links the current anonymous account and rotates the
+session token; email sign-in rotates the current anonymous token onto the email
+account. Google sign-in links through the server-owned OAuth callback and
+refreshes the current session token's expiry, because the redirect callback does
+not expose a safe client token handoff point.
 
 After running `sporades auth set <provider>`, restart any running dev session so
 the server runtime reloads the updated Server env and auth configuration:

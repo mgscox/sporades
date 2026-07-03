@@ -311,10 +311,10 @@ export default capsule({
         throw new Error("Photo uploads must be image files.");
       }
 
-      const title = String(input.title ?? file.name).trim() || file.name;
-      const isPublic = ctx.auth.provider === "google" ? Boolean(input.isPublic) : true;
-      const imageUrl = isPublic ? String(input.publicUrl?.url ?? "") : "";
-      const publicUrlId = isPublic ? String(input.publicUrl?.id ?? "") : "";
+      const title = globalThis.String(input.title ?? file.name).trim() || file.name;
+      const isPublic = ctx.auth.provider === "google" ? globalThis.Boolean(input.isPublic) : true;
+      const imageUrl = isPublic ? globalThis.String(input.publicUrl?.url ?? "") : "";
+      const publicUrlId = isPublic ? globalThis.String(input.publicUrl?.id ?? "") : "";
       if (isPublic && !imageUrl) {
         throw new Error("Public photos need a public file URL.");
       }
@@ -1179,7 +1179,7 @@ Template: ${template}
 - Use \`sporades/server\` only from \`server/*.ts\`.
 - Use \`sporades/client\` only from \`client/*.tsx\`.
 - Data is accessed through queries. Changes go through mutations.
-- No endpoints in v0 - WebSocket only.
+- Use endpoints only for HTTP integrations that cannot use queries, mutations, or app messages.
 - No file-based routing. Use the router included in the scaffold template.
 - All imports must be from Sporades, the configured framework, or relative paths.
 - Do not use Node built-ins in client code.

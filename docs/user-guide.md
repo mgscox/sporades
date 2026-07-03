@@ -266,6 +266,15 @@ not set or update those fields.
 Use capitalized field builders: `String()`, `Boolean()`, `Number()`, `Date()`,
 `Json()`, and `Reference("tableName")`.
 
+Fields with `.default(value)` get that value when a write omits the field. A
+non-null default is also stored as a SQLite `NOT NULL DEFAULT` constraint, so
+fresh tables and migrated tables enforce it the same way.
+
+Fields without defaults are nullable at the storage and table API boundary. If
+you add one to a table that already has rows, existing rows read the new field
+as `null`; fresh tables use the same nullable column definition. Validate
+required business fields in your mutations before calling `ctx.db`.
+
 ### Read With Queries
 
 Queries receive `ctx` and return serializable data:
@@ -372,7 +381,12 @@ export default capsule({
 });
 ```
 
-Middleware runs for queries, mutations, and endpoints.
+Middleware runs for queries, mutations, endpoints, and app messages.
+
+Query, mutation, endpoint, message, middleware, and mutation hook handlers may
+return Promises. Sporades awaits them before sending WebSocket results, writing
+HTTP endpoint responses, committing mutation transactions, or refreshing query
+subscriptions.
 
 ## Building the Client Side
 

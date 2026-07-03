@@ -4,15 +4,27 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   readJsonRequest,
   openDevDatabase,
   extractSchema,
+  schemaFromCapsuleDefinition,
+  schemaTableFromCapsuleTable,
+  schemaFieldFromCapsuleField,
+  sqliteTypeForFieldKind,
   extractEndpoints,
   extractQueryHandlers,
+  extractQueryHandlersFromCapsule,
   extractMutationHandlers,
+  handlersFromCapsuleDefinition,
+  mutationHandlersFromCapsuleDefinition,
+  shouldUseBundledMutationHandler,
+  isInlineHandlerSource,
+  isGeneratedScaffoldMutationHandler,
   extractMessageHandlers,
   extractContextMiddleware,
   extractMutationHooks,
   extractHookList,
   extractFields,
+  extractFieldDefaultSource,
   parseFieldDefault,
+  parseDateFieldDefault,
   parseJsonFieldDefault,
   extractObjectPropertySource,
   findMatchingDelimiter,
@@ -22,9 +34,14 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   hashSchema,
   assertValidReferenceTargets,
   assertAdditiveSchemaMigration,
-  applyAdditiveFieldMigrations,
+  migrateExistingAppTable,
+  columnSelectExpressionForMigration,
   addedFieldsForTable,
   createAppTable,
+  appTableColumnDefinitions,
+  appFieldColumnDefinition,
+  fieldDefaultIsSqlNull,
+  fieldColumnDefaultSql,
   commandError,
   toSqlLiteral,
   findMatchingParen,
@@ -69,6 +86,12 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   removeFileVersionBestEffort,
   contentTypeForFile,
   createAnonymousAuthTables,
+  ensureSessionLifecycleColumns,
+  sessionExpiresAt,
+  isExpiredSession,
+  createSessionToken,
+  refreshSession,
+  rotateSession,
   resolveAnonymousSession,
   sessionFromRow,
   authProvidersForClient,
@@ -128,14 +151,16 @@ export async function readJsonRequest(request) {
   return raw ? JSON.parse(raw) : {};
 }
 
-export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}) {
+export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null) {
   const { DatabaseSync } = await import("node:sqlite");
   const path = await import("node:path");
   const sqlite = new DatabaseSync(databasePath);
-  const schema = extractSchema(serverSource);
+  const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
   const endpoints = extractEndpoints(serverSource);
-  const queries = extractQueryHandlers(serverSource);
-  const mutations = extractMutationHandlers(serverSource);
+  const queries = extractQueryHandlersFromCapsule(capsuleDefinition) ?? extractQueryHandlers(serverSource);
+  const mutations = capsuleDefinition
+    ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition)
+    : extractMutationHandlers(serverSource);
   const messages = extractMessageHandlers(serverSource);
   const contextMiddleware = extractContextMiddleware(serverSource);
   const mutationHooks = extractMutationHooks(serverSource);
@@ -166,12 +191,87 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
   return database;
 }
 
+function schemaFromCapsuleDefinition(definition) {
+  const schema = definition?.schema ?? {};
+  if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
+    throw commandError(
+      "Invalid Capsule schema.",
+      "Pass an object whose values are table(...) declarations to capsule({ schema }).",
+    );
+  }
+
+  return {
+    tables: Object.entries(schema).map(([name, table]) => schemaTableFromCapsuleTable(name, table)),
+  };
+}
+
+function schemaTableFromCapsuleTable(name, table) {
+  if (!table || table.kind !== "table" || !table.fields || typeof table.fields !== "object" || Array.isArray(table.fields)) {
+    throw commandError(
+      `Invalid Capsule table: ${name}`,
+      "Declare schema tables with table({ fieldName: FieldBuilder() }).",
+    );
+  }
+
+  return {
+    name,
+    fields: Object.entries(table.fields).map(([fieldName, field]) => schemaFieldFromCapsuleField(fieldName, field)),
+  };
+}
+
+function schemaFieldFromCapsuleField(name, field) {
+  if (!field || typeof field !== "object" || typeof field.kind !== "string") {
+    throw commandError(
+      `Invalid Capsule field: ${name}`,
+      "Use Sporades field builders such as String(), Boolean(), Number(), Date(), Json(), or Reference(...).",
+    );
+  }
+
+  const supportedKinds = new Set(["String", "Boolean", "Number", "Date", "Json", "Reference"]);
+  if (!supportedKinds.has(field.kind)) {
+    throw commandError(
+      `Unsupported Capsule field type: ${field.kind}`,
+      "Use supported Sporades field builders: String, Boolean, Number, Date, Json, Reference.",
+    );
+  }
+
+  let defaultValue = field.defaultValue;
+  if (field.kind === "Number" && defaultValue !== undefined && !Number.isFinite(defaultValue)) {
+    throw commandError("Invalid Number() default.", "Pass a finite JavaScript number to Number().default(...).");
+  }
+  if (field.kind === "Date" && defaultValue !== undefined) {
+    defaultValue = normalizeDateValue(defaultValue, "default");
+  }
+  if (field.kind === "Json" && defaultValue !== undefined) {
+    assertJsonCompatible(defaultValue);
+  }
+
+  return {
+    name,
+    kind: field.kind,
+    sqliteType: sqliteTypeForFieldKind(field.kind),
+    targetTable: field.kind === "Reference" ? String(field.targetTable ?? "") : undefined,
+    defaultValue,
+  };
+}
+
+function sqliteTypeForFieldKind(kind) {
+  if (kind === "Boolean") {
+    return "INTEGER";
+  }
+  if (kind === "Number") {
+    return "REAL";
+  }
+  return "TEXT";
+}
+
 function migrateAppSchema(sqlite, schema) {
   const nextSchema = normalizeSchema(schema);
   const nextSchemaJson = JSON.stringify(nextSchema);
   const nextSchemaHash = hashSchema(nextSchemaJson);
   const existingSchemaRow = sqlite.prepare("SELECT value FROM sporades WHERE key = ?").get("schema");
   let existingSchema = null;
+  let schemaChanged = false;
 
   if (existingSchemaRow) {
     try {
@@ -183,16 +283,20 @@ function migrateAppSchema(sqlite, schema) {
       );
     }
 
-    if (hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash) {
+    schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
+    if (schemaChanged) {
       assertAdditiveSchemaMigration(existingSchema, nextSchema);
     }
   }
 
+  const existingTables = new Map((existingSchema?.tables ?? []).map((table) => [table.name, table]));
   for (const table of schema.tables) {
-    createAppTable(sqlite, table);
-  }
-  if (existingSchema) {
-    applyAdditiveFieldMigrations(sqlite, existingSchema, nextSchema);
+    const existingTable = existingTables.get(table.name);
+    if (schemaChanged && existingTable) {
+      migrateExistingAppTable(sqlite, existingTable, table);
+    } else {
+      createAppTable(sqlite, table);
+    }
   }
 
   const upsert = sqlite.prepare("INSERT OR REPLACE INTO sporades (key, value) VALUES (?, ?)");
@@ -261,25 +365,40 @@ function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
   }
 }
 
-function applyAdditiveFieldMigrations(sqlite, existingSchema, nextSchema) {
-  const existingTables = new Map((existingSchema.tables ?? []).map((table) => [table.name, table]));
-
-  for (const nextTable of nextSchema.tables ?? []) {
-    const existingTable = existingTables.get(nextTable.name);
-    if (!existingTable) {
-      continue;
-    }
-
-    for (const field of addedFieldsForTable(existingTable, nextTable)) {
-      const defaultSql = field.defaultValue === undefined ? "" : ` NOT NULL DEFAULT ${toSqlLiteral(field.defaultValue, field)}`;
-      if (field.kind === "Reference" && field.defaultValue !== undefined && !referenceExists({ sqlite }, field, field.defaultValue)) {
-        throw invalidReferenceError(field);
-      }
-      sqlite.exec(
-        `ALTER TABLE ${quoteIdentifier(nextTable.name)} ADD COLUMN ${quoteIdentifier(field.name)} ${field.sqliteType}${defaultSql}`,
-      );
+function migrateExistingAppTable(sqlite, existingTable, nextTable) {
+  for (const field of addedFieldsForTable(existingTable, nextTable)) {
+    if (
+      field.kind === "Reference" &&
+      field.defaultValue !== undefined &&
+      field.defaultValue !== null &&
+      !referenceExists({ sqlite }, field, field.defaultValue)
+    ) {
+      throw invalidReferenceError(field);
     }
   }
+
+  const tempTableName = `__sporades_migrating_${nextTable.name}`;
+  const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
+  sqlite.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`);
+  createAppTable(sqlite, nextTable, tempTableName);
+  sqlite.exec(
+    `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
+      `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
+      `FROM ${quoteIdentifier(nextTable.name)}`,
+  );
+  sqlite.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`);
+  sqlite.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`);
+}
+
+function columnSelectExpressionForMigration(existingTable, nextTable, columnName) {
+  if (["id", "createdAt", "updatedAt"].includes(columnName)) {
+    return quoteIdentifier(columnName);
+  }
+  if ((existingTable.fields ?? []).some((field) => field.name === columnName)) {
+    return quoteIdentifier(columnName);
+  }
+  const field = nextTable.fields.find((candidate) => candidate.name === columnName);
+  return field?.defaultValue === undefined ? "NULL" : toSqlLiteral(field.defaultValue, field);
 }
 
 function addedFieldsForTable(existingTable, nextTable) {
@@ -287,20 +406,35 @@ function addedFieldsForTable(existingTable, nextTable) {
   return (nextTable.fields ?? []).filter((field) => !existingFields.has(field.name));
 }
 
-function createAppTable(sqlite, table) {
+function createAppTable(sqlite, table, tableName = table.name) {
   sqlite.exec(
-    `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(table.name)} (` +
-      [
-        "id TEXT PRIMARY KEY",
-        "createdAt TEXT NOT NULL",
-        "updatedAt TEXT NOT NULL",
-        ...table.fields.map((field) => {
-          const defaultSql = field.defaultValue === undefined ? "" : ` DEFAULT ${toSqlLiteral(field.defaultValue, field)}`;
-          return `${quoteIdentifier(field.name)} ${field.sqliteType} NOT NULL${defaultSql}`;
-        }),
-      ].join(", ") +
+    `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` +
+      appTableColumnDefinitions(table).join(", ") +
       ")",
   );
+}
+
+function appTableColumnDefinitions(table) {
+  return [
+    "id TEXT PRIMARY KEY",
+    "createdAt TEXT NOT NULL",
+    "updatedAt TEXT NOT NULL",
+    ...table.fields.map((field) => appFieldColumnDefinition(field)),
+  ];
+}
+
+function appFieldColumnDefinition(field) {
+  const defaultSql = fieldColumnDefaultSql(field);
+  const notNullSql = field.defaultValue !== undefined && !fieldDefaultIsSqlNull(field) ? " NOT NULL" : "";
+  return `${quoteIdentifier(field.name)} ${field.sqliteType}${notNullSql}${defaultSql}`;
+}
+
+function fieldDefaultIsSqlNull(field) {
+  return field.defaultValue === null && field.kind !== "Json";
+}
+
+function fieldColumnDefaultSql(field) {
+  return field.defaultValue === undefined ? "" : ` DEFAULT ${toSqlLiteral(field.defaultValue, field)}`;
 }
 
 function commandError(message, hint) {
@@ -442,7 +576,25 @@ function extractQueryHandlers(serverSource) {
   return handlers;
 }
 
-function extractMutationHandlers(serverSource) {
+function extractQueryHandlersFromCapsule(capsuleDefinition) {
+  if (!capsuleDefinition?.queries || typeof capsuleDefinition.queries !== "object") {
+    return null;
+  }
+
+  const handlers = [];
+  for (const [name, queryDefinition] of Object.entries(capsuleDefinition.queries)) {
+    if (queryDefinition?.kind !== "query" || typeof queryDefinition.handler !== "function") {
+      continue;
+    }
+    handlers.push({
+      name,
+      handler: queryDefinition.handler,
+    });
+  }
+  return handlers;
+}
+
+function extractMutationHandlers(serverSource, options = {}) {
   const mutationsSource = extractObjectPropertySource(serverSource, "mutations");
   if (!mutationsSource) {
     return [];
@@ -464,7 +616,7 @@ function extractMutationHandlers(serverSource) {
     if (!match) {
       continue;
     }
-    if (match[1].startsWith("add") || match[1].startsWith("update")) {
+    if (!options.includeGeneratedNames && (match[1].startsWith("add") || match[1].startsWith("update"))) {
       continue;
     }
 
@@ -481,6 +633,46 @@ function extractMutationHandlers(serverSource) {
     });
   }
   return handlers;
+}
+
+function handlersFromCapsuleDefinition(definitions, kind) {
+  return Object.entries(definitions ?? {})
+    .filter(([, definition]) => definition?.kind === kind && typeof definition.handler === "function")
+    .map(([name, definition]) => ({
+      name,
+      handler: definition.handler,
+    }));
+}
+
+function mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition) {
+  const sourceHandlers = new Map(
+    extractMutationHandlers(serverSource, { includeGeneratedNames: true }).map((handler) => [handler.name, handler]),
+  );
+  return handlersFromCapsuleDefinition(capsuleDefinition.mutations, "mutation").filter((handler) =>
+    shouldUseBundledMutationHandler(handler.name, sourceHandlers.get(handler.name)),
+  );
+}
+
+function shouldUseBundledMutationHandler(name, sourceHandler) {
+  if (!name.startsWith("add") && !name.startsWith("update")) {
+    return true;
+  }
+  if (!sourceHandler || !isInlineHandlerSource(sourceHandler.handlerSource)) {
+    return true;
+  }
+  return !isGeneratedScaffoldMutationHandler(sourceHandler.handlerSource);
+}
+
+function isInlineHandlerSource(handlerSource) {
+  const source = handlerSource.trim();
+  return source.startsWith("(") || source.startsWith("function") || source.startsWith("async ") || source.includes("=>");
+}
+
+function isGeneratedScaffoldMutationHandler(handlerSource) {
+  const normalized = handlerSource.replace(/\s+/g, "");
+  return /^\(ctx,([A-Za-z_$][A-Za-z0-9_$]*)(?::[^,)]+)?\)=>\{ctx\.db\.[A-Za-z_$][A-Za-z0-9_$]*\.insert\(\{\1,ownerId:ctx\.auth\.userId\}\);\}$/.test(
+    normalized,
+  );
 }
 
 function extractMessageHandlers(serverSource) {
@@ -708,22 +900,48 @@ function splitTopLevelList(source) {
 }
 
 function extractFields(tableSource) {
-  return [
-    ...tableSource.matchAll(
-      /([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?:(String|Boolean|Number|Date|Json)\(\)|Reference\(\s*["']([^"']+)["']\s*\))(?:\.default\(([^)]*)\))?/g,
-    ),
-  ].map(
-    (match) => {
-      const kind = match[3] ? "Reference" : match[2];
+  return splitTopLevelList(tableSource)
+    .map((entry) => {
+      const property = entry.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*/);
+      if (!property) {
+        return null;
+      }
+
+      const fieldSource = entry.slice(property[0].length).trim().replace(/,\s*$/, "");
+      const referenceMatch = fieldSource.match(/^Reference\s*\(\s*["']([^"']+)["']\s*\)/);
+      const scalarMatch = fieldSource.match(/^(String|Boolean|Number|Date|Json)\s*\(\s*\)/);
+      const kind = referenceMatch ? "Reference" : scalarMatch?.[1];
+      if (!kind) {
+        return null;
+      }
+
+      const builderSource = referenceMatch?.[0] ?? scalarMatch[0];
       return {
-        name: match[1],
+        name: property[1],
         kind,
         sqliteType: kind === "Boolean" ? "INTEGER" : kind === "Number" ? "REAL" : "TEXT",
-        targetTable: match[3],
-        defaultValue: parseFieldDefault(kind, match[4]),
+        targetTable: referenceMatch?.[1],
+        defaultValue: parseFieldDefault(kind, extractFieldDefaultSource(fieldSource, builderSource.length)),
       };
-    },
-  );
+    })
+    .filter(Boolean);
+}
+
+function extractFieldDefaultSource(fieldSource, builderEndIndex) {
+  const rest = fieldSource.slice(builderEndIndex).trim();
+  if (!rest.startsWith(".default")) {
+    return undefined;
+  }
+
+  const openIndex = rest.indexOf("(");
+  if (openIndex === -1) {
+    return undefined;
+  }
+  const closeIndex = findMatchingParen(rest, openIndex);
+  if (closeIndex === -1) {
+    return undefined;
+  }
+  return rest.slice(openIndex + 1, closeIndex).trim();
 }
 
 export async function routeEndpoint(database, request, response) {
@@ -754,7 +972,7 @@ export async function handleFileHttpRoute(database, request, response, websocket
 
   const privateMatch = requestUrl.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
   if (privateMatch && request.method === "GET") {
-    const token = request.headers["x-sporades-session-token"] ?? requestUrl.searchParams.get("sessionToken");
+    const token = request.headers["x-sporades-session-token"];
     const session = resolveAnonymousSession(database, token);
     const row = fileRowForOwner(database, privateMatch[1], session.auth.userId);
     if (!row || row.version !== requestUrl.searchParams.get("v")) {
@@ -1018,7 +1236,7 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
   }
 }
 
-function getPrivateFileUrl(database, auth, fileId, sessionToken) {
+function getPrivateFileUrl(database, auth, fileId) {
   const row = fileRowForOwner(database, fileId, auth.userId);
   if (!row) {
     return {
@@ -1029,7 +1247,7 @@ function getPrivateFileUrl(database, auth, fileId, sessionToken) {
   return {
     ok: true,
     data: {
-      url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}&sessionToken=${encodeURIComponent(sessionToken)}`,
+      url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
       file: fileMetadataFromRow(row),
     },
     error: null,
@@ -1216,19 +1434,13 @@ async function createEndpointContext(database, requestUrl, request) {
   };
 }
 
-function applyContextMiddleware(database, baseContext, kind) {
+async function applyContextMiddleware(database, baseContext, kind) {
   let context = {
     ...baseContext,
     kind,
   };
   for (const middlewareSource of database.contextMiddleware) {
-    const result = runContextMiddleware(middlewareSource, context);
-    if (result && typeof result.then === "function") {
-      throw commandError(
-        "Async context middleware is not supported.",
-        "Use synchronous context middleware for queries, mutations, and endpoints.",
-      );
-    }
+    const result = await runContextMiddleware(middlewareSource, context);
     context = result ?? context;
   }
   return context;
@@ -1264,7 +1476,9 @@ function createEndpointTableApi(database, table, query = {}) {
             fieldValueForWrite(
               database,
               field,
-              Object.hasOwn(values, field.name) ? values[field.name] : field.defaultValue,
+              Object.hasOwn(values, field.name) && values[field.name] !== undefined
+                ? values[field.name]
+                : field.defaultValue,
             ),
           ]),
         ),
@@ -1279,6 +1493,34 @@ function createEndpointTableApi(database, table, query = {}) {
         .run(...columns.map((column) => row[column]));
       database.rowCache.clear();
       return deserializeRow(table, row);
+    },
+    update(id, values) {
+      const fieldsToUpdate = table.fields.filter((field) => Object.hasOwn(values, field.name));
+      if (fieldsToUpdate.length === 0) {
+        const existing = database.sqlite
+          .prepare(`SELECT * FROM ${quoteIdentifier(table.name)} WHERE id = ?`)
+          .get(String(id));
+        return existing ? deserializeRow(table, existing) : null;
+      }
+
+      const now = new Date().toISOString();
+      const assignments = [...fieldsToUpdate.map((field) => quoteIdentifier(field.name)), "updatedAt"];
+      const params = [
+        ...fieldsToUpdate.map((field) => fieldValueForWrite(database, field, values[field.name])),
+        now,
+        String(id),
+      ];
+      const result = database.sqlite
+        .prepare(
+          `UPDATE ${quoteIdentifier(table.name)} SET ${assignments.map((column) => `${column} = ?`).join(", ")} WHERE id = ?`,
+        )
+        .run(...params);
+      database.rowCache.clear();
+      if (result.changes === 0) {
+        return null;
+      }
+      const row = database.sqlite.prepare(`SELECT * FROM ${quoteIdentifier(table.name)} WHERE id = ?`).get(String(id));
+      return row ? deserializeRow(table, row) : null;
     },
     where(fieldName, value) {
       return createEndpointTableApi(database, table, { ...query, where: { fieldName, value } });
@@ -1327,6 +1569,16 @@ function referenceExists(database, field, value) {
 }
 
 function serializeFieldValue(field, value) {
+  if (value === undefined) {
+    return null;
+  }
+  if (field?.kind === "Json") {
+    assertJsonCompatible(value);
+    return JSON.stringify(value);
+  }
+  if (value === null) {
+    return null;
+  }
   if (field?.kind === "Boolean") {
     return value ? 1 : 0;
   }
@@ -1336,12 +1588,8 @@ function serializeFieldValue(field, value) {
   if (field?.kind === "Date") {
     return normalizeDateValue(value, field.name);
   }
-  if (field?.kind === "Json") {
-    assertJsonCompatible(value);
-    return JSON.stringify(value);
-  }
   if (field?.kind === "Reference") {
-    return value === undefined || value === null ? null : String(value);
+    return String(value);
   }
   return String(value ?? "");
 }
@@ -1396,9 +1644,9 @@ function deserializeRow(table, row) {
   const output = { ...row };
   for (const field of table.fields) {
     if (field.kind === "Boolean") {
-      output[field.name] = Boolean(output[field.name]);
+      output[field.name] = output[field.name] === null ? null : Boolean(output[field.name]);
     } else if (field.kind === "Json") {
-      output[field.name] = JSON.parse(output[field.name]);
+      output[field.name] = output[field.name] === null ? null : JSON.parse(output[field.name]);
     }
     if (field.kind === "Number") {
       output[field.name] = output[field.name] === null ? null : Number(output[field.name]);
@@ -1510,7 +1758,7 @@ function parseFieldDefault(kind, rawDefault) {
   }
   const defaultValue = rawDefault.trim().replace(/^["']|["']$/g, "");
   if (kind === "Date") {
-    return normalizeDateValue(defaultValue, "default");
+    return parseDateFieldDefault(rawDefault);
   }
   if (kind === "Json") {
     return parseJsonFieldDefault(rawDefault);
@@ -1532,10 +1780,28 @@ function parseJsonFieldDefault(rawDefault) {
   }
 }
 
+function parseDateFieldDefault(rawDefault) {
+  try {
+    const createDefault = new Function(`return (${rawDefault});`);
+    return normalizeDateValue(createDefault(), "default");
+  } catch {
+    throw commandError(
+      "Invalid Date() default.",
+      "Pass an ISO 8601 date string or JavaScript Date value to Date().default(...).",
+    );
+  }
+}
+
 function toSqlLiteral(value, field = null) {
   if (field?.kind === "Json") {
     assertJsonCompatible(value);
     return `'${JSON.stringify(value).replaceAll("'", "''")}'`;
+  }
+  if (value === null) {
+    return "NULL";
+  }
+  if (field?.kind === "Date") {
+    return `'${normalizeDateValue(value, field.name).replaceAll("'", "''")}'`;
   }
   if (typeof value === "boolean") {
     return value ? "1" : "0";
@@ -1621,7 +1887,7 @@ export function simulateLocalIdentitySession(database, options = {}) {
     .prepare("SELECT id FROM sporades_auth_users WHERE provider = ? AND email = ?")
     .get(provider, email);
   const userId = existing?.id ?? randomUUID();
-  const token = randomBytes(32).toString("base64url");
+  const token = createSessionToken();
 
   if (existing) {
     database.sqlite
@@ -1639,8 +1905,8 @@ export function simulateLocalIdentitySession(database, options = {}) {
       .run(userId, now, displayName, email, picture, 1, 0, provider);
   }
   database.sqlite
-    .prepare("INSERT INTO sporades_auth_sessions (token, userId, createdAt) VALUES (?, ?, ?)")
-    .run(token, userId, now);
+    .prepare("INSERT INTO sporades_auth_sessions (token, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?)")
+    .run(token, userId, now, sessionExpiresAt(now));
 
   const auth = {
     userId,
@@ -1713,6 +1979,7 @@ export function createWebSocketHub(getDatabase) {
         id: `client-${(nextClientId++).toString(36)}`,
         socket,
         buffer: Buffer.alloc(0),
+        messageQueue: Promise.resolve(),
         subscriptions: new Map(),
         session,
         origin,
@@ -1723,7 +1990,7 @@ export function createWebSocketHub(getDatabase) {
       socket.on("data", (chunk) => {
         client.lastSeenAt = new Date().toISOString();
         client.buffer = Buffer.concat([client.buffer, chunk]);
-        drainWebSocketFrames(client, (message) => handleClientMessage(client, message));
+        drainWebSocketFrames(client, (message) => enqueueClientMessage(client, message));
       });
       socket.on("close", () => clients.delete(client));
       socket.on("error", () => clients.delete(client));
@@ -1818,7 +2085,32 @@ export function createWebSocketHub(getDatabase) {
     };
   }
 
-  function handleClientMessage(client, rawMessage) {
+  function enqueueClientMessage(client, rawMessage) {
+    client.messageQueue = client.messageQueue
+      .then(() => handleClientMessage(client, rawMessage))
+      .catch((error) => {
+        sendUnhandledMessageError(client, rawMessage, error);
+      });
+  }
+
+  function sendUnhandledMessageError(client, rawMessage, error) {
+    let id = null;
+    try {
+      id = JSON.parse(rawMessage)?.id ?? null;
+    } catch {
+      id = null;
+    }
+    sendJson(client, {
+      id,
+      type: "error",
+      error: {
+        message: error?.message || "WebSocket message failed.",
+        hint: error?.hint ?? "Retry the request. If this keeps happening, restart the Sporades session.",
+      },
+    });
+  }
+
+  async function handleClientMessage(client, rawMessage) {
     let message;
     try {
       message = JSON.parse(rawMessage);
@@ -1835,6 +2127,7 @@ export function createWebSocketHub(getDatabase) {
     }
 
     const database = getDatabase();
+    client.session = resolveAnonymousSession(database, client.session.token);
     if (message.type === "auth.get") {
       sendAuthResult(client, message.id ?? null);
       return;
@@ -1921,30 +2214,34 @@ export function createWebSocketHub(getDatabase) {
     if (message.type === "query.subscribe") {
       const queryName = message.query ?? message.name;
       client.subscriptions.set(message.id, { id: message.id, name: queryName, style: message.query ? "direct" : "rows" });
-      sendQueryResult(client, client.subscriptions.get(message.id));
+      await sendQueryResult(client, client.subscriptions.get(message.id));
       return;
     }
 
     if (message.type === "mutation.run") {
       const mutationName = message.mutation ?? message.name;
-      const result = runMutation(database, client.session.auth, mutationName, message.args ?? []);
+      const result = await runMutation(database, client.session.auth, mutationName, message.args ?? []);
       sendJson(client, formatMutationResult(message, mutationName, result));
       if (result.ok) {
-        for (const subscribedClient of clients) {
-          if (subscribedClient.session.auth.userId !== client.session.auth.userId) {
-            continue;
+        setTimeout(() => {
+          for (const subscribedClient of clients) {
+            if (subscribedClient.session.auth.userId !== client.session.auth.userId) {
+              continue;
+            }
+            for (const subscription of subscribedClient.subscriptions.values()) {
+              sendQueryResult(subscribedClient, subscription).catch((error) => {
+                sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error);
+              });
+            }
           }
-          for (const subscription of subscribedClient.subscriptions.values()) {
-            sendQueryResult(subscribedClient, subscription);
-          }
-        }
+        }, 0);
       }
       return;
     }
 
     if (message.type === "app.send") {
       const messageName = message.message ?? message.name;
-      const result = runAppMessage(database, client.session.auth, messageName, message.data, {
+      const result = await runAppMessage(database, client.session.auth, messageName, message.data, {
         sendAppMessage,
       });
       sendJson(client, {
@@ -1969,7 +2266,7 @@ export function createWebSocketHub(getDatabase) {
     }
 
     if (message.type === "file.url") {
-      const result = getPrivateFileUrl(database, client.session.auth, message.fileId, client.session.token);
+      const result = getPrivateFileUrl(database, client.session.auth, message.fileId);
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "file.url.result" : "error",
@@ -2002,13 +2299,12 @@ export function createWebSocketHub(getDatabase) {
     }
 
     if (message.type === "file.delete") {
-      deletePrivateFile(database, client.session.auth, message.fileId).then((result) => {
-        sendJson(client, {
-          id: message.id ?? null,
-          type: result.ok ? "file.delete.result" : "error",
-          data: result.data ?? null,
-          error: result.error,
-        });
+      const result = await deletePrivateFile(database, client.session.auth, message.fileId);
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "file.delete.result" : "error",
+        data: result.data ?? null,
+        error: result.error,
       });
       return;
     }
@@ -2023,9 +2319,9 @@ export function createWebSocketHub(getDatabase) {
     });
   }
 
-  function sendQueryResult(client, subscription) {
+  async function sendQueryResult(client, subscription) {
     const database = getDatabase();
-    const result = runQuery(database, client.session.auth, subscription.name);
+    const result = await runQuery(database, client.session.auth, subscription.name);
     const data =
       subscription.style === "direct"
         ? (result.data ?? result.rows)
@@ -2297,6 +2593,7 @@ function linkGoogleAccount(database, session, profile) {
       "UPDATE sporades_auth_users SET displayName = ?, email = ?, picture = ?, isAuthenticated = ?, isGuest = ?, provider = ? WHERE id = ?",
     )
     .run(auth.displayName, auth.email, auth.picture, 1, 0, "google", auth.userId);
+  refreshSession(database, session.token);
   return { ok: true, auth };
 }
 
@@ -2358,7 +2655,7 @@ function signUpWithEmail(database, session, provider, credentials) {
       "UPDATE sporades_auth_users SET displayName = ?, email = ?, picture = ?, isAuthenticated = ?, isGuest = ?, provider = ? WHERE id = ?",
     )
     .run(auth.displayName, auth.email, auth.picture, 1, 0, "email", auth.userId);
-  return { ok: true, sessionToken: session.token, auth };
+  return { ok: true, sessionToken: rotateSession(database, session, auth.userId), auth };
 }
 
 function signInWithEmail(database, session, credentials) {
@@ -2389,7 +2686,6 @@ function signInWithEmail(database, session, credentials) {
     };
   }
 
-  database.sqlite.prepare("UPDATE sporades_auth_sessions SET userId = ? WHERE token = ?").run(row.userId, session.token);
   const auth = {
     userId: row.userId,
     displayName: row.displayName,
@@ -2399,7 +2695,7 @@ function signInWithEmail(database, session, credentials) {
     isGuest: Boolean(row.isGuest),
     provider: row.provider,
   };
-  return { ok: true, sessionToken: session.token, auth };
+  return { ok: true, sessionToken: rotateSession(database, session, auth.userId), auth };
 }
 
 function normalizeEmailCredentials(credentials) {
@@ -2463,9 +2759,11 @@ function createAnonymousAuthTables(sqlite, authConfig = null) {
     "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
       "token TEXT PRIMARY KEY, " +
       "userId TEXT NOT NULL, " +
-      "createdAt TEXT NOT NULL" +
+      "createdAt TEXT NOT NULL, " +
+      "expiresAt TEXT NOT NULL" +
       ")",
   );
+  ensureSessionLifecycleColumns(sqlite);
   if (authConfig?.providers?.email?.enabled) {
     sqlite.exec(
       "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
@@ -2488,24 +2786,68 @@ function createAnonymousAuthTables(sqlite, authConfig = null) {
   );
 }
 
+function ensureSessionLifecycleColumns(sqlite) {
+  const columns = sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
+  const hasExpiresAt = columns.some((column) => column.name === "expiresAt");
+  if (!hasExpiresAt) {
+    sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN expiresAt TEXT");
+    sqlite
+      .prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE expiresAt IS NULL")
+      .run(sessionExpiresAt(new Date().toISOString()));
+  }
+}
+
+function sessionExpiresAt(from = new Date().toISOString()) {
+  const sessionLifetimeMs = 30 * 24 * 60 * 60 * 1000;
+  return new Date(Date.parse(from) + sessionLifetimeMs).toISOString();
+}
+
+function isExpiredSession(row) {
+  return Date.parse(row.expiresAt) <= Date.now();
+}
+
+function createSessionToken() {
+  return randomBytes(32).toString("base64url");
+}
+
+function refreshSession(database, token) {
+  const now = new Date().toISOString();
+  const expiresAt = sessionExpiresAt(now);
+  database.sqlite.prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE token = ?").run(expiresAt, token);
+  return expiresAt;
+}
+
+function rotateSession(database, session, userId) {
+  const now = new Date().toISOString();
+  const token = createSessionToken();
+  database.sqlite
+    .prepare("UPDATE sporades_auth_sessions SET token = ?, userId = ?, createdAt = ?, expiresAt = ? WHERE token = ?")
+    .run(token, userId, now, sessionExpiresAt(now), session.token);
+  return token;
+}
+
 function resolveAnonymousSession(database, sessionToken) {
   if (sessionToken) {
     const existing = database.sqlite
       .prepare(
-        "SELECT s.token, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, u.provider " +
+        "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, u.provider " +
           "FROM sporades_auth_sessions s " +
           "JOIN sporades_auth_users u ON u.id = s.userId " +
           "WHERE s.token = ?",
       )
       .get(sessionToken);
     if (existing) {
-      return sessionFromRow(existing);
+      if (isExpiredSession(existing)) {
+        database.sqlite.prepare("DELETE FROM sporades_auth_sessions WHERE token = ?").run(sessionToken);
+      } else {
+        return sessionFromRow(existing);
+      }
     }
   }
 
   const now = new Date().toISOString();
   const userId = randomUUID();
-  const token = randomBytes(32).toString("base64url");
+  const token = createSessionToken();
   database.sqlite
     .prepare(
       "INSERT INTO sporades_auth_users " +
@@ -2514,8 +2856,8 @@ function resolveAnonymousSession(database, sessionToken) {
     )
     .run(userId, now, "Anonymous", null, null, 0, 1, "anonymous");
   database.sqlite
-    .prepare("INSERT INTO sporades_auth_sessions (token, userId, createdAt) VALUES (?, ?, ?)")
-    .run(token, userId, now);
+    .prepare("INSERT INTO sporades_auth_sessions (token, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?)")
+    .run(token, userId, now, sessionExpiresAt(now));
   return {
     token,
     auth: {
@@ -2613,10 +2955,10 @@ function sendJson(client, message) {
   client.socket.write(Buffer.concat([header, payload]));
 }
 
-function runQuery(database, auth, queryName) {
+async function runQuery(database, auth, queryName) {
   let context;
   try {
-    context = applyContextMiddleware(database, createMutationContext(database, auth), "query");
+    context = await applyContextMiddleware(database, createMutationContext(database, auth), "query");
   } catch (error) {
     return {
       rows: null,
@@ -2631,7 +2973,7 @@ function runQuery(database, auth, queryName) {
     return { data: context.env, error: null };
   }
 
-  const customResult = runCustomQuery(database, context, queryName);
+  const customResult = await runCustomQuery(database, context, queryName);
   if (customResult) {
     return customResult;
   }
@@ -2665,15 +3007,18 @@ function runQuery(database, auth, queryName) {
   return { rows: database.rowCache.get(cacheKey), error: null };
 }
 
-function runCustomQuery(database, context, queryName) {
+async function runCustomQuery(database, context, queryName) {
   const handler = database.queries.find((candidate) => candidate.name === queryName);
   if (!handler) {
     return null;
   }
 
   try {
-    const createHandler = new Function(`return (${handler.handlerSource});`);
-    const data = createHandler()(context);
+    const queryHandler =
+      typeof handler.handler === "function"
+        ? handler.handler
+        : new Function(`return (${handler.handlerSource});`)();
+    const data = await queryHandler(context);
     assertJsonCompatible(data);
     return { data, error: null };
   } catch (error) {
@@ -2687,18 +3032,18 @@ function runCustomQuery(database, context, queryName) {
   }
 }
 
-function runMutation(database, auth, mutationName, args) {
+async function runMutation(database, auth, mutationName, args) {
   let context;
   let result;
   database.sqlite.exec("BEGIN");
   try {
-    context = applyContextMiddleware(database, createMutationContext(database, auth), "mutation");
+    context = await applyContextMiddleware(database, createMutationContext(database, auth), "mutation");
 
     for (const hookSource of database.mutationHooks.beforeMutation) {
-      runMutationHook(hookSource, { name: mutationName, args, ctx: context });
+      await runMutationHook(hookSource, { name: mutationName, args, ctx: context });
     }
 
-    result = runCustomMutation(database, context, mutationName, args);
+    result = await runCustomMutation(database, context, mutationName, args);
     if (!result) {
       result = mutationName.startsWith("update")
         ? runUpdateMutation(database, context.auth, mutationName, args)
@@ -2707,7 +3052,7 @@ function runMutation(database, auth, mutationName, args) {
 
     if (result.ok) {
       for (const hookSource of database.mutationHooks.afterMutation) {
-        runMutationHook(hookSource, { name: mutationName, args, ctx: context, result });
+        await runMutationHook(hookSource, { name: mutationName, args, ctx: context, result });
       }
     }
 
@@ -2720,22 +3065,25 @@ function runMutation(database, auth, mutationName, args) {
   }
 }
 
-function runCustomMutation(database, context, mutationName, args) {
+async function runCustomMutation(database, context, mutationName, args) {
   const handler = database.mutations.find((candidate) => candidate.name === mutationName);
   if (!handler) {
     return null;
   }
 
-  const createHandler = new Function(`return (${handler.handlerSource});`);
-  const result = createHandler()(context, ...args);
+  const mutationHandler =
+    typeof handler.handler === "function"
+      ? handler.handler
+      : new Function(`return (${handler.handlerSource});`)();
+  const result = await mutationHandler(context, ...args);
   if (result !== undefined) {
     assertJsonCompatible(result);
   }
   database.rowCache.clear();
-  return { ok: true, error: null };
+  return { ok: true, data: result ?? null, error: null };
 }
 
-function runAppMessage(database, auth, messageName, data, options = {}) {
+async function runAppMessage(database, auth, messageName, data, options = {}) {
   if (!messageName) {
     return {
       data: null,
@@ -2773,13 +3121,13 @@ function runAppMessage(database, auth, messageName, data, options = {}) {
     if (data !== undefined) {
       assertJsonCompatible(data);
     }
-    const context = applyContextMiddleware(
+    const context = await applyContextMiddleware(
       database,
       createMessageContext(database, auth, options.sendAppMessage),
       "message",
     );
     const createHandler = new Function(`return (${handler.handlerSource});`);
-    const result = createHandler()(context, data);
+    const result = await createHandler()(context, data);
     if (result !== undefined) {
       assertJsonCompatible(result);
     }
@@ -2838,10 +3186,10 @@ function createMessageContext(database, auth, sendAppMessage) {
   };
 }
 
-function runMutationHook(hookSource, event) {
+async function runMutationHook(hookSource, event) {
   const createHook = new Function(`return (${hookSource});`);
   const hook = createHook();
-  return hook(event);
+  return await hook(event);
 }
 
 function createMutationContext(database, auth) {
@@ -2898,6 +3246,8 @@ function runInsertMutation(database, auth, mutationName, args) {
       }
       if (field.defaultValue !== undefined) {
         values[field.name] = fieldValueForWrite(database, field, field.defaultValue);
+      } else {
+        values[field.name] = null;
       }
     }
   } catch (error) {
@@ -2983,7 +3333,7 @@ function formatMutationResult(message, mutationName, result) {
   const formatted = {
     id: message.id,
     type: "mutation.result",
-    data: null,
+    data: result.data ?? null,
     error: result.error,
   };
   if (message.mutation) {
@@ -3128,9 +3478,9 @@ function rowToApiValue(row, table) {
   const value = { ...row };
   for (const field of table.fields) {
     if (field.kind === "Boolean") {
-      value[field.name] = Boolean(value[field.name]);
+      value[field.name] = value[field.name] === null ? null : Boolean(value[field.name]);
     } else if (field.kind === "Json") {
-      value[field.name] = JSON.parse(value[field.name]);
+      value[field.name] = value[field.name] === null ? null : JSON.parse(value[field.name]);
     }
     if (field.kind === "Number") {
       value[field.name] = value[field.name] === null ? null : Number(value[field.name]);

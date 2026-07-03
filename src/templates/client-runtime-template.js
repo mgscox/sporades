@@ -279,11 +279,21 @@ function createConnection() {
       };
     },
     signUp(provider, credentials) {
-      return request("auth.signUp", { provider, credentials });
+      return request("auth.signUp", { provider, credentials }).then((result) => {
+        if (result.data?.sessionToken) {
+          return storeAuthSession(result);
+        }
+        return result;
+      });
     },
     signIn(provider, credentials) {
       if (credentials) {
-        return request("auth.signIn", { provider, credentials });
+        return request("auth.signIn", { provider, credentials }).then((result) => {
+          if (result.data?.sessionToken) {
+            return storeAuthSession(result);
+          }
+          return result;
+        });
       }
       const returnTo = window.location.href;
       localStorage.setItem("sporades.authReturnTo", returnTo);
@@ -373,7 +383,12 @@ function createConnection() {
     },
     async downloadFile(fileId) {
       const url = await this.fileUrl(fileId);
-      const response = await fetch(url);
+      if (!sessionToken) {
+        await request("auth.get");
+      }
+      const response = await fetch(url, {
+        headers: sessionToken ? { "x-sporades-session-token": sessionToken } : {},
+      });
       if (!response.ok) {
         throw structuredError({
           message: "File download failed.",

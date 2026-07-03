@@ -1,6 +1,6 @@
 # Sporades
 
-A CLI-first tool for building and running full-stack web apps. Agents and developers scaffold, develop, and deploy apps through a single CLI. v0 runs entirely locally — no remote hosting.
+A CLI-first tool for building, running, inspecting, and hosting full-stack web Capsules. Agents and developers use one CLI for local Dev sessions, local Container sessions, and Hosted Capsules on Host servers.
 
 ## Language
 
@@ -25,15 +25,15 @@ The build-time path that turns a Capsule's server entry, client entry, `sporades
 _Avoid_: build system (too broad), compiler (only part of the work), bundler (esbuild is just one adapter inside it)
 
 **Base image**:
-The Docker image (Node 22 alpine) that all container sessions use. v0 uses the stock image with no hardening. v1 will introduce a locked, hardened image (non-root, read-only FS, seccomp).
+The Docker image (Node 22 alpine) that local Container sessions and Hosted Capsules use today. Current practical Docker hardening defaults live in the runtime layout and lifecycle: release files mount read-only, Capsule data mounts read-write, Hosted Capsules publish only loopback ports behind Caddy, and Hosted containers carry Sporades ownership labels. A custom hardened Base image, non-root runtime, read-only root filesystem, seccomp profile, and deeper filesystem model remain future hardening work.
 _Avoid_: runtime image, host image
 
 **Runtime directory**:
-The `.sporades/` directory in a project. Contains build output (`build/server.mjs`, `build/client.js`), the SQLite database (`data.db`), and the container binding (`binding.json`). Gitignored. Owned by Sporades — the user does not touch it.
+The `.sporades/` directory in a project. Contains build output (`build/server.mjs`, `build/client.js`), Dev-session SQLite data (`data.db`), uploaded file bytes, local container binding (`binding.json`), remote binding (`remote-binding.json`), and host-push artifacts as needed. Gitignored. Owned by Sporades - the user does not touch it.
 _Avoid_: build directory, cache directory
 
 **Container binding**:
-A `.sporades/binding.json` file tracking the running container's ID and name. Used by `sporades deploy` to find and replace the existing container. v0 supports one container per project — redeploy replaces, does not multiply.
+A `.sporades/binding.json` file tracking the running local Container session's ID and name. Used by `sporades deploy` to find and replace the existing local container. The current local model supports one container per project - redeploy replaces, does not multiply.
 _Avoid_: deploy metadata, container record
 
 **Host server**:
@@ -83,15 +83,23 @@ _Avoid_: cert folder, SSL directory
 ## Server runtime
 
 **sporades/server**:
-A runtime context, not just a set of exports. Internally manages the SQLite connection, Better Auth instance, env vars, and row-level cache. When imported, it initialises the runtime. `capsule()` registers the app definition (schema, queries, mutations) against this runtime. The user never touches the runtime directly.
+A runtime context, not just a set of exports. Internally manages the SQLite connection, runtime-owned auth storage, env vars, row-level cache, endpoint routing, file metadata, and app-message fan-out. When imported, it initialises the runtime. `capsule()` registers the app definition (schema, queries, mutations, endpoints, messages) against this runtime. The user never touches the runtime directly.
 _Avoid_: server module, server library (it's a living context, not a static library)
 
 **capsule()**:
-The initialisation function. Called with the app definition. Registers the schema with SQLite (creating tables, updating the system table), configures Better Auth, and wires the table API. This is where app bootstrap happens — not an identity function. Future extensibility (middleware, hooks, custom field types) hooks into this function.
+The initialisation function. Called with the app definition. Registers the schema with SQLite, applies supported schema migrations, configures runtime-owned auth, wires the table API, and registers custom endpoints and message handlers. This is where app bootstrap happens - not an identity function.
 _Avoid_: app definition (that's the argument, not the function), config function
 
+**Custom endpoint**:
+A Capsule-defined HTTP handler declared with `endpoint({ method, path }, handler)`. Used for integration paths such as webhooks that cannot use the WebSocket client transport. Endpoints receive normal Sporades context plus `ctx.request`.
+_Avoid_: REST API (too broad), route handler (confuses it with client routing)
+
+**Message handler**:
+A Capsule-defined app-message handler declared with `message((ctx, data) => ...)`. Client-origin App messages enter server code through these handlers before any response or fan-out.
+_Avoid_: socket listener, raw WebSocket handler
+
 **Lifecycle hooks**:
-`init()` and `shutdown()` boundaries on the server runtime. v0 uses them as "start" and "die" (full process restart on rebuild). v1 will use them for hot reload — call `shutdown()`, re-import the bundle, call `init()` — without restructuring.
+`init()` and `shutdown()` boundaries on the server runtime. Dev rebuilds currently use a full runtime restart around these boundaries; finer-grained hot reload remains future work.
 _Avoid_: start/stop (too generic), lifecycle methods (they're hooks, not methods)
 
 ## Field types
@@ -110,6 +118,18 @@ _Avoid_: boolean() (lowercase — collides with TS keyword)
 A date/timestamp field. Maps to SQLite `TEXT`. JavaScript/API values are ISO 8601 strings, with JavaScript `Date` values accepted by runtime table APIs and normalised to ISO strings before storage.
 _Avoid_: date() (lowercase — collides with the field-builder convention)
 
+**Number()**:
+A numeric field. Maps to SQLite numeric storage and JavaScript `number` values.
+_Avoid_: number() (lowercase - collides with the field-builder convention)
+
+**Json()**:
+A JSON-compatible field for structured values. Sporades owns serialisation and deserialisation between JavaScript values and SQLite storage.
+_Avoid_: blob, object field
+
+**Reference()**:
+A field that stores a reference to a row in another Capsule table. Reference targets must name an existing table.
+_Avoid_: foreign key (too SQL-specific for the authoring API)
+
 ## Auto fields
 
 Every table has three managed fields added automatically by Sporades. App code cannot set or update them.
@@ -121,20 +141,21 @@ _Avoid_: primary key, timestamp fields (these are Sporades-managed, not user-def
 
 ## Auth
 
-Sporades owns auth entirely on the server side. The client never sees the auth library.
+Sporades owns auth entirely on the server side. The client never sees provider SDKs or runtime auth internals.
 
 **Anonymous session**:
-A real session created automatically for every visitor via Better Auth's Anonymous plugin. Not a fake guest ID — a persistent account with a session token. Data created anonymously is preserved when the user links an authentication method (e.g. Google OAuth).
+A real session created automatically for every visitor. Not a fake guest ID - a persistent account with a session token. Data created anonymously is preserved when the user links an authentication method such as email or Google OAuth.
 _Avoid_: guest mode (implies fake/transient — these are real sessions), guest user
 
 **Session token**:
-A string stored in `localStorage` on the client and sent on the WebSocket connection. The server verifies it via Better Auth on every request. No auth SDK in the client bundle.
-_Avoid_: auth token, JWT (implementation detail of Better Auth)
+A string stored in `localStorage` on the client and sent on the WebSocket connection. Custom endpoints may also receive it through the `x-sporades-session-token` HTTP header. No auth SDK is bundled into the client.
+Session records include lifecycle metadata and expire after 30 days by default. Missing, invalid, or expired tokens resolve to a fresh Anonymous session. Email sign-up and sign-in rotate the current token; Google sign-in refreshes the current token during the OAuth callback.
+_Avoid_: auth token, JWT
 
-Custom endpoints accept the Sporades session token in the `x-sporades-session-token` HTTP header. Missing or invalid endpoint tokens resolve to a fresh Anonymous session rather than crashing or rejecting the request.
+Missing or invalid endpoint tokens resolve to a fresh Anonymous session rather than crashing or rejecting the request.
 
 **Linked account**:
-An anonymous session upgraded with a real authentication method (Google OAuth, etc.). The user's data follows them because the auth method is linked to the existing account, not a new one.
+A real authentication method, such as email or Google OAuth, linked to an existing Anonymous session. The user's data follows them because the auth method is linked to the existing account, not a new one.
 _Avoid_: upgrade, migration (those are schema concerns, not auth)
 
 ## Client transport
@@ -183,12 +204,12 @@ Sporades does not provide a router. The scaffold template includes a framework-a
 A `sporades` table auto-created in every app's SQLite database. Stores schema version, migration state, and app metadata. Sporades owns it; app code cannot write to it.
 _Avoid_: migration table, metadata table
 
-**Schema version**:
-A hash of the capsule's schema definition, stored in the system table. On startup, if the hash differs from the stored version, all app tables are dropped and recreated. Data is lost on schema change. This is a v0 simplification — v1 will support incremental migrations.
+**Schema migration**:
+The runtime-owned startup path that compares stored schema metadata with the next Capsule schema. Adding tables and fields is supported as an additive migration; removing tables, removing fields, or changing existing field definitions is rejected with a structured error and hint.
 _Avoid_: migration version, database version
 
 **Row cache**:
-A `Map<rowId, row>` in-memory cache. Rows are cached on read (lazy, per-row) and invalidated on write. SQLite is the source of truth. Single writer in v0 (one dev session or one container), so no cache coherence problem.
+A `Map<rowId, row>` in-memory cache. Rows are cached on read (lazy, per-row) and invalidated on write. SQLite is the source of truth for the running Capsule process.
 _Avoid_: table cache (it's row-level, not table-level), data cache
 
 ## Configuration
@@ -201,7 +222,7 @@ _Avoid_: config file (too generic — it's the specific project config)
 `sporades.json` → CLI flag → default. CLI flags override config values; config values override defaults. Applied to: ports, framework, auth providers, and legacy auth mode.
 
 **Server env**:
-A `.env.sporades.server` file at the project root containing server-only environment variables. Mounted read-only at `/app/.env.sporades.server` in the container. Max 64 keys, 64KB total. No `SPORADES_` prefix (reserved). Accessible via `ctx.env`. This is a v0 stopgap — env files are terrible and will be replaced.
+A `.env.sporades.server` file at the project root containing server-only environment variables. Loaded for Dev sessions, mounted read-only in local Container sessions, included in Hosted Capsule release packages when present, and exposed via `ctx.env`. Max 64 keys, 64KB total. No `SPORADES_` prefix (reserved). This env-file shape is intentionally deferred hardening work.
 _Avoid_: environment file, dot-env (implementation detail)
 
 ## CLI output

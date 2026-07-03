@@ -271,6 +271,15 @@ test("client auth.signIn starts a full-page provider redirect and preserves the 
 });
 
 test("client auth.signIn sends email credentials without starting a redirect", async () => {
+  const emailAuth = {
+    userId: "email-user",
+    displayName: "Mira",
+    email: "mira@example.com",
+    picture: null,
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
   const browser = installBrowserFakes(anonymousAuth, {
     href: "http://localhost:4000/notes?filter=mine#today",
     handlers: {
@@ -280,23 +289,28 @@ test("client auth.signIn sends email credentials without starting a redirect", a
           type: "auth.signIn.result",
           data: {
             ok: true,
-            auth: {
-              userId: "email-user",
-              displayName: "Mira",
-              email: "mira@example.com",
-              picture: null,
-              isAuthenticated: true,
-              isGuest: false,
-              provider: "email",
-            },
+            sessionToken: "rotated-email-token",
+            auth: emailAuth,
           },
           error: null,
         };
       },
     },
   });
+  const stateUpdates = [];
   try {
     const runtime = await importClientRuntime();
+    const hooks = runtime.createHooks({
+      useState(initialState) {
+        return [initialState, (nextState) => stateUpdates.push(nextState)];
+      },
+      useEffect(effect) {
+        effect();
+      },
+    });
+    hooks.useAuth();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
     const result = await runtime.auth.signIn("email", {
       email: "mira@example.com",
       password: "correct horse battery staple",
@@ -316,12 +330,27 @@ test("client auth.signIn sends email credentials without starting a redirect", a
     assert.equal(result.type, "auth.signIn.result");
     assert.equal(result.error, null);
     assert.equal(result.data.ok, true);
+    assert.equal(browser.storage.get("sporades.sessionToken"), "rotated-email-token");
+    assert.deepEqual(
+      stateUpdates.map((state) => state.auth?.provider),
+      ["anonymous", "email"],
+    );
+    assert.deepEqual(stateUpdates.at(-1).auth, emailAuth);
   } finally {
     browser.cleanup();
   }
 });
 
 test("client auth.signUp sends email credentials through the provider-generic auth surface", async () => {
+  const emailAuth = {
+    userId: "email-user",
+    displayName: "Mira",
+    email: "mira@example.com",
+    picture: null,
+    isAuthenticated: true,
+    isGuest: false,
+    provider: "email",
+  };
   const browser = installBrowserFakes(anonymousAuth, {
     handlers: {
       "auth.signUp": async (message) => {
@@ -330,23 +359,28 @@ test("client auth.signUp sends email credentials through the provider-generic au
           type: "auth.signUp.result",
           data: {
             ok: true,
-            auth: {
-              userId: "email-user",
-              displayName: "Mira",
-              email: "mira@example.com",
-              picture: null,
-              isAuthenticated: true,
-              isGuest: false,
-              provider: "email",
-            },
+            sessionToken: "rotated-sign-up-token",
+            auth: emailAuth,
           },
           error: null,
         };
       },
     },
   });
+  const stateUpdates = [];
   try {
     const runtime = await importClientRuntime();
+    const hooks = runtime.createHooks({
+      useState(initialState) {
+        return [initialState, (nextState) => stateUpdates.push(nextState)];
+      },
+      useEffect(effect) {
+        effect();
+      },
+    });
+    hooks.useAuth();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
     const result = await runtime.auth.signUp("email", {
       email: "mira@example.com",
       password: "correct horse battery staple",
@@ -367,6 +401,12 @@ test("client auth.signUp sends email credentials through the provider-generic au
     assert.equal(result.error, null);
     assert.equal(result.data.ok, true);
     assert.equal(result.data.auth.provider, "email");
+    assert.equal(browser.storage.get("sporades.sessionToken"), "rotated-sign-up-token");
+    assert.deepEqual(
+      stateUpdates.map((state) => state.auth?.provider),
+      ["anonymous", "email"],
+    );
+    assert.deepEqual(stateUpdates.at(-1).auth, emailAuth);
   } finally {
     browser.cleanup();
   }
@@ -741,6 +781,60 @@ test("client files.upload uploads arrays sequentially through the single-file pa
     assert.deepEqual(negotiatedNames, ["one.txt", "two.txt"]);
     assert.deepEqual(uploadedBodies, ["one", "two"]);
     assert.deepEqual(results.map((file) => file.id), ["file-1", "file-2"]);
+  } finally {
+    delete globalThis.fetch;
+    browser.cleanup();
+  }
+});
+
+test("client files.download authenticates private reads with a header instead of a URL token", async () => {
+  const browser = installBrowserFakes(anonymousAuth, {
+    autoOpen: false,
+    handlers: {
+      "file.url": async () => ({
+        type: "file.url.result",
+        data: {
+          url: "/__sporades/files/private/file-1?v=version-1",
+          file: {
+            id: "file-1",
+            bucket: "default",
+            size: 11,
+            type: "text/plain",
+            name: "hello.txt",
+            path: "/__sporades/files/private/file-1?v=version-1",
+            version: "version-1",
+          },
+        },
+        error: null,
+      }),
+    },
+  });
+  const downloads = [];
+  globalThis.fetch = async (url, options = {}) => {
+    downloads.push({ url, headers: options.headers ?? {} });
+    return {
+      ok: true,
+      status: 200,
+      async blob() {
+        return new Blob(["hello world"], { type: "text/plain" });
+      },
+    };
+  };
+
+  try {
+    const runtime = await importClientRuntime();
+    const downloadPromise = runtime.files.download("file-1");
+    browser.openSockets();
+    const blob = await downloadPromise;
+
+    assert.equal(blob.type, "text/plain");
+    assert.deepEqual(downloads, [
+      {
+        url: "/__sporades/files/private/file-1?v=version-1",
+        headers: { "x-sporades-session-token": "session-token" },
+      },
+    ]);
+    assert.doesNotMatch(downloads[0].url, /sessionToken|session-token/);
   } finally {
     delete globalThis.fetch;
     browser.cleanup();

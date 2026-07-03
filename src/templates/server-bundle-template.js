@@ -1,9 +1,10 @@
 import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../server-runtime-source.js";
 
-export function createServerBundleSource({ config, serverEnv, serverSource }) {
+export function createServerBundleSource({ config, serverEnv, serverSource, serverModuleSource }) {
   const runtimeFunctions = SERVER_RUNTIME_SOURCE_FUNCTIONS
     .map((fn) => fn.toString())
     .join("\n\n");
+  const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
 
   return `// Sporades server bundle
 import { createHash, randomBytes, randomUUID } from "node:crypto";
@@ -14,12 +15,14 @@ import path from "node:path";
 export const sporadesConfig = ${JSON.stringify(config, null, 2)};
 export const sporadesServerEnv = ${JSON.stringify(serverEnv, null, 2)};
 export const sporadesServerSource = ${JSON.stringify(serverSource)};
+const sporadesCapsuleModule = await import(${JSON.stringify(serverModuleDataUrl)});
+const sporadesCapsuleDefinition = sporadesCapsuleModule.default ?? null;
 
 ${runtimeFunctions}
 
 const port = Number(process.env.PORT ?? sporadesConfig.deploy?.port ?? 4000);
 const databasePath = process.env.SPORADES_DATABASE_PATH ?? path.join(process.cwd(), "data", "data.db");
-const database = await openDevDatabase(databasePath, sporadesServerSource, sporadesServerEnv, sporadesConfig);
+const database = await openDevDatabase(databasePath, sporadesServerSource, sporadesServerEnv, sporadesConfig, sporadesCapsuleDefinition);
 const websocketHub = createWebSocketHub(() => database);
 
 const server = createServer(async (request, response) => {

@@ -2,6 +2,8 @@ export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Ref
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
+export type MaybePromise<Value> = Value | Promise<Value>;
+
 export type FieldBuilder<Value> = {
   kind: FieldKind;
   default(defaultValue: Value): FieldDefinition<Value>;
@@ -44,7 +46,7 @@ export type AutoFields = {
 };
 
 export type FieldValue<Field> = Field extends FieldBuilder<infer Value>
-  ? Value
+  ? Value | null
   : Field extends FieldDefinition<infer Value>
     ? Value
     : Field extends ReferenceFieldBuilder | ReferenceFieldDefinition
@@ -124,21 +126,55 @@ export type EndpointContext<Schema extends SchemaDefinition = SchemaDefinition> 
 
 export type QueryHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
   ctx: CapsuleContext<Schema>,
-) => Result | Promise<Result>;
+) => MaybePromise<Result>;
 
 export type MutationHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
   ctx: CapsuleContext<Schema>,
   ...args: any[]
-) => Result | Promise<Result>;
+) => MaybePromise<Result>;
 
 export type EndpointHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
   ctx: EndpointContext<Schema>,
-) => Result | Promise<Result>;
+) => MaybePromise<Result>;
 
 export type MessageHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
   ctx: CapsuleContext<Schema>,
   data: any,
-) => Result | Promise<Result>;
+) => MaybePromise<Result>;
+
+export type ContextKind = "query" | "mutation" | "endpoint" | "message";
+
+export type MiddlewareContext<Schema extends SchemaDefinition = SchemaDefinition> = CapsuleContext<Schema> &
+  Partial<Pick<EndpointContext<Schema>, "request">> & {
+    kind: ContextKind;
+    [key: string]: any;
+  };
+
+export type ContextMiddleware<Schema extends SchemaDefinition = SchemaDefinition> = (
+  ctx: MiddlewareContext<Schema>,
+) => MaybePromise<MiddlewareContext<Schema> | void>;
+
+export type MutationResult<Result = unknown> = {
+  ok: boolean;
+  data?: Result | null;
+  error?: { message: string; hint?: string } | null;
+};
+
+export type MutationHookEvent<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = {
+  name: string;
+  args: any[];
+  ctx: MiddlewareContext<Schema>;
+  result?: MutationResult<Result>;
+};
+
+export type MutationHook<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
+  event: MutationHookEvent<Schema, Result>,
+) => MaybePromise<void>;
+
+export type CapsuleHooks<Schema extends SchemaDefinition = SchemaDefinition> = {
+  beforeMutation?: MutationHook<Schema>[];
+  afterMutation?: MutationHook<Schema>[];
+};
 
 export type QueryDefinition<Handler = QueryHandler> = {
   kind: "query";
@@ -173,8 +209,8 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   mutations?: Record<string, MutationDefinition<MutationHandler<Schema>>>;
   endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema>>>;
   messages?: Record<string, MessageDefinition<MessageHandler<Schema>>>;
-  middleware?: unknown[];
-  hooks?: unknown;
+  middleware?: ContextMiddleware<Schema>[];
+  hooks?: CapsuleHooks<Schema>;
 };
 
 export type Capsule<Definition extends object = CapsuleDefinition> = Definition & {
@@ -194,6 +230,6 @@ export function table<const Fields extends Record<string, AnyFieldDefinition>>(f
 export function String(): FieldBuilder<string>;
 export function Boolean(): FieldBuilder<boolean>;
 export function Number(): FieldBuilder<number>;
-export function Date(): FieldBuilder<string | Date>;
+export function Date(): FieldBuilder<string | globalThis.Date | null>;
 export function Json<Value extends JsonValue = JsonValue>(): FieldBuilder<Value>;
 export function Reference(targetTable: string): ReferenceFieldBuilder;

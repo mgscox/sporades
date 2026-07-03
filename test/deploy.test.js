@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
+const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-deploy-"));
@@ -256,6 +257,10 @@ test("sporades deploy --json bundles and starts a container session", async () =
     assert.equal(runCall.args[0], "run");
     assert(runCall.args.includes("--detach"));
     assert.equal(runCall.args[runCall.args.indexOf("--name") + 1], "sporades-todo-island");
+    assert(runCall.args.includes("--read-only"));
+    assert.equal(runCall.args[runCall.args.indexOf("--tmpfs") + 1], "/tmp:rw,nosuid,nodev,noexec");
+    assert.equal(runCall.args[runCall.args.indexOf("--cap-drop") + 1], "ALL");
+    assert.equal(runCall.args[runCall.args.indexOf("--security-opt") + 1], "no-new-privileges");
     assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "4321:4000");
     assertVolume(runCall.args, `${path.join(projectDir, ".sporades", "build", "server.mjs")}:/app/server.mjs:ro`);
     assertVolume(runCall.args, `${path.join(projectDir, ".sporades", "build", "client.js")}:/app/client.js:ro`);
@@ -263,7 +268,7 @@ test("sporades deploy --json bundles and starts a container session", async () =
     assertVolume(runCall.args, `${path.join(projectDir, "sporades.json")}:/app/sporades.json:ro`);
     assertVolume(runCall.args, `${path.join(projectDir, ".env.sporades.server")}:/app/.env.sporades.server:ro`);
     assert.equal(runCall.args[runCall.args.indexOf("--env-file") + 1], path.join(projectDir, ".env.sporades.server"));
-    assertVolume(runCall.args, `${path.join(projectDir, ".sporades", "data")}:/app/data`);
+    assertVolume(runCall.args, `${path.join(projectDir, ".sporades", "data")}:/app/data:rw`);
     const imageIndex = runCall.args.indexOf("node:22-alpine");
     assert(imageIndex > -1);
     assert.deepEqual(runCall.args.slice(imageIndex), ["node:22-alpine", "node", "/app/server.mjs"]);
@@ -305,6 +310,389 @@ test("sporades deploy writes a server bundle that serves the capsule", async () 
       const clientResponse = await waitForHttp(`http://127.0.0.1:${port}/client.js`, child);
       assert.match(await clientResponse.text(), /Sporades Todos/);
     } finally {
+      await stopChild(child);
+    }
+  });
+});
+
+test("sporades deploy writes a server bundle that runs bundled Capsule query handlers", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "query-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "query-island"));
+    await writeFile(
+      path.join(projectDir, "server", "helpers.ts"),
+      `export function decorateGreeting(name: string) {
+  return \`Hello from \${name}\`;
+}
+`,
+    );
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, query } from "sporades/server";
+import { decorateGreeting } from "./helpers";
+
+const island = "the bundle";
+
+export default capsule({
+  name: "query-island",
+
+  queries: {
+    greeting: query(() => ({
+      text: decorateGreeting(island),
+      nested: { source: "container" },
+    })),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "container-first");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+
+    const port = await getAvailablePort();
+    const serverBundlePath = path.join(projectDir, ".sporades", "build", "server.mjs");
+    const child = spawn(process.execPath, [serverBundlePath], {
+      cwd: projectDir,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let socket;
+    try {
+      await waitForHttp(`http://127.0.0.1:${port}/`, child);
+      socket = await openSocket(`http://127.0.0.1:${port}`);
+      socket.send(JSON.stringify({ id: "greeting-1", type: "query.subscribe", query: "greeting" }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "greeting-1",
+        type: "query.result",
+        query: "greeting",
+        data: {
+          text: "Hello from the bundle",
+          nested: { source: "container" },
+        },
+        error: null,
+      });
+    } finally {
+      socket?.close();
+      await stopChild(child);
+    }
+  });
+});
+
+test("sporades deploy writes a server bundle that runs Capsule mutation handlers from the bundled module", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "bundled-mutation-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "bundled-mutation-island"));
+    await writeFile(
+      path.join(projectDir, "server", "todo-text.ts"),
+      `export function cleanTodoText(value: string, prefix: string) {
+  return prefix + value.trim().replace(/\\s+/g, " ");
+}
+`,
+    );
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, mutation, query, String, table } from "sporades/server";
+import { cleanTodoText } from "./todo-text";
+
+const TODO_PREFIX = "container:";
+
+export default capsule({
+  name: "bundled-mutation-island",
+
+  schema: {
+    todos: table({
+      text: String(),
+      ownerId: String(),
+    }),
+  },
+
+  queries: {
+    todos: query((ctx) =>
+      ctx.db.todos
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "desc")
+        .all()
+    ),
+  },
+
+  mutations: {
+    addTodo: mutation((ctx, text: string) => {
+      ctx.db.todos.insert({
+        text: cleanTodoText(text, TODO_PREFIX),
+        ownerId: ctx.auth.userId,
+      });
+      if (text.trim() === "rollback") {
+        throw Object.assign(new Error("No rollback todos."), {
+          hint: "Try calmer todo text.",
+        });
+      }
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "container-first");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+
+    const port = await getAvailablePort();
+    const serverBundlePath = path.join(projectDir, ".sporades", "build", "server.mjs");
+    const child = spawn(process.execPath, [serverBundlePath], {
+      cwd: projectDir,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let socket;
+    try {
+      await waitForHttp(`http://127.0.0.1:${port}/`, child);
+      socket = await openSocket(`http://127.0.0.1:${port}`);
+
+      socket.send(JSON.stringify({ id: "todos", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+
+      socket.send(JSON.stringify({ id: "record", type: "mutation.run", mutation: "addTodo", args: ["  imported   helper  "] }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "record",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: null,
+        error: null,
+      });
+
+      const refreshed = await readSocketMessage(socket);
+      assert.equal(refreshed.id, "todos");
+      assert.equal(refreshed.type, "query.result");
+      assert.equal(refreshed.error, null);
+      assert.deepEqual(
+        refreshed.data.map((todo) => todo.text),
+        ["container:imported helper"],
+      );
+
+      socket.send(JSON.stringify({ id: "rollback", type: "mutation.run", mutation: "addTodo", args: ["rollback"] }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "rollback",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: null,
+        error: {
+          message: "No rollback todos.",
+          hint: "Try calmer todo text.",
+        },
+      });
+    } finally {
+      socket?.close();
+      await stopChild(child);
+    }
+  });
+});
+
+test("sporades deploy writes a server bundle that awaits async Capsule handlers", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "async-container-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "async-container-island"));
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint, message, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: "async-container-island",
+
+  schema: {
+    todos: table({
+      text: String(),
+      ownerId: String(),
+    }),
+    auditLogs: table({
+      text: String(),
+      ownerId: String(),
+    }),
+  },
+
+  middleware: [
+    async (ctx) => {
+      await Promise.resolve();
+      return { ...ctx, marker: "async:" + ctx.kind };
+    },
+  ],
+
+  queries: {
+    greeting: query(async (ctx) => {
+      await Promise.resolve();
+      return { marker: ctx.marker };
+    }),
+    todos: query((ctx) =>
+      ctx.db.todos
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "asc")
+        .all()
+    ),
+    auditLogs: query((ctx) =>
+      ctx.db.auditLogs
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "asc")
+        .all()
+    ),
+  },
+
+  mutations: {
+    addTodo: mutation(async (ctx, text: string) => {
+      ctx.db.todos.insert({ text: text + ":before-await", ownerId: ctx.auth.userId });
+      await Promise.resolve();
+      ctx.db.todos.insert({ text: text + ":after-await", ownerId: ctx.auth.userId });
+      return { inserted: 2, marker: ctx.marker };
+    }),
+  },
+
+  endpoints: {
+    status: endpoint({ method: "GET", path: "/status" }, async (ctx) => {
+      await Promise.resolve();
+      return { status: 202, body: { marker: ctx.marker } };
+    }),
+  },
+
+  messages: {
+    echo: message(async (ctx, data) => {
+      await Promise.resolve();
+      return { marker: ctx.marker, received: data };
+    }),
+  },
+
+  hooks: {
+    beforeMutation: [
+      async ({ ctx }) => {
+        await Promise.resolve();
+        ctx.db.auditLogs.insert({ text: "before-hook:" + ctx.marker, ownerId: ctx.auth.userId });
+      },
+    ],
+    afterMutation: [
+      async ({ ctx, result }) => {
+        await Promise.resolve();
+        const todoCount = ctx.db.todos.where("ownerId", ctx.auth.userId).all().length;
+        ctx.db.auditLogs.insert({
+          text: "after-hook:" + result.data.inserted + ":" + todoCount,
+          ownerId: ctx.auth.userId,
+        });
+      },
+    ],
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "container-first");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+
+    const port = await getAvailablePort();
+    const serverBundlePath = path.join(projectDir, ".sporades", "build", "server.mjs");
+    const child = spawn(process.execPath, [serverBundlePath], {
+      cwd: projectDir,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let socket;
+    try {
+      await waitForHttp(`http://127.0.0.1:${port}/`, child);
+      socket = await openSocket(`http://127.0.0.1:${port}`);
+
+      socket.send(JSON.stringify({ id: "greeting", type: "query.subscribe", query: "greeting" }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "greeting",
+        type: "query.result",
+        query: "greeting",
+        data: { marker: "async:query" },
+        error: null,
+      });
+
+      const endpointResponse = await fetch(`http://127.0.0.1:${port}/status`);
+      assert.equal(endpointResponse.status, 202);
+      assert.deepEqual(await endpointResponse.json(), { marker: "async:endpoint" });
+
+      socket.send(JSON.stringify({ id: "echo", type: "app.send", message: "echo", data: { ok: true } }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "echo",
+        type: "app.result",
+        message: "echo",
+        data: { marker: "async:message", received: { ok: true } },
+        error: null,
+      });
+
+      socket.send(JSON.stringify({ id: "todos", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+      socket.send(JSON.stringify({ id: "audits", type: "query.subscribe", query: "auditLogs" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+
+      const mutationResult = waitForSocketMessage(
+        socket,
+        (message) => message.id === "add" && message.type === "mutation.result",
+      );
+      const todosRefresh = waitForSocketMessage(
+        socket,
+        (message) => message.id === "todos" && message.type === "query.result" && message.data.length === 2,
+      );
+      const auditsRefresh = waitForSocketMessage(
+        socket,
+        (message) => message.id === "audits" && message.type === "query.result" && message.data.length === 2,
+      );
+      socket.send(JSON.stringify({ id: "add", type: "mutation.run", mutation: "addTodo", args: ["ship"] }));
+      assert.deepEqual(await mutationResult, {
+        id: "add",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: { inserted: 2, marker: "async:mutation" },
+        error: null,
+      });
+      assert.deepEqual(
+        (await todosRefresh).data.map((todo) => todo.text),
+        ["ship:before-await", "ship:after-await"],
+      );
+      assert.deepEqual(
+        (await auditsRefresh).data.map((audit) => audit.text),
+        ["before-hook:async:mutation", "after-hook:2:2"],
+      );
+    } finally {
+      socket?.close();
       await stopChild(child);
     }
   });
@@ -407,12 +795,24 @@ test("sporades deploy writes a server bundle that applies additive table migrati
       const sessionToken = (await readSocketMessage(firstSocket)).data.sessionToken;
       firstSocket.send(JSON.stringify({ id: "todos-before", type: "query.subscribe", query: "todos" }));
       assert.deepEqual((await readSocketMessage(firstSocket)).data, []);
+      const addTodoResultPromise = waitForSocketMessage(
+        firstSocket,
+        (message) => message.id === "add-todo" && message.type === "mutation.result",
+      );
+      const todosAfterPromise = waitForSocketMessage(
+        firstSocket,
+        (message) =>
+          message.id === "todos-before" &&
+          message.type === "query.result" &&
+          message.query === "todos" &&
+          message.data.some((todo) => todo.text === "Container keeps me"),
+      );
       firstSocket.send(
         JSON.stringify({ id: "add-todo", type: "mutation.run", mutation: "addTodo", args: ["Container keeps me"] }),
       );
-      assert.equal((await readSocketMessage(firstSocket)).type, "mutation.result");
+      assert.equal((await addTodoResultPromise).error, null);
       assert.deepEqual(
-        (await readSocketMessage(firstSocket)).data.map((todo) => todo.text),
+        (await todosAfterPromise).data.map((todo) => todo.text),
         ["Container keeps me"],
       );
       firstSocket.close();
@@ -483,6 +883,18 @@ test("sporades deploy writes a server bundle that applies additive table migrati
         );
         secondSocket.send(JSON.stringify({ id: "notes-before", type: "query.subscribe", query: "notes" }));
         assert.deepEqual((await readSocketMessage(secondSocket)).data, []);
+        const notesAfterPromise = waitForSocketMessage(
+          secondSocket,
+          (message) =>
+            message.id === "notes-before" &&
+            message.type === "query.result" &&
+            message.query === "notes" &&
+            message.data.length === 1,
+        );
+        const addNoteResultPromise = waitForSocketMessage(
+          secondSocket,
+          (message) => message.id === "add-note" && message.type === "mutation.result",
+        );
         secondSocket.send(
           JSON.stringify({
             id: "add-note",
@@ -491,15 +903,8 @@ test("sporades deploy writes a server bundle that applies additive table migrati
             args: ["Container new table works"],
           }),
         );
-        assert.equal((await readSocketMessage(secondSocket)).type, "mutation.result");
-        const notesAfter = await waitForSocketMessage(
-          secondSocket,
-          (message) =>
-            message.id === "notes-before" &&
-            message.type === "query.result" &&
-            message.query === "notes" &&
-            message.data.length === 1,
-        );
+        assert.equal((await addNoteResultPromise).error, null);
+        const notesAfter = await notesAfterPromise;
         assert.equal(notesAfter.data[0].text, "Container new table works");
       } finally {
         secondSocket?.close();
@@ -508,6 +913,87 @@ test("sporades deploy writes a server bundle that applies additive table migrati
     } finally {
       firstSocket?.close();
       await stopChild(firstServer);
+    }
+  });
+});
+
+test("sporades deploy writes a server bundle that creates app tables from imported and shared Capsule field definitions", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "composed-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "composed-island"));
+    await installFakeReact(projectDir);
+    await writeFile(
+      path.join(projectDir, "server", "schema.ts"),
+      `import { Boolean, Date, String } from "sporades/server";
+
+const ownershipFields = {
+  ownerId: String(),
+};
+
+export const todoFields = {
+  text: String(),
+  done: Boolean().default(false),
+  ...ownershipFields,
+  dueAt: Date().default("2026-07-03T12:00:00.000Z"),
+};
+`,
+    );
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, table } from "sporades/server";
+import { todoFields } from "./schema";
+
+export default capsule({
+  name: "composed-island",
+
+  schema: {
+    todos: table(todoFields),
+  },
+});
+`,
+    );
+
+    const docker = await installFakeDocker(dir, "container-first");
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+
+    const port = await getAvailablePort();
+    const serverBundlePath = path.join(projectDir, ".sporades", "build", "server.mjs");
+    const child = spawn(process.execPath, [serverBundlePath], {
+      cwd: projectDir,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data", "data.db"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let socket;
+    try {
+      await waitForHttp(`http://127.0.0.1:${port}/`, child);
+      socket = await openSocket(`http://127.0.0.1:${port}`);
+      socket.send(JSON.stringify({ id: "todos-before", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+
+      socket.send(JSON.stringify({ id: "add-todo", type: "mutation.run", mutation: "addTodo", args: ["Container composed"] }));
+      assert.equal((await readSocketMessage(socket)).type, "mutation.result");
+      const rowsAfter = await readSocketMessage(socket);
+      assert.equal(rowsAfter.error, null);
+      assert.equal(rowsAfter.data[0].text, "Container composed");
+      assert.equal(rowsAfter.data[0].done, false);
+      assert.equal(typeof rowsAfter.data[0].ownerId, "string");
+      assert.equal(rowsAfter.data[0].dueAt, "2026-07-03T12:00:00.000Z");
+    } finally {
+      socket?.close();
+      await stopChild(child);
     }
   });
 });
@@ -856,7 +1342,7 @@ function readSocketMessage(socket) {
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error("Timed out waiting for WebSocket message."));
-    }, 5000);
+    }, TEST_WEBSOCKET_TIMEOUT_MS);
 
     function cleanup() {
       clearTimeout(timeout);
@@ -882,7 +1368,7 @@ function waitForSocketMessage(socket, predicate) {
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error("Timed out waiting for WebSocket message"));
-    }, 5000);
+    }, TEST_WEBSOCKET_TIMEOUT_MS);
 
     function cleanup() {
       clearTimeout(timeout);

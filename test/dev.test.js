@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
+const TEST_PROCESS_EVENT_TIMEOUT_MS = 10000;
+const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-dev-"));
@@ -58,7 +60,7 @@ async function waitForJsonLine(child) {
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error(`Timed out waiting for JSON output.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
-    }, 5000);
+    }, TEST_PROCESS_EVENT_TIMEOUT_MS);
 
     function cleanup() {
       clearTimeout(timeout);
@@ -95,7 +97,7 @@ async function waitForJsonEvent(child, predicate) {
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error(`Timed out waiting for JSON event.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
-    }, 5000);
+    }, TEST_PROCESS_EVENT_TIMEOUT_MS);
 
     function cleanup() {
       clearTimeout(timeout);
@@ -138,7 +140,7 @@ async function waitForStdoutLine(child, predicate) {
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error(`Timed out waiting for stdout line.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
-    }, 5000);
+    }, TEST_PROCESS_EVENT_TIMEOUT_MS);
 
     function cleanup() {
       clearTimeout(timeout);
@@ -519,6 +521,11 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
       );
       const anonymousPublicUrl = await waitForPhotoMessage(anonymousSocket, "anonymous public URL", (message) => message.id === "anon-url");
       assert.equal(anonymousPublicUrl.error, null);
+      const anonymousGalleryPromise = waitForPhotoMessage(
+        anonymousSocket,
+        "anonymous gallery refresh",
+        (message) => message.id === "anon-public" && message.data.length === 1,
+      );
       anonymousSocket.send(
         JSON.stringify({
           id: "anon-record",
@@ -528,11 +535,7 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
         }),
       );
       assert.equal((await waitForPhotoMessage(anonymousSocket, "anonymous record", (message) => message.id === "anon-record")).error, null);
-      const anonymousGallery = await waitForPhotoMessage(
-        anonymousSocket,
-        "anonymous gallery refresh",
-        (message) => message.id === "anon-public" && message.data.length === 1,
-      );
+      const anonymousGallery = await anonymousGalleryPromise;
       assert.deepEqual(
         anonymousGallery.data.map((photo) => ({
           title: photo.title,
@@ -577,6 +580,11 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
       assert.deepEqual((await waitForPhotoMessage(googleSocket, "google personal initial", (message) => message.id === "google-personal")).data, []);
 
       const googleFile = await uploadImage(googleSocket, "google", "cove.png", "google-image");
+      const privateLibraryPromise = waitForPhotoMessage(
+        googleSocket,
+        "google private library refresh",
+        (message) => message.id === "google-personal" && message.data.length === 1,
+      );
       googleSocket.send(
         JSON.stringify({
           id: "google-record",
@@ -586,11 +594,7 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
         }),
       );
       assert.equal((await waitForPhotoMessage(googleSocket, "google record", (message) => message.id === "google-record")).error, null);
-      const privateLibrary = await waitForPhotoMessage(
-        googleSocket,
-        "google private library refresh",
-        (message) => message.id === "google-personal" && message.data.length === 1,
-      );
+      const privateLibrary = await privateLibraryPromise;
       const googlePhoto = privateLibrary.data[0];
       assert.equal(googlePhoto.title, "Hidden cove");
       assert.equal(googlePhoto.status, "private");
@@ -625,6 +629,11 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
         }),
       );
       assert.equal((await waitForPhotoMessage(googleSocket, "publish public URL id", (message) => message.id === "publish-url-id")).error, null);
+      const publicLibraryPromise = waitForPhotoMessage(
+        googleSocket,
+        "google public library refresh",
+        (message) => message.id === "google-personal" && message.data.some((photo) => photo.status === "public"),
+      );
       googleSocket.send(
         JSON.stringify({
           id: "publish",
@@ -634,11 +643,7 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
         }),
       );
       assert.equal((await waitForPhotoMessage(googleSocket, "publish visibility", (message) => message.id === "publish")).error, null);
-      const publicLibrary = await waitForPhotoMessage(
-        googleSocket,
-        "google public library refresh",
-        (message) => message.id === "google-personal" && message.data.some((photo) => photo.status === "public"),
-      );
+      const publicLibrary = await publicLibraryPromise;
       assert.equal(publicLibrary.data[0].status, "public");
       googleSocket.send(JSON.stringify({ id: "google-public-after-publish", type: "query.subscribe", query: "publicPhotos" }));
       const expandedGallery = await waitForPhotoMessage(
@@ -648,6 +653,11 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
       );
       assert.deepEqual(expandedGallery.data.map((photo) => photo.title).toSorted(), ["Hidden cove", "Shoreline"]);
 
+      const hiddenLibraryPromise = waitForPhotoMessage(
+        googleSocket,
+        "google hidden library refresh",
+        (message) => message.id === "google-personal" && message.data.some((photo) => photo.status === "private"),
+      );
       googleSocket.send(
         JSON.stringify({
           id: "hide",
@@ -657,11 +667,7 @@ test("a scaffolded photo library stores uploads, public gallery rows, and Google
         }),
       );
       assert.equal((await waitForPhotoMessage(googleSocket, "hide visibility", (message) => message.id === "hide")).error, null);
-      const hiddenLibrary = await waitForPhotoMessage(
-        googleSocket,
-        "google hidden library refresh",
-        (message) => message.id === "google-personal" && message.data.some((photo) => photo.status === "private"),
-      );
+      const hiddenLibrary = await hiddenLibraryPromise;
       assert.equal(hiddenLibrary.data[0].status, "private");
       googleSocket.send(JSON.stringify({ id: "google-public-after-hide", type: "query.subscribe", query: "publicPhotos" }));
       const reducedGallery = await waitForPhotoMessage(
@@ -1032,6 +1038,7 @@ test("sporades auth as email returns a localStorage session payload that resolve
 
     const child = startCli(["dev", "--json"], { cwd: projectDir });
     let socket;
+    let expiredSocket;
     try {
       const started = await waitForJsonLine(child);
       assert.equal(started.ok, true, JSON.stringify(started.error));
@@ -1064,14 +1071,43 @@ test("sporades auth as email returns a localStorage session payload that resolve
         isGuest: false,
         provider: "email",
       });
+      const { DatabaseSync } = await import("node:sqlite");
+      const sqlite = new DatabaseSync(path.join(projectDir, ".sporades", "data.db"));
+      try {
+        const storedSession = sqlite
+          .prepare("SELECT expiresAt FROM sporades_auth_sessions WHERE token = ?")
+          .get(body.data.localStorage.value);
+        assert.match(storedSession.expiresAt, /^\d{4}-\d{2}-\d{2}T/);
+        assert.ok(Date.parse(storedSession.expiresAt) > Date.now());
+      } finally {
+        sqlite.close();
+      }
 
       socket = await openSocket(started.data.url, body.data.localStorage.value);
       socket.send(JSON.stringify({ id: "auth-after-simulation", type: "auth.get" }));
       const resolved = await readSocketMessage(socket);
       assert.deepEqual(resolved.data.auth, body.data.auth);
       assert.equal(resolved.data.sessionToken, body.data.localStorage.value);
+
+      const expiringSqlite = new DatabaseSync(path.join(projectDir, ".sporades", "data.db"));
+      try {
+        expiringSqlite
+          .prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE token = ?")
+          .run("2000-01-01T00:00:00.000Z", body.data.localStorage.value);
+      } finally {
+        expiringSqlite.close();
+      }
+      socket.close();
+      socket = null;
+
+      expiredSocket = await openSocket(started.data.url, body.data.localStorage.value);
+      expiredSocket.send(JSON.stringify({ id: "auth-expired-simulation", type: "auth.get" }));
+      const expiredResolved = await readSocketMessage(expiredSocket);
+      assert.equal(expiredResolved.data.auth.provider, "anonymous");
+      assert.notEqual(expiredResolved.data.sessionToken, body.data.localStorage.value);
     } finally {
       socket?.close();
+      expiredSocket?.close();
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
     }
@@ -1830,6 +1866,171 @@ test("sporades dev streams rebuild failure events and keeps serving the last cli
   });
 });
 
+test("sporades dev reloads sporades.json on rebuild failure and keeps the last Runtime", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      socket = await openSocket(started.data.url);
+      socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+      const authBefore = await readSocketMessage(socket);
+
+      config.auth = {
+        providers: {
+          anonymous: true,
+          google: {
+            clientIdEnv: "GOOGLE_CLIENT_ID",
+            clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+          },
+        },
+      };
+      await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+      const failed = await waitForJsonEvent(
+        child,
+        (event) => !event.ok && event.data.event === "rebuild" && event.data.status === "failed",
+      );
+      assert.equal(failed.error.message, "Google OAuth is not fully configured.");
+      assert.equal(
+        failed.error.hint,
+        "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`.",
+      );
+
+      socket.send(JSON.stringify({ id: "auth-after", type: "auth.get" }));
+      const authAfter = await readSocketMessage(socket);
+      assert.equal(authAfter.data.sessionToken, authBefore.data.sessionToken);
+      assert.deepEqual(authAfter.data.auth, authBefore.data.auth);
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev reloads server-runtime config on rebuild and disconnects old WebSocket clients", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    let reconnectedSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      socket = await openSocket(started.data.url);
+
+      config.auth = { providers: { anonymous: true, email: true } };
+      await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+      const [rebuilt] = await Promise.all([
+        waitForJsonEvent(
+          child,
+          (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success",
+        ),
+        waitForSocketClose(socket),
+      ]);
+      assert.equal(rebuilt.error, null);
+
+      reconnectedSocket = await openSocket(started.data.url);
+      reconnectedSocket.send(JSON.stringify({ id: "auth-after", type: "auth.get" }));
+      const authAfter = await readSocketMessage(reconnectedSocket);
+      assert.equal(authAfter.data.providers.email.enabled, true);
+
+      reconnectedSocket.send(
+        JSON.stringify({
+          id: "email-sign-up",
+          type: "auth.signUp",
+          provider: "email",
+          credentials: { email: "mira@example.com", password: "secret-password", name: "Mira" },
+        }),
+      );
+      const signUp = await readSocketMessage(reconnectedSocket);
+      assert.equal(signUp.error, null);
+      assert.equal(signUp.data.auth.provider, "email");
+    } finally {
+      reconnectedSocket?.close();
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev reloads client-only config without restarting the server Runtime", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    await installFakePreact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      socket = await openSocket(started.data.url);
+      socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+      const authBefore = await readSocketMessage(socket);
+
+      config.client.framework = "preact";
+      await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+      const rebuilt = await waitForJsonEvent(
+        child,
+        (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success",
+      );
+      assert.equal(rebuilt.error, null);
+
+      assert.equal(socket.readyState, WebSocket.OPEN);
+      socket.send(JSON.stringify({ id: "auth-after", type: "auth.get" }));
+      const authAfter = await readSocketMessage(socket);
+      assert.equal(authAfter.data.sessionToken, authBefore.data.sessionToken);
+      assert.deepEqual(authAfter.data.auth, authBefore.data.auth);
+
+      const clientResponse = await fetch(`${started.data.url}/client.js`);
+      assert.equal(clientResponse.status, 200);
+      assert.match(await clientResponse.text(), /JSX import source: preact/);
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev restarts server runtime and accepts new WebSocket connections after rebuild", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -2049,6 +2250,310 @@ test("sporades dev applies an additive table migration without losing existing C
   });
 });
 
+test("sporades dev creates app tables from imported and shared Capsule field definitions", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "composed-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "composed-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    await writeFile(
+      path.join(projectDir, "server", "schema.ts"),
+      `import { Boolean, Date, String } from "sporades/server";
+
+export const ownershipFields = {
+  ownerId: String(),
+};
+
+export const todoFields = {
+  text: String(),
+  done: Boolean().default(false),
+  ...ownershipFields,
+  dueAt: Date().default("2026-07-03T12:00:00.000Z"),
+};
+`,
+    );
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, table } from "sporades/server";
+import { todoFields } from "./schema";
+
+export default capsule({
+  name: "composed-island",
+
+  schema: {
+    todos: table(todoFields),
+  },
+});
+`,
+    );
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
+      assert.equal(dumpResult.code, 0, dumpResult.stderr);
+      const tables = JSON.parse(dumpResult.stdout).data.tables;
+      assert.deepEqual(tables.find((table) => table.name === "todos").columns, [
+        "id",
+        "createdAt",
+        "updatedAt",
+        "text",
+        "done",
+        "ownerId",
+        "dueAt",
+      ]);
+      const systemRows = tables.find((table) => table.name === "sporades").rows;
+      assert.match(systemRows.find((row) => row.key === "schema")?.value ?? "", /"dueAt"/);
+    } finally {
+      if (child.exitCode === null) {
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.kill("SIGTERM");
+        await exited;
+      }
+    }
+  });
+});
+
+test("sporades dev gives fresh and migrated Capsule schemas the same nullability and defaults", async () => {
+  await withTempDir(async (dir) => {
+    const baseServer = `import { Boolean, capsule, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: "nullability-island",
+  schema: {
+    todos: table({
+      text: String(),
+      done: Boolean().default(false),
+      ownerId: String(),
+    }),
+  },
+  queries: {
+    todos: query((ctx) => ctx.db.todos.where("ownerId", ctx.auth.userId).orderBy("createdAt", "desc").all()),
+  },
+  mutations: {
+    recordTodo: mutation((ctx, text, values = {}) => {
+      ctx.db.todos.insert({ text, ownerId: ctx.auth.userId, ...values });
+    }),
+  },
+});
+`;
+    const finalServer = baseServer.replace(
+      "done: Boolean().default(false),",
+      `done: Boolean().default(false),
+      priority: String().default("normal"),
+      note: String(),
+      reviewed: Boolean(),`,
+    );
+
+    async function createProject(projectName, serverSource) {
+      const createResult = await runCli(["create", projectName, "--template", "todo", "--no-install", "--no-git", "--json"], {
+        cwd: dir,
+      });
+      assert.equal(createResult.code, 0, createResult.stderr);
+
+      const projectDir = path.join(dir, projectName);
+      const configPath = path.join(projectDir, "sporades.json");
+      const config = JSON.parse(await readFile(configPath, "utf8"));
+      config.dev.port = 0;
+      await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+      await writeFile(path.join(projectDir, "server", "index.ts"), serverSource);
+      await installFakeReact(projectDir);
+      return projectDir;
+    }
+
+    async function tableInfo(projectDir) {
+      const result = await runCli(["db", "query", "PRAGMA table_info(todos)", "--json"], { cwd: projectDir });
+      assert.equal(result.code, 0, result.stderr);
+      return JSON.parse(result.stdout).data.rows.map((column) => ({
+        name: column.name,
+        type: column.type,
+        notnull: column.notnull,
+        dflt_value: column.dflt_value,
+        pk: column.pk,
+      }));
+    }
+
+    function rowContract(rows) {
+      return rows
+        .map(({ text, priority, note, reviewed }) => ({ text, priority, note, reviewed }))
+        .sort((left, right) => left.text.localeCompare(right.text));
+    }
+
+    const freshProjectDir = await createProject("fresh-island", finalServer);
+    const freshChild = startCli(["dev", "--json"], { cwd: freshProjectDir });
+    let freshSocket;
+    let freshRows;
+    let freshSchemaInfo;
+    try {
+      const freshStarted = await waitForJsonLine(freshChild);
+      assert.equal(freshStarted.ok, true, JSON.stringify(freshStarted));
+      freshSocket = await openSocket(freshStarted.data.url);
+      freshSocket.send(JSON.stringify({ id: "fresh-todos", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual(
+        (
+          await waitForSocketMessage(
+            freshSocket,
+            (message) => message.id === "fresh-todos" && message.type === "query.result" && message.query === "todos",
+          )
+        ).data,
+        [],
+      );
+      const freshMissingResultPromise = waitForSocketMessage(
+        freshSocket,
+        (message) => message.id === "fresh-missing" && message.type === "mutation.result",
+      );
+      const freshMissingRefreshPromise = waitForSocketMessage(
+        freshSocket,
+        (message) =>
+          message.id === "fresh-todos" &&
+          message.type === "query.result" &&
+          message.query === "todos" &&
+          message.data.some((todo) => todo.text === "Fresh missing"),
+      );
+      freshSocket.send(
+        JSON.stringify({ id: "fresh-missing", type: "mutation.run", mutation: "recordTodo", args: ["Fresh missing"] }),
+      );
+      assert.equal((await freshMissingResultPromise).error, null);
+      await freshMissingRefreshPromise;
+      const freshSuppliedResultPromise = waitForSocketMessage(
+        freshSocket,
+        (message) => message.id === "fresh-supplied" && message.type === "mutation.result",
+      );
+      const freshSuppliedRefreshPromise = waitForSocketMessage(
+        freshSocket,
+        (message) =>
+          message.id === "fresh-todos" &&
+          message.type === "query.result" &&
+          message.query === "todos" &&
+          message.data.length === 2 &&
+          message.data.some((todo) => todo.text === "Fresh supplied"),
+      );
+      freshSocket.send(
+        JSON.stringify({
+          id: "fresh-supplied",
+          type: "mutation.run",
+          mutation: "recordTodo",
+          args: ["Fresh supplied", { priority: "urgent", note: "explicit", reviewed: true }],
+        }),
+      );
+      assert.equal((await freshSuppliedResultPromise).error, null);
+      freshRows = (await freshSuppliedRefreshPromise).data;
+      freshSchemaInfo = await tableInfo(freshProjectDir);
+    } finally {
+      freshSocket?.close();
+      if (freshChild.exitCode === null) {
+        const exited = new Promise((resolve) => freshChild.once("exit", resolve));
+        freshChild.kill("SIGTERM");
+        await exited;
+      }
+    }
+
+    const migratedProjectDir = await createProject("migrated-island", baseServer);
+    const migratedChild = startCli(["dev", "--json"], { cwd: migratedProjectDir });
+    let migratedSocket;
+    let migratedRows;
+    let migratedSchemaInfo;
+    try {
+      const migratedStarted = await waitForJsonLine(migratedChild);
+      assert.equal(migratedStarted.ok, true, JSON.stringify(migratedStarted));
+      migratedSocket = await openSocket(migratedStarted.data.url);
+      migratedSocket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+      const sessionToken = (await readSocketMessage(migratedSocket)).data.sessionToken;
+      migratedSocket.send(JSON.stringify({ id: "migrated-todos", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual(
+        (
+          await waitForSocketMessage(
+            migratedSocket,
+            (message) => message.id === "migrated-todos" && message.type === "query.result" && message.query === "todos",
+          )
+        ).data,
+        [],
+      );
+      const migratedBeforeResultPromise = waitForSocketMessage(
+        migratedSocket,
+        (message) => message.id === "migrated-before" && message.type === "mutation.result",
+      );
+      const migratedBeforeRefreshPromise = waitForSocketMessage(
+        migratedSocket,
+        (message) =>
+          message.id === "migrated-todos" &&
+          message.type === "query.result" &&
+          message.query === "todos" &&
+          message.data.some((todo) => todo.text === "Fresh missing"),
+      );
+      migratedSocket.send(
+        JSON.stringify({ id: "migrated-before", type: "mutation.run", mutation: "recordTodo", args: ["Fresh missing"] }),
+      );
+      assert.equal((await migratedBeforeResultPromise).error, null);
+      await migratedBeforeRefreshPromise;
+
+      await writeFile(path.join(migratedProjectDir, "server", "index.ts"), finalServer);
+      const [rebuilt] = await Promise.all([
+        waitForJsonEvent(
+          migratedChild,
+          (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success",
+        ),
+        waitForSocketClose(migratedSocket),
+      ]);
+      assert.equal(rebuilt.error, null);
+      migratedSocket = await openSocket(migratedStarted.data.url, sessionToken);
+      migratedSocket.send(JSON.stringify({ id: "migrated-after", type: "query.subscribe", query: "todos" }));
+      await waitForSocketMessage(
+        migratedSocket,
+        (message) => message.id === "migrated-after" && message.type === "query.result" && message.query === "todos",
+      );
+      const migratedSuppliedResultPromise = waitForSocketMessage(
+        migratedSocket,
+        (message) => message.id === "migrated-supplied" && message.type === "mutation.result",
+      );
+      const migratedSuppliedRefreshPromise = waitForSocketMessage(
+        migratedSocket,
+        (message) =>
+          message.id === "migrated-after" &&
+          message.type === "query.result" &&
+          message.query === "todos" &&
+          message.data.length === 2 &&
+          message.data.some((todo) => todo.text === "Fresh supplied"),
+      );
+      migratedSocket.send(
+        JSON.stringify({
+          id: "migrated-supplied",
+          type: "mutation.run",
+          mutation: "recordTodo",
+          args: ["Fresh supplied", { priority: "urgent", note: "explicit", reviewed: true }],
+        }),
+      );
+      assert.equal((await migratedSuppliedResultPromise).error, null);
+      migratedRows = (await migratedSuppliedRefreshPromise).data;
+      migratedSchemaInfo = await tableInfo(migratedProjectDir);
+    } finally {
+      migratedSocket?.close();
+      if (migratedChild.exitCode === null) {
+        const exited = new Promise((resolve) => migratedChild.once("exit", resolve));
+        migratedChild.kill("SIGTERM");
+        await exited;
+      }
+    }
+
+    assert.deepEqual(freshSchemaInfo, migratedSchemaInfo);
+    assert.deepEqual(rowContract(freshRows), rowContract(migratedRows));
+    assert.deepEqual(rowContract(freshRows), [
+      { text: "Fresh missing", priority: "normal", note: null, reviewed: null },
+      { text: "Fresh supplied", priority: "urgent", note: "explicit", reviewed: true },
+    ]);
+  });
+});
+
 test("sporades dev applies additive field migrations without losing existing Capsule data", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -2128,6 +2633,14 @@ test("sporades dev applies additive field migrations without losing existing Cap
       assert.equal(migratedRows.data[0].priority, "normal");
       assert.equal(migratedRows.data[0].note, null);
 
+      const insertedRowsPromise = waitForSocketMessage(
+        migratedSocket,
+        (message) =>
+          message.id === "todos-after" &&
+          message.type === "query.result" &&
+          message.query === "todos" &&
+          message.data.length === 2,
+      );
       migratedSocket.send(
         JSON.stringify({
           id: "add-after",
@@ -2137,18 +2650,19 @@ test("sporades dev applies additive field migrations without losing existing Cap
         }),
       );
       assert.equal((await readSocketMessage(migratedSocket)).type, "mutation.result");
-      const insertedRows = await waitForSocketMessage(
+      const insertedRows = await insertedRowsPromise;
+      assert.equal(insertedRows.data[0].text, "New field works");
+      assert.equal(insertedRows.data[0].priority, "urgent");
+      assert.equal(insertedRows.data[0].note, "first note");
+
+      const updatedRowsPromise = waitForSocketMessage(
         migratedSocket,
         (message) =>
           message.id === "todos-after" &&
           message.type === "query.result" &&
           message.query === "todos" &&
-          message.data.length === 2,
+          message.data.some((todo) => todo.note === "edited note"),
       );
-      assert.equal(insertedRows.data[0].text, "New field works");
-      assert.equal(insertedRows.data[0].priority, "urgent");
-      assert.equal(insertedRows.data[0].note, "first note");
-
       migratedSocket.send(
         JSON.stringify({
           id: "update-note",
@@ -2158,21 +2672,14 @@ test("sporades dev applies additive field migrations without losing existing Cap
         }),
       );
       assert.equal((await readSocketMessage(migratedSocket)).type, "mutation.result");
-      const updatedRows = await waitForSocketMessage(
-        migratedSocket,
-        (message) =>
-          message.id === "todos-after" &&
-          message.type === "query.result" &&
-          message.query === "todos" &&
-          message.data[0]?.note === "edited note",
-      );
-      assert.equal(updatedRows.data[0].priority, "urgent");
+      const updatedTodo = (await updatedRowsPromise).data.find((todo) => todo.note === "edited note");
+      assert.equal(updatedTodo.priority, "urgent");
 
       const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
       assert.equal(dumpResult.code, 0, dumpResult.stderr);
       const tables = JSON.parse(dumpResult.stdout).data.tables;
       const todosTable = tables.find((table) => table.name === "todos");
-      assert.deepEqual(todosTable.columns, ["id", "createdAt", "updatedAt", "text", "done", "ownerId", "priority", "note"]);
+      assert.deepEqual(todosTable.columns, ["id", "createdAt", "updatedAt", "text", "done", "priority", "note", "ownerId"]);
       assert.equal(todosTable.rows.find((row) => row.text === "Keep me").priority, "normal");
       assert.equal(todosTable.rows.find((row) => row.text === "Keep me").note, null);
       assert.equal(todosTable.rows.find((row) => row.text === "New field works").note, "edited note");
@@ -2412,14 +2919,14 @@ test("sporades dev supports Date fields through migrations, mutations, queries, 
           .replace(
             "done: Boolean().default(false),",
             `done: Boolean().default(false),
-      dueAt: Date().default("2026-01-02T03:04:05.000Z"),
+      dueAt: Date().default(new globalThis.Date("2026-01-02T03:04:05.000Z")),
       reminderAt: Date(),`,
           )
           .replace(
             "queries: {",
             `endpoints: {
     dueTodos: endpoint({ method: "GET", path: "/due-todos" }, (ctx) => ({
-      body: ctx.db.todos.where("dueAt", ctx.request.query.dueAt).orderBy("reminderAt", "asc").all()
+      body: ctx.db.todos.where("dueAt", new globalThis.Date(ctx.request.query.dueAt)).orderBy("reminderAt", "asc").all()
     })),
   },
 
@@ -2427,15 +2934,25 @@ test("sporades dev supports Date fields through migrations, mutations, queries, 
           )
           .replace(
             "addTodo: mutation((ctx, text: string) => {",
-            `updateTodoDueAt: mutation((ctx, id: string, dueAt: string) => {
-      ctx.db.todos.update(id, { dueAt });
+            `rescheduleTodo: mutation((ctx, id, dueAt) => {
+      ctx.db.todos.update(id, { dueAt: new globalThis.Date(dueAt) });
     }),
 
-    addTodo: mutation((ctx, text: string, done: boolean, dueAt: string, reminderAt: string) => {`,
+    recordDatedTodo: mutation((ctx, text, dueAt, reminderAt) => {
+      ctx.db.todos.insert({
+        text,
+        done: false,
+        dueAt: new globalThis.Date(dueAt),
+        reminderAt: reminderAt === null ? null : new globalThis.Date(reminderAt),
+        ownerId: ctx.auth.userId,
+      });
+    }),
+
+    addTodo: mutation((ctx, text: string, done: boolean, dueAt: string, reminderAt: string | null) => {`,
           )
           .replace(
             "ctx.db.todos.insert({ text, ownerId: ctx.auth.userId });",
-            "ctx.db.todos.insert({ text, done, dueAt, reminderAt, ownerId: ctx.auth.userId });",
+            "ctx.db.todos.insert({ text, done, dueAt: new globalThis.Date(dueAt), reminderAt: reminderAt === null ? null : new globalThis.Date(reminderAt), ownerId: ctx.auth.userId });",
           ),
       );
 
@@ -2458,6 +2975,18 @@ test("sporades dev supports Date fields through migrations, mutations, queries, 
       assert.equal(migratedRows.data[0].dueAt, "2026-01-02T03:04:05.000Z");
       assert.equal(migratedRows.data[0].reminderAt, null);
 
+      const addFirstResultPromise = waitForSocketMessage(
+        migratedSocket,
+        (message) => message.id === "add-first" && message.type === "mutation.result",
+      );
+      const firstDateRowsPromise = waitForSocketMessage(
+        migratedSocket,
+        (message) =>
+          message.id === "todos-after" &&
+          message.type === "query.result" &&
+          message.query === "todos" &&
+          message.data.some((todo) => todo.text === "First date"),
+      );
       migratedSocket.send(
         JSON.stringify({
           id: "add-first",
@@ -2466,26 +2995,14 @@ test("sporades dev supports Date fields through migrations, mutations, queries, 
           args: ["First date", false, "2026-03-01T10:00:00.000Z", "2026-02-01T09:00:00.000Z"],
         }),
       );
-      assert.equal((await readSocketMessage(migratedSocket)).type, "mutation.result");
-      await waitForSocketMessage(
-        migratedSocket,
-        (message) =>
-          message.id === "todos-after" &&
-          message.type === "query.result" &&
-          message.query === "todos" &&
-          message.data.some((todo) => todo.text === "First date"),
-      );
+      assert.equal((await addFirstResultPromise).error, null);
+      await firstDateRowsPromise;
 
-      migratedSocket.send(
-        JSON.stringify({
-          id: "add-second",
-          type: "mutation.run",
-          mutation: "addTodo",
-          args: ["Second date", false, "2026-03-01T10:00:00.000Z", "2026-01-15T09:00:00.000Z"],
-        }),
+      const addSecondResultPromise = waitForSocketMessage(
+        migratedSocket,
+        (message) => message.id === "add-second" && message.type === "mutation.result",
       );
-      assert.equal((await readSocketMessage(migratedSocket)).type, "mutation.result");
-      const rowsWithSecond = await waitForSocketMessage(
+      const rowsWithSecondPromise = waitForSocketMessage(
         migratedSocket,
         (message) =>
           message.id === "todos-after" &&
@@ -2493,19 +3010,25 @@ test("sporades dev supports Date fields through migrations, mutations, queries, 
           message.query === "todos" &&
           message.data.some((todo) => todo.text === "Second date"),
       );
-      const firstDateRow = rowsWithSecond.data.find((todo) => todo.text === "First date");
-      assert.equal(firstDateRow.dueAt, "2026-03-01T10:00:00.000Z");
-
       migratedSocket.send(
         JSON.stringify({
-          id: "update-date",
+          id: "add-second",
           type: "mutation.run",
-          mutation: "updateTodoDueAt",
-          args: [firstDateRow.id, "2026-04-01T12:30:00.000Z"],
+          mutation: "addTodo",
+          args: ["Second date", false, "2026-03-01T10:00:00.000Z", null],
         }),
       );
-      assert.equal((await readSocketMessage(migratedSocket)).type, "mutation.result");
-      await waitForSocketMessage(
+      assert.equal((await addSecondResultPromise).error, null);
+      const rowsWithSecond = await rowsWithSecondPromise;
+      const firstDateRow = rowsWithSecond.data.find((todo) => todo.text === "First date");
+      assert.equal(firstDateRow.dueAt, "2026-03-01T10:00:00.000Z");
+      assert.equal(rowsWithSecond.data.find((todo) => todo.text === "Second date").reminderAt, null);
+
+      const updateDateResultPromise = waitForSocketMessage(
+        migratedSocket,
+        (message) => message.id === "update-date" && message.type === "mutation.result",
+      );
+      const updatedDateRowsPromise = waitForSocketMessage(
         migratedSocket,
         (message) =>
           message.id === "todos-after" &&
@@ -2513,7 +3036,49 @@ test("sporades dev supports Date fields through migrations, mutations, queries, 
           message.query === "todos" &&
           message.data.find((todo) => todo.id === firstDateRow.id)?.dueAt === "2026-04-01T12:30:00.000Z",
       );
+      migratedSocket.send(
+        JSON.stringify({
+          id: "update-date",
+          type: "mutation.run",
+          mutation: "rescheduleTodo",
+          args: [firstDateRow.id, "2026-04-01T12:30:00.000Z"],
+        }),
+      );
+      assert.equal((await updateDateResultPromise).error, null);
+      await updatedDateRowsPromise;
 
+      const recordDateResultPromise = waitForSocketMessage(
+        migratedSocket,
+        (message) => message.id === "record-date" && message.type === "mutation.result",
+      );
+      const tableApiDateRowsPromise = waitForSocketMessage(
+        migratedSocket,
+        (message) =>
+          message.id === "todos-after" &&
+          message.type === "query.result" &&
+          message.query === "todos" &&
+          message.data.some(
+            (todo) =>
+              todo.text === "Table API date" &&
+              todo.dueAt === "2026-05-01T08:00:00.000Z" &&
+              todo.reminderAt === "2026-04-30T18:00:00.000Z",
+          ),
+      );
+      migratedSocket.send(
+        JSON.stringify({
+          id: "record-date",
+          type: "mutation.run",
+          mutation: "recordDatedTodo",
+          args: ["Table API date", "2026-05-01T08:00:00.000Z", "2026-04-30T18:00:00.000Z"],
+        }),
+      );
+      assert.equal((await recordDateResultPromise).error, null);
+      await tableApiDateRowsPromise;
+
+      const invalidDateResultPromise = waitForSocketMessage(
+        migratedSocket,
+        (message) => message.id === "invalid-date" && message.type === "mutation.result",
+      );
       migratedSocket.send(
         JSON.stringify({
           id: "invalid-date",
@@ -2522,7 +3087,7 @@ test("sporades dev supports Date fields through migrations, mutations, queries, 
           args: ["Bad date", false, "not-a-date", "2026-02-01T09:00:00.000Z"],
         }),
       );
-      assert.deepEqual(await readSocketMessage(migratedSocket), {
+      assert.deepEqual(await invalidDateResultPromise, {
         id: "invalid-date",
         type: "mutation.result",
         data: null,
@@ -2540,7 +3105,7 @@ test("sporades dev supports Date fields through migrations, mutations, queries, 
         endpointRows.map((todo) => todo.text),
         ["Second date"],
       );
-      assert.equal(endpointRows[0].reminderAt, "2026-01-15T09:00:00.000Z");
+      assert.equal(endpointRows[0].reminderAt, null);
 
       const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
       assert.equal(dumpResult.code, 0, dumpResult.stderr);
@@ -2552,18 +3117,128 @@ test("sporades dev supports Date fields through migrations, mutations, queries, 
         "updatedAt",
         "text",
         "done",
-        "ownerId",
         "dueAt",
         "reminderAt",
+        "ownerId",
       ]);
       assert.equal(todosTable.rows.find((row) => row.text === "Keep me").dueAt, "2026-01-02T03:04:05.000Z");
       assert.equal(todosTable.rows.find((row) => row.text === "Keep me").reminderAt, null);
       assert.equal(todosTable.rows.find((row) => row.text === "First date").dueAt, "2026-04-01T12:30:00.000Z");
+      assert.equal(todosTable.rows.find((row) => row.text === "Table API date").dueAt, "2026-05-01T08:00:00.000Z");
       const systemRows = tables.find((table) => table.name === "sporades").rows;
       assert.match(systemRows.find((row) => row.key === "schema")?.value ?? "", /"kind":"Date"/);
       assert.match(systemRows.find((row) => row.key === "schema")?.value ?? "", /"sqliteType":"TEXT"/);
     } finally {
       migratedSocket?.close();
+      socket?.close();
+      if (child.exitCode === null) {
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.kill("SIGTERM");
+        await exited;
+      }
+    }
+  });
+});
+
+test("sporades dev treats Date fields without defaults as nullable in a fresh database", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "fresh-date-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "fresh-date-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, Date, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: "Fresh Dates",
+  schema: {
+    todos: table({
+      text: String(),
+      dueAt: Date(),
+      ownerId: String(),
+    }),
+  },
+  queries: {
+    todos: query((ctx) => ctx.db.todos.where("ownerId", ctx.auth.userId).all()),
+  },
+  mutations: {
+    recordTodo: mutation((ctx, text, dueAt) => {
+      ctx.db.todos.insert({
+        text,
+        dueAt: dueAt === null ? null : new globalThis.Date(dueAt),
+        ownerId: ctx.auth.userId,
+      });
+    }),
+  },
+});
+`,
+    );
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+
+      socket.send(JSON.stringify({ id: "todos", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+
+      const recordNullDateResultPromise = waitForSocketMessage(
+        socket,
+        (message) => message.id === "record-null-date" && message.type === "mutation.result",
+      );
+      const rowsWithNullDatePromise = waitForSocketMessage(
+        socket,
+        (message) => message.id === "todos" && message.data.some((todo) => todo.text === "No date yet"),
+      );
+      socket.send(
+        JSON.stringify({
+          id: "record-null-date",
+          type: "mutation.run",
+          mutation: "recordTodo",
+          args: ["No date yet", null],
+        }),
+      );
+      assert.equal((await recordNullDateResultPromise).error, null);
+      const rowsWithNullDate = await rowsWithNullDatePromise;
+      assert.equal(rowsWithNullDate.data.find((todo) => todo.text === "No date yet").dueAt, null);
+
+      const recordJsDateResultPromise = waitForSocketMessage(
+        socket,
+        (message) => message.id === "record-js-date" && message.type === "mutation.result",
+      );
+      const rowsWithJsDatePromise = waitForSocketMessage(
+        socket,
+        (message) =>
+          message.id === "todos" &&
+          message.data.some((todo) => todo.text === "Has date" && todo.dueAt === "2026-06-01T11:12:13.000Z"),
+      );
+      socket.send(
+        JSON.stringify({
+          id: "record-js-date",
+          type: "mutation.run",
+          mutation: "recordTodo",
+          args: ["Has date", "2026-06-01T11:12:13.000Z"],
+        }),
+      );
+      assert.equal((await recordJsDateResultPromise).error, null);
+      await rowsWithJsDatePromise;
+
+      const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
+      assert.equal(dumpResult.code, 0, dumpResult.stderr);
+      const todosTable = JSON.parse(dumpResult.stdout).data.tables.find((table) => table.name === "todos");
+      assert.equal(todosTable.rows.find((row) => row.text === "No date yet").dueAt, null);
+      assert.equal(todosTable.rows.find((row) => row.text === "Has date").dueAt, "2026-06-01T11:12:13.000Z");
+    } finally {
       socket?.close();
       if (child.exitCode === null) {
         const exited = new Promise((resolve) => child.once("exit", resolve));
@@ -2687,6 +3362,10 @@ export default capsule({
         assert.deepEqual(initial.data.find((row) => row.text === text).meta, value);
       }
 
+      const afterDefaultPromise = waitForSocketMessage(
+        socket,
+        (message) => message.id === "notes-1" && message.type === "query.result" && message.data.length === 7,
+      );
       socket.send(
         JSON.stringify({
           id: "add-1",
@@ -2698,10 +3377,7 @@ export default capsule({
       const addResult = await readSocketMessage(socket);
       assert.equal(addResult.type, "mutation.result");
       assert.equal(addResult.error, null);
-      const afterDefault = await waitForSocketMessage(
-        socket,
-        (message) => message.id === "notes-1" && message.type === "query.result" && message.data.length === 7,
-      );
+      const afterDefault = await afterDefaultPromise;
       assert.deepEqual(afterDefault.data[0].meta, { tags: [], archived: false });
 
       const updatedMeta = { tags: ["edited"], nested: { ok: true }, values: [1, "two", null] };
@@ -2812,6 +3488,10 @@ test("sporades dev applies additive Json field migrations with decoded defaults"
       assert.deepEqual(migratedRows.data[0].meta, { tags: ["migrated"], archived: false });
 
       const updatedMeta = { tags: ["after"], nested: { count: 1 }, values: [true, null, "ok"] };
+      const updatedRowsPromise = waitForSocketMessage(
+        migratedSocket,
+        (message) => message.id === "todos-after" && message.data[0]?.meta?.nested?.count === 1,
+      );
       migratedSocket.send(
         JSON.stringify({
           id: "update-meta",
@@ -2821,10 +3501,7 @@ test("sporades dev applies additive Json field migrations with decoded defaults"
         }),
       );
       assert.equal((await readSocketMessage(migratedSocket)).error, null);
-      const updatedRows = await waitForSocketMessage(
-        migratedSocket,
-        (message) => message.id === "todos-after" && message.data[0]?.meta?.nested?.count === 1,
-      );
+      const updatedRows = await updatedRowsPromise;
       assert.deepEqual(updatedRows.data[0].meta, updatedMeta);
 
       const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
@@ -2910,22 +3587,27 @@ export default capsule({
 
       socket.send(JSON.stringify({ id: "users", type: "query.subscribe", query: "users" }));
       assert.deepEqual((await readSocketMessage(socket)).data, []);
+      const usersAfterAdaPromise = waitForSocketMessage(
+        socket,
+        (message) => message.id === "users" && message.type === "query.result" && message.data.length === 1,
+      );
       socket.send(JSON.stringify({ id: "add-ada", type: "mutation.run", mutation: "addUser", args: ["Ada"] }));
       assert.equal((await readSocketMessage(socket)).error, null);
-      const usersAfterAda = await readSocketMessage(socket);
+      const usersAfterAda = await usersAfterAdaPromise;
       const adaId = usersAfterAda.data[0].id;
       assert.equal(usersAfterAda.data[0].name, "Ada");
 
       socket.send(JSON.stringify({ id: "posts", type: "query.subscribe", query: "posts" }));
       assert.deepEqual((await readSocketMessage(socket)).data, []);
+      const postsAfterInsertPromise = waitForSocketMessage(
+        socket,
+        (message) => message.id === "posts" && message.type === "query.result" && message.data.length === 1,
+      );
       socket.send(
         JSON.stringify({ id: "add-post", type: "mutation.run", mutation: "addPost", args: ["Notes on engines", adaId] }),
       );
       assert.equal((await readSocketMessage(socket)).error, null);
-      const postsAfterInsert = await waitForSocketMessage(
-        socket,
-        (message) => message.id === "posts" && message.type === "query.result" && message.data.length === 1,
-      );
+      const postsAfterInsert = await postsAfterInsertPromise;
       assert.equal(postsAfterInsert.data[0].authorId, adaId);
 
       const byAuthorResponse = await fetch(`${started.data.url}/posts/by-author?authorId=${adaId}`);
@@ -2934,14 +3616,19 @@ export default capsule({
       assert.equal(postsByAuthor[0].text, "Notes on engines");
       assert.equal(postsByAuthor[0].authorId, adaId);
 
-      socket.send(JSON.stringify({ id: "add-grace", type: "mutation.run", mutation: "addUser", args: ["Grace"] }));
-      assert.equal((await readSocketMessage(socket)).error, null);
-      const usersAfterGrace = await waitForSocketMessage(
+      const usersAfterGracePromise = waitForSocketMessage(
         socket,
         (message) => message.id === "users" && message.type === "query.result" && message.data.length === 2,
       );
+      socket.send(JSON.stringify({ id: "add-grace", type: "mutation.run", mutation: "addUser", args: ["Grace"] }));
+      assert.equal((await readSocketMessage(socket)).error, null);
+      const usersAfterGrace = await usersAfterGracePromise;
       const graceId = usersAfterGrace.data.find((user) => user.name === "Grace").id;
 
+      const postsAfterUpdatePromise = waitForSocketMessage(
+        socket,
+        (message) => message.id === "posts" && message.type === "query.result" && message.data[0]?.authorId === graceId,
+      );
       socket.send(
         JSON.stringify({
           id: "update-author",
@@ -2951,10 +3638,7 @@ export default capsule({
         }),
       );
       assert.equal((await readSocketMessage(socket)).error, null);
-      const postsAfterUpdate = await waitForSocketMessage(
-        socket,
-        (message) => message.id === "posts" && message.type === "query.result" && message.data[0]?.authorId === graceId,
-      );
+      const postsAfterUpdate = await postsAfterUpdatePromise;
       assert.equal(postsAfterUpdate.data[0].text, "Notes on engines");
 
       socket.send(
@@ -3001,7 +3685,7 @@ export default capsule({
       const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
       assert.equal(dumpResult.code, 0, dumpResult.stderr);
       const postsTable = JSON.parse(dumpResult.stdout).data.tables.find((table) => table.name === "posts");
-      assert.deepEqual(postsTable.columns, ["id", "createdAt", "updatedAt", "text", "authorId", "ownerId", "editorId"]);
+      assert.deepEqual(postsTable.columns, ["id", "createdAt", "updatedAt", "text", "authorId", "editorId", "ownerId"]);
       assert.equal(postsTable.rows[0].authorId, graceId);
       assert.equal(postsTable.rows[0].editorId, graceId);
     } finally {
@@ -3373,23 +4057,19 @@ export default capsule({
         }),
       );
       const signUp = await readSocketMessage(socket);
-      assert.deepEqual(signUp, {
-        id: "signup-1",
-        type: "auth.signUp.result",
-        data: {
-          ok: true,
-          sessionToken: anonymousAuth.data.sessionToken,
-          auth: {
-            userId: anonymousAuth.data.auth.userId,
-            displayName: "Mira",
-            email: "mira@example.com",
-            picture: null,
-            isAuthenticated: true,
-            isGuest: false,
-            provider: "email",
-          },
-        },
-        error: null,
+      assert.equal(signUp.id, "signup-1");
+      assert.equal(signUp.type, "auth.signUp.result");
+      assert.equal(signUp.error, null);
+      assert.equal(signUp.data.ok, true);
+      assert.notEqual(signUp.data.sessionToken, anonymousAuth.data.sessionToken);
+      assert.deepEqual(signUp.data.auth, {
+        userId: anonymousAuth.data.auth.userId,
+        displayName: "Mira",
+        email: "mira@example.com",
+        picture: null,
+        isAuthenticated: true,
+        isGuest: false,
+        provider: "email",
       });
 
       socket.send(JSON.stringify({ id: "me-1", type: "query.subscribe", query: "me" }));
@@ -3467,6 +4147,7 @@ export default capsule({
 
     const child = startCli(["dev", "--json"], { cwd: projectDir });
     let socket;
+    let expiredSocket;
     try {
       const started = await waitForJsonLine(child);
       socket = await openSocket(started.data.url);
@@ -3529,29 +4210,45 @@ export default capsule({
         }),
       );
       const goodSignIn = await readSocketMessage(socket);
-      assert.deepEqual(goodSignIn, {
-        id: "signin-good",
-        type: "auth.signIn.result",
-        data: {
-          ok: true,
-          sessionToken: anonymousAuth.data.sessionToken,
-          auth: {
-            userId: emailUserId,
-            displayName: "Mira",
-            email: "mira@example.com",
-            picture: null,
-            isAuthenticated: true,
-            isGuest: false,
-            provider: "email",
-          },
-        },
-        error: null,
+      assert.equal(goodSignIn.id, "signin-good");
+      assert.equal(goodSignIn.type, "auth.signIn.result");
+      assert.equal(goodSignIn.error, null);
+      assert.equal(goodSignIn.data.ok, true);
+      assert.notEqual(goodSignIn.data.sessionToken, anonymousAuth.data.sessionToken);
+      assert.deepEqual(goodSignIn.data.auth, {
+        userId: emailUserId,
+        displayName: "Mira",
+        email: "mira@example.com",
+        picture: null,
+        isAuthenticated: true,
+        isGuest: false,
+        provider: "email",
       });
 
       socket.send(JSON.stringify({ id: "me-1", type: "query.subscribe", query: "me" }));
       assert.deepEqual((await readSocketMessage(socket)).data, goodSignIn.data.auth);
+
+      const { DatabaseSync } = await import("node:sqlite");
+      const sqlite = new DatabaseSync(path.join(projectDir, ".sporades", "data.db"));
+      try {
+        sqlite
+          .prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE token = ?")
+          .run("2000-01-01T00:00:00.000Z", goodSignIn.data.sessionToken);
+      } finally {
+        sqlite.close();
+      }
+      socket.close();
+      socket = null;
+
+      expiredSocket = await openSocket(started.data.url, goodSignIn.data.sessionToken);
+      expiredSocket.send(JSON.stringify({ id: "auth-expired-linked", type: "auth.get" }));
+      const expiredLinked = await readSocketMessage(expiredSocket);
+      assert.equal(expiredLinked.data.auth.provider, "anonymous");
+      assert.notEqual(expiredLinked.data.auth.userId, emailUserId);
+      assert.notEqual(expiredLinked.data.sessionToken, goodSignIn.data.sessionToken);
     } finally {
       socket?.close();
+      expiredSocket?.close();
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
     }
@@ -3596,6 +4293,16 @@ test("Google auth callback exchanges the code server-side and links the current 
         const userId = anonymousAuth.data.auth.userId;
         assert.equal(anonymousAuth.data.auth.isGuest, true);
         assert.equal(anonymousAuth.data.providers.google.configured, true);
+        const googlePreRefreshExpiry = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+        const { DatabaseSync } = await import("node:sqlite");
+        const sqlite = new DatabaseSync(path.join(projectDir, ".sporades", "data.db"));
+        try {
+          sqlite
+            .prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE token = ?")
+            .run(googlePreRefreshExpiry, anonymousAuth.data.sessionToken);
+        } finally {
+          sqlite.close();
+        }
 
         socket.send(JSON.stringify({ id: "query-1", type: "query.subscribe", query: "todos" }));
         assert.deepEqual((await readSocketMessage(socket)).data, []);
@@ -3653,6 +4360,7 @@ test("Google auth callback exchanges the code server-side and links the current 
         socket.send(JSON.stringify({ id: "auth-2", type: "auth.get" }));
         const linked = await readSocketMessage(socket);
         assert.equal(linked.type, "auth.result");
+        assert.equal(linked.data.sessionToken, anonymousAuth.data.sessionToken);
         assert.deepEqual(linked.data.auth, {
           userId,
           displayName: "Mira",
@@ -3662,6 +4370,15 @@ test("Google auth callback exchanges the code server-side and links the current 
           isGuest: false,
           provider: "google",
         });
+        const refreshedSqlite = new DatabaseSync(path.join(projectDir, ".sporades", "data.db"));
+        try {
+          const refreshedSession = refreshedSqlite
+            .prepare("SELECT expiresAt FROM sporades_auth_sessions WHERE token = ?")
+            .get(linked.data.sessionToken);
+          assert.ok(Date.parse(refreshedSession.expiresAt) > Date.parse(googlePreRefreshExpiry));
+        } finally {
+          refreshedSqlite.close();
+        }
 
         socket.send(JSON.stringify({ id: "query-2", type: "query.subscribe", query: "todos" }));
         const todosAfterLink = await readSocketMessage(socket);
@@ -3879,7 +4596,7 @@ test("sporades db dump returns structured table data from the running dev sessio
             },
             {
               name: "sporades_auth_sessions",
-              columns: ["token", "userId", "createdAt"],
+              columns: ["token", "userId", "createdAt", "expiresAt"],
               rows: [],
             },
             {
@@ -4094,6 +4811,144 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
   });
 });
 
+test("sporades dev runs query handlers from the bundled Capsule module", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "query-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "query-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "helpers.ts"),
+      `export function decorateGreeting(name: string) {
+  return \`Hello, \${name}!\`;
+}
+`,
+    );
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, query } from "sporades/server";
+import { decorateGreeting } from "./helpers";
+
+const salutation = "Ada";
+
+export default capsule({
+  name: "query-island",
+
+  queries: {
+    greeting: query(() => ({
+      text: decorateGreeting(salutation),
+      parts: ["bundled", "query"],
+    })),
+
+    broken: query(() => {
+      throw new Error("Imported helper went sideways.");
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      const socket = await openSocket(started.data.url);
+      try {
+        socket.send(JSON.stringify({ id: "greeting-1", type: "query.subscribe", query: "greeting" }));
+        assert.deepEqual(await readSocketMessage(socket), {
+          id: "greeting-1",
+          type: "query.result",
+          query: "greeting",
+          data: {
+            text: "Hello, Ada!",
+            parts: ["bundled", "query"],
+          },
+          error: null,
+        });
+
+        socket.send(JSON.stringify({ id: "broken-1", type: "query.subscribe", query: "broken" }));
+        assert.deepEqual(await readSocketMessage(socket), {
+          id: "broken-1",
+          type: "query.result",
+          query: "broken",
+          error: {
+            message: "Imported helper went sideways.",
+            hint: "Check the Capsule query handler and retry the query.",
+          },
+        });
+
+        const stillServing = await fetch(started.data.url);
+        assert.equal(stillServing.status, 200);
+      } finally {
+        socket.close();
+      }
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev awaits async Capsule query handlers before sending results", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "async-query-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "async-query-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, query } from "sporades/server";
+
+export default capsule({
+  name: "async-query-island",
+
+  queries: {
+    greeting: query(async () => {
+      await Promise.resolve();
+      return { text: "async query resolved" };
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+
+      socket.send(JSON.stringify({ id: "greeting", type: "query.subscribe", query: "greeting" }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "greeting",
+        type: "query.result",
+        query: "greeting",
+        data: { text: "async query resolved" },
+        error: null,
+      });
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("a scaffolded guestbook trims, validates, and reads shared entries over WebSocket", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "guest-island", "--template", "guestbook", "--no-install", "--no-git", "--json"], {
@@ -4138,6 +4993,13 @@ test("a scaffolded guestbook trims, validates, and reads shared entries over Web
         assert.equal(longResult.type, "mutation.result");
         assert.equal(longResult.error.message, "Guestbook messages must be 280 characters or fewer.");
 
+        const firstRefreshPromise = waitForSocketMessage(
+          socket,
+          (message) =>
+            message.type === "query.result" &&
+            message.query === "entries" &&
+            message.data.some((entry) => entry.body === "First note"),
+        );
         socket.send(JSON.stringify({ id: "sign-1", type: "mutation.run", mutation: "sign", args: ["  First note  "] }));
         assert.deepEqual(await readSocketMessage(socket), {
           id: "sign-1",
@@ -4146,7 +5008,7 @@ test("a scaffolded guestbook trims, validates, and reads shared entries over Web
           data: null,
           error: null,
         });
-        const firstRefresh = await readSocketMessage(socket);
+        const firstRefresh = await firstRefreshPromise;
         assert.equal(firstRefresh.data.length, 1);
         assert.equal(firstRefresh.data[0].body, "First note");
         assert.equal(firstRefresh.data[0].authorId, authResult.data.auth.userId);
@@ -4154,9 +5016,16 @@ test("a scaffolded guestbook trims, validates, and reads shared entries over Web
         assert.equal(firstRefresh.data[0].authorPicture, "");
 
         await new Promise((resolve) => setTimeout(resolve, 5));
+        const secondRefreshPromise = waitForSocketMessage(
+          socket,
+          (message) =>
+            message.type === "query.result" &&
+            message.query === "entries" &&
+            message.data.some((entry) => entry.body === "Second note"),
+        );
         socket.send(JSON.stringify({ id: "sign-2", type: "mutation.run", mutation: "sign", args: ["Second note"] }));
         assert.equal((await readSocketMessage(socket)).error, null);
-        const secondRefresh = await readSocketMessage(socket);
+        const secondRefresh = await secondRefreshPromise;
         assert.deepEqual(
           secondRefresh.data.map((entry) => entry.body),
           ["Second note", "First note"],
@@ -4317,6 +5186,95 @@ export default capsule({
       });
     } finally {
       socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev awaits async app message handlers before sending app results", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "async-message-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "async-message-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, message } from "sporades/server";
+
+export default capsule({
+  name: "async-message-island",
+
+  messages: {
+    typing: message(async (ctx, data) => {
+      await Promise.resolve();
+      ctx.messages.send({ type: "typing", data: { resolved: data.active } });
+      return { ok: true, resolved: data.active };
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let firstSocket;
+    let secondSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      firstSocket = await openSocket(started.data.url);
+      firstSocket.send(JSON.stringify({ id: "auth", type: "auth.get" }));
+      const auth = await readSocketMessage(firstSocket);
+      secondSocket = await openSocket(started.data.url, auth.data.sessionToken);
+
+      const firstAppMessage = waitForSocketMessage(
+        firstSocket,
+        (message) => message.type === "app.message" && message.message === "typing",
+      );
+      const secondAppMessage = waitForSocketMessage(
+        secondSocket,
+        (message) => message.type === "app.message" && message.message === "typing",
+      );
+      const sendResult = waitForSocketMessage(
+        firstSocket,
+        (message) => message.id === "typing" && message.type === "app.result",
+      );
+
+      firstSocket.send(
+        JSON.stringify({
+          id: "typing",
+          type: "app.send",
+          message: "typing",
+          data: { active: true },
+        }),
+      );
+
+      assert.deepEqual(await firstAppMessage, {
+        type: "app.message",
+        message: "typing",
+        data: { resolved: true },
+      });
+      assert.deepEqual(await secondAppMessage, {
+        type: "app.message",
+        message: "typing",
+        data: { resolved: true },
+      });
+      assert.deepEqual(await sendResult, {
+        id: "typing",
+        type: "app.result",
+        message: "typing",
+        data: { ok: true, resolved: true },
+        error: null,
+      });
+    } finally {
+      firstSocket?.close();
+      secondSocket?.close();
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
     }
@@ -4768,6 +5726,426 @@ export default capsule({
   });
 });
 
+test("sporades dev awaits async mutation handlers and hooks before commit and subscription refresh", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "async-mutation-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "async-mutation-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: "async-mutation-island",
+
+  schema: {
+    todos: table({
+      text: String(),
+      ownerId: String(),
+    }),
+    auditLogs: table({
+      text: String(),
+      ownerId: String(),
+    }),
+  },
+
+  queries: {
+    todos: query((ctx) =>
+      ctx.db.todos
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "asc")
+        .all()
+    ),
+    auditLogs: query((ctx) =>
+      ctx.db.auditLogs
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "asc")
+        .all()
+    ),
+  },
+
+  mutations: {
+    addTodo: mutation(async (ctx, text: string) => {
+      ctx.db.todos.insert({ text: text + ":before-await", ownerId: ctx.auth.userId });
+      await Promise.resolve();
+      ctx.db.todos.insert({ text: text + ":after-await", ownerId: ctx.auth.userId });
+      return { inserted: 2 };
+    }),
+  },
+
+  hooks: {
+    beforeMutation: [
+      async ({ ctx }) => {
+        await Promise.resolve();
+        ctx.db.auditLogs.insert({ text: "before-hook", ownerId: ctx.auth.userId });
+      },
+    ],
+    afterMutation: [
+      async ({ ctx, result }) => {
+        await Promise.resolve();
+        const todoCount = ctx.db.todos.where("ownerId", ctx.auth.userId).all().length;
+        ctx.db.auditLogs.insert({
+          text: "after-hook:" + result.data.inserted + ":" + todoCount,
+          ownerId: ctx.auth.userId,
+        });
+      },
+    ],
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+
+      socket.send(JSON.stringify({ id: "todos", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+      socket.send(JSON.stringify({ id: "audits", type: "query.subscribe", query: "auditLogs" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+
+      const mutationResult = waitForSocketMessage(
+        socket,
+        (message) => message.id === "add" && message.type === "mutation.result",
+      );
+      const todosRefresh = waitForSocketMessage(
+        socket,
+        (message) => message.id === "todos" && message.type === "query.result" && message.data.length === 2,
+      );
+      const auditsRefresh = waitForSocketMessage(
+        socket,
+        (message) => message.id === "audits" && message.type === "query.result" && message.data.length === 2,
+      );
+      socket.send(JSON.stringify({ id: "add", type: "mutation.run", mutation: "addTodo", args: ["ship"] }));
+
+      assert.deepEqual(await mutationResult, {
+        id: "add",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: { inserted: 2 },
+        error: null,
+      });
+      assert.deepEqual(
+        (await todosRefresh).data.map((todo) => todo.text),
+        ["ship:before-await", "ship:after-await"],
+      );
+      assert.deepEqual(
+        (await auditsRefresh).data.map((audit) => audit.text),
+        ["before-hook", "after-hook:2:2"],
+      );
+
+      const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
+      assert.equal(dumpResult.code, 0, dumpResult.stderr);
+      const tables = JSON.parse(dumpResult.stdout).data.tables;
+      assert.deepEqual(
+        tables.find((table) => table.name === "todos").rows.map((row) => row.text),
+        ["ship:before-await", "ship:after-await"],
+      );
+      assert.deepEqual(
+        tables.find((table) => table.name === "auditLogs").rows.map((row) => row.text),
+        ["before-hook", "after-hook:2:2"],
+      );
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev processes same-socket WebSocket messages in order around async mutations", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "queued-mutation-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "queued-mutation-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: "queued-mutation-island",
+
+  schema: {
+    todos: table({
+      text: String(),
+      ownerId: String(),
+    }),
+  },
+
+  queries: {
+    todos: query((ctx) =>
+      ctx.db.todos
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "asc")
+        .all()
+    ),
+  },
+
+  mutations: {
+    addTodo: mutation(async (ctx, text: string) => {
+      ctx.db.todos.insert({ text: text + ":before-await", ownerId: ctx.auth.userId });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      ctx.db.todos.insert({ text: text + ":after-await", ownerId: ctx.auth.userId });
+      return { inserted: 2 };
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+
+      const mutationResult = waitForSocketMessage(
+        socket,
+        (message) => message.id === "add" && message.type === "mutation.result",
+      );
+      const queryResult = waitForSocketMessage(
+        socket,
+        (message) => message.id === "todos-after-add" && message.type === "query.result",
+      );
+      socket.send(JSON.stringify({ id: "add", type: "mutation.run", mutation: "addTodo", args: ["ship"] }));
+      socket.send(JSON.stringify({ id: "todos-after-add", type: "query.subscribe", query: "todos" }));
+
+      assert.deepEqual(await mutationResult, {
+        id: "add",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: { inserted: 2 },
+        error: null,
+      });
+      assert.deepEqual(
+        (await queryResult).data.map((todo) => todo.text),
+        ["ship:before-await", "ship:after-await"],
+      );
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev runs Capsule mutation handlers from the bundled module", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "bundled-mutation-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "bundled-mutation-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, mutation, query, String, table } from "sporades/server";
+
+const TODO_PREFIX = "bundled:";
+
+export default capsule({
+  name: "bundled-mutation-island",
+
+  schema: {
+    todos: table({
+      text: String(),
+      ownerId: String(),
+    }),
+  },
+
+  queries: {
+    todos: query((ctx) =>
+      ctx.db.todos
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "desc")
+        .all()
+    ),
+  },
+
+  mutations: {
+    addTodo: mutation((ctx, text: string) => {
+      ctx.db.todos.insert({
+        text: TODO_PREFIX + text.trim().replace(/\\s+/g, " "),
+        ownerId: ctx.auth.userId,
+      });
+      if (text.trim() === "rollback") {
+        throw Object.assign(new Error("No rollback todos."), {
+          hint: "Try calmer todo text.",
+        });
+      }
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+
+      socket.send(JSON.stringify({ id: "todos", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+
+      socket.send(JSON.stringify({ id: "record", type: "mutation.run", mutation: "addTodo", args: ["  imported   helper  "] }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "record",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: null,
+        error: null,
+      });
+
+      const refreshed = await readSocketMessage(socket);
+      assert.equal(refreshed.id, "todos");
+      assert.equal(refreshed.type, "query.result");
+      assert.equal(refreshed.error, null);
+      assert.deepEqual(
+        refreshed.data.map((todo) => todo.text),
+        ["bundled:imported helper"],
+      );
+
+      socket.send(JSON.stringify({ id: "rollback", type: "mutation.run", mutation: "addTodo", args: ["rollback"] }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "rollback",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: null,
+        error: {
+          message: "No rollback todos.",
+          hint: "Try calmer todo text.",
+        },
+      });
+
+      const dumpResult = await runCli(["db", "query", "SELECT text FROM todos ORDER BY createdAt", "--json"], { cwd: projectDir });
+      assert.equal(dumpResult.code, 0, dumpResult.stderr);
+      assert.deepEqual(JSON.parse(dumpResult.stdout).data.rows, [{ text: "bundled:imported helper" }]);
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev runs imported-helper Capsule mutation handlers from the bundled module", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "helper-mutation-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "helper-mutation-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "todo-text.ts"),
+      `export function cleanTodoText(value: string) {
+  return "helper:" + value.trim().replace(/\\s+/g, " ");
+}
+`,
+    );
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, mutation, query, String, table } from "sporades/server";
+import { cleanTodoText } from "./todo-text";
+
+export default capsule({
+  name: "helper-mutation-island",
+
+  schema: {
+    todos: table({
+      text: String(),
+      ownerId: String(),
+    }),
+  },
+
+  queries: {
+    todos: query((ctx) =>
+      ctx.db.todos
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "desc")
+        .all()
+    ),
+  },
+
+  mutations: {
+    addTodo: mutation((ctx, text: string) => {
+      ctx.db.todos.insert({
+        text: cleanTodoText(text),
+        ownerId: ctx.auth.userId,
+      });
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+
+      socket.send(JSON.stringify({ id: "todos", type: "query.subscribe", query: "todos" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+
+      socket.send(JSON.stringify({ id: "record", type: "mutation.run", mutation: "addTodo", args: ["  imported   helper  "] }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "record",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: null,
+        error: null,
+      });
+
+      const refreshed = await readSocketMessage(socket);
+      assert.equal(refreshed.id, "todos");
+      assert.equal(refreshed.type, "query.result");
+      assert.equal(refreshed.error, null);
+      assert.deepEqual(
+        refreshed.data.map((todo) => todo.text),
+        ["helper:imported helper"],
+      );
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev applies Capsule context middleware to WebSocket requests and endpoints", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "middleware-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -4931,6 +6309,70 @@ export default capsule({
   });
 });
 
+test("sporades dev awaits async endpoint handlers and context middleware before writing responses", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "async-endpoint-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "async-endpoint-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "TENANT=green\n");
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "async-endpoint-island",
+
+  middleware: [
+    async (ctx) => {
+      await Promise.resolve();
+      return { ...ctx, tenant: ctx.env.TENANT };
+    },
+  ],
+
+  endpoints: {
+    tenant: endpoint({ method: "GET", path: "/tenant" }, async (ctx) => {
+      await Promise.resolve();
+      return {
+        status: 202,
+        headers: { "x-tenant": ctx.tenant },
+        body: {
+          tenant: ctx.tenant,
+          kind: ctx.kind,
+        },
+      };
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+
+      const response = await fetch(`${started.data.url}/tenant`);
+      assert.equal(response.status, 202);
+      assert.equal(response.headers.get("x-tenant"), "green");
+      assert.deepEqual(await response.json(), {
+        tenant: "green",
+        kind: "endpoint",
+      });
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("WebSocket auth.get creates a persistent anonymous session token", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -4947,6 +6389,7 @@ test("WebSocket auth.get creates a persistent anonymous session token", async ()
 
     const child = startCli(["dev", "--json"], { cwd: projectDir });
     let socket;
+    let expiredSocket;
     try {
       const started = await waitForJsonLine(child);
       socket = await openSocket(started.data.url);
@@ -4969,8 +6412,38 @@ test("WebSocket auth.get creates a persistent anonymous session token", async ()
         provider: "anonymous",
       });
       assert.equal(typeof auth.data.auth.userId, "string");
+
+      const { DatabaseSync } = await import("node:sqlite");
+      const sqlite = new DatabaseSync(path.join(projectDir, ".sporades", "data.db"));
+      try {
+        const storedSession = sqlite
+          .prepare("SELECT token, userId, createdAt, expiresAt FROM sporades_auth_sessions WHERE token = ?")
+          .get(auth.data.sessionToken);
+        assert.equal(storedSession.token, auth.data.sessionToken);
+        assert.equal(storedSession.userId, auth.data.auth.userId);
+        assert.match(storedSession.createdAt, /^\d{4}-\d{2}-\d{2}T/);
+        assert.match(storedSession.expiresAt, /^\d{4}-\d{2}-\d{2}T/);
+        assert.ok(Date.parse(storedSession.expiresAt) > Date.now());
+
+        sqlite
+          .prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE token = ?")
+          .run("2000-01-01T00:00:00.000Z", auth.data.sessionToken);
+      } finally {
+        sqlite.close();
+      }
+
+      socket.close();
+      socket = null;
+      expiredSocket = await openSocket(started.data.url, auth.data.sessionToken);
+      expiredSocket.send(JSON.stringify({ id: "auth-expired", type: "auth.get" }));
+      const refreshedAuth = await readSocketMessage(expiredSocket);
+      assert.equal(refreshedAuth.type, "auth.result");
+      assert.notEqual(refreshedAuth.data.sessionToken, auth.data.sessionToken);
+      assert.notEqual(refreshedAuth.data.auth.userId, auth.data.auth.userId);
+      assert.equal(refreshedAuth.data.auth.provider, "anonymous");
     } finally {
       socket?.close();
+      expiredSocket?.close();
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
     }
@@ -5097,6 +6570,8 @@ test("sporades dev persists private file uploads across dev session restarts", a
       assert.equal(uploadUrl.data.file.size, 11);
       assert.equal(uploadUrl.data.file.type, "text/plain");
       assert.match(uploadUrl.data.file.path, /^\/__sporades\/files\/private\//);
+      assert.doesNotMatch(uploadUrl.data.file.path, /sessionToken/);
+      assert.equal(uploadUrl.data.file.path.includes(auth.data.sessionToken), false);
 
       const uploadResponse = await fetch(new URL(uploadUrl.data.uploadUrl, started.data.url), {
         method: uploadUrl.data.method,
@@ -5110,6 +6585,16 @@ test("sporades dev persists private file uploads across dev session restarts", a
       socket.send(JSON.stringify({ id: "file-url", type: "file.url", fileId: uploaded.data.file.id }));
       const privateUrl = await readSocketMessage(socket);
       assert.equal(privateUrl.error, null);
+      assert.match(privateUrl.data.url, /^\/__sporades\/files\/private\//);
+      assert.doesNotMatch(privateUrl.data.url, /sessionToken/);
+      assert.equal(privateUrl.data.url.includes(auth.data.sessionToken), false);
+      assert.doesNotMatch(privateUrl.data.file.path, /sessionToken/);
+      assert.equal(privateUrl.data.file.path.includes(auth.data.sessionToken), false);
+
+      const queryTokenUrl = new URL(privateUrl.data.url, started.data.url);
+      queryTokenUrl.searchParams.set("sessionToken", auth.data.sessionToken);
+      const queryTokenResponse = await fetch(queryTokenUrl);
+      assert.equal(queryTokenResponse.status, 404);
 
       const privateResponse = await fetch(new URL(privateUrl.data.url, started.data.url), {
         headers: { "x-sporades-session-token": auth.data.sessionToken },
@@ -5179,6 +6664,11 @@ test("sporades dev enforces public URL expiry choices, ownership, and replacemen
       ownerSocket.send(JSON.stringify({ id: "fresh-private", type: "file.url", fileId: uploadUrl.data.file.id }));
       const privateUrl = await waitForSocketMessage(ownerSocket, (message) => message.id === "fresh-private");
       assert.equal(privateUrl.error, null);
+      assert.match(privateUrl.data.url, /^\/__sporades\/files\/private\//);
+      assert.doesNotMatch(privateUrl.data.url, /sessionToken/);
+      assert.equal(privateUrl.data.url.includes(ownerAuth.data.sessionToken), false);
+      assert.doesNotMatch(privateUrl.data.file.path, /sessionToken/);
+      assert.equal(privateUrl.data.file.path.includes(ownerAuth.data.sessionToken), false);
 
       otherSocket = await openSocket(started.data.url);
       otherSocket.send(JSON.stringify({ id: "other-auth", type: "auth.get" }));
@@ -5293,7 +6783,7 @@ function openSocketWithHeaders(baseUrl, headers = {}) {
       cleanup();
       socket.destroy();
       reject(new Error("Timed out opening raw WebSocket."));
-    }, 5000);
+    }, 10000);
 
     function cleanup() {
       clearTimeout(timeout);
@@ -5371,7 +6861,7 @@ function readRawWebSocketJson(socket, initialBuffer = Buffer.alloc(0)) {
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error("Timed out waiting for raw WebSocket message."));
-    }, 5000);
+    }, 10000);
 
     function cleanup() {
       clearTimeout(timeout);
@@ -5413,7 +6903,7 @@ function readSocketMessage(socket) {
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error("Timed out waiting for WebSocket message."));
-    }, 5000);
+    }, TEST_WEBSOCKET_TIMEOUT_MS);
 
     function cleanup() {
       clearTimeout(timeout);
@@ -5439,7 +6929,7 @@ function waitForSocketClose(socket) {
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error("Timed out waiting for WebSocket close."));
-    }, 5000);
+    }, TEST_WEBSOCKET_TIMEOUT_MS);
 
     function cleanup() {
       clearTimeout(timeout);
@@ -5473,7 +6963,7 @@ function waitForSocketMessage(socket, predicate) {
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error("Timed out waiting for WebSocket message"));
-    }, 5000);
+    }, TEST_WEBSOCKET_TIMEOUT_MS);
 
     function cleanup() {
       clearTimeout(timeout);

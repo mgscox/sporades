@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { readFileSync, watch } from "node:fs";
+import { readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -736,7 +736,7 @@ async function createProject(options) {
 }
 
 async function startDevSession(options) {
-  const config = await readProjectConfig(options.projectDir);
+  let config = await readProjectConfig(options.projectDir);
   const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4000;
   const bundle = await createBundle(options.projectDir, config);
 
@@ -751,6 +751,7 @@ async function startDevSession(options) {
     databasePath,
     serverSource: bundle.serverRuntime.source,
     serverEnv: bundle.serverRuntime.env,
+    capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
     config,
   });
   const websocketHub = createWebSocketHub(() => runtime.database);
@@ -883,11 +884,20 @@ async function startDevSession(options) {
   );
   const watchers = watchDevInputs(options.projectDir, async (change) => {
     try {
-      const rebuild = await createBundle(options.projectDir, config);
-      if (change.affectsServerRuntime) {
-        await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, config);
+      const nextConfig = await readProjectConfig(options.projectDir);
+      const rebuild = await createBundle(options.projectDir, nextConfig);
+      const affectsServerRuntime =
+        change.affectsServerRuntime || (change.configChanged && configChangeAffectsServerRuntime(config, nextConfig));
+      if (affectsServerRuntime) {
+        await runtime.restart(
+          rebuild.serverRuntime.source,
+          rebuild.serverRuntime.env,
+          rebuild.serverRuntime.capsuleModuleSource,
+          nextConfig,
+        );
         websocketHub.disconnectAll();
       }
+      config = nextConfig;
       emitDevEvent(options, {
         event: "rebuild",
         status: "success",
@@ -929,14 +939,26 @@ async function startDevSession(options) {
 }
 
 async function createDevRuntime(options) {
-  let database = await openDevDatabase(options.databasePath, options.serverSource, options.serverEnv, options.config);
+  let database = await openDevDatabase(
+    options.databasePath,
+    options.serverSource,
+    options.serverEnv,
+    options.config,
+    await importCapsuleDefinition(options.capsuleModuleSource),
+  );
 
   return {
     get database() {
       return database;
     },
-    async restart(serverSource, serverEnv, config) {
-      const nextDatabase = await openDevDatabase(options.databasePath, serverSource, serverEnv, config);
+    async restart(serverSource, serverEnv, capsuleModuleSource, config) {
+      const nextDatabase = await openDevDatabase(
+        options.databasePath,
+        serverSource,
+        serverEnv,
+        config,
+        await importCapsuleDefinition(capsuleModuleSource),
+      );
       database.close();
       database = nextDatabase;
     },
@@ -946,28 +968,57 @@ async function createDevRuntime(options) {
   };
 }
 
+async function importCapsuleDefinition(moduleSource) {
+  const encodedModule = Buffer.from(moduleSource, "utf8").toString("base64");
+  const module = await import(`data:text/javascript;base64,${encodedModule}`);
+  return module.default ?? null;
+}
+
 function watchDevInputs(projectDir, onChange) {
   const watchedPaths = [
     { path: path.join(projectDir, "server"), affectsServerRuntime: true },
     { path: path.join(projectDir, "client"), affectsServerRuntime: false },
     { path: path.join(projectDir, "shared"), affectsServerRuntime: true },
     { path: path.join(projectDir, "index.html"), affectsServerRuntime: false },
-    { path: path.join(projectDir, "sporades.json"), affectsServerRuntime: true },
+    { path: path.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true },
   ];
   const watchers = [];
   let debounceTimer = null;
   let pendingChange = null;
+  let rebuildInFlight = false;
+  let lastHandledSignature = null;
 
   const schedule = (change) => {
     pendingChange = {
       affectsServerRuntime: Boolean(pendingChange?.affectsServerRuntime || change.affectsServerRuntime),
+      configChanged: Boolean(pendingChange?.configChanged || change.configChanged),
     };
     clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      const currentChange = pendingChange ?? { affectsServerRuntime: true };
-      pendingChange = null;
-      onChange(currentChange);
-    }, DEV_REBUILD_DEBOUNCE_MS);
+    debounceTimer = setTimeout(runPendingChange, DEV_REBUILD_DEBOUNCE_MS);
+  };
+
+  const runPendingChange = async () => {
+    if (rebuildInFlight) {
+      return;
+    }
+    const currentChange = pendingChange ?? { affectsServerRuntime: true };
+    pendingChange = null;
+    const currentSignature = readDevInputSignature(watchedPaths);
+    if (currentSignature === lastHandledSignature) {
+      return;
+    }
+
+    rebuildInFlight = true;
+    try {
+      await onChange(currentChange);
+      lastHandledSignature = currentSignature;
+    } finally {
+      rebuildInFlight = false;
+      if (pendingChange) {
+        clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(runPendingChange, DEV_REBUILD_DEBOUNCE_MS);
+      }
+    }
   };
 
   for (const watchedPath of watchedPaths) {
@@ -981,6 +1032,52 @@ function watchDevInputs(projectDir, onChange) {
   }
 
   return watchers;
+}
+
+function configChangeAffectsServerRuntime(currentConfig, nextConfig) {
+  return JSON.stringify(serverRuntimeConfig(currentConfig)) !== JSON.stringify(serverRuntimeConfig(nextConfig));
+}
+
+function serverRuntimeConfig(config) {
+  const { client: _client, ...serverConfig } = config ?? {};
+  return serverConfig;
+}
+
+function readDevInputSignature(watchedPaths) {
+  const entries = [];
+
+  for (const watchedPath of watchedPaths) {
+    collectPathSignature(watchedPath.path, entries);
+  }
+
+  return entries.sort().join("\n");
+}
+
+function collectPathSignature(filePath, entries) {
+  let stats;
+  try {
+    stats = statSync(filePath);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      entries.push(`${filePath}:missing`);
+      return;
+    }
+    throw error;
+  }
+
+  if (stats.isDirectory()) {
+    const children = readdirSync(filePath);
+    if (children.length === 0) {
+      entries.push(`${filePath}:dir:empty`);
+      return;
+    }
+    for (const child of children) {
+      collectPathSignature(path.join(filePath, child), entries);
+    }
+    return;
+  }
+
+  entries.push(`${filePath}:file:${stats.size}:${stats.mtimeMs}`);
 }
 
 function emitDevEvent(options, data, error = null) {
@@ -1494,12 +1591,19 @@ async function startContainerSession(options) {
       "--detach",
       "--name",
       containerName,
+      "--read-only",
+      "--tmpfs",
+      "/tmp:rw,nosuid,nodev,noexec",
+      "--cap-drop",
+      "ALL",
+      "--security-opt",
+      "no-new-privileges",
       "--publish",
       `${port}:4000`,
       ...bundleMountArgs,
       ...envArgs,
       "--volume",
-      `${dataDir}:/app/data`,
+      `${dataDir}:/app/data:rw`,
       "--workdir",
       "/app",
       "--env",
