@@ -7,6 +7,8 @@ import { spawn } from "node:child_process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { openDevDatabase, routeRuntimeHealth } from "../src/server-runtime-source.js";
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
 const hostHelperPath = path.join(repoRoot, "bin", "sporades-host-helper.js");
@@ -945,6 +947,127 @@ test("sporades host health checks the selected Host profile and reports safe JSO
       assert.equal(explicitHealth.code, 0, explicitHealth.stderr);
       assert.deepEqual(JSON.parse(explicitHealth.stdout), JSON.parse(health.stdout));
     });
+  });
+});
+
+test("sporades host health checks a Hosted Capsule runtime through the remote helper", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+if (request.action !== "capsule.health") {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected action.", hint: "Use capsule.health." }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    capsule: {
+      subname: request.capsule.subname,
+      domain: request.host.domain,
+      hostedUrl: request.health.hostedUrl,
+      remoteCapsuleId: request.health.remoteCapsuleId,
+      registered: true
+    },
+    release: { id: "20260703T120000Z-abc12345", current: true },
+    container: { name: request.health.container.name, running: true },
+    route: { url: request.health.runtimeHealthUrl, responding: true },
+    runtime: {
+      ready: true,
+      checks: {
+        sqlite: { ok: true },
+        fileStorage: { ok: true }
+      }
+    }
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    await writeHostProfileConfig(configDir, {
+      currentHostAlias: "personal",
+      profiles: {
+        personal: {
+          server: "root@example.test",
+          domain: "capsules.example.dev",
+          scheme: "https",
+          remoteRoot: "/opt/sporades",
+          tls: { mode: "automatic" },
+        },
+      },
+    });
+
+    const health = await runCli(["host", "health", "team-notes", "--json"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+
+    assert.equal(health.code, 0, health.stderr);
+    assert.deepEqual(JSON.parse(health.stdout), {
+      ok: true,
+      data: {
+        capsule: {
+          subname: "team-notes",
+          domain: "capsules.example.dev",
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          remoteCapsuleId: "capsules.example.dev/team-notes",
+          registered: true,
+        },
+        release: { id: "20260703T120000Z-abc12345", current: true },
+        container: { name: "sporades-capsules-example-dev-team-notes", running: true },
+        route: {
+          url: "https://team-notes.capsules.example.dev/__sporades/health/runtime",
+          responding: true,
+        },
+        runtime: {
+          ready: true,
+          checks: {
+            sqlite: { ok: true },
+            fileStorage: { ok: true },
+          },
+        },
+      },
+      error: null,
+    });
+
+    const explicitHealth = await runCli(["host", "health", "team-notes", "--host", "personal", "--json"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(explicitHealth.code, 0, explicitHealth.stderr);
+    assert.deepEqual(JSON.parse(explicitHealth.stdout), JSON.parse(health.stdout));
+
+    const [sshCall, explicitSshCall] = await readJsonl(fakeSsh.logPath);
+    assert.deepEqual(JSON.parse(sshCall.stdin), {
+      action: "capsule.health",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot: "/opt/sporades",
+      },
+      capsule: {
+        subname: "team-notes",
+      },
+      health: {
+        domain: "capsules.example.dev",
+        subname: "team-notes",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        runtimeHealthUrl: "https://team-notes.capsules.example.dev/__sporades/health/runtime",
+        container: {
+          name: "sporades-capsules-example-dev-team-notes",
+        },
+      },
+    });
+    assert.deepEqual(JSON.parse(explicitSshCall.stdin), JSON.parse(sshCall.stdin));
   });
 });
 
@@ -2022,6 +2145,8 @@ test("sporades host helper registers Hosted Capsules with registry state and una
     assert.equal((await stat(request.registration.directories.logs)).isDirectory(), true);
     const routeContents = await readFile(expectedRoute.routeFile, "utf8");
     assert.match(routeContents, /team-notes\.capsules\.example\.dev/);
+    assert.match(routeContents, /@sporadesRuntimeHealth path \/__sporades\/health\/runtime/);
+    assert.match(routeContents, /respond @sporadesRuntimeHealth 404/);
     assert.match(routeContents, /respond "Hosted Capsule unavailable" 503/);
     assert.match(routeContents, /hosts\/capsules\.example\.dev\/capsules\/team-notes\/logs\/http\.log/);
     assert.doesNotMatch(routeContents, /418|caller-controlled|tls /);
@@ -2844,7 +2969,339 @@ test("sporades host helper starts the current release in Docker and routes throu
     const routeContents = await readFile(routeFile, "utf8");
     assert.match(routeContents, /log \{\n    output file .*remote-root\/hosts\/capsules\.example\.dev\/capsules\/team-notes\/logs\/http\.log \{/);
     assert.match(routeContents, /roll_size 10MiB/);
+    assert.match(routeContents, /@sporadesRuntimeHealth path \/__sporades\/health\/runtime/);
+    assert.match(routeContents, /header x-sporades-host-probe [a-f0-9]{64}/);
+    assert.match(routeContents, /respond @sporadesRuntimeHealth 404/);
     assert.match(routeContents, /reverse_proxy 127\.0\.0\.1:49153/);
+    const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
+    assert.equal(record.runtimeProbe.header, "x-sporades-host-probe");
+    assert.match(record.runtimeProbe.token, /^[a-f0-9]{64}$/);
+    assert.equal(JSON.stringify(output).includes(record.runtimeProbe.token), false);
+    assert.equal(JSON.stringify(output).includes("SECRET_TOKEN"), false);
+  });
+});
+
+test("sporades host helper checks Hosted Capsule runtime health with a Host-owned probe credential", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const docker = await installFakeDocker(dir);
+
+    await withHttpServer((request, response) => {
+      assert.equal(request.url, "/__sporades/health/runtime");
+      assert.equal(request.headers["x-sporades-host-probe"], "probe-secret");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          data: {
+            runtime: { ready: true },
+            checks: {
+              sqlite: { ok: true },
+              fileStorage: { ok: true },
+            },
+          },
+          error: null,
+        }),
+      );
+    }, async (port) => {
+      const domain = `localhost:${port}`;
+      const hostedUrl = `http://team-notes.localhost:${port}`;
+      const registryRecordPath = path.join(remoteRoot, "hosts", domain, "registry", "capsules", "team-notes.json");
+      await mkdir(path.dirname(registryRecordPath), { recursive: true });
+      await writeFile(
+        registryRecordPath,
+        `${JSON.stringify({
+          subname: "team-notes",
+          domain,
+          remoteCapsuleId: `${domain}/team-notes`,
+          hostedUrl,
+          status: "running",
+          currentRelease: { id: "20260630T221500Z-feedface" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+        })}\n`,
+      );
+
+      const health = await runHostHelper(
+        {
+          action: "capsule.health",
+          host: { alias: "personal", domain, scheme: "http", remoteRoot },
+          capsule: { subname: "team-notes" },
+          health: {
+            runtimeHealthUrl: "http://malicious.localhost/__sporades/health/runtime",
+            hostedUrl: "https://malicious.example.test",
+            remoteCapsuleId: "malicious.example.test/team-notes",
+            container: { name: "sporades-capsules-example-dev-team-notes" },
+          },
+        },
+        { cwd: dir, env: docker.env },
+      );
+
+      assert.equal(health.code, 0, health.stderr);
+      assert.deepEqual(JSON.parse(health.stdout), {
+        ok: true,
+        data: {
+          capsule: {
+            subname: "team-notes",
+            domain,
+            hostedUrl,
+            remoteCapsuleId: `${domain}/team-notes`,
+            registered: true,
+          },
+          release: { id: "20260630T221500Z-feedface", current: true },
+          container: { name: "sporades-capsules-example-dev-team-notes", running: true },
+          route: {
+            url: `${hostedUrl}/__sporades/health/runtime`,
+            responding: true,
+          },
+          runtime: {
+            ready: true,
+            checks: {
+              sqlite: { ok: true },
+              fileStorage: { ok: true },
+            },
+          },
+        },
+        error: null,
+      });
+      assert.equal(health.stdout.includes("probe-secret"), false);
+    });
+  });
+});
+
+test("sporades host helper does not send the runtime probe credential to caller-supplied URLs", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const docker = await installFakeDocker(dir);
+    let maliciousRequests = 0;
+
+    await withHttpServer((request, response) => {
+      assert.equal(request.headers["x-sporades-host-probe"], "probe-secret");
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          data: {
+            runtime: { ready: true },
+            checks: {
+              sqlite: { ok: true },
+              fileStorage: { ok: true },
+            },
+          },
+          error: null,
+        }),
+      );
+    }, async (validPort) => {
+      await withHttpServer((_request, response) => {
+        maliciousRequests += 1;
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify({ ok: true, data: {}, error: null }));
+      }, async (maliciousPort) => {
+        const domain = `localhost:${validPort}`;
+        const hostedUrl = `http://team-notes.localhost:${validPort}`;
+        const registryRecordPath = path.join(remoteRoot, "hosts", domain, "registry", "capsules", "team-notes.json");
+        await mkdir(path.dirname(registryRecordPath), { recursive: true });
+        await writeFile(
+          registryRecordPath,
+          `${JSON.stringify({
+            subname: "team-notes",
+            domain,
+            remoteCapsuleId: `${domain}/team-notes`,
+            hostedUrl,
+            status: "running",
+            currentRelease: { id: "20260630T221500Z-feedface" },
+            runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+          })}\n`,
+        );
+
+        const health = await runHostHelper(
+          {
+            action: "capsule.health",
+            host: { alias: "personal", domain, scheme: "http", remoteRoot },
+            capsule: { subname: "team-notes" },
+            health: {
+              runtimeHealthUrl: `http://localhost:${maliciousPort}/__sporades/health/runtime`,
+              hostedUrl: `http://localhost:${maliciousPort}`,
+              remoteCapsuleId: `localhost:${maliciousPort}/team-notes`,
+              container: { name: "sporades-capsules-example-dev-team-notes" },
+            },
+          },
+          { cwd: dir, env: docker.env },
+        );
+
+        assert.equal(health.code, 0, health.stderr);
+        assert.equal(JSON.parse(health.stdout).ok, true);
+        assert.equal(maliciousRequests, 0);
+        assert.equal(health.stdout.includes("probe-secret"), false);
+      });
+    });
+  });
+});
+
+test("Sporades runtime health rejects unauthenticated probes and returns safe readiness checks", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {});
+    const server = createServer(async (request, response) => {
+      if (await routeRuntimeHealth(database, request, response)) {
+        return;
+      }
+      response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
+      response.end("Not found");
+    });
+
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+
+    try {
+      const port = server.address().port;
+      const unauthenticated = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`);
+      assert.equal(unauthenticated.status, 404);
+      assert.equal(await unauthenticated.text(), "Not found");
+
+      const authenticated = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {
+        headers: { "x-sporades-host-probe": "probe-secret" },
+      });
+      assert.equal(authenticated.status, 200);
+      const body = await authenticated.json();
+      assert.deepEqual(body, {
+        ok: true,
+        data: {
+          runtime: { ready: true },
+          checks: {
+            sqlite: { ok: true },
+            fileStorage: { ok: true },
+          },
+        },
+        error: null,
+      });
+      const raw = JSON.stringify(body);
+      assert.equal(raw.includes(dir), false);
+      assert.equal(raw.includes("probe-secret"), false);
+      assert.equal(raw.includes("SPORADES"), false);
+    } finally {
+      database.close();
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+});
+
+test("sporades host helper reports structured Hosted Capsule runtime health failures", async () => {
+  await withTempDir(async (dir) => {
+    const baseRoot = path.join(dir, "remote-root");
+
+    async function writeHealthRecord(root, overrides = {}) {
+      const domain = overrides.domain ?? "capsules.example.dev";
+      const { scheme = "https", ...recordOverrides } = overrides;
+      const registryRecordPath = path.join(root, "hosts", domain, "registry", "capsules", "team-notes.json");
+      await mkdir(path.dirname(registryRecordPath), { recursive: true });
+      await writeFile(
+        registryRecordPath,
+        `${JSON.stringify({
+          subname: "team-notes",
+          domain,
+          remoteCapsuleId: `${domain}/team-notes`,
+          hostedUrl: `${scheme}://team-notes.${domain}`,
+          status: "running",
+          currentRelease: { id: "20260630T221500Z-feedface" },
+          runtimeProbe: { header: "x-sporades-host-probe", token: "probe-secret" },
+          ...recordOverrides,
+        })}\n`,
+      );
+    }
+
+    async function runHealth(root, env = {}, host = {}) {
+      const domain = host.domain ?? "capsules.example.dev";
+      const scheme = host.scheme ?? "https";
+      return runHostHelper(
+        {
+          action: "capsule.health",
+          host: { alias: "personal", domain, scheme, remoteRoot: root },
+          capsule: { subname: "team-notes" },
+          health: {
+            runtimeHealthUrl: "http://malicious.localhost/__sporades/health/runtime",
+            hostedUrl: "https://malicious.example.test",
+            remoteCapsuleId: "malicious.example.test/team-notes",
+            container: { name: "sporades-capsules-example-dev-team-notes" },
+          },
+        },
+        { cwd: dir, env },
+      );
+    }
+
+    const missingRoot = path.join(baseRoot, "missing");
+    const missingDocker = await installFakeDocker(path.join(dir, "missing-docker"));
+    const missing = await runHealth(missingRoot, missingDocker.env);
+    assert.equal(missing.code, 0, missing.stderr);
+    assert.equal(JSON.parse(missing.stdout).data.failure, "unregistered-capsule");
+
+    const noReleaseRoot = path.join(baseRoot, "no-release");
+    await writeHealthRecord(noReleaseRoot, { currentRelease: null });
+    const noReleaseDocker = await installFakeDocker(path.join(dir, "no-release-docker"));
+    const noRelease = await runHealth(noReleaseRoot, noReleaseDocker.env);
+    assert.equal(noRelease.code, 0, noRelease.stderr);
+    assert.equal(JSON.parse(noRelease.stdout).data.failure, "no-current-release");
+
+    const stoppedRoot = path.join(baseRoot, "stopped");
+    await writeHealthRecord(stoppedRoot);
+    const stoppedDocker = await installFakeDocker(path.join(dir, "stopped-docker"), { env: { FAKE_DOCKER_RUNNING: "false" } });
+    const stopped = await runHealth(stoppedRoot, stoppedDocker.env);
+    assert.equal(stopped.code, 0, stopped.stderr);
+    assert.equal(JSON.parse(stopped.stdout).data.failure, "stopped-container");
+
+    const routeRoot = path.join(baseRoot, "route");
+    const routeDocker = await installFakeDocker(path.join(dir, "route-docker"));
+    const routePort = await reserveUnusedPort();
+    const routeDomain = `localhost:${routePort}`;
+    await writeHealthRecord(routeRoot, {
+      domain: routeDomain,
+      scheme: "http",
+      hostedUrl: `http://team-notes.localhost:${routePort}`,
+      remoteCapsuleId: `${routeDomain}/team-notes`,
+    });
+    const route = await runHealth(routeRoot, routeDocker.env, { domain: routeDomain, scheme: "http" });
+    assert.equal(route.code, 0, route.stderr);
+    assert.equal(JSON.parse(route.stdout).data.failure, "route-failure");
+
+    const responseCases = [
+      {
+        failure: "runtime-failure",
+        body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: true } } }, error: null },
+      },
+      {
+        failure: "sqlite-failure",
+        body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: false }, fileStorage: { ok: true } } }, error: null },
+      },
+      {
+        failure: "file-storage-failure",
+        body: { ok: false, data: { runtime: { ready: false }, checks: { sqlite: { ok: true }, fileStorage: { ok: false } } }, error: null },
+      },
+    ];
+
+    for (const responseCase of responseCases) {
+      const root = path.join(baseRoot, responseCase.failure);
+      const docker = await installFakeDocker(path.join(dir, `${responseCase.failure}-docker`));
+      await withHttpServer((request, response) => {
+        assert.equal(request.headers["x-sporades-host-probe"], "probe-secret");
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(JSON.stringify(responseCase.body));
+      }, async (port) => {
+        const domain = `localhost:${port}`;
+        await writeHealthRecord(root, {
+          domain,
+          scheme: "http",
+          hostedUrl: `http://team-notes.localhost:${port}`,
+          remoteCapsuleId: `${domain}/team-notes`,
+        });
+        const result = await runHealth(root, docker.env, { domain, scheme: "http" });
+        assert.equal(result.code, 0, result.stderr);
+        const output = JSON.parse(result.stdout);
+        assert.equal(output.ok, false);
+        assert.equal(output.data.failure, responseCase.failure);
+        assert.equal(result.stdout.includes("probe-secret"), false);
+        assert.equal(result.stdout.includes(baseRoot), false);
+      });
+    }
   });
 });
 
@@ -2885,6 +3342,8 @@ test("sporades host helper stops containers and routes Hosted Capsules to unavai
     const routeContents = await readFile(routeFile, "utf8");
     assert.match(routeContents, /log \{\n    output file .*remote-root\/hosts\/capsules\.example\.dev\/capsules\/team-notes\/logs\/http\.log \{/);
     assert.match(routeContents, /roll_keep 5/);
+    assert.match(routeContents, /@sporadesRuntimeHealth path \/__sporades\/health\/runtime/);
+    assert.match(routeContents, /respond @sporadesRuntimeHealth 404/);
     assert.match(routeContents, /respond "Hosted Capsule unavailable" 503/);
     assert.equal(JSON.parse(await readFile(registryRecordPath, "utf8")).status, "stopped");
   });

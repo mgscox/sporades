@@ -2,6 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { access, chmod, mkdir, readdir, readFile, readlink, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { randomBytes } from "node:crypto";
 import path from "node:path";
 
 const HOST_HELPER_CONFIG_FILE = "sporades-host-helper.json";
@@ -10,6 +11,8 @@ const DEFAULT_HOSTED_CAPSULE_DOCKER_NETWORK = "sporades-hosted-capsules";
 const DEFAULT_HOSTED_CAPSULE_GRACE_CHECK_MS = 500;
 const DEFAULT_HOST_LOG_LINES_VALUE = 200;
 const DEFAULT_MAX_HOST_LOG_LINES = 10000;
+const CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
+const RUNTIME_PROBE_HEADER = "x-sporades-host-probe";
 
 let HOSTED_CAPSULE_DOCKER_IMAGE = DEFAULT_HOSTED_CAPSULE_DOCKER_IMAGE;
 let HOSTED_CAPSULE_DOCKER_NETWORK = DEFAULT_HOSTED_CAPSULE_DOCKER_NETWORK;
@@ -68,6 +71,10 @@ async function main() {
   }
   if (request.action === "capsule.stats") {
     await statsCapsule(request);
+    return;
+  }
+  if (request.action === "capsule.health") {
+    await healthCapsule(request);
     return;
   }
   if (request.action === "capsule.list") {
@@ -528,7 +535,8 @@ async function startCapsule(request, options = {}) {
     return null;
   }
 
-  const runningRoute = loopbackRunningRoute(lifecycle.routes.running, publishedPort);
+  const runtimeProbe = await ensureRuntimeProbeCredential(request);
+  const runningRoute = loopbackRunningRoute({ ...lifecycle.routes.running, runtimeProbe }, publishedPort);
   try {
     await writeRunningRoute(lifecycle, runningRoute);
   } catch (error) {
@@ -549,12 +557,197 @@ async function startCapsule(request, options = {}) {
       running: true,
       publishedPort,
     },
-    route: runningRoute,
+    route: publicRouteData(runningRoute),
   };
   if (options.write !== false) {
     writeEnvelope({ ok: true, data, error: null });
   }
   return data;
+}
+
+async function healthCapsule(request) {
+  validateHealthRequest(request);
+  let health = normaliseHealth(request);
+  let record;
+  try {
+    record = await readRegistryRecordForCapsule(request, "health");
+  } catch (error) {
+    if (error.message === "Hosted Capsule is not registered.") {
+      writeEnvelope(unregisteredHealthFailure(request, health));
+      return;
+    }
+    throw error;
+  }
+  assertRegistryRecordMatchesRequest(request, record);
+  health = normaliseHealth(request, record);
+  if (record.status === "unregistered") {
+    writeEnvelope(unregisteredHealthFailure(request, health));
+    return;
+  }
+
+  if (!record.currentRelease?.id) {
+    writeEnvelope(
+      healthFailure(
+        request,
+        health,
+        "no-current-release",
+        "Hosted Capsule has no current release.",
+        `Run \`sporades host push --host ${request.host.alias} --subname ${request.capsule.subname}\`, then retry health.`,
+      ),
+    );
+    return;
+  }
+
+  const running = checkContainerRunning(health.container.name);
+  if (!running) {
+    writeEnvelope(
+      healthFailure(
+        request,
+        health,
+        "stopped-container",
+        "Hosted Capsule has no running container.",
+        `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry health.`,
+      ),
+    );
+    return;
+  }
+
+  const runtimeProbe = readRuntimeProbeCredential(record);
+  if (!runtimeProbe) {
+    writeEnvelope(
+      healthFailure(
+        request,
+        health,
+        "route-failure",
+        "Hosted Capsule runtime probe is not configured.",
+        `Restart the Hosted Capsule with \`sporades host restart ${request.capsule.subname} --host ${request.host.alias}\`, then retry health.`,
+      ),
+    );
+    return;
+  }
+
+  let response;
+  try {
+    response = await fetch(health.runtimeHealthUrl, {
+      headers: {
+        accept: "application/json",
+        [runtimeProbe.header]: runtimeProbe.token,
+      },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    writeEnvelope(
+      healthFailure(
+        request,
+        health,
+        "route-failure",
+        "Hosted Capsule route did not respond to runtime health.",
+        "Check DNS, Caddy, and the Hosted Capsule route, then retry health.",
+      ),
+    );
+    return;
+  }
+
+  if (!response.ok) {
+    writeEnvelope(
+      healthFailure(
+        request,
+        health,
+        "route-failure",
+        "Hosted Capsule route returned an HTTP failure for runtime health.",
+        "Check Caddy routing and Hosted Capsule logs, then retry health.",
+        { statusCode: response.status },
+      ),
+    );
+    return;
+  }
+
+  let body;
+  try {
+    body = JSON.parse(await response.text());
+  } catch {
+    writeEnvelope(
+      healthFailure(
+        request,
+        health,
+        "runtime-failure",
+        "Hosted Capsule runtime health returned invalid JSON.",
+        "Check Hosted Capsule logs, then retry health.",
+      ),
+    );
+    return;
+  }
+
+  const runtime = normaliseRuntimeHealthBody(body);
+  if (!runtime.valid) {
+    writeEnvelope(
+      healthFailure(
+        request,
+        health,
+        "runtime-failure",
+        "Hosted Capsule runtime health had an unexpected shape.",
+        "Update the Hosted Capsule release and retry health.",
+      ),
+    );
+    return;
+  }
+  if (!runtime.checks.sqlite.ok) {
+    writeEnvelope(
+      healthFailure(
+        request,
+        health,
+        "sqlite-failure",
+        "Hosted Capsule SQLite health check failed.",
+        "Check the Hosted Capsule data volume and runtime logs, then retry health.",
+        { runtime: runtime.safe },
+      ),
+    );
+    return;
+  }
+  if (!runtime.checks.fileStorage.ok) {
+    writeEnvelope(
+      healthFailure(
+        request,
+        health,
+        "file-storage-failure",
+        "Hosted Capsule file storage health check failed.",
+        "Check the Hosted Capsule data volume permissions, then retry health.",
+        { runtime: runtime.safe },
+      ),
+    );
+    return;
+  }
+  if (!body.ok || !runtime.ready) {
+    writeEnvelope(
+      healthFailure(
+        request,
+        health,
+        "runtime-failure",
+        "Hosted Capsule runtime is not ready.",
+        "Check Hosted Capsule logs, then retry health.",
+        { runtime: runtime.safe },
+      ),
+    );
+    return;
+  }
+
+  writeEnvelope({
+    ok: true,
+    data: {
+      capsule: {
+        subname: request.capsule.subname,
+        domain: request.host.domain,
+        hostedUrl: health.hostedUrl,
+        remoteCapsuleId: health.remoteCapsuleId,
+        registered: true,
+      },
+      release: { id: record.currentRelease.id, current: true },
+      container: { name: health.container.name, running: true },
+      route: { url: health.runtimeHealthUrl, responding: true },
+      runtime: runtime.safe,
+    },
+    error: null,
+  });
 }
 
 async function stopCapsule(request, options = {}) {
@@ -912,6 +1105,94 @@ function normaliseStats(request) {
       name: provided.container?.name ?? createHostedContainerName(domain, subname),
     },
   };
+}
+
+function normaliseHealth(request, record = null) {
+  const provided = request.health ?? {};
+  const subname = request.capsule.subname;
+  const domain = request.host.domain;
+  const hostedUrl = record?.hostedUrl ?? `${request.host.scheme ?? "https"}://${subname}.${domain}`;
+  const remoteCapsuleId = record?.remoteCapsuleId ?? `${domain}/${subname}`;
+  return {
+    hostedUrl,
+    remoteCapsuleId,
+    runtimeHealthUrl: `${hostedUrl}${CAPSULE_RUNTIME_HEALTH_PATH}`,
+    container: {
+      name: provided.container?.name ?? createHostedContainerName(domain, subname),
+    },
+  };
+}
+
+async function ensureRuntimeProbeCredential(request) {
+  let probe = null;
+  await mutateRegistryRecord(request, (record) => {
+    probe = readRuntimeProbeCredential(record) ?? {
+      header: RUNTIME_PROBE_HEADER,
+      token: randomBytes(32).toString("hex"),
+      createdAt: new Date().toISOString(),
+    };
+    return { ...record, runtimeProbe: probe };
+  });
+  return probe;
+}
+
+function readRuntimeProbeCredential(record) {
+  const header = record?.runtimeProbe?.header;
+  const token = record?.runtimeProbe?.token;
+  if (header !== RUNTIME_PROBE_HEADER || typeof token !== "string" || token.length === 0) {
+    return null;
+  }
+  return { header, token };
+}
+
+function normaliseRuntimeHealthBody(body) {
+  const checks = body?.data?.checks;
+  const sqlite = checks?.sqlite;
+  const fileStorage = checks?.fileStorage;
+  const ready = body?.data?.runtime?.ready;
+  const valid = typeof body?.ok === "boolean" && typeof ready === "boolean" && typeof sqlite?.ok === "boolean" && typeof fileStorage?.ok === "boolean";
+  const safe = {
+    ready: ready === true,
+    checks: {
+      sqlite: { ok: sqlite?.ok === true },
+      fileStorage: { ok: fileStorage?.ok === true },
+    },
+  };
+  return { valid, ready: ready === true, checks: safe.checks, safe };
+}
+
+function healthFailure(request, health, failure, message, hint, extra = {}) {
+  return {
+    ok: false,
+    data: {
+      capsule: {
+        subname: request.capsule.subname,
+        domain: request.host.domain,
+        hostedUrl: health.hostedUrl,
+        remoteCapsuleId: health.remoteCapsuleId,
+      },
+      route: { url: health.runtimeHealthUrl },
+      container: { name: health.container.name },
+      failure,
+      ...extra,
+    },
+    error: { message, hint },
+  };
+}
+
+function unregisteredHealthFailure(request, health) {
+  return healthFailure(
+    request,
+    health,
+    "unregistered-capsule",
+    "Hosted Capsule is not registered.",
+    `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before checking runtime health.`,
+  );
+}
+
+function publicRouteData(route) {
+  const { runtimeProbe, ...safeRoute } = route;
+  return safeRoute;
 }
 
 async function readCapsuleRegistryRecords(request) {
@@ -1653,11 +1934,31 @@ function loopbackRunningRoute(route, publishedPort) {
 
 async function writeRunningRoute(lifecycle, route = lifecycle.routes.running) {
   await provisionRouteLogFile(route);
+  const proxyLine = `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4000}`}`;
   await applyManagedRoute(
     lifecycle,
     route.routeFile,
-    renderRoute(route, `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4000}`}`),
+    renderRoute(route, renderRunningRouteHandler(route, proxyLine)),
   );
+}
+
+function renderRunningRouteHandler(route, proxyLine) {
+  const probe = route.runtimeProbe;
+  if (!probe?.token || probe.header !== RUNTIME_PROBE_HEADER) {
+    return proxyLine;
+  }
+  return [
+    `@sporadesRuntimeHealth path ${CAPSULE_RUNTIME_HEALTH_PATH}`,
+    "@sporadesRuntimeProbe {",
+    `  path ${CAPSULE_RUNTIME_HEALTH_PATH}`,
+    `  header ${RUNTIME_PROBE_HEADER} ${probe.token}`,
+    "}",
+    "handle @sporadesRuntimeProbe {",
+    `  ${proxyLine}`,
+    "}",
+    "respond @sporadesRuntimeHealth 404",
+    proxyLine,
+  ].join("\n  ");
 }
 
 async function writeUnavailableRoute(lifecycle) {
@@ -1666,8 +1967,16 @@ async function writeUnavailableRoute(lifecycle) {
   await applyManagedRoute(
     lifecycle,
     route.routeFile,
-    renderRoute(route, `respond "Hosted Capsule unavailable" ${route.statusCode ?? 503}`),
+    renderRoute(route, renderUnavailableRouteHandler(route)),
   );
+}
+
+function renderUnavailableRouteHandler(route) {
+  return [
+    `@sporadesRuntimeHealth path ${CAPSULE_RUNTIME_HEALTH_PATH}`,
+    "respond @sporadesRuntimeHealth 404",
+    `respond "Hosted Capsule unavailable" ${route.statusCode ?? 503}`,
+  ].join("\n  ");
 }
 
 function renderRoute(route, handlerLine) {
@@ -2384,6 +2693,18 @@ function validateReleaseListRequest(request) {
   ];
   if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule releases request.", "Update the Sporades CLI and retry `sporades host releases`.");
+  }
+}
+
+function validateHealthRequest(request) {
+  const requiredStrings = [
+    request.host?.domain,
+    request.host?.alias,
+    request.host?.remoteRoot,
+    request.capsule?.subname,
+  ];
+  if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw helperError("Invalid Hosted Capsule health request.", "Update the Sporades CLI and retry the host health command.");
   }
 }
 

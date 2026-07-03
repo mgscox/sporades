@@ -66,6 +66,10 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   normalizeAuthConfig,
   readProviderConfig,
   createFileStorageTables,
+  routeRuntimeHealth,
+  createRuntimeHealthResult,
+  checkRuntimeSqlite,
+  checkRuntimeFileStorage,
   handleFileHttpRoute,
   readRequestBytes,
   writeJsonHttpResponse,
@@ -1009,6 +1013,69 @@ export async function handleFileHttpRoute(database, request, response, websocket
   }
 
   return false;
+}
+
+export async function routeRuntimeHealth(database, request, response) {
+  const requestUrl = new URL(request.url, "http://127.0.0.1");
+  if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/health/runtime") {
+    return false;
+  }
+
+  const probe = request.headers["x-sporades-host-probe"];
+  if (typeof probe !== "string" || probe.length === 0) {
+    writeNotFound(response);
+    return true;
+  }
+
+  const result = await createRuntimeHealthResult(database);
+  writeJsonHttpResponse(response, result.ok ? 200 : 503, result);
+  return true;
+}
+
+async function createRuntimeHealthResult(database) {
+  const checks = {
+    sqlite: checkRuntimeSqlite(database),
+    fileStorage: await checkRuntimeFileStorage(database),
+  };
+  const ready = checks.sqlite.ok && checks.fileStorage.ok;
+  return {
+    ok: ready,
+    data: {
+      runtime: { ready },
+      checks,
+    },
+    error: ready
+      ? null
+      : {
+          message: "Sporades runtime is not ready.",
+          hint: "Check Hosted Capsule logs and data volume permissions.",
+        },
+  };
+}
+
+function checkRuntimeSqlite(database) {
+  try {
+    database.sqlite.prepare("SELECT 1 AS ok").get();
+    return { ok: true };
+  } catch {
+    return { ok: false };
+  }
+}
+
+async function checkRuntimeFileStorage(database) {
+  const { mkdir, rm, writeFile } = await import("node:fs/promises");
+  const path = await import("node:path");
+  const probeDirectory = path.join(database.fileStoragePath, ".sporades-health");
+  const probeFile = path.join(probeDirectory, `${randomUUID()}.tmp`);
+  try {
+    await mkdir(probeDirectory, { recursive: true });
+    await writeFile(probeFile, "");
+    await rm(probeFile, { force: true });
+    return { ok: true };
+  } catch {
+    await rm(probeFile, { force: true }).catch(() => {});
+    return { ok: false };
+  }
 }
 
 function createFileStorageTables(sqlite) {

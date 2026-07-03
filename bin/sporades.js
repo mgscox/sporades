@@ -36,6 +36,7 @@ const RESERVED_CAPSULE_SUBNAMES = new Set(["www", "api", "admin", "root", "host"
 const MAX_HOST_LOG_LINES = 10000;
 const HOST_LOG_SOURCES = new Set(["http", "stdout", "stderr"]);
 const HOST_HEALTH_PATH = "/__sporades/health";
+const CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
 const CLI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 main().catch((error) => {
@@ -446,13 +447,17 @@ function parseHostArgs(args) {
   }
 
   if (subcommand === "health") {
-    if (positional.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host health --host <alias> --json`.");
+    const [positionalSubname, ...extra] = positional;
+    if (extra.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host health [subname] --host <alias> --json`.");
     }
     if (hostAlias) {
       validateHostAlias(hostAlias);
     }
-    return { subcommand, hostAlias, json, projectDir: process.cwd() };
+    if (positionalSubname) {
+      validateCapsuleSubname(positionalSubname);
+    }
+    return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
   }
 
   if (subcommand === "bind") {
@@ -1269,6 +1274,29 @@ async function manageHost(options) {
   if (options.subcommand === "health") {
     const config = await readHostConfig();
     const resolved = resolveHostProfile(config, options.hostAlias);
+    if (options.subname) {
+      const health = createHostRuntimeHealthRequest(resolved.profile, options.subname);
+      const result = invokeRemoteHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        action: "capsule.health",
+        subname: options.subname,
+        health,
+        projectDir: options.projectDir,
+      });
+
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+
+      if (!result.ok) {
+        throw commandError(result.error.message, result.error.hint);
+      }
+      process.stdout.write(`Hosted Capsule runtime healthy: ${health.runtimeHealthUrl}\n`);
+      return;
+    }
+
     const result = await checkHostServerHealth(resolved.alias, resolved.profile);
 
     if (options.json) {
@@ -2072,6 +2100,9 @@ function invokeRemoteHostHelper(options) {
   if (options.stats) {
     request.stats = options.stats;
   }
+  if (options.health) {
+    request.health = options.health;
+  }
   if (options.release) {
     request.release = options.release;
   }
@@ -2234,6 +2265,20 @@ function createHostStatsRequest(profile, subname) {
     subname,
     hostedUrl: `${profile.scheme}://${subname}.${profile.domain}`,
     remoteCapsuleId: `${profile.domain}/${subname}`,
+    container: {
+      name: createHostedContainerName(profile.domain, subname),
+    },
+  };
+}
+
+function createHostRuntimeHealthRequest(profile, subname) {
+  const hostedUrl = `${profile.scheme}://${subname}.${profile.domain}`;
+  return {
+    domain: profile.domain,
+    subname,
+    hostedUrl,
+    remoteCapsuleId: `${profile.domain}/${subname}`,
+    runtimeHealthUrl: `${hostedUrl}${CAPSULE_RUNTIME_HEALTH_PATH}`,
     container: {
       name: createHostedContainerName(profile.domain, subname),
     },
