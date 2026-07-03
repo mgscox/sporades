@@ -5,6 +5,7 @@
 - [User guide](docs/user-guide.md) - quick start and day-to-day Capsule usage.
 - [Architecture](docs/architecture.md) - platform ethos, runtime layout, Host
   routing, storage, and client transport.
+- [Roadmap](docs/ROADMAP.md) - candidate features and their promotion status.
 - [Runtime layout](docs/runtime-layout.md) - canonical filesystem paths,
   runtime mounts, and Host server directory structures.
 - [Host server installation](docs/server-installation.md) - preparing a Linux

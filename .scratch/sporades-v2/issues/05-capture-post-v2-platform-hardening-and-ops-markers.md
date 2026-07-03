@@ -16,7 +16,7 @@ Resolution: split into `.scratch/post-v2-platform-hardening-and-ops/` as post-v2
 - Add automatic OpenTelemetry so agents can monitor running apps.
 - Add JSON server logging to a centralized logger so agents can watch.
 - Gracefully restart the server on unhandled rejection and similar fatal paths.
-- Add a vector-storage extension to MySQL for AI tasks.
+- Add SQLite vector extension support for AI tasks.
 - Add a job queue using something like Bull.
 - Add job scheduling with a cron-like system.
 

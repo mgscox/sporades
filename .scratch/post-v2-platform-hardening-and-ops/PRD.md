@@ -22,7 +22,7 @@ These markers must not be implemented as part of v2 unless maintainers explicitl
 | Add automatic OpenTelemetry so agents can monitor running apps. | Post-v2, unassigned | `issues/04-add-automatic-opentelemetry.md` |
 | Add JSON server logging to a centralized logger so agents can watch. | Post-v2, unassigned | `issues/05-centralize-json-server-logging.md` |
 | Gracefully restart the server on unhandled rejection and similar fatal paths. | Post-v2, unassigned | `issues/06-handle-fatal-runtime-paths-with-restart-policy.md` |
-| Add a vector-storage extension to MySQL for AI tasks. | Post-v2, unassigned | `issues/07-evaluate-vector-storage-extension.md` |
+| Add SQLite vector extension support for AI tasks. | Post-v2, unassigned | `issues/07-evaluate-vector-storage-extension.md` |
 | Add a job queue using something like Bull. | Post-v2, unassigned | `issues/08-add-job-queue.md` |
 | Add job scheduling with a cron-like system. | Post-v2, unassigned | `issues/09-add-job-scheduling.md` |
 
