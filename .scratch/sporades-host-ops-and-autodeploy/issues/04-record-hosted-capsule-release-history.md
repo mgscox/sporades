@@ -1,6 +1,6 @@
 # Record Hosted Capsule release history
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
