@@ -3533,6 +3533,16 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert.equal(output.data.release.id, "20260630T221500Z-feedface");
     assert.equal(output.data.container.publishedPort.hostIp, "127.0.0.1");
     assert.equal(output.data.container.publishedPort.hostPort, 49153);
+    assert.deepEqual(output.data.restartPolicy, {
+      mode: "bounded",
+      maxAttempts: 3,
+      backoffMs: 1000,
+      dockerRestart: "on-failure:3",
+      restartFatalEvents: ["unhandledRejection", "uncaughtException", "initHookFailed"],
+      exitFatalEvents: ["sigterm", "sigint", "shutdownHookFailed"],
+      exhaustedRouteTarget: "hosted-capsule-unavailable",
+      verificationFallbackOnly: true,
+    });
     assert.equal(output.data.route.target, "loopback");
     assert.equal(output.data.route.upstream, "127.0.0.1:49153");
 
@@ -3541,6 +3551,7 @@ test("sporades host helper starts the current release in Docker and routes throu
     const runCall = calls[2];
     assert.equal(runCall.args[runCall.args.indexOf("--name") + 1], "sporades-capsules-example-dev-team-notes");
     assert.equal(runCall.args[runCall.args.indexOf("--network") + 1], "sporades-hosted-capsules");
+    assert.equal(runCall.args[runCall.args.indexOf("--restart") + 1], "on-failure:3");
     assert(runCall.args.includes("--read-only"));
     assert.equal(runCall.args[runCall.args.indexOf("--tmpfs") + 1], "/tmp:rw,nosuid,nodev,noexec");
     assert.equal(runCall.args[runCall.args.indexOf("--cap-drop") + 1], "ALL");
@@ -5459,7 +5470,7 @@ test("sporades host helper fails start when Docker does not report a usable loop
       [
         ["stop", "sporades-capsules-example-dev-team-notes"],
         ["rm", "sporades-capsules-example-dev-team-notes"],
-        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.1.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "client.js")}:/app/client.js:ro`, "--volume", `${path.join(capsuleDir, "current", "index.html")}:/app/index.html:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine", "node", "/app/server.mjs"],
+        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.1.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "client.js")}:/app/client.js:ro`, "--volume", `${path.join(capsuleDir, "current", "index.html")}:/app/index.html:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine", "node", "/app/server.mjs"],
         ["inspect", "-f", "{{.State.Running}}", "sporades-capsules-example-dev-team-notes"],
         ["inspect", "-f", "{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostIp}}:{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostPort}}", "sporades-capsules-example-dev-team-notes"],
         ["stop", "sporades-capsules-example-dev-team-notes"],
@@ -6545,6 +6556,110 @@ test("sporades host helper marks verified push failed when the Capsule route doe
     assert.equal(release.failure.message, "Hosted Capsule route did not respond to runtime health.");
     assert.equal(release.verificationAttempts.length, 1);
     assert.equal(release.verificationAttempts[0].failure.message, "Hosted Capsule route did not respond to runtime health.");
+  });
+});
+
+test("sporades host helper applies verification fallback only after the previous release restarts", async () => {
+  await withTempDir(async (dir) => {
+    const port = await reserveUnusedPort();
+    const fixture = await writeHostedCapsuleInstallFixture(dir, {
+      rootName: "verify-fallback-success",
+      domain: `localhost:${port}`,
+      scheme: "http",
+    });
+    const previousReleaseDir = path.join(fixture.capsuleDir, "releases", fixture.previousReleaseId);
+    await mkdir(previousReleaseDir, { recursive: true });
+    await writeFile(path.join(previousReleaseDir, "server.mjs"), "export default 'previous';\n");
+    await writeFile(path.join(previousReleaseDir, "client.js"), "console.log('previous');\n");
+    await writeFile(path.join(previousReleaseDir, "index.html"), "<div></div>\n");
+    await writeFile(path.join(previousReleaseDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+    const docker = await installFakeDocker(path.join(dir, "verify-fallback-success-docker"));
+
+    const install = await runHostHelper(
+      {
+        action: "capsule.release.install",
+        host: { alias: "personal", domain: fixture.domain, scheme: "http", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname },
+        release: fixture.release,
+        lifecycle: fixture.lifecycle,
+        verification: {
+          enabled: true,
+          fallbackToPreviousRelease: true,
+          healthTimeoutMs: 25,
+        },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(install.code, 1, install.stderr);
+    const output = JSON.parse(install.stdout);
+    assert.equal(output.ok, false);
+    assert.equal(output.data.fallback.applied, true);
+    assert.equal(output.data.fallback.release.id, fixture.previousReleaseId);
+    assert.equal(output.data.fallback.lifecycle.release.id, fixture.previousReleaseId);
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), previousReleaseDir);
+
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    const failedRelease = record.releases.find((entry) => entry.id === fixture.releaseId);
+    const fallbackRelease = record.releases.find((entry) => entry.id === fixture.previousReleaseId);
+    assert.equal(record.currentRelease.id, fixture.previousReleaseId);
+    assert.equal(record.status, "running");
+    assert.equal(failedRelease.current, false);
+    assert.equal(failedRelease.fallbackAttempts.length, 1);
+    assert.equal(failedRelease.fallbackAttempts[0].releaseId, fixture.previousReleaseId);
+    assert.equal(fallbackRelease.current, true);
+  });
+});
+
+test("sporades host helper keeps failed release current when verification fallback restart fails", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleInstallFixture(dir, {
+      rootName: "verify-fallback-restart-failure",
+    });
+    const previousReleaseDir = path.join(fixture.capsuleDir, "releases", fixture.previousReleaseId);
+    await mkdir(previousReleaseDir, { recursive: true });
+    await writeFile(path.join(previousReleaseDir, "server.mjs"), "export default 'previous';\n");
+    await writeFile(path.join(previousReleaseDir, "client.js"), "console.log('previous');\n");
+    await writeFile(path.join(previousReleaseDir, "index.html"), "<div></div>\n");
+    await writeFile(path.join(previousReleaseDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+    const docker = await installFakeDocker(path.join(dir, "verify-fallback-restart-failure-docker"), {
+      env: { FAKE_DOCKER_RUNNING: "false" },
+    });
+
+    const install = await runHostHelper(
+      {
+        action: "capsule.release.install",
+        host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname },
+        release: fixture.release,
+        lifecycle: fixture.lifecycle,
+        verification: {
+          enabled: true,
+          fallbackToPreviousRelease: true,
+        },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(install.code, 1, install.stderr);
+    const output = JSON.parse(install.stdout);
+    assert.equal(output.ok, false);
+    assert.equal(output.data.fallback.applied, false);
+    assert.equal(output.data.fallback.reason, "fallback-restart-failed");
+    assert.equal(output.data.fallback.release.id, fixture.previousReleaseId);
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), path.join(fixture.capsuleDir, "releases", fixture.releaseId));
+
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    const failedRelease = record.releases.find((entry) => entry.id === fixture.releaseId);
+    const fallbackRelease = record.releases.find((entry) => entry.id === fixture.previousReleaseId);
+    assert.equal(record.currentRelease.id, fixture.releaseId);
+    assert.equal(record.status, "failed");
+    assert.equal(failedRelease.current, true);
+    assert.equal(failedRelease.state, "failed");
+    assert.equal(failedRelease.fallbackAttempts.length, 1);
+    assert.equal(failedRelease.fallbackAttempts[0].releaseId, fixture.previousReleaseId);
+    assert.equal(failedRelease.fallbackAttempts[0].failure.message, "Hosted Capsule fallback restart failed.");
+    assert.equal(fallbackRelease.current, false);
   });
 });
 

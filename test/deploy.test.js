@@ -283,6 +283,14 @@ test("sporades deploy --json bundles and starts a container session", async () =
         url: "http://localhost:4321",
         port: 4321,
         containerId: "container-first",
+        restartPolicy: {
+          mode: "bounded",
+          maxAttempts: 3,
+          backoffMs: 1000,
+          dockerRestart: "on-failure:3",
+          restartFatalEvents: ["unhandledRejection", "uncaughtException", "initHookFailed"],
+          exitFatalEvents: ["sigterm", "sigint", "shutdownHookFailed"],
+        },
       },
       error: null,
     });
@@ -303,6 +311,7 @@ test("sporades deploy --json bundles and starts a container session", async () =
     assert.equal(runCall.args[0], "run");
     assert(runCall.args.includes("--detach"));
     assert.equal(runCall.args[runCall.args.indexOf("--name") + 1], "sporades-todo-island");
+    assert.equal(runCall.args[runCall.args.indexOf("--restart") + 1], "on-failure:3");
     assert(runCall.args.includes("--read-only"));
     assert.equal(runCall.args[runCall.args.indexOf("--tmpfs") + 1], "/tmp:rw,nosuid,nodev,noexec");
     assert.equal(runCall.args[runCall.args.indexOf("--cap-drop") + 1], "ALL");

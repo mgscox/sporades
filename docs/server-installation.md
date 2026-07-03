@@ -262,6 +262,29 @@ Capsule in one command:
 sporades host push --host personal --subname team-notes --restart --json
 ```
 
+For release verification, add `--verify`. Verification starts or restarts the
+new current release and checks the Hosted Capsule runtime health route:
+
+```sh
+sporades host push --host personal --subname team-notes --verify --json
+```
+
+By default, verification failure records the failed release and routes the
+Capsule to the Hosted Capsule unavailable response. Automatic fallback to the
+previous release is deliberately opt-in and only applies during release
+verification:
+
+```sh
+sporades host push --host personal --subname team-notes --verify --fallback-to-previous-release --json
+```
+
+If fallback is applied, release history records the failed release, the fallback
+decision, and the previous release selected as current. Arbitrary runtime
+crashes after a release has already been verified or accepted do not
+automatically roll back; Docker applies the bounded restart policy, and after
+exhaustion operators should inspect `host logs stdout`, fix the release, and
+push or explicitly roll back.
+
 **Important:** On macOS, set `COPYFILE_DISABLE=1` when pushing if tar includes AppleDouble
 `._*` metadata files; those files are not valid Hosted Capsule runtime files.
 Whilst the server helper will silently discard known metadata files, it is preferable 
@@ -358,6 +381,13 @@ release or container replacement records richer metadata. `manual` reports state
 without automatic mutation; `auto-patch` currently reports that in-container
 patching is unsupported because Base image updates happen by container
 replacement.
+
+Hosted Capsule containers run with Docker `--restart on-failure:3`. The Host
+helper reports this restart policy in lifecycle JSON and records failed starts
+or verification failures in release history. When retries are exhausted or a
+start cannot produce a usable loopback route, keep the route on the Hosted
+Capsule unavailable response and use `host logs stdout|stderr` plus release
+history to diagnose the crash.
 
 Plain output is available by omitting `--json`, but automation should prefer
 structured JSON.

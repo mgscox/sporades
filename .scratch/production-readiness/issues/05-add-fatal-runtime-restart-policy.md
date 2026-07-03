@@ -1,6 +1,6 @@
 # Add fatal runtime restart policy
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -20,20 +20,20 @@ fallback, docs, and tests.
 
 ## Acceptance criteria
 
-- [ ] The implementation defines which fatal paths trigger restart versus process exit.
-- [ ] Dev sessions restart automatically and emit visible terminal, JSONL, and structured log events.
-- [ ] Local Container sessions use bounded restart/backoff behavior and expose structured status.
-- [ ] Hosted Capsules use bounded restart/backoff behavior and expose structured status.
-- [ ] Restart behavior respects `init()` and `shutdown()` lifecycle hooks.
-- [ ] Retry limits and backoff avoid infinite restart loops.
-- [ ] Hosted Capsules route to the Hosted Capsule unavailable response after retry exhaustion by default.
-- [ ] Hosted Capsules may be configured to fall back to the prior release only during release verification.
-- [ ] Automatic fallback does not apply to arbitrary later runtime crashes after a release has already been verified or accepted.
-- [ ] Any fallback to a prior release is recorded in release history and surfaced in structured logs and CLI output.
-- [ ] Runtime crashes after a release has been verified or accepted use restart/backoff, structured failure output, and unavailable response when exhausted.
-- [ ] CLI and JSON output report fatal events, restart attempts, retry exhaustion, and fallback decisions.
-- [ ] Docs cover mode-specific restart behavior, release verification fallback, and operator guidance.
-- [ ] `docs/ROADMAP.md` is updated to reflect implementation status.
+- [x] The implementation defines which fatal paths trigger restart versus process exit.
+- [x] Dev sessions restart automatically and emit visible terminal, JSONL, and structured log events.
+- [x] Local Container sessions use bounded restart/backoff behavior and expose structured status.
+- [x] Hosted Capsules use bounded restart/backoff behavior and expose structured status.
+- [x] Restart behavior respects `init()` and `shutdown()` lifecycle hooks.
+- [x] Retry limits and backoff avoid infinite restart loops.
+- [x] Hosted Capsules route to the Hosted Capsule unavailable response after retry exhaustion by default.
+- [x] Hosted Capsules may be configured to fall back to the prior release only during release verification.
+- [x] Automatic fallback does not apply to arbitrary later runtime crashes after a release has already been verified or accepted.
+- [x] Any fallback to a prior release is recorded in release history and surfaced in structured logs and CLI output.
+- [x] Runtime crashes after a release has been verified or accepted use restart/backoff, structured failure output, and unavailable response when exhausted.
+- [x] CLI and JSON output report fatal events, restart attempts, retry exhaustion, and fallback decisions.
+- [x] Docs cover mode-specific restart behavior, release verification fallback, and operator guidance.
+- [x] `docs/ROADMAP.md` is updated to reflect implementation status.
 
 ## Blocked by
 

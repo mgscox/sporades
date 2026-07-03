@@ -37,7 +37,7 @@ production-readiness behavior end to end.
 | Hardened secrets | done | Sealed Server env now replaces plaintext project-root Server env files as the long-term default, with CLI import/export and Host-profile re-encryption while preserving `ctx.env`. | `.scratch/production-readiness/issues/03-add-sealed-server-env.md` |
 | Container filesystem hardening | done | Adds the Sporades-owned Node 22 Base image, non-root runtime user, explicit writable data paths, read-only release mounts, Base image labels/version reporting, and Host-visible update policy. | `.scratch/production-readiness/issues/04-add-hardened-base-image-and-filesystem-model.md` |
 | Central JSON logging | done | App `ctx.log` and platform runtime events now share a redacted `sporades.log.v1` envelope, durable JSONL stream, bounded SQLite recent index, CLI inspection, and Docker stdout visibility for Container sessions and Hosted Capsules. | `.scratch/production-readiness/issues/02-add-centralized-json-logging.md` |
-| Fatal runtime restart policy | ready | Defines restart, backoff, lifecycle-hook, and JSON output behavior for unhandled rejections, uncaught exceptions, and fatal runtime paths. | `.scratch/production-readiness/issues/05-add-fatal-runtime-restart-policy.md` |
+| Fatal runtime restart policy | done | Adds mode-specific fatal restart behavior: Dev-session automatic restart/logging, bounded Docker restart policy for local Container sessions and Hosted Capsules, Hosted unavailable routing on failed starts, and opt-in release-verification fallback to the previous release only during verification. | `.scratch/production-readiness/issues/05-add-fatal-runtime-restart-policy.md` |
 
 ## Data And Auth Helpers
 

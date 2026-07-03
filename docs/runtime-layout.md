@@ -207,3 +207,10 @@ sporades-example-com-team-notes
 Containers also carry Docker labels for Sporades ownership, Hosted domain,
 Capsule subname, Capsule ID, release ID, Base image name, Base image version,
 and Base image update policy.
+
+Hosted Capsule and local Container sessions use a bounded fatal runtime restart
+policy: Docker runs them with `--restart on-failure:3`. Dev sessions handle the
+same fatal paths in-process and restart automatically while emitting terminal,
+JSONL, and structured log events. Hosted Capsule fallback to a previous release
+is not a general crash response; it is only available during
+`host push --verify --fallback-to-previous-release`.

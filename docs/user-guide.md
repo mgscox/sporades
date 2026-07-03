@@ -827,6 +827,33 @@ inspection queries; `sporades logs --json` reads that index, while
 Container sessions and Hosted Capsules also emit JSON log events to Docker
 stdout.
 
+### Fatal Runtime Restart Policy
+
+Fatal runtime paths are handled by mode, and the policy is reported in JSON
+status output:
+
+- Dev sessions restart automatically after unhandled rejections, uncaught
+  exceptions, and failed `init()` or `shutdown()` lifecycle boundaries. The
+  terminal, `sporades dev --json`, and the structured log stream report the
+  fatal event, restart attempt, and exhaustion state. `SIGTERM` and `SIGINT`
+  still exit the Dev session.
+- Local Container sessions run with Docker `--restart on-failure:3`. Fatal
+  runtime exits such as unhandled rejections, uncaught exceptions, and failed
+  startup hooks get bounded restarts instead of infinite loops. `sporades
+  deploy --json` includes the restart policy.
+- Hosted Capsules also run with Docker `--restart on-failure:3`. Start,
+  restart, stats, health, release verification, and release history surfaces
+  expose lifecycle and restart-policy details. When a Hosted Capsule cannot be
+  kept running, its route returns the Hosted Capsule unavailable response.
+
+During `sporades host push --verify`, fallback to the previous release is only
+available when explicitly requested with
+`--fallback-to-previous-release`. This opt-in fallback applies to release
+verification only. Later runtime crashes after a release has already been
+verified or accepted do not automatically fall back; they use restart/backoff,
+structured failure output, Docker logs, and the unavailable response when
+retries are exhausted.
+
 ### Database
 
 List tables:
@@ -929,6 +956,7 @@ For normal release updates:
 
 ```sh
 sporades host push --host personal --subname team-notes --restart --json
+sporades host push --host personal --subname team-notes --verify --fallback-to-previous-release --json
 ```
 
 Useful Hosted Capsule operations:
@@ -1019,3 +1047,7 @@ definition.
 - Hosted Capsule route returns `503`: the Capsule is registered, but has no
   running container or the current release failed to start. Check
   `sporades host stats <subname>` and `sporades host logs stdout`.
+- Hosted Capsule keeps crashing: inspect `sporades host logs stdout --subname
+  <subname> --json`, then restart or push a fixed release. Automatic fallback
+  only applies to `host push --verify --fallback-to-previous-release`, not to
+  later runtime crashes.

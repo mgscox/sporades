@@ -12,6 +12,7 @@ import {
   baseImageRuntimeUser,
   normaliseBaseImageUpdatePolicy,
 } from "../src/base-image.js";
+import { restartPolicyForMode, restartPolicyStatus } from "../src/runtime-restart-policy.js";
 
 const HOST_HELPER_CONFIG_FILE = "sporades-host-helper.json";
 const DEFAULT_HOSTED_CAPSULE_DOCKER_IMAGE = SPORADES_BASE_IMAGE.image;
@@ -510,6 +511,7 @@ async function verifyInstalledRelease(request, release, installData, previousCur
     currentAttemptedRelease,
   };
   if (!restartResult) {
+    const fallback = await maybeFallbackToPreviousRelease(request, release.id, previousCurrentRelease, restartError?.message ?? "Hosted Capsule restart failed.");
     return verificationFailureResult(
       request,
       release.id,
@@ -520,6 +522,7 @@ async function verifyInstalledRelease(request, release, installData, previousCur
           state: "failed",
           health: null,
         },
+        fallback,
       },
       restartError?.message ?? "Hosted Capsule restart failed.",
     );
@@ -530,6 +533,12 @@ async function verifyInstalledRelease(request, release, installData, previousCur
   });
   if (!healthResult.ok) {
     await routeVerifiedFailureToUnavailable(request, release.id, healthResult.error?.message ?? "Hosted Capsule release verification failed.");
+    const fallback = await maybeFallbackToPreviousRelease(
+      request,
+      release.id,
+      previousCurrentRelease,
+      healthResult.error?.message ?? "Hosted Capsule release verification failed.",
+    );
     return verificationFailureResult(
       request,
       release.id,
@@ -540,6 +549,7 @@ async function verifyInstalledRelease(request, release, installData, previousCur
           state: "failed",
           health: verificationHealthSummary(healthResult),
         },
+        fallback,
       },
       healthResult.error?.message ?? "Hosted Capsule release verification failed.",
     );
@@ -578,6 +588,75 @@ async function routeVerifiedFailureToUnavailable(request, releaseId, message) {
   }
 }
 
+async function maybeFallbackToPreviousRelease(request, failedReleaseId, previousCurrentRelease, reason) {
+  if (request.verification?.fallbackToPreviousRelease !== true || !previousCurrentRelease?.id) {
+    return {
+      applied: false,
+      reason: request.verification?.fallbackToPreviousRelease === true ? "no-previous-release" : "not-configured",
+    };
+  }
+
+  const releaseId = previousCurrentRelease.id;
+  const paths = canonicalRollbackPaths(request, releaseId);
+  try {
+    await assertRollbackReleaseFiles(request, paths.release);
+    await switchCurrentReleaseLink(paths.currentLink, paths.release);
+    let lifecycle = null;
+    let restartError = null;
+    try {
+      lifecycle = await restartCapsule(request, { write: false });
+    } catch (error) {
+      restartError = error;
+    }
+    if (!lifecycle) {
+      await restoreFailedReleaseAfterFallbackRestartFailure(request, failedReleaseId, releaseId, reason, restartError);
+      return {
+        applied: false,
+        reason: "fallback-restart-failed",
+        release: { id: releaseId },
+        error: restartError ? { message: restartError.message, hint: restartError.hint ?? null } : null,
+      };
+    }
+    await recordReleaseVerificationFallback(request, failedReleaseId, releaseId, reason);
+    return { applied: true, release: { id: releaseId }, lifecycle };
+  } catch (error) {
+    return {
+      applied: false,
+      reason: "fallback-failed",
+      release: { id: releaseId },
+      error: { message: error.message, hint: error.hint ?? null },
+    };
+  }
+}
+
+async function switchCurrentReleaseLink(currentLink, releaseDirectory) {
+  const tempCurrentLink = `${currentLink}.tmp-${process.pid}`;
+  await rm(tempCurrentLink, { force: true });
+  await symlink(releaseDirectory, tempCurrentLink);
+  await rename(tempCurrentLink, currentLink);
+}
+
+async function restoreFailedReleaseAfterFallbackRestartFailure(request, failedReleaseId, fallbackReleaseId, reason, restartError) {
+  const failedPaths = canonicalRollbackPaths(request, failedReleaseId);
+  try {
+    await switchCurrentReleaseLink(failedPaths.currentLink, failedPaths.release);
+  } catch {
+    // Registry state below still makes the failed attempted release authoritative.
+  }
+  await recordReleaseVerificationFallbackFailed(
+    request,
+    failedReleaseId,
+    fallbackReleaseId,
+    restartError?.message ?? "Hosted Capsule fallback restart failed.",
+    reason,
+  );
+  try {
+    await writeUnavailableRoute(normaliseLifecycle(request));
+  } catch {
+    // The original verification failure has already returned the route to unavailable.
+  }
+}
+
 function verificationFailureResult(request, releaseId, data, message) {
   const rollbackGuidance = releaseVerificationRollbackGuidance(request, data.previousCurrentRelease);
   return {
@@ -594,6 +673,7 @@ function verificationFailureResult(request, releaseId, data, message) {
       details: {
         releaseId,
         cause: message,
+        fallback: data.fallback ?? { applied: false, reason: "not-configured" },
       },
     },
   };
@@ -719,6 +799,7 @@ async function startCapsule(request, options = {}) {
       publishedPort,
     },
     route: publicRouteData(runningRoute),
+    restartPolicy: restartPolicyStatus("hosted"),
   };
   if (options.write !== false) {
     writeEnvelope({ ok: true, data, error: null });
@@ -784,6 +865,7 @@ async function evaluateCapsuleHealth(request, options = {}) {
 
   const running = checkContainerRunning(health.container.name);
   if (!running) {
+    await routeRuntimeExhaustionToUnavailable(request, record, health);
     return healthFailure(
       request,
       health,
@@ -905,6 +987,28 @@ async function evaluateCapsuleHealth(request, options = {}) {
     },
     error: null,
   };
+}
+
+async function routeRuntimeExhaustionToUnavailable(request, record, health) {
+  const inspected = inspectContainerLifecycle(health.container.name);
+  const policy = restartPolicyForMode("hosted");
+  if (!Number.isFinite(inspected.restartCount) || inspected.restartCount < policy.maxAttempts) {
+    return;
+  }
+  const releaseId = record.currentRelease?.id;
+  if (!releaseId) {
+    return;
+  }
+  try {
+    await writeUnavailableRoute(normaliseLifecycle(request, record));
+    await recordReleaseFailure(
+      request,
+      releaseId,
+      `Hosted Capsule runtime exhausted ${policy.dockerRestart} restart policy.`,
+    );
+  } catch {
+    // Health should still return the observed stopped-container failure.
+  }
 }
 
 async function stopCapsule(request, options = {}) {
@@ -2304,6 +2408,8 @@ async function dockerRunArgs(lifecycle, releaseId) {
     lifecycle.container.name,
     "--network",
     lifecycle.container.network,
+    "--restart",
+    restartPolicyForMode("hosted").dockerRestart,
     "--read-only",
     "--tmpfs",
     "/tmp:rw,nosuid,nodev,noexec",
@@ -2803,6 +2909,69 @@ async function recordReleaseVerificationFailed(request, releaseId, message) {
   });
 }
 
+async function recordReleaseVerificationFallback(request, failedReleaseId, fallbackReleaseId, message) {
+  await mutateRegistryRecord(request, (record) => {
+    const now = new Date().toISOString();
+    record.currentRelease = { ...(record.currentRelease ?? {}), id: fallbackReleaseId };
+    record.status = "running";
+    record.updatedAt = now;
+    record.releases = upsertReleaseEntry(record, failedReleaseId, (entry) => ({
+      ...entry,
+      id: failedReleaseId,
+      state: "failed",
+      current: false,
+      fallbackAttempts: [
+        ...normaliseReleaseEventList(entry.fallbackAttempts),
+        { fallbackAt: now, releaseId: fallbackReleaseId, reason: message },
+      ],
+      failure: {
+        failedAt: entry.failure?.failedAt ?? now,
+        message,
+      },
+    }));
+    record.releases = upsertReleaseEntry(record, fallbackReleaseId, (entry) => ({
+      ...entry,
+      id: fallbackReleaseId,
+      current: true,
+      fallbackSelectedAt: now,
+      failure: null,
+    }));
+    return record;
+  });
+}
+
+async function recordReleaseVerificationFallbackFailed(request, failedReleaseId, fallbackReleaseId, fallbackMessage, verificationMessage) {
+  await mutateRegistryRecord(request, (record) => {
+    const now = new Date().toISOString();
+    record.currentRelease = { ...(record.currentRelease ?? {}), id: failedReleaseId };
+    record.status = "failed";
+    record.updatedAt = now;
+    record.releases = upsertReleaseEntry(record, failedReleaseId, (entry) => ({
+      ...entry,
+      id: failedReleaseId,
+      state: "failed",
+      current: true,
+      fallbackAttempts: [
+        ...normaliseReleaseEventList(entry.fallbackAttempts),
+        {
+          failedAt: now,
+          releaseId: fallbackReleaseId,
+          reason: verificationMessage,
+          failure: { message: fallbackMessage },
+        },
+      ],
+      failure: {
+        failedAt: entry.failure?.failedAt ?? now,
+        message: verificationMessage,
+      },
+    }));
+    record.releases = normaliseReleaseHistory(record).map((release) =>
+      release.id === fallbackReleaseId ? { ...release, current: false } : release,
+    );
+    return record;
+  });
+}
+
 async function recordReleaseFailure(request, releaseId, message) {
   await mutateRegistryRecord(request, (record) => {
     const now = new Date().toISOString();
@@ -2881,6 +3050,8 @@ function normaliseReleaseEntry(release, currentReleaseId) {
     source: normaliseReleaseSource(release.source),
     startAttempts: normaliseReleaseEventList(release.startAttempts),
     verificationAttempts: normaliseReleaseEventList(release.verificationAttempts),
+    fallbackAttempts: normaliseReleaseEventList(release.fallbackAttempts),
+    fallbackSelectedAt: typeof release.fallbackSelectedAt === "string" ? release.fallbackSelectedAt : null,
     failure: normaliseReleaseFailure(release.failure),
   };
 }

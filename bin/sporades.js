@@ -26,6 +26,7 @@ import {
   unsealServerEnv,
   writeSealedServerEnv,
 } from "../src/sealed-server-env.js";
+import { restartPolicyForMode, restartPolicyStatus } from "../src/runtime-restart-policy.js";
 import {
   createWebSocketHub,
   dumpDatabase,
@@ -491,6 +492,7 @@ function parseHostArgs(args) {
   let lines = null;
   let restart = false;
   let verify = false;
+  let fallbackToPreviousRelease = false;
   let branch = "main";
   let file = DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW;
   let dryRun = false;
@@ -539,6 +541,10 @@ function parseHostArgs(args) {
     if (arg === "--verify") {
       verify = true;
       restart = true;
+      continue;
+    }
+    if (arg === "--fallback-to-previous-release") {
+      fallbackToPreviousRelease = true;
       continue;
     }
     if (arg === "--branch") {
@@ -749,7 +755,13 @@ function parseHostArgs(args) {
     if (subname) {
       validateCapsuleSubname(subname);
     }
-    return { subcommand, hostAlias, subname, restart, verify, json, projectDir: process.cwd() };
+    if (fallbackToPreviousRelease && !verify) {
+      throw commandError(
+        "Release fallback requires verification.",
+        "Use `sporades host push --verify --fallback-to-previous-release`.",
+      );
+    }
+    return { subcommand, hostAlias, subname, restart, verify, fallbackToPreviousRelease, json, projectDir: process.cwd() };
   }
 
   if (subcommand === "github") {
@@ -1002,8 +1014,9 @@ async function startDevSession(options) {
   let config = await readProjectConfig(options.projectDir);
   const session = options.publicDev ? "public-dev" : "dev";
   let security = resolveEffectiveSecurityPolicy(config, session);
+  const restartPolicy = restartPolicyForMode("dev");
   const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4000;
-  const bundle = await createBundle(options.projectDir, config);
+  let bundle = await createBundle(options.projectDir, config);
 
   const sessionFilePath = path.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path.join(options.projectDir, ".sporades", "data.db");
@@ -1166,6 +1179,122 @@ async function startDevSession(options) {
       2,
     )}\n`,
   );
+  let fatalRestartAttempts = 0;
+  let fatalRestartInFlight = false;
+  const restartAfterFatal = async (fatalEvent, error) => {
+    if (fatalRestartInFlight) {
+      return;
+    }
+    fatalRestartInFlight = true;
+    fatalRestartAttempts += 1;
+    const attempt = fatalRestartAttempts;
+    const errorData = {
+      fatalEvent,
+      attempt,
+      maxAttempts: restartPolicy.maxAttempts,
+      message: error?.message ?? String(error),
+    };
+    runtime.database.log.emit({
+      category: "platform",
+      event: "runtime.fatal",
+      level: "error",
+      message: "Dev runtime fatal event detected",
+      data: errorData,
+    });
+    emitDevEvent(options, {
+      event: "fatal",
+      status: "detected",
+      url,
+      port: actualPort,
+      restartPolicy: restartPolicyStatus("dev"),
+      fatal: errorData,
+    });
+    if (attempt > restartPolicy.maxAttempts) {
+      runtime.database.log.emit({
+        category: "platform",
+        event: "runtime.restart.exhausted",
+        level: "error",
+        message: "Dev runtime restart attempts exhausted",
+        data: errorData,
+      });
+      emitDevEvent(
+        options,
+        {
+          event: "restart",
+          status: "exhausted",
+          url,
+          port: actualPort,
+          restartPolicy: restartPolicyStatus("dev"),
+          fatal: errorData,
+        },
+        {
+          message: "Dev runtime restart attempts exhausted.",
+          hint: "Restart `sporades dev` after fixing the fatal runtime error.",
+        },
+      );
+      fatalRestartInFlight = false;
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, restartPolicy.backoffMs * attempt));
+    try {
+      await runtime.restart(
+        bundle.serverRuntime.source,
+        bundle.serverRuntime.env,
+        bundle.serverRuntime.capsuleModuleSource,
+        withRuntimeSecuritySession(config, session),
+      );
+      websocketHub.disconnectAll();
+      runtime.database.log.emit({
+        category: "platform",
+        event: "runtime.restart.attempted",
+        level: "info",
+        message: "Dev runtime restarted after fatal event",
+        data: { ...errorData, restarted: true },
+      });
+      emitDevEvent(options, {
+        event: "restart",
+        status: "success",
+        url,
+        port: actualPort,
+        restartPolicy: restartPolicyStatus("dev"),
+        fatal: errorData,
+      });
+    } catch (restartError) {
+      runtime.database.log.emit({
+        category: "platform",
+        event: "runtime.restart.failed",
+        level: "error",
+        message: "Dev runtime restart failed",
+        data: { ...errorData, restartError: restartError.message },
+      });
+      emitDevEvent(
+        options,
+        {
+          event: "restart",
+          status: "failed",
+          url,
+          port: actualPort,
+          restartPolicy: restartPolicyStatus("dev"),
+          fatal: errorData,
+        },
+        {
+          message: restartError.message,
+          hint: restartError.hint ?? "Fix the fatal runtime error and save again.",
+        },
+      );
+    } finally {
+      fatalRestartInFlight = false;
+    }
+  };
+  const onUnhandledRejection = (reason) => {
+    restartAfterFatal("unhandledRejection", reason instanceof Error ? reason : new Error(String(reason)));
+  };
+  const onUncaughtException = (error) => {
+    restartAfterFatal("uncaughtException", error);
+  };
+  process.on("unhandledRejection", onUnhandledRejection);
+  process.on("uncaughtException", onUncaughtException);
+
   const watchers = watchDevInputs(options.projectDir, async (change) => {
     try {
       const nextConfig = await readProjectConfig(options.projectDir);
@@ -1180,6 +1309,8 @@ async function startDevSession(options) {
           rebuild.serverRuntime.capsuleModuleSource,
           withRuntimeSecuritySession(nextConfig, session),
         );
+        bundle = rebuild;
+        fatalRestartAttempts = 0;
         websocketHub.disconnectAll();
       }
       config = nextConfig;
@@ -1214,7 +1345,7 @@ async function startDevSession(options) {
       );
     }
   });
-  emitDevEvent(options, { event: "started", url, port: actualPort, security });
+  emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev") });
 
   const shutdown = () => {
     for (const watcher of watchers) {
@@ -1224,6 +1355,8 @@ async function startDevSession(options) {
     server.close(async () => {
       await rm(sessionFilePath, { force: true });
       await runtime.shutdown();
+      process.off("unhandledRejection", onUnhandledRejection);
+      process.off("uncaughtException", onUncaughtException);
       process.exit(0);
     });
   };
@@ -1385,6 +1518,22 @@ function emitDevEvent(options, data, error = null) {
 
   if (data.event === "started") {
     process.stdout.write(`Sporades dev session started at ${data.url}\n`);
+    return;
+  }
+  if (data.event === "fatal") {
+    process.stdout.write(`Sporades dev runtime fatal event: ${error?.message ?? data.fatal?.message ?? "unknown error"}\n`);
+    return;
+  }
+  if (data.event === "restart" && data.status === "success") {
+    process.stdout.write(`Sporades dev runtime restarted at ${data.url}\n`);
+    return;
+  }
+  if (data.event === "restart" && data.status === "exhausted") {
+    process.stdout.write(`Sporades dev runtime restart attempts exhausted: ${error.message}\n`);
+    return;
+  }
+  if (data.event === "restart") {
+    process.stdout.write(`Sporades dev runtime restart failed: ${error.message}\n`);
     return;
   }
   if (data.status === "success") {
@@ -1867,7 +2016,13 @@ async function manageHost(options) {
           })
         : null,
       health: options.verify ? createHostRuntimeHealthRequest(target.profile, target.subname) : null,
-      verification: options.verify ? { enabled: true, health: createHostRuntimeHealthRequest(target.profile, target.subname) } : null,
+      verification: options.verify
+        ? {
+            enabled: true,
+            fallbackToPreviousRelease: options.fallbackToPreviousRelease,
+            health: createHostRuntimeHealthRequest(target.profile, target.subname),
+          }
+        : null,
       projectDir: options.projectDir,
     });
 
@@ -2213,6 +2368,8 @@ async function startContainerSession(options) {
       "--detach",
       "--name",
       containerName,
+      "--restart",
+      restartPolicyForMode("container").dockerRestart,
       "--read-only",
       "--tmpfs",
       "/tmp:rw,nosuid,nodev,noexec",
@@ -2253,7 +2410,7 @@ async function startContainerSession(options) {
 
   const url = `http://localhost:${port}`;
   if (options.json) {
-    writeResult({ ok: true, data: { url, port, containerId }, error: null });
+    writeResult({ ok: true, data: { url, port, containerId, restartPolicy: restartPolicyStatus("container") }, error: null });
   } else {
     process.stdout.write(`Sporades container session started at ${url}\n`);
   }
