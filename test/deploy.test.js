@@ -206,6 +206,43 @@ async function waitForHttp(url, child) {
   throw lastError;
 }
 
+async function waitForJsonStdoutLine(child) {
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for JSON stdout.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+    }, 5000);
+
+    function cleanup() {
+      clearTimeout(timeout);
+      child.stdout.off("data", onStdout);
+      child.stderr.off("data", onStderr);
+      child.off("exit", onExit);
+    }
+    function onStdout(chunk) {
+      stdout += chunk;
+      const line = stdout.split("\n").find((candidate) => candidate.trim());
+      if (line) {
+        cleanup();
+        resolve(JSON.parse(line));
+      }
+    }
+    function onStderr(chunk) {
+      stderr += chunk;
+    }
+    function onExit(code) {
+      cleanup();
+      reject(new Error(`Server bundle exited with ${code} before JSON stdout.\nstdout:\n${stdout}\nstderr:\n${stderr}`));
+    }
+
+    child.stdout.on("data", onStdout);
+    child.stderr.on("data", onStderr);
+    child.on("exit", onExit);
+  });
+}
+
 async function stopChild(child) {
   if (child.exitCode !== null) {
     return;
@@ -282,6 +319,7 @@ test("sporades deploy --json bundles and starts a container session", async () =
     assert(runCall.args.includes("com.sporades.base-image.name=sporades-base"));
     assert(runCall.args.includes("com.sporades.base-image.version=0.1.0-node22-alpine"));
     assert(runCall.args.includes("com.sporades.base-image.update-policy=host-managed"));
+    assert(runCall.args.includes("SPORADES_LOG_STDOUT=1"));
     const imageIndex = runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.1.0-node22-alpine");
     assert(imageIndex > -1);
     assert.deepEqual(runCall.args.slice(imageIndex), [
@@ -419,6 +457,52 @@ export default capsule({
         headers: { origin: "https://dashboard.example.test" },
       });
       assert.equal(allowed.headers.get("access-control-allow-origin"), "https://dashboard.example.test");
+    } finally {
+      await stopChild(child);
+    }
+  });
+});
+
+test("generated server bundle emits JSON logs to stdout when requested", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "container-first");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+
+    const port = await getAvailablePort();
+    const serverBundlePath = path.join(projectDir, ".sporades", "build", "server.mjs");
+    const child = spawn(process.execPath, [serverBundlePath], {
+      cwd: projectDir,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "stdout-data.db"),
+        SPORADES_LOG_STDOUT: "1",
+        SPORADES_RELEASE_ID: "20260630T221500Z-feedface",
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    try {
+      const event = await waitForJsonStdoutLine(child);
+      assert.equal(event.schema, "sporades.log.v1");
+      assert.equal(event.category, "platform");
+      assert.equal(event.event, "runtime.started");
+      assert.equal(event.level, "info");
+      assert.equal(event.message, "Capsule runtime started");
+      assert.equal(event.capsule.name, "todo-island");
+      assert.deepEqual(event.release, { id: "20260630T221500Z-feedface" });
     } finally {
       await stopChild(child);
     }

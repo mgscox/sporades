@@ -863,9 +863,14 @@ function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
 function parseLogsArgs(args) {
   let json = false;
   let port = null;
+  let subcommand = "recent";
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
+    if (arg === "tail") {
+      subcommand = "tail";
+      continue;
+    }
     if (arg === "--port") {
       port = readPort(readFlagValue(args, ++index, "--port"));
       continue;
@@ -874,10 +879,11 @@ function parseLogsArgs(args) {
       json = true;
       continue;
     }
-    throw commandError(`Unknown flag: ${arg}`, "Use `sporades logs --json`.");
+    throw commandError(`Unknown flag: ${arg}`, "Use `sporades logs [tail] --json`.");
   }
 
   return {
+    subcommand,
     json,
     port,
     projectDir: process.cwd(),
@@ -999,11 +1005,6 @@ async function startDevSession(options) {
   const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4000;
   const bundle = await createBundle(options.projectDir, config);
 
-  const logStore = createLogStore();
-  const ctx = {
-    log: createLogger(logStore),
-  };
-  ctx.log.info("Dev session started");
   const sessionFilePath = path.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path.join(options.projectDir, ".sporades", "data.db");
   const runtime = await createDevRuntime({
@@ -1012,6 +1013,12 @@ async function startDevSession(options) {
     serverEnv: bundle.serverRuntime.env,
     capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
     config: withRuntimeSecuritySession(config, session),
+  });
+  runtime.database.log.emit({
+    category: "platform",
+    event: "dev.session.started",
+    level: "info",
+    message: "Dev session started",
   });
   const websocketHub = createWebSocketHub(() => runtime.database);
 
@@ -1024,7 +1031,12 @@ async function startDevSession(options) {
       }
 
       if (request.method === "POST" && requestUrl.pathname === "/__sporades/debug/ctx-log") {
-        ctx.log.info("ctx.log is available");
+        runtime.database.log.emit({
+          category: "app",
+          event: "ctx.log",
+          level: "info",
+          message: "ctx.log is available",
+        });
         writeJsonResponse(response, 200, {
           ok: true,
           data: { log: ["info", "warn", "error"] },
@@ -1036,7 +1048,16 @@ async function startDevSession(options) {
       if (request.method === "GET" && requestUrl.pathname === "/__sporades/debug/logs") {
         writeJsonResponse(response, 200, {
           ok: true,
-          data: { entries: logStore.entries },
+          data: { source: "sqlite", entries: runtime.database.log.recent() },
+          error: null,
+        });
+        return;
+      }
+
+      if (request.method === "GET" && requestUrl.pathname === "/__sporades/debug/logs/tail") {
+        writeJsonResponse(response, 200, {
+          ok: true,
+          data: { source: "jsonl", entries: runtime.database.log.tail() },
           error: null,
         });
         return;
@@ -1171,7 +1192,13 @@ async function startDevSession(options) {
         security,
       });
     } catch (error) {
-      ctx.log.error("Dev rebuild failed", { message: error.message });
+      runtime.database.log.emit({
+        category: "platform",
+        event: "dev.rebuild.failed",
+        level: "error",
+        message: "Dev rebuild failed",
+        data: { message: error.message },
+      });
       emitDevEvent(
         options,
         {
@@ -2207,6 +2234,8 @@ async function startContainerSession(options) {
       "/app",
       "--env",
       "PORT=4000",
+      "--env",
+      "SPORADES_LOG_STDOUT=1",
       SPORADES_BASE_IMAGE.image,
       "node",
       "/app/server.mjs",
@@ -2276,9 +2305,18 @@ async function inspectDatabase(options) {
 
 async function printLogs(options) {
   const session = options.port ? { url: `http://localhost:${options.port}` } : await readDevSession(options.projectDir);
-  const result = await fetchDevSessionJson(session, "/__sporades/debug/logs");
+  const result = await fetchDevSessionJson(
+    session,
+    options.subcommand === "tail" ? "/__sporades/debug/logs/tail" : "/__sporades/debug/logs",
+  );
 
   if (options.json) {
+    if (options.subcommand === "tail" && result.ok) {
+      for (const entry of result.data.entries) {
+        process.stdout.write(`${JSON.stringify(entry)}\n`);
+      }
+      return;
+    }
     writeResult(result, !result.ok);
     return;
   }

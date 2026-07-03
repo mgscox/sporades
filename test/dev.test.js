@@ -4589,27 +4589,82 @@ test("sporades logs returns captured ctx.log entries from the running dev sessio
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.dev.port = 0;
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "WEBHOOK_SECRET=env-secret-123\n");
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "Todo Island",
+  endpoints: {
+    log: endpoint({ method: "POST", path: "/log" }, (ctx) => {
+      ctx.log.info("ctx.log is available", {
+        password: "plaintext-password",
+        token: "token-123",
+        secretValue: ctx.env.WEBHOOK_SECRET,
+        authorization: "Bearer auth-123",
+        cookie: "session=abc",
+        clientSecret: "client-secret-123",
+        safe: "visible",
+        nested: { apiToken: "nested-token-123" },
+        large: "x".repeat(5000),
+      });
+      return { status: 200, body: { ok: true, body: ctx.request.body } };
+    }),
+  },
+});
+`,
+    );
     await installFakeReact(projectDir);
 
     const child = startCli(["dev", "--json"], { cwd: projectDir });
     try {
       const started = await waitForJsonLine(child);
 
-      const ctxResponse = await fetch(`${started.data.url}/__sporades/debug/ctx-log`, { method: "POST" });
-      assert.equal(ctxResponse.status, 200);
-      assert.deepEqual(await ctxResponse.json(), {
-        ok: true,
-        data: { log: ["info", "warn", "error"] },
-        error: null,
+      const ctxResponse = await fetch(`${started.data.url}/log`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ rawBodySecret: "do-not-log-request-body" }),
       });
+      assert.equal(ctxResponse.status, 200);
 
       const logsResult = await runCli(["logs", "--json"], { cwd: projectDir });
       assert.equal(logsResult.code, 0, logsResult.stderr);
       const logs = JSON.parse(logsResult.stdout);
       assert.equal(logs.ok, true);
       assert.equal(logs.error, null);
+      assert.equal(logs.data.source, "sqlite");
       const ctxLog = logs.data.entries.find((entry) => entry.message === "ctx.log is available");
+      const platformLog = logs.data.entries.find((entry) => entry.event === "dev.session.started");
+
+      assert.equal(platformLog.category, "platform");
+      assert.equal(platformLog.level, "info");
+      assert.equal(platformLog.capsule.name, "todo-island");
+      assert.equal(platformLog.release, null);
+      assert.equal(ctxLog.category, "app");
+      assert.equal(ctxLog.event, "ctx.log");
       assert.equal(ctxLog.level, "info");
+      assert.equal(ctxLog.capsule.name, "todo-island");
+      assert.equal(ctxLog.release, null);
+      assert.equal(ctxLog.request.method, "POST");
+      assert.equal(ctxLog.request.path, "/log");
+      assert.equal(ctxLog.request.body, undefined);
+      assert.equal(ctxLog.data.safe, "visible");
+      assert.equal(ctxLog.data.password, "[REDACTED]");
+      assert.equal(ctxLog.data.token, "[REDACTED]");
+      assert.equal(ctxLog.data.secretValue, "[REDACTED]");
+      assert.equal(ctxLog.data.authorization, "[REDACTED]");
+      assert.equal(ctxLog.data.cookie, "[REDACTED]");
+      assert.equal(ctxLog.data.clientSecret, "[REDACTED]");
+      assert.equal(ctxLog.data.nested.apiToken, "[REDACTED]");
+      assert.equal(JSON.stringify(ctxLog).includes("do-not-log-request-body"), false);
+      assert.equal(JSON.stringify(ctxLog).includes("env-secret-123"), false);
+      assert.equal(ctxLog.truncated, true);
+
+      const tailResult = await runCli(["logs", "tail", "--json"], { cwd: projectDir });
+      assert.equal(tailResult.code, 0, tailResult.stderr);
+      const tailEvents = tailResult.stdout.trim().split("\n").map((line) => JSON.parse(line));
+      assert.equal(tailEvents.some((entry) => entry.event === "ctx.log" && entry.message === "ctx.log is available"), true);
     } finally {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
@@ -4809,6 +4864,132 @@ test("sporades db query runs read-only SQL against the running dev session datab
             { name: "sporades_files" },
             { name: "todos" },
           ],
+        },
+        error: null,
+      });
+
+      const internalLogQuery = await runCli(["db", "query", "SELECT * FROM sporades_log_events", "--json"], {
+        cwd: projectDir,
+      });
+      assert.equal(internalLogQuery.code, 1);
+      assert.deepEqual(JSON.parse(internalLogQuery.stdout), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Internal log index tables are not available through generic DB inspection.",
+          hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
+        },
+      });
+
+      const qualifiedInternalLogQuery = await runCli(["db", "query", "SELECT * FROM main.sporades_log_events", "--json"], {
+        cwd: projectDir,
+      });
+      assert.equal(qualifiedInternalLogQuery.code, 1);
+      assert.deepEqual(JSON.parse(qualifiedInternalLogQuery.stdout), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Internal log index tables are not available through generic DB inspection.",
+          hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
+        },
+      });
+
+      const quotedQualifiedInternalLogQuery = await runCli(
+        ["db", "query", 'SELECT message, payload FROM main."sporades_log_events"', "--json"],
+        { cwd: projectDir },
+      );
+      assert.equal(quotedQualifiedInternalLogQuery.code, 1);
+      assert.deepEqual(JSON.parse(quotedQualifiedInternalLogQuery.stdout), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Internal log index tables are not available through generic DB inspection.",
+          hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
+        },
+      });
+
+      const parenthesizedInternalLogQuery = await runCli(
+        ["db", "query", "SELECT message, payload FROM (sporades_log_events)", "--json"],
+        { cwd: projectDir },
+      );
+      assert.equal(parenthesizedInternalLogQuery.code, 1);
+      assert.deepEqual(JSON.parse(parenthesizedInternalLogQuery.stdout), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Internal log index tables are not available through generic DB inspection.",
+          hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
+        },
+      });
+
+      const blockCommentInternalLogQuery = await runCli(
+        ["db", "query", "SELECT message FROM /* comment */ sporades_log_events", "--json"],
+        { cwd: projectDir },
+      );
+      assert.equal(blockCommentInternalLogQuery.code, 1);
+      assert.deepEqual(JSON.parse(blockCommentInternalLogQuery.stdout), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Internal log index tables are not available through generic DB inspection.",
+          hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
+        },
+      });
+
+      const lineCommentInternalLogQuery = await runCli(
+        ["db", "query", "SELECT message FROM -- comment\n sporades_log_events", "--json"],
+        { cwd: projectDir },
+      );
+      assert.equal(lineCommentInternalLogQuery.code, 1);
+      assert.deepEqual(JSON.parse(lineCommentInternalLogQuery.stdout), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Internal log index tables are not available through generic DB inspection.",
+          hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
+        },
+      });
+
+      const schemaSqlQuery = await runCli(
+        ["db", "query", "SELECT sql FROM sqlite_schema WHERE type = 'table' ORDER BY name", "--json"],
+        { cwd: projectDir },
+      );
+      assert.equal(schemaSqlQuery.code, 0, schemaSqlQuery.stderr);
+      assert.equal(
+        JSON.stringify(JSON.parse(schemaSqlQuery.stdout).data.rows).includes("sporades_log_events"),
+        false,
+      );
+
+      const schemaProjectionQuery = await runCli(
+        ["db", "query", "SELECT tbl_name, sql FROM sqlite_schema WHERE type = 'table' ORDER BY name", "--json"],
+        { cwd: projectDir },
+      );
+      assert.equal(schemaProjectionQuery.code, 0, schemaProjectionQuery.stderr);
+      assert.equal(
+        JSON.stringify(JSON.parse(schemaProjectionQuery.stdout).data.rows).includes("sporades_log_events"),
+        false,
+      );
+
+      const transformedSchemaQuery = await runCli(
+        ["db", "query", "SELECT quote(name) AS leaked FROM sqlite_schema WHERE type = 'table' ORDER BY name", "--json"],
+        { cwd: projectDir },
+      );
+      assert.equal(transformedSchemaQuery.code, 0, transformedSchemaQuery.stderr);
+      assert.equal(
+        JSON.stringify(JSON.parse(transformedSchemaQuery.stdout).data.rows).includes("sporades_log_events"),
+        false,
+      );
+
+      const literalOnlyQuery = await runCli(
+        ["db", "query", "SELECT 'sporades_log_events' AS literal_only", "--json"],
+        { cwd: projectDir },
+      );
+      assert.equal(literalOnlyQuery.code, 0, literalOnlyQuery.stderr);
+      assert.deepEqual(JSON.parse(literalOnlyQuery.stdout), {
+        ok: true,
+        data: {
+          columns: ["literal_only"],
+          rows: [{ literal_only: "sporades_log_events" }],
         },
         error: null,
       });

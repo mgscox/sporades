@@ -6,8 +6,9 @@ export function createServerBundleSource({ config, serverEnv, sealedServerEnv = 
     .join("\n\n");
   const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
 
-  return `// Sporades server bundle
+return `// Sporades server bundle
 import { createDecipheriv, createHash, privateDecrypt, randomBytes, randomUUID } from "node:crypto";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
@@ -25,6 +26,13 @@ const port = Number(process.env.PORT ?? sporadesConfig.deploy?.port ?? 4000);
 const databasePath = process.env.SPORADES_DATABASE_PATH ?? path.join(process.cwd(), "data", "data.db");
 const runtimeServerEnv = await readRuntimeServerEnv(sporadesServerEnv, sporadesSealedServerEnv);
 const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, sporadesConfig, sporadesCapsuleDefinition);
+database.log.emit({
+  category: "platform",
+  event: "runtime.started",
+  level: "info",
+  message: "Capsule runtime started",
+  release: process.env.SPORADES_RELEASE_ID ? { id: process.env.SPORADES_RELEASE_ID } : null,
+});
 const websocketHub = createWebSocketHub(() => database);
 
 const server = createServer(async (request, response) => {

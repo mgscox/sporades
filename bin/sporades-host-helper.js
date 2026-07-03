@@ -2342,7 +2342,18 @@ async function dockerRunArgs(lifecycle, releaseId) {
       args.push("--env", `SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH=${mount.container}`);
     }
   }
-  args.push("--volume", formatMount(lifecycle.mounts.data), "--workdir", "/app", "--env", "PORT=4000");
+  args.push(
+    "--volume",
+    formatMount(lifecycle.mounts.data),
+    "--workdir",
+    "/app",
+    "--env",
+    "PORT=4000",
+    "--env",
+    "SPORADES_LOG_STDOUT=1",
+    "--env",
+    `SPORADES_RELEASE_ID=${releaseId}`,
+  );
   args.push("--publish", `127.0.0.1::${lifecycle.routes.running.port ?? 4000}`);
   args.push(lifecycle.container.image, "node", "/app/server.mjs");
   return args;

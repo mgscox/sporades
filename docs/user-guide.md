@@ -800,8 +800,32 @@ Read logs from a running Dev session:
 ```sh
 sporades logs
 sporades logs --json
+sporades logs tail --json
 sporades logs --port 3000 --json
 ```
+
+`ctx.log` entries and Sporades platform runtime events share the
+`sporades.log.v1` envelope: `timestamp`, `category`, `event`, `level`,
+`message`, `capsule`, optional `release`, optional `request`, optional
+`correlation`, and structured `data`. App logs use `category: "app"` and
+`event: "ctx.log"`; runtime events use `category: "platform"`. This JSONL log
+stream is separate from `sporades dev --json`, which only streams Dev-session
+lifecycle events such as start and rebuild status.
+
+Structured log data is redacted before it is written. Keys such as passwords,
+tokens, secrets, authorization headers, cookies, API tokens, and client secrets
+are replaced with `[REDACTED]`; exact Server env values are also redacted if
+they appear in structured log data. Request method and path may be recorded, but
+raw request bodies are not logged by default. Each log event is capped to a
+bounded payload size, with oversized structured data marked as truncated.
+
+The JSONL log stream lives under the Runtime directory by default and is the
+primary durable stream for CLI tailing, Host collection, Docker stdout, and
+crash-adjacent debugging. SQLite stores only a bounded recent log index for
+inspection queries; `sporades logs --json` reads that index, while
+`sporades logs tail --json` prints JSONL events from the durable stream. Local
+Container sessions and Hosted Capsules also emit JSON log events to Docker
+stdout.
 
 ### Database
 

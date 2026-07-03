@@ -350,8 +350,11 @@ Implemented command families:
 - `sporades auth status|set|clients|as`
 - `sporades host add|use|current|bind|register|push|start|stop|restart|unregister|delete|list|stats|logs|bootstrap|invoke`
 
-`sporades dev --json` streams JSON Lines for start and rebuild events. Host
-commands support `--json` for agent-friendly remote operation.
+`sporades dev --json` streams JSON Lines for start and rebuild lifecycle events.
+The JSONL log stream used by app `ctx.log` and platform runtime events is a
+separate durable stream exposed through `sporades logs tail --json` and indexed
+recently for `sporades logs --json`. Host commands support `--json` for
+agent-friendly remote operation.
 
 ## Configuration
 

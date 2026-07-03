@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 
 export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   readJsonRequest,
@@ -12,6 +13,28 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   appendVaryHeader,
   sanitizeResponseHeaders,
   openDevDatabase,
+  createRuntimeLogSink,
+  requirePathModule,
+  createRuntimeLogger,
+  createLogEnvelope,
+  sanitizeLogData,
+  redactLogData,
+  logDataContainsServerEnvValue,
+  isSensitiveLogKey,
+  capLogEnvelope,
+  createLogIndexTables,
+  insertLogIndexEvent,
+  pruneLogIndex,
+  readRecentLogEvents,
+  readJsonlLogEvents,
+  logIndexLimit,
+  logPayloadMaxBytes,
+  logRedactedValue,
+  targetsInternalLogIndexTable,
+  readSqlTableReference,
+  skipSqlTrivia,
+  readSqlIdentifier,
+  isInternalLogIndexMetadataRow,
   extractSchema,
   schemaFromCapsuleDefinition,
   schemaTableFromCapsuleTable,
@@ -322,6 +345,7 @@ function sanitizeResponseHeaders(headers) {
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null) {
   const { DatabaseSync } = await import("node:sqlite");
   const path = await import("node:path");
+  mkdirSync(path.dirname(databasePath), { recursive: true });
   const sqlite = new DatabaseSync(databasePath);
   const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
   const endpoints = extractEndpoints(serverSource);
@@ -350,14 +374,287 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
     close: () => sqlite.close(),
   };
+  database.log = createRuntimeLogSink({
+    sqlite,
+    config,
+    serverEnv,
+    dataDir: path.dirname(databasePath),
+  });
   sqlite.exec("PRAGMA journal_mode = WAL");
   sqlite.exec("CREATE TABLE IF NOT EXISTS sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   createAnonymousAuthTables(sqlite, database.authConfig);
   createFileStorageTables(sqlite);
+  createLogIndexTables(sqlite);
   assertValidReferenceTargets(schema);
   migrateAppSchema(sqlite, schema);
 
   return database;
+}
+
+function logIndexLimit(config = {}) {
+  const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
+  return Number.isInteger(configured) && configured > 0 ? configured : 500;
+}
+
+function logPayloadMaxBytes(config = {}) {
+  const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
+  return Number.isInteger(configured) && configured > 0 ? configured : 4096;
+}
+
+function logRedactedValue() {
+  return "[REDACTED]";
+}
+
+function createRuntimeLogSink(options) {
+  const path = requirePathModule();
+  const logPath =
+    options.config.logs?.jsonlPath ??
+    options.config.logging?.jsonlPath ??
+    process.env.SPORADES_LOG_PATH ??
+    path.join(options.dataDir, "logs", "events.jsonl");
+  mkdirSync(path.dirname(logPath), { recursive: true });
+  return {
+    path: logPath,
+    emit(input) {
+      const event = createLogEnvelope({
+        ...input,
+        config: options.config,
+        serverEnv: options.serverEnv,
+      });
+      appendFileSync(logPath, `${JSON.stringify(event)}\n`);
+      insertLogIndexEvent(options.sqlite, event);
+      pruneLogIndex(options.sqlite, logIndexLimit(options.config));
+      if (process.env.SPORADES_LOG_STDOUT === "1") {
+        process.stdout.write(`${JSON.stringify(event)}\n`);
+      }
+      return event;
+    },
+    recent(limit = logIndexLimit(options.config)) {
+      return readRecentLogEvents(options.sqlite, limit);
+    },
+    tail(limit = logIndexLimit(options.config)) {
+      return readJsonlLogEvents(logPath, limit);
+    },
+  };
+}
+
+function requirePathModule() {
+  return {
+    join: (...parts) => parts.join("/").replace(/\/+/g, "/"),
+    dirname: (filePath) => String(filePath).replace(/\/[^/]*$/, "") || ".",
+  };
+}
+
+function createRuntimeLogger(database, context = {}) {
+  const write = (level, args) => {
+    const [message, data, ...rest] = args;
+    const structuredData =
+      data !== undefined && rest.length === 0
+        ? data
+        : rest.length > 0
+          ? { data, args: rest }
+          : null;
+    database.log.emit({
+      category: context.category ?? "app",
+      event: context.event ?? "ctx.log",
+      level,
+      message: String(message ?? ""),
+      data: structuredData,
+      request: context.request ?? null,
+      release: context.release ?? null,
+      correlation: context.correlation ?? null,
+    });
+  };
+
+  return {
+    info: (...args) => write("info", args),
+    warn: (...args) => write("warn", args),
+    error: (...args) => write("error", args),
+  };
+}
+
+function createLogEnvelope(input) {
+  const now = new Date().toISOString();
+  const config = input.config ?? {};
+  const capsuleName = String(config.name ?? "unknown");
+  const envelope = {
+    schema: "sporades.log.v1",
+    timestamp: input.timestamp ?? now,
+    category: input.category ?? "platform",
+    event: input.event ?? "runtime.event",
+    level: input.level ?? "info",
+    message: String(input.message ?? ""),
+    capsule: {
+      name: capsuleName,
+      id: String(config.capsule?.id ?? config.id ?? capsuleName),
+    },
+    release: input.release ?? config.release ?? null,
+    request: input.request
+      ? {
+          id: input.request.id ?? randomUUID(),
+          method: input.request.method ?? null,
+          path: input.request.path ?? null,
+        }
+      : null,
+    correlation: input.correlation ?? null,
+    data: sanitizeLogData(input.data ?? null, input.serverEnv ?? {}),
+  };
+  return capLogEnvelope(envelope, logPayloadMaxBytes(config));
+}
+
+function sanitizeLogData(value, serverEnv) {
+  return redactLogData(value, serverEnv);
+}
+
+function redactLogData(value, serverEnv) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return logDataContainsServerEnvValue(value, serverEnv) ? logRedactedValue() : value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactLogData(item, serverEnv));
+  }
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nestedValue]) => [
+        key,
+        isSensitiveLogKey(key) || logDataContainsServerEnvValue(nestedValue, serverEnv)
+          ? logRedactedValue()
+          : redactLogData(nestedValue, serverEnv),
+      ]),
+    );
+  }
+  return String(value);
+}
+
+function logDataContainsServerEnvValue(value, serverEnv) {
+  const values = Object.values(serverEnv ?? {}).filter((candidate) => typeof candidate === "string" && candidate.length > 0);
+  if (values.length === 0) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return values.includes(value);
+  }
+  if (value === null || value === undefined || typeof value !== "object") {
+    return false;
+  }
+  const serialized = JSON.stringify(value, (_key, nestedValue) =>
+    typeof nestedValue === "bigint" ? String(nestedValue) : nestedValue,
+  );
+  return values.some((secret) => serialized.includes(secret));
+}
+
+function isSensitiveLogKey(key) {
+  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token)([-_]|$)/i.test(String(key));
+}
+
+function capLogEnvelope(envelope, maxBytes) {
+  let capped = envelope;
+  if (Buffer.byteLength(JSON.stringify(capped), "utf8") <= maxBytes) {
+    return { ...capped, truncated: false };
+  }
+  capped = {
+    ...capped,
+    data: {
+      ...(capped.data && typeof capped.data === "object" && !Array.isArray(capped.data) ? capped.data : { value: capped.data }),
+    },
+    truncated: true,
+  };
+  for (const key of Object.keys(capped.data).reverse()) {
+    if (Buffer.byteLength(JSON.stringify(capped), "utf8") <= maxBytes) {
+      return capped;
+    }
+    capped.data[key] = "[TRUNCATED]";
+  }
+  if (Buffer.byteLength(JSON.stringify(capped), "utf8") <= maxBytes) {
+    return capped;
+  }
+  capped.data = { truncated: true };
+  capped.message = capped.message.slice(0, 256);
+  return capped;
+}
+
+function createLogIndexTables(sqlite) {
+  sqlite.exec(
+    "CREATE TABLE IF NOT EXISTS sporades_log_events (" +
+      "id TEXT PRIMARY KEY, " +
+      "timestamp TEXT NOT NULL, " +
+      "category TEXT NOT NULL, " +
+      "event TEXT NOT NULL, " +
+      "level TEXT NOT NULL, " +
+      "message TEXT NOT NULL, " +
+      "capsuleName TEXT, " +
+      "capsuleId TEXT, " +
+      "releaseId TEXT, " +
+      "requestId TEXT, " +
+      "correlationId TEXT, " +
+      "payload TEXT NOT NULL" +
+      ")",
+  );
+}
+
+function insertLogIndexEvent(sqlite, event) {
+  sqlite
+    .prepare(
+      "INSERT INTO sporades_log_events " +
+        "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .run(
+      randomUUID(),
+      event.timestamp,
+      event.category,
+      event.event,
+      event.level,
+      event.message,
+      event.capsule?.name ?? null,
+      event.capsule?.id ?? null,
+      event.release?.id ?? event.release ?? null,
+      event.request?.id ?? null,
+      event.correlation?.id ?? event.correlation ?? null,
+      JSON.stringify(event),
+    );
+}
+
+function pruneLogIndex(sqlite, limit) {
+  sqlite
+    .prepare(
+      "DELETE FROM sporades_log_events WHERE id IN (" +
+        "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?" +
+        ")",
+    )
+    .run(limit);
+}
+
+function readRecentLogEvents(sqlite, limit = 200) {
+  const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
+  return sqlite
+    .prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?")
+    .all(safeLimit)
+    .reverse()
+    .map((row) => JSON.parse(row.payload));
+}
+
+function readJsonlLogEvents(logPath, limit = 200) {
+  let raw = "";
+  try {
+    raw = readFileSync(logPath, "utf8");
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+  const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
+  return raw
+    .split(/\r?\n/)
+    .filter(Boolean)
+    .slice(-safeLimit)
+    .map((line) => JSON.parse(line));
 }
 
 function schemaFromCapsuleDefinition(definition) {
@@ -1655,7 +1952,12 @@ async function createEndpointContext(database, requestUrl, request) {
     db: createEndpointDatabaseApi(database),
     auth: session.auth,
     env: database.serverEnv,
-    log: createEndpointLogger(),
+    log: createEndpointLogger(database, {
+      request: {
+        method: request.method,
+        path: requestUrl.pathname,
+      },
+    }),
     request: {
       method: request.method,
       path: requestUrl.pathname,
@@ -1902,12 +2204,12 @@ async function readEndpointBody(request, headers) {
   return raw;
 }
 
-function createEndpointLogger() {
-  return {
-    info() {},
-    warn() {},
-    error() {},
-  };
+function createEndpointLogger(database, context = {}) {
+  return createRuntimeLogger(database, {
+    category: "app",
+    event: "ctx.log",
+    ...context,
+  });
 }
 
 function writeEndpointResult(response, result) {
@@ -2048,7 +2350,8 @@ export function listDatabaseTables(database) {
   return database.sqlite
     .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
     .all()
-    .map((row) => row.name);
+    .map((row) => row.name)
+    .filter((name) => name !== "sporades_log_events");
 }
 
 export function dumpDatabase(database) {
@@ -2064,9 +2367,19 @@ export function dumpDatabase(database) {
 
 export function runReadOnlyQuery(database, sql) {
   try {
+    if (targetsInternalLogIndexTable(sql)) {
+      return {
+        ok: false,
+        data: null,
+        error: {
+          message: "Internal log index tables are not available through generic DB inspection.",
+          hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
+        },
+      };
+    }
     const statement = database.sqlite.prepare(sql);
     const columns = statement.columns().map((column) => column.name);
-    const rows = statement.all();
+    const rows = statement.all().filter((row) => !isInternalLogIndexMetadataRow(row, sql));
     return {
       ok: true,
       data: {
@@ -2085,6 +2398,104 @@ export function runReadOnlyQuery(database, sql) {
       },
     };
   }
+}
+
+function targetsInternalLogIndexTable(sql) {
+  const text = String(sql);
+  const targetKeywords = /\b(?:from|join|update|into|table)\b/gi;
+  let match;
+  while ((match = targetKeywords.exec(text))) {
+    const reference = readSqlTableReference(text, match.index + match[0].length);
+    if (reference.some((part) => part.toLowerCase() === "sporades_log_events")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function readSqlTableReference(sql, startIndex) {
+  let index = skipSqlTrivia(sql, startIndex);
+  while (sql[index] === "(") {
+    index += 1;
+    index = skipSqlTrivia(sql, index);
+  }
+
+  const parts = [];
+  while (index < sql.length) {
+    const identifier = readSqlIdentifier(sql, index);
+    if (!identifier) {
+      break;
+    }
+    parts.push(identifier.value);
+    index = skipSqlTrivia(sql, identifier.nextIndex);
+    if (sql[index] !== ".") {
+      break;
+    }
+    index = skipSqlTrivia(sql, index + 1);
+  }
+  return parts;
+}
+
+function skipSqlTrivia(sql, startIndex) {
+  let index = startIndex;
+  let advanced = true;
+  while (advanced) {
+    advanced = false;
+    while (/\s/.test(sql[index] ?? "")) {
+      index += 1;
+      advanced = true;
+    }
+    if (sql[index] === "/" && sql[index + 1] === "*") {
+      const end = sql.indexOf("*/", index + 2);
+      index = end === -1 ? sql.length : end + 2;
+      advanced = true;
+      continue;
+    }
+    if (sql[index] === "-" && sql[index + 1] === "-") {
+      const end = sql.indexOf("\n", index + 2);
+      index = end === -1 ? sql.length : end + 1;
+      advanced = true;
+    }
+  }
+  return index;
+}
+
+function readSqlIdentifier(sql, index) {
+  const quote = sql[index];
+  const closingQuote = quote === "[" ? "]" : quote;
+  if (quote === '"' || quote === "'" || quote === "`" || quote === "[") {
+    let value = "";
+    let cursor = index + 1;
+    while (cursor < sql.length) {
+      if (sql[cursor] === closingQuote) {
+        if (sql[cursor + 1] === closingQuote && quote !== "[") {
+          value += closingQuote;
+          cursor += 2;
+          continue;
+        }
+        return { value, nextIndex: cursor + 1 };
+      }
+      value += sql[cursor];
+      cursor += 1;
+    }
+    return null;
+  }
+
+  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
+  return match ? { value: match[0], nextIndex: index + match[0].length } : null;
+}
+
+function isInternalLogIndexMetadataRow(row, sql = "") {
+  const queriesSqliteSchema = /\bsqlite_(?:schema|master)\b/i.test(String(sql));
+  return (
+    ["name", "tbl_name", "table", "tableName"].some((key) => row?.[key] === "sporades_log_events") ||
+    Object.values(row ?? {}).some(
+      (value) =>
+        typeof value === "string" &&
+        (/\bcreate\s+table\b[\s\S]*\bsporades_log_events\b/i.test(value) ||
+          (queriesSqliteSchema && /\bsporades_log_events\b/i.test(value))),
+    )
+  );
 }
 
 export function simulateLocalIdentitySession(database, options = {}) {
@@ -3429,7 +3840,7 @@ function createMutationContext(database, auth) {
     db: createEndpointDatabaseApi(database),
     auth,
     env: database.serverEnv,
-    log: createEndpointLogger(),
+    log: createEndpointLogger(database),
   };
 }
 
