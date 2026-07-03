@@ -14,13 +14,30 @@ Statuses:
 
 ## Recommended Next Features
 
+The recommended next features form one cohesive post-v2 release theme:
+production readiness for Hosted Capsules and Container sessions. Items should
+remain independently shippable, but planning should treat them as one hardening
+and operations arc rather than unrelated roadmap entries.
+
+The success bar for this theme is agent-operable Hosted Capsules: an agent
+should be able to safely deploy, observe, diagnose, and recover a Hosted Capsule
+without scraping logs, SSH spelunking, or guessing whether a failure comes from
+security configuration, runtime crashes, secrets, or container filesystem
+permissions.
+
+The theme should cover Dev sessions, local Container sessions, and Hosted
+Capsules, but Hosted Capsules are the acceptance bar. Dev sessions should stay
+convenient and forgiving, local Container sessions should provide a
+production-like verification surface, and Hosted Capsules should prove the
+production-readiness behavior end to end.
+
 | Feature | Status | Why it matters | Planning |
 | --- | --- | --- | --- |
-| Server security defaults | candidate | Sets safe HTTP defaults for CORS, headers, auth callbacks, custom endpoints, file URLs, and local dev exceptions. | `.scratch/post-v2-platform-hardening-and-ops/issues/03-add-server-security-defaults.md` |
-| Hardened secrets | candidate | Replaces plaintext project-root Server env files as the long-term default for provider credentials and other secrets. | `.scratch/post-v2-platform-hardening-and-ops/issues/01-replace-server-env-files-with-hardened-secrets.md` |
-| Container filesystem hardening | candidate | Makes Container sessions and Hosted Capsules safer with non-root runtime, explicit writable paths, read-only filesystem posture, and Docker hardening. | `.scratch/post-v2-platform-hardening-and-ops/issues/02-harden-base-image-and-container-filesystem.md` |
-| Central JSON logging | candidate | Gives developers and agents one structured way to watch platform logs, app logs, and `ctx.log` output. | `.scratch/post-v2-platform-hardening-and-ops/issues/05-centralize-json-server-logging.md` |
-| Fatal runtime restart policy | candidate | Defines restart, backoff, lifecycle-hook, and JSON output behavior for unhandled rejections, uncaught exceptions, and fatal runtime paths. | `.scratch/post-v2-platform-hardening-and-ops/issues/06-handle-fatal-runtime-paths-with-restart-policy.md` |
+| Server security defaults | ready | Sets configurable CORS and CSP with safe defaults: same-origin CORS, report-only CSP for React/Preact scaffolds, suppressed technology-revealing headers, and conservative security headers. Dev sessions should allow both `localhost` and `127.0.0.1`, plus an explicit Public Dev session mode. | `.scratch/production-readiness/issues/01-add-capsule-security-policy-defaults.md` |
+| Hardened secrets | ready | Replaces plaintext project-root Server env files as the long-term default for provider credentials and other secrets. | `.scratch/production-readiness/issues/03-add-sealed-server-env.md` |
+| Container filesystem hardening | ready | Makes Container sessions and Hosted Capsules safer with non-root runtime, explicit writable paths, read-only filesystem posture, and Docker hardening. | `.scratch/production-readiness/issues/04-add-hardened-base-image-and-filesystem-model.md` |
+| Central JSON logging | ready | Gives developers and agents one structured way to watch platform logs, app logs, and `ctx.log` output. | `.scratch/production-readiness/issues/02-add-centralized-json-logging.md` |
+| Fatal runtime restart policy | ready | Defines restart, backoff, lifecycle-hook, and JSON output behavior for unhandled rejections, uncaught exceptions, and fatal runtime paths. | `.scratch/production-readiness/issues/05-add-fatal-runtime-restart-policy.md` |
 
 ## Data And Auth Helpers
 

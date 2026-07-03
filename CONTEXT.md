@@ -12,6 +12,10 @@ _Avoid_: app (too generic), project (the scaffold), deployment (the act)
 A local Node process running the bundled app with file watching, hot rebuild, and SQLite persistence. For iteration speed.
 _Avoid_: dev server (it's more than a server — it's a whole feedback loop)
 
+**Public Dev session**:
+A Dev session mode that deliberately relaxes local access defaults for temporary demos, device testing, or public tunneling. It is never the default and does not apply to Container sessions or Hosted Capsules.
+_Avoid_: open dev, unsafe mode, fully accessible dev
+
 **Container session**:
 A local Docker container running the bundled app with the base image, mounted bundle files, and a persistent SQLite volume. For production-like testing.
 _Avoid_: deploy (that's the command), deployment (remote connotation)
@@ -51,6 +55,10 @@ _Avoid_: host, hostname, server domain
 **Hosted Capsule**:
 A Capsule registered on a Hosted domain and managed by a Host server. Registration reserves the Capsule subname and server-side state before any release is pushed.
 _Avoid_: deployment, app, remote app
+
+**Agent-operable Hosted Capsule**:
+A Hosted Capsule that an agent can safely deploy, observe, diagnose, and recover using structured Sporades commands without scraping logs, manually inspecting SSH state, or guessing across platform failure modes.
+_Avoid_: production-ready app, observable deployment
 
 **Capsule subname**:
 The DNS-safe name reserved for a Hosted Capsule within a Hosted domain, forming URLs such as `subname.example.com`.
@@ -215,8 +223,12 @@ _Avoid_: table cache (it's row-level, not table-level), data cache
 ## Configuration
 
 **sporades.json**:
-The project configuration file at the project root. Read by the CLI at startup; relevant pieces passed to the server runtime as a startup argument. The server runtime does not read files. Contains: app name, client framework, enabled auth providers (or legacy auth mode), deploy port, optional dev port override.
+The project configuration file at the project root. Read by the CLI at startup; relevant pieces passed to the server runtime as a startup argument. The server runtime does not read files. Contains: app name, client framework, enabled auth providers (or legacy auth mode), security policy, deploy port, optional dev port override.
 _Avoid_: config file (too generic — it's the specific project config)
+
+**Security policy**:
+The `sporades.json` configuration that defines Capsule HTTP security posture, including CORS and Content Security Policy defaults and overrides. It is runtime policy, not app business logic.
+_Avoid_: security middleware, helmet config
 
 **Config cascade**:
 `sporades.json` → CLI flag → default. CLI flags override config values; config values override defaults. Applied to: ports, framework, auth providers, and legacy auth mode.
@@ -224,6 +236,10 @@ _Avoid_: config file (too generic — it's the specific project config)
 **Server env**:
 A `.env.sporades.server` file at the project root containing server-only environment variables. Loaded for Dev sessions, mounted read-only in local Container sessions, included in Hosted Capsule release packages when present, and exposed via `ctx.env`. Max 64 keys, 64KB total. No `SPORADES_` prefix (reserved). This env-file shape is intentionally deferred hardening work.
 _Avoid_: environment file, dot-env (implementation detail)
+
+**Sealed Server env**:
+Encrypted server-only configuration values managed by Sporades, decryptable by configured local or Host keys, and exposed to Capsule code through `ctx.env`. It is the planned hardened successor to plaintext Server env files.
+_Avoid_: secrets API, vault, encrypted dot-env
 
 ## CLI output
 
@@ -234,6 +250,14 @@ _Avoid_: structured output (too generic)
 **JSONL streaming**:
 `sporades dev --json` streams JSON Lines to stdout — one JSON object per event (started, rebuild success, rebuild failed). Enables agents to watch for build errors and react in real time.
 _Avoid_: streaming output, log lines
+
+**JSONL log stream**:
+An append-friendly sequence of JSON log events emitted by the runtime for app and platform behavior. It is distinct from `sporades dev --json`, which streams command lifecycle events.
+_Avoid_: text logs, dev JSONL events
+
+**Log index**:
+A bounded SQLite-backed index of recent JSON log events used for structured inspection queries. The JSONL log stream remains the durable append stream.
+_Avoid_: log database, audit log
 
 ## Scaffold
 
