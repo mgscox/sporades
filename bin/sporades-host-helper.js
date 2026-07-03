@@ -1237,6 +1237,7 @@ function normaliseBootstrap(request) {
       managedInclude: provided.caddy?.managedInclude ?? path.join(directories.caddy, "sporades-hosted-domains.caddy"),
       domainInclude: provided.caddy?.domainInclude ?? path.join(directories.caddyHosts, `${domain}.caddy`),
       routesDirectory: path.join(directories.caddyHosts, domain),
+      healthRoute: path.join(directories.caddyHosts, domain, "host.caddy"),
       accessLog: provided.caddy?.accessLog ?? defaultCaddyAccessLogPath(remoteRoot),
     },
   };
@@ -1377,6 +1378,7 @@ async function installCaddyBootstrapConfig(request, bootstrap) {
   const domainInclude = bootstrap.caddy.domainInclude;
   const placeholderRoute = path.join(bootstrap.caddy.routesDirectory, ".sporades-placeholder.caddy");
   await writeFile(placeholderRoute, "# Sporades keeps this placeholder so Caddy route imports are valid before Capsules are registered.\n");
+  await writeFile(bootstrap.caddy.healthRoute, renderHostHealthRoute(request.host.domain, bootstrap.tls));
   await writeManagedCaddyfile(caddyfile, `import ${managedInclude}`);
   await writeFile(managedInclude, `# Sporades-managed Hosted domain include list.\nimport ${path.join(bootstrap.directories.caddyHosts, "*.caddy")}\n`);
   await writeFile(domainInclude, `# Sporades-managed routes for ${request.host.domain}.\nimport ${path.join(bootstrap.caddy.routesDirectory, "*.caddy")}\n`);
@@ -1388,9 +1390,29 @@ async function installCaddyBootstrapConfig(request, bootstrap) {
     managedInclude,
     domainInclude,
     routesDirectory: bootstrap.caddy.routesDirectory,
+    health: {
+      hostname: `host.${request.host.domain}`,
+      path: "/__sporades/health",
+      url: `${request.host.scheme ?? "https"}://host.${request.host.domain}/__sporades/health`,
+    },
     globalConfigReplaced: false,
     reloaded: true,
   };
+}
+
+function renderHostHealthRoute(domain, tls) {
+  const route = {
+    hostname: `host.${domain}`,
+    tls,
+  };
+  return renderRoute(
+    route,
+    [
+      "header /__sporades/health Content-Type application/json",
+      'respond /__sporades/health "{\\"ok\\":true}" 200',
+      "respond 404",
+    ].join("\n  "),
+  );
 }
 
 async function writeManagedCaddyfile(caddyfile, importLine) {

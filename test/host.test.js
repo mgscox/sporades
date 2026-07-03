@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readdir, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -17,6 +18,31 @@ async function withTempDir(fn) {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+async function withHttpServer(handler, fn) {
+  const server = createServer(handler);
+  await new Promise((resolve) => {
+    server.listen(0, "::1", resolve);
+  });
+  try {
+    return await fn(server.address().port);
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+}
+
+async function reserveUnusedPort() {
+  let port;
+  await withHttpServer((request, response) => {
+    response.writeHead(500);
+    response.end();
+  }, async (reservedPort) => {
+    port = reservedPort;
+  });
+  return port;
 }
 
 function runCli(args, options = {}) {
@@ -66,6 +92,11 @@ function runHostHelper(input, options = {}) {
 
 function hostEnv(configDir) {
   return { SPORADES_CONFIG_DIR: configDir };
+}
+
+async function writeHostProfileConfig(configDir, config) {
+  await mkdir(configDir, { recursive: true });
+  await writeFile(path.join(configDir, "hosts.json"), `${JSON.stringify(config, null, 2)}\n`);
 }
 
 async function installFakeSsh(dir) {
@@ -868,6 +899,164 @@ process.exit(127);
   });
 });
 
+test("sporades host health checks the selected Host profile and reports safe JSON", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+
+    await withHttpServer((request, response) => {
+      assert.equal(request.url, "/__sporades/health");
+      assert.match(request.headers.host, /^host\.localhost:\d+$/);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true}\n');
+    }, async (port) => {
+      await writeHostProfileConfig(configDir, {
+        currentHostAlias: "personal",
+        profiles: {
+          personal: {
+            server: "root@example.test",
+            domain: `localhost:${port}`,
+            scheme: "http",
+            remoteRoot: "/opt/sporades",
+            tls: { mode: "automatic" },
+          },
+        },
+      });
+
+      const health = await runCli(["host", "health", "--json"], {
+        cwd: dir,
+        env: hostEnv(configDir),
+      });
+
+      assert.equal(health.code, 0, health.stderr);
+      assert.deepEqual(JSON.parse(health.stdout), {
+        ok: true,
+        data: {
+          alias: "personal",
+          healthUrl: `http://host.localhost:${port}/__sporades/health`,
+          response: { ok: true },
+        },
+        error: null,
+      });
+
+      const explicitHealth = await runCli(["host", "health", "--host", "personal", "--json"], {
+        cwd: dir,
+        env: hostEnv(configDir),
+      });
+      assert.equal(explicitHealth.code, 0, explicitHealth.stderr);
+      assert.deepEqual(JSON.parse(explicitHealth.stdout), JSON.parse(health.stdout));
+    });
+  });
+});
+
+test("sporades host health distinguishes unreachable, HTTP failure, and unexpected response shape", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const unreachablePort = await reserveUnusedPort();
+
+    await writeHostProfileConfig(configDir, {
+      currentHostAlias: "personal",
+      profiles: {
+        personal: {
+          server: "root@example.test",
+          domain: `localhost:${unreachablePort}`,
+          scheme: "http",
+          remoteRoot: "/opt/sporades",
+          tls: { mode: "automatic" },
+        },
+      },
+    });
+    const unreachable = await runCli(["host", "health", "--json"], {
+      cwd: dir,
+      env: hostEnv(configDir),
+    });
+    assert.equal(unreachable.code, 1);
+    assert.deepEqual(JSON.parse(unreachable.stdout), {
+      ok: false,
+      data: {
+        alias: "personal",
+        healthUrl: `http://host.localhost:${unreachablePort}/__sporades/health`,
+        failure: "unreachable",
+      },
+      error: {
+        message: "Host server is unreachable.",
+        hint: "Check DNS for the Host server health name, network connectivity, and whether the Host server is running.",
+      },
+    });
+
+    await withHttpServer((request, response) => {
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end('{"ok":false}\n');
+    }, async (port) => {
+      await writeHostProfileConfig(configDir, {
+        currentHostAlias: "personal",
+        profiles: {
+          personal: {
+            server: "root@example.test",
+            domain: `localhost:${port}`,
+            scheme: "http",
+            remoteRoot: "/opt/sporades",
+            tls: { mode: "automatic" },
+          },
+        },
+      });
+      const httpFailure = await runCli(["host", "health", "--json"], {
+        cwd: dir,
+        env: hostEnv(configDir),
+      });
+      assert.equal(httpFailure.code, 1);
+      assert.deepEqual(JSON.parse(httpFailure.stdout), {
+        ok: false,
+        data: {
+          alias: "personal",
+          healthUrl: `http://host.localhost:${port}/__sporades/health`,
+          failure: "tls-http",
+          statusCode: 503,
+        },
+        error: {
+          message: "Host server health returned an HTTP failure.",
+          hint: "Check TLS mode, certificate configuration, Caddy, and the Host server health route.",
+        },
+      });
+    });
+
+    await withHttpServer((request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end('{"ok":true,"version":"0.0.0"}\n');
+    }, async (port) => {
+      await writeHostProfileConfig(configDir, {
+        currentHostAlias: "personal",
+        profiles: {
+          personal: {
+            server: "root@example.test",
+            domain: `localhost:${port}`,
+            scheme: "http",
+            remoteRoot: "/opt/sporades",
+            tls: { mode: "automatic" },
+          },
+        },
+      });
+      const unexpectedShape = await runCli(["host", "health", "--json"], {
+        cwd: dir,
+        env: hostEnv(configDir),
+      });
+      assert.equal(unexpectedShape.code, 1);
+      assert.deepEqual(JSON.parse(unexpectedShape.stdout), {
+        ok: false,
+        data: {
+          alias: "personal",
+          healthUrl: `http://host.localhost:${port}/__sporades/health`,
+          failure: "unexpected-response",
+          statusCode: 200,
+        },
+        error: {
+          message: "Host server health response had an unexpected shape.",
+          hint: "Run `sporades host bootstrap --host personal` and check the generated Host server health route.",
+        },
+      });
+    });
+  });
+});
+
 test("sporades host bootstrap enables one Hosted domain through the remote helper contract", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
@@ -1452,6 +1641,10 @@ test("sporades host helper bootstraps a Hosted domain idempotently without delet
       await readFile(path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev.caddy"), "utf8"),
       new RegExp(`import ${escapeRegExp(path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "*.caddy"))}`),
     );
+    const healthRoute = await readFile(path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "host.caddy"), "utf8");
+    assert.match(healthRoute, /host\.capsules\.example\.dev \{/);
+    assert.match(healthRoute, /respond \/__sporades\/health "\{\\"ok\\":true\}" 200/);
+    assert.doesNotMatch(healthRoute, /container|registry|\/srv|remote-root|version|metrics|secret/i);
 
     assert.deepEqual(
       (await docker.calls()).map((call) => call.args),

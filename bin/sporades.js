@@ -35,6 +35,7 @@ const HOST_TLS_MODES = new Set(["automatic", "cloudflare-origin"]);
 const RESERVED_CAPSULE_SUBNAMES = new Set(["www", "api", "admin", "root", "host"]);
 const MAX_HOST_LOG_LINES = 10000;
 const HOST_LOG_SOURCES = new Set(["http", "stdout", "stderr"]);
+const HOST_HEALTH_PATH = "/__sporades/health";
 const CLI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 main().catch((error) => {
@@ -392,7 +393,7 @@ function parseHostArgs(args) {
     if (arg.startsWith("--")) {
       throw commandError(
         `Unknown flag: ${arg}`,
-        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
+        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
       );
     }
     positional.push(arg);
@@ -437,6 +438,16 @@ function parseHostArgs(args) {
   if (subcommand === "current") {
     if (positional.length > 0) {
       throw commandError("Too many positional arguments.", "Use `sporades host current --host <alias> --json`.");
+    }
+    if (hostAlias) {
+      validateHostAlias(hostAlias);
+    }
+    return { subcommand, hostAlias, json, projectDir: process.cwd() };
+  }
+
+  if (subcommand === "health") {
+    if (positional.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host health --host <alias> --json`.");
     }
     if (hostAlias) {
       validateHostAlias(hostAlias);
@@ -557,7 +568,7 @@ function parseHostArgs(args) {
 
   throw commandError(
     `Unknown host command: ${subcommand ?? ""}`.trim(),
-    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
+    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
   );
 }
 
@@ -1237,6 +1248,23 @@ async function manageHost(options) {
     } else {
       process.stdout.write(`${resolved.alias}\t${resolved.profile.server}\t${resolved.profile.domain}\n`);
     }
+    return;
+  }
+
+  if (options.subcommand === "health") {
+    const config = await readHostConfig();
+    const resolved = resolveHostProfile(config, options.hostAlias);
+    const result = await checkHostServerHealth(resolved.alias, resolved.profile);
+
+    if (options.json) {
+      writeResult(result, !result.ok);
+      return;
+    }
+
+    if (!result.ok) {
+      throw commandError(result.error.message, result.error.hint);
+    }
+    process.stdout.write(`Host server healthy: ${result.data.healthUrl}\n`);
     return;
   }
 
@@ -2258,6 +2286,118 @@ function formatCapsuleDockerStatus(docker) {
   }
   const detail = typeof docker.status === "string" && docker.status.trim() ? docker.status.trim() : "";
   return detail ? `${label} (${detail})` : label;
+}
+
+function createHostHealthUrl(profile) {
+  return `${profile.scheme ?? DEFAULT_HOST_SCHEME}://host.${profile.domain}${HOST_HEALTH_PATH}`;
+}
+
+async function checkHostServerHealth(alias, profile) {
+  const healthUrl = createHostHealthUrl(profile);
+  const failureData = (failure, extra = {}) => ({
+    alias,
+    healthUrl,
+    failure,
+    ...extra,
+  });
+
+  let response;
+  try {
+    response = await fetch(healthUrl, {
+      headers: { accept: "application/json" },
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (error) {
+    const failure = classifyHostHealthFetchFailure(error);
+    if (failure === "unreachable") {
+      return {
+        ok: false,
+        data: failureData("unreachable"),
+        error: {
+          message: "Host server is unreachable.",
+          hint: "Check DNS for the Host server health name, network connectivity, and whether the Host server is running.",
+        },
+      };
+    }
+    return {
+      ok: false,
+      data: failureData("tls-http"),
+      error: {
+        message: "Host server health request failed during TLS or HTTP.",
+        hint: "Check TLS mode, certificate configuration, Caddy, and the Host server health route.",
+      },
+    };
+  }
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      data: failureData("tls-http", { statusCode: response.status }),
+      error: {
+        message: "Host server health returned an HTTP failure.",
+        hint: "Check TLS mode, certificate configuration, Caddy, and the Host server health route.",
+      },
+    };
+  }
+
+  let body;
+  try {
+    body = JSON.parse(await response.text());
+  } catch {
+    return unexpectedHostHealthResponse(alias, healthUrl, response.status);
+  }
+
+  if (!isExpectedHostHealthResponse(body)) {
+    return unexpectedHostHealthResponse(alias, healthUrl, response.status);
+  }
+
+  return {
+    ok: true,
+    data: {
+      alias,
+      healthUrl,
+      response: body,
+    },
+    error: null,
+  };
+}
+
+function classifyHostHealthFetchFailure(error) {
+  const code = error?.cause?.code ?? error?.code;
+  if (
+    error?.name === "TimeoutError" ||
+    error?.name === "AbortError" ||
+    ["ENOTFOUND", "EAI_AGAIN", "ECONNREFUSED", "ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH"].includes(code)
+  ) {
+    return "unreachable";
+  }
+  return "tls-http";
+}
+
+function isExpectedHostHealthResponse(value) {
+  return (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    value.ok === true &&
+    Object.keys(value).length === 1
+  );
+}
+
+function unexpectedHostHealthResponse(alias, healthUrl, statusCode) {
+  return {
+    ok: false,
+    data: {
+      alias,
+      healthUrl,
+      failure: "unexpected-response",
+      statusCode,
+    },
+    error: {
+      message: "Host server health response had an unexpected shape.",
+      hint: `Run \`sporades host bootstrap --host ${alias}\` and check the generated Host server health route.`,
+    },
+  };
 }
 
 function remoteHostHelperPath(profile) {
