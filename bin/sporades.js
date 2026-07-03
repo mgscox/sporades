@@ -350,6 +350,7 @@ function parseHostArgs(args) {
   let subname = null;
   let lines = null;
   let restart = false;
+  let verify = false;
   const positional = [];
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -388,6 +389,11 @@ function parseHostArgs(args) {
       continue;
     }
     if (arg === "--restart") {
+      restart = true;
+      continue;
+    }
+    if (arg === "--verify") {
+      verify = true;
       restart = true;
       continue;
     }
@@ -583,7 +589,7 @@ function parseHostArgs(args) {
     if (subname) {
       validateCapsuleSubname(subname);
     }
-    return { subcommand, hostAlias, subname, restart, json, projectDir: process.cwd() };
+    return { subcommand, hostAlias, subname, restart, verify, json, projectDir: process.cwd() };
   }
 
   if (subcommand === "logs") {
@@ -1430,6 +1436,9 @@ async function manageHost(options) {
       action: "capsule.release.install",
       subname: target.subname,
       release: release.request,
+      lifecycle: options.verify ? createHostLifecycleRequest(target.alias, target.profile, target.subname) : null,
+      health: options.verify ? createHostRuntimeHealthRequest(target.profile, target.subname) : null,
+      verification: options.verify ? { enabled: true, health: createHostRuntimeHealthRequest(target.profile, target.subname) } : null,
       projectDir: options.projectDir,
     });
 
@@ -2167,6 +2176,9 @@ function invokeRemoteHostHelper(options) {
   }
   if (options.rollback) {
     request.rollback = options.rollback;
+  }
+  if (options.verification) {
+    request.verification = options.verification;
   }
   if (options.lifecycle) {
     request.lifecycle = options.lifecycle;

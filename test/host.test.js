@@ -670,6 +670,117 @@ async function createTarGz(archivePath, sourceDir, entries) {
   assert.equal(result.code, 0, result.stderr);
 }
 
+async function writeHostedCapsuleInstallFixture(dir, options = {}) {
+  const remoteRoot = path.join(dir, options.rootName ?? "remote-root");
+  const domain = options.domain ?? "capsules.example.dev";
+  const subname = options.subname ?? "team-notes";
+  const releaseId = options.releaseId ?? "20260630T221500Z-feedface";
+  const previousReleaseId = options.previousReleaseId ?? "20260629T120000Z-deadbeef";
+  const capsuleDir = path.join(remoteRoot, "hosts", domain, "capsules", subname);
+  const incomingDir = path.join(remoteRoot, "incoming");
+  const runtimeDir = path.join(dir, `${options.rootName ?? "remote-root"}-runtime-files`);
+  const archivePath = path.join(incomingDir, `${releaseId}.tar.gz`);
+  const registryRecordPath = path.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`);
+  await mkdir(incomingDir, { recursive: true });
+  await mkdir(runtimeDir, { recursive: true });
+  await mkdir(path.dirname(registryRecordPath), { recursive: true });
+  await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
+  await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
+  await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
+  await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+  await createTarGz(archivePath, runtimeDir, ["server.mjs", "client.js", "index.html", "sporades.json"]);
+  await writeFile(
+    registryRecordPath,
+    `${JSON.stringify({
+      subname,
+      domain,
+      remoteCapsuleId: `${domain}/${subname}`,
+      hostedUrl: `${options.scheme ?? "https"}://${subname}.${domain}`,
+      status: "running",
+      currentRelease: previousReleaseId ? { id: previousReleaseId } : null,
+      releases: previousReleaseId
+        ? [
+            {
+              id: previousReleaseId,
+              createdAt: "2026-06-29T12:00:00.000Z",
+              uploadedAt: "2026-06-29T12:00:00.000Z",
+              state: "verified",
+              current: true,
+              verificationAttempts: [{ verifiedAt: "2026-06-29T12:01:00.000Z" }],
+              failure: null,
+            },
+          ]
+        : [],
+    })}\n`,
+  );
+  return {
+    remoteRoot,
+    domain,
+    subname,
+    releaseId,
+    previousReleaseId,
+    capsuleDir,
+    archivePath,
+    registryRecordPath,
+    release: {
+      id: releaseId,
+      hostedUrl: `${options.scheme ?? "https"}://${subname}.${domain}`,
+      remoteCapsuleId: `${domain}/${subname}`,
+      remoteArchive: archivePath,
+      restart: true,
+      serverEnvIncluded: false,
+      files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+      directories: {
+        capsule: capsuleDir,
+        releases: path.join(capsuleDir, "releases"),
+        release: path.join(capsuleDir, "releases", releaseId),
+        data: path.join(capsuleDir, "data"),
+      },
+      currentLink: path.join(capsuleDir, "current"),
+    },
+    lifecycle: {
+      domain,
+      subname,
+      hostedUrl: `${options.scheme ?? "https"}://${subname}.${domain}`,
+      remoteCapsuleId: `${domain}/${subname}`,
+      currentLink: path.join(capsuleDir, "current"),
+      directories: {
+        capsule: capsuleDir,
+        releases: path.join(capsuleDir, "releases"),
+        release: path.join(capsuleDir, "releases", releaseId),
+        data: path.join(capsuleDir, "data"),
+      },
+      mounts: {
+        files: [
+          { host: path.join(capsuleDir, "current", "server.mjs"), container: "/app/server.mjs", mode: "ro" },
+          { host: path.join(capsuleDir, "current", "client.js"), container: "/app/client.js", mode: "ro" },
+          { host: path.join(capsuleDir, "current", "index.html"), container: "/app/index.html", mode: "ro" },
+          { host: path.join(capsuleDir, "current", "sporades.json"), container: "/app/sporades.json", mode: "ro" },
+        ],
+        data: { host: path.join(capsuleDir, "data"), container: "/app/data", mode: "rw" },
+      },
+      container: { name: `sporades-${domain.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase()}-${subname}` },
+      routes: {
+        running: {
+          hostname: `${subname}.${domain}`,
+          target: "container",
+          containerName: `sporades-${domain.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase()}-${subname}`,
+          port: 4000,
+          routeFile: path.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`),
+          tls: { mode: "automatic" },
+        },
+        unavailable: {
+          hostname: `${subname}.${domain}`,
+          target: "hosted-capsule-unavailable",
+          statusCode: 503,
+          routeFile: path.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`),
+          tls: { mode: "automatic" },
+        },
+      },
+    },
+  };
+}
+
 async function installFakeReact(projectDir) {
   await writePackage(
     projectDir,
@@ -2671,6 +2782,100 @@ process.exit(0);
     assert.equal(request.host.domain, "apps.work.test");
     assert.equal(request.capsule.subname, "field-notes");
     assert.equal(request.release.restart, true);
+  });
+});
+
+test("sporades host push --verify requests Hosted Capsule restart and release verification", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      path.join(dir, "fake-ssh"),
+      `const request = JSON.parse(stdin);
+if (request.action !== "capsule.release.install" || request.release.restart !== true || !request.verification) {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected verification request.", hint: "Use capsule.release.install with verification." }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    installed: true,
+    restartRequested: true,
+    restarted: true,
+    verified: true,
+    capsule: {
+      subname: request.capsule.subname,
+      domain: request.host.domain,
+      hostedUrl: request.release.hostedUrl
+    },
+    release: {
+      id: request.release.id,
+      current: true
+    },
+    previousCurrentRelease: { id: "20260629T120000Z-deadbeef" },
+    currentAttemptedRelease: { id: request.release.id },
+    verification: {
+      state: "verified",
+      health: {
+        route: { responding: true },
+        runtime: {
+          ready: true,
+          checks: { sqlite: { ok: true }, fileStorage: { ok: true } }
+        }
+      }
+    }
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+    const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "todo-island");
+    await installFakeReact(projectDir);
+    await rm(path.join(projectDir, ".env.sporades.server"), { force: true });
+
+    const env = {
+      ...hostEnv(configDir),
+      ...fakeSsh.env,
+      ...fakeScp.env,
+      PATH: `${fakeSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+    const addHost = await runCli(
+      ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+      { cwd: projectDir, env },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+    const bind = await runCli(["host", "bind", "team-notes", "--host", "personal", "--json"], { cwd: projectDir, env });
+    assert.equal(bind.code, 0, bind.stderr);
+
+    const push = await runCli(["host", "push", "--verify", "--json"], { cwd: projectDir, env });
+    assert.equal(push.code, 0, `${push.stderr}\n${push.stdout}`);
+    const output = JSON.parse(push.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.restartRequested, true);
+    assert.equal(output.data.restarted, true);
+    assert.equal(output.data.verification.state, "verified");
+    assert.equal(output.data.verification.health.runtime.ready, true);
+    assert.equal(output.data.capsule.hostedUrl, "https://team-notes.capsules.example.dev");
+    assert.match(output.data.release.id, /^\d{8}T\d{6}Z-[a-f0-9]{8}$/);
+    assert.equal(output.data.previousCurrentRelease.id, "20260629T120000Z-deadbeef");
+    assert.equal(output.data.currentAttemptedRelease.id, output.data.release.id);
+
+    const [sshCall] = await readJsonl(fakeSsh.logPath);
+    const request = JSON.parse(sshCall.stdin);
+    assert.equal(request.action, "capsule.release.install");
+    assert.equal(request.release.restart, true);
+    assert.equal(request.verification.enabled, true);
+    assert.equal(request.verification.health.runtimeHealthUrl, "https://team-notes.capsules.example.dev/__sporades/health/runtime");
+    assert.equal(request.lifecycle.container.name, "sporades-capsules-example-dev-team-notes");
   });
 });
 
@@ -5842,6 +6047,193 @@ test("sporades host helper restarts the current release after install when reque
     assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");
     assert.equal(output.data.lifecycle.container.publishedPort.hostPort, 49153);
     assert.equal(output.data.lifecycle.route.upstream, "127.0.0.1:49153");
+  });
+});
+
+test("sporades host helper verifies a pushed Hosted Capsule release after restart", async () => {
+  await withTempDir(async (dir) => {
+    let probeToken = null;
+    await withHttpServer((request, response) => {
+      assert.equal(request.url, "/__sporades/health/runtime");
+      probeToken = request.headers["x-sporades-host-probe"];
+      assert.equal(typeof probeToken, "string");
+      assert.ok(probeToken.length > 0);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          data: {
+            runtime: { ready: true },
+            checks: {
+              sqlite: { ok: true },
+              fileStorage: { ok: true },
+            },
+          },
+          error: null,
+        }),
+      );
+    }, async (port) => {
+      const fixture = await writeHostedCapsuleInstallFixture(dir, {
+        rootName: "verified",
+        domain: `localhost:${port}`,
+        scheme: "http",
+      });
+      const docker = await installFakeDocker(path.join(dir, "verified-docker"));
+
+      const install = await runHostHelper(
+        {
+          action: "capsule.release.install",
+          host: { alias: "personal", domain: fixture.domain, scheme: "http", remoteRoot: fixture.remoteRoot },
+          capsule: { subname: fixture.subname },
+          release: fixture.release,
+          lifecycle: fixture.lifecycle,
+          verification: {
+            enabled: true,
+            health: { runtimeHealthUrl: `http://malicious.localhost:${port}/__sporades/health/runtime` },
+          },
+        },
+        { cwd: dir, env: docker.env },
+      );
+
+      assert.equal(install.code, 0, install.stderr);
+      const output = JSON.parse(install.stdout);
+      assert.equal(output.ok, true);
+      assert.equal(output.data.installed, true);
+      assert.equal(output.data.restarted, true);
+      assert.equal(output.data.verified, true);
+      assert.equal(output.data.release.id, fixture.releaseId);
+      assert.equal(output.data.previousCurrentRelease.id, fixture.previousReleaseId);
+      assert.equal(output.data.currentAttemptedRelease.id, fixture.releaseId);
+      assert.equal(output.data.verification.state, "verified");
+      assert.equal(output.data.verification.health.route.responding, true);
+      assert.equal(output.data.verification.health.runtime.ready, true);
+      assert.equal(install.stdout.includes(probeToken), false);
+
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+      const release = record.releases.find((entry) => entry.id === fixture.releaseId);
+      assert.equal(record.currentRelease.id, fixture.releaseId);
+      assert.equal(record.status, "running");
+      assert.equal(release.state, "verified");
+      assert.equal(release.current, true);
+      assert.equal(release.verificationAttempts.length, 1);
+      assert.match(release.verificationAttempts[0].verifiedAt, /^\d{4}-\d{2}-\d{2}T/);
+      assert.equal(release.failure, null);
+    });
+  });
+});
+
+test("sporades host helper marks verified push failed when the Capsule route does not become healthy", async () => {
+  await withTempDir(async (dir) => {
+    const port = await reserveUnusedPort();
+    const fixture = await writeHostedCapsuleInstallFixture(dir, {
+      rootName: "verify-route-failure",
+      domain: `localhost:${port}`,
+      scheme: "http",
+    });
+    const docker = await installFakeDocker(path.join(dir, "verify-route-failure-docker"));
+
+    const install = await runHostHelper(
+      {
+        action: "capsule.release.install",
+        host: { alias: "personal", domain: fixture.domain, scheme: "http", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname },
+        release: fixture.release,
+        lifecycle: fixture.lifecycle,
+        verification: {
+          enabled: true,
+          healthTimeoutMs: 25,
+        },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(install.code, 1, install.stderr);
+    const output = JSON.parse(install.stdout);
+    assert.equal(output.ok, false);
+    assert.equal(output.data.release.id, fixture.releaseId);
+    assert.equal(output.data.currentAttemptedRelease.id, fixture.releaseId);
+    assert.equal(output.data.previousCurrentRelease.id, fixture.previousReleaseId);
+    assert.equal(output.data.verified, false);
+    assert.equal(output.data.verification.state, "failed");
+    assert.equal(output.data.verification.health.failure, "route-failure");
+    assert.equal(output.data.rollbackGuidance.command, `sporades host rollback team-notes ${fixture.previousReleaseId} --host personal`);
+    assert.equal(output.error.message, "Hosted Capsule release verification failed.");
+    assert.match(output.error.hint, /sporades host rollback team-notes 20260629T120000Z-deadbeef --host personal/);
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), path.join(fixture.capsuleDir, "releases", fixture.releaseId));
+    assert.match(await readFile(fixture.lifecycle.routes.unavailable.routeFile, "utf8"), /respond "Hosted Capsule unavailable" 503/);
+
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    const release = record.releases.find((entry) => entry.id === fixture.releaseId);
+    assert.equal(record.currentRelease.id, fixture.releaseId);
+    assert.equal(record.status, "failed");
+    assert.equal(release.state, "failed");
+    assert.equal(release.current, true);
+    assert.equal(release.failure.message, "Hosted Capsule route did not respond to runtime health.");
+    assert.equal(release.verificationAttempts.length, 1);
+    assert.equal(release.verificationAttempts[0].failure.message, "Hosted Capsule route did not respond to runtime health.");
+  });
+});
+
+test("sporades host helper marks verified push failed when runtime health checks fail", async () => {
+  await withTempDir(async (dir) => {
+    let probeToken = null;
+    await withHttpServer((request, response) => {
+      assert.equal(request.url, "/__sporades/health/runtime");
+      probeToken = request.headers["x-sporades-host-probe"];
+      assert.equal(typeof probeToken, "string");
+      assert.ok(probeToken.length > 0);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          ok: false,
+          data: {
+            runtime: { ready: false },
+            checks: {
+              sqlite: { ok: false },
+              fileStorage: { ok: true },
+            },
+          },
+          error: null,
+        }),
+      );
+    }, async (port) => {
+      const fixture = await writeHostedCapsuleInstallFixture(dir, {
+        rootName: "verify-runtime-failure",
+        domain: `localhost:${port}`,
+        scheme: "http",
+      });
+      const docker = await installFakeDocker(path.join(dir, "verify-runtime-failure-docker"));
+
+      const install = await runHostHelper(
+        {
+          action: "capsule.release.install",
+          host: { alias: "personal", domain: fixture.domain, scheme: "http", remoteRoot: fixture.remoteRoot },
+          capsule: { subname: fixture.subname },
+          release: fixture.release,
+          lifecycle: fixture.lifecycle,
+          verification: { enabled: true },
+        },
+        { cwd: dir, env: docker.env },
+      );
+
+      assert.equal(install.code, 1, install.stderr);
+      const output = JSON.parse(install.stdout);
+      assert.equal(install.stdout.includes(probeToken), false);
+      assert.equal(output.ok, false);
+      assert.equal(output.data.verification.health.failure, "sqlite-failure");
+      assert.equal(output.data.verification.health.runtime.checks.sqlite.ok, false);
+      assert.equal(output.data.rollbackGuidance.previousReleaseId, fixture.previousReleaseId);
+      assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), path.join(fixture.capsuleDir, "releases", fixture.releaseId));
+      assert.match(await readFile(fixture.lifecycle.routes.unavailable.routeFile, "utf8"), /respond "Hosted Capsule unavailable" 503/);
+
+      const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+      const release = record.releases.find((entry) => entry.id === fixture.releaseId);
+      assert.equal(record.currentRelease.id, fixture.releaseId);
+      assert.equal(record.status, "failed");
+      assert.equal(release.state, "failed");
+      assert.equal(release.failure.message, "Hosted Capsule SQLite health check failed.");
+      assert.equal(release.verificationAttempts[0].failure.message, "Hosted Capsule SQLite health check failed.");
+    });
   });
 });
 

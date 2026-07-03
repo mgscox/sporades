@@ -393,7 +393,8 @@ function deletionRequiresUnregisterError(request) {
 async function installRelease(request) {
   const release = request.release;
   validateInstallRequest(request);
-  await verifyRegisteredCapsule(request);
+  const previousRecord = await verifyRegisteredCapsule(request);
+  const previousCurrentRelease = previousRecord.currentRelease?.id ? { id: previousRecord.currentRelease.id } : null;
   validateReleaseArchive(request);
   const paths = canonicalReleasePaths(request);
   await mkdir(paths.releases, { recursive: true });
@@ -465,6 +466,11 @@ async function installRelease(request) {
   if (restartResult) {
     data.lifecycle = restartResult;
   }
+  if (isVerificationRequested(request)) {
+    const verificationResult = await verifyInstalledRelease(request, release, data, previousCurrentRelease, restartResult, restartError);
+    writeEnvelope(verificationResult, !verificationResult.ok);
+    return;
+  }
   if (release.restart && !restartResult) {
     writeEnvelope({
       ok: false,
@@ -479,6 +485,137 @@ async function installRelease(request) {
     return;
   }
   writeEnvelope({ ok: true, data, error: null });
+}
+
+function isVerificationRequested(request) {
+  return request.verification?.enabled === true;
+}
+
+async function verifyInstalledRelease(request, release, installData, previousCurrentRelease, restartResult, restartError) {
+  const currentAttemptedRelease = { id: release.id };
+  const baseData = {
+    ...installData,
+    previousCurrentRelease,
+    currentAttemptedRelease,
+  };
+  if (!restartResult) {
+    return verificationFailureResult(
+      request,
+      release.id,
+      {
+        ...baseData,
+        verified: false,
+        verification: {
+          state: "failed",
+          health: null,
+        },
+      },
+      restartError?.message ?? "Hosted Capsule restart failed.",
+    );
+  }
+
+  const healthResult = await evaluateCapsuleHealth(request, {
+    timeoutMs: readVerificationHealthTimeoutMs(request),
+  });
+  if (!healthResult.ok) {
+    await routeVerifiedFailureToUnavailable(request, release.id, healthResult.error?.message ?? "Hosted Capsule release verification failed.");
+    return verificationFailureResult(
+      request,
+      release.id,
+      {
+        ...baseData,
+        verified: false,
+        verification: {
+          state: "failed",
+          health: verificationHealthSummary(healthResult),
+        },
+      },
+      healthResult.error?.message ?? "Hosted Capsule release verification failed.",
+    );
+  }
+
+  await recordReleaseVerified(request, release.id);
+  return {
+    ok: true,
+    data: {
+      ...baseData,
+      verified: true,
+      verification: {
+        state: "verified",
+        health: verificationHealthSummary(healthResult),
+      },
+    },
+    error: null,
+  };
+}
+
+function readVerificationHealthTimeoutMs(request) {
+  const value = Number(request.verification?.healthTimeoutMs ?? 10_000);
+  if (!Number.isFinite(value) || value < 1) {
+    return 10_000;
+  }
+  return Math.min(value, 60_000);
+}
+
+async function routeVerifiedFailureToUnavailable(request, releaseId, message) {
+  const lifecycle = normaliseLifecycle(request);
+  stopAndRemoveContainer(lifecycle.container.name);
+  try {
+    await writeUnavailableRoute(lifecycle);
+  } finally {
+    await recordReleaseVerificationFailed(request, releaseId, message);
+  }
+}
+
+function verificationFailureResult(request, releaseId, data, message) {
+  const rollbackGuidance = releaseVerificationRollbackGuidance(request, data.previousCurrentRelease);
+  return {
+    ok: false,
+    data: {
+      ...data,
+      rollbackGuidance,
+    },
+    error: {
+      message: "Hosted Capsule release verification failed.",
+      hint: rollbackGuidance
+        ? `Run \`${rollbackGuidance.command}\` to explicitly roll back to the previous current release.`
+        : `Inspect \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\` and choose an explicit rollback target.`,
+      details: {
+        releaseId,
+        cause: message,
+      },
+    },
+  };
+}
+
+function releaseVerificationRollbackGuidance(request, previousCurrentRelease) {
+  if (!previousCurrentRelease?.id) {
+    return null;
+  }
+  return {
+    previousReleaseId: previousCurrentRelease.id,
+    command: `sporades host rollback ${request.capsule.subname} ${previousCurrentRelease.id} --host ${request.host.alias}`,
+  };
+}
+
+function verificationHealthSummary(result) {
+  if (result.ok) {
+    return {
+      route: {
+        url: result.data.route.url,
+        responding: result.data.route.responding === true,
+      },
+      runtime: result.data.runtime,
+    };
+  }
+  return {
+    failure: result.data?.failure ?? "verification-failure",
+    route: {
+      url: result.data?.route?.url ?? null,
+      responding: false,
+    },
+    runtime: result.data?.runtime ?? null,
+  };
 }
 
 async function startCapsule(request, options = {}) {
@@ -575,6 +712,10 @@ async function startCapsule(request, options = {}) {
 }
 
 async function healthCapsule(request) {
+  writeEnvelope(await evaluateCapsuleHealth(request));
+}
+
+async function evaluateCapsuleHealth(request, options = {}) {
   validateHealthRequest(request);
   let health = normaliseHealth(request);
   let record;
@@ -582,57 +723,46 @@ async function healthCapsule(request) {
     record = await readRegistryRecordForCapsule(request, "health");
   } catch (error) {
     if (error.message === "Hosted Capsule is not registered.") {
-      writeEnvelope(unregisteredHealthFailure(request, health));
-      return;
+      return unregisteredHealthFailure(request, health);
     }
     throw error;
   }
   assertRegistryRecordMatchesRequest(request, record);
   health = normaliseHealth(request, record);
   if (record.status === "unregistered") {
-    writeEnvelope(unregisteredHealthFailure(request, health));
-    return;
+    return unregisteredHealthFailure(request, health);
   }
 
   if (!record.currentRelease?.id) {
-    writeEnvelope(
-      healthFailure(
-        request,
-        health,
-        "no-current-release",
-        "Hosted Capsule has no current release.",
-        `Run \`sporades host push --host ${request.host.alias} --subname ${request.capsule.subname}\`, then retry health.`,
-      ),
+    return healthFailure(
+      request,
+      health,
+      "no-current-release",
+      "Hosted Capsule has no current release.",
+      `Run \`sporades host push --host ${request.host.alias} --subname ${request.capsule.subname}\`, then retry health.`,
     );
-    return;
   }
 
   const running = checkContainerRunning(health.container.name);
   if (!running) {
-    writeEnvelope(
-      healthFailure(
-        request,
-        health,
-        "stopped-container",
-        "Hosted Capsule has no running container.",
-        `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry health.`,
-      ),
+    return healthFailure(
+      request,
+      health,
+      "stopped-container",
+      "Hosted Capsule has no running container.",
+      `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry health.`,
     );
-    return;
   }
 
   const runtimeProbe = readRuntimeProbeCredential(record);
   if (!runtimeProbe) {
-    writeEnvelope(
-      healthFailure(
-        request,
-        health,
-        "route-failure",
-        "Hosted Capsule runtime probe is not configured.",
-        `Restart the Hosted Capsule with \`sporades host restart ${request.capsule.subname} --host ${request.host.alias}\`, then retry health.`,
-      ),
+    return healthFailure(
+      request,
+      health,
+      "route-failure",
+      "Hosted Capsule runtime probe is not configured.",
+      `Restart the Hosted Capsule with \`sporades host restart ${request.capsule.subname} --host ${request.host.alias}\`, then retry health.`,
     );
-    return;
   }
 
   let response;
@@ -642,105 +772,84 @@ async function healthCapsule(request) {
         accept: "application/json",
         [runtimeProbe.header]: runtimeProbe.token,
       },
-      signal: AbortSignal.timeout(10_000),
+      signal: AbortSignal.timeout(options.timeoutMs ?? 10_000),
     });
   } catch {
-    writeEnvelope(
-      healthFailure(
-        request,
-        health,
-        "route-failure",
-        "Hosted Capsule route did not respond to runtime health.",
-        "Check DNS, Caddy, and the Hosted Capsule route, then retry health.",
-      ),
+    return healthFailure(
+      request,
+      health,
+      "route-failure",
+      "Hosted Capsule route did not respond to runtime health.",
+      "Check DNS, Caddy, and the Hosted Capsule route, then retry health.",
     );
-    return;
   }
 
   if (!response.ok) {
-    writeEnvelope(
-      healthFailure(
-        request,
-        health,
-        "route-failure",
-        "Hosted Capsule route returned an HTTP failure for runtime health.",
-        "Check Caddy routing and Hosted Capsule logs, then retry health.",
-        { statusCode: response.status },
-      ),
+    return healthFailure(
+      request,
+      health,
+      "route-failure",
+      "Hosted Capsule route returned an HTTP failure for runtime health.",
+      "Check Caddy routing and Hosted Capsule logs, then retry health.",
+      { statusCode: response.status },
     );
-    return;
   }
 
   let body;
   try {
     body = JSON.parse(await response.text());
   } catch {
-    writeEnvelope(
-      healthFailure(
-        request,
-        health,
-        "runtime-failure",
-        "Hosted Capsule runtime health returned invalid JSON.",
-        "Check Hosted Capsule logs, then retry health.",
-      ),
+    return healthFailure(
+      request,
+      health,
+      "runtime-failure",
+      "Hosted Capsule runtime health returned invalid JSON.",
+      "Check Hosted Capsule logs, then retry health.",
     );
-    return;
   }
 
   const runtime = normaliseRuntimeHealthBody(body);
   if (!runtime.valid) {
-    writeEnvelope(
-      healthFailure(
-        request,
-        health,
-        "runtime-failure",
-        "Hosted Capsule runtime health had an unexpected shape.",
-        "Update the Hosted Capsule release and retry health.",
-      ),
+    return healthFailure(
+      request,
+      health,
+      "runtime-failure",
+      "Hosted Capsule runtime health had an unexpected shape.",
+      "Update the Hosted Capsule release and retry health.",
     );
-    return;
   }
   if (!runtime.checks.sqlite.ok) {
-    writeEnvelope(
-      healthFailure(
-        request,
-        health,
-        "sqlite-failure",
-        "Hosted Capsule SQLite health check failed.",
-        "Check the Hosted Capsule data volume and runtime logs, then retry health.",
-        { runtime: runtime.safe },
-      ),
+    return healthFailure(
+      request,
+      health,
+      "sqlite-failure",
+      "Hosted Capsule SQLite health check failed.",
+      "Check the Hosted Capsule data volume and runtime logs, then retry health.",
+      { runtime: runtime.safe },
     );
-    return;
   }
   if (!runtime.checks.fileStorage.ok) {
-    writeEnvelope(
-      healthFailure(
-        request,
-        health,
-        "file-storage-failure",
-        "Hosted Capsule file storage health check failed.",
-        "Check the Hosted Capsule data volume permissions, then retry health.",
-        { runtime: runtime.safe },
-      ),
+    return healthFailure(
+      request,
+      health,
+      "file-storage-failure",
+      "Hosted Capsule file storage health check failed.",
+      "Check the Hosted Capsule data volume permissions, then retry health.",
+      { runtime: runtime.safe },
     );
-    return;
   }
   if (!body.ok || !runtime.ready) {
-    writeEnvelope(
-      healthFailure(
-        request,
-        health,
-        "runtime-failure",
-        "Hosted Capsule runtime is not ready.",
-        "Check Hosted Capsule logs, then retry health.",
-        { runtime: runtime.safe },
-      ),
+    return healthFailure(
+      request,
+      health,
+      "runtime-failure",
+      "Hosted Capsule runtime is not ready.",
+      "Check Hosted Capsule logs, then retry health.",
+      { runtime: runtime.safe },
     );
-    return;
   }
 
-  writeEnvelope({
+  return {
     ok: true,
     data: {
       capsule: {
@@ -756,7 +865,7 @@ async function healthCapsule(request) {
       runtime: runtime.safe,
     },
     error: null,
-  });
+  };
 }
 
 async function stopCapsule(request, options = {}) {
@@ -2444,6 +2553,51 @@ async function recordReleaseStarted(request, releaseId) {
       state: "started",
       current: true,
       failure: null,
+    }));
+    return record;
+  });
+}
+
+async function recordReleaseVerified(request, releaseId) {
+  await mutateRegistryRecord(request, (record) => {
+    const now = new Date().toISOString();
+    record.currentRelease = { ...(record.currentRelease ?? {}), id: releaseId };
+    record.status = "running";
+    record.updatedAt = now;
+    record.releases = upsertReleaseEntry(record, releaseId, (entry) => ({
+      ...entry,
+      id: releaseId,
+      createdAt: entry.createdAt ?? now,
+      uploadedAt: entry.uploadedAt ?? null,
+      state: "verified",
+      current: true,
+      verificationAttempts: [...normaliseReleaseEventList(entry.verificationAttempts), { verifiedAt: now }],
+      failure: null,
+    }));
+    return record;
+  });
+}
+
+async function recordReleaseVerificationFailed(request, releaseId, message) {
+  await mutateRegistryRecord(request, (record) => {
+    const now = new Date().toISOString();
+    record.status = "failed";
+    record.updatedAt = now;
+    record.releases = upsertReleaseEntry(record, releaseId, (entry) => ({
+      ...entry,
+      id: releaseId,
+      createdAt: entry.createdAt ?? now,
+      uploadedAt: entry.uploadedAt ?? null,
+      state: "failed",
+      current: (record.currentRelease?.id ?? null) === releaseId,
+      verificationAttempts: [
+        ...normaliseReleaseEventList(entry.verificationAttempts),
+        { failedAt: now, failure: { message } },
+      ],
+      failure: {
+        failedAt: now,
+        message,
+      },
     }));
     return record;
   });
