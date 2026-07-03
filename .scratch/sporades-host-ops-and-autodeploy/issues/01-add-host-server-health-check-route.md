@@ -1,6 +1,6 @@
 # Add Host Server health check route
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -27,4 +27,3 @@ details.
 ## Blocked by
 
 None - can start immediately
-
