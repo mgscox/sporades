@@ -1,6 +1,6 @@
 # Extend Host stats with protected resource details
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

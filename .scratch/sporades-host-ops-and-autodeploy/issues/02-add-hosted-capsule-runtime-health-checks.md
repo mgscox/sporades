@@ -1,6 +1,6 @@
 # Add Hosted Capsule runtime health checks
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

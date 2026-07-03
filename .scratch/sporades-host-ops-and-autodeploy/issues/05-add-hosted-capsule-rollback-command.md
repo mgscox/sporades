@@ -1,6 +1,6 @@
 # Add Hosted Capsule rollback command
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
