@@ -48,6 +48,7 @@ Statuses:
 | Automated backups | candidate | Back up SQLite data and uploaded file bytes for Dev sessions, Container sessions, and Hosted Capsules. Needs restore semantics, retention, encryption, and CLI inspection. |
 | OpenTelemetry hooks | candidate | Add hooks or default instrumentation points for traces, metrics, and logs without requiring app code to import OpenTelemetry directly. |
 | Mail sending | candidate | Add SMTP or third-party mail provider support for server-side mail sending. Likely useful for auth, invites, notifications, and team workflows. |
+| GitHub release auto-update | candidate | For a linked GitHub repository, watch for newly published releases, download the packaged Sporades release artifact, update the Hosted Capsule, and automatically roll back if deployment or verification fails. Assumes a GitHub Action already uses Sporades to build and package the release. |
 | Job queue | candidate | Durable background work with retry/failure visibility. Should stay local-first unless an adapter is explicitly configured. |
 | Job scheduling | candidate | Cron-like recurring jobs with persistence, missed-run behavior, timezone handling, and duplicate-run protection. Can build on or sit beside the job queue depending on design. |
 
