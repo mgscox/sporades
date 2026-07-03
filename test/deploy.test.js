@@ -315,6 +315,85 @@ test("sporades deploy writes a server bundle that serves the capsule", async () 
   });
 });
 
+test("container server bundle requires explicit CORS and can enforce CSP", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "secure-container-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "secure-container-island"));
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.security.cors.allowedOrigins = ["https://dashboard.example.test"];
+    config.security.csp.mode = "enforce";
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "secure-container-island",
+
+  endpoints: {
+    ping: endpoint({ method: "POST", path: "/integrations/ping" }, () => ({
+      headers: { "x-powered-by": "custom-stack", server: "custom-server" },
+      body: { ok: true },
+    })),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "container-first");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+
+    const securityResult = await runCli(["security", "--session", "hosted", "--json"], { cwd: projectDir });
+    assert.equal(securityResult.code, 0, securityResult.stderr);
+    const security = JSON.parse(securityResult.stdout).data.security;
+    assert.deepEqual(security.cors.allowedOrigins, ["https://dashboard.example.test"]);
+    assert.equal(security.csp.header, "content-security-policy");
+
+    const port = await getAvailablePort();
+    const child = spawn(process.execPath, [path.join(projectDir, ".sporades", "build", "server.mjs")], {
+      cwd: projectDir,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    try {
+      await waitForHttp(`http://127.0.0.1:${port}/`, child);
+      const blocked = await fetch(`http://127.0.0.1:${port}/integrations/ping`, {
+        method: "POST",
+        headers: { origin: "https://evil.example.test" },
+      });
+      assert.equal(blocked.status, 200);
+      assert.equal(blocked.headers.get("access-control-allow-origin"), null);
+      assert.equal(blocked.headers.get("x-powered-by"), null);
+      assert.equal(blocked.headers.get("server"), null);
+      assert.match(blocked.headers.get("content-security-policy") ?? "", /default-src 'self'/);
+      assert.equal(blocked.headers.get("content-security-policy-report-only"), null);
+
+      const allowed = await fetch(`http://127.0.0.1:${port}/integrations/ping`, {
+        method: "POST",
+        headers: { origin: "https://dashboard.example.test" },
+      });
+      assert.equal(allowed.headers.get("access-control-allow-origin"), "https://dashboard.example.test");
+    } finally {
+      await stopChild(child);
+    }
+  });
+});
+
 test("sporades deploy writes a server bundle that runs bundled Capsule query handlers", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "query-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

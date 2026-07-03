@@ -29,6 +29,14 @@ export function scaffoldFiles(options) {
         template: options.template,
         client: { framework },
         auth: templateOptions.auth,
+        security: {
+          cors: {
+            allowedOrigins: [],
+          },
+          csp: {
+            mode: "report-only",
+          },
+        },
         deploy: { port: 4000 },
         dev: { port: null },
       },

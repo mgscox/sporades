@@ -33,7 +33,7 @@ production-readiness behavior end to end.
 
 | Feature | Status | Why it matters | Planning |
 | --- | --- | --- | --- |
-| Server security defaults | ready | Sets configurable CORS and CSP with safe defaults: same-origin CORS, report-only CSP for React/Preact scaffolds, suppressed technology-revealing headers, and conservative security headers. Dev sessions should allow both `localhost` and `127.0.0.1`, plus an explicit Public Dev session mode. | `.scratch/production-readiness/issues/01-add-capsule-security-policy-defaults.md` |
+| Server security defaults | done | Adds per-Capsule security policy defaults in `sporades.json`: same-origin CORS, Dev-session localhost/127.0.0.1 ergonomics, explicit Public Dev mode, conservative headers, technology-header suppression, report-only CSP defaults, active CSP enforcement, and CLI/Host policy inspection. | `.scratch/production-readiness/issues/01-add-capsule-security-policy-defaults.md` |
 | Hardened secrets | ready | Replaces plaintext project-root Server env files as the long-term default for provider credentials and other secrets. | `.scratch/production-readiness/issues/03-add-sealed-server-env.md` |
 | Container filesystem hardening | ready | Makes Container sessions and Hosted Capsules safer with non-root runtime, explicit writable paths, read-only filesystem posture, and Docker hardening. | `.scratch/production-readiness/issues/04-add-hardened-base-image-and-filesystem-model.md` |
 | Central JSON logging | ready | Gives developers and agents one structured way to watch platform logs, app logs, and `ctx.log` output. | `.scratch/production-readiness/issues/02-add-centralized-json-logging.md` |

@@ -27,6 +27,10 @@ const websocketHub = createWebSocketHub(() => database);
 
 const server = createServer(async (request, response) => {
   try {
+    if (prepareHttpSecurity(database, request, response)) {
+      return;
+    }
+
     if (await routeRuntimeHealth(database, request, response)) {
       return;
     }

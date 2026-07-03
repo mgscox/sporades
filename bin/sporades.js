@@ -14,6 +14,7 @@ import {
   handleFileHttpRoute,
   listDatabaseTables,
   openDevDatabase,
+  prepareHttpSecurity,
   readJsonRequest,
   routeEndpoint,
   routeSporadesAuth,
@@ -32,6 +33,18 @@ const DEFAULT_HOST_SCHEME = "https";
 const DEFAULT_HOST_REMOTE_ROOT = "/srv/sporades";
 const DEFAULT_HOST_TLS_MODE = "automatic";
 const HOST_TLS_MODES = new Set(["automatic", "cloudflare-origin"]);
+const SECURITY_SESSIONS = new Set(["dev", "public-dev", "container", "hosted"]);
+const DEFAULT_CSP_DIRECTIVES = {
+  "default-src": ["'self'"],
+  "script-src": ["'self'", "'unsafe-inline'"],
+  "style-src": ["'self'", "'unsafe-inline'"],
+  "img-src": ["'self'", "data:", "blob:"],
+  "connect-src": ["'self'", "ws:", "wss:"],
+  "font-src": ["'self'", "data:"],
+  "object-src": ["'none'"],
+  "base-uri": ["'self'"],
+  "frame-ancestors": ["'none'"],
+};
 const RESERVED_CAPSULE_SUBNAMES = new Set(["www", "api", "admin", "root", "host"]);
 const MAX_HOST_LOG_LINES = 10000;
 const HOST_LOG_SOURCES = new Set(["http", "stdout", "stderr"]);
@@ -84,6 +97,11 @@ async function main() {
     return;
   }
 
+  if (command === "security") {
+    await inspectSecurity(parseSecurityArgs(args));
+    return;
+  }
+
   if (command === "deploy") {
     await startContainerSession(parseDeployArgs(args));
     return;
@@ -116,6 +134,7 @@ Commands:
   create <name>  Scaffold a new Capsule
   dev            Start a local Dev session
   auth           Manage local auth configuration and simulation
+  security       Inspect effective Capsule security policy
   deploy         Start a local Container session
   host           Manage Host profiles and Hosted Capsules
   logs           Print Dev session logs
@@ -191,6 +210,7 @@ function parseCreateArgs(args) {
 function parseDevArgs(args) {
   let port = null;
   let json = false;
+  let publicDev = false;
 
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -207,12 +227,17 @@ function parseDevArgs(args) {
       json = true;
       continue;
     }
-    throw commandError(`Unknown flag: ${arg}`, "Use `sporades dev --port <number> --json`.");
+    if (arg === "--public") {
+      publicDev = true;
+      continue;
+    }
+    throw commandError(`Unknown flag: ${arg}`, "Use `sporades dev --port <number> --public --json`.");
   }
 
   return {
     port,
     json,
+    publicDev,
     projectDir: process.cwd(),
   };
 }
@@ -243,6 +268,40 @@ function parseDeployArgs(args) {
   return {
     port,
     force,
+    json,
+    projectDir: process.cwd(),
+  };
+}
+
+function parseSecurityArgs(args) {
+  let session = "dev";
+  let json = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--session") {
+      session = readFlagValue(args, ++index, "--session");
+      continue;
+    }
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    throw commandError(
+      `Unknown flag: ${arg}`,
+      "Use `sporades security --session dev|public-dev|container|hosted --json`.",
+    );
+  }
+
+  if (!SECURITY_SESSIONS.has(session)) {
+    throw commandError(
+      `Invalid security session: ${session}`,
+      "Use one of: dev, public-dev, container, hosted.",
+    );
+  }
+
+  return {
+    session,
     json,
     projectDir: process.cwd(),
   };
@@ -855,6 +914,8 @@ async function createProject(options) {
 
 async function startDevSession(options) {
   let config = await readProjectConfig(options.projectDir);
+  const session = options.publicDev ? "public-dev" : "dev";
+  let security = resolveEffectiveSecurityPolicy(config, session);
   const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4000;
   const bundle = await createBundle(options.projectDir, config);
 
@@ -870,13 +931,17 @@ async function startDevSession(options) {
     serverSource: bundle.serverRuntime.source,
     serverEnv: bundle.serverRuntime.env,
     capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
-    config,
+    config: withRuntimeSecuritySession(config, session),
   });
   const websocketHub = createWebSocketHub(() => runtime.database);
 
   const server = createServer(async (request, response) => {
     try {
       const requestUrl = new URL(request.url, "http://127.0.0.1");
+
+      if (prepareHttpSecurity(runtime.database, request, response)) {
+        return;
+      }
 
       if (request.method === "POST" && requestUrl.pathname === "/__sporades/debug/ctx-log") {
         ctx.log.info("ctx.log is available");
@@ -1003,6 +1068,7 @@ async function startDevSession(options) {
   const watchers = watchDevInputs(options.projectDir, async (change) => {
     try {
       const nextConfig = await readProjectConfig(options.projectDir);
+      const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
       const rebuild = await createBundle(options.projectDir, nextConfig);
       const affectsServerRuntime =
         change.affectsServerRuntime || (change.configChanged && configChangeAffectsServerRuntime(config, nextConfig));
@@ -1011,16 +1077,18 @@ async function startDevSession(options) {
           rebuild.serverRuntime.source,
           rebuild.serverRuntime.env,
           rebuild.serverRuntime.capsuleModuleSource,
-          nextConfig,
+          withRuntimeSecuritySession(nextConfig, session),
         );
         websocketHub.disconnectAll();
       }
       config = nextConfig;
+      security = nextSecurity;
       emitDevEvent(options, {
         event: "rebuild",
         status: "success",
         url,
         port: actualPort,
+        security,
       });
     } catch (error) {
       ctx.log.error("Dev rebuild failed", { message: error.message });
@@ -1039,7 +1107,7 @@ async function startDevSession(options) {
       );
     }
   });
-  emitDevEvent(options, { event: "started", url, port: actualPort });
+  emitDevEvent(options, { event: "started", url, port: actualPort, security });
 
   const shutdown = () => {
     for (const watcher of watchers) {
@@ -1310,6 +1378,27 @@ async function manageAuth(options) {
   }
 }
 
+async function inspectSecurity(options) {
+  const config = await readProjectConfig(options.projectDir);
+  const security = resolveEffectiveSecurityPolicy(config, options.session);
+
+  if (options.json) {
+    writeResult({
+      ok: true,
+      data: {
+        session: options.session,
+        security,
+      },
+      error: null,
+    });
+    return;
+  }
+
+  process.stdout.write(`Session: ${options.session}\n`);
+  process.stdout.write(`CORS: ${security.cors.publicDev ? "public-dev" : "same-origin"}\n`);
+  process.stdout.write(`CSP: ${security.csp.mode}\n`);
+}
+
 async function manageHost(options) {
   if (options.subcommand === "add") {
     const config = await readHostConfig();
@@ -1349,9 +1438,10 @@ async function manageHost(options) {
     const config = await readHostConfig();
     const resolved = resolveHostProfile(config, options.hostAlias);
     const binding = await readRemoteBinding(options.projectDir);
+    const security = await readOptionalProjectSecurity(options.projectDir, "hosted");
 
     if (options.json) {
-      writeResult({ ok: true, data: { alias: resolved.alias, profile: resolved.profile, binding }, error: null });
+      writeResult({ ok: true, data: { alias: resolved.alias, profile: resolved.profile, binding, security }, error: null });
     } else {
       process.stdout.write(`${resolved.alias}\t${resolved.profile.server}\t${resolved.profile.domain}\n`);
     }
@@ -2050,11 +2140,96 @@ async function readProjectConfig(projectDir) {
     "Missing project configuration: sporades.json",
     "Run `sporades create` to scaffold a new project.",
   );
+  let config;
   try {
-    return JSON.parse(raw);
+    config = JSON.parse(raw);
   } catch {
     throw commandError("Invalid project configuration: sporades.json", "Fix the JSON syntax in sporades.json.");
   }
+  validateSecurityConfig(config.security);
+  return config;
+}
+
+async function readOptionalProjectSecurity(projectDir, session) {
+  try {
+    return resolveEffectiveSecurityPolicy(await readProjectConfig(projectDir), session);
+  } catch (error) {
+    if (error?.message === "Missing project configuration: sporades.json") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function validateSecurityConfig(security) {
+  if (security === undefined) {
+    return;
+  }
+  if (!security || typeof security !== "object" || Array.isArray(security)) {
+    throw commandError("Invalid security policy.", "Set `security` in sporades.json to an object.");
+  }
+  const cors = security.cors;
+  if (cors !== undefined) {
+    if (!cors || typeof cors !== "object" || Array.isArray(cors)) {
+      throw commandError("Invalid CORS policy.", "Set `security.cors` to an object with `allowedOrigins`.");
+    }
+    if (cors.allowedOrigins !== undefined && (!Array.isArray(cors.allowedOrigins) || !cors.allowedOrigins.every((origin) => typeof origin === "string"))) {
+      throw commandError("Invalid CORS allowed origins.", "Set `security.cors.allowedOrigins` to an array of origin strings.");
+    }
+  }
+  const csp = security.csp;
+  if (csp !== undefined) {
+    if (!csp || typeof csp !== "object" || Array.isArray(csp)) {
+      throw commandError("Invalid CSP policy.", "Set `security.csp` to an object with `mode`.");
+    }
+    if (csp.mode !== undefined && csp.mode !== "report-only" && csp.mode !== "enforce") {
+      throw commandError("Invalid CSP mode.", "Use `security.csp.mode` of `report-only` or `enforce`.");
+    }
+  }
+}
+
+function resolveEffectiveSecurityPolicy(config, session) {
+  const security = config.security ?? {};
+  const cors = security.cors ?? {};
+  const csp = security.csp ?? {};
+  const publicDev = session === "public-dev";
+  const dev = session === "dev" || publicDev;
+  const configuredOrigins = [...(cors.allowedOrigins ?? [])];
+  const devOrigins = dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [];
+  const allowedOrigins = publicDev ? ["*"] : configuredOrigins;
+
+  return {
+    cors: {
+      sameOrigin: !publicDev,
+      publicDev,
+      allowedOrigins,
+      allowedOriginPatterns: devOrigins,
+      requireExplicitCrossOrigin: !dev && configuredOrigins.length === 0,
+    },
+    headers: {
+      contentTypeOptions: "nosniff",
+      referrerPolicy: "no-referrer",
+      frameOptions: "DENY",
+      permissionsPolicy: "camera=(), microphone=(), geolocation=()",
+      crossOriginOpenerPolicy: "same-origin",
+      suppressTechnologyHeaders: true,
+    },
+    csp: {
+      mode: csp.mode ?? "report-only",
+      header: (csp.mode ?? "report-only") === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
+      directives: {
+        ...DEFAULT_CSP_DIRECTIVES,
+        ...(csp.directives ?? {}),
+      },
+    },
+  };
+}
+
+function withRuntimeSecuritySession(config, session) {
+  return {
+    ...config,
+    __sporadesSession: session,
+  };
 }
 
 async function readRequiredFile(filePath, message, hint) {

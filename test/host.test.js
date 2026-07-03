@@ -7824,6 +7824,51 @@ process.exit(0);
   });
 });
 
+test("sporades host current reports effective Hosted security policy without contacting the Host server", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    await writeHostProfileConfig(configDir, {
+      currentHostAlias: "personal",
+      profiles: {
+        personal: {
+          server: "root@example.test",
+          domain: "capsules.example.dev",
+          scheme: "https",
+          remoteRoot: "/opt/sporades",
+          tls: { mode: "automatic" },
+        },
+      },
+    });
+    await writeFile(
+      path.join(dir, "sporades.json"),
+      `${JSON.stringify(
+        {
+          name: "hosted-security-island",
+          client: { framework: "react" },
+          security: {
+            cors: { allowedOrigins: ["https://dashboard.example.test"] },
+            csp: { mode: "enforce" },
+          },
+        },
+        null,
+        2,
+      )}\n`,
+    );
+    const fakeSsh = await installFakeSsh(dir);
+
+    const current = await runCli(["host", "current", "--json"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(current.code, 0, current.stderr);
+    const body = JSON.parse(current.stdout);
+    assert.equal(body.data.alias, "personal");
+    assert.equal(body.data.security.csp.header, "content-security-policy");
+    assert.deepEqual(body.data.security.cors.allowedOrigins, ["https://dashboard.example.test"]);
+    await fakeSsh.assertNotCalled();
+  });
+});
+
 test("sporades host stats without a Host profile reports a structured JSON failure", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");

@@ -2,6 +2,15 @@ import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from
 
 export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   readJsonRequest,
+  prepareHttpSecurity,
+  resolveRuntimeSecurityPolicy,
+  defaultRuntimeCspDirectives,
+  serializeCspDirectives,
+  requestOriginAllowed,
+  isSameOriginRequest,
+  isLocalDevOrigin,
+  appendVaryHeader,
+  sanitizeResponseHeaders,
   openDevDatabase,
   extractSchema,
   schemaFromCapsuleDefinition,
@@ -155,6 +164,161 @@ export async function readJsonRequest(request) {
   return raw ? JSON.parse(raw) : {};
 }
 
+export function prepareHttpSecurity(database, request, response) {
+  const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
+  const originalWriteHead = response.writeHead.bind(response);
+  response.writeHead = (statusCode, statusMessageOrHeaders, maybeHeaders) => {
+    const statusMessage = typeof statusMessageOrHeaders === "string" ? statusMessageOrHeaders : undefined;
+    const inputHeaders = statusMessage ? maybeHeaders : statusMessageOrHeaders;
+    const headers = {
+      ...sanitizeResponseHeaders(inputHeaders ?? {}),
+      "x-content-type-options": "nosniff",
+      "referrer-policy": "no-referrer",
+      "x-frame-options": "DENY",
+      "permissions-policy": "camera=(), microphone=(), geolocation=()",
+      "cross-origin-opener-policy": "same-origin",
+      [policy.csp.header]: serializeCspDirectives(policy.csp.directives),
+    };
+    const origin = request.headers.origin;
+    if (requestOriginAllowed(policy, request)) {
+      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : origin;
+      if (!policy.cors.publicDev) {
+        headers.vary = appendVaryHeader(headers.vary, "Origin");
+      }
+    }
+    if (statusMessage) {
+      return originalWriteHead(statusCode, statusMessage, headers);
+    }
+    return originalWriteHead(statusCode, headers);
+  };
+
+  if (request.method === "OPTIONS" && request.headers.origin && request.headers["access-control-request-method"]) {
+    const headers = {
+      "content-length": "0",
+    };
+    if (requestOriginAllowed(policy, request)) {
+      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : request.headers.origin;
+      headers["access-control-allow-methods"] = "GET,POST,PUT,DELETE,OPTIONS";
+      headers["access-control-allow-headers"] =
+        request.headers["access-control-request-headers"] ?? "content-type,x-sporades-session-token";
+      headers["access-control-max-age"] = "600";
+      if (!policy.cors.publicDev) {
+        headers.vary = "Origin";
+      }
+    }
+    response.writeHead(204, headers);
+    response.end();
+    return true;
+  }
+
+  return false;
+}
+
+function resolveRuntimeSecurityPolicy(config = {}) {
+  const security = config.security ?? {};
+  const cors = security.cors ?? {};
+  const csp = security.csp ?? {};
+  const session = config.__sporadesSession ?? "container";
+  const publicDev = session === "public-dev";
+  const dev = session === "dev" || publicDev;
+  const configuredOrigins = Array.isArray(cors.allowedOrigins) ? cors.allowedOrigins.filter((origin) => typeof origin === "string") : [];
+  const directives = {
+    ...defaultRuntimeCspDirectives(),
+    ...(csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}),
+  };
+  const mode = csp.mode === "enforce" ? "enforce" : "report-only";
+
+  return {
+    cors: {
+      sameOrigin: !publicDev,
+      publicDev,
+      allowedOrigins: publicDev ? ["*"] : configuredOrigins,
+      allowedOriginPatterns: dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [],
+      requireExplicitCrossOrigin: !dev && configuredOrigins.length === 0,
+    },
+    csp: {
+      mode,
+      header: mode === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
+      directives,
+    },
+  };
+}
+
+function defaultRuntimeCspDirectives() {
+  return {
+    "default-src": ["'self'"],
+    "script-src": ["'self'", "'unsafe-inline'"],
+    "style-src": ["'self'", "'unsafe-inline'"],
+    "img-src": ["'self'", "data:", "blob:"],
+    "connect-src": ["'self'", "ws:", "wss:"],
+    "font-src": ["'self'", "data:"],
+    "object-src": ["'none'"],
+    "base-uri": ["'self'"],
+    "frame-ancestors": ["'none'"],
+  };
+}
+
+function serializeCspDirectives(directives) {
+  return Object.entries(directives)
+    .map(([name, values]) => `${name} ${Array.isArray(values) ? values.join(" ") : String(values)}`)
+    .join("; ");
+}
+
+function requestOriginAllowed(policy, request) {
+  const origin = request.headers.origin;
+  if (!origin) {
+    return false;
+  }
+  if (policy.cors.publicDev) {
+    return true;
+  }
+  if (policy.cors.allowedOrigins.includes("*") || policy.cors.allowedOrigins.includes(origin)) {
+    return true;
+  }
+  if (policy.cors.sameOrigin && isSameOriginRequest(request, origin)) {
+    return true;
+  }
+  return policy.cors.allowedOriginPatterns.length > 0 && isLocalDevOrigin(origin);
+}
+
+function isSameOriginRequest(request, origin) {
+  const host = request.headers["x-forwarded-host"] ?? request.headers.host;
+  if (!host) {
+    return false;
+  }
+  const protocol = request.headers["x-forwarded-proto"] ?? (request.socket?.encrypted ? "https" : "http");
+  return origin === `${protocol}://${host}`;
+}
+
+function isLocalDevOrigin(origin) {
+  try {
+    const parsed = new URL(origin);
+    return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+  } catch {
+    return false;
+  }
+}
+
+function appendVaryHeader(existing, value) {
+  if (!existing) {
+    return value;
+  }
+  const parts = String(existing)
+    .split(",")
+    .map((part) => part.trim().toLowerCase());
+  return parts.includes(value.toLowerCase()) ? existing : `${existing}, ${value}`;
+}
+
+function sanitizeResponseHeaders(headers) {
+  const entries = headers instanceof Map ? headers.entries() : Object.entries(headers ?? {});
+  return Object.fromEntries(
+    [...entries].filter(([name]) => {
+      const normalized = String(name).toLowerCase();
+      return normalized !== "x-powered-by" && normalized !== "server";
+    }),
+  );
+}
+
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null) {
   const { DatabaseSync } = await import("node:sqlite");
   const path = await import("node:path");
@@ -181,6 +345,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     rowCache,
     serverEnv,
     authConfig: authStatus(config, serverEnv),
+    securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStoragePath: config.files?.storagePath ?? path.join(path.dirname(databasePath), "files"),
     fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
     close: () => sqlite.close(),

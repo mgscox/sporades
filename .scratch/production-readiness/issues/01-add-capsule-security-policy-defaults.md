@@ -1,6 +1,6 @@
 # Add Capsule security policy defaults
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 

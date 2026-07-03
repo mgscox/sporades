@@ -128,6 +128,40 @@ test("sporades create writes a runnable React blank scaffold by default", async 
   });
 });
 
+test("sporades create writes safe default security policy to sporades.json", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "secure-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(result.code, 0, result.stderr);
+
+    const projectDir = path.join(dir, "secure-island");
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.deepEqual(config.security, {
+      cors: {
+        allowedOrigins: [],
+      },
+      csp: {
+        mode: "report-only",
+      },
+    });
+
+    const security = await runCli(["security", "--session", "container", "--json"], { cwd: projectDir });
+    assert.equal(security.code, 0, security.stderr);
+    const body = JSON.parse(security.stdout);
+    assert.equal(body.ok, true);
+    assert.equal(body.data.session, "container");
+    assert.deepEqual(body.data.security.cors, {
+      sameOrigin: true,
+      publicDev: false,
+      allowedOrigins: [],
+      allowedOriginPatterns: [],
+      requireExplicitCrossOrigin: true,
+    });
+    assert.equal(body.data.security.csp.header, "content-security-policy-report-only");
+  });
+});
+
 test("sporades create writes a runnable React todo scaffold when requested", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

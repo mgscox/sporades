@@ -46,6 +46,11 @@ The repository currently includes:
   under read-write data mounts, hosted traffic reaches containers through Caddy
   loopback routes rather than public container ports, and Hosted Capsule logs
   use bounded Docker `json-file` settings.
+- Per-Capsule HTTP security policy defaults in `sporades.json`, including
+  same-origin CORS by default, Dev-session localhost/127.0.0.1 ergonomics,
+  explicit Public Dev mode, conservative security headers, technology-header
+  suppression, report-only CSP defaults, active CSP enforcement, and CLI/Host
+  policy inspection.
 - Caddy automatic HTTPS as the default Host TLS mode, with
   `cloudflare-origin` TLS available for Hosted domains that use preinstalled
   Cloudflare origin certificates.
@@ -75,8 +80,6 @@ The following work is intentionally deferred:
 - Deeper hardened Base image and filesystem model, including non-root runtime,
   read-only root filesystem, seccomp, and any broader Docker isolation posture:
   `.scratch/post-v2-platform-hardening-and-ops/issues/02-harden-base-image-and-container-filesystem.md`.
-- Server security defaults such as CORS and header hardening:
-  `.scratch/post-v2-platform-hardening-and-ops/issues/03-add-server-security-defaults.md`.
 - Automatic OpenTelemetry and centralized JSON logging:
   `.scratch/post-v2-platform-hardening-and-ops/issues/04-add-automatic-opentelemetry.md` and
   `.scratch/post-v2-platform-hardening-and-ops/issues/05-centralize-json-server-logging.md`.

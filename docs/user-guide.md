@@ -222,6 +222,14 @@ A typical `sporades.json` looks like this:
   "auth": {
     "mode": "anonymous"
   },
+  "security": {
+    "cors": {
+      "allowedOrigins": []
+    },
+    "csp": {
+      "mode": "report-only"
+    }
+  },
   "deploy": {
     "port": 4000
   },
@@ -235,6 +243,71 @@ Ports follow this cascade: CLI flag, then `sporades.json`, then default.
 
 Use `dev.port` when you always want a different Dev session port. Use
 `deploy.port` for local Container sessions.
+
+### Security Policy
+
+`security` controls the Capsule HTTP security posture for Sporades-owned
+surfaces and Custom endpoints. The default CORS posture is same-origin. Dev
+sessions additionally allow browser origins on `localhost` and `127.0.0.1` so
+local tools can talk to the Capsule without extra configuration.
+
+For temporary demos, device testing, or tunnels, start an explicit Public Dev
+session:
+
+```sh
+sporades dev --public --json
+```
+
+The JSON started event includes the effective security policy, including
+`security.cors.publicDev: true` and the relaxed allowed origin. Public Dev mode
+does not apply to local Container sessions or Hosted Capsules.
+
+Local Container sessions and Hosted Capsules require explicit CORS origins for
+cross-origin Custom endpoint access:
+
+```json
+{
+  "security": {
+    "cors": {
+      "allowedOrigins": ["https://dashboard.example.com"]
+    },
+    "csp": {
+      "mode": "report-only"
+    }
+  }
+}
+```
+
+CSP defaults to report-only mode with React/Preact-friendly scaffold defaults.
+Switch to active enforcement when the Capsule is ready:
+
+```json
+{
+  "security": {
+    "csp": {
+      "mode": "enforce"
+    }
+  }
+}
+```
+
+Inspect the effective policy without starting the server Bundle:
+
+```sh
+sporades security --session dev --json
+sporades security --session public-dev --json
+sporades security --session container --json
+sporades security --session hosted --json
+```
+
+Host commands may report the effective Hosted policy, for example through
+`sporades host current --json`, but Host profiles do not override
+`sporades.json`.
+
+Migration note: existing Capsules without a `security` object continue to use
+the same defaults as new scaffolds. Add `security.cors.allowedOrigins` only for
+known cross-origin callers, and prefer testing active CSP with `report-only`
+before switching to `enforce`.
 
 ## Building the Server Side
 

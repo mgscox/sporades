@@ -53,6 +53,10 @@ function startCli(args, options = {}) {
   });
 }
 
+function headerNames(headers) {
+  return new Set([...headers.keys()].map((name) => name.toLowerCase()));
+}
+
 async function waitForJsonLine(child) {
   return new Promise((resolve, reject) => {
     let stdout = "";
@@ -728,6 +732,111 @@ export default capsule({
       const pathMissResponse = await fetch(`${started.data.url}/integrations/missing`, { method: "POST" });
       assert.equal(pathMissResponse.status, 404);
       assert.equal(await pathMissResponse.text(), "Not found");
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev applies default security headers and local-only CORS", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "secure-dev-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "secure-dev-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "secure-dev-island",
+
+  endpoints: {
+    ping: endpoint({ method: "POST", path: "/integrations/ping" }, () => ({ body: { ok: true } })),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      assert.deepEqual(started.data.security.cors.allowedOriginPatterns, ["http://localhost:*", "http://127.0.0.1:*"]);
+      assert.equal(started.data.security.cors.publicDev, false);
+
+      const rootResponse = await fetch(`${started.data.url}/`, {
+        headers: { origin: "http://localhost:5173" },
+      });
+      assert.equal(rootResponse.headers.get("access-control-allow-origin"), "http://localhost:5173");
+      assert.equal(rootResponse.headers.get("x-content-type-options"), "nosniff");
+      assert.equal(rootResponse.headers.get("referrer-policy"), "no-referrer");
+      assert.equal(rootResponse.headers.get("x-frame-options"), "DENY");
+      assert.equal(rootResponse.headers.get("cross-origin-opener-policy"), "same-origin");
+      assert.match(rootResponse.headers.get("permissions-policy") ?? "", /camera=\(\)/);
+      assert.match(rootResponse.headers.get("content-security-policy-report-only") ?? "", /default-src 'self'/);
+      assert.equal(rootResponse.headers.get("content-security-policy"), null);
+      assert.equal(rootResponse.headers.get("x-powered-by"), null);
+      assert.equal(rootResponse.headers.get("server"), null);
+
+      const endpointResponse = await fetch(`${started.data.url}/integrations/ping`, {
+        method: "POST",
+        headers: { origin: "https://example.test" },
+      });
+      assert.equal(endpointResponse.status, 200);
+      assert.equal(endpointResponse.headers.get("access-control-allow-origin"), null);
+
+      const preflight = await fetch(`${started.data.url}/integrations/ping`, {
+        method: "OPTIONS",
+        headers: {
+          origin: "http://127.0.0.1:5173",
+          "access-control-request-method": "POST",
+          "access-control-request-headers": "x-sporades-session-token",
+        },
+      });
+      assert.equal(preflight.status, 204);
+      assert.equal(preflight.headers.get("access-control-allow-origin"), "http://127.0.0.1:5173");
+      assert.match(preflight.headers.get("access-control-allow-headers") ?? "", /x-sporades-session-token/);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev --public makes the relaxed CORS posture visible", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "public-dev-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "public-dev-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--public", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      assert.equal(started.data.security.cors.publicDev, true);
+      assert.deepEqual(started.data.security.cors.allowedOrigins, ["*"]);
+
+      const response = await fetch(started.data.url, {
+        headers: { origin: "https://demo.example.test" },
+      });
+      assert.equal(response.headers.get("access-control-allow-origin"), "*");
     } finally {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
