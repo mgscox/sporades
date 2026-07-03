@@ -1,6 +1,6 @@
 # Add release verification around Host push
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
