@@ -139,7 +139,14 @@ export default capsule({
       score: Number().default(0),
       publishedAt: Date(),
       metadata: Json().default({}),
-      parentId: Reference("notes").default(null)
+      parentId: Reference("notes").default(null),
+      ownerId: String()
+    }).acl({
+      read: ({ row, ctx }) => row.ownerId === ctx.auth.userId,
+      write: async ({ previous, next, ctx }) => {
+        const ownerId = next?.ownerId ?? previous?.ownerId;
+        return ownerId === ctx.auth.userId;
+      }
     })
   },
 

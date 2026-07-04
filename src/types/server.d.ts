@@ -32,9 +32,35 @@ export type AnyFieldDefinition =
   | ReferenceFieldBuilder
   | ReferenceFieldDefinition;
 
+export type TableAclOperation = "read" | "write" | "insert" | "update" | "delete";
+
+export type TableAclContext = {
+  auth: AuthContext;
+  [key: string]: unknown;
+};
+
+export type TableAclRuleInput<Row extends Record<string, unknown> = Record<string, unknown>> = {
+  ctx: TableAclContext;
+  operation: TableAclOperation;
+  table: string;
+  row?: Row | null;
+  previous?: Row | null;
+  next?: Row | null;
+};
+
+export type TableAclRule<Row extends Record<string, unknown> = Record<string, unknown>> = (
+  input: TableAclRuleInput<Row>,
+) => MaybePromise<boolean>;
+
+export type TableAclRules<Row extends Record<string, unknown> = Record<string, unknown>> = Partial<
+  Record<TableAclOperation, TableAclRule<Row>>
+>;
+
 export type TableDefinition<Fields extends Record<string, AnyFieldDefinition> = Record<string, AnyFieldDefinition>> = {
   kind: "table";
   fields: Fields;
+  aclRules?: TableAclRules;
+  acl(rules: TableAclRules<RowFromFields<Fields>>): TableDefinition<Fields>;
 };
 
 export type SchemaDefinition = Record<string, TableDefinition>;
