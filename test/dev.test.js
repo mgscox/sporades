@@ -9,6 +9,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { withFakeLibsqlService } from "./support/libsql-http-service.js";
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
 const TEST_PROCESS_EVENT_TIMEOUT_MS = 10000;
@@ -423,7 +425,8 @@ test("sporades dev generates owned Compose for declared database Capsule service
     await installFakeReact(projectDir);
     const docker = await installFakeDocker(dir);
 
-    await withFakeServiceEndpoint(async ({ port: servicePort }) => {
+    await withFakeLibsqlService(path.join(dir, "dev-libsql.db"), async ({ url: serviceUrl }) => {
+      const servicePort = new URL(serviceUrl).port;
       const child = startCli(["dev", "--json"], {
         cwd: projectDir,
         env: { ...docker.env, FAKE_DOCKER_SERVICE_PORT: String(servicePort) },
@@ -450,7 +453,7 @@ test("sporades dev generates owned Compose for declared database Capsule service
           engine: "libsql",
           statePath: path.join(".sporades", "services", "database"),
           host: "127.0.0.1",
-          port: servicePort,
+          port: Number(servicePort),
         });
         const started = await waitForJsonEvent(child, (event) => event.data?.event === "started");
         assert.equal(started.ok, true);
@@ -583,7 +586,8 @@ test("sporades dev injects database Capsule service connection details into serv
     await installFakeReact(projectDir);
     const docker = await installFakeDocker(dir);
 
-    await withFakeServiceEndpoint(async ({ port: servicePort }) => {
+    await withFakeLibsqlService(path.join(dir, "dev-libsql.db"), async ({ url: serviceUrl }) => {
+      const servicePort = new URL(serviceUrl).port;
       const child = startCli(["dev", "--json"], {
         cwd: projectDir,
         env: { ...docker.env, FAKE_DOCKER_SERVICE_PORT: String(servicePort) },
@@ -601,10 +605,7 @@ test("sporades dev injects database Capsule service connection details into serv
           id: "env-1",
           type: "query.result",
           query: "ctx.env",
-          data: {
-            SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
-            SPORADES_SERVICE_DATABASE_URL: `http://127.0.0.1:${servicePort}`,
-          },
+          data: {},
           error: null,
         });
 
@@ -612,6 +613,7 @@ test("sporades dev injects database Capsule service connection details into serv
         assert.equal(clientResponse.status, 200);
         const clientBundle = await clientResponse.text();
         assert.doesNotMatch(clientBundle, /SPORADES_SERVICE_DATABASE_URL/);
+        assert.doesNotMatch(clientBundle, /SPORADES_SERVICE_DATABASE_AUTH_TOKEN/);
         assert.doesNotMatch(clientBundle, new RegExp(String(servicePort)));
 
         const stateDir = path.join(projectDir, ".sporades", "services", "database");

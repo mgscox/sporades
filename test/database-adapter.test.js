@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   checkRuntimeSqlite,
+  createLibsqlDatabaseAdapter,
   createPendingFileUpload,
   createSqliteDatabaseAdapter,
   dumpDatabase,
@@ -16,6 +17,7 @@ import {
   runReadOnlyQuery,
   signUpWithEmail,
 } from "../src/server-runtime-source.js";
+import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-database-adapter-"));
@@ -44,6 +46,299 @@ test("SQLite database adapter owns setup, query execution, and close lifecycle",
 
     adapter.close();
     assert.throws(() => adapter.prepare("SELECT 1").get(), /database is not open/i);
+  });
+});
+
+test("libSQL database adapter owns remote connection, result normalization, and transaction sessions", async () => {
+  await withTempDir(async (dir) => {
+    await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url, requests }) => {
+      const adapter = await createLibsqlDatabaseAdapter({ url });
+      try {
+        await adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
+        await adapter.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("one", "hello");
+
+        assert.deepEqual(await adapter.prepare("SELECT id, value FROM entries WHERE id = ?").get("one"), {
+          id: "one",
+          value: "hello",
+        });
+        assert.deepEqual(await adapter.prepare("SELECT id, value FROM entries ORDER BY id").all(), [
+          { id: "one", value: "hello" },
+        ]);
+
+        await assert.rejects(
+          adapter.withTransaction(async (transaction) => {
+            await transaction.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("two", "rolled back");
+            throw new Error("rollback please");
+          }),
+          /rollback please/,
+        );
+        assert.equal(await adapter.prepare("SELECT value FROM entries WHERE id = ?").get("two"), null);
+
+        const transactionRequests = requests.filter((request) =>
+          request.requests?.some((candidate) => candidate.stmt?.sql === "BEGIN" || candidate.stmt?.sql === "ROLLBACK"),
+        );
+        assert.equal(transactionRequests.length, 2);
+        assert.equal(transactionRequests[0].baton ?? null, null);
+        assert.equal(typeof transactionRequests[1].baton, "string");
+        assert.notEqual(transactionRequests[1].baton, "");
+      } finally {
+        await adapter.close();
+      }
+    });
+  });
+});
+
+test("libSQL database adapter does not share transaction baton with non-transaction operations", async () => {
+  await withTempDir(async (dir) => {
+    await withFakeLibsqlService(path.join(dir, "libsql-transaction-scope.db"), async ({ url, requests }) => {
+      const adapter = await createLibsqlDatabaseAdapter({ url });
+      try {
+        await adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
+
+        await adapter.withTransaction(async (transaction) => {
+          await transaction.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("inside", "transaction");
+          await adapter.prepare("SELECT id FROM entries WHERE id = ?").get("inside");
+        });
+
+        const outsideSelect = requests.find((request) =>
+          request.requests?.some((entry) => entry.stmt?.sql === "SELECT id FROM entries WHERE id = ?"),
+        );
+        assert(outsideSelect, JSON.stringify(requests));
+        assert.equal(outsideSelect.baton, undefined);
+      } finally {
+        await adapter.close();
+      }
+    });
+  });
+});
+
+test("runtime selects libSQL only when declared services provide server-only connection env", async () => {
+  await withTempDir(async (dir) => {
+    await withFakeLibsqlService(path.join(dir, "runtime-libsql.db"), async ({ url }) => {
+      const serverSource = `
+        export default capsule({
+          schema: {
+            notes: table({
+              text: String(),
+              ownerId: String()
+            })
+          }
+        });
+      `;
+      const config = { services: { database: { kind: "database", engine: "libsql" } } };
+      const database = await openDevDatabase(
+        path.join(dir, "data.db"),
+        serverSource,
+        {
+          VISIBLE_CAPSULE_ENV: "yes",
+        },
+        config,
+        null,
+        {
+          serviceEnv: {
+            SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
+            SPORADES_SERVICE_DATABASE_URL: url,
+          },
+        },
+      );
+      try {
+        assert.equal(database.adapter.engine, "libsql");
+        assert.deepEqual(database.serverEnv, { VISIBLE_CAPSULE_ENV: "yes" });
+        await database.sqlite.insertAppRow(database.schema.tables[0], {
+          id: "note-1",
+          createdAt: "2026-07-04T10:00:00.000Z",
+          updatedAt: "2026-07-04T10:00:00.000Z",
+          text: "remote database",
+          ownerId: "user-1",
+        });
+        assert.deepEqual(await runReadOnlyQuery(database, "SELECT text FROM notes"), {
+          ok: true,
+          data: {
+            columns: ["text"],
+            rows: [{ text: "remote database" }],
+          },
+          error: null,
+        });
+      } finally {
+        await database.close();
+      }
+    });
+
+    const embedded = await openDevDatabase(
+      path.join(dir, "embedded.db"),
+      "",
+      {
+        SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
+        SPORADES_SERVICE_DATABASE_URL: "http://127.0.0.1:1/should-not-be-used",
+      },
+      {},
+    );
+    try {
+      assert.equal(embedded.adapter.engine, "sqlite");
+    } finally {
+      await embedded.close();
+    }
+  });
+});
+
+test("libSQL app schema migrations await delayed table creation failures before writing metadata", async () => {
+  await withTempDir(async (dir) => {
+    await withFakeLibsqlService(
+      path.join(dir, "libsql-delayed-create.db"),
+      {
+        async beforeStatement(sql) {
+          if (/CREATE TABLE IF NOT EXISTS "delayed_failure"/.test(sql)) {
+            await new Promise((resolve) => setTimeout(resolve, 25));
+            throw new Error("delayed create failed");
+          }
+        },
+      },
+      async ({ url }) => {
+        const adapter = await createLibsqlDatabaseAdapter({ url });
+        try {
+          await adapter.ensureSystemTable();
+          await assert.rejects(
+            adapter.migrateAppSchema({
+              tables: [
+                {
+                  name: "delayed_failure",
+                  fields: [{ name: "text", kind: "String", sqliteType: "TEXT" }],
+                },
+              ],
+            }),
+            /delayed create failed/,
+          );
+          assert.equal(await adapter.readSchemaMetadata(), null);
+        } finally {
+          await adapter.close();
+        }
+      },
+    );
+  });
+});
+
+test("libSQL database adapter supports runtime storage, migrations, health, and inspection paths", async () => {
+  await withTempDir(async (dir) => {
+    await withFakeLibsqlService(path.join(dir, "runtime-paths.db"), async ({ url }) => {
+      const adapter = await createLibsqlDatabaseAdapter({ url });
+      const database = { adapter, sqlite: adapter };
+      try {
+        const notesTable = {
+          name: "notes",
+          fields: [
+            { name: "text", kind: "String", sqliteType: "TEXT" },
+            { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+            { name: "done", kind: "Boolean", sqliteType: "INTEGER", defaultValue: false },
+          ],
+        };
+
+        await adapter.ensureSystemTable();
+        await adapter.writeSystemMetadata("adapter", "libsql");
+        await adapter.migrateAppSchema({ tables: [notesTable] });
+        assert.equal((await adapter.readSystemMetadata("adapter")).value, "libsql");
+
+        const now = "2026-07-04T10:00:00.000Z";
+        await adapter.insertAppRow(notesTable, {
+          id: "note-1",
+          createdAt: now,
+          updatedAt: now,
+          text: "service backed",
+          ownerId: "user-1",
+          done: 0,
+        });
+        await adapter.updateAppRow(notesTable, "note-1", { done: 1, updatedAt: "2026-07-04T10:01:00.000Z" });
+        assert.deepEqual(await adapter.selectAppRows(notesTable, { columns: ["text", "done"] }), [
+          { text: "service backed", done: 1 },
+        ]);
+
+        const migratedNotesTable = {
+          ...notesTable,
+          fields: [...notesTable.fields, { name: "summary", kind: "String", sqliteType: "TEXT", defaultValue: "draft" }],
+        };
+        await adapter.migrateAppSchema({ tables: [migratedNotesTable] });
+        assert.deepEqual(await adapter.selectAppRows(migratedNotesTable, { columns: ["text", "summary"] }), [
+          { text: "service backed", summary: "draft" },
+        ]);
+
+        await adapter.ensureAuthStorage({ providers: { email: { enabled: true } } });
+        await adapter.insertAuthUser({
+          id: "user-1",
+          createdAt: now,
+          displayName: "LibSQL User",
+          email: "libsql@example.com",
+          picture: null,
+          isAuthenticated: 1,
+          isGuest: 0,
+          provider: "email",
+        });
+        await adapter.insertAuthSession({
+          token: "session-1",
+          userId: "user-1",
+          createdAt: now,
+          expiresAt: "2026-08-03T10:00:00.000Z",
+        });
+        assert.equal((await adapter.readAuthSessionWithUser("session-1")).email, "libsql@example.com");
+
+        await adapter.ensureFileStorage();
+        await adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });
+        await adapter.insertFileRow({
+          id: "file-1",
+          ownerId: "user-1",
+          bucketId: "bucket-1",
+          bucketName: "default",
+          name: "proof.txt",
+          type: "text/plain",
+          size: 5,
+          version: "version-1",
+          status: "uploaded",
+          createdAt: now,
+          updatedAt: now,
+        });
+        assert.equal((await adapter.fileRowForOwner("file-1", "user-1")).name, "proof.txt");
+
+        await adapter.ensureLogStorage();
+        await adapter.insertLogIndexEvent({
+          timestamp: "2026-07-04T10:02:00.000Z",
+          category: "app",
+          event: "ctx.log",
+          level: "info",
+          message: "libsql log",
+          capsule: { name: "libsql-adapter" },
+        });
+        assert.deepEqual((await adapter.readRecentLogEvents(1)).map((event) => event.message), ["libsql log"]);
+
+        await assert.rejects(
+          adapter.withTransaction(async (transaction) => {
+            await transaction.insertAppRow(migratedNotesTable, {
+              id: "note-rolled-back",
+              createdAt: now,
+              updatedAt: now,
+              text: "rolled back",
+              ownerId: "user-1",
+              done: 0,
+              summary: "draft",
+            });
+            throw new Error("rollback path");
+          }),
+          /rollback path/,
+        );
+        assert.equal(await adapter.selectAppRowById(migratedNotesTable, "note-rolled-back"), null);
+
+        assert.deepEqual(await checkRuntimeSqlite(database), { ok: true });
+        assert.deepEqual((await listDatabaseTables(database)).filter((name) => name === "notes"), ["notes"]);
+        assert.equal((await dumpDatabase(database)).find((table) => table.name === "notes").rows.length, 1);
+        assert.deepEqual(await runReadOnlyQuery(database, "SELECT text, summary FROM notes"), {
+          ok: true,
+          data: {
+            columns: ["text", "summary"],
+            rows: [{ text: "service backed", summary: "draft" }],
+          },
+          error: null,
+        });
+      } finally {
+        await adapter.close();
+      }
+    });
   });
 });
 

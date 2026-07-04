@@ -13,6 +13,21 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   appendVaryHeader,
   sanitizeResponseHeaders,
   createSqliteDatabaseAdapter,
+  createLibsqlDatabaseAdapter,
+  createRuntimeDatabaseAdapter,
+  libsqlPipelineUrl,
+  assertLibsqlOpen,
+  libsqlHasMultipleStatements,
+  libsqlExecute,
+  libsqlDescribe,
+  libsqlPipeline,
+  libsqlRowsFromResult,
+  libsqlValueFromJs,
+  libsqlValueToJs,
+  ensureLibsqlSessionLifecycleColumns,
+  migrateLibsqlAppSchema,
+  migrateExistingLibsqlAppTable,
+  splitSqlStatements,
   openDevDatabase,
   createRuntimeLogSink,
   requirePathModule,
@@ -90,6 +105,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createEndpointTableApi,
   runTableWriteWithAcl,
   isPromiseLike,
+  thenIfPromise,
+  chainMaybePromise,
   applyReadAcl,
   filterRowsByReadAcl,
   createAclHelpers,
@@ -366,9 +383,9 @@ function sanitizeResponseHeaders(headers) {
   );
 }
 
-export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null) {
+export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
   const path = await import("node:path");
-  const sqlite = await createSqliteDatabaseAdapter(databasePath);
+  const sqlite = await createRuntimeDatabaseAdapter(databasePath, options?.serviceEnv ?? serverEnv, config);
   const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
   const endpoints = extractEndpoints(serverSource);
   const queries = extractQueryHandlersFromCapsule(capsuleDefinition) ?? extractQueryHandlers(serverSource);
@@ -413,13 +430,28 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
   return database;
 }
 
-export async function createSqliteDatabaseAdapter(databasePath) {
+async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
+  if (
+    config.services?.database?.engine === "libsql" &&
+    serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" &&
+    serverEnv.SPORADES_SERVICE_DATABASE_URL
+  ) {
+    return await createLibsqlDatabaseAdapter({
+      url: serverEnv.SPORADES_SERVICE_DATABASE_URL,
+      authToken: serverEnv.SPORADES_SERVICE_DATABASE_AUTH_TOKEN,
+    });
+  }
+  return await createSqliteDatabaseAdapter(databasePath);
+}
+
+export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const { DatabaseSync } = await import("node:sqlite");
   const path = await import("node:path");
   mkdirSync(path.dirname(databasePath), { recursive: true });
-  const connection = new DatabaseSync(databasePath);
+  const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
 
   const adapter = {
+    engine: "sqlite",
     exec(sql) {
       return connection.exec(sql);
     },
@@ -673,7 +705,7 @@ export async function createSqliteDatabaseAdapter(databasePath) {
     async withTransaction(fn) {
       this.exec("BEGIN");
       try {
-        const result = await fn();
+        const result = await fn(this);
         this.exec("COMMIT");
         return result;
       } catch (error) {
@@ -797,8 +829,432 @@ export async function createSqliteDatabaseAdapter(databasePath) {
     },
   };
 
-  adapter.exec("PRAGMA journal_mode = WAL");
+  if (!options.readOnly) {
+    adapter.exec("PRAGMA journal_mode = WAL");
+  }
   return adapter;
+}
+
+export async function createLibsqlDatabaseAdapter(options) {
+  const url = typeof options === "string" ? options : options?.url;
+  if (!url) {
+    throw commandError(
+      "Missing libSQL database service URL.",
+      "Start a Dev session or local Container session with services.database.engine set to libsql.",
+    );
+  }
+
+  const endpoint = libsqlPipelineUrl(url);
+  const authToken = typeof options === "object" ? options.authToken : null;
+  let closed = false;
+  const activeTransactions = new Set();
+
+  const shape = await createSqliteDatabaseAdapter(":memory:");
+  shape.close();
+
+  const createOperations = (transaction = null) => ({
+    exec(sql) {
+      assertLibsqlOpen(closed);
+      const request = libsqlHasMultipleStatements(sql)
+        ? { type: "sequence", sql }
+        : { type: "execute", stmt: { sql } };
+      return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then(() => undefined);
+    },
+    prepare(sql) {
+      assertLibsqlOpen(closed);
+      return {
+        all(...params) {
+          return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) =>
+            libsqlRowsFromResult(result),
+          );
+        },
+        get(...params) {
+          return this.all(...params).then((rows) => rows[0] ?? null);
+        },
+        run(...params) {
+          return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => ({
+            changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
+            lastInsertRowid:
+              result.last_insert_rowid === null || result.last_insert_rowid === undefined
+                ? undefined
+                : BigInt(result.last_insert_rowid),
+          }));
+        },
+        columns() {
+          return libsqlDescribe({ endpoint, authToken, transaction, sql, close: !transaction });
+        },
+      };
+    },
+  });
+
+  const adapter = {
+    ...shape,
+    ...createOperations(),
+    engine: "libsql",
+    async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
+      await this.writeSystemMetadata("schemaVersion", schemaVersion);
+      await this.writeSystemMetadata("schemaHash", schemaHash);
+      await this.writeSystemMetadata("schema", schemaJson);
+    },
+    async ensureLogStorage() {
+      await this.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_log_events (" +
+          "id TEXT PRIMARY KEY, " +
+          "timestamp TEXT NOT NULL, " +
+          "category TEXT NOT NULL, " +
+          "event TEXT NOT NULL, " +
+          "level TEXT NOT NULL, " +
+          "message TEXT NOT NULL, " +
+          "capsuleName TEXT, " +
+          "capsuleId TEXT, " +
+          "releaseId TEXT, " +
+          "requestId TEXT, " +
+          "correlationId TEXT, " +
+          "payload TEXT NOT NULL" +
+          ")",
+      );
+    },
+    async insertLogIndexEvent(event) {
+      await this.prepare(
+        "INSERT INTO sporades_log_events " +
+          "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(
+        randomUUID(),
+        event.timestamp,
+        event.category,
+        event.event,
+        event.level,
+        event.message,
+        event.capsule?.name ?? null,
+        event.capsule?.id ?? null,
+        event.release?.id ?? event.release ?? null,
+        event.request?.id ?? null,
+        event.correlation?.id ?? event.correlation ?? null,
+        JSON.stringify(event),
+      );
+    },
+    async pruneLogIndex(limit) {
+      await this.prepare(
+        "DELETE FROM sporades_log_events WHERE id IN (" +
+          "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?" +
+          ")",
+      ).run(limit);
+    },
+    async readRecentLogEvents(limit = 200) {
+      const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
+      const rows = await this.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?").all(safeLimit);
+      return rows.reverse().map((row) => JSON.parse(row.payload));
+    },
+    async ensureFileStorage() {
+      await this.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
+          "id TEXT PRIMARY KEY, " +
+          "ownerId TEXT NOT NULL, " +
+          "name TEXT NOT NULL, " +
+          "createdAt TEXT NOT NULL, " +
+          "UNIQUE(ownerId, name)" +
+          ")",
+      );
+      await this.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_files (" +
+          "id TEXT PRIMARY KEY, " +
+          "ownerId TEXT NOT NULL, " +
+          "bucketId TEXT NOT NULL, " +
+          "bucketName TEXT NOT NULL, " +
+          "name TEXT NOT NULL, " +
+          "type TEXT NOT NULL, " +
+          "size INTEGER NOT NULL, " +
+          "version TEXT NOT NULL, " +
+          "status TEXT NOT NULL, " +
+          "createdAt TEXT NOT NULL, " +
+          "updatedAt TEXT NOT NULL, " +
+          "deletedAt TEXT" +
+          ")",
+      );
+      await this.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
+          "id TEXT PRIMARY KEY, " +
+          "fileId TEXT NOT NULL, " +
+          "ownerId TEXT NOT NULL, " +
+          "version TEXT NOT NULL, " +
+          "expectedSize INTEGER NOT NULL, " +
+          "createdAt TEXT NOT NULL" +
+          ")",
+      );
+      await this.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (" +
+          "id TEXT PRIMARY KEY, " +
+          "fileId TEXT NOT NULL, " +
+          "ownerId TEXT NOT NULL, " +
+          "version TEXT NOT NULL, " +
+          "expiresAt TEXT, " +
+          "createdAt TEXT NOT NULL, " +
+          "revokedAt TEXT" +
+          ")",
+      );
+    },
+    async ensureAuthStorage(authConfig = null) {
+      await this.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
+          "id TEXT PRIMARY KEY, " +
+          "createdAt TEXT NOT NULL, " +
+          "displayName TEXT NOT NULL, " +
+          "email TEXT, " +
+          "picture TEXT, " +
+          "isAuthenticated INTEGER NOT NULL, " +
+          "isGuest INTEGER NOT NULL, " +
+          "provider TEXT NOT NULL" +
+          ")",
+      );
+      await this.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
+          "token TEXT PRIMARY KEY, " +
+          "userId TEXT NOT NULL, " +
+          "createdAt TEXT NOT NULL, " +
+          "expiresAt TEXT NOT NULL" +
+          ")",
+      );
+      await ensureLibsqlSessionLifecycleColumns(this);
+      if (authConfig?.providers?.email?.enabled) {
+        await this.exec(
+          "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
+            "email TEXT PRIMARY KEY, " +
+            "userId TEXT NOT NULL, " +
+            "passwordHash TEXT NOT NULL, " +
+            "passwordSalt TEXT NOT NULL, " +
+            "createdAt TEXT NOT NULL" +
+            ")",
+        );
+      }
+      await this.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
+          "state TEXT PRIMARY KEY, " +
+          "sessionToken TEXT NOT NULL, " +
+          "returnTo TEXT NOT NULL, " +
+          "redirectUri TEXT NOT NULL, " +
+          "createdAt TEXT NOT NULL" +
+          ")",
+      );
+    },
+    async consumeOAuthState(state) {
+      const row = (await this.prepare("SELECT state, sessionToken, returnTo, redirectUri FROM sporades_auth_oauth_states WHERE state = ?").get(state)) ?? null;
+      await this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
+      return row;
+    },
+    async migrateAppSchema(schema) {
+      return await migrateLibsqlAppSchema(this, schema);
+    },
+    async migrateExistingAppTable(existingTable, nextTable) {
+      return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
+    },
+    async listInspectableTables() {
+      const rows = await this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
+      return rows.map((row) => row.name).filter((name) => name !== "sporades_log_events");
+    },
+    async dumpInspectableDatabase() {
+      const tableNames = await this.listInspectableTables();
+      const tables = [];
+      for (const tableName of tableNames) {
+        const columns = (await this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all()).map((column) => column.name);
+        const rows = await this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all();
+        tables.push({ name: tableName, columns, rows });
+      }
+      return tables;
+    },
+    async runReadOnlyInspectionQuery(sql) {
+      try {
+        if (targetsInternalLogIndexTable(sql)) {
+          return {
+            ok: false,
+            data: null,
+            error: {
+              message: "Internal log index tables are not available through generic DB inspection.",
+              hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
+            },
+          };
+        }
+        const statement = this.prepare(sql);
+        const columns = (await statement.columns()).map((column) => column.name);
+        const rows = (await statement.all()).filter((row) => !isInternalLogIndexMetadataRow(row, sql));
+        return { ok: true, data: { columns, rows }, error: null };
+      } catch (error) {
+        return {
+          ok: false,
+          data: null,
+          error: {
+            message: error.message,
+            hint: "Check the SQL syntax and table names, then retry the query.",
+          },
+        };
+      }
+    },
+    async checkHealth() {
+      try {
+        await this.prepare("SELECT 1 AS ok").get();
+        return { ok: true };
+      } catch {
+        return { ok: false };
+      }
+    },
+    async withTransaction(fn) {
+      const transaction = { baton: null, baseUrl: endpoint };
+      const transactionAdapter = {
+        ...adapter,
+        ...createOperations(transaction),
+        async withTransaction() {
+          throw commandError("Nested database transactions are not supported.", "Keep mutation work inside a single Sporades mutation transaction.");
+        },
+      };
+      activeTransactions.add(transaction);
+      try {
+        await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
+        const result = await fn(transactionAdapter);
+        await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
+        return result;
+      } catch (error) {
+        try {
+          await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true });
+        } catch {}
+        throw error;
+      } finally {
+        activeTransactions.delete(transaction);
+      }
+    },
+    async close() {
+      closed = true;
+      for (const transaction of activeTransactions) {
+        if (transaction.baton) {
+          await libsqlPipeline({ endpoint, authToken, transaction, requests: [], close: true }).catch(() => {});
+        }
+      }
+      activeTransactions.clear();
+    },
+  };
+
+  return adapter;
+}
+
+function libsqlPipelineUrl(url) {
+  const parsed = new URL(String(url));
+  parsed.pathname = `${parsed.pathname.replace(/\/+$/, "")}/v2/pipeline`;
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString();
+}
+
+function assertLibsqlOpen(closed) {
+  if (closed) {
+    throw new Error("database is not open");
+  }
+}
+
+function libsqlHasMultipleStatements(sql) {
+  return splitSqlStatements(sql).length > 1;
+}
+
+async function libsqlExecute({ endpoint, authToken, transaction, sql, params = [], close }) {
+  const [result] = await libsqlPipeline({
+    endpoint,
+    authToken,
+    transaction,
+    requests: [{ type: "execute", stmt: { sql, args: params.map(libsqlValueFromJs) } }],
+    close,
+  });
+  return result.result;
+}
+
+async function libsqlDescribe({ endpoint, authToken, transaction, sql, close }) {
+  const [result] = await libsqlPipeline({
+    endpoint,
+    authToken,
+    transaction,
+    requests: [{ type: "describe", sql }],
+    close,
+  });
+  return (result.result?.cols ?? []).map((column) => ({ name: column.name }));
+}
+
+async function libsqlPipeline({ endpoint, authToken, transaction = null, requests, close = true }) {
+  const requestUrl = transaction?.baseUrl ?? endpoint;
+  const payload = {
+    ...(transaction ? { baton: transaction.baton } : {}),
+    requests: close ? [...requests, { type: "close" }] : requests,
+  };
+  const response = await fetch(requestUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(authToken ? { authorization: `Bearer ${authToken}` } : {}),
+    },
+    body: JSON.stringify(payload),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body?.error?.message ?? `libSQL request failed with HTTP ${response.status}.`);
+  }
+  if (transaction) {
+    transaction.baton = body.baton ?? null;
+    transaction.baseUrl = body.base_url ? new URL("/v2/pipeline", body.base_url).toString() : requestUrl;
+  }
+  const results = body.results ?? [];
+  const errorResult = results.find((result) => result.type === "error");
+  if (errorResult) {
+    throw new Error(errorResult.error?.message ?? "libSQL statement failed.");
+  }
+  return results.filter((result) => result.response?.type !== "close").map((result) => result.response);
+}
+
+function libsqlRowsFromResult(result) {
+  const columns = (result.cols ?? []).map((column) => column.name);
+  return (result.rows ?? []).map((row) => {
+    if (!Array.isArray(row)) {
+      return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, libsqlValueToJs(value)]));
+    }
+    return Object.fromEntries(columns.map((column, index) => [column, libsqlValueToJs(row[index])]));
+  });
+}
+
+function libsqlValueFromJs(value) {
+  if (value === null || value === undefined) {
+    return { type: "null" };
+  }
+  if (typeof value === "boolean") {
+    return { type: "integer", value: value ? "1" : "0" };
+  }
+  if (typeof value === "bigint") {
+    return { type: "integer", value: String(value) };
+  }
+  if (typeof value === "number" && Number.isInteger(value)) {
+    return { type: "integer", value: String(value) };
+  }
+  if (typeof value === "number") {
+    return { type: "float", value };
+  }
+  if (value instanceof Uint8Array) {
+    return { type: "blob", base64: Buffer.from(value).toString("base64") };
+  }
+  return { type: "text", value: String(value) };
+}
+
+function libsqlValueToJs(value) {
+  if (value === null || value === undefined || value.type === "null") {
+    return null;
+  }
+  if (value.type === "integer") {
+    const number = Number(value.value);
+    return Number.isSafeInteger(number) ? number : String(value.value);
+  }
+  if (value.type === "float") {
+    return Number(value.value);
+  }
+  if (value.type === "blob") {
+    return Buffer.from(value.base64 ?? "", "base64");
+  }
+  if (Object.hasOwn(value, "value")) {
+    return value.value;
+  }
+  return value;
 }
 
 function logIndexLimit(config = {}) {
@@ -1223,16 +1679,55 @@ function migrateAppSchema(sqlite, schema) {
   }
 
   const existingTables = new Map((existingSchema?.tables ?? []).map((table) => [table.name, table]));
-  for (const table of schema.tables) {
-    const existingTable = existingTables.get(table.name);
-    if (schemaChanged && existingTable) {
-      sqlite.migrateExistingAppTable(existingTable, table);
-    } else {
-      sqlite.createAppTable(table);
+  return chainMaybePromise([
+    ...schema.tables.map((table) => () => {
+      const existingTable = existingTables.get(table.name);
+      return schemaChanged && existingTable ? sqlite.migrateExistingAppTable(existingTable, table) : sqlite.createAppTable(table);
+    }),
+    () =>
+      sqlite.writeSchemaMetadata({
+        schemaVersion: "v1:additive-fields",
+        schemaHash: nextSchemaHash,
+        schemaJson: nextSchemaJson,
+      }),
+  ]);
+}
+
+async function migrateLibsqlAppSchema(sqlite, schema) {
+  const nextSchema = normalizeSchema(schema);
+  const nextSchemaJson = JSON.stringify(nextSchema);
+  const nextSchemaHash = hashSchema(nextSchemaJson);
+  const existingSchemaRow = await sqlite.readSchemaMetadata();
+  let existingSchema = null;
+  let schemaChanged = false;
+
+  if (existingSchemaRow) {
+    try {
+      existingSchema = JSON.parse(existingSchemaRow.value);
+    } catch {
+      throw commandError(
+        "Invalid Sporades schema metadata.",
+        "Delete the Runtime directory only if you can lose local data, then restart the Capsule.",
+      );
+    }
+
+    schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
+    if (schemaChanged) {
+      assertAdditiveSchemaMigration(existingSchema, nextSchema);
     }
   }
 
-  sqlite.writeSchemaMetadata({
+  const existingTables = new Map((existingSchema?.tables ?? []).map((table) => [table.name, table]));
+  for (const table of schema.tables) {
+    const existingTable = existingTables.get(table.name);
+    if (schemaChanged && existingTable) {
+      await sqlite.migrateExistingAppTable(existingTable, table);
+    } else {
+      await sqlite.createAppTable(table);
+    }
+  }
+
+  await sqlite.writeSchemaMetadata({
     schemaVersion: "v1:additive-fields",
     schemaHash: nextSchemaHash,
     schemaJson: nextSchemaJson,
@@ -1300,12 +1795,38 @@ function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
 }
 
 function migrateExistingAppTable(sqlite, existingTable, nextTable) {
+  const tempTableName = `__sporades_migrating_${nextTable.name}`;
+  const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
+  return chainMaybePromise([
+    ...addedFieldsForTable(existingTable, nextTable)
+      .filter((field) => field.kind === "Reference" && field.defaultValue !== undefined && field.defaultValue !== null)
+      .map((field) => () =>
+        thenIfPromise(sqlite.referenceExists(field, field.defaultValue), (exists) => {
+          if (!exists) {
+            throw invalidReferenceError(field);
+          }
+        }),
+      ),
+    () => sqlite.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`),
+    () => sqlite.createAppTable(nextTable, tempTableName),
+    () =>
+      sqlite.exec(
+      `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
+        `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
+        `FROM ${quoteIdentifier(nextTable.name)}`,
+      ),
+    () => sqlite.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`),
+    () => sqlite.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`),
+  ]);
+}
+
+async function migrateExistingLibsqlAppTable(sqlite, existingTable, nextTable) {
   for (const field of addedFieldsForTable(existingTable, nextTable)) {
     if (
       field.kind === "Reference" &&
       field.defaultValue !== undefined &&
       field.defaultValue !== null &&
-      !sqlite.referenceExists(field, field.defaultValue)
+      !(await sqlite.referenceExists(field, field.defaultValue))
     ) {
       throw invalidReferenceError(field);
     }
@@ -1313,15 +1834,17 @@ function migrateExistingAppTable(sqlite, existingTable, nextTable) {
 
   const tempTableName = `__sporades_migrating_${nextTable.name}`;
   const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
-  sqlite.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`);
-  sqlite.createAppTable(nextTable, tempTableName);
-  sqlite.exec(
-    `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
-      `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
-      `FROM ${quoteIdentifier(nextTable.name)}`,
-  );
-  sqlite.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`);
-  sqlite.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`);
+  await sqlite.withTransaction(async (transaction) => {
+    await transaction.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`);
+    await transaction.createAppTable(nextTable, tempTableName);
+    await transaction.exec(
+      `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
+        `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
+        `FROM ${quoteIdentifier(nextTable.name)}`,
+    );
+    await transaction.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`);
+    await transaction.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`);
+  });
 }
 
 function columnSelectExpressionForMigration(existingTable, nextTable, columnName) {
@@ -1341,7 +1864,7 @@ function addedFieldsForTable(existingTable, nextTable) {
 }
 
 function createAppTable(sqlite, table, tableName = table.name) {
-  sqlite.exec(
+  return sqlite.exec(
     `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` +
       appTableColumnDefinitions(table).join(", ") +
       ")",
@@ -2680,6 +3203,21 @@ function isPromiseLike(value) {
 
 function thenIfPromise(value, onResolved) {
   return isPromiseLike(value) ? value.then(onResolved) : onResolved(value);
+}
+
+function chainMaybePromise(steps) {
+  let pending = null;
+  for (const step of steps) {
+    if (pending) {
+      pending = pending.then(step);
+      continue;
+    }
+    const result = step();
+    if (isPromiseLike(result)) {
+      pending = result;
+    }
+  }
+  return pending ?? undefined;
 }
 
 function applyReadAcl(database, table, row, context) {
@@ -4191,6 +4729,90 @@ function ensureSessionLifecycleColumns(sqlite) {
   }
 }
 
+async function ensureLibsqlSessionLifecycleColumns(sqlite) {
+  const columns = await sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
+  const hasExpiresAt = columns.some((column) => column.name === "expiresAt");
+  if (!hasExpiresAt) {
+    await sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN expiresAt TEXT");
+    await sqlite
+      .prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE expiresAt IS NULL")
+      .run(sessionExpiresAt(new Date().toISOString()));
+  }
+}
+
+function splitSqlStatements(sql) {
+  const statements = [];
+  let start = 0;
+  let quote = null;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+  const text = String(sql ?? "");
+
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    const next = text[index + 1];
+    if (lineComment) {
+      if (char === "\n") {
+        lineComment = false;
+      }
+      continue;
+    }
+    if (blockComment) {
+      if (char === "*" && next === "/") {
+        blockComment = false;
+        index += 1;
+      }
+      continue;
+    }
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        if (text[index + 1] === quote && quote !== "`") {
+          index += 1;
+          continue;
+        }
+        quote = null;
+      }
+      continue;
+    }
+    if (char === "-" && next === "-") {
+      lineComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      blockComment = true;
+      index += 1;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === ";") {
+      const statement = text.slice(start, index).trim();
+      if (statement) {
+        statements.push(statement);
+      }
+      start = index + 1;
+    }
+  }
+
+  const last = text.slice(start).trim();
+  if (last) {
+    statements.push(last);
+  }
+  return statements;
+}
+
 function sessionExpiresAt(from = new Date().toISOString()) {
   const sessionLifetimeMs = 30 * 24 * 60 * 60 * 1000;
   return new Date(Date.parse(from) + sessionLifetimeMs).toISOString();
@@ -4420,18 +5042,21 @@ export async function runMutation(database, auth, mutationName, args) {
   let context;
   let result;
   try {
-    return await (database.adapter ?? database.sqlite).withTransaction(async () => {
-      context = await applyContextMiddleware(database, createMutationContext(database, auth), "mutation");
+    return await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
+      const transactionDatabase = transactionAdapter
+        ? { ...database, adapter: transactionAdapter, sqlite: transactionAdapter }
+        : database;
+      context = await applyContextMiddleware(transactionDatabase, createMutationContext(transactionDatabase, auth), "mutation");
 
       for (const hookSource of database.mutationHooks.beforeMutation) {
         await runMutationHook(hookSource, { name: mutationName, args, ctx: context });
       }
 
-      result = await runCustomMutation(database, context, mutationName, args);
+      result = await runCustomMutation(transactionDatabase, context, mutationName, args);
       if (!result) {
         result = mutationName.startsWith("update")
-          ? await runUpdateMutation(database, context, mutationName, args)
-          : await runInsertMutation(database, context, mutationName, args);
+          ? await runUpdateMutation(transactionDatabase, context, mutationName, args)
+          : await runInsertMutation(transactionDatabase, context, mutationName, args);
       }
       await drainPendingAclWrites(context);
 
