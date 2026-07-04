@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Generate Host-Owned Sealed Env Keys
 
@@ -23,4 +23,3 @@ Generate a per-Hosted Capsule sealed-env keypair during Hosted Capsule registrat
 ## Blocked by
 
 None - can start immediately
-
