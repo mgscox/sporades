@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Make Database Adapter Runtime Path Awaitable
 
@@ -20,14 +20,14 @@ should convert the runtime-owned adapter call sites deliberately, keeping
 
 ## Acceptance criteria
 
-- [ ] App table reads and writes can await adapter operations without changing the public `ctx.db` API.
-- [ ] Auth storage paths can await adapter operations.
-- [ ] File metadata storage paths can await adapter operations.
-- [ ] Log index writes/reads can await adapter operations.
-- [ ] Schema migration and system metadata paths can await adapter operations.
-- [ ] Inspection and health paths can await adapter operations.
-- [ ] Mutation transactions still await the full handler and roll back failed writes.
-- [ ] Existing SQLite behavior remains covered by tests.
+- [x] App table reads and writes can await adapter operations without changing the public `ctx.db` API.
+- [x] Auth storage paths can await adapter operations.
+- [x] File metadata storage paths can await adapter operations.
+- [x] Log index writes/reads can await adapter operations.
+- [x] Schema migration and system metadata paths can await adapter operations.
+- [x] Inspection and health paths can await adapter operations.
+- [x] Mutation transactions still await the full handler and roll back failed writes.
+- [x] Existing SQLite behavior remains covered by tests.
 
 ## Blocked by
 
