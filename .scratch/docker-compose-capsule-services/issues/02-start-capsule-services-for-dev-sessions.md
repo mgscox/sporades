@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Start Capsule Services For Dev Sessions
 
@@ -12,14 +12,13 @@ Make `sporades dev` start declared local database Capsule services before runnin
 
 ## Acceptance criteria
 
-- [ ] `sporades dev` starts declared database Capsule services through generated Compose.
-- [ ] Dev session startup waits for service readiness or fails with structured diagnostics.
-- [ ] Service data persists under Runtime-owned service state and survives Dev session restarts.
-- [ ] The server runtime receives service connection details through server-only configuration.
-- [ ] `sporades dev --json` reports service lifecycle events without leaking secrets.
-- [ ] Tests cover service start, readiness failure, rebuild behavior, persistence, and JSON output.
+- [x] `sporades dev` starts declared database Capsule services through generated Compose.
+- [x] Dev session startup waits for service readiness or fails with structured diagnostics.
+- [x] Service data persists under Runtime-owned service state and survives Dev session restarts.
+- [x] The server runtime receives service connection details through server-only configuration.
+- [x] `sporades dev --json` reports service lifecycle events without leaking secrets.
+- [x] Tests cover service start, readiness failure, rebuild behavior, persistence, and JSON output.
 
 ## Blocked by
 
 - .scratch/docker-compose-capsule-services/issues/01-declare-database-capsule-services.md
-
