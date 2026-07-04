@@ -2,7 +2,7 @@
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import { access, chmod, chown, lstat, mkdir, readdir, readFile, readlink, rename, rm, stat, statfs, symlink, writeFile } from "node:fs/promises";
-import { randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
 import path from "node:path";
 import {
@@ -269,6 +269,7 @@ async function registerCapsule(request) {
   await ensureHostedDomainBootstrapped(request, registration);
 
   let reactivated = false;
+  let sealedServerEnv = null;
   await mkdir(path.dirname(registryLockPath(request)), { recursive: true });
   await withRegistryLock(request, async () => {
     if (await pathExists(registration.registryRecord)) {
@@ -279,7 +280,8 @@ async function registerCapsule(request) {
         await mkdir(registration.directories.releases, { recursive: true });
         await mkdir(registration.directories.data, { recursive: true });
         await writeUnavailableRoute(registration.lifecycle);
-        await writeRegistryRecordAtomic(registration.registryRecord, reactivateRegistrationRecord(existing));
+        sealedServerEnv = await ensureHostSealedEnvKeyPair(registration, existing);
+        await writeRegistryRecordAtomic(registration.registryRecord, reactivateRegistrationRecord(existing, sealedServerEnv));
         reactivated = true;
         return;
       }
@@ -294,7 +296,8 @@ async function registerCapsule(request) {
     await mkdir(registration.directories.data, { recursive: true });
     await mkdir(registration.directories.logs, { recursive: true });
     await writeUnavailableRoute(registration.lifecycle);
-    await writeRegistryRecordAtomic(registration.registryRecord, createRegistrationRecord(registration));
+    sealedServerEnv = await ensureHostSealedEnvKeyPair(registration);
+    await writeRegistryRecordAtomic(registration.registryRecord, createRegistrationRecord(registration, sealedServerEnv));
   });
 
   writeEnvelope({
@@ -312,6 +315,7 @@ async function registerCapsule(request) {
       registryRecord: registration.registryRecord,
       directories: registration.directories,
       route: registration.route,
+      sealedServerEnv,
     },
     error: null,
   });
@@ -1286,10 +1290,15 @@ async function listCapsules(request) {
         createdAt: record.createdAt ?? null,
         updatedAt: record.updatedAt ?? null,
         status: record.status ?? "registered",
+        ...(record.sealedServerEnv ? { sealedServerEnv: publicRegistrySealedServerEnv(record.sealedServerEnv) } : {}),
       },
       currentRelease: record.currentRelease ?? null,
       docker: lookupCapsuleDockerState(request, record),
     };
+    const sealedServerEnv = await readPublicHostSealedEnvKey(record, request.host.remoteRoot);
+    if (sealedServerEnv) {
+      capsule.sealedServerEnv = sealedServerEnv;
+    }
     capsule.baseImage = normaliseRecordBaseImage(record, capsule.docker);
     capsules.push(capsule);
   }
@@ -1903,6 +1912,7 @@ function normaliseRegistration(request) {
   return {
     subname,
     domain,
+    remoteRoot,
     hostedUrl,
     remoteCapsuleId,
     registryRecord: path.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
@@ -2016,7 +2026,7 @@ async function ensureHostedDomainBootstrapped(request, registration) {
   );
 }
 
-function createRegistrationRecord(registration) {
+function createRegistrationRecord(registration, sealedServerEnv = null) {
   const now = new Date().toISOString();
   return {
     subname: registration.subname,
@@ -2028,16 +2038,98 @@ function createRegistrationRecord(registration) {
     updatedAt: now,
     currentRelease: null,
     baseImage: registration.baseImage,
+    ...(sealedServerEnv ? { sealedServerEnv: { currentKeyFingerprint: sealedServerEnv.publicKeyFingerprint } } : {}),
   };
 }
 
-function reactivateRegistrationRecord(record) {
+async function ensureHostSealedEnvKeyPair(registration, existingRecord = null) {
+  const existingFingerprint = existingRecord?.sealedServerEnv?.currentKeyFingerprint;
+  if (existingFingerprint) {
+    const existing = await readPublicHostSealedEnvKey(
+      {
+        subname: registration.subname,
+        domain: registration.domain,
+        sealedServerEnv: { currentKeyFingerprint: existingFingerprint },
+      },
+      registration.remoteRoot,
+    );
+    if (existing) {
+      return existing;
+    }
+  }
+
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: "spki", format: "pem" },
+    privateKeyEncoding: { type: "pkcs8", format: "pem" },
+  });
+  const publicKeyFingerprint = fingerprintPublicKey(publicKey);
+  const paths = hostSealedEnvKeyPaths(registration.directories.data, publicKeyFingerprint);
+  await mkdir(paths.root, { recursive: true, mode: 0o700 });
+  await chmod(paths.root, 0o700);
+  await mkdir(paths.keys, { recursive: true, mode: 0o700 });
+  await chmod(paths.keys, 0o700);
+  await writeFile(paths.privateKey, privateKey, { mode: 0o600 });
+  await chmod(paths.privateKey, 0o600);
+  await writeFile(paths.publicKey, publicKey, { mode: 0o644 });
+  await chmod(paths.publicKey, 0o644);
+  return {
+    publicKey,
+    publicKeyFingerprint,
+    publicKeyPath: paths.publicKey,
+  };
+}
+
+async function readPublicHostSealedEnvKey(record, remoteRoot) {
+  const publicKeyFingerprint = record?.sealedServerEnv?.currentKeyFingerprint;
+  if (typeof publicKeyFingerprint !== "string" || publicKeyFingerprint.length === 0) {
+    return null;
+  }
+  const dataDirectory = path.join(remoteRoot, "hosts", record.domain, "capsules", record.subname, "data");
+  const paths = hostSealedEnvKeyPaths(dataDirectory, publicKeyFingerprint);
+  try {
+    return {
+      publicKey: await readFile(paths.publicKey, "utf8"),
+      publicKeyFingerprint,
+      publicKeyPath: paths.publicKey,
+    };
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function publicRegistrySealedServerEnv(sealedServerEnv) {
+  return {
+    currentKeyFingerprint: sealedServerEnv.currentKeyFingerprint ?? null,
+  };
+}
+
+function hostSealedEnvKeyPaths(dataDirectory, fingerprint) {
+  const root = path.join(dataDirectory, "sealed-server-env");
+  const keys = path.join(root, "keys");
+  return {
+    root,
+    keys,
+    privateKey: path.join(keys, `${fingerprint}.private.pem`),
+    publicKey: path.join(keys, `${fingerprint}.public.pem`),
+  };
+}
+
+function fingerprintPublicKey(publicKey) {
+  return createHash("sha256").update(publicKey).digest("hex").slice(0, 16);
+}
+
+function reactivateRegistrationRecord(record, sealedServerEnv = null) {
   const now = new Date().toISOString();
   const { unregistered, unregisteredAt, deleteAfter, ...activeRecord } = record;
   return {
     ...activeRecord,
     status: "registered",
     updatedAt: now,
+    ...(sealedServerEnv ? { sealedServerEnv: { currentKeyFingerprint: sealedServerEnv.publicKeyFingerprint } } : {}),
   };
 }
 

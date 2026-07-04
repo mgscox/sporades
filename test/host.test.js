@@ -2324,6 +2324,14 @@ test("sporades host helper registers Hosted Capsules with registry state and una
     assert.equal(output.data.registryRecord, request.registration.registryRecord);
     assert.deepEqual(output.data.directories, request.registration.directories);
     assert.deepEqual(output.data.route, expectedRoute);
+    assert.equal(typeof output.data.sealedServerEnv.publicKey, "string");
+    assert.match(output.data.sealedServerEnv.publicKey, /PUBLIC KEY/);
+    assert.match(output.data.sealedServerEnv.publicKeyFingerprint, /^[a-f0-9]{16}$/);
+    assert.equal(
+      output.data.sealedServerEnv.publicKeyPath,
+      path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes", "data", "sealed-server-env", "keys", `${output.data.sealedServerEnv.publicKeyFingerprint}.public.pem`),
+    );
+    assert.doesNotMatch(JSON.stringify(output), /PRIVATE KEY/);
 
     const record = JSON.parse(await readFile(request.registration.registryRecord, "utf8"));
     assert.equal(record.subname, "team-notes");
@@ -2332,11 +2340,33 @@ test("sporades host helper registers Hosted Capsules with registry state and una
     assert.equal(record.hostedUrl, "https://team-notes.capsules.example.dev");
     assert.equal(record.status, "registered");
     assert.equal(record.currentRelease, null);
+    assert.deepEqual(record.sealedServerEnv, {
+      currentKeyFingerprint: output.data.sealedServerEnv.publicKeyFingerprint,
+    });
     assert.match(record.createdAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.equal(record.updatedAt, record.createdAt);
     assert.equal((await stat(request.registration.directories.releases)).isDirectory(), true);
     assert.equal((await stat(request.registration.directories.data)).isDirectory(), true);
     assert.equal((await stat(request.registration.directories.logs)).isDirectory(), true);
+    const privateKeyPath = path.join(
+      request.registration.directories.data,
+      "sealed-server-env",
+      "keys",
+      `${output.data.sealedServerEnv.publicKeyFingerprint}.private.pem`,
+    );
+    const publicKeyPath = path.join(
+      request.registration.directories.data,
+      "sealed-server-env",
+      "keys",
+      `${output.data.sealedServerEnv.publicKeyFingerprint}.public.pem`,
+    );
+    assert.match(await readFile(privateKeyPath, "utf8"), /PRIVATE KEY/);
+    assert.equal(await readFile(publicKeyPath, "utf8"), output.data.sealedServerEnv.publicKey);
+    assert.equal((await stat(path.dirname(path.dirname(privateKeyPath)))).mode & 0o777, 0o700);
+    assert.equal((await stat(path.dirname(privateKeyPath))).mode & 0o777, 0o700);
+    assert.equal((await stat(privateKeyPath)).mode & 0o777, 0o600);
+    assert.equal((await stat(publicKeyPath)).mode & 0o777, 0o644);
+    const originalPrivateKey = await readFile(privateKeyPath, "utf8");
     const routeContents = await readFile(expectedRoute.routeFile, "utf8");
     assert.match(routeContents, /team-notes\.capsules\.example\.dev/);
     assert.match(routeContents, /@sporadesRuntimeHealth path \/__sporades\/health\/runtime/);
@@ -2355,6 +2385,8 @@ test("sporades host helper registers Hosted Capsules with registry state and una
 
     const duplicate = await runHostHelper(request, { cwd: dir, env: caddy.env });
     assert.equal(duplicate.code, 0, duplicate.stderr);
+    assert.equal(await readFile(privateKeyPath, "utf8"), originalPrivateKey);
+    assert.equal(JSON.parse(await readFile(request.registration.registryRecord, "utf8")).sealedServerEnv.currentKeyFingerprint, output.data.sealedServerEnv.publicKeyFingerprint);
     assert.deepEqual(JSON.parse(duplicate.stdout), {
       ok: false,
       data: null,
@@ -4237,7 +4269,13 @@ test("sporades host helper lists registry records enriched with Docker container
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote");
     const registryDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules");
+    const draftsKeyFingerprint = "0123456789abcdef";
+    const draftsPublicKey = "-----BEGIN PUBLIC KEY-----\npublic-drafts\n-----END PUBLIC KEY-----\n";
+    const draftsKeyDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "drafts", "data", "sealed-server-env", "keys");
     await mkdir(registryDir, { recursive: true });
+    await mkdir(draftsKeyDir, { recursive: true });
+    await writeFile(path.join(draftsKeyDir, `${draftsKeyFingerprint}.public.pem`), draftsPublicKey);
+    await writeFile(path.join(draftsKeyDir, `${draftsKeyFingerprint}.private.pem`), "-----BEGIN PRIVATE KEY-----\nnope\n-----END PRIVATE KEY-----\n");
     await writeFile(
       path.join(registryDir, "drafts.json"),
       `${JSON.stringify({
@@ -4249,6 +4287,7 @@ test("sporades host helper lists registry records enriched with Docker container
         createdAt: "2026-01-01T00:00:00.000Z",
         updatedAt: "2026-01-01T00:00:00.000Z",
         currentRelease: null,
+        sealedServerEnv: { currentKeyFingerprint: draftsKeyFingerprint },
       })}\n`,
     );
     await writeFile(
@@ -4370,6 +4409,12 @@ test("sporades host helper lists registry records enriched with Docker container
               createdAt: "2026-01-01T00:00:00.000Z",
               updatedAt: "2026-01-01T00:00:00.000Z",
               status: "registered",
+              sealedServerEnv: { currentKeyFingerprint: draftsKeyFingerprint },
+            },
+            sealedServerEnv: {
+              publicKey: draftsPublicKey,
+              publicKeyFingerprint: draftsKeyFingerprint,
+              publicKeyPath: path.join(draftsKeyDir, `${draftsKeyFingerprint}.public.pem`),
             },
             currentRelease: null,
             docker: null,
@@ -4465,6 +4510,7 @@ test("sporades host helper lists registry records enriched with Docker container
         "json",
       ],
     ]);
+    assert.doesNotMatch(list.stdout, /PRIVATE KEY|nope/);
   });
 });
 
