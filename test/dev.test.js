@@ -3882,6 +3882,116 @@ export default capsule({
   });
 });
 
+test("sporades dev deletes Capsule rows through ctx.db table API", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "delete-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "delete-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: "delete-island",
+
+  schema: {
+    notes: table({
+      text: String(),
+      ownerId: String(),
+    }),
+  },
+
+  queries: {
+    notes: query((ctx) => ctx.db.notes.where("ownerId", ctx.auth.userId).orderBy("createdAt", "desc").all()),
+  },
+
+  mutations: {
+    addNote: mutation((ctx, text: string) => ctx.db.notes.insert({ text, ownerId: ctx.auth.userId })),
+    deleteNote: mutation((ctx, id: string) => ctx.db.notes.delete(id)),
+  },
+});
+`,
+    );
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+      socket.send(JSON.stringify({ id: "notes", type: "query.subscribe", query: "notes" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, []);
+
+      const addedPromise = waitForSocketMessage(
+        socket,
+        (message) => message.id === "notes" && message.type === "query.result" && message.data.length === 1,
+      );
+      const addResultPromise = waitForSocketMessage(
+        socket,
+        (message) => message.id === "add-note" && message.type === "mutation.result",
+      );
+      socket.send(JSON.stringify({ id: "add-note", type: "mutation.run", mutation: "addNote", args: ["Delete me"] }));
+      const addResult = await addResultPromise;
+      assert.equal(addResult.error, null);
+      assert.equal(addResult.data.text, "Delete me");
+      const addedRows = await addedPromise;
+      const noteId = addedRows.data[0].id;
+
+      const missingDeletePromise = waitForSocketMessage(
+        socket,
+        (message) => message.id === "delete-missing" && message.type === "mutation.result",
+      );
+      socket.send(JSON.stringify({ id: "delete-missing", type: "mutation.run", mutation: "deleteNote", args: ["missing"] }));
+      assert.deepEqual(await missingDeletePromise, {
+        id: "delete-missing",
+        type: "mutation.result",
+        mutation: "deleteNote",
+        data: false,
+        error: null,
+      });
+
+      const deletedPromise = waitForSocketMessage(
+        socket,
+        (message) => message.id === "notes" && message.type === "query.result" && message.data.length === 0,
+      );
+      const deleteResultPromise = waitForSocketMessage(
+        socket,
+        (message) => message.id === "delete-note" && message.type === "mutation.result",
+      );
+      socket.send(JSON.stringify({ id: "delete-note", type: "mutation.run", mutation: "deleteNote", args: [noteId] }));
+      assert.deepEqual(await deleteResultPromise, {
+        id: "delete-note",
+        type: "mutation.result",
+        mutation: "deleteNote",
+        data: true,
+        error: null,
+      });
+      assert.deepEqual((await deletedPromise).data, []);
+
+      const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
+      assert.equal(dumpResult.code, 0, dumpResult.stderr);
+      const notesTable = JSON.parse(dumpResult.stdout).data.tables.find((table) => table.name === "notes");
+      assert.deepEqual(notesTable.rows, []);
+    } finally {
+      socket?.close();
+      if (child.exitCode === null) {
+        const exited = new Promise((resolve) => child.once("exit", resolve));
+        child.kill("SIGTERM");
+        await exited;
+      }
+    }
+  });
+});
+
 test("sporades dev rejects unsupported Capsule schema changes with a structured rebuild error", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

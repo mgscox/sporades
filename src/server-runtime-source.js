@@ -386,12 +386,12 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     serverEnv,
     dataDir: path.dirname(databasePath),
   });
-  sqlite.exec("CREATE TABLE IF NOT EXISTS sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  sqlite.ensureSystemTable();
   createAnonymousAuthTables(sqlite, database.authConfig);
   createFileStorageTables(sqlite);
   createLogIndexTables(sqlite);
   assertValidReferenceTargets(schema);
-  migrateAppSchema(sqlite, schema);
+  sqlite.migrateAppSchema(schema);
 
   return database;
 }
@@ -422,6 +422,86 @@ export async function createSqliteDatabaseAdapter(databasePath) {
           return statement.columns();
         },
       };
+    },
+    ensureSystemTable() {
+      return this.exec("CREATE TABLE IF NOT EXISTS sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    },
+    readSchemaMetadata() {
+      return this.prepare("SELECT value FROM sporades WHERE key = ?").get("schema") ?? null;
+    },
+    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
+      const upsert = this.prepare("INSERT OR REPLACE INTO sporades (key, value) VALUES (?, ?)");
+      upsert.run("schemaVersion", schemaVersion);
+      upsert.run("schemaHash", schemaHash);
+      upsert.run("schema", schemaJson);
+    },
+    migrateAppSchema(schema) {
+      return migrateAppSchema(this, schema);
+    },
+    createAppTable(table, tableName = table.name) {
+      return createAppTable(this, table, tableName);
+    },
+    migrateExistingAppTable(existingTable, nextTable) {
+      return migrateExistingAppTable(this, existingTable, nextTable);
+    },
+    referenceExists(field, value) {
+      return Boolean(
+        this.prepare(`SELECT 1 FROM ${quoteIdentifier(field.targetTable)} WHERE id = ? LIMIT 1`).get(String(value)),
+      );
+    },
+    insertAppRow(table, row) {
+      const columns = Object.keys(row);
+      return this.prepare(
+        `INSERT INTO ${quoteIdentifier(table.name)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns
+          .map(() => "?")
+          .join(", ")})`,
+      ).run(...columns.map((column) => row[column]));
+    },
+    selectAppRowById(table, id) {
+      return this.prepare(`SELECT * FROM ${quoteIdentifier(table.name)} WHERE id = ?`).get(String(id)) ?? null;
+    },
+    updateAppRow(table, id, values, options = {}) {
+      const columns = Object.keys(values);
+      if (columns.length === 0) {
+        return { changes: 0 };
+      }
+      return this.prepare(
+        `UPDATE ${quoteIdentifier(table.name)} SET ${columns.map((column) => `${quoteIdentifier(column)} = ?`).join(", ")} WHERE id = ?` +
+          (options.ownerId === undefined ? "" : " AND ownerId = ?"),
+      ).run(
+        ...columns.map((column) => values[column]),
+        String(id),
+        ...(options.ownerId === undefined ? [] : [options.ownerId]),
+      );
+    },
+    deleteAppRow(table, id) {
+      return this.prepare(`DELETE FROM ${quoteIdentifier(table.name)} WHERE id = ?`).run(String(id));
+    },
+    selectAppRows(table, query = {}) {
+      const columns = query.columns ?? ["*"];
+      const whereClauses = [];
+      const params = [];
+      if (query.ownerId !== undefined) {
+        whereClauses.push(`${quoteIdentifier("ownerId")} = ?`);
+        params.push(query.ownerId);
+      }
+      if (query.where) {
+        whereClauses.push(`${quoteIdentifier(query.where.fieldName)} = ?`);
+        params.push(query.where.value);
+      }
+      const whereSql = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(" AND ")}` : "";
+      const orderSql = query.orderBy
+        ? ` ORDER BY ${quoteIdentifier(query.orderBy.fieldName)} ${
+            String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"
+          }`
+        : "";
+      const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
+      const limitSql = limit === null ? "" : " LIMIT ?";
+      return this.prepare(
+        `SELECT ${columns.map((column) => (column === "*" ? "*" : quoteIdentifier(column))).join(", ")} FROM ${quoteIdentifier(
+          table.name,
+        )}${whereSql}${orderSql}${limitSql}`,
+      ).all(...(limit === null ? params : [...params, limit]));
     },
     close() {
       return connection.close();
@@ -828,7 +908,7 @@ function migrateAppSchema(sqlite, schema) {
   const nextSchema = normalizeSchema(schema);
   const nextSchemaJson = JSON.stringify(nextSchema);
   const nextSchemaHash = hashSchema(nextSchemaJson);
-  const existingSchemaRow = sqlite.prepare("SELECT value FROM sporades WHERE key = ?").get("schema");
+  const existingSchemaRow = sqlite.readSchemaMetadata();
   let existingSchema = null;
   let schemaChanged = false;
 
@@ -852,16 +932,17 @@ function migrateAppSchema(sqlite, schema) {
   for (const table of schema.tables) {
     const existingTable = existingTables.get(table.name);
     if (schemaChanged && existingTable) {
-      migrateExistingAppTable(sqlite, existingTable, table);
+      sqlite.migrateExistingAppTable(existingTable, table);
     } else {
-      createAppTable(sqlite, table);
+      sqlite.createAppTable(table);
     }
   }
 
-  const upsert = sqlite.prepare("INSERT OR REPLACE INTO sporades (key, value) VALUES (?, ?)");
-  upsert.run("schemaVersion", "v1:additive-fields");
-  upsert.run("schemaHash", nextSchemaHash);
-  upsert.run("schema", nextSchemaJson);
+  sqlite.writeSchemaMetadata({
+    schemaVersion: "v1:additive-fields",
+    schemaHash: nextSchemaHash,
+    schemaJson: nextSchemaJson,
+  });
 }
 
 function normalizeSchema(schema) {
@@ -930,7 +1011,7 @@ function migrateExistingAppTable(sqlite, existingTable, nextTable) {
       field.kind === "Reference" &&
       field.defaultValue !== undefined &&
       field.defaultValue !== null &&
-      !referenceExists({ sqlite }, field, field.defaultValue)
+      !sqlite.referenceExists(field, field.defaultValue)
     ) {
       throw invalidReferenceError(field);
     }
@@ -939,7 +1020,7 @@ function migrateExistingAppTable(sqlite, existingTable, nextTable) {
   const tempTableName = `__sporades_migrating_${nextTable.name}`;
   const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
   sqlite.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`);
-  createAppTable(sqlite, nextTable, tempTableName);
+  sqlite.createAppTable(nextTable, tempTableName);
   sqlite.exec(
     `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
       `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
@@ -2147,43 +2228,35 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
         ),
       };
       const columns = Object.keys(row);
-      database.sqlite
-        .prepare(
-          `INSERT INTO ${quoteIdentifier(table.name)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns
-            .map(() => "?")
-            .join(", ")})`,
-        )
-        .run(...columns.map((column) => row[column]));
+      database.sqlite.insertAppRow(table, Object.fromEntries(columns.map((column) => [column, row[column]])));
       database.rowCache.clear();
       return deserializeRow(table, row);
     },
     update(id, values) {
       const fieldsToUpdate = table.fields.filter((field) => Object.hasOwn(values, field.name));
       if (fieldsToUpdate.length === 0) {
-        const existing = database.sqlite
-          .prepare(`SELECT * FROM ${quoteIdentifier(table.name)} WHERE id = ?`)
-          .get(String(id));
+        const existing = database.sqlite.selectAppRowById(table, id);
         return existing ? deserializeRow(table, existing) : null;
       }
 
       const now = new Date().toISOString();
-      const assignments = [...fieldsToUpdate.map((field) => quoteIdentifier(field.name)), "updatedAt"];
-      const params = [
-        ...fieldsToUpdate.map((field) => fieldValueForWrite(database, field, values[field.name])),
-        now,
-        String(id),
-      ];
-      const result = database.sqlite
-        .prepare(
-          `UPDATE ${quoteIdentifier(table.name)} SET ${assignments.map((column) => `${column} = ?`).join(", ")} WHERE id = ?`,
-        )
-        .run(...params);
+      const result = database.sqlite.updateAppRow(table, id, {
+        ...Object.fromEntries(
+          fieldsToUpdate.map((field) => [field.name, fieldValueForWrite(database, field, values[field.name])]),
+        ),
+        updatedAt: now,
+      });
       database.rowCache.clear();
       if (result.changes === 0) {
         return null;
       }
-      const row = database.sqlite.prepare(`SELECT * FROM ${quoteIdentifier(table.name)} WHERE id = ?`).get(String(id));
+      const row = database.sqlite.selectAppRowById(table, id);
       return row ? deserializeRow(table, row) : null;
+    },
+    delete(id) {
+      const result = database.sqlite.deleteAppRow(table, id);
+      database.rowCache.clear();
+      return result.changes > 0;
     },
     where(fieldName, value) {
       return createEndpointTableApi(database, table, { ...query, where: { fieldName, value } }, contextGetter);
@@ -2195,16 +2268,20 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       return createEndpointTableApi(database, table, { ...query, limit: count }, contextGetter);
     },
     get() {
-      const whereSql = query.where ? ` WHERE ${quoteIdentifier(query.where.fieldName)} = ?` : "";
-      const orderSql = query.orderBy
-        ? ` ORDER BY ${quoteIdentifier(query.orderBy.fieldName)} ${
-            String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"
-          }`
-        : "";
-      const params = query.where ? [serializeFieldValue(table.fields.find((field) => field.name === query.where.fieldName), query.where.value)] : [];
-      const row = database.sqlite
-        .prepare(`SELECT * FROM ${quoteIdentifier(table.name)}${whereSql}${orderSql} LIMIT 1`)
-        .get(...params);
+      const row =
+        database.sqlite.selectAppRows(table, {
+          where: query.where
+            ? {
+                fieldName: query.where.fieldName,
+                value: serializeFieldValue(
+                  table.fields.find((field) => field.name === query.where.fieldName),
+                  query.where.value,
+                ),
+              }
+            : null,
+          orderBy: query.orderBy,
+          limit: 1,
+        })[0] ?? null;
       if (!row) {
         return null;
       }
@@ -2216,18 +2293,21 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       return allowed ? deserialized : null;
     },
     all() {
-      const whereSql = query.where ? ` WHERE ${quoteIdentifier(query.where.fieldName)} = ?` : "";
-      const orderSql = query.orderBy
-        ? ` ORDER BY ${quoteIdentifier(query.orderBy.fieldName)} ${
-            String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"
-          }`
-        : "";
       const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
-      const limitSql = limit === null ? "" : " LIMIT ?";
-      const params = query.where ? [serializeFieldValue(table.fields.find((field) => field.name === query.where.fieldName), query.where.value)] : [];
       const rows = database.sqlite
-        .prepare(`SELECT * FROM ${quoteIdentifier(table.name)}${whereSql}${orderSql}${limitSql}`)
-        .all(...(limit === null ? params : [...params, limit]))
+        .selectAppRows(table, {
+          where: query.where
+            ? {
+                fieldName: query.where.fieldName,
+                value: serializeFieldValue(
+                  table.fields.find((field) => field.name === query.where.fieldName),
+                  query.where.value,
+                ),
+              }
+            : null,
+          orderBy: query.orderBy,
+          limit,
+        })
         .map((row) => deserializeRow(table, row));
       return filterRowsByReadAcl(table, rows, contextGetter?.());
     },
@@ -2271,11 +2351,7 @@ function invalidReferenceError(field) {
 }
 
 function referenceExists(database, field, value) {
-  return Boolean(
-    database.sqlite
-      .prepare(`SELECT 1 FROM ${quoteIdentifier(field.targetTable)} WHERE id = ? LIMIT 1`)
-      .get(String(value)),
-  );
+  return database.sqlite.referenceExists(field, value);
 }
 
 function serializeFieldValue(field, value) {
@@ -3812,13 +3888,12 @@ async function runQuery(database, auth, queryName) {
   if (!database.rowCache.has(cacheKey)) {
     const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
     const ownerScoped = table.fields.some((field) => field.name === "ownerId");
-    const sql =
-      `SELECT ${columns.map(quoteIdentifier).join(", ")} FROM ${quoteIdentifier(table.name)}` +
-      (ownerScoped ? " WHERE ownerId = ?" : "") +
-      " ORDER BY createdAt DESC";
     const rows = database.sqlite
-      .prepare(sql)
-      .all(...(ownerScoped ? [context.auth.userId] : []))
+      .selectAppRows(table, {
+        columns,
+        ownerId: ownerScoped ? context.auth.userId : undefined,
+        orderBy: { fieldName: "createdAt", direction: "desc" },
+      })
       .map((row) => rowToApiValue(row, table));
     database.rowCache.set(cacheKey, rows);
   }
@@ -4086,16 +4161,7 @@ function runInsertMutation(database, auth, mutationName, args) {
     };
   }
 
-  const columns = Object.keys(values);
-  database.sqlite
-    .prepare(
-      `INSERT INTO ${quoteIdentifier(table.name)} (` +
-        columns.map(quoteIdentifier).join(", ") +
-        ") VALUES (" +
-        columns.map(() => "?").join(", ") +
-        ")",
-    )
-    .run(...columns.map((column) => values[column]));
+  database.sqlite.insertAppRow(table, values);
   database.rowCache.clear();
   return { ok: true, error: null };
 }
@@ -4141,12 +4207,15 @@ function runUpdateMutation(database, auth, mutationName, args) {
     return { ok: false, error: { message: error.message, hint: error.hint } };
   }
 
-  database.sqlite
-    .prepare(
-      `UPDATE ${quoteIdentifier(resolved.table.name)} SET ${quoteIdentifier(resolved.field.name)} = ?, updatedAt = ? WHERE id = ?` +
-        (ownerScoped ? " AND ownerId = ?" : ""),
-    )
-    .run(nextValue, now, id, ...(ownerScoped ? [auth.userId] : []));
+  database.sqlite.updateAppRow(
+    resolved.table,
+    id,
+    {
+      [resolved.field.name]: nextValue,
+      updatedAt: now,
+    },
+    { ownerId: ownerScoped ? auth.userId : undefined },
+  );
   database.rowCache.clear();
   return { ok: true, error: null };
 }

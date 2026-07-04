@@ -63,3 +63,142 @@ test("runtime opens and closes SQLite through the internal adapter boundary", as
     assert.throws(() => database.sqlite.prepare("SELECT 1").get(), /database is not open/i);
   });
 });
+
+test("SQLite database adapter owns app schema metadata, migrations, references, queries, and mutations", async () => {
+  await withTempDir(async (dir) => {
+    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
+    try {
+      const usersTable = {
+        name: "users",
+        fields: [
+          { name: "name", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+        ],
+      };
+      const postsTable = {
+        name: "posts",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "authorId", kind: "Reference", sqliteType: "TEXT", targetTable: "users" },
+          { name: "published", kind: "Boolean", sqliteType: "INTEGER", defaultValue: false },
+        ],
+      };
+
+      adapter.ensureSystemTable();
+      adapter.migrateAppSchema({ tables: [usersTable, postsTable] });
+
+      const schemaMetadata = adapter.readSchemaMetadata();
+      assert.match(schemaMetadata.value, /"posts"/);
+      assert.deepEqual(
+        adapter.prepare("PRAGMA table_info(posts)").all().map((column) => column.name),
+        ["id", "createdAt", "updatedAt", "text", "authorId", "published"],
+      );
+
+      const now = "2026-07-04T10:00:00.000Z";
+      adapter.insertAppRow(usersTable, {
+        id: "user-1",
+        createdAt: now,
+        updatedAt: now,
+        name: "Ada",
+        ownerId: "owner-1",
+      });
+      assert.equal(adapter.referenceExists({ targetTable: "users" }, "user-1"), true);
+      assert.equal(adapter.referenceExists({ targetTable: "users" }, "missing"), false);
+
+      adapter.insertAppRow(postsTable, {
+        id: "post-1",
+        createdAt: now,
+        updatedAt: now,
+        text: "First",
+        authorId: "user-1",
+        published: 0,
+      });
+      adapter.updateAppRow(postsTable, "post-1", {
+        text: "Updated",
+        published: 1,
+        updatedAt: "2026-07-04T11:00:00.000Z",
+      });
+
+      assert.deepEqual(
+        adapter
+          .selectAppRows(postsTable, {
+            columns: ["id", "text", "published"],
+            where: { fieldName: "authorId", value: "user-1" },
+            orderBy: { fieldName: "createdAt", direction: "desc" },
+            limit: 1,
+          })
+          .map((row) => ({ ...row })),
+        [{ id: "post-1", text: "Updated", published: 1 }],
+      );
+      assert.equal(adapter.selectAppRowById(postsTable, "post-1").text, "Updated");
+      assert.equal(adapter.deleteAppRow(postsTable, "missing").changes, 0);
+
+      const migratedPostsTable = {
+        ...postsTable,
+        fields: [
+          ...postsTable.fields,
+          { name: "editorId", kind: "Reference", sqliteType: "TEXT", targetTable: "users", defaultValue: "user-1" },
+          { name: "summary", kind: "String", sqliteType: "TEXT", defaultValue: "draft" },
+        ],
+      };
+      adapter.migrateAppSchema({ tables: [usersTable, migratedPostsTable] });
+
+      assert.deepEqual(
+        adapter.prepare("PRAGMA table_info(posts)").all().map((column) => column.name),
+        ["id", "createdAt", "updatedAt", "text", "authorId", "published", "editorId", "summary"],
+      );
+      assert.deepEqual(
+        adapter
+          .selectAppRows(migratedPostsTable, { columns: ["text", "editorId", "summary"] })
+          .map((row) => ({ ...row })),
+        [{ text: "Updated", editorId: "user-1", summary: "draft" }],
+      );
+      assert.equal(adapter.deleteAppRow(migratedPostsTable, "post-1").changes, 1);
+      assert.deepEqual(adapter.selectAppRows(migratedPostsTable), []);
+
+      assert.throws(
+        () =>
+          adapter.migrateAppSchema({
+            tables: [
+              usersTable,
+              {
+                ...migratedPostsTable,
+                fields: migratedPostsTable.fields.filter((field) => field.name !== "summary"),
+              },
+            ],
+          }),
+        {
+          message: "Unsupported Capsule schema change.",
+          hint: "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
+        },
+      );
+      assert.throws(
+        () =>
+          adapter.migrateAppSchema({
+            tables: [
+              usersTable,
+              {
+                ...migratedPostsTable,
+                fields: [
+                  ...migratedPostsTable.fields,
+                  {
+                    name: "reviewerId",
+                    kind: "Reference",
+                    sqliteType: "TEXT",
+                    targetTable: "users",
+                    defaultValue: "missing",
+                  },
+                ],
+              },
+            ],
+          }),
+        {
+          message: "Invalid reference for field: reviewerId",
+          hint: "Pass the id of an existing users row.",
+        },
+      );
+    } finally {
+      adapter.close();
+    }
+  });
+});
