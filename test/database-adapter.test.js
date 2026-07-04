@@ -1,11 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { Readable } from "node:stream";
 import test from "node:test";
 
 import {
+  checkRuntimeFileStorage,
   checkRuntimeSqlite,
+  completePendingFileUpload,
+  createLocalFileStorageAdapter,
   createLibsqlDatabaseAdapter,
   createPostgresDatabaseAdapter,
   createPendingFileUpload,
@@ -48,6 +52,96 @@ test("SQLite database adapter owns setup, query execution, and close lifecycle",
 
     adapter.close();
     assert.throws(() => adapter.prepare("SELECT 1").get(), /database is not open/i);
+  });
+});
+
+test("LocalFileStorageAdapter owns local file bytes, health, and close lifecycle", async () => {
+  await withTempDir(async (dir) => {
+    const storagePath = path.join(dir, "files");
+    const adapter = createLocalFileStorageAdapter({ storagePath });
+
+    await adapter.writeFileVersion({
+      fileId: "file-1",
+      version: "version-1",
+      bytes: Buffer.from("hello storage"),
+    });
+
+    assert.equal((await adapter.readFileVersion({ fileId: "file-1", version: "version-1" })).toString("utf8"), "hello storage");
+    assert.equal(await readFile(path.join(storagePath, "file-1", "version-1"), "utf8"), "hello storage");
+    assert.deepEqual(await adapter.checkHealth(), { ok: true });
+
+    await adapter.deleteFileVersion({ fileId: "file-1", version: "version-1" });
+    await assert.rejects(() => adapter.readFileVersion({ fileId: "file-1", version: "version-1" }), { code: "ENOENT" });
+    assert.equal(adapter.close(), undefined);
+  });
+});
+
+test("runtime file lifecycle paths use the configured file storage adapter", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true } },
+    });
+    const writes = [];
+    const reads = [];
+    const deletes = [];
+    const closed = [];
+    const storedBytes = new Map();
+    database.fileStorage = {
+      engine: "spy",
+      async writeFileVersion({ fileId, version, bytes }) {
+        writes.push({ fileId, version, bytes: bytes.toString("utf8") });
+        storedBytes.set(`${fileId}:${version}`, Buffer.from(bytes));
+      },
+      async readFileVersion({ fileId, version }) {
+        reads.push({ fileId, version });
+        const bytes = storedBytes.get(`${fileId}:${version}`);
+        if (!bytes) {
+          const error = new Error("missing spy bytes");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return bytes;
+      },
+      async deleteFileVersion({ fileId, version }) {
+        deletes.push({ fileId, version });
+        storedBytes.delete(`${fileId}:${version}`);
+      },
+      async checkHealth() {
+        return { ok: true, adapter: "spy" };
+      },
+      close() {
+        closed.push(true);
+      },
+    };
+
+    try {
+      const session = await resolveAnonymousSession(database, null);
+      const pending = await createPendingFileUpload(database, session.auth, {
+        file: { name: "proof.txt", type: "text/plain", size: 5 },
+      });
+      assert.equal(pending.ok, true);
+
+      const uploadId = pending.data.uploadUrl.split("/").pop();
+      const completed = await completePendingFileUpload(database, uploadId, Readable.from([Buffer.from("proof")]));
+      assert.equal(completed.ok, true);
+      assert.deepEqual(writes, [
+        {
+          fileId: pending.data.file.id,
+          version: pending.data.file.version,
+          bytes: "proof",
+        },
+      ]);
+      assert.deepEqual(await checkRuntimeFileStorage(database), { ok: true, adapter: "spy" });
+
+      await database.fileStorage.readFileVersion({ fileId: completed.data.file.id, version: completed.data.file.version });
+      assert.deepEqual(reads, [{ fileId: completed.data.file.id, version: completed.data.file.version }]);
+
+      await database.fileStorage.deleteFileVersion({ fileId: completed.data.file.id, version: completed.data.file.version });
+      assert.deepEqual(deletes, [{ fileId: completed.data.file.id, version: completed.data.file.version }]);
+    } finally {
+      database.close();
+      assert.deepEqual(closed, [true]);
+    }
   });
 });
 

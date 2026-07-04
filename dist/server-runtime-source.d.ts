@@ -585,7 +585,27 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
             directives: any;
         };
     };
-    fileStoragePath: any;
+    fileStorage: {
+        engine: string;
+        storagePath: string;
+        writeFileVersion({ fileId, version, bytes }: {
+            fileId: any;
+            version: any;
+            bytes: any;
+        }): Promise<void>;
+        readFileVersion({ fileId, version }: {
+            fileId: any;
+            version: any;
+        }): Promise<NonSharedBuffer>;
+        deleteFileVersion({ fileId, version }: {
+            fileId: any;
+            version: any;
+        }): Promise<void>;
+        checkHealth(): Promise<{
+            ok: boolean;
+        }>;
+        close(): void;
+    };
     fileMaxSizeBytes: any;
     close: () => void | Promise<void>;
 }>;
@@ -850,6 +870,53 @@ declare function createRuntimeDatabaseAdapter(databasePath: any, serverEnv?: {},
     deleteAppRow(table: any, id: any): any;
     selectAppRows(table: any, query?: {}): any;
 }>;
+export declare function createRuntimeFileStorageAdapter({ config, databasePath }: {
+    config?: {};
+    databasePath: any;
+}): Promise<{
+    engine: string;
+    storagePath: string;
+    writeFileVersion({ fileId, version, bytes }: {
+        fileId: any;
+        version: any;
+        bytes: any;
+    }): Promise<void>;
+    readFileVersion({ fileId, version }: {
+        fileId: any;
+        version: any;
+    }): Promise<NonSharedBuffer>;
+    deleteFileVersion({ fileId, version }: {
+        fileId: any;
+        version: any;
+    }): Promise<void>;
+    checkHealth(): Promise<{
+        ok: boolean;
+    }>;
+    close(): void;
+}>;
+export declare function createLocalFileStorageAdapter({ storagePath }: {
+    storagePath: any;
+}): {
+    engine: string;
+    storagePath: string;
+    writeFileVersion({ fileId, version, bytes }: {
+        fileId: any;
+        version: any;
+        bytes: any;
+    }): Promise<void>;
+    readFileVersion({ fileId, version }: {
+        fileId: any;
+        version: any;
+    }): Promise<NonSharedBuffer>;
+    deleteFileVersion({ fileId, version }: {
+        fileId: any;
+        version: any;
+    }): Promise<void>;
+    checkHealth(): Promise<{
+        ok: boolean;
+    }>;
+    close(): void;
+};
 export declare function createSqliteDatabaseAdapter(databasePath: any, options?: {}): Promise<{
     engine: string;
     exec(sql: any): void;
@@ -1130,6 +1197,7 @@ export declare function routeEndpoint(database: any, request: any, response: any
 export declare function handleFileHttpRoute(database: any, request: any, response: any, websocketHub?: any): Promise<boolean>;
 export declare function routeRuntimeHealth(database: any, request: any, response: any): Promise<boolean>;
 export declare function checkRuntimeSqlite(database: any): Promise<any>;
+export declare function checkRuntimeFileStorage(database: any): Promise<any>;
 export declare function createPendingFileUpload(database: any, auth: any, message: any): Promise<{
     ok: boolean;
     error: {
@@ -1155,7 +1223,7 @@ export declare function createPendingFileUpload(database: any, auth: any, messag
     };
     error: any;
 }>;
-declare function completePendingFileUpload(database: any, uploadId: any, request: any, websocketHub?: any): Promise<{
+export declare function completePendingFileUpload(database: any, uploadId: any, request: any, websocketHub?: any): Promise<{
     ok: boolean;
     data: any;
     error: {

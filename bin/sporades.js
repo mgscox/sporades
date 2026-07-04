@@ -842,6 +842,8 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   normalizeAuthConfig,
   readProviderConfig,
   createFileStorageTables,
+  createRuntimeFileStorageAdapter,
+  createLocalFileStorageAdapter,
   routeRuntimeHealth,
   createRuntimeHealthResult,
   checkRuntimeSqlite,
@@ -861,8 +863,6 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createStructuredFileError,
   validatePublicUrlExpiry,
   fileRowForOwner,
-  fileStoragePath,
-  fileVersionPath,
   removeFileVersionBestEffort,
   contentTypeForFile,
   createAnonymousAuthTables,
@@ -1071,6 +1071,10 @@ function sanitizeResponseHeaders(headers) {
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
   const path5 = await import("node:path");
   const sqlite = await createRuntimeDatabaseAdapter(databasePath, options?.serviceEnv ?? serverEnv, config);
+  const fileStorage = await createRuntimeFileStorageAdapter({
+    config,
+    databasePath
+  });
   const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
   const endpoints = extractEndpoints(serverSource);
   const queries = extractQueryHandlersFromCapsule(capsuleDefinition) ?? extractQueryHandlers(serverSource);
@@ -1093,9 +1097,13 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     serverEnv,
     authConfig: authStatus(config, serverEnv),
     securityPolicy: resolveRuntimeSecurityPolicy(config),
-    fileStoragePath: config.files?.storagePath ?? path5.join(path5.dirname(databasePath), "files"),
+    fileStorage,
     fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
-    close: () => sqlite.close()
+    close: () => {
+      const sqliteResult = database.sqlite.close();
+      const storageResult = database.fileStorage.close();
+      return storageResult ?? sqliteResult;
+    }
   };
   database.log = createRuntimeLogSink({
     database: sqlite,
@@ -1124,6 +1132,58 @@ async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config
     });
   }
   return await createSqliteDatabaseAdapter(databasePath);
+}
+async function createRuntimeFileStorageAdapter({ config = {}, databasePath }) {
+  const path5 = await import("node:path");
+  return createLocalFileStorageAdapter({
+    storagePath: config.files?.storagePath ?? path5.join(path5.dirname(databasePath), "files")
+  });
+}
+function createLocalFileStorageAdapter({ storagePath }) {
+  if (typeof storagePath !== "string" || storagePath.length === 0) {
+    throw new Error("Local file storage requires a storagePath.");
+  }
+  return {
+    engine: "local",
+    storagePath,
+    async writeFileVersion({ fileId, version, bytes }) {
+      const { mkdir: mkdir5, writeFile: writeFile5 } = await import("node:fs/promises");
+      await mkdir5(localFileStoragePath(storagePath, fileId), { recursive: true });
+      await writeFile5(localFileVersionPath(storagePath, fileId, version), bytes);
+    },
+    async readFileVersion({ fileId, version }) {
+      const { readFile: readFile4 } = await import("node:fs/promises");
+      return await readFile4(localFileVersionPath(storagePath, fileId, version));
+    },
+    async deleteFileVersion({ fileId, version }) {
+      const { rm: rm3 } = await import("node:fs/promises");
+      await rm3(localFileVersionPath(storagePath, fileId, version), { force: true });
+    },
+    async checkHealth() {
+      const { mkdir: mkdir5, rm: rm3, writeFile: writeFile5 } = await import("node:fs/promises");
+      const path5 = await import("node:path");
+      const probeDirectory = path5.join(storagePath, ".sporades-health");
+      const probeFile = path5.join(probeDirectory, `${randomUUID()}.tmp`);
+      try {
+        await mkdir5(probeDirectory, { recursive: true });
+        await writeFile5(probeFile, "");
+        await rm3(probeFile, { force: true });
+        return { ok: true };
+      } catch {
+        await rm3(probeFile, { force: true }).catch(() => {
+        });
+        return { ok: false };
+      }
+    },
+    close() {
+    }
+  };
+}
+function localFileStoragePath(storagePath, fileId) {
+  return `${storagePath}/${fileId}`;
+}
+function localFileVersionPath(storagePath, fileId, version) {
+  return `${localFileStoragePath(storagePath, fileId)}/${version}`;
 }
 async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const { DatabaseSync } = await import("node:sqlite");
@@ -3498,20 +3558,7 @@ async function checkRuntimeSqlite(database) {
   return await (database.adapter ?? database.sqlite).checkHealth();
 }
 async function checkRuntimeFileStorage(database) {
-  const { mkdir: mkdir5, rm: rm3, writeFile: writeFile5 } = await import("node:fs/promises");
-  const path5 = await import("node:path");
-  const probeDirectory = path5.join(database.fileStoragePath, ".sporades-health");
-  const probeFile = path5.join(probeDirectory, `${randomUUID()}.tmp`);
-  try {
-    await mkdir5(probeDirectory, { recursive: true });
-    await writeFile5(probeFile, "");
-    await rm3(probeFile, { force: true });
-    return { ok: true };
-  } catch {
-    await rm3(probeFile, { force: true }).catch(() => {
-    });
-    return { ok: false };
-  }
+  return await database.fileStorage.checkHealth();
 }
 function createFileStorageTables(sqlite) {
   sqlite.exec(
@@ -3552,9 +3599,8 @@ function writeNotFound(response) {
   response.end("Not found");
 }
 async function sendFileHttpResponse(database, response, row) {
-  const { readFile: readFile4 } = await import("node:fs/promises");
   try {
-    const bytes = await readFile4(fileVersionPath(database, row.id, row.version));
+    const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
     response.writeHead(200, {
       "content-type": contentTypeForFile(row.type),
       "cache-control": "private, max-age=31536000, immutable"
@@ -3651,9 +3697,7 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
       total: upload.expectedSize
     });
     const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
-    const { mkdir: mkdir5, writeFile: writeFile5 } = await import("node:fs/promises");
-    await mkdir5(fileStoragePath(database, upload.fileId), { recursive: true });
-    await writeFile5(fileVersionPath(database, upload.fileId, upload.version), bytes);
+    await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
     const now = (/* @__PURE__ */ new Date()).toISOString();
     await database.sqlite.completeFileUpload(upload, bytes.length, now);
     await database.sqlite.deleteFileUpload(uploadId);
@@ -3818,15 +3862,9 @@ function fileMetadataFromRow(row) {
 function createStructuredFileError(message, hint) {
   return { message, hint };
 }
-function fileStoragePath(database, fileId) {
-  return `${database.fileStoragePath}/${fileId}`;
-}
-function fileVersionPath(database, fileId, version) {
-  return `${fileStoragePath(database, fileId)}/${version}`;
-}
 async function removeFileVersionBestEffort(database, fileId, version) {
-  const { rm: rm3 } = await import("node:fs/promises");
-  await rm3(fileVersionPath(database, fileId, version), { force: true });
+  await database.fileStorage.deleteFileVersion({ fileId, version }).catch(() => {
+  });
 }
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const createHandler = new Function(`return (${endpoint.handlerSource});`);
