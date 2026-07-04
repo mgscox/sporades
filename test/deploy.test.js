@@ -1606,6 +1606,132 @@ test("sporades deploy skips the server env mount when the env file is absent", a
   });
 });
 
+test("sporades deploy generates owned Compose for a declared database Capsule service", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.services = {
+      database: {
+        kind: "database",
+        engine: "libsql",
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const docker = await installFakeDocker(dir, "container-with-service-compose");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+    const compose = await readFile(path.join(projectDir, ".sporades", "compose", "capsule-services.compose.yml"), "utf8");
+    assert.match(compose, /# Sporades-owned runtime state/);
+    assert.match(compose, /name: sporades-todo-island-services/);
+    assert.match(compose, /sporades-todo-island-database:/);
+    assert.match(compose, /image: ghcr\.io\/tursodatabase\/libsql-server:v0\.24\.32/);
+    assert.match(compose, /sporades-todo-island-database-data:/);
+    assert.match(compose, /sporades-todo-island-services:/);
+    assert.match(compose, /com\.sporades\.managed: "true"/);
+    assert.match(compose, /com\.sporades\.capsule-service\.kind: "database"/);
+
+    const calls = await docker.calls();
+    const composeUpCall = calls.find((call) => call.args[0] === "compose");
+    const runCall = firstDockerRunCall(calls);
+    assert.deepEqual(composeUpCall.args, [
+      "compose",
+      "-f",
+      path.join(projectDir, ".sporades", "compose", "capsule-services.compose.yml"),
+      "up",
+      "--detach",
+    ]);
+    assert(runCall.args.includes("--network"), runCall.args.join(" "));
+    assert.equal(runCall.args[runCall.args.indexOf("--network") + 1], "sporades-todo-island-services");
+    assert(calls.indexOf(composeUpCall) < calls.indexOf(runCall));
+  });
+});
+
+test("sporades deploy reports structured errors for unsupported Capsule service declarations", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.services = {
+      cache: {
+        kind: "redis",
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const deployResult = await runCli(["deploy", "--json"], { cwd: projectDir });
+
+    assert.equal(deployResult.code, 1);
+    assert.deepEqual(JSON.parse(deployResult.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Unsupported Capsule service: cache",
+        hint: "The first supported Capsule service declaration is `services.database`.",
+      },
+    });
+  });
+});
+
+test("sporades deploy keeps Capsule service Compose names stable for a project", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "service-lab", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "service-lab"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.name = "Team Notes!";
+    config.services = {
+      database: {
+        kind: "database",
+        engine: "libsql",
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const firstDocker = await installFakeDocker(path.join(dir, "first"), "container-first");
+    const firstDeploy = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: firstDocker.env,
+    });
+    assert.equal(firstDeploy.code, 0, firstDeploy.stderr);
+    const firstCompose = await readFile(path.join(projectDir, ".sporades", "compose", "capsule-services.compose.yml"), "utf8");
+
+    const secondDocker = await installFakeDocker(path.join(dir, "second"), "container-second");
+    const secondDeploy = await runCli(["deploy", "--force", "--json"], {
+      cwd: projectDir,
+      env: secondDocker.env,
+    });
+    assert.equal(secondDeploy.code, 0, secondDeploy.stderr);
+    const secondCompose = await readFile(path.join(projectDir, ".sporades", "compose", "capsule-services.compose.yml"), "utf8");
+
+    assert.equal(secondCompose, firstCompose);
+    assert.match(firstCompose, /name: sporades-team-notes-services/);
+    assert.match(firstCompose, /sporades-team-notes-database:/);
+    assert.match(firstCompose, /sporades-team-notes-database-data:/);
+  });
+});
+
 test("sporades deploy replaces the existing container binding before starting a new one", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

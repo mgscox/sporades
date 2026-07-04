@@ -251,6 +251,12 @@ A typical `sporades.json` looks like this:
   },
   "dev": {
     "port": null
+  },
+  "services": {
+    "database": {
+      "kind": "database",
+      "engine": "libsql"
+    }
   }
 }
 ```
@@ -259,6 +265,14 @@ Ports follow this cascade: CLI flag, then `sporades.json`, then default.
 
 Use `dev.port` when you always want a different Dev session port. Use
 `deploy.port` for local Container sessions.
+
+`services.database` declares a database Capsule service. The first supported
+shape is `{ "kind": "database", "engine": "libsql" }`. Sporades turns that
+intent into a deterministic Docker Compose file under
+`.sporades/compose/capsule-services.compose.yml`; the generated file, service
+names, network, volume, and labels are Sporades-owned runtime state. Do not
+hand-edit the Compose YAML for the supported path; edit `sporades.json` and let
+Sporades regenerate it.
 
 ### Security Policy
 

@@ -20,6 +20,8 @@ by Sporades.
     server-env.sealed.json
     server-env.private.pem
     server-env.public.pem
+  compose/
+    capsule-services.compose.yml
   binding.json
   remote-binding.json
   host-push/
@@ -32,12 +34,18 @@ Common entries:
 - `data.db`: SQLite database for Dev sessions.
 - `files/`: uploaded file bytes for Dev sessions.
 - `sealed-server-env/`: Sealed Server env envelopes and local key material.
+- `compose/capsule-services.compose.yml`: generated Docker Compose for
+  declared Capsule services.
 - `binding.json`: local Container session binding.
 - `remote-binding.json`: local convenience binding for a Hosted Capsule.
 - `host-push/`: locally saved Hosted Capsule release archives.
 
 Not every entry exists in every project. Sporades creates entries as commands
 need them.
+
+`compose/capsule-services.compose.yml` is generated from `sporades.json`
+`services` declarations. It is marked with Sporades ownership comments and
+Docker labels; users should edit the declaration intent, not this runtime file.
 
 ## Capsule Runtime Files
 

@@ -41,6 +41,10 @@ import {
   simulateLocalIdentitySession,
 } from "../src/server-runtime-source.js";
 import { scaffoldFiles } from "../src/templates/scaffold-template.js";
+import {
+  validateCapsuleServicesConfig,
+  writeCapsuleServicesCompose,
+} from "../src/capsule-services.js";
 
 const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
 const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library"]);
@@ -1016,7 +1020,9 @@ async function startDevSession(options) {
   let security = resolveEffectiveSecurityPolicy(config, session);
   const restartPolicy = restartPolicyForMode("dev");
   const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4000;
+  const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   let bundle = await createBundle(options.projectDir, config);
+  startCapsuleServices(capsuleServices, options.projectDir);
 
   const sessionFilePath = path.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path.join(options.projectDir, ".sporades", "data.db");
@@ -1299,7 +1305,9 @@ async function startDevSession(options) {
     try {
       const nextConfig = await readProjectConfig(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
+      const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig);
       const rebuild = await createBundle(options.projectDir, nextConfig);
+      startCapsuleServices(nextCapsuleServices, options.projectDir);
       const affectsServerRuntime =
         change.affectsServerRuntime || (change.configChanged && configChangeAffectsServerRuntime(config, nextConfig));
       if (affectsServerRuntime) {
@@ -2313,6 +2321,7 @@ async function manageHost(options) {
 async function startContainerSession(options) {
   const config = await readProjectConfig(options.projectDir);
   const port = options.port ?? config.deploy?.port ?? 4000;
+  const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const bundle = await createBundle(options.projectDir, config);
   const runtimeDir = path.join(options.projectDir, ".sporades");
   const dataDir = path.join(runtimeDir, "data");
@@ -2343,6 +2352,7 @@ async function startContainerSession(options) {
   }
 
   ensureLocalBaseImage(options.projectDir);
+  startCapsuleServices(capsuleServices, options.projectDir);
 
   const envArgs = bundle.containerMounts.serverEnv
     ? [
@@ -2365,6 +2375,7 @@ async function startContainerSession(options) {
       ]
     : [];
   const bundleMountArgs = bundle.containerMounts.files.flatMap((mount) => ["--volume", formatMount(mount)]);
+  const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
   const containerId = runDocker(
     [
       "run",
@@ -2382,6 +2393,7 @@ async function startContainerSession(options) {
       "no-new-privileges",
       "--user",
       runtimeUser,
+      ...capsuleServicesNetworkArgs,
       ...Object.entries(baseImageLabels(updatePolicyMode)).flatMap(([key, value]) => ["--label", `${key}=${value}`]),
       "--publish",
       `${port}:4000`,
@@ -2775,6 +2787,7 @@ async function readProjectConfig(projectDir) {
     throw commandError("Invalid project configuration: sporades.json", "Fix the JSON syntax in sporades.json.");
   }
   validateSecurityConfig(config.security);
+  validateCapsuleServicesConfig(config.services);
   return config;
 }
 
@@ -4122,6 +4135,18 @@ function runDocker(args, cwd, message, hint) {
     throw commandError(message, hint);
   }
   return result.stdout.trim();
+}
+
+function startCapsuleServices(capsuleServices, projectDir) {
+  if (!capsuleServices) {
+    return;
+  }
+  runDocker(
+    ["compose", "-f", capsuleServices.path, "up", "--detach"],
+    projectDir,
+    "Failed to start Capsule services.",
+    "Check Docker is running and supports `docker compose`, then retry the command.",
+  );
 }
 
 function ensureLocalBaseImage(cwd) {
