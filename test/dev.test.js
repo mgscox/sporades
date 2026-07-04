@@ -478,6 +478,91 @@ test("sporades dev generates owned Compose for declared database Capsule service
   });
 });
 
+test("sporades dev starts MinIO storage Capsule services and injects server-only storage env", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.services = {
+      storage: {
+        kind: "storage",
+        engine: "minio",
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir);
+
+    await withFakeServiceEndpoint(async ({ port: servicePort }) => {
+      const child = startCli(["dev", "--json"], {
+        cwd: projectDir,
+        env: { ...docker.env, FAKE_DOCKER_SERVICE_PORT: String(servicePort) },
+      });
+      try {
+        const starting = await waitForJsonLine(child);
+        assert.deepEqual(starting.data, {
+          event: "service",
+          service: "storage",
+          status: "starting",
+          engine: "minio",
+          statePath: path.join(".sporades", "services", "storage"),
+        });
+        const ready = await waitForJsonEvent(child, (event) => event.data?.event === "service" && event.data.status === "ready");
+        assert.deepEqual(ready.data, {
+          event: "service",
+          service: "storage",
+          status: "ready",
+          engine: "minio",
+          statePath: path.join(".sporades", "services", "storage"),
+          host: "127.0.0.1",
+          port: Number(servicePort),
+        });
+        const started = await waitForJsonEvent(child, (event) => event.data?.event === "started");
+        assert.equal(started.ok, true);
+
+        const socket = await openSocket(started.data.url);
+        try {
+          socket.send(JSON.stringify({ id: "env-1", type: "query.subscribe", query: "ctx.env" }));
+          assert.deepEqual(await readSocketMessage(socket), {
+            id: "env-1",
+            type: "query.result",
+            query: "ctx.env",
+            data: {},
+            error: null,
+          });
+        } finally {
+          socket.close();
+        }
+
+        const clientBundle = await (await fetch(`${started.data.url}/client.js`)).text();
+        assert.doesNotMatch(clientBundle, /SPORADES_SERVICE_STORAGE_/);
+        assert.doesNotMatch(clientBundle, /sporades-minio-local-secret/);
+
+        const compose = await readFile(path.join(projectDir, ".sporades", "compose", "capsule-services.compose.yml"), "utf8");
+        assert.match(compose, /sporades-todo-island-storage:/);
+        assert.match(compose, /image: quay\.io\/minio\/minio:RELEASE\.2025-04-22T22-12-26Z/);
+        assert.match(compose, /MINIO_ROOT_USER: "sporades"/);
+        assert.match(compose, /127\.0\.0\.1::9000/);
+        assert.match(compose, /todo-island\/\.sporades\/services\/storage\:\/data:rw"/);
+        assert.match(compose, /com\.sporades\.capsule-service\.kind: "storage"/);
+
+        const calls = await docker.calls();
+        assert.deepEqual(calls[1].args.slice(3), ["ps", "--format", "json", "sporades-todo-island-storage"]);
+        assert.deepEqual(calls[2].args.slice(3), ["port", "sporades-todo-island-storage", "9000"]);
+      } finally {
+        child.kill("SIGTERM");
+        await new Promise((resolve) => child.once("exit", resolve));
+      }
+    });
+  });
+});
+
 test("sporades dev fails with structured diagnostics when a declared database Capsule service is unhealthy", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

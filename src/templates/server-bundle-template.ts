@@ -136,6 +136,11 @@ function readRuntimeServiceEnv() {
     "SPORADES_SERVICE_DATABASE_ENGINE",
     "SPORADES_SERVICE_DATABASE_URL",
     "SPORADES_SERVICE_DATABASE_AUTH_TOKEN",
+    "SPORADES_SERVICE_STORAGE_ENGINE",
+    "SPORADES_SERVICE_STORAGE_ENDPOINT",
+    "SPORADES_SERVICE_STORAGE_ACCESS_KEY",
+    "SPORADES_SERVICE_STORAGE_SECRET_KEY",
+    "SPORADES_SERVICE_STORAGE_BUCKET",
   ];
   return Object.fromEntries(keys.filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
 }

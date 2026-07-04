@@ -400,17 +400,22 @@ does not discover project configuration by walking the filesystem.
     "database": {
       "kind": "database",
       "engine": "libsql"
+    },
+    "storage": {
+      "kind": "storage",
+      "engine": "minio"
     }
   }
 }
 ```
 
-`services.database` declares database Capsule service intent. Sporades
-validates supported service declarations and generates Docker Compose runtime
-state under `.sporades/`; users edit `sporades.json` rather than hand-editing
-generated Compose YAML. The current Capsule service implementation is
-local-only for Dev sessions and local Container sessions. Hosted Capsule
-service orchestration remains future Host-server work.
+`services.database` declares database Capsule service intent, and
+`services.storage` declares storage Capsule service intent. Sporades validates
+supported service declarations and generates Docker Compose runtime state under
+`.sporades/`; users edit `sporades.json` rather than hand-editing generated
+Compose YAML. The current Capsule service implementation is local-only for Dev
+sessions and local Container sessions. Hosted Capsule service orchestration
+remains future Host-server work.
 
 When a local Dev session or local Container session starts a declared
 `services.database` service with `engine: "libsql"`, Sporades injects a
@@ -418,7 +423,10 @@ server-only service URL and selects the internal libSQL service-backed Database
 adapter for runtime persistence. Embedded SQLite remains the default when no
 service-backed database URL is provided. Service connection details are runtime
 plumbing and must not be exposed through client bundles, inspection JSON, or app
-authoring APIs.
+code. When a local session starts `services.storage` with `engine: "minio"`,
+Sporades injects server-only S3-compatible storage env for the Storage adapter;
+local filesystem file storage remains the default until the adapter is enabled.
+Service-backed storage remains below the stable file authoring APIs.
 
 Sealed Server env lives in ignored Runtime or Host state, is decrypted for Dev
 sessions, local Container sessions, and Hosted Capsules, is exposed to server
