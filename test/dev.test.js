@@ -5284,7 +5284,7 @@ test("sporades db dump returns structured table data from the running dev sessio
             },
             {
               name: "sporades_file_uploads",
-              columns: ["id", "fileId", "ownerId", "version", "expectedSize", "createdAt"],
+              columns: ["id", "fileId", "ownerId", "bucketId", "bucketName", "path", "name", "type", "version", "expectedSize", "createdAt"],
               rows: [],
             },
             {

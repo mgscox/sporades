@@ -191,6 +191,10 @@ test("runtime file operations accept absolute File paths and File references", a
       assert.equal(firstOverlap.ok, true, firstOverlap.error?.message);
       assert.equal(firstOverlap.data.file.id, explicit.id);
       assert.equal(firstOverlap.data.file.path, "/images/avatars/profile.png");
+      const liveAfterAbandonedNegotiation = await getPrivateFileUrl(database, auth, explicit.id);
+      assert.equal(liveAfterAbandonedNegotiation.ok, true);
+      assert.equal(liveAfterAbandonedNegotiation.data.file.version, explicit.version);
+      assert.equal((await getPrivateFileUrl(database, auth, "/images/avatars/profile.png")).data.file.version, explicit.version);
 
       const secondOverlap = await createPendingFileUpload(database, auth, {
         file: { name: "second.png", type: "image/png", size: 6, path: "/images/avatars/profile.png" },
@@ -206,7 +210,10 @@ test("runtime file operations accept absolute File paths and File references", a
         firstOverlapUploadId,
         Readable.from([Buffer.from("first")]),
       );
-      assert.equal(firstOverlapCompleted.ok, true, firstOverlapCompleted.error?.message);
+      assert.equal(firstOverlapCompleted.ok, false);
+      assert.equal(firstOverlapCompleted.error.message, "Upload URL not found.");
+      assert.equal((await getPrivateFileUrl(database, auth, "/images/avatars/profile.png")).data.file.version, explicit.version);
+
       const secondOverlapCompleted = await completePendingFileUpload(
         database,
         secondOverlapUploadId,
@@ -214,6 +221,8 @@ test("runtime file operations accept absolute File paths and File references", a
       );
       assert.equal(secondOverlapCompleted.ok, true, secondOverlapCompleted.error?.message);
       assert.equal(secondOverlapCompleted.data.file.id, explicit.id);
+      assert.equal(secondOverlapCompleted.data.file.version, secondOverlap.data.file.version);
+      assert.equal((await getPrivateFileUrl(database, auth, "/images/avatars/profile.png")).data.file.version, secondOverlap.data.file.version);
 
       const overlapRows = await database.sqlite.selectLiveFileByPath(auth.userId, "/images/avatars/profile.png");
       assert.equal(overlapRows.length, 1);
@@ -950,6 +959,11 @@ test("SQLite database adapter owns runtime storage for auth, files, logs, and sy
         id: "upload-1",
         fileId: "file-1",
         ownerId: "user-1",
+        bucketId: "bucket-1",
+        bucketName: "default",
+        path: "/default/hello.txt",
+        name: "hello.txt",
+        type: "text/plain",
         version: "version-1",
         expectedSize: 5,
         createdAt: now,
@@ -1270,8 +1284,10 @@ function wrapAsyncRuntimeAdapter(adapter) {
     "selectFileById",
     "selectLiveFileByPath",
     "selectActiveFileByPath",
+    "selectPendingFileUploadByPath",
     "selectFileUpload",
     "completeFileUpload",
+    "deleteFileUploadsForPath",
     "deleteFileUpload",
     "selectPublicFileRow",
     "insertPublicFileUrl",
