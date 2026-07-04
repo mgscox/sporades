@@ -22,6 +22,7 @@ bundled code.
 ### 1. Create a Capsule
 
 ```sh
+# Create a sporades capsule called 'notes' from the 'todo' template
 sporades create notes --template todo
 cd notes
 ```
@@ -151,7 +152,7 @@ mutations refresh connected clients without you writing manual fetch code.
 
 ### 5. Inspect Logs and Data
 
-In another terminal, from the Capsule directory:
+In **another** terminal, from the Capsule directory:
 
 ```sh
 sporades logs
@@ -176,7 +177,7 @@ Bundle files and Server env into a Node container, and persisting SQLite data in
 the Runtime directory. Re-running `sporades deploy` replaces the previous local
 container for this project.
 
-Use a different port when needed:
+Use a different port when needed, e.g. if 'dev' is running at same time:
 
 ```sh
 sporades deploy --port 5000
@@ -445,6 +446,13 @@ property, Sporades includes it in structured error output.
 
 ### Use Sealed Server Env
 
+A Sealed Server Environment uses public/private keys to encrypt environment
+variables, reducing exposure risk when copying data to and from a Host server.
+It does not require any local keychain or secure storage, and is almost
+transparent to development operations once enabled.
+
+#### Create and Import Values
+
 Use Sealed Server env for server-only values:
 
 ```sh
@@ -464,6 +472,8 @@ sporades env import --file .env.sporades.server
 sporades env status --json
 ```
 
+#### Read Values in Server Code
+
 Read them from `ctx.env`:
 
 ```ts
@@ -479,6 +489,8 @@ endpoint({ method: "POST", path: "/billing/webhook" }, (ctx) => {
 
 Restart a running Dev session after changing Sealed Server env.
 
+#### Export or Import an Envelope
+
 For portability, export the sealed envelope without private keys or plaintext
 values:
 
@@ -492,6 +504,8 @@ Import an exported sealed envelope explicitly with:
 sporades env import --sealed --file sealed-server-env.json --json
 ```
 
+#### Push to a Hosted Capsule
+
 For Hosted Capsules, re-encrypt local values for a Host profile before pushing:
 
 ```sh
@@ -499,10 +513,44 @@ sporades env reencrypt --host personal --json
 sporades host push --host personal --subname team-notes --json
 ```
 
+`sporades env reencrypt --host personal` decrypts your local Sealed Server env
+with the local private key, then writes a Host-profile envelope encrypted to the
+Host profile key at
+`.sporades/sealed-server-env/hosts/personal.server-env.sealed.json`. The command
+does not print plaintext values or private keys.
+
+`sporades host push` includes that Host-profile envelope in the release archive
+as `.sporades/sealed-server-env/server-env.sealed.json`. The release archive is
+copied to the Host server over SSH/SCP and installed under the Hosted Capsule's
+immutable `releases/<release-id>/` directory. The matching Host-profile private
+key is delivered to the Hosted Capsule's persistent Host state at
+`data/sealed-server-env/server-env.private.pem`, not into the release archive.
+When the Hosted Capsule starts, both files are mounted read-only at
+`/app/.sporades/sealed-server-env/`; the runtime decrypts the values and exposes
+them through `ctx.env`.
+
 Sporades stores local sealed material under `.sporades/sealed-server-env/`,
 which is ignored Runtime state. Host-profile private keys are stored in local
 Host profile configuration and delivered to Host state during push; exported
 sealed envelopes never include private keys.
+
+#### Recover from Lost Keys
+
+Because those files do not live in the repository, a different developer machine
+or Host profile may not have access to them (or they may be lost if local
+checkout is deleted). Sporades creates keypairs automatically, but a new keypair
+cannot decrypt envelopes written for an old one.
+
+Recovery is achieved by re-sealing known values:
+
+- If local sealed key material is lost but you still have `.env.sporades.server`
+  or another source of truth for the values, run `sporades env import` again.
+- If Host-profile key material is lost but the local Sealed Server env still
+  works, run `sporades env reencrypt --host <alias>` again, then push the
+  Hosted Capsule.
+- If all private keys and all plaintext/source-of-truth values are gone, the
+  sealed values cannot be recovered. Regenerate the real provider secrets, add
+  them back to Server env, import, re-encrypt for the Host profile, and push.
 
 ### Add Middleware
 
@@ -541,8 +589,13 @@ subscriptions.
 function ProjectList() {
   const projects = useQuery("myProjects");
 
-  if (projects.loading) return <p>Loading...</p>;
-  if (projects.error) return <p>{projects.error.message}</p>;
+  if (projects.loading) {
+    return <p>Loading...</p>;
+  }
+
+  if (projects.error) {
+    return <p>{projects.error.message}</p>;
+  }
 
   return (
     <ul>
@@ -619,24 +672,56 @@ sporades auth status --json
 The status command reports which providers are enabled and whether configured
 providers have the required Server env values.
 
-### Configure Google
+### Configure Google OAuth
 
-Use explicit values:
+Create a Google OAuth **Web application** client. In Google Console, set:
+
+- **Authorized JavaScript origins**: the Capsule origin, with no path, for
+  example `http://localhost:4000` for a local Dev session or
+  `https://team-notes.example.com` for a Hosted Capsule.
+- **Authorized redirect URIs**: the same origin plus Sporades' Google callback
+  path: `/__sporades/auth/google/callback`.
+
+> ---
+> **Configuring Google OAuth Web application client in Google Console**
+>
+> For the usual local Dev session URL, the redirect URI is:
+>
+> ```text
+> http://localhost:4000/__sporades/auth/google/callback
+>```
+>
+> If you run Dev on another port, use the URL printed by `sporades dev`. For a
+> Hosted Capsule, use its Hosted Capsule URL, for example:
+>
+> ```text
+> https://team-notes.example.com/__sporades/auth/google/callback
+> ```
+> ---
+
+#### Importing the OAuth client into Sporades
+
+Once the client is setup in the Google console, you can use the client Id and secret directly, or download and use the JSON representation.
+
+Using explicit values:
 
 ```sh
 sporades auth set google --client-id <id> --client-secret <secret>
 ```
 
-Or use a downloaded Google OAuth web client JSON file:
+Or, using the downloaded Google OAuth web client JSON file:
 
 ```sh
 sporades auth set google --client-json ./client_secret_google.json
 ```
 
-Sporades writes Google auth values to legacy `.env.sporades.server` today and
-keeps env var names in `sporades.json`. Run `sporades env import` after setting
-auth values if you want them in Sealed Server env. Restart any running Dev
-session after changing auth configuration.
+Sporades writes Google auth values to `.env.sporades.server` and stores the environment variable names in `sporades.json`. 
+Restart any running Dev session after changing auth configuration.
+
+> Run `sporades env import` after setting auth values if you want them in Sealed Server env. 
+
+
+#### Using OAuth sign-in in the client
 
 Client sign-in uses the provider name:
 
@@ -712,10 +797,15 @@ const file = await files.upload(selectedFile, {
 });
 ```
 
+File upload is automatically handled as multi-part.
 The returned file metadata includes fields such as `id`, `name`, `type`, `size`,
-`path`, and `version`. Store that metadata through a normal mutation:
+`path`, and `version`. Uploaded bytes are private by default and scoped to the current user.
+
+If you want to store the file information in a database table,
+you must explicitly do so using a normal mutation:
 
 ```tsx
+// Using existing 'recordPhoto' table
 await recordPhoto.run({
   title,
   file,
@@ -742,13 +832,22 @@ Revoke public URLs when they should no longer work:
 await files.revokePublicUrl(publicUrl.id);
 ```
 
+Delete uploaded files when the current user owns them:
+
+```tsx
+await files.delete(file.id);
+```
+
+Deleting a file marks it deleted, removes the current stored bytes on a
+best-effort basis, and revokes any active public URLs for that file. If you
+stored the returned file metadata in one of your own tables, delete or update
+that row separately with a normal mutation.
+
 Replace file bytes while preserving the file ID:
 
 ```tsx
-await files.upload(nextFile, { replace: true, fileId: file.id });
+await files.upload(replacementFile, { replace: true, fileId: file.id });
 ```
-
-Uploaded bytes are private by default and scoped to the current user.
 
 ## Custom HTTP Endpoints
 
@@ -760,15 +859,21 @@ import { capsule, endpoint } from "sporades/server";
 
 export default capsule({
   endpoints: {
-    webhook: endpoint({ method: "POST", path: "/integrations/webhook" }, (ctx) => ({
-      status: 202,
-      headers: { "x-sporades-endpoint": "accepted" },
-      body: {
-        received: true,
+    webhook: endpoint({ method: "POST", path: "/integrations/webhook" }, (ctx) => {
+      ctx.log.info("Webhook received", {
         path: ctx.request.path,
-        userId: ctx.auth.userId,
-      },
-    })),
+        body: ctx.request.body,
+      });
+
+      return {
+        status: 202,
+        headers: { "x-sporades-endpoint": "accepted" },
+        body: {
+          received: true,
+          userId: ctx.auth.userId,
+        },
+      };
+    }),
   },
 });
 ```
@@ -780,34 +885,44 @@ query parameters, and parsed body data.
 ## App Messages
 
 Use app messages for ephemeral real-time events, such as typing indicators or
-presence pings. Use queries and mutations for durable state.
+presence pings. Messages are sent to the client (or clients) over WebSocket.
+Use queries and mutations for durable state.
 
-Declare a server handler:
+There is no need to predefine or register message categories.
+
+Declare a handler on the server:
 
 ```ts
 import { capsule, message } from "sporades/server";
 
 export default capsule({
   messages: {
+    // hook the 'typing' category of messages from clients
     typing: message((ctx, data) => {
-      ctx.messages.send({ type: "typing", data });
-      return { ok: true };
+      const numClientsSentTo = ctx.messages.send({ type: "typing", data });
+      return { ok: true, numClientsSentTo };
     }),
   },
 });
 ```
+
+`ctx.messages.send(...)` returns the number of connected clients the message was
+sent to. Multiple browser tabs or devices for the same user are counted
+separately.
 
 Send and subscribe on the client:
 
 ```tsx
 import { onMessage, sendMessage } from "sporades/client";
 
+// send a message with 'typing' category to server
 await sendMessage("typing", { roomId: "general", active: true });
 
+// hook all incoming messgaes from server
 const subscription = onMessage()
-  .filter((message) => message.type === "typing")
+  .filter((message) => message.type === "typing") // filter on 'typing' category
   .subscribe((message) => {
-    console.log(message.data);
+    console.log(message.data);  // {ok: true, numClientSentTo: <numeric count>}
   });
 
 subscription.unsubscribe();
@@ -870,16 +985,16 @@ stdout.
 Fatal runtime paths are handled by mode, and the policy is reported in JSON
 status output:
 
-- Dev sessions restart automatically after unhandled rejections, uncaught
+- **Dev** sessions restart automatically after unhandled rejections, uncaught
   exceptions, and failed `init()` or `shutdown()` lifecycle boundaries. The
   terminal, `sporades dev --json`, and the structured log stream report the
   fatal event, restart attempt, and exhaustion state. `SIGTERM` and `SIGINT`
   still exit the Dev session.
-- Local Container sessions run with Docker `--restart on-failure:3`. Fatal
+- **Local Container** sessions run with Docker `--restart on-failure:3`. Fatal
   runtime exits such as unhandled rejections, uncaught exceptions, and failed
   startup hooks get bounded restarts instead of infinite loops. `sporades
   deploy --json` includes the restart policy.
-- Hosted Capsules also run with Docker `--restart on-failure:3`. Start,
+- **Hosted Capsules** also run with Docker `--restart on-failure:3`. Start,
   restart, stats, health, release verification, and release history surfaces
   expose lifecycle and restart-policy details. When a Hosted Capsule cannot be
   kept running, its route returns the Hosted Capsule unavailable response.
@@ -1001,6 +1116,18 @@ sporades host push --host personal --subname team-notes --json
 sporades host start team-notes --host personal --json
 ```
 
+If the Capsule uses Sealed Server env, run this before the first push and
+whenever the sealed values change:
+
+```sh
+sporades env reencrypt --host personal --json
+```
+
+The push packages the Host-profile sealed envelope with the release and sends
+the matching private key to the Hosted Capsule's persistent Host state. Releases
+therefore contain encrypted env values, while the key needed to decrypt them is
+kept outside the immutable release directory.
+
 For normal release updates:
 
 ```sh
@@ -1020,11 +1147,15 @@ sporades host restart team-notes --host personal --json
 sporades host stop team-notes --host personal --json
 ```
 
-On macOS, if tar includes AppleDouble metadata during push, use:
+**Push validation**
+
+Sporades will review the uploaded bundle for unexpected files. On macOS, if tar includes AppleDouble metadata during push, it can cause rejection. Use:
 
 ```sh
 COPYFILE_DISABLE=1 sporades host push --host personal --subname team-notes --restart --json
 ```
+
+> Sporades will attempt to auto-ignore additional MacOS metadata, but it still may cause a false-postivie and reject the bundle - setting `COPYFILE_DISABLE` is guaranteed.
 
 ## Common Workflows
 
