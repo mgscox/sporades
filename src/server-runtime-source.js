@@ -92,6 +92,13 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   isPromiseLike,
   applyReadAcl,
   filterRowsByReadAcl,
+  createAclHelpers,
+  createAclDbHelpers,
+  createAclStorageHelpers,
+  assertAclHelperReadAllowed,
+  resolveAclAppTable,
+  resolveAclStorageResource,
+  aclStorageMetadataFromFileRow,
   createAclDeniedError,
   fieldValueForWrite,
   invalidReferenceError,
@@ -2405,11 +2412,11 @@ function createContextHolder(context) {
   return holder;
 }
 
-function createTableAclContext(context) {
+function createTableAclContext(context, database) {
   const { db, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
   return {
     ...aclContext,
-    acl: aclContext.acl ?? {},
+    acl: createAclHelpers(database),
   };
 }
 
@@ -2562,7 +2569,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
         return null;
       }
       const deserialized = deserializeRow(table, row);
-      const allowed = applyReadAcl(table, deserialized, contextGetter?.());
+      const allowed = applyReadAcl(database, table, deserialized, contextGetter?.());
       if (isPromiseLike(allowed)) {
         return allowed.then((result) => (result ? deserialized : null));
       }
@@ -2585,7 +2592,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
           limit,
         })
         .map((row) => deserializeRow(table, row));
-      return filterRowsByReadAcl(table, rows, contextGetter?.());
+      return filterRowsByReadAcl(database, table, rows, contextGetter?.());
     },
   };
 }
@@ -2597,7 +2604,7 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
   }
   const context = contextGetter?.();
   const result = rule({
-    ctx: createTableAclContext(context),
+    ctx: createTableAclContext(context, database),
     operation,
     table: table.name,
     previous,
@@ -2623,25 +2630,108 @@ function isPromiseLike(value) {
   return value && typeof value === "object" && typeof value.then === "function";
 }
 
-function applyReadAcl(table, row, context) {
+function applyReadAcl(database, table, row, context) {
   const rule = table.acl?.resolve?.("read");
   if (!rule) {
     return true;
   }
   return rule({
-    ctx: createTableAclContext(context),
+    ctx: createTableAclContext(context, database),
     operation: "read",
     table: table.name,
     row,
   });
 }
 
-function filterRowsByReadAcl(table, rows, context) {
-  const decisions = rows.map((row) => applyReadAcl(table, row, context));
+function filterRowsByReadAcl(database, table, rows, context) {
+  const decisions = rows.map((row) => applyReadAcl(database, table, row, context));
   if (decisions.some(isPromiseLike)) {
     return Promise.all(decisions).then((resolved) => rows.filter((_, index) => resolved[index]));
   }
   return rows.filter((_, index) => decisions[index]);
+}
+
+function createAclHelpers(database) {
+  const state = { readCount: 0, maxReads: 32 };
+  return Object.freeze({
+    db: createAclDbHelpers(database, state),
+    storage: createAclStorageHelpers(database, state),
+  });
+}
+
+function createAclDbHelpers(database, state) {
+  return Object.freeze({
+    get(tableName, id) {
+      assertAclHelperReadAllowed(state);
+      const table = resolveAclAppTable(database, tableName);
+      const row = database.sqlite.selectAppRowById(table, id);
+      return row ? deserializeRow(table, row) : null;
+    },
+    exists(tableName, id) {
+      assertAclHelperReadAllowed(state);
+      const table = resolveAclAppTable(database, tableName);
+      return Boolean(database.sqlite.selectAppRowById(table, id));
+    },
+  });
+}
+
+function createAclStorageHelpers(database, state) {
+  return Object.freeze({
+    get(resourceName, id) {
+      assertAclHelperReadAllowed(state);
+      const resource = resolveAclStorageResource(resourceName);
+      if (resource === "files") {
+        const row = database.sqlite.selectFileById(String(id));
+        return row ? aclStorageMetadataFromFileRow(row) : null;
+      }
+      return null;
+    },
+    exists(resourceName, id) {
+      assertAclHelperReadAllowed(state);
+      const resource = resolveAclStorageResource(resourceName);
+      if (resource === "files") {
+        return Boolean(database.sqlite.selectFileById(String(id)));
+      }
+      return false;
+    },
+  });
+}
+
+function assertAclHelperReadAllowed(state) {
+  state.readCount += 1;
+  if (state.readCount > state.maxReads) {
+    throw commandError("ACL helper read limit exceeded.", "Keep ACL policies bounded; each rule may perform at most 32 helper reads.");
+  }
+}
+
+function resolveAclAppTable(database, tableName) {
+  const normalized = String(tableName ?? "");
+  const table = database.schema.tables.find((candidate) => candidate.name === normalized);
+  if (!table) {
+    throw commandError("Unknown ACL database resource.", "ACL database helpers can inspect Capsule app tables by stable table name only.");
+  }
+  return table;
+}
+
+function resolveAclStorageResource(resourceName) {
+  const normalized = String(resourceName ?? "");
+  if (normalized === "files") {
+    return normalized;
+  }
+  throw commandError("Unknown ACL storage resource.", "ACL storage helpers can inspect stable storage metadata resources such as files only.");
+}
+
+function aclStorageMetadataFromFileRow(row) {
+  const metadata = fileMetadataFromRow(row);
+  return {
+    ...metadata,
+    ownerId: row.ownerId,
+    bucketId: row.bucketId,
+    status: row.status,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+    deletedAt: row.deletedAt ?? null,
+  };
 }
 
 function createAclDeniedError() {
@@ -4158,7 +4248,7 @@ async function runQuery(database, auth, queryName) {
     database.rowCache.set(cacheKey, rows);
   }
 
-  const rows = await filterRowsByReadAcl(table, database.rowCache.get(cacheKey), context);
+  const rows = await filterRowsByReadAcl(database, table, database.rowCache.get(cacheKey), context);
   return { rows, error: null };
 }
 
