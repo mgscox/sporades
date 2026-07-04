@@ -7698,7 +7698,7 @@ function parseDevArgs(args) {
   };
 }
 function parseDeployArgs(args) {
-  const lifecycleCommands = /* @__PURE__ */ new Set(["status", "stop", "reset"]);
+  const lifecycleCommands = /* @__PURE__ */ new Set(["status", "stop", "restart", "remove", "reset"]);
   const subcommand = lifecycleCommands.has(args[0]) ? args[0] : "start";
   const rest = subcommand === "start" ? args : args.slice(1);
   let port = null;
@@ -7718,7 +7718,7 @@ function parseDeployArgs(args) {
       force = true;
       continue;
     }
-    throw commandError4(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|reset] --json`.");
+    throw commandError4(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reset] --json`.");
   }
   return {
     subcommand,
@@ -8416,11 +8416,44 @@ async function manageLocalLifecycle(surface, options) {
     return;
   }
   if (options.subcommand === "stop") {
+    if (surface === "deploy") {
+      const container = await stopLocalContainerSession(options);
+      const services = await stopLocalCapsuleServices({ ...options, silent: true });
+      if (options.json) {
+        writeResult({ ok: true, data: { container, services }, error: null });
+      } else {
+        process.stdout.write("Local Container session stopped.\n");
+      }
+      return;
+    }
     await stopLocalCapsuleServices(options);
     return;
   }
+  if (options.subcommand === "restart") {
+    if (surface !== "deploy") {
+      throw commandError4("Unsupported lifecycle command: restart", "Use `sporades deploy restart`.");
+    }
+    await restartLocalContainerSession(options);
+    return;
+  }
+  if (options.subcommand === "remove") {
+    if (surface !== "deploy") {
+      throw commandError4("Unsupported lifecycle command: remove", "Use `sporades deploy remove`.");
+    }
+    await removeLocalContainerSession(options);
+    return;
+  }
   if (options.subcommand === "reset") {
-    await resetLocalCapsuleServices(options);
+    let container = null;
+    if (surface === "deploy") {
+      container = await removeLocalContainerSession({ ...options, silent: true, missingOk: true, stopServices: false });
+    }
+    const services = await resetLocalCapsuleServices({ ...options, silent: true });
+    if (options.json) {
+      writeResult({ ok: true, data: { ...container ? { container } : {}, services }, error: null });
+    } else {
+      process.stdout.write(surface === "deploy" ? "Local Container session and Capsule service state reset.\n" : "Capsule service state reset.\n");
+    }
     return;
   }
   if (surface === "dev") {
@@ -11458,6 +11491,93 @@ function localCapsuleServicesFromConfig(config, projectDir) {
     ...capsuleServicesComposeModel(config, projectDir)
   };
 }
+async function requireLocalContainerBinding(options, action) {
+  const bindingPath = path4.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const binding = await readContainerBinding(bindingPath);
+  if (!binding?.containerId) {
+    throw commandError4(
+      "No local Container session binding found.",
+      `Run \`sporades deploy\` before \`sporades deploy ${action}\`.`
+    );
+  }
+  return { binding, bindingPath };
+}
+function containerLifecycleSummary(status, binding) {
+  return {
+    status,
+    containerId: binding.containerId,
+    containerName: binding.containerName ?? null
+  };
+}
+async function stopLocalContainerSession(options) {
+  const { binding } = await requireLocalContainerBinding(options, "stop");
+  runDocker(
+    ["stop", binding.containerId],
+    options.projectDir,
+    "Failed to stop the local Container session.",
+    "Check Docker is running and the bound container still exists. If it was removed manually, run `sporades deploy remove`."
+  );
+  return containerLifecycleSummary("stopped", binding);
+}
+async function restartLocalContainerSession(options) {
+  const { binding } = await requireLocalContainerBinding(options, "restart");
+  const config = await readProjectConfig(options.projectDir);
+  const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
+  const serviceState = await startCapsuleServices(capsuleServices, options.projectDir, {
+    connection: "container",
+    wait: true
+  });
+  runDocker(
+    ["start", binding.containerId],
+    options.projectDir,
+    "Failed to restart the local Container session.",
+    "Check Docker is running and the bound container still exists. If it was removed manually, run `sporades deploy remove` and deploy again."
+  );
+  if (options.json) {
+    writeResult({
+      ok: true,
+      data: {
+        container: containerLifecycleSummary("running", binding),
+        ...serviceState.services ? { services: serviceState.services } : { services: {} }
+      },
+      error: null
+    });
+  } else {
+    process.stdout.write("Local Container session restarted.\n");
+  }
+}
+async function removeLocalContainerSession(options) {
+  const bindingPath = path4.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const binding = await readContainerBinding(bindingPath);
+  if (!binding?.containerId) {
+    if (options.missingOk) {
+      return null;
+    }
+    throw commandError4(
+      "No local Container session binding found.",
+      "Run `sporades deploy` before `sporades deploy remove`."
+    );
+  }
+  runDockerCleanup(
+    ["rm", "-f", binding.containerId],
+    options.projectDir,
+    "Failed to remove the local Container session.",
+    "Check Docker is running, then retry `sporades deploy remove`.",
+    true
+  );
+  await rm2(bindingPath, { force: true });
+  const services = options.stopServices === false ? {} : await stopLocalCapsuleServices({ ...options, silent: true });
+  const container = containerLifecycleSummary("removed", binding);
+  if (options.silent) {
+    return container;
+  }
+  if (options.json) {
+    writeResult({ ok: true, data: { container, services }, error: null });
+  } else {
+    process.stdout.write("Local Container session removed.\n");
+  }
+  return container;
+}
 async function stopLocalCapsuleServices(options) {
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
@@ -11473,11 +11593,15 @@ async function stopLocalCapsuleServices(options) {
       ...capsuleServicesJsonSummary(capsuleServices, "stopped").database
     };
   }
+  if (options.silent) {
+    return services;
+  }
   if (options.json) {
     writeResult({ ok: true, data: { services }, error: null });
-    return;
+    return services;
   }
   process.stdout.write("Capsule services stopped.\n");
+  return services;
 }
 async function resetLocalCapsuleServices(options) {
   const config = await readProjectConfig(options.projectDir);
@@ -11498,11 +11622,15 @@ async function resetLocalCapsuleServices(options) {
       removedImages
     };
   }
+  if (options.silent) {
+    return services;
+  }
   if (options.json) {
     writeResult({ ok: true, data: { services }, error: null });
-    return;
+    return services;
   }
   process.stdout.write("Capsule service state reset.\n");
+  return services;
 }
 async function localCapsuleServicesStatus(capsuleServices, projectDir) {
   if (!capsuleServices) {

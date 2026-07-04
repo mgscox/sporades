@@ -2256,6 +2256,126 @@ test("sporades deploy reset removes generated Capsule service state and orphans 
   });
 });
 
+test("sporades deploy stop stops the bound local Container session without deleting the binding", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
+    const binding = { containerId: "container-bound", containerName: "sporades-todo-island" };
+    await writeFile(path.join(projectDir, ".sporades", "binding.json"), `${JSON.stringify(binding, null, 2)}\n`);
+    const docker = await installFakeDocker(dir);
+
+    const stop = await runCli(["deploy", "stop", "--json"], { cwd: projectDir, env: docker.env });
+
+    assert.equal(stop.code, 0, stop.stderr);
+    assert.deepEqual(JSON.parse(stop.stdout), {
+      ok: true,
+      data: {
+        container: { status: "stopped", ...binding },
+        services: {},
+      },
+      error: null,
+    });
+    assert.deepEqual((await docker.calls()).map((call) => call.args), [["stop", "container-bound"]]);
+    assert.deepEqual(JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8")), binding);
+  });
+});
+
+test("sporades deploy restart starts the bound stopped local Container session", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
+    const binding = { containerId: "container-bound", containerName: "sporades-todo-island" };
+    await writeFile(path.join(projectDir, ".sporades", "binding.json"), `${JSON.stringify(binding, null, 2)}\n`);
+    const docker = await installFakeDocker(dir);
+
+    const restart = await runCli(["deploy", "restart", "--json"], { cwd: projectDir, env: docker.env });
+
+    assert.equal(restart.code, 0, restart.stderr);
+    assert.deepEqual(JSON.parse(restart.stdout), {
+      ok: true,
+      data: {
+        container: { status: "running", ...binding },
+        services: {},
+      },
+      error: null,
+    });
+    assert.deepEqual((await docker.calls()).map((call) => call.args), [["start", "container-bound"]]);
+    assert.deepEqual(JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8")), binding);
+  });
+});
+
+test("sporades deploy remove force-removes the bound local Container session and deletes the binding", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
+    const binding = { containerId: "container-bound", containerName: "sporades-todo-island" };
+    const bindingPath = path.join(projectDir, ".sporades", "binding.json");
+    await writeFile(bindingPath, `${JSON.stringify(binding, null, 2)}\n`);
+    const docker = await installFakeDocker(dir);
+
+    const remove = await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: docker.env });
+
+    assert.equal(remove.code, 0, remove.stderr);
+    assert.deepEqual(JSON.parse(remove.stdout), {
+      ok: true,
+      data: {
+        container: { status: "removed", ...binding },
+        services: {},
+      },
+      error: null,
+    });
+    assert.deepEqual((await docker.calls()).map((call) => call.args), [["rm", "-f", "container-bound"]]);
+    await assert.rejects(readFile(bindingPath, "utf8"), { code: "ENOENT" });
+  });
+});
+
+test("sporades deploy remove clears a stale binding when the bound container is already gone", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
+    const binding = { containerId: "container-deleted", containerName: "sporades-todo-island" };
+    const bindingPath = path.join(projectDir, ".sporades", "binding.json");
+    await writeFile(bindingPath, `${JSON.stringify(binding, null, 2)}\n`);
+    const docker = await installFakeDocker(dir, "container-new", {
+      missingContainerActions: ["rm"],
+    });
+
+    const remove = await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: docker.env });
+
+    assert.equal(remove.code, 0, remove.stderr);
+    assert.deepEqual(JSON.parse(remove.stdout), {
+      ok: true,
+      data: {
+        container: { status: "removed", ...binding },
+        services: {},
+      },
+      error: null,
+    });
+    assert.deepEqual((await docker.calls()).map((call) => call.args), [["rm", "-f", "container-deleted"]]);
+    await assert.rejects(readFile(bindingPath, "utf8"), { code: "ENOENT" });
+  });
+});
+
 test("sporades deploy replaces the existing container binding before starting a new one", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

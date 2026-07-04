@@ -1146,6 +1146,9 @@ sporades deploy
 sporades deploy --port 5000
 sporades deploy --force
 sporades deploy --json
+sporades deploy stop --json
+sporades deploy restart --json
+sporades deploy remove --json
 ```
 
 The command:
@@ -1161,6 +1164,16 @@ The command:
 
 Use `--force` if the previous Docker container was deleted manually and the
 local binding is stale.
+
+Lifecycle commands operate on the local Container session recorded in
+`.sporades/binding.json`:
+
+| Command | Effect |
+| --- | --- |
+| `sporades deploy stop` | Stops the bound Docker container and any generated local Capsule services. The binding and persistent data remain in place. |
+| `sporades deploy restart` | Starts the stopped bound Docker container again, starting declared Capsule services first when needed. It does not rebuild bundles. |
+| `sporades deploy remove` | Force-removes the bound Docker container, removes `.sporades/binding.json`, and stops generated local Capsule services. Persistent data remains in the Runtime directory. |
+| `sporades deploy reset` | Removes the bound Docker container when present, stops generated services, and deletes generated Capsule service state such as Compose volumes, networks, and Sporades-owned service data. |
 
 When running through the scaffolded npm script, pass flags after `--`:
 
@@ -1280,11 +1293,18 @@ Do not put secrets in `client/`, `shared/`, `index.html`, or `sporades.json`.
 
 ### Reset Local Runtime State
 
-Stop generated Capsule services without deleting persisted service data:
+Stop local runtime processes without deleting persisted data:
 
 ```sh
 sporades dev stop --json
 sporades deploy stop --json
+```
+
+Restart or remove a stopped local Container session:
+
+```sh
+sporades deploy restart --json
+sporades deploy remove --json
 ```
 
 Inspect generated Capsule service state with structured JSON:

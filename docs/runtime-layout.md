@@ -70,6 +70,14 @@ into `client.js`.
 `sporades deploy` runs a local Container session with release files mounted
 read-only and persistent data mounted read-write.
 
+The local Container binding at `.sporades/binding.json` records the Docker
+container ID and name for lifecycle commands. `sporades deploy stop` stops the
+bound container and keeps the binding, `sporades deploy restart` starts that
+same stopped container without rebuilding, and `sporades deploy remove`
+force-removes the bound container and deletes the binding. Persistent Capsule
+data under `.sporades/data/` remains intact until the user removes or resets it
+explicitly.
+
 Before starting the container, Sporades prepares the Base image automatically:
 it uses the local image when present, otherwise pulls the canonical image, and
 falls back to building the bundled Base image definition when pulling is

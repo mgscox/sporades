@@ -149,9 +149,11 @@ image.
 It mounts release files read-only and persistent data read-write, following the
 canonical [Local Container Mounts](./runtime-layout.md#local-container-mounts).
 
-The local container binding in `.sporades/binding.json` tracks the running
-container so redeploy replaces the existing Container session rather than
-creating a pile of duplicates. Chic restraint, honestly.
+The local container binding in `.sporades/binding.json` tracks the Docker
+container ID and name for the current Container session. Redeploy replaces the
+bound container, `deploy stop` stops it while keeping the binding, `deploy
+restart` starts the stopped container again without rebuilding, and `deploy
+remove` deletes the container plus binding.
 
 ### Hosted Capsule
 
