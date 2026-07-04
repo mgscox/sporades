@@ -388,9 +388,20 @@ does not discover project configuration by walking the filesystem.
   },
   "dev": {
     "port": null
+  },
+  "services": {
+    "database": {
+      "kind": "database",
+      "engine": "libsql"
+    }
   }
 }
 ```
+
+`services.database` declares database Capsule service intent. Sporades
+validates supported service declarations and generates Docker Compose runtime
+state under `.sporades/`; users edit `sporades.json` rather than hand-editing
+generated Compose YAML.
 
 Sealed Server env lives in ignored Runtime or Host state, is decrypted for Dev
 sessions, local Container sessions, and Hosted Capsules, is exposed to server

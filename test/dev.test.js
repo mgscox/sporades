@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -51,6 +51,37 @@ function startCli(args, options = {}) {
     env: { ...process.env, ...options.env },
     stdio: ["ignore", "pipe", "pipe"],
   });
+}
+
+async function installFakeDocker(dir) {
+  const fakeBinDir = path.join(dir, "fake-bin");
+  const logPath = path.join(dir, "docker-calls.jsonl");
+  const dockerPath = path.join(fakeBinDir, "docker");
+  await mkdir(fakeBinDir, { recursive: true });
+  await writeFile(
+    dockerPath,
+    `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const call = { args: process.argv.slice(2), cwd: process.cwd() };
+appendFileSync(process.env.FAKE_DOCKER_LOG, JSON.stringify(call) + "\\n");
+`,
+  );
+  await chmod(dockerPath, 0o755);
+
+  return {
+    env: {
+      PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
+      FAKE_DOCKER_LOG: logPath,
+    },
+    async calls() {
+      const raw = await readFile(logPath, "utf8");
+      return raw
+        .trim()
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    },
+  };
 }
 
 function headerNames(headers) {
@@ -330,6 +361,48 @@ test("sporades dev bundles and serves a scaffolded React todo capsule", async ()
       const servedClientBundle = await clientResponse.text();
       assert.match(servedClientBundle, /Sporades Todos/);
       assert.doesNotMatch(servedClientBundle, /Original client source/);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev generates owned Compose for declared database Capsule services", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.services = {
+      database: {
+        kind: "database",
+        engine: "libsql",
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir, env: docker.env });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true);
+
+      const compose = await readFile(path.join(projectDir, ".sporades", "compose", "capsule-services.compose.yml"), "utf8");
+      assert.match(compose, /# Sporades-owned runtime state/);
+      assert.match(compose, /sporades-todo-island-database:/);
+      assert.match(compose, /sporades-todo-island-database-data:/);
+      const calls = await docker.calls();
+      assert.equal(calls.length, 1);
+      assert.deepEqual(calls[0].args.slice(0, 2), ["compose", "-f"]);
+      assert.match(calls[0].args[2], /todo-island\/\.sporades\/compose\/capsule-services\.compose\.yml$/);
+      assert.deepEqual(calls[0].args.slice(3), ["up", "--detach"]);
     } finally {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
