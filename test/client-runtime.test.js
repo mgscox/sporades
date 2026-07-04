@@ -851,3 +851,43 @@ test("client files.download authenticates private reads with a header instead of
     browser.cleanup();
   }
 });
+
+test("client files.publicUrl sends expires using the server wire contract", async () => {
+  let publicUrlMessage = null;
+  const browser = installBrowserFakes(anonymousAuth, {
+    autoOpen: false,
+    handlers: {
+      "file.publicUrl.create": async (message) => {
+        publicUrlMessage = message;
+        return {
+          type: "file.publicUrl.result",
+          data: {
+            publicUrl: {
+              id: "public-1",
+              fileId: "file-1",
+              url: "/__sporades/files/public/public-1?v=version-1",
+              expiresAt: "2026-07-04T12:00:00.000Z",
+              revokedAt: null,
+            },
+          },
+          error: null,
+        };
+      },
+    },
+  });
+
+  try {
+    const runtime = await importClientRuntime();
+    const expires = new Date("2026-07-04T12:00:00.000Z");
+    const publicUrlPromise = runtime.files.publicUrl("/docs/hello.txt", { expires });
+    browser.openSockets();
+    const publicUrl = await publicUrlPromise;
+
+    assert.equal(publicUrl.id, "public-1");
+    assert.equal(publicUrlMessage.fileReference, "/docs/hello.txt");
+    assert.deepEqual(publicUrlMessage.options, { expires: expires.toISOString() });
+    assert.equal("expiresAt" in publicUrlMessage.options, false);
+  } finally {
+    browser.cleanup();
+  }
+});

@@ -687,7 +687,7 @@ function structuredError(error) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash2, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash as createHash2, createHmac, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   readJsonRequest,
@@ -846,6 +846,20 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createFileStorageTables,
   createRuntimeFileStorageAdapter,
   createLocalFileStorageAdapter,
+  createS3CompatibleFileStorageAdapter,
+  s3ObjectKey,
+  s3Request,
+  s3RequestBodyBuffer,
+  s3SignedHeaders,
+  s3Signature,
+  s3SigningKey,
+  s3CanonicalPath,
+  s3EncodedPathSegment,
+  s3StorageNamespace,
+  s3AmzDate,
+  s3Hmac,
+  s3Sha256Hex,
+  s3ObjectNotFoundError,
   routeRuntimeHealth,
   createRuntimeHealthResult,
   checkRuntimeSqlite,
@@ -872,11 +886,14 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   singleLiveFileRowByPath,
   ambiguousFileReferenceError,
   structuredFileException,
+  ensureFileBucket,
   isDuplicateColumnError,
+  isUniqueConstraintError,
   filePathBackfillSql,
   ensureFileUploadTargetColumns,
   runSchemaExecIgnoringDuplicateColumn,
   chainSchemaOperation,
+  withFileUploadPathLock,
   createStructuredFileError,
   validatePublicUrlExpiry,
   fileRowForOwner,
@@ -1088,9 +1105,11 @@ function sanitizeResponseHeaders(headers) {
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
   const path5 = await import("node:path");
   const sqlite = await createRuntimeDatabaseAdapter(databasePath, options?.serviceEnv ?? serverEnv, config);
+  const serviceEnv = options?.serviceEnv ?? serverEnv;
   const fileStorage = await createRuntimeFileStorageAdapter({
     config,
-    databasePath
+    databasePath,
+    serviceEnv
   });
   const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
   const endpoints = extractEndpoints(serverSource);
@@ -1150,8 +1169,18 @@ async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config
   }
   return await createSqliteDatabaseAdapter(databasePath);
 }
-async function createRuntimeFileStorageAdapter({ config = {}, databasePath }) {
+async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
   const path5 = await import("node:path");
+  if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
+    return createS3CompatibleFileStorageAdapter({
+      endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT,
+      bucket: serviceEnv.SPORADES_SERVICE_STORAGE_BUCKET,
+      region: serviceEnv.SPORADES_SERVICE_STORAGE_REGION ?? "us-east-1",
+      accessKey: serviceEnv.SPORADES_SERVICE_STORAGE_ACCESS_KEY,
+      secretKey: serviceEnv.SPORADES_SERVICE_STORAGE_SECRET_KEY,
+      namespace: serviceEnv.SPORADES_SERVICE_STORAGE_NAMESPACE
+    });
+  }
   return createLocalFileStorageAdapter({
     storagePath: config.files?.storagePath ?? path5.join(path5.dirname(databasePath), "files")
   });
@@ -1201,6 +1230,214 @@ function localFileStoragePath(storagePath, fileId) {
 }
 function localFileVersionPath(storagePath, fileId, version) {
   return `${localFileStoragePath(storagePath, fileId)}/${version}`;
+}
+function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region, accessKey, secretKey, namespace }) {
+  if (typeof endpoint !== "string" || endpoint.length === 0) {
+    throw new Error("S3-compatible file storage requires an endpoint.");
+  }
+  if (typeof bucket !== "string" || bucket.length === 0) {
+    throw new Error("S3-compatible file storage requires a bucket.");
+  }
+  if (typeof region !== "string" || region.length === 0) {
+    throw new Error("S3-compatible file storage requires a region.");
+  }
+  if (typeof accessKey !== "string" || accessKey.length === 0 || typeof secretKey !== "string" || secretKey.length === 0) {
+    throw new Error("S3-compatible file storage requires access credentials.");
+  }
+  const isolatedNamespace = s3StorageNamespace(namespace);
+  const config = { endpoint, bucket, region, accessKey, secretKey };
+  let bucketReady = false;
+  const ensureBucket = async () => {
+    if (bucketReady) {
+      return;
+    }
+    const head = await s3Request(config, { method: "HEAD", key: null });
+    if (head.statusCode === 404) {
+      const created = await s3Request(config, { method: "PUT", key: null, body: Buffer.alloc(0) });
+      if (created.statusCode < 200 || created.statusCode >= 300) {
+        throw new Error(`S3-compatible file storage bucket setup failed with HTTP ${created.statusCode}.`);
+      }
+    } else if (head.statusCode < 200 || head.statusCode >= 300) {
+      throw new Error(`S3-compatible file storage bucket check failed with HTTP ${head.statusCode}.`);
+    }
+    bucketReady = true;
+  };
+  return {
+    engine: "s3-compatible",
+    endpoint,
+    bucket,
+    region,
+    namespace: isolatedNamespace,
+    objectKeyPrefix: `${isolatedNamespace}/files`,
+    async writeFileVersion({ fileId, version, bytes }) {
+      await ensureBucket();
+      const result = await s3Request(config, {
+        method: "PUT",
+        key: s3ObjectKey(isolatedNamespace, fileId, version),
+        body: bytes
+      });
+      if (result.statusCode < 200 || result.statusCode >= 300) {
+        throw new Error(`S3-compatible file write failed with HTTP ${result.statusCode}.`);
+      }
+    },
+    async readFileVersion({ fileId, version }) {
+      const result = await s3Request(config, {
+        method: "GET",
+        key: s3ObjectKey(isolatedNamespace, fileId, version)
+      });
+      if (result.statusCode === 404) {
+        throw s3ObjectNotFoundError();
+      }
+      if (result.statusCode < 200 || result.statusCode >= 300) {
+        throw new Error(`S3-compatible file read failed with HTTP ${result.statusCode}.`);
+      }
+      return result.body;
+    },
+    async deleteFileVersion({ fileId, version }) {
+      const result = await s3Request(config, {
+        method: "DELETE",
+        key: s3ObjectKey(isolatedNamespace, fileId, version)
+      });
+      if (result.statusCode === 404) {
+        return;
+      }
+      if (result.statusCode < 200 || result.statusCode >= 300) {
+        throw new Error(`S3-compatible file delete failed with HTTP ${result.statusCode}.`);
+      }
+    },
+    async checkHealth() {
+      try {
+        await ensureBucket();
+        return { ok: true, adapter: "s3-compatible" };
+      } catch {
+        return { ok: false, adapter: "s3-compatible" };
+      }
+    },
+    close() {
+    }
+  };
+}
+function s3ObjectKey(namespace, fileId, version) {
+  return `${namespace}/files/${fileId}/${version}`;
+}
+async function s3Request(config, { method, key = null, body = null }) {
+  const endpoint = new URL(config.endpoint);
+  const isHttps = endpoint.protocol === "https:";
+  const transport = await (isHttps ? import("node:https") : import("node:http"));
+  const payload = s3RequestBodyBuffer(body);
+  const amzDate = s3AmzDate(/* @__PURE__ */ new Date());
+  const date = amzDate.slice(0, 8);
+  const pathname = s3CanonicalPath(endpoint.pathname, config.bucket, key);
+  const payloadHash = s3Sha256Hex(payload);
+  const headers = s3SignedHeaders({
+    "host": endpoint.host,
+    "x-amz-content-sha256": payloadHash,
+    "x-amz-date": amzDate
+  });
+  headers.authorization = s3Signature({
+    method,
+    pathname,
+    query: "",
+    headers,
+    payloadHash,
+    accessKey: config.accessKey,
+    secretKey: config.secretKey,
+    region: config.region,
+    date,
+    amzDate
+  });
+  return await new Promise((resolve, reject) => {
+    const request = transport.request(
+      {
+        protocol: endpoint.protocol,
+        hostname: endpoint.hostname,
+        port: endpoint.port || void 0,
+        method,
+        path: `${pathname}${endpoint.search}`,
+        headers: {
+          ...headers,
+          "content-length": payload.length
+        }
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on("end", () => {
+          resolve({
+            statusCode: response.statusCode ?? 0,
+            headers: response.headers,
+            body: Buffer.concat(chunks)
+          });
+        });
+      }
+    );
+    request.on("error", reject);
+    if (payload.length > 0) {
+      request.write(payload);
+    }
+    request.end();
+  });
+}
+function s3RequestBodyBuffer(body) {
+  if (body === null || body === void 0) {
+    return Buffer.alloc(0);
+  }
+  if (Buffer.isBuffer(body)) {
+    return body;
+  }
+  if (body instanceof Uint8Array) {
+    return Buffer.from(body);
+  }
+  return Buffer.from(String(body));
+}
+function s3SignedHeaders(headers) {
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [name.toLowerCase(), String(value).trim()]).sort(([left], [right]) => left.localeCompare(right))
+  );
+}
+function s3Signature({ method, pathname, query, headers, payloadHash, accessKey, secretKey, region, date, amzDate }) {
+  const signedHeaders = Object.keys(headers).join(";");
+  const canonicalHeaders = Object.entries(headers).map(([name, value]) => `${name}:${value}
+`).join("");
+  const canonicalRequest = [method, pathname, query, canonicalHeaders, signedHeaders, payloadHash].join("\n");
+  const credentialScope = `${date}/${region}/s3/aws4_request`;
+  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credentialScope, s3Sha256Hex(canonicalRequest)].join("\n");
+  const signature = s3Hmac(s3SigningKey(secretKey, date, region), stringToSign).toString("hex");
+  return `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+}
+function s3SigningKey(secretKey, date, region) {
+  const dateKey = s3Hmac(`AWS4${secretKey}`, date);
+  const dateRegionKey = s3Hmac(dateKey, region);
+  const dateRegionServiceKey = s3Hmac(dateRegionKey, "s3");
+  return s3Hmac(dateRegionServiceKey, "aws4_request");
+}
+function s3CanonicalPath(basePath, bucket, key) {
+  const base = String(basePath ?? "").split("/").filter(Boolean);
+  const parts = [...base, bucket, ...key ? String(key).split("/") : []].map(s3EncodedPathSegment);
+  return `/${parts.join("/")}`;
+}
+function s3EncodedPathSegment(segment) {
+  return encodeURIComponent(segment).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+function s3StorageNamespace(namespace) {
+  if (typeof namespace !== "string" || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(namespace)) {
+    throw new Error("S3-compatible file storage requires a capsule storage namespace.");
+  }
+  return `capsules/${namespace}`;
+}
+function s3AmzDate(date) {
+  return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
+}
+function s3Hmac(key, data) {
+  return createHmac("sha256", key).update(data).digest();
+}
+function s3Sha256Hex(data) {
+  return createHash2("sha256").update(data).digest("hex");
+}
+function s3ObjectNotFoundError() {
+  const error = new Error("S3-compatible file object not found.");
+  error.code = "ENOENT";
+  return error;
 }
 async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const { DatabaseSync } = await import("node:sqlite");
@@ -3749,72 +3986,93 @@ async function createPendingFileUpload(database, auth, message) {
       )
     };
   }
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const replacing = message.replace === true;
-  const replaceReference = message.fileReference ?? message.fileId;
-  const resolvedReplacement = replacing ? await resolveLiveFileReference(database, auth.userId, replaceReference) : { ok: true, row: null };
-  if (!resolvedReplacement.ok) {
-    return resolvedReplacement;
-  }
-  const existingByReference = resolvedReplacement.row;
-  if (replacing && !existingByReference) {
-    return {
-      ok: false,
-      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
-    };
-  }
-  let target;
-  try {
-    target = replacing && existingByReference && (input.path === void 0 || input.path === null) ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path } : await resolveFileWriteTarget(database, auth.userId, input, now);
-  } catch (error) {
-    return {
-      ok: false,
-      error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path.")
-    };
-  }
-  const existingByPath = target.path ? await singleActiveFileRowByPath(database, auth.userId, target.path) : null;
-  if (existingByPath?.ambiguous) {
-    return ambiguousFileReferenceError(target.path);
-  }
-  const pendingByPath = !existingByReference && !existingByPath && target.path ? await database.sqlite.selectPendingFileUploadByPath(auth.userId, target.path) : null;
-  const existing = existingByReference ?? existingByPath;
-  const fileId = existing?.id ?? pendingByPath?.fileId ?? randomUUID();
-  const uploadId = randomUUID();
-  const version = randomUUID();
-  const name = normalizeFileName(input.name, target.path);
-  const type = String(input.type ?? "application/octet-stream");
-  await database.sqlite.deleteFileUploadsForPath(auth.userId, target.path);
-  await database.sqlite.insertFileUpload({
-    id: uploadId,
-    fileId,
-    ownerId: auth.userId,
-    bucketId: target.bucket.id,
-    bucketName: target.bucket.name,
-    path: target.path,
-    name,
-    type,
-    version,
-    expectedSize: size,
-    createdAt: now
+  return await withFileUploadPathLock(auth.userId, "owner", async () => {
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const replacing = message.replace === true;
+    const replaceReference = message.fileReference ?? message.fileId;
+    const resolvedReplacement = replacing ? await resolveLiveFileReference(database, auth.userId, replaceReference) : { ok: true, row: null };
+    if (!resolvedReplacement.ok) {
+      return resolvedReplacement;
+    }
+    const existingByReference = resolvedReplacement.row;
+    if (replacing && !existingByReference) {
+      return {
+        ok: false,
+        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
+      };
+    }
+    let target;
+    try {
+      target = replacing && existingByReference && (input.path === void 0 || input.path === null) ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path } : await resolveFileWriteTarget(database, auth.userId, input, now);
+    } catch (error) {
+      return {
+        ok: false,
+        error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path.")
+      };
+    }
+    return await database.sqlite.withTransaction(async (sqlite) => {
+      const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+      const existingByPath = target.path ? await singleActiveFileRowByPath(transactionDatabase, auth.userId, target.path) : null;
+      if (existingByPath?.ambiguous) {
+        return ambiguousFileReferenceError(target.path);
+      }
+      const pendingByPath = !existingByReference && !existingByPath && target.path ? await sqlite.selectPendingFileUploadByPath(auth.userId, target.path) : null;
+      const existing = existingByReference ?? existingByPath;
+      const fileId = existing?.id ?? pendingByPath?.fileId ?? randomUUID();
+      const uploadId = randomUUID();
+      const version = randomUUID();
+      const name = normalizeFileName(input.name, target.path);
+      const type = String(input.type ?? "application/octet-stream");
+      await sqlite.deleteFileUploadsForPath(auth.userId, target.path);
+      try {
+        await sqlite.insertFileUpload({
+          id: uploadId,
+          fileId,
+          ownerId: auth.userId,
+          bucketId: target.bucket.id,
+          bucketName: target.bucket.name,
+          path: target.path,
+          name,
+          type,
+          version,
+          expectedSize: size,
+          createdAt: now
+        });
+      } catch (error) {
+        if (!isUniqueConstraintError(error)) throw error;
+        const current = await sqlite.selectPendingFileUploadByPath(auth.userId, target.path);
+        if (!current) throw error;
+        return {
+          ok: true,
+          data: {
+            uploadUrl: `/__sporades/uploads/${current.id}`,
+            method: "PUT",
+            headers: {},
+            file: fileMetadataFromUpload(current)
+          },
+          error: null
+        };
+      }
+      return {
+        ok: true,
+        data: {
+          uploadUrl: `/__sporades/uploads/${uploadId}`,
+          method: "PUT",
+          headers: {},
+          file: fileMetadataFromUpload({
+            fileId,
+            bucketName: target.bucket.name,
+            path: target.path,
+            name,
+            type,
+            expectedSize: size,
+            version
+          })
+        },
+        error: null
+      };
+    });
   });
-  return {
-    ok: true,
-    data: {
-      uploadUrl: `/__sporades/uploads/${uploadId}`,
-      method: "PUT",
-      headers: {},
-      file: fileMetadataFromUpload({
-        fileId,
-        bucketName: target.bucket.name,
-        path: target.path,
-        name,
-        type,
-        expectedSize: size,
-        version
-      })
-    },
-    error: null
-  };
 }
 async function completePendingFileUpload(database, uploadId, request, websocketHub = null) {
   const upload = await database.sqlite.selectFileUpload(uploadId);
@@ -3825,6 +4083,7 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
       error: createStructuredFileError("Upload URL not found.", "Request a fresh upload URL from the Sporades client SDK.")
     };
   }
+  let wroteFileVersion = false;
   try {
     websocketHub?.notifyFileEvent?.(upload.ownerId, {
       type: "file.upload.progress",
@@ -3834,6 +4093,7 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
     });
     const bytes = await readRequestBytes(request, database.fileMaxSizeBytes);
     await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
+    wroteFileVersion = true;
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const completed = await database.sqlite.completeFileUpload(upload, bytes.length, now);
     if (completed?.changes === 0) {
@@ -3856,21 +4116,22 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
     });
     return { ok: true, data: { file }, error: null };
   } catch (error) {
+    if (wroteFileVersion) {
+      await removeFileVersionBestEffort(database, upload.fileId, upload.version);
+    }
+    const structuredError = isUniqueConstraintError(error) ? createStructuredFileError("Upload URL was superseded.", "Request a fresh upload URL before retrying this file upload.") : {
+      message: error.message,
+      hint: error.hint ?? "Request a fresh upload URL and retry."
+    };
     websocketHub?.notifyFileEvent?.(upload.ownerId, {
       type: "file.upload.failed",
       fileId: upload.fileId,
-      error: {
-        message: error.message,
-        hint: error.hint ?? "Request a fresh upload URL and retry."
-      }
+      error: structuredError
     });
     return {
       ok: false,
       data: null,
-      error: {
-        message: error.message,
-        hint: error.hint ?? "Request a fresh upload URL and retry."
-      }
+      error: structuredError
     };
   }
 }
@@ -4037,17 +4298,48 @@ function fileMetadataFromUpload(upload) {
     version: upload.version
   };
 }
+async function withFileUploadPathLock(ownerId, path5, fn) {
+  const fileUploadPathLocks = globalThis.__sporadesFileUploadPathLocks ??= /* @__PURE__ */ new Map();
+  const key = `${ownerId}\0${path5}`;
+  const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
+  let release;
+  const current = new Promise((resolve) => {
+    release = resolve;
+  });
+  const next = previous.then(() => current, () => current);
+  fileUploadPathLocks.set(key, next);
+  try {
+    await previous.catch(() => {
+    });
+    return await fn();
+  } finally {
+    release();
+    if (fileUploadPathLocks.get(key) === next) {
+      fileUploadPathLocks.delete(key);
+    }
+  }
+}
 async function resolveFileWriteTarget(database, ownerId, input, now) {
   const explicitPath = input.path === void 0 || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
   const path5 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
   const firstSegment = path5.split("/").filter(Boolean)[0] ?? "default";
   const existingBucket = await database.sqlite.findFileBucket(ownerId, firstSegment);
-  const bucket = existingBucket ?? await database.sqlite.findFileBucket(ownerId, "default") ?? await (async () => {
-    const bucket2 = { id: randomUUID(), ownerId, name: "default", createdAt: now };
-    await database.sqlite.createFileBucket(bucket2);
-    return bucket2;
-  })();
+  const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now);
   return { bucket, path: path5 };
+}
+async function ensureFileBucket(database, ownerId, name, now) {
+  const existing = await database.sqlite.findFileBucket(ownerId, name);
+  if (existing) return existing;
+  const bucket = { id: randomUUID(), ownerId, name, createdAt: now };
+  try {
+    await database.sqlite.createFileBucket(bucket);
+    return bucket;
+  } catch (error) {
+    if (!isUniqueConstraintError(error)) throw error;
+    const raced = await database.sqlite.findFileBucket(ownerId, name);
+    if (raced) return raced;
+    throw error;
+  }
 }
 function normalizeAbsoluteFilePath(value) {
   const raw = String(value ?? "").trim();
@@ -4114,6 +4406,10 @@ function isDuplicateColumnError(error) {
   const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
   return /duplicate column|already exists/i.test(text);
 }
+function isUniqueConstraintError(error) {
+  const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
+  return /unique constraint|duplicate key|constraint failed/i.test(text);
+}
 function filePathBackfillSql() {
   return "UPDATE sporades_files SET path = CASE WHEN (SELECT COUNT(*) FROM sporades_files AS matching WHERE matching.ownerId = sporades_files.ownerId AND matching.bucketName = sporades_files.bucketName AND matching.name = sporades_files.name AND matching.deletedAt IS NULL AND matching.status IN ('pending', 'uploaded')) = 1 THEN '/' || bucketName || '/' || name ELSE '/' || bucketName || '/' || id || '/' || name END WHERE path IS NULL OR path = ''";
 }
@@ -4125,7 +4421,9 @@ function ensureFileUploadTargetColumns(sqlite) {
     "ALTER TABLE sporades_file_uploads ADD COLUMN name TEXT",
     "ALTER TABLE sporades_file_uploads ADD COLUMN type TEXT",
     "UPDATE sporades_file_uploads SET bucketId = COALESCE(bucketId, (SELECT bucketId FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), bucketName = COALESCE(bucketName, (SELECT bucketName FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), path = COALESCE(path, (SELECT path FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), name = COALESCE(name, (SELECT name FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), type = COALESCE(type, (SELECT type FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)) WHERE path IS NULL OR path = ''",
-    "CREATE INDEX IF NOT EXISTS sporades_file_uploads_owner_path ON sporades_file_uploads (ownerId, path)"
+    "DELETE FROM sporades_file_uploads WHERE id NOT IN (SELECT MAX(id) FROM sporades_file_uploads GROUP BY ownerId, path)",
+    "CREATE INDEX IF NOT EXISTS sporades_file_uploads_owner_path ON sporades_file_uploads (ownerId, path)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS sporades_file_uploads_owner_path_unique ON sporades_file_uploads (ownerId, path)"
   ];
   let chain = void 0;
   for (const statement of statements) {
@@ -6567,7 +6865,7 @@ function createServerBundleSource({ config, serverEnv, sealedServerEnv = { enabl
   const runtimeFunctions = SERVER_RUNTIME_SOURCE_FUNCTIONS.map((fn) => fn.toString()).join("\n\n");
   const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
   return `// Sporades server bundle
-import { createDecipheriv, createHash, createHash as createHash2, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createDecipheriv, createHash, createHash as createHash2, createHmac, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, readFileSync as readFileSync2 } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -6700,6 +6998,8 @@ function readRuntimeServiceEnv() {
     "SPORADES_SERVICE_STORAGE_ACCESS_KEY",
     "SPORADES_SERVICE_STORAGE_SECRET_KEY",
     "SPORADES_SERVICE_STORAGE_BUCKET",
+    "SPORADES_SERVICE_STORAGE_REGION",
+    "SPORADES_SERVICE_STORAGE_NAMESPACE",
   ];
   return Object.fromEntries(keys.filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
 }
@@ -8392,6 +8692,7 @@ var MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z";
 var MINIO_ROOT_USER = "sporades";
 var MINIO_ROOT_PASSWORD = "sporades-minio-local-secret";
 var MINIO_BUCKET = "sporades-files";
+var MINIO_REGION = "us-east-1";
 var CAPSULE_SERVICES_COMPOSE_FILE = path3.join(".sporades", "compose", "capsule-services.compose.yml");
 var CAPSULE_SERVICES_STATE_DIR = path3.join(".sporades", "services");
 function validateCapsuleServicesConfig(services) {
@@ -8489,7 +8790,9 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd()) {
       command: 'server /data --console-address ":9001"',
       accessKey: MINIO_ROOT_USER,
       secretKey: MINIO_ROOT_PASSWORD,
-      bucket: MINIO_BUCKET
+      bucket: MINIO_BUCKET,
+      region: MINIO_REGION,
+      namespace: projectSlug
     };
   }
   const model = {
@@ -12930,6 +13233,8 @@ function capsuleServicesContainerEnv(capsuleServices) {
     env.SPORADES_SERVICE_STORAGE_ACCESS_KEY = service.accessKey;
     env.SPORADES_SERVICE_STORAGE_SECRET_KEY = service.secretKey;
     env.SPORADES_SERVICE_STORAGE_BUCKET = service.bucket;
+    env.SPORADES_SERVICE_STORAGE_REGION = service.region;
+    env.SPORADES_SERVICE_STORAGE_NAMESPACE = service.namespace;
   }
   return env;
 }
@@ -12947,6 +13252,8 @@ function capsuleServicesLocalEnv(capsuleServices, connections) {
     env.SPORADES_SERVICE_STORAGE_ACCESS_KEY = service.accessKey;
     env.SPORADES_SERVICE_STORAGE_SECRET_KEY = service.secretKey;
     env.SPORADES_SERVICE_STORAGE_BUCKET = service.bucket;
+    env.SPORADES_SERVICE_STORAGE_REGION = service.region;
+    env.SPORADES_SERVICE_STORAGE_NAMESPACE = service.namespace;
   }
   return env;
 }

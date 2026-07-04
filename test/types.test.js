@@ -170,6 +170,9 @@ hooks.useMutation("addTodo").run("Ship the types");
 hooks.useAuth().signIn("google");
 auth.signUp("email", { email: "a@example.com", password: "secret", name: "Ada" });
 files.upload(new Blob(["hello"], { type: "text/plain" }));
+files.publicUrl("/docs/hello.txt", { expires: new globalThis.Date() });
+// @ts-expect-error public URL expiry option is named expires, not expiresAt.
+files.publicUrl("/docs/hello.txt", { expiresAt: new globalThis.Date() });
 isAuthenticated().then((ok) => ok.valueOf());
 sendMessage("typing", { active: true });
 onMessage<{ active: boolean }>()

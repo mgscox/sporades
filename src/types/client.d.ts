@@ -102,7 +102,7 @@ export type UploadOptions = {
 };
 
 export type PublicUrlOptions = {
-  expiresAt?: string | Date | null;
+  expires?: string | Date;
   ttlSeconds?: number;
   noExpiry?: boolean;
 };

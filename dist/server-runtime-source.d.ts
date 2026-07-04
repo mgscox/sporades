@@ -617,6 +617,31 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
     };
     fileStorage: {
         engine: string;
+        endpoint: string;
+        bucket: string;
+        region: string;
+        namespace: string;
+        objectKeyPrefix: string;
+        writeFileVersion({ fileId, version, bytes }: {
+            fileId: any;
+            version: any;
+            bytes: any;
+        }): Promise<void>;
+        readFileVersion({ fileId, version }: {
+            fileId: any;
+            version: any;
+        }): Promise<any>;
+        deleteFileVersion({ fileId, version }: {
+            fileId: any;
+            version: any;
+        }): Promise<void>;
+        checkHealth(): Promise<{
+            ok: boolean;
+            adapter: string;
+        }>;
+        close(): void;
+    } | {
+        engine: string;
         storagePath: string;
         writeFileVersion({ fileId, version, bytes }: {
             fileId: any;
@@ -915,10 +940,36 @@ declare function createRuntimeDatabaseAdapter(databasePath: any, serverEnv?: {},
     deleteAppRow(table: any, id: any): any;
     selectAppRows(table: any, query?: {}): any;
 }>;
-export declare function createRuntimeFileStorageAdapter({ config, databasePath }: {
+export declare function createRuntimeFileStorageAdapter({ config, databasePath, serviceEnv }: {
     config?: {};
     databasePath: any;
+    serviceEnv?: {};
 }): Promise<{
+    engine: string;
+    endpoint: string;
+    bucket: string;
+    region: string;
+    namespace: string;
+    objectKeyPrefix: string;
+    writeFileVersion({ fileId, version, bytes }: {
+        fileId: any;
+        version: any;
+        bytes: any;
+    }): Promise<void>;
+    readFileVersion({ fileId, version }: {
+        fileId: any;
+        version: any;
+    }): Promise<any>;
+    deleteFileVersion({ fileId, version }: {
+        fileId: any;
+        version: any;
+    }): Promise<void>;
+    checkHealth(): Promise<{
+        ok: boolean;
+        adapter: string;
+    }>;
+    close(): void;
+} | {
     engine: string;
     storagePath: string;
     writeFileVersion({ fileId, version, bytes }: {
@@ -959,6 +1010,39 @@ export declare function createLocalFileStorageAdapter({ storagePath }: {
     }): Promise<void>;
     checkHealth(): Promise<{
         ok: boolean;
+    }>;
+    close(): void;
+};
+export declare function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region, accessKey, secretKey, namespace }: {
+    endpoint: any;
+    bucket: any;
+    region: any;
+    accessKey: any;
+    secretKey: any;
+    namespace: any;
+}): {
+    engine: string;
+    endpoint: string;
+    bucket: string;
+    region: string;
+    namespace: string;
+    objectKeyPrefix: string;
+    writeFileVersion({ fileId, version, bytes }: {
+        fileId: any;
+        version: any;
+        bytes: any;
+    }): Promise<void>;
+    readFileVersion({ fileId, version }: {
+        fileId: any;
+        version: any;
+    }): Promise<any>;
+    deleteFileVersion({ fileId, version }: {
+        fileId: any;
+        version: any;
+    }): Promise<void>;
+    checkHealth(): Promise<{
+        ok: boolean;
+        adapter: string;
     }>;
     close(): void;
 };
@@ -1258,33 +1342,7 @@ export declare function handleFileHttpRoute(database: any, request: any, respons
 export declare function routeRuntimeHealth(database: any, request: any, response: any): Promise<boolean>;
 export declare function checkRuntimeSqlite(database: any): Promise<any>;
 export declare function checkRuntimeFileStorage(database: any): Promise<any>;
-export declare function createPendingFileUpload(database: any, auth: any, message: any): Promise<{
-    ok: boolean;
-    error: {
-        message: any;
-        hint: any;
-    };
-} | {
-    ok: boolean;
-    row: any;
-} | {
-    ok: boolean;
-    data: {
-        uploadUrl: string;
-        method: string;
-        headers: {};
-        file: {
-            id: any;
-            bucket: any;
-            size: number;
-            type: any;
-            name: any;
-            path: any;
-            version: any;
-        };
-    };
-    error: any;
-}>;
+export declare function createPendingFileUpload(database: any, auth: any, message: any): Promise<any>;
 export declare function completePendingFileUpload(database: any, uploadId: any, request: any, websocketHub?: any): Promise<{
     ok: boolean;
     data: any;
