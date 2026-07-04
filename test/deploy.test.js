@@ -1996,6 +1996,84 @@ test("sporades deploy wires Postgres Capsule database services through Compose",
   });
 });
 
+test("sporades deploy wires database and MinIO storage Capsule services through Compose", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.services = {
+      database: {
+        kind: "database",
+        engine: "libsql",
+      },
+      storage: {
+        kind: "storage",
+        engine: "minio",
+        password: "super-secret-token",
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    await withFakeCapsuleService(async ({ port }) => {
+      const docker = await installFakeDocker(dir, "container-with-storage-service", {
+        composePortOutput: `127.0.0.1:${port}`,
+      });
+
+      const deployResult = await runCli(["deploy", "--json"], {
+        cwd: projectDir,
+        env: docker.env,
+      });
+
+      assert.equal(deployResult.code, 0, deployResult.stderr);
+      const output = JSON.parse(deployResult.stdout);
+      assert.deepEqual(output.data.services, {
+        database: {
+          status: "ready",
+          engine: "libsql",
+          network: "sporades-todo-island-services",
+          containerName: "sporades-todo-island-database",
+          statePath: path.join(".sporades", "services", "database"),
+        },
+        storage: {
+          status: "ready",
+          engine: "minio",
+          network: "sporades-todo-island-services",
+          containerName: "sporades-todo-island-storage",
+          statePath: path.join(".sporades", "services", "storage"),
+        },
+      });
+      assert.doesNotMatch(deployResult.stdout, /sporades-minio-local-secret/);
+      assert.doesNotMatch(deployResult.stdout, /super-secret-token/);
+
+      const compose = await readFile(path.join(projectDir, ".sporades", "compose", "capsule-services.compose.yml"), "utf8");
+      assert.match(compose, /sporades-todo-island-database:/);
+      assert.match(compose, /sporades-todo-island-storage:/);
+      assert.match(compose, /command: "server \/data --console-address \\":9001\\""/);
+      assert.match(compose, /MINIO_ROOT_PASSWORD: "sporades-minio-local-secret"/);
+      assert.match(compose, /com\.sporades\.capsule-service\.kind: "storage"/);
+      assert.match(compose, new RegExp(`${projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\/\\.sporades\\/services\\/storage\:\\/data:rw"`));
+
+      const calls = await docker.calls();
+      const runCall = firstDockerRunCall(calls);
+      assert.equal(runCall.args[runCall.args.indexOf("--network") + 1], "sporades-todo-island-services");
+      assert(runCall.args.includes("SPORADES_SERVICE_DATABASE_ENGINE=libsql"), runCall.args.join(" "));
+      assert(runCall.args.includes("SPORADES_SERVICE_DATABASE_URL=http://sporades-todo-island-database:8080"), runCall.args.join(" "));
+      assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_ENGINE=minio"), runCall.args.join(" "));
+      assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_ENDPOINT=http://sporades-todo-island-storage:9000"), runCall.args.join(" "));
+      assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_ACCESS_KEY=sporades"), runCall.args.join(" "));
+      assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_SECRET_KEY=sporades-minio-local-secret"), runCall.args.join(" "));
+      assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_BUCKET=sporades-files"), runCall.args.join(" "));
+      assert(calls.some((call) => call.args.slice(3).join(" ") === "port sporades-todo-island-storage 9000"));
+    });
+  });
+});
+
 test("sporades deploy reports Capsule service startup failures without leaking secrets", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -2192,7 +2270,39 @@ test("sporades deploy reports structured errors for unsupported Capsule service 
       data: null,
       error: {
         message: "Unsupported Capsule service: cache",
-        hint: "The first supported Capsule service declaration is `services.database`.",
+        hint: "Use supported Capsule service declarations: `services.database` or `services.storage`.",
+      },
+    });
+  });
+});
+
+test("sporades deploy reports structured errors for unsupported storage service declarations", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.services = {
+      storage: {
+        kind: "storage",
+        engine: "s3",
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const deployResult = await runCli(["deploy", "--json"], { cwd: projectDir });
+
+    assert.equal(deployResult.code, 1);
+    assert.deepEqual(JSON.parse(deployResult.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Unsupported storage Capsule service engine: s3",
+        hint: "Use `services.storage.engine` of `minio`.",
       },
     });
   });
@@ -2247,7 +2357,7 @@ test("sporades deploy keeps Capsule service Compose names stable for a project",
   });
 });
 
-test("sporades deploy status reports declared Capsule service and generated state as JSON", async () => {
+test("sporades deploy status reports declared Capsule services and generated state as JSON", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
@@ -2257,9 +2367,13 @@ test("sporades deploy status reports declared Capsule service and generated stat
     const projectDir = await realpath(path.join(dir, "todo-island"));
     const configPath = path.join(projectDir, "sporades.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
-    config.services = { database: { kind: "database", engine: "libsql" } };
+    config.services = {
+      database: { kind: "database", engine: "libsql" },
+      storage: { kind: "storage", engine: "minio" },
+    };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     await mkdir(path.join(projectDir, ".sporades", "services", "database"), { recursive: true });
+    await mkdir(path.join(projectDir, ".sporades", "services", "storage"), { recursive: true });
     const docker = await installFakeDocker(dir, "container-status", {
       composePsOutput: JSON.stringify({ State: "running", Health: "healthy" }),
     });
@@ -2286,6 +2400,24 @@ test("sporades deploy status reports declared Capsule service and generated stat
               exists: true,
             },
             containerName: "sporades-todo-island-database",
+            composeFile: path.join(".sporades", "compose", "capsule-services.compose.yml"),
+            diagnostics: [],
+          },
+          storage: {
+            declared: true,
+            engine: "minio",
+            status: "running",
+            health: "healthy",
+            network: {
+              name: "sporades-todo-island-services",
+              exists: true,
+            },
+            volume: {
+              type: "bind",
+              path: path.join(".sporades", "services", "storage"),
+              exists: true,
+            },
+            containerName: "sporades-todo-island-storage",
             composeFile: path.join(".sporades", "compose", "capsule-services.compose.yml"),
             diagnostics: [],
           },
@@ -2334,11 +2466,17 @@ test("sporades deploy reset removes generated Capsule service state and orphans 
     const projectDir = await realpath(path.join(dir, "todo-island"));
     const configPath = path.join(projectDir, "sporades.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
-    config.services = { database: { kind: "database", engine: "libsql" } };
+    config.services = {
+      database: { kind: "database", engine: "libsql" },
+      storage: { kind: "storage", engine: "minio" },
+    };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     const stateDir = path.join(projectDir, ".sporades", "services", "database");
+    const storageStateDir = path.join(projectDir, ".sporades", "services", "storage");
     await mkdir(stateDir, { recursive: true });
+    await mkdir(storageStateDir, { recursive: true });
     await writeFile(path.join(stateDir, "removed.txt"), "gone\n");
+    await writeFile(path.join(storageStateDir, "removed.txt"), "gone\n");
     const docker = await installFakeDocker(dir, "container-reset", {
       sporadesImages: "sporades-owned-image\n",
     });
@@ -2347,13 +2485,24 @@ test("sporades deploy reset removes generated Capsule service state and orphans 
 
     assert.equal(reset.code, 0, reset.stderr);
     await assert.rejects(readFile(path.join(stateDir, "removed.txt"), "utf8"), { code: "ENOENT" });
-    assert.deepEqual(JSON.parse(reset.stdout).data.services.database, {
-      status: "reset",
-      engine: "libsql",
-      network: "sporades-todo-island-services",
-      containerName: "sporades-todo-island-database",
-      statePath: path.join(".sporades", "services", "database"),
-      removedImages: ["sporades-owned-image"],
+    await assert.rejects(readFile(path.join(storageStateDir, "removed.txt"), "utf8"), { code: "ENOENT" });
+    assert.deepEqual(JSON.parse(reset.stdout).data.services, {
+      database: {
+        status: "reset",
+        engine: "libsql",
+        network: "sporades-todo-island-services",
+        containerName: "sporades-todo-island-database",
+        statePath: path.join(".sporades", "services", "database"),
+        removedImages: ["sporades-owned-image"],
+      },
+      storage: {
+        status: "reset",
+        engine: "minio",
+        network: "sporades-todo-island-services",
+        containerName: "sporades-todo-island-storage",
+        statePath: path.join(".sporades", "services", "storage"),
+        removedImages: ["sporades-owned-image"],
+      },
     });
     const calls = await docker.calls();
     const downCall = calls.find((call) => call.args[0] === "compose" && call.args.includes("down"));

@@ -256,6 +256,10 @@ A typical `sporades.json` looks like this:
     "database": {
       "kind": "database",
       "engine": "libsql"
+    },
+    "storage": {
+      "kind": "storage",
+      "engine": "minio"
     }
   }
 }
@@ -266,8 +270,9 @@ Ports follow this cascade: CLI flag, then `sporades.json`, then default.
 Use `dev.port` when you always want a different Dev session port. Use
 `deploy.port` for local Container sessions.
 
-`services.database` declares a database Capsule service. The first supported
-shape is `{ "kind": "database", "engine": "libsql" }`. Sporades turns that
+`services.database` declares database Capsule service intent. Supported engines
+are `libsql` and `postgres`. `services.storage` declares storage Capsule
+service intent; the first supported engine is `minio`. Sporades turns that
 intent into a deterministic Docker Compose file under
 `.sporades/compose/capsule-services.compose.yml`; the generated file, service
 names, network, volume, and labels are Sporades-owned runtime state. Do not
@@ -282,6 +287,12 @@ Container sessions use the generated Compose service DNS name on the services
 network. Capsule code still uses the normal `ctx.db` API; app code does not
 need to read the service URL or choose a database client.
 
+Declaring `services.storage` with `engine: "minio"` starts a local MinIO
+service for Dev sessions and local Container sessions, injects server-only
+S3-compatible connection env for the future Storage adapter, and keeps public
+and private file URLs on Sporades-owned HTTP routes. Local filesystem file
+storage remains the default until the MinIO byte-storage adapter is enabled.
+
 The first Docker Compose Capsule service implementation is local-only. Dev
 sessions and local Container sessions can start, inspect, stop, and reset
 declared local service state. Hosted Capsule service orchestration is deferred:
@@ -289,10 +300,10 @@ future Host servers should interpret the same `sporades.json` service intent
 through `sporades host ...` commands rather than requiring app code, hand-edited
 Compose files, or a separate top-level service namespace.
 
-Hosted Capsules do not yet provision or attach declared libSQL services. Until
-Host service orchestration exists, do not rely on `services.database` for Hosted
-Capsules; keep using the default embedded SQLite path for hosted releases that
-need to run today.
+Hosted Capsules do not yet provision or attach declared database or storage
+services. Until Host service orchestration exists, do not rely on `services` for
+Hosted Capsules; keep using the default embedded SQLite and local file-storage
+paths for hosted releases that need to run today.
 
 ### Security Policy
 

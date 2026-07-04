@@ -3807,7 +3807,7 @@ async function printLocalCapsuleServiceStatus(options) {
     }
 }
 function localCapsuleServicesFromConfig(config, projectDir) {
-    if (!config.services?.database) {
+    if (!hasDeclaredLocalCapsuleServices(config)) {
         validateCapsuleServicesConfig(config.services);
         return null;
     }
@@ -3817,6 +3817,9 @@ function localCapsuleServicesFromConfig(config, projectDir) {
         relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
         ...capsuleServicesComposeModel(config, projectDir),
     };
+}
+function hasDeclaredLocalCapsuleServices(config) {
+    return Boolean(config.services?.database || config.services?.storage);
 }
 async function requireLocalContainerBinding(options, action) {
     const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
@@ -3891,9 +3894,7 @@ async function stopLocalCapsuleServices(options) {
     const services = {};
     if (capsuleServices) {
         runDocker(["compose", "-f", capsuleServices.path, "down", "--remove-orphans"], options.projectDir, "Failed to stop Capsule services.", "Check Docker is running and supports `docker compose down`, then retry the command.");
-        services.database = {
-            ...capsuleServicesJsonSummary(capsuleServices, "stopped").database,
-        };
+        Object.assign(services, capsuleServicesJsonSummary(capsuleServices, "stopped"));
     }
     if (options.silent) {
         return services;
@@ -3908,16 +3909,16 @@ async function stopLocalCapsuleServices(options) {
 async function resetLocalCapsuleServices(options) {
     const config = await readProjectConfig(options.projectDir);
     validateCapsuleServicesConfig(config.services);
-    const capsuleServices = config.services?.database ? await writeCapsuleServicesCompose(options.projectDir, config) : null;
+    const capsuleServices = hasDeclaredLocalCapsuleServices(config) ? await writeCapsuleServicesCompose(options.projectDir, config) : null;
     const services = {};
     if (capsuleServices) {
         runDocker(["compose", "-f", capsuleServices.path, "down", "--remove-orphans", "--volumes"], options.projectDir, "Failed to reset Capsule services.", "Check Docker is running and supports `docker compose down`, then retry the command.");
-        await rm(capsuleServices.services.database.stateDir, { recursive: true, force: true });
+        await Promise.all(Object.values(capsuleServices.services).map((service) => rm(service.stateDir, { recursive: true, force: true })));
         const removedImages = removeSporadesOwnedCapsuleImages(capsuleServices, options.projectDir);
-        services.database = {
-            ...capsuleServicesJsonSummary(capsuleServices, "reset").database,
-            removedImages,
-        };
+        Object.assign(services, capsuleServicesJsonSummary(capsuleServices, "reset"));
+        for (const service of Object.values(services)) {
+            service.removedImages = removedImages;
+        }
     }
     if (options.silent) {
         return services;
@@ -3933,38 +3934,40 @@ async function localCapsuleServicesStatus(capsuleServices, projectDir) {
     if (!capsuleServices) {
         return {};
     }
-    const service = capsuleServices.services.database;
-    const diagnostics = [];
-    let runtime = { state: "unknown", health: null };
-    try {
-        runtime = capsuleServiceStatus(capsuleServices, projectDir, service.name);
-    }
-    catch (error) {
-        diagnostics.push({
-            code: "compose-status-unavailable",
-            message: error.message,
-        });
-    }
-    return {
-        database: {
+    const services = {};
+    const networkExists = dockerResourceExists(["network", "inspect", capsuleServices.networks.services], projectDir);
+    for (const [name, service] of Object.entries(capsuleServices.services)) {
+        const diagnostics = [];
+        let runtime = { state: "unknown", health: null };
+        try {
+            runtime = capsuleServiceStatus(capsuleServices, projectDir, service.name);
+        }
+        catch (error) {
+            diagnostics.push({
+                code: "compose-status-unavailable",
+                message: error.message,
+            });
+        }
+        services[name] = {
             declared: true,
             engine: service.engine,
             status: runtime.state || "unknown",
             health: runtime.health,
             network: {
                 name: capsuleServices.networks.services,
-                exists: dockerResourceExists(["network", "inspect", capsuleServices.networks.services], projectDir),
+                exists: networkExists,
             },
             volume: {
                 type: "bind",
-                path: path.join(CAPSULE_SERVICES_STATE_DIR, "database"),
+                path: path.join(CAPSULE_SERVICES_STATE_DIR, name),
                 exists: await pathExists(service.stateDir),
             },
             containerName: service.name,
             composeFile: capsuleServices.relativePath,
             diagnostics,
-        },
-    };
+        };
+    }
+    return services;
 }
 function removeSporadesOwnedCapsuleImages(capsuleServices, projectDir) {
     const images = new Set();
@@ -4020,13 +4023,15 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
     if (!capsuleServices) {
         return options.connection === "container" ? { env: {}, services: null } : {};
     }
-    options.emit?.({
-        event: "service",
-        service: "database",
-        status: "starting",
-        engine: capsuleServices.services.database.engine,
-        statePath: path.join(CAPSULE_SERVICES_STATE_DIR, "database"),
-    });
+    for (const [name, service] of Object.entries(capsuleServices.services)) {
+        options.emit?.({
+            event: "service",
+            service: name,
+            status: "starting",
+            engine: service.engine,
+            statePath: path.join(CAPSULE_SERVICES_STATE_DIR, name),
+        });
+    }
     try {
         runDocker(["compose", "-f", capsuleServices.path, "up", "--detach"], projectDir, "Failed to start Capsule services.", "Check Docker is running and supports `docker compose`, then retry the command.");
     }
@@ -4042,9 +4047,11 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
     if (!options.wait) {
         return {};
     }
-    let connection;
+    const connections = {};
     try {
-        connection = await waitForCapsuleDatabaseService(capsuleServices, projectDir);
+        for (const [name, service] of Object.entries(capsuleServices.services)) {
+            connections[name] = await waitForCapsuleService(capsuleServices, projectDir, name, service);
+        }
     }
     catch (error) {
         if (options.connection === "container") {
@@ -4061,40 +4068,107 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
             services: capsuleServicesJsonSummary(capsuleServices, "ready"),
         };
     }
-    options.emit?.({
-        event: "service",
-        service: "database",
-        status: "ready",
-        engine: capsuleServices.services.database.engine,
-        statePath: path.join(CAPSULE_SERVICES_STATE_DIR, "database"),
-        host: connection.host,
-        port: connection.port,
-    });
-    return {
-        SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
-        SPORADES_SERVICE_DATABASE_URL: connection.url,
-    };
+    for (const [name, connection] of Object.entries(connections)) {
+        const service = capsuleServices.services[name];
+        options.emit?.({
+            event: "service",
+            service: name,
+            status: "ready",
+            engine: service.engine,
+            statePath: path.join(CAPSULE_SERVICES_STATE_DIR, name),
+            host: connection.host,
+            port: connection.port,
+        });
+    }
+    return capsuleServicesLocalEnv(capsuleServices, connections);
 }
 function capsuleServicesContainerEnv(capsuleServices) {
-    const service = capsuleServices.services.database;
-    return {
-        SPORADES_SERVICE_DATABASE_ENGINE: service.engine,
-        SPORADES_SERVICE_DATABASE_URL: service.engine === "postgres"
-            ? `postgres://sporades:sporades@${service.name}:${service.targetPort}/sporades`
-            : `http://${service.name}:${service.targetPort}`,
-    };
+    const env = {};
+    if (capsuleServices.services.database) {
+        const service = capsuleServices.services.database;
+        env.SPORADES_SERVICE_DATABASE_ENGINE = service.engine;
+        env.SPORADES_SERVICE_DATABASE_URL =
+            service.engine === "postgres"
+                ? `postgres://sporades:sporades@${service.name}:${service.targetPort}/sporades`
+                : `http://${service.name}:${service.targetPort}`;
+    }
+    if (capsuleServices.services.storage) {
+        const service = capsuleServices.services.storage;
+        env.SPORADES_SERVICE_STORAGE_ENGINE = service.engine;
+        env.SPORADES_SERVICE_STORAGE_ENDPOINT = `http://${service.name}:${service.targetPort}`;
+        env.SPORADES_SERVICE_STORAGE_ACCESS_KEY = service.accessKey;
+        env.SPORADES_SERVICE_STORAGE_SECRET_KEY = service.secretKey;
+        env.SPORADES_SERVICE_STORAGE_BUCKET = service.bucket;
+    }
+    return env;
+}
+function capsuleServicesLocalEnv(capsuleServices, connections) {
+    const env = {};
+    if (capsuleServices.services.database) {
+        const service = capsuleServices.services.database;
+        env.SPORADES_SERVICE_DATABASE_ENGINE = service.engine;
+        env.SPORADES_SERVICE_DATABASE_URL = connections.database.url;
+    }
+    if (capsuleServices.services.storage) {
+        const service = capsuleServices.services.storage;
+        env.SPORADES_SERVICE_STORAGE_ENGINE = service.engine;
+        env.SPORADES_SERVICE_STORAGE_ENDPOINT = connections.storage.url;
+        env.SPORADES_SERVICE_STORAGE_ACCESS_KEY = service.accessKey;
+        env.SPORADES_SERVICE_STORAGE_SECRET_KEY = service.secretKey;
+        env.SPORADES_SERVICE_STORAGE_BUCKET = service.bucket;
+    }
+    return env;
 }
 function capsuleServicesJsonSummary(capsuleServices, status) {
-    const service = capsuleServices.services.database;
-    return {
-        database: {
+    return Object.fromEntries(Object.entries(capsuleServices.services).map(([name, service]) => [
+        name,
+        {
             status,
             engine: service.engine,
             network: capsuleServices.networks.services,
             containerName: service.name,
-            statePath: path.join(CAPSULE_SERVICES_STATE_DIR, "database"),
+            statePath: path.join(CAPSULE_SERVICES_STATE_DIR, name),
         },
+    ]));
+}
+async function waitForCapsuleService(capsuleServices, projectDir, name, service) {
+    if (service.kind === "database") {
+        return await waitForCapsuleDatabaseService(capsuleServices, projectDir);
+    }
+    const deadline = Date.now() + capsuleServiceReadinessTimeoutMs();
+    let lastStatus = null;
+    let lastError = null;
+    let lastProbe = null;
+    while (Date.now() < deadline) {
+        const status = capsuleServiceStatus(capsuleServices, projectDir, service.name);
+        lastStatus = status;
+        if (["exited", "dead", "removing"].includes(status.state) || status.health === "unhealthy") {
+            lastError = status;
+            break;
+        }
+        if (status.state === "running") {
+            const port = capsuleServicePort(capsuleServices, projectDir, service.name, service.targetPort, name);
+            const connection = {
+                host: "127.0.0.1",
+                port,
+                url: `http://127.0.0.1:${port}`,
+            };
+            lastProbe = await probeCapsuleStorageService(connection.url);
+            if (lastProbe.ok) {
+                return connection;
+            }
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    const diagnostics = {
+        service: name,
+        engine: service.engine,
+        status: lastError ?? lastStatus ?? { state: "unknown", health: null },
+        probe: lastProbe,
     };
+    const error = commandError("Capsule storage service did not become ready.", "Run `docker compose -f .sporades/compose/capsule-services.compose.yml ps` and inspect the service logs.");
+    error.diagnostics = diagnostics;
+    throw error;
 }
 async function waitForCapsuleDatabaseService(capsuleServices, projectDir) {
     const service = capsuleServices.services.database;
@@ -4156,6 +4230,26 @@ async function probeCapsuleDatabaseService(capsuleServices, url) {
         clearTimeout(timeout);
     }
 }
+async function probeCapsuleStorageService(url) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 500);
+    try {
+        const response = await fetch(`${url}/minio/health/ready`, { signal: controller.signal });
+        return {
+            ok: response.status < 500,
+            statusCode: response.status,
+        };
+    }
+    catch (error) {
+        return {
+            ok: false,
+            message: error.name === "AbortError" ? "probe timed out" : error.message,
+        };
+    }
+    finally {
+        clearTimeout(timeout);
+    }
+}
 async function probePostgresCapsuleDatabaseService(url) {
     try {
         const client = await createPostgresConnection(url);
@@ -4191,11 +4285,11 @@ function capsuleServiceStatus(capsuleServices, projectDir, serviceName) {
         health: record?.Health ? String(record.Health).toLowerCase() : null,
     };
 }
-function capsuleServicePort(capsuleServices, projectDir, serviceName, targetPort) {
+function capsuleServicePort(capsuleServices, projectDir, serviceName, targetPort, serviceKind = "database") {
     const output = runDocker(["compose", "-f", capsuleServices.path, "port", serviceName, String(targetPort)], projectDir, "Failed to inspect Capsule service port.", "Check Docker is running and supports `docker compose port`, then retry the command.");
     const match = output.match(/:(\d+)\s*$/);
     if (!match) {
-        throw commandError("Capsule database service port was not published.", "Restart Docker and rerun `sporades dev` so Compose can publish the local service port.");
+        throw commandError(`Capsule ${serviceKind} service port was not published.`, "Restart Docker and rerun `sporades dev` so Compose can publish the local service port.");
     }
     return Number(match[1]);
 }
