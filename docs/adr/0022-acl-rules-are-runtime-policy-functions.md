@@ -1,0 +1,11 @@
+# ACL rules are runtime policy functions
+
+ACL rules are declared in Capsule definition code and evaluated as invisible runtime policy around the Sporades DB API and file APIs, not as `sporades.json` configuration or database-specific SQL. Capsule code keeps using normal `ctx.db` and file operations; ACL rules accept or reject those operations.
+
+ACL rules receive operation data and a constrained read-only ACL context exposed as `ctx.acl`, with scoped helpers such as `ctx.acl.db.get()`, `ctx.acl.db.exists()`, `ctx.acl.storage.get()`, and `ctx.acl.storage.exists()` for policy checks. They do not receive normal `ctx.db`, because using the policy-wrapped DB API from inside policy evaluation would risk recursion and writes. ACLs are allow-by-default when no matching rule is specified; a `write` rule can cover insert, update, and delete unless an operation-specific rule overrides it.
+
+ACL rules are authorization policy only. They answer whether the current actor may see or change a row or file metadata record; file-specific validation, upload affordances, and client-facing file checks belong outside ACL. Storage ACL uses the same read-only `get()` and `exists()` vocabulary under `ctx.acl.storage`, while database ACL uses `ctx.acl.db`; each scope can check the other's stable resources without exposing implementation table names or full runtime APIs.
+
+Normal ACL helpers cannot read runtime-owned non-app tables such as auth, system metadata, log index, or raw storage tables. `ctx.acl.db` sees app tables, and `ctx.acl.storage` sees stable storage metadata resources. Privileged inspection of runtime-owned non-app resources belongs to the future Root server role, not normal ACL evaluation.
+
+The first implementation filters read results after fetch rather than compiling ACL policy into database-specific SQL. Write ACLs evaluate inside the mutation transaction where possible and receive previous/next row state: insert has `previous = null`, update has both, and delete has `next = null`. Public denial responses stay opaque with a broad code such as `DENIED`, while internal structured logs should include detailed ACL context for developer diagnosis.

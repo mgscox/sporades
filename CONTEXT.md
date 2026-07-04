@@ -20,6 +20,10 @@ _Avoid_: open dev, unsafe mode, fully accessible dev
 A local Docker container running the bundled app with the base image, mounted bundle files, and a persistent SQLite volume. For production-like testing.
 _Avoid_: deploy (that's the command), deployment (remote connotation)
 
+**Capsule service**:
+A runtime companion service provisioned for a Capsule, such as Postgres, Redis, or object storage. Capsule services are owned by the Capsule's execution environment rather than by app code.
+_Avoid_: sidecar, dependency, add-on
+
 **Bundle**:
 The esbuild output — a self-contained JavaScript file with all dependencies inlined. Server bundle (`server.mjs`) and client bundle (`client.js`).
 _Avoid_: build (that's the act), artifact (too abstract)
@@ -219,6 +223,26 @@ _Avoid_: migration version, database version
 **Row cache**:
 A `Map<rowId, row>` in-memory cache. Rows are cached on read (lazy, per-row) and invalidated on write. SQLite is the source of truth for the running Capsule process.
 _Avoid_: table cache (it's row-level, not table-level), data cache
+
+**Database adapter**:
+A runtime-owned boundary that maps the Sporades table API, schema migration model, auth storage, file metadata storage, log index, system metadata, and inspection queries onto one database engine's connection behavior and SQL dialect. Code above the Database adapter must remain agnostic to the selected engine.
+_Avoid_: driver (too low-level), ORM, database plugin
+
+**Sporades DB API**:
+The engine-agnostic database operation model used by Sporades runtime code. Capsule handlers interact with a runtime instance of this API through `ctx.db`; design discussions may refer to the underlying API as `sporades.db`.
+_Avoid_: raw SQL API, database client, ORM
+
+**ACL rule**:
+An authorization policy declared in Capsule definition code and applied invisibly around the Sporades DB API to accept or reject app-table and file-storage operations. Capsule code continues to use normal `ctx.db` and file APIs rather than calling permission checks directly. ACLs answer whether the current actor may see or change a row or file metadata record; file-specific validation and client-facing upload choices are not ACL concerns. ACLs are allow-by-default when no matching rule is specified; a `write` ACL rule may apply to insert, update, and delete operations unless an operation-specific rule overrides it. Write ACL rules evaluate against previous and next row state where relevant.
+_Avoid_: permission helper, manual auth check, database filter
+
+**ACL context**:
+A constrained read-only policy context exposed to ACL rules as `ctx.acl`. It provides scoped helpers such as `ctx.acl.db.get()`, `ctx.acl.db.exists()`, `ctx.acl.storage.get()`, and `ctx.acl.storage.exists()` so database and storage ACL rules can check each other's stable resources without exposing normal runtime APIs or allowing writes.
+_Avoid_: ctx.db in ACL, admin client, bypass API
+
+**Root server role**:
+A privileged server-side role that can perform API actions without normal user authentication and may inspect runtime-owned non-app resources that normal app ACL helpers cannot see. It is a server/runtime capability, not a browser credential.
+_Avoid_: admin user, superuser account, service account
 
 ## Configuration
 
