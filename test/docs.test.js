@@ -265,3 +265,24 @@ test("docs describe Host-generated Sealed Server env custody and lost-key recove
   assert.match(architecture, /re-seal from source-of-truth values/);
   assert.match(runtimeLayout, /inspection reports key fingerprints and availability status without exposing\s+private key material/);
 });
+
+test("Host deploy smoke docs import legacy Server env before pushing", async () => {
+  const [serverInstallation, hostProvisioning] = await Promise.all([
+    readProjectFile("docs/server-installation.md"),
+    readProjectFile("docs/agents/host-provisioning.md"),
+  ]);
+
+  for (const contents of [serverInstallation, hostProvisioning]) {
+    assert.match(contents, /if \[ -f \.\/client_secret_google\.json \]; then\s+sporades auth set google --client-json \.\/client_secret_google\.json --json\s+fi/);
+    assert.match(contents, /if \[ -f \.\/\.env\.sporades\.server \]; then\s+sporades env import --file \.env\.sporades\.server --json\s+fi/);
+    assert.match(contents, /sporades auth set google --client-json \.\/client_secret_google\.json --json/);
+    assert.match(contents, /sporades env import --file \.env\.sporades\.server --json/);
+    assert.match(contents, /legacy Server env\s+files?\s+(?:are|is) not pushed directly/i);
+
+    const importIndex = contents.indexOf("sporades env import --file .env.sporades.server --json");
+    const pushIndex = contents.indexOf("sporades host push");
+    assert(importIndex !== -1);
+    assert(pushIndex !== -1);
+    assert(importIndex < pushIndex);
+  }
+});

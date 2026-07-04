@@ -609,6 +609,14 @@ sporades host register "$SPORADES_CAPSULE_SUBNAME" \
   --host "$SPORADES_HOST_ALIAS" \
   --json
 
+if [ -f ./client_secret_google.json ]; then
+  sporades auth set google --client-json ./client_secret_google.json --json
+fi
+
+if [ -f ./.env.sporades.server ]; then
+  sporades env import --file .env.sporades.server --json
+fi
+
 COPYFILE_DISABLE=1 sporades host push \
   --host "$SPORADES_HOST_ALIAS" \
   --subname "$SPORADES_CAPSULE_SUBNAME" \
@@ -620,6 +628,14 @@ sporades host stats "$SPORADES_CAPSULE_SUBNAME" \
   --host "$SPORADES_HOST_ALIAS" \
   --json
 ```
+
+If a Capsule has `.env.sporades.server`, import it into Sealed Server env before
+`sporades host push`. For Google-backed templates such as `photo-library`, set
+the OAuth client JSON first with
+`sporades auth set google --client-json ./client_secret_google.json --json`, then
+run `sporades env import --file .env.sporades.server --json`. Legacy Server env
+files are not pushed directly; `host push` consumes local Sealed Server env and
+packages the Host-encrypted envelope for the Hosted Capsule release.
 
 ## Verification checklist
 

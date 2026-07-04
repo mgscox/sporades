@@ -279,6 +279,17 @@ From a Sporades Capsule project directory:
 
 ```sh
 sporades host register team-notes --host personal --json
+
+# For Google-backed templates, set OAuth credentials before importing Server env.
+if [ -f ./client_secret_google.json ]; then
+  sporades auth set google --client-json ./client_secret_google.json --json
+fi
+
+# If .env.sporades.server exists, import it into Sealed Server env before push.
+if [ -f ./.env.sporades.server ]; then
+  sporades env import --file .env.sporades.server --json
+fi
+
 sporades host push --host personal --subname team-notes --json
 sporades host start team-notes --host personal --json
 ```
@@ -286,6 +297,15 @@ sporades host start team-notes --host personal --json
 Registration reserves the Capsule subname on the Host server and writes a local
 remote binding for the current project. A registered Capsule with no running
 container is routed to a Host-server-owned `503 Service Unavailable` response.
+
+Capsules with `.env.sporades.server` must import those legacy Server env values
+into Sealed Server env before `sporades host push`. For templates that use
+Google OAuth credentials, such as `photo-library`, run
+`sporades auth set google --client-json ./client_secret_google.json --json`
+first so the generated Google client ID and secret are included in the import.
+Legacy Server env files are not pushed directly; `host push` re-encrypts local
+Sealed Server env values to the Hosted Capsule's Host-owned public key and
+packages the Host-encrypted envelope in the release.
 
 Push installs a new immutable release and updates the current release pointer.
 It does not restart the Capsule by default. To push and restart the running
