@@ -62,10 +62,15 @@ into `client.js`.
 `sporades deploy` runs a local Container session with release files mounted
 read-only and persistent data mounted read-write.
 
+Before starting the container, Sporades prepares the Base image automatically:
+it uses the local image when present, otherwise pulls the canonical image, and
+falls back to building the bundled Base image definition when pulling is
+unavailable.
+
 ```text
 Container
   Base image: ghcr.io/sporades/sporades-base:0.1.0-node22-alpine
-  Runtime user: sporades (10001:10001)
+  Runtime user: invoking host UID/GID when available
   /app/server.mjs              read-only
   /app/client.js               read-only
   /app/index.html              read-only
@@ -90,8 +95,9 @@ compatible with the Sporades Base image:
 - read-only container root filesystem,
 - writable `/tmp` tmpfs with `nosuid`, `nodev`, and `noexec`,
 - all Linux capabilities dropped,
-- `no-new-privileges` security option.
-- non-root runtime user `10001:10001`.
+- `no-new-privileges` security option,
+- invoking host UID/GID when available, falling back to the Base image runtime
+  user `10001:10001`.
 
 The Base image is a thin Sporades-owned Node 22 image. It does not bake in
 Capsule app dependencies. Release files are mounted into known read-only paths,

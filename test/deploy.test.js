@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
 const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
+const BASE_IMAGE_RUNTIME_USER = "10001:10001";
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-deploy-"));
@@ -59,6 +60,15 @@ if (missingContainerActions.has(call.args[0])) {
   process.stderr.write("Error response from daemon: No such container: " + call.args[1] + "\\n");
   process.exit(1);
 }
+if (call.args[0] === "image" && call.args[1] === "inspect") {
+  process.exit(Number(process.env.FAKE_DOCKER_IMAGE_INSPECT_STATUS ?? "0"));
+}
+if (call.args[0] === "pull") {
+  process.exit(Number(process.env.FAKE_DOCKER_PULL_STATUS ?? "0"));
+}
+if (call.args[0] === "build") {
+  process.exit(Number(process.env.FAKE_DOCKER_BUILD_STATUS ?? "0"));
+}
 if (call.args[0] === "run") {
   process.stdout.write(process.env.FAKE_DOCKER_CONTAINER_ID + "\\n");
 }
@@ -72,7 +82,9 @@ if (call.args[0] === "run") {
       FAKE_DOCKER_LOG: logPath,
       FAKE_DOCKER_CONTAINER_ID: containerId,
       FAKE_DOCKER_MISSING_CONTAINER_ACTIONS: options.missingContainerActions?.join(",") ?? "",
-      SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
+      FAKE_DOCKER_IMAGE_INSPECT_STATUS: String(options.imageInspectStatus ?? 0),
+      FAKE_DOCKER_PULL_STATUS: String(options.pullStatus ?? 0),
+      FAKE_DOCKER_BUILD_STATUS: String(options.buildStatus ?? 0),
     },
     async calls() {
       const raw = await readFile(logPath, "utf8");
@@ -83,6 +95,19 @@ if (call.args[0] === "run") {
         .map((line) => JSON.parse(line));
     },
   };
+}
+
+function expectedLocalContainerRuntimeUser() {
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  if (Number.isInteger(uid) && Number.isInteger(gid) && uid >= 0 && gid >= 0) {
+    return `${uid}:${gid}`;
+  }
+  return BASE_IMAGE_RUNTIME_USER;
+}
+
+function firstDockerRunCall(calls) {
+  return calls.find((call) => call.args[0] === "run");
 }
 
 function assertVolume(args, mount) {
@@ -306,7 +331,7 @@ test("sporades deploy --json bundles and starts a container session", async () =
       containerName: "sporades-todo-island",
     });
 
-    const [runCall] = await docker.calls();
+    const runCall = firstDockerRunCall(await docker.calls());
     assert.equal(runCall.cwd, projectDir);
     assert.equal(runCall.args[0], "run");
     assert(runCall.args.includes("--detach"));
@@ -324,7 +349,7 @@ test("sporades deploy --json bundles and starts a container session", async () =
     assertVolume(runCall.args, `${path.join(projectDir, ".env.sporades.server")}:/app/.env.sporades.server:ro`);
     assert.equal(runCall.args[runCall.args.indexOf("--env-file") + 1], path.join(projectDir, ".env.sporades.server"));
     assertVolume(runCall.args, `${path.join(projectDir, ".sporades", "data")}:/app/data:rw`);
-    assert.equal(runCall.args[runCall.args.indexOf("--user") + 1], "10001:10001");
+    assert.equal(runCall.args[runCall.args.indexOf("--user") + 1], expectedLocalContainerRuntimeUser());
     assert(runCall.args.includes("com.sporades.base-image.name=sporades-base"));
     assert(runCall.args.includes("com.sporades.base-image.version=0.1.0-node22-alpine"));
     assert(runCall.args.includes("com.sporades.base-image.update-policy=host-managed"));
@@ -344,12 +369,51 @@ test("sporades deploy --json bundles and starts a container session", async () =
     assert.equal(preparedUploadsDir.mode & 0o777, 0o700);
     assert.equal(preparedDatabase.mode & 0o777, 0o600);
     assert.equal(preparedUpload.mode & 0o777, 0o600);
-    if (process.getuid?.() === 0) {
-      assert.equal(preparedDataDir.uid, 10001);
-      assert.equal(preparedDataDir.gid, 10001);
-      assert.equal(preparedDatabase.uid, 10001);
-      assert.equal(preparedDatabase.gid, 10001);
-    }
+    assert.equal(preparedDataDir.uid, process.getuid());
+    assert.equal(preparedDataDir.gid, process.getgid());
+    assert.equal(preparedDatabase.uid, process.getuid());
+    assert.equal(preparedDatabase.gid, process.getgid());
+  });
+});
+
+test("sporades deploy does not require changing local runtime data ownership", async (t) => {
+  if (process.getuid?.() === 0) {
+    t.skip("root does not exercise the normal local non-root container user");
+  }
+
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    await installFakeReact(projectDir);
+    const dataDir = path.join(projectDir, ".sporades", "data");
+    await mkdir(path.join(dataDir, "uploads"), { recursive: true });
+    await writeFile(path.join(dataDir, "data.db"), "sqlite bytes\n");
+    await writeFile(path.join(dataDir, "uploads", "file.bin"), "uploaded bytes\n");
+    const docker = await installFakeDocker(dir, "container-first");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+    assert.equal(JSON.parse(deployResult.stdout).data.containerId, "container-first");
+
+    const runCall = firstDockerRunCall(await docker.calls());
+    assert.equal(runCall.args[runCall.args.indexOf("--user") + 1], expectedLocalContainerRuntimeUser());
+
+    const preparedDataDir = await stat(dataDir);
+    const preparedDatabase = await stat(path.join(dataDir, "data.db"));
+    assert.equal(preparedDataDir.mode & 0o777, 0o700);
+    assert.equal(preparedDatabase.mode & 0o777, 0o600);
+    assert.equal(preparedDataDir.uid, process.getuid());
+    assert.equal(preparedDataDir.gid, process.getgid());
+    assert.equal(preparedDatabase.uid, process.getuid());
+    assert.equal(preparedDatabase.gid, process.getgid());
   });
 });
 
@@ -539,7 +603,7 @@ test("sporades deploy accepts object-shaped Base image update policy config", as
     });
 
     assert.equal(deployResult.code, 0, deployResult.stderr);
-    const [runCall] = await docker.calls();
+    const runCall = firstDockerRunCall(await docker.calls());
     assert(runCall.args.includes("com.sporades.base-image.update-policy=manual"));
   });
 });
@@ -1421,7 +1485,7 @@ test("sporades deploy skips the server env mount when the env file is absent", a
     });
 
     assert.equal(deployResult.code, 0, deployResult.stderr);
-    const [runCall] = await docker.calls();
+    const runCall = firstDockerRunCall(await docker.calls());
     assert.equal(runCall.args.includes("--env-file"), false);
     assert.equal(
       runCall.args.includes(`${path.join(projectDir, ".env.sporades.server")}:/app/.env.sporades.server:ro`),
@@ -1460,10 +1524,11 @@ test("sporades deploy replaces the existing container binding before starting a 
       [
         ["stop", "container-old"],
         ["rm", "container-old"],
-        calls[2].args,
+        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"],
+        firstDockerRunCall(calls).args,
       ],
     );
-    assert.equal(calls[2].args[0], "run");
+    assert.equal(firstDockerRunCall(calls).args[0], "run");
 
     const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
     assert.deepEqual(binding, {
@@ -1502,7 +1567,7 @@ test("sporades deploy --force ignores stale container bindings when the containe
     const calls = await docker.calls();
     assert.deepEqual(
       calls.map((call) => call.args[0]),
-      ["stop", "rm", "run"],
+      ["stop", "rm", "image", "run"],
     );
 
     const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
@@ -1510,6 +1575,43 @@ test("sporades deploy --force ignores stale container bindings when the containe
       containerId: "container-replacement",
       containerName: "sporades-todo-island",
     });
+  });
+});
+
+test("sporades deploy builds the bundled Base image when pull is unavailable", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "container-built-base-image", {
+      imageInspectStatus: 1,
+      pullStatus: 1,
+    });
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+    assert.equal(JSON.parse(deployResult.stdout).data.containerId, "container-built-base-image");
+
+    const calls = await docker.calls();
+    assert.deepEqual(calls.map((call) => call.args[0]), ["image", "pull", "build", "run"]);
+    assert.deepEqual(calls[0].args, ["image", "inspect", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"]);
+    assert.deepEqual(calls[1].args, ["pull", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"]);
+    assert.deepEqual(calls[2].args.slice(0, 5), [
+      "build",
+      "-f",
+      path.join(repoRoot, "Dockerfile.base"),
+      "-t",
+      "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+    ]);
+    assert.equal(calls[2].args[5], repoRoot);
   });
 });
 

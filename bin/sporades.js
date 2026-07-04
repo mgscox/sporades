@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { chmod, chown, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -2316,6 +2316,7 @@ async function startContainerSession(options) {
   const bundle = await createBundle(options.projectDir, config);
   const runtimeDir = path.join(options.projectDir, ".sporades");
   const dataDir = path.join(runtimeDir, "data");
+  const runtimeUser = localContainerRuntimeUser();
   await mkdir(dataDir, { recursive: true });
   await prepareRuntimeDataPath(dataDir);
 
@@ -2340,6 +2341,8 @@ async function startContainerSession(options) {
       options.force,
     );
   }
+
+  ensureLocalBaseImage(options.projectDir);
 
   const envArgs = bundle.containerMounts.serverEnv
     ? [
@@ -2378,7 +2381,7 @@ async function startContainerSession(options) {
       "--security-opt",
       "no-new-privileges",
       "--user",
-      baseImageRuntimeUser(),
+      runtimeUser,
       ...Object.entries(baseImageLabels(updatePolicyMode)).flatMap(([key, value]) => ["--label", `${key}=${value}`]),
       "--publish",
       `${port}:4000`,
@@ -3973,6 +3976,42 @@ function runDocker(args, cwd, message, hint) {
   return result.stdout.trim();
 }
 
+function ensureLocalBaseImage(cwd) {
+  const inspect = spawnSync("docker", ["image", "inspect", SPORADES_BASE_IMAGE.image], { cwd, encoding: "utf8" });
+  if (inspect.status === 0) {
+    return;
+  }
+
+  const pull = spawnSync("docker", ["pull", SPORADES_BASE_IMAGE.image], { cwd, encoding: "utf8" });
+  if (pull.status === 0) {
+    return;
+  }
+
+  const dockerfilePath = path.join(CLI_ROOT, "Dockerfile.base");
+  try {
+    const stats = statSync(dockerfilePath);
+    if (!stats.isFile()) {
+      throw new Error("Dockerfile.base is not a file.");
+    }
+  } catch {
+    throw commandError(
+      "Unable to prepare the Sporades Base image.",
+      `Check Docker can pull ${SPORADES_BASE_IMAGE.image}, then retry \`sporades deploy\`.`,
+    );
+  }
+
+  const build = spawnSync("docker", ["build", "-f", dockerfilePath, "-t", SPORADES_BASE_IMAGE.image, CLI_ROOT], {
+    cwd,
+    encoding: "utf8",
+  });
+  if (build.status !== 0) {
+    throw commandError(
+      "Unable to prepare the Sporades Base image.",
+      "Check Docker is running and can build the local Sporades Base image, then retry `sporades deploy`.",
+    );
+  }
+}
+
 function runDockerCleanup(args, cwd, message, hint, force = false) {
   const result = spawnSync("docker", args, { cwd, encoding: "utf8" });
   if (result.status === 0) {
@@ -4006,8 +4045,6 @@ async function prepareRuntimeDataPath(targetPath) {
     );
   }
 
-  await prepareRuntimeDataOwnership(targetPath, stats);
-
   if (stats.isDirectory()) {
     await chmod(targetPath, 0o700);
     const entries = await readdir(targetPath, { withFileTypes: true });
@@ -4022,23 +4059,13 @@ async function prepareRuntimeDataPath(targetPath) {
   }
 }
 
-async function prepareRuntimeDataOwnership(targetPath, stats) {
-  const uid = SPORADES_BASE_IMAGE.runtimeUid;
-  const gid = SPORADES_BASE_IMAGE.runtimeGid;
-  if (stats.uid === uid && stats.gid === gid) {
-    return;
+function localContainerRuntimeUser() {
+  const uid = process.getuid?.();
+  const gid = process.getgid?.();
+  if (Number.isInteger(uid) && Number.isInteger(gid) && uid >= 0 && gid >= 0) {
+    return `${uid}:${gid}`;
   }
-  try {
-    await chown(targetPath, uid, gid);
-  } catch (error) {
-    if (process.env.SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK === "1" && ["EPERM", "EINVAL"].includes(error?.code)) {
-      return;
-    }
-    throw commandError(
-      "Unable to prepare Container session data ownership for the non-root runtime user.",
-      `Run \`sudo chown -R ${uid}:${gid} ${targetPath}\`, then retry \`sporades deploy\`.`,
-    );
-  }
+  return baseImageRuntimeUser();
 }
 
 function isMissingDockerContainerError(result) {

@@ -920,10 +920,12 @@ The command:
 
 1. Bundles the server and client.
 2. Stops and removes the previously bound local container, if one exists.
-3. Runs the Capsule in Docker using the Sporades Base image as a non-root user.
-4. Mounts Sealed Server env or legacy Server env read-only.
-5. Persists SQLite data through the Runtime directory.
-6. Writes the container binding to `.sporades/binding.json`.
+3. Prepares the Sporades Base image automatically.
+4. Runs the Capsule in Docker using the Sporades Base image as the invoking
+   host UID/GID when available.
+5. Mounts Sealed Server env or legacy Server env read-only.
+6. Persists SQLite data through the Runtime directory.
+7. Writes the container binding to `.sporades/binding.json`.
 
 Use `--force` if the previous Docker container was deleted manually and the
 local binding is stale.

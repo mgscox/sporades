@@ -236,11 +236,12 @@ This lets releases be replaced without treating user data as part of the
 release package.
 
 Local Container sessions and Hosted Capsules share the same Docker hardening
-defaults with the Sporades Base image: non-root user `10001:10001`, read-only
-root filesystem, a writable hardened `/tmp` tmpfs, all Linux capabilities
-dropped, and `no-new-privileges`. Mutable SQLite state, uploaded file bytes,
-and required runtime metadata stay in the explicit `/app/data` read-write
-mount.
+defaults with the Sporades Base image: local Container sessions use the
+invoking host UID/GID when available, Hosted Capsules use the Base image
+non-root user `10001:10001`, read-only root filesystem, a writable hardened
+`/tmp` tmpfs, all Linux capabilities dropped, and `no-new-privileges`. Mutable
+SQLite state, uploaded file bytes, and required runtime metadata stay in the
+explicit `/app/data` read-write mount.
 
 ## Database Architecture
 

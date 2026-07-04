@@ -42,11 +42,12 @@ The repository currently includes:
   Docker ownership labels, and a Host-server-owned unavailable response for
   registered Capsules without a running release.
 - Practical Docker hardening defaults for local and hosted Container sessions:
-  the thin Sporades-owned Base image runs Node 22 as non-root user
-  `10001:10001`, release files and Server env mount read-only, mutable
-  SQLite/file state lives under read-write data mounts, hosted traffic reaches
-  containers through Caddy loopback routes rather than public container ports,
-  Hosted Capsule logs use bounded Docker `json-file` settings, and Host
+  the thin Sporades-owned Base image runs Node 22, local Container sessions use
+  the invoking host UID/GID when available, Hosted Capsules use the Base image
+  non-root user `10001:10001`, release files and Server env mount read-only,
+  mutable SQLite/file state lives under read-write data mounts, hosted traffic
+  reaches containers through Caddy loopback routes rather than public container
+  ports, Hosted Capsule logs use bounded Docker `json-file` settings, and Host
   inspection reports Base image version/update policy.
 - Per-Capsule HTTP security policy defaults in `sporades.json`, including
   same-origin CORS by default, Dev-session localhost/127.0.0.1 ergonomics,
@@ -306,9 +307,12 @@ and local identity simulation.
 
 `sporades deploy` bundles the Capsule and runs it in Docker with:
 
+- automatic preparation of the Sporades Base image,
 - runtime files mounted read-only,
 - Server env mounted read-only when present,
 - persistent data mounted read-write,
+- the invoking host UID/GID when available, so local Runtime data stays owned by
+  the local user,
 - one local container per project, replaced on redeploy.
 
 The canonical mount layout lives in

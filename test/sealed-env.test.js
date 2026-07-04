@@ -83,7 +83,6 @@ if (process.argv[2] === "run") {
   return {
     env: {
       PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
-      SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK: "1",
     },
   };
 }
