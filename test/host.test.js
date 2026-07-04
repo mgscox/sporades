@@ -3245,6 +3245,12 @@ test("sporades host push refuses legacy Server env values instead of silently im
     const output = JSON.parse(push.stdout);
     assert.equal(output.error.message, "Hosted Capsule push requires Sealed Server env.");
     assert.match(output.error.hint, /sporades env import/);
+    assert.deepEqual(output.error.diagnostics, {
+      source: "legacy-server-env",
+      legacyServerEnvFilePresent: true,
+      localSealedServerEnvConfigured: false,
+      requiresExplicitImport: true,
+    });
     await fakeSsh.assertNotCalled?.();
     await assert.rejects(readFile(fakeScp.logPath, "utf8"), { code: "ENOENT" });
   });
@@ -3289,7 +3295,14 @@ test("sporades host push reports a structured recovery hint when local sealed so
     assert.equal(push.code, 1);
     const output = JSON.parse(push.stdout);
     assert.equal(output.error.message, "Local Sealed Server env source values are unavailable.");
-    assert.match(output.error.hint, /Restore \.sporades\/sealed-server-env\/server-env\.private\.pem|sporades env import/);
+    assert.match(output.error.hint, /local Sealed Server env private key|source-of-truth values/);
+    assert.deepEqual(output.error.diagnostics, {
+      source: "local-sealed-server-env",
+      localSealedServerEnvConfigured: true,
+      localPrivateKeyConfigured: false,
+      legacyServerEnvFilePresent: false,
+      requiresSourceOfTruthValues: true,
+    });
     assert.doesNotMatch(push.stdout, /swordfish|PRIVATE KEY/);
   });
 });
@@ -3951,7 +3964,22 @@ test("sporades host helper rejects sealed release start when the manifest finger
     const output = JSON.parse(start.stdout);
     assert.equal(output.ok, false);
     assert.equal(output.error.message, "Hosted Capsule Sealed Server env private key is missing.");
-    assert.match(output.error.hint, /0123456789abcdef/);
+    assert.match(output.error.hint, /re-key/);
+    assert.match(output.error.hint, /re-seal/);
+    assert.deepEqual(output.error.diagnostics, {
+      capsule: {
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+      },
+      sealedServerEnv: {
+        expectedPublicKeyFingerprint: fingerprint,
+        privateKeyPath: path.join(capsuleDir, "data", "sealed-server-env", "keys", `${fingerprint}.private.pem`),
+        recovery: "re-key-and-re-seal-from-source-of-truth",
+      },
+    });
+    assert.doesNotMatch(start.stdout, /PRIVATE KEY|host-owned private key|swordfish/);
     assert.equal((await docker.calls()).some((call) => call.args[0] === "run"), false);
   });
 });
@@ -4989,6 +5017,7 @@ test("sporades host helper lists registry records enriched with Docker container
     );
 
     assert.equal(list.code, 0, list.stderr);
+    assert.doesNotMatch(list.stdout, /PRIVATE KEY|nope/);
     assert.deepEqual(JSON.parse(list.stdout), {
       ok: true,
       data: {
@@ -5043,6 +5072,9 @@ test("sporades host helper lists registry records enriched with Docker container
               publicKey: draftsPublicKey,
               publicKeyFingerprint: draftsKeyFingerprint,
               publicKeyPath: path.join(draftsKeyDir, `${draftsKeyFingerprint}.public.pem`),
+              status: "available",
+              publicKeyAvailable: true,
+              privateKeyAvailable: true,
             },
             currentRelease: null,
             docker: null,
@@ -5072,6 +5104,13 @@ test("sporades host helper lists registry records enriched with Docker container
               createdAt: "2026-01-03T00:00:00.000Z",
               bundleHash: "sha256:abc123",
               sealedServerEnv: { publicKeyFingerprint: "0123456789abcdef" },
+            },
+            sealedServerEnv: {
+              publicKeyFingerprint: "fedcba9876543210",
+              publicKeyPath: path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "notes", "data", "sealed-server-env", "keys", "fedcba9876543210.public.pem"),
+              status: "missing-key-material",
+              publicKeyAvailable: false,
+              privateKeyAvailable: false,
             },
             docker: {
               containerId: "abc123def456",
@@ -5140,7 +5179,6 @@ test("sporades host helper lists registry records enriched with Docker container
         "json",
       ],
     ]);
-    assert.doesNotMatch(list.stdout, /PRIVATE KEY|nope/);
   });
 });
 

@@ -540,51 +540,51 @@ sporades env import --sealed --file sealed-server-env.json --json
 
 #### Push to a Hosted Capsule
 
-For Hosted Capsules, re-encrypt local values for a Host profile before pushing:
+For Hosted Capsules, the Host server owns a per-Capsule Sealed Server env
+keypair. The CLI reads only the Hosted Capsule public key and fingerprint,
+re-encrypts local source values to that public key, and pushes only the sealed
+envelope.
 
 ```sh
-sporades env reencrypt --host personal --json
 sporades host push --host personal --subname team-notes --json
 ```
 
-`sporades env reencrypt --host personal` decrypts your local Sealed Server env
-with the local private key, then writes a Host-profile envelope encrypted to the
-Host profile key at
-`.sporades/sealed-server-env/hosts/personal.server-env.sealed.json`. The command
-does not print plaintext values or private keys.
-
-`sporades host push` includes that Host-profile envelope in the release archive
-as `.sporades/sealed-server-env/server-env.sealed.json`. The release archive is
-copied to the Host server over SSH/SCP and installed under the Hosted Capsule's
-immutable `releases/<release-id>/` directory. The matching Host-profile private
-key is delivered to the Hosted Capsule's persistent Host state at
-`data/sealed-server-env/server-env.private.pem`, not into the release archive.
-When the Hosted Capsule starts, both files are mounted read-only at
-`/app/.sporades/sealed-server-env/`; the runtime decrypts the values and exposes
-them through `ctx.env`.
+`sporades host push` decrypts the local Sealed Server env with the local
+private key, re-encrypts the values to the Hosted Capsule's current Host public
+key, and includes `.sporades/sealed-server-env/server-env.sealed.json` in the
+release archive. The release archive is copied to the Host server over SSH/SCP
+and installed under the Hosted Capsule's immutable `releases/<release-id>/`
+directory.
 
 Sporades stores local sealed material under `.sporades/sealed-server-env/`,
-which is ignored Runtime state. Host-profile private keys are stored in local
-Host profile configuration and delivered to Host state during push; exported
-sealed envelopes never include private keys.
+which is ignored Runtime state. Host private keys stay in Host-owned
+`data/sealed-server-env/keys/` state and are mounted read-only when a release
+needs the matching fingerprint. Host private keys never leave the Host server,
+plaintext values never cross the local-to-Host boundary, and exported sealed
+envelopes never include private keys.
+
+`sporades env reencrypt --host personal --subname team-notes --json` is still
+available for explicit inspection and CI preparation. It uses the same
+public-key-only Host model and does not print plaintext values or private keys.
 
 #### Recover from Lost Keys
 
 Because those files do not live in the repository, a different developer machine
-or Host profile may not have access to them (or they may be lost if local
-checkout is deleted). Sporades creates keypairs automatically, but a new keypair
-cannot decrypt envelopes written for an old one.
+or Host server may not have access to them (or they may be lost if local
+checkout or Host storage is deleted). Sporades creates keypairs automatically,
+but a new keypair cannot decrypt envelopes written for an old one.
 
 Recovery is achieved by re-sealing known values:
 
 - If local sealed key material is lost but you still have `.env.sporades.server`
   or another source of truth for the values, run `sporades env import` again.
-- If Host-profile key material is lost but the local Sealed Server env still
-  works, run `sporades env reencrypt --host <alias>` again, then push the
-  Hosted Capsule.
+- If Host private key material is lost, old Host-encrypted envelopes are
+  unrecoverable without that private key. Run `sporades host rotate-key`, then
+  push a release re-sealed from local Sealed Server env, legacy Server env
+  imported explicitly, or another source-of-truth value store.
 - If all private keys and all plaintext/source-of-truth values are gone, the
   sealed values cannot be recovered. Regenerate the real provider secrets, add
-  them back to Server env, import, re-encrypt for the Host profile, and push.
+  them back to Server env, import, and push a new Host-encrypted release.
 
 ### Add Middleware
 
@@ -1150,17 +1150,11 @@ sporades host push --host personal --subname team-notes --json
 sporades host start team-notes --host personal --json
 ```
 
-If the Capsule uses Sealed Server env, run this before the first push and
-whenever the sealed values change:
-
-```sh
-sporades env reencrypt --host personal --json
-```
-
-The push packages the Host-profile sealed envelope with the release and sends
-the matching private key to the Hosted Capsule's persistent Host state. Releases
-therefore contain encrypted env values, while the key needed to decrypt them is
-kept outside the immutable release directory.
+If the Capsule uses Sealed Server env, `host push` re-encrypts local sealed
+values to the Hosted Capsule's current Host public key. The push packages only
+the Host-encrypted sealed envelope with the release. Host private keys stay in
+Host-owned persistent state and plaintext values do not cross the local-to-Host
+boundary.
 
 For normal release updates:
 

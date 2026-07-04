@@ -193,8 +193,11 @@ sessions: read-only root filesystem, writable hardened `/tmp` tmpfs, dropped
 Linux capabilities, and `no-new-privileges`. Release files and optional Server
 env inputs remain read-only mounts; only the Hosted Capsule `data/` directory is
 mounted read-write. Hosted Capsule containers run as `10001:10001` from the
-Sporades Base image. Host-profile Sealed Server env private keys live in Hosted
-Capsule data state, not in exported sealed envelopes.
+Sporades Base image. Host-generated Sealed Server env private keys live in
+Hosted Capsule data state under `sealed-server-env/keys/`, not in exported
+sealed envelopes, release archives, local Host profiles, or CLI output. Host
+inspection reports key fingerprints and availability status without exposing
+private key material.
 
 ## Host Caddy Files
 
