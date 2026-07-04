@@ -368,6 +368,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
   const mutationHooks = extractMutationHooks(serverSource);
   const rowCache = new Map();
   const database = {
+    adapter: sqlite,
     sqlite,
     schema,
     endpoints,
@@ -657,6 +658,17 @@ export async function createSqliteDatabaseAdapter(databasePath) {
         this.prepare(`SELECT 1 FROM ${quoteIdentifier(field.targetTable)} WHERE id = ? LIMIT 1`).get(String(value)),
       );
     },
+    async withTransaction(fn) {
+      this.exec("BEGIN");
+      try {
+        const result = await fn();
+        this.exec("COMMIT");
+        return result;
+      } catch (error) {
+        this.exec("ROLLBACK");
+        throw error;
+      }
+    },
     insertAppRow(table, row) {
       const columns = Object.keys(row);
       return this.prepare(
@@ -710,6 +722,63 @@ export async function createSqliteDatabaseAdapter(databasePath) {
           table.name,
         )}${whereSql}${orderSql}${limitSql}`,
       ).all(...(limit === null ? params : [...params, limit]));
+    },
+    listInspectableTables() {
+      return this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+        .all()
+        .map((row) => row.name)
+        .filter((name) => name !== "sporades_log_events");
+    },
+    dumpInspectableDatabase() {
+      return this.listInspectableTables().map((tableName) => ({
+        name: tableName,
+        columns: this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`)
+          .all()
+          .map((column) => column.name),
+        rows: this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all(),
+      }));
+    },
+    runReadOnlyInspectionQuery(sql) {
+      try {
+        if (targetsInternalLogIndexTable(sql)) {
+          return {
+            ok: false,
+            data: null,
+            error: {
+              message: "Internal log index tables are not available through generic DB inspection.",
+              hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
+            },
+          };
+        }
+        const statement = this.prepare(sql);
+        const columns = statement.columns().map((column) => column.name);
+        const rows = statement.all().filter((row) => !isInternalLogIndexMetadataRow(row, sql));
+        return {
+          ok: true,
+          data: {
+            columns,
+            rows,
+          },
+          error: null,
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          data: null,
+          error: {
+            message: error.message,
+            hint: "Check the SQL syntax and table names, then retry the query.",
+          },
+        };
+      }
+    },
+    checkHealth() {
+      try {
+        this.prepare("SELECT 1 AS ok").get();
+        return { ok: true };
+      } catch {
+        return { ok: false };
+      }
     },
     close() {
       return connection.close();
@@ -1890,13 +1959,8 @@ async function createRuntimeHealthResult(database) {
   };
 }
 
-function checkRuntimeSqlite(database) {
-  try {
-    database.sqlite.prepare("SELECT 1 AS ok").get();
-    return { ok: true };
-  } catch {
-    return { ok: false };
-  }
+export function checkRuntimeSqlite(database) {
+  return (database.adapter ?? database.sqlite).checkHealth();
 }
 
 async function checkRuntimeFileStorage(database) {
@@ -2857,57 +2921,15 @@ function toSqlLiteral(value, field = null) {
 }
 
 export function listDatabaseTables(database) {
-  return database.sqlite
-    .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-    .all()
-    .map((row) => row.name)
-    .filter((name) => name !== "sporades_log_events");
+  return (database.adapter ?? database.sqlite).listInspectableTables();
 }
 
 export function dumpDatabase(database) {
-  return listDatabaseTables(database).map((tableName) => ({
-    name: tableName,
-    columns: database.sqlite
-      .prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`)
-      .all()
-      .map((column) => column.name),
-    rows: database.sqlite.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all(),
-  }));
+  return (database.adapter ?? database.sqlite).dumpInspectableDatabase();
 }
 
 export function runReadOnlyQuery(database, sql) {
-  try {
-    if (targetsInternalLogIndexTable(sql)) {
-      return {
-        ok: false,
-        data: null,
-        error: {
-          message: "Internal log index tables are not available through generic DB inspection.",
-          hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
-        },
-      };
-    }
-    const statement = database.sqlite.prepare(sql);
-    const columns = statement.columns().map((column) => column.name);
-    const rows = statement.all().filter((row) => !isInternalLogIndexMetadataRow(row, sql));
-    return {
-      ok: true,
-      data: {
-        columns,
-        rows,
-      },
-      error: null,
-    };
-  } catch (error) {
-    return {
-      ok: false,
-      data: null,
-      error: {
-        message: error.message,
-        hint: "Check the SQL syntax and table names, then retry the query.",
-      },
-    };
-  }
+  return (database.adapter ?? database.sqlite).runReadOnlyInspectionQuery(sql);
 }
 
 function targetsInternalLogIndexTable(sql) {
@@ -4168,33 +4190,32 @@ async function runCustomQuery(database, context, queryName) {
 export async function runMutation(database, auth, mutationName, args) {
   let context;
   let result;
-  database.sqlite.exec("BEGIN");
   try {
-    context = await applyContextMiddleware(database, createMutationContext(database, auth), "mutation");
+    return await (database.adapter ?? database.sqlite).withTransaction(async () => {
+      context = await applyContextMiddleware(database, createMutationContext(database, auth), "mutation");
 
-    for (const hookSource of database.mutationHooks.beforeMutation) {
-      await runMutationHook(hookSource, { name: mutationName, args, ctx: context });
-    }
+      for (const hookSource of database.mutationHooks.beforeMutation) {
+        await runMutationHook(hookSource, { name: mutationName, args, ctx: context });
+      }
 
-    result = await runCustomMutation(database, context, mutationName, args);
-    if (!result) {
-      result = mutationName.startsWith("update")
-        ? await runUpdateMutation(database, context, mutationName, args)
-        : await runInsertMutation(database, context, mutationName, args);
-    }
-    await drainPendingAclWrites(context);
-
-    if (result.ok) {
-      for (const hookSource of database.mutationHooks.afterMutation) {
-        await runMutationHook(hookSource, { name: mutationName, args, ctx: context, result });
+      result = await runCustomMutation(database, context, mutationName, args);
+      if (!result) {
+        result = mutationName.startsWith("update")
+          ? await runUpdateMutation(database, context, mutationName, args)
+          : await runInsertMutation(database, context, mutationName, args);
       }
       await drainPendingAclWrites(context);
-    }
 
-    database.sqlite.exec("COMMIT");
-    return result;
+      if (result.ok) {
+        for (const hookSource of database.mutationHooks.afterMutation) {
+          await runMutationHook(hookSource, { name: mutationName, args, ctx: context, result });
+        }
+        await drainPendingAclWrites(context);
+      }
+
+      return result;
+    });
   } catch (error) {
-    database.sqlite.exec("ROLLBACK");
     database.rowCache.clear();
     return createHookErrorResult(error);
   }

@@ -4,7 +4,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { createSqliteDatabaseAdapter, openDevDatabase } from "../src/server-runtime-source.js";
+import {
+  checkRuntimeSqlite,
+  createSqliteDatabaseAdapter,
+  dumpDatabase,
+  listDatabaseTables,
+  openDevDatabase,
+  runMutation,
+  runReadOnlyQuery,
+} from "../src/server-runtime-source.js";
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-database-adapter-"));
@@ -52,6 +60,7 @@ test("runtime opens and closes SQLite through the internal adapter boundary", as
   await withTempDir(async (dir) => {
     const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {});
 
+    assert.equal(database.adapter, database.sqlite);
     assert.equal(typeof database.sqlite.exec, "function");
     assert.equal(typeof database.sqlite.prepare, "function");
     assert.equal(typeof database.sqlite.close, "function");
@@ -340,6 +349,124 @@ test("SQLite database adapter owns runtime storage for auth, files, logs, and sy
       );
     } finally {
       adapter.close();
+    }
+  });
+});
+
+test("SQLite database adapter owns transactions for successful and failing mutations", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      files: { storagePath: path.join(dir, "files") },
+    });
+    try {
+      const table = {
+        name: "todos",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+        ],
+      };
+      database.schema = { tables: [table] };
+      database.mutations = [
+        {
+          name: "addThenFail",
+          handler: (ctx) => {
+            ctx.db.todos.insert({ text: "rolled back", ownerId: ctx.auth.userId });
+            throw new Error("nope");
+          },
+        },
+      ];
+      database.mutationHooks = { beforeMutation: [], afterMutation: [] };
+      database.sqlite.migrateAppSchema(database.schema);
+
+      const committed = await runMutation(database, { userId: "user-1" }, "addTodo", ["committed"]);
+      assert.equal(committed.ok, true);
+      assert.equal(database.sqlite.selectAppRows(table).length, 1);
+
+      const failed = await runMutation(database, { userId: "user-1" }, "addThenFail", []);
+      assert.deepEqual(failed, {
+        ok: false,
+        error: {
+          message: "nope",
+          hint: "Check the Capsule mutation hooks and retry the mutation.",
+        },
+      });
+      assert.deepEqual(
+        database.sqlite
+          .selectAppRows(table, { columns: ["text"], orderBy: { fieldName: "createdAt", direction: "asc" } })
+          .map((row) => ({ ...row })),
+        [{ text: "committed" }],
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("SQLite database adapter owns inspection and health surfaces", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      files: { storagePath: path.join(dir, "files") },
+    });
+    try {
+      const table = {
+        name: "todos",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+        ],
+      };
+      database.schema = { tables: [table] };
+      database.sqlite.migrateAppSchema(database.schema);
+      database.sqlite.insertAppRow(table, {
+        id: "todo-1",
+        createdAt: "2026-07-04T10:00:00.000Z",
+        updatedAt: "2026-07-04T10:00:00.000Z",
+        text: "inspect me",
+        ownerId: "user-1",
+      });
+
+      assert.equal(typeof database.sqlite.listInspectableTables, "function");
+      assert.equal(typeof database.sqlite.dumpInspectableDatabase, "function");
+      assert.equal(typeof database.sqlite.runReadOnlyInspectionQuery, "function");
+      assert.equal(typeof database.sqlite.checkHealth, "function");
+      assert.equal(database.adapter, database.sqlite);
+      assert.deepEqual(listDatabaseTables(database).filter((name) => name === "todos"), ["todos"]);
+      const dumpedTodos = dumpDatabase(database).find((dumpedTable) => dumpedTable.name === "todos");
+      assert.deepEqual({ ...dumpedTodos, rows: dumpedTodos.rows.map((row) => ({ ...row })) }, {
+        name: "todos",
+        columns: ["id", "createdAt", "updatedAt", "text", "ownerId"],
+        rows: [
+          {
+            id: "todo-1",
+            createdAt: "2026-07-04T10:00:00.000Z",
+            updatedAt: "2026-07-04T10:00:00.000Z",
+            text: "inspect me",
+            ownerId: "user-1",
+          },
+        ],
+      });
+      const queryResult = runReadOnlyQuery(database, "SELECT text FROM todos");
+      assert.deepEqual(
+        {
+          ...queryResult,
+          data: {
+            ...queryResult.data,
+            rows: queryResult.data.rows.map((row) => ({ ...row })),
+          },
+        },
+        {
+          ok: true,
+          data: {
+            columns: ["text"],
+            rows: [{ text: "inspect me" }],
+          },
+          error: null,
+        },
+      );
+      assert.deepEqual(checkRuntimeSqlite(database), { ok: true });
+    } finally {
+      database.close();
     }
   });
 });
