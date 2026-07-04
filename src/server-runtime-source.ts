@@ -4715,7 +4715,7 @@ export function createWebSocketHub(getDatabase) {
     },
     disconnectAll() {
       for (const client of clients) {
-        client.socket.end();
+        closeWebSocketClient(client);
       }
       clients.clear();
     },
@@ -5708,7 +5708,7 @@ function drainWebSocketFrames(client, onMessage) {
     client.buffer = client.buffer.subarray(offset + length);
 
     if (opcode === 8) {
-      client.socket.end();
+      closeWebSocketClient(client);
       return;
     }
     if (opcode !== 1) {
@@ -5720,6 +5720,20 @@ function drainWebSocketFrames(client, onMessage) {
       decoded[index] = mask ? payload[index] ^ mask[index % 4] : payload[index];
     }
     onMessage(decoded.toString("utf8"));
+  }
+}
+
+function closeWebSocketClient(client) {
+  if (client.closing || client.socket.destroyed) {
+    return;
+  }
+  client.closing = true;
+  try {
+    client.socket.write(Buffer.from([0x88, 0x00]), () => {
+      client.socket.end();
+    });
+  } catch {
+    client.socket.destroy();
   }
 }
 
