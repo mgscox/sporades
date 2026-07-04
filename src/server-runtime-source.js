@@ -99,6 +99,11 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   resolveAclAppTable,
   resolveAclStorageResource,
   aclStorageMetadataFromFileRow,
+  emitAclDeniedLog,
+  createAclDenialLogData,
+  aclRuleDeclaredOperation,
+  aclRowLogSnapshot,
+  aclVisibleFieldNames,
   createAclDeniedError,
   fieldValueForWrite,
   invalidReferenceError,
@@ -955,7 +960,10 @@ function logDataContainsServerEnvValue(value, serverEnv) {
 }
 
 function isSensitiveLogKey(key) {
-  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token)([-_]|$)/i.test(String(key));
+  return (
+    /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token)([-_]|$)/i.test(String(key)) ||
+    /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken)/i.test(String(key))
+  );
 }
 
 function capLogEnvelope(envelope, maxBytes) {
@@ -1361,9 +1369,12 @@ function fieldColumnDefaultSql(field) {
   return field.defaultValue === undefined ? "" : ` DEFAULT ${toSqlLiteral(field.defaultValue, field)}`;
 }
 
-function commandError(message, hint) {
+function commandError(message, hint, code = null) {
   const error = new Error(message);
   error.hint = hint;
+  if (code) {
+    error.code = code;
+  }
   return error;
 }
 
@@ -2603,6 +2614,19 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
     return write();
   }
   const context = contextGetter?.();
+  const denialLogData = createAclDenialLogData({
+    context,
+    table,
+    operation,
+    previous,
+    next,
+  });
+  const deny = () => {
+    if (!context?.__pendingAclWrites) {
+      emitAclDeniedLog(database, { data: denialLogData });
+    }
+    throw createAclDeniedError(denialLogData);
+  };
   const result = rule({
     ctx: createTableAclContext(context, database),
     operation,
@@ -2612,13 +2636,13 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
   });
   if (!isPromiseLike(result)) {
     if (!result) {
-      throw createAclDeniedError();
+      deny();
     }
     return write();
   }
   const pending = Promise.resolve(result).then((allowed) => {
     if (!allowed) {
-      throw createAclDeniedError();
+      deny();
     }
     return write();
   });
@@ -2635,12 +2659,25 @@ function applyReadAcl(database, table, row, context) {
   if (!rule) {
     return true;
   }
-  return rule({
+  const result = rule({
     ctx: createTableAclContext(context, database),
     operation: "read",
     table: table.name,
     row,
   });
+  const deny = () => {
+    emitAclDeniedLog(database, {
+      context,
+      table,
+      operation: "read",
+      row,
+    });
+    return false;
+  };
+  if (!isPromiseLike(result)) {
+    return result ? true : deny();
+  }
+  return Promise.resolve(result).then((allowed) => (allowed ? true : deny()));
 }
 
 function filterRowsByReadAcl(database, table, rows, context) {
@@ -2734,8 +2771,76 @@ function aclStorageMetadataFromFileRow(row) {
   };
 }
 
-function createAclDeniedError() {
-  return commandError("Write denied.", "The current user is not allowed to change this row.");
+function emitAclDeniedLog(database, details) {
+  database.log?.emit?.({
+    category: "platform",
+    event: "acl.denied",
+    level: "warn",
+    message: "ACL denied table operation.",
+    data: details.data ?? createAclDenialLogData(details),
+  });
+}
+
+function createAclDenialLogData({ context, table, operation, row = null, previous = null, next = null }) {
+  return {
+    resource: {
+      kind: "table",
+      name: table.name,
+    },
+    operation,
+    rule: {
+      category: "table",
+      declaredOperation: aclRuleDeclaredOperation(table, operation),
+    },
+    actor: {
+      userId: context?.auth?.userId ?? null,
+      provider: context?.auth?.provider ?? null,
+      isAuthenticated: context?.auth?.isAuthenticated ?? null,
+      isGuest: context?.auth?.isGuest ?? null,
+    },
+    row: operation === "read" ? aclRowLogSnapshot(row) : aclRowLogSnapshot({ previous, next }),
+  };
+}
+
+function aclRuleDeclaredOperation(table, operation) {
+  if (operation !== "read" && table.acl?.[operation] === undefined && table.acl?.write) {
+    return "write";
+  }
+  return operation;
+}
+
+function aclRowLogSnapshot(input) {
+  if (input && Object.hasOwn(input, "previous") && Object.hasOwn(input, "next")) {
+    const previous = input.previous ?? null;
+    const next = input.next ?? null;
+    return {
+      previousId: previous?.id ?? null,
+      nextId: next?.id ?? null,
+      previousFields: aclVisibleFieldNames(previous),
+      nextFields: aclVisibleFieldNames(next),
+      changedFields: aclVisibleFieldNames(next).filter((fieldName) => previous?.[fieldName] !== next?.[fieldName]),
+      previousPresent: Boolean(previous),
+      nextPresent: Boolean(next),
+    };
+  }
+  return {
+    id: input?.id ?? null,
+    fields: aclVisibleFieldNames(input),
+  };
+}
+
+function aclVisibleFieldNames(row) {
+  return Object.keys(row ?? {}).filter(
+    (fieldName) => !["id", "createdAt", "updatedAt"].includes(fieldName) && !isSensitiveLogKey(fieldName),
+  );
+}
+
+function createAclDeniedError(logData = null) {
+  const error = commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
+  if (logData) {
+    error.sporadesAclDenialLogData = logData;
+  }
+  return error;
 }
 
 function fieldValueForWrite(database, field, value) {
@@ -2919,6 +3024,7 @@ function writeEndpointError(response, error) {
       ok: false,
       data: null,
       error: {
+        ...(error?.code ? { code: error.code } : {}),
         message: error?.hint
           ? error.message
           : error?.sporadesEndpointResponse
@@ -4307,6 +4413,9 @@ export async function runMutation(database, auth, mutationName, args) {
     });
   } catch (error) {
     database.rowCache.clear();
+    if (error?.sporadesAclDenialLogData) {
+      emitAclDeniedLog(database, { data: error.sporadesAclDenialLogData });
+    }
     return createHookErrorResult(error);
   }
 }
@@ -4462,6 +4571,7 @@ function createHookErrorResult(error) {
   return {
     ok: false,
     error: {
+      ...(error?.code ? { code: error.code } : {}),
       message: error?.message || "Mutation hook failed.",
       hint: error?.hint ?? "Check the Capsule mutation hooks and retry the mutation.",
     },

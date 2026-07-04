@@ -403,10 +403,13 @@ you add one to a table that already has rows, existing rows read the new field
 as `null`; fresh tables use the same nullable column definition. Validate
 required business fields in your mutations before calling `ctx.db`.
 
-Tables can also declare ACL rules next to their fields. Rules may be sync or
-async functions. `read` applies to row reads, and `write` is the fallback for
-`insert`, `update`, and `delete` unless that operation has its own rule. Missing
-rules allow the operation by default.
+Tables can also declare ACL rules next to their fields. ACL rules are an
+invisible accept/reject authorization policy around normal `ctx.db` table
+operations; app code still reads and writes through the table API instead of
+calling permission helpers directly. Rules may be sync or async functions.
+`read` applies to row reads. `write` is the fallback for `insert`, `update`,
+and `delete` unless that operation has its own rule. Missing rules allow the
+operation by default.
 
 ```ts
 schema: {
@@ -422,6 +425,25 @@ schema: {
   }),
 }
 ```
+
+Read ACLs filter rows after fetch in the current implementation, so denied rows
+are simply absent from query results. Write ACLs receive previous and next row
+state: insert receives `previous = null`, update receives both states, and
+delete receives `next = null`.
+
+ACL rules receive a constrained `ctx.acl` context for bounded read-only policy
+checks. `ctx.acl.db.get()` and `ctx.acl.db.exists()` can inspect Capsule app
+tables by stable table name; they cannot access runtime-owned tables such as
+auth, system metadata, logs, or raw storage tables. `ctx.acl.storage.get()` and
+`ctx.acl.storage.exists()` expose stable storage metadata resources such as
+`files`. `ctx.acl.storage` enforcement is reserved for a later
+storage-enforcement slice and shares the same model.
+
+When an ACL denies a write, clients receive an opaque `DENIED` error rather than
+policy internals. Sporades writes structured internal `acl.denied` log events
+with table name, operation, declared rule, actor shape, row IDs, and non-secret
+field names. `sporades doctor` may later warn about missing ACLs or
+open-to-the-world data; missing ACLs are not deny-by-default today.
 
 ### Read With Queries
 
