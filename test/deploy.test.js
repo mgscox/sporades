@@ -60,6 +60,33 @@ if (missingContainerActions.has(call.args[0])) {
   process.stderr.write("Error response from daemon: No such container: " + call.args[1] + "\\n");
   process.exit(1);
 }
+if (call.args[0] === "ps") {
+  process.stdout.write(process.env.FAKE_DOCKER_CONTAINER_ID + "\\n");
+  process.exit(0);
+}
+if (call.args[0] === "inspect" && call.args.includes("{{json .Mounts}}")) {
+  process.stdout.write(JSON.stringify([
+    { Source: process.env.FAKE_DOCKER_DATA_DIR, Destination: "/app/data" }
+  ]) + "\\n");
+  process.exit(0);
+}
+if (call.args[0] === "logs") {
+  process.stdout.write(JSON.stringify({
+    schema: "sporades.log.v1",
+    timestamp: "2026-07-04T06:32:08.180Z",
+    category: "platform",
+    event: "runtime.started",
+    level: "info",
+    message: "Capsule runtime started",
+    capsule: { name: "todo-island", id: "todo-island" },
+    release: null,
+    request: null,
+    correlation: null,
+    data: null,
+    truncated: false
+  }) + "\\n");
+  process.exit(0);
+}
 if (call.args[0] === "image" && call.args[1] === "inspect") {
   process.exit(Number(process.env.FAKE_DOCKER_IMAGE_INSPECT_STATUS ?? "0"));
 }
@@ -81,6 +108,7 @@ if (call.args[0] === "run") {
       PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
       FAKE_DOCKER_LOG: logPath,
       FAKE_DOCKER_CONTAINER_ID: containerId,
+      FAKE_DOCKER_DATA_DIR: options.dataDir ?? "",
       FAKE_DOCKER_MISSING_CONTAINER_ACTIONS: options.missingContainerActions?.join(",") ?? "",
       FAKE_DOCKER_IMAGE_INSPECT_STATUS: String(options.imageInspectStatus ?? 0),
       FAKE_DOCKER_PULL_STATUS: String(options.pullStatus ?? 0),
@@ -454,6 +482,90 @@ test("sporades deploy writes a server bundle that serves the capsule", async () 
     } finally {
       await stopChild(child);
     }
+  });
+});
+
+test("sporades logs and db can inspect a local Container session by published port", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    await installFakeReact(projectDir);
+    const dataDir = path.join(projectDir, ".sporades", "data");
+    await mkdir(dataDir, { recursive: true });
+    const docker = await installFakeDocker(dir, "container-first", { dataDir });
+
+    const deployResult = await runCli(["deploy", "--port", "4321", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+
+    const serverPort = await getAvailablePort();
+    const child = spawn(process.execPath, [path.join(projectDir, ".sporades", "build", "server.mjs")], {
+      cwd: projectDir,
+      env: {
+        ...process.env,
+        PORT: String(serverPort),
+        SPORADES_DATABASE_PATH: path.join(dataDir, "data.db"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    try {
+      await waitForHttp(`http://127.0.0.1:${serverPort}/`, child);
+    } finally {
+      await stopChild(child);
+    }
+
+    const logsResult = await runCli(["logs", "--port", "4321", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(logsResult.code, 0, logsResult.stderr);
+    assert.deepEqual(JSON.parse(logsResult.stdout).data, {
+      source: "docker",
+      containerId: "container-first",
+      entries: [
+        {
+          schema: "sporades.log.v1",
+          timestamp: "2026-07-04T06:32:08.180Z",
+          category: "platform",
+          event: "runtime.started",
+          level: "info",
+          message: "Capsule runtime started",
+          capsule: { name: "todo-island", id: "todo-island" },
+          release: null,
+          request: null,
+          correlation: null,
+          data: null,
+          truncated: false,
+        },
+      ],
+    });
+
+    const dbResult = await runCli(["db", "list", "--port", "4321", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(dbResult.code, 0, dbResult.stderr);
+    assert.deepEqual(JSON.parse(dbResult.stdout).data, {
+      source: "sqlite-file",
+      tables: [
+        "sporades",
+        "sporades_auth_oauth_states",
+        "sporades_auth_sessions",
+        "sporades_auth_users",
+        "sporades_file_buckets",
+        "sporades_file_public_urls",
+        "sporades_file_uploads",
+        "sporades_files",
+        "todos",
+      ],
+    });
   });
 });
 
@@ -1644,7 +1756,8 @@ test("sporades deploy fails on stale container bindings without --force", async 
       data: null,
       error: {
         message: "Failed to stop the existing container session.",
-        hint: "Check Docker is running. If the bound container was deleted manually, retry with `sporades deploy --force`.",
+        hint:
+          "Check Docker is running. If the bound container was deleted manually, retry with `sporades deploy --force`; through npm, use `npm run deploy -- --force`.",
       },
     });
 

@@ -2330,14 +2330,14 @@ async function startContainerSession(options) {
       ["stop", existingBinding.containerId],
       options.projectDir,
       "Failed to stop the existing container session.",
-      "Check Docker is running. If the bound container was deleted manually, retry with `sporades deploy --force`.",
+      "Check Docker is running. If the bound container was deleted manually, retry with `sporades deploy --force`; through npm, use `npm run deploy -- --force`.",
       options.force,
     );
     runDockerCleanup(
       ["rm", existingBinding.containerId],
       options.projectDir,
       "Failed to remove the existing container session.",
-      "Remove the old container manually or retry with `sporades deploy --force`.",
+      "Remove the old container manually or retry with `sporades deploy --force`; through npm, use `npm run deploy -- --force`.",
       options.force,
     );
   }
@@ -2427,15 +2427,7 @@ async function inspectDatabase(options) {
     );
   }
 
-  const session = options.port ? { url: `http://localhost:${options.port}` } : await readDevSession(options.projectDir);
-  const result =
-    options.subcommand === "query"
-      ? await fetchDevSessionJson(session, "/__sporades/debug/db/query", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ sql: options.sql }),
-        })
-      : await fetchDevSessionJson(session, `/__sporades/debug/db/${options.subcommand}`);
+  const result = await fetchInspectionDatabase(options);
 
   if (options.json) {
     writeResult(result, !result.ok);
@@ -2464,11 +2456,11 @@ async function inspectDatabase(options) {
 }
 
 async function printLogs(options) {
-  const session = options.port ? { url: `http://localhost:${options.port}` } : await readDevSession(options.projectDir);
-  const result = await fetchDevSessionJson(
-    session,
-    options.subcommand === "tail" ? "/__sporades/debug/logs/tail" : "/__sporades/debug/logs",
-  );
+  const result =
+    (await tryFetchInspectionJson(
+      options,
+      options.subcommand === "tail" ? "/__sporades/debug/logs/tail" : "/__sporades/debug/logs",
+    )) ?? readContainerLogs(options);
 
   if (options.json) {
     if (options.subcommand === "tail" && result.ok) {
@@ -2490,6 +2482,22 @@ async function printLogs(options) {
   }
 }
 
+async function fetchInspectionDatabase(options) {
+  return (
+    (await tryFetchInspectionJson(
+      options,
+      options.subcommand === "query" ? "/__sporades/debug/db/query" : `/__sporades/debug/db/${options.subcommand}`,
+      options.subcommand === "query"
+        ? {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ sql: options.sql }),
+          }
+        : {},
+    )) ?? inspectContainerDatabase(options)
+  );
+}
+
 async function readDevSession(projectDir) {
   const sessionPath = path.join(projectDir, DEV_SESSION_FILE);
   const raw = await readRequiredFile(
@@ -2504,6 +2512,146 @@ async function readDevSession(projectDir) {
       "Invalid Sporades dev session metadata.",
       "Restart the dev session with `sporades dev`, then retry the command.",
     );
+  }
+}
+
+async function readOptionalDevSession(projectDir) {
+  try {
+    return await readDevSession(projectDir);
+  } catch (error) {
+    if (error?.message === "No running Sporades dev session found.") {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function tryFetchInspectionJson(options, pathname, fetchOptions = {}) {
+  const session = options.port ? { url: `http://localhost:${options.port}` } : await readOptionalDevSession(options.projectDir);
+  if (!session) {
+    return null;
+  }
+  try {
+    const response = await fetch(new URL(pathname, session.url), fetchOptions);
+    if (!response.ok) {
+      return null;
+    }
+    return await response.json();
+  } catch {
+    return null;
+  }
+}
+
+function readContainerLogs(options) {
+  const container = resolveLocalContainerTarget(options);
+  const result = spawnSync("docker", ["logs", "--tail", "200", container.containerId], {
+    cwd: options.projectDir,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      data: null,
+      error: {
+        message: "Container session logs are unavailable.",
+        hint: "Check Docker is running and the bound container still exists, then retry `sporades logs`.",
+      },
+    };
+  }
+  const entries = `${result.stdout ?? ""}\n${result.stderr ?? ""}`
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map(parseDockerLogLine)
+    .filter(Boolean);
+  return {
+    ok: true,
+    data: { source: "docker", containerId: container.containerId, entries },
+    error: null,
+  };
+}
+
+function parseDockerLogLine(line) {
+  try {
+    const entry = JSON.parse(line);
+    if (entry && typeof entry === "object" && entry.schema === "sporades.log.v1") {
+      return entry;
+    }
+  } catch {
+    // Ignore non-JSON process warnings emitted by Node or Docker.
+  }
+  return null;
+}
+
+async function inspectContainerDatabase(options) {
+  const databasePath = resolveLocalContainerDatabasePath(options);
+  const { DatabaseSync } = await import("node:sqlite");
+  const sqlite = new DatabaseSync(databasePath, { readOnly: true });
+  try {
+    sqlite.exec("PRAGMA busy_timeout = 1000");
+    sqlite.exec("PRAGMA query_only = ON");
+    const database = { sqlite };
+    if (options.subcommand === "list") {
+      return { ok: true, data: { source: "sqlite-file", tables: listDatabaseTables(database) }, error: null };
+    }
+    if (options.subcommand === "dump") {
+      return { ok: true, data: { source: "sqlite-file", tables: dumpDatabase(database) }, error: null };
+    }
+    return runReadOnlyQuery(database, options.sql);
+  } finally {
+    sqlite.close();
+  }
+}
+
+function resolveLocalContainerDatabasePath(options) {
+  const container = resolveLocalContainerTarget(options);
+  const mount = container.mounts.find((entry) => entry.Destination === "/app/data");
+  const dataDir = mount?.Source ?? path.join(options.projectDir, ".sporades", "data");
+  return path.join(dataDir, "data.db");
+}
+
+function resolveLocalContainerTarget(options) {
+  if (options.port) {
+    const result = spawnSync("docker", ["ps", "--filter", `publish=${options.port}`, "--format", "{{.ID}}"], {
+      cwd: options.projectDir,
+      encoding: "utf8",
+    });
+    const containerId = result.status === 0 ? result.stdout.trim().split("\n").filter(Boolean)[0] : null;
+    if (containerId) {
+      return { containerId, mounts: inspectDockerMounts(options.projectDir, containerId) };
+    }
+  }
+
+  const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
+  let binding = null;
+  try {
+    binding = JSON.parse(readFileSync(bindingPath, "utf8"));
+  } catch (error) {
+    if (error?.code !== "ENOENT") {
+      throw error;
+    }
+  }
+  if (!binding?.containerId) {
+    throw commandError(
+      "No running Sporades session found.",
+      "Start `sporades dev`, run `sporades deploy`, or pass `--port <number>` for a running local Container session.",
+    );
+  }
+  return { containerId: binding.containerId, mounts: inspectDockerMounts(options.projectDir, binding.containerId) };
+}
+
+function inspectDockerMounts(cwd, containerId) {
+  const result = spawnSync("docker", ["inspect", "--format", "{{json .Mounts}}", containerId], {
+    cwd,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    return [];
+  }
+  try {
+    return JSON.parse(result.stdout.trim());
+  } catch {
+    return [];
   }
 }
 

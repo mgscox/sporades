@@ -182,6 +182,20 @@ Use a different port when needed:
 sporades deploy --port 5000
 ```
 
+Inspect a running local Container session by passing its port to the same log
+and database commands:
+
+```sh
+sporades logs --port 4000
+sporades logs tail --port 4000 --json
+sporades db list --port 4000
+sporades db dump --port 4000 --json
+sporades db query "select * from todos" --port 4000 --json
+```
+
+Use the port from `sporades deploy --json` if you do not know which port the
+Container session is using.
+
 ## How Sporades Projects Fit Together
 
 ### Project Files
@@ -801,7 +815,13 @@ Read logs from a running Dev session:
 sporades logs
 sporades logs --json
 sporades logs tail --json
-sporades logs --port 3000 --json
+```
+
+Pass `--port` to inspect a local Container session instead:
+
+```sh
+sporades logs --port 4000 --json
+sporades logs tail --port 4000 --json
 ```
 
 `ctx.log` entries and Sporades platform runtime events share the
@@ -860,18 +880,21 @@ List tables:
 
 ```sh
 sporades db list
+sporades db list --port 4000
 ```
 
 Dump everything:
 
 ```sh
 sporades db dump --json
+sporades db dump --port 4000 --json
 ```
 
 Run a read-only SQL query:
 
 ```sh
 sporades db query "select id, createdAt from todos order by createdAt desc" --json
+sporades db query "select id, createdAt from todos order by createdAt desc" --port 4000 --json
 ```
 
 If a query cannot connect, confirm `sporades dev` is running or pass the right
@@ -929,6 +952,12 @@ The command:
 
 Use `--force` if the previous Docker container was deleted manually and the
 local binding is stale.
+
+When running through the scaffolded npm script, pass flags after `--`:
+
+```sh
+npm run deploy -- --force
+```
 
 ## Hosted Capsules
 
