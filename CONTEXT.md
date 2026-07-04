@@ -183,7 +183,7 @@ An application-defined message sent over the Sporades client transport. App and 
 _Avoid_: raw WebSocket message, custom socket packet, transport frame
 
 **Upload call**:
-A high-level `sporades/client` operation that accepts a browser file/blob and returns Sporades-owned file metadata. It hides upload URL negotiation and byte transfer details from app code, and may replace an existing file when called with an explicit file ID. Passing an array is a convenience that runs single-file uploads sequentially.
+A high-level `sporades/client` operation that accepts a browser file/blob and returns Sporades-owned file metadata. It hides upload URL negotiation and byte transfer details from app code. Uploads are addressed by absolute File path; when no File path is provided, Sporades uses the uploaded file name in the Default File bucket. Passing an array is a convenience that runs single-file uploads sequentially.
 _Avoid_: upload URL API, presigned URL flow, storage client
 
 **Upload event**:
@@ -191,16 +191,40 @@ An app-facing SDK callback or event for upload progress, completion, or failure.
 _Avoid_: upload WebSocket message, raw upload notification, transport event
 
 **File metadata**:
-The app-scoped record returned by an Upload call, including the file's Sporades ID and descriptive properties such as size, MIME type, original name, and storage URL/path when appropriate. App code stores references to this metadata in its own tables through normal mutations.
+The app-scoped record returned by an Upload call, including the file's absolute File path, stable File ID, and descriptive properties such as size, MIME type, original name, and version. App code stores references to this metadata in its own tables through normal mutations.
 _Avoid_: file field, attachment row, upload result
 
 **File version**:
 The cache-busting identity of a file's current bytes. Replacing a file preserves the file ID but creates a new version so previously generated URLs cannot keep serving stale content.
 _Avoid_: revision, cache token, object generation
 
+**File ID**:
+The stable identifier of a file metadata record. File content can change without changing the File ID; content changes create a new File version.
+_Avoid_: content ID, object ID, storage key
+
+**File reference**:
+Any app/API value that resolves to one live file metadata record, such as a File ID or absolute File path. File operations may accept File references when they only need to identify an existing file.
+_Avoid_: storage locator, URL, object key
+
 **File bucket**:
-A user-scoped storage namespace for uploaded files. v2 creates one `default` bucket per user, preserving the bucket model for later storage backends without exposing multiple bucket management yet.
+A backend-agnostic storage namespace for uploaded files inside one Capsule. File buckets are conceptual prefixes on absolute File paths and are also the unit that object-storage backends such as MinIO or S3 may map onto concrete storage namespaces. Two Capsules using the same File bucket name do not share files.
 _Avoid_: folder, directory, container
+
+**Default File bucket**:
+The fallback File bucket name used when a File path does not resolve to an existing or explicitly created File bucket. It is only a storage namespace name, not a special ownership, visibility, or policy boundary.
+_Avoid_: user bucket, system bucket, default folder
+
+**File path**:
+A unique, absolute, Capsule-scoped logical path for file metadata, with arbitrary depth such as `/users/images/avatars/file-1`. It behaves like a file-system path at the Sporades API and ACL boundary, but it is not a filesystem path or object-storage key; the storage backend decides how File paths map to stored bytes. Writes may opt into creating any missing namespace pieces needed for the path; otherwise unresolved bucket prefixes fall back to the Default File bucket.
+_Avoid_: filesystem path, storage path, object key, file location
+
+**Capsule storage**:
+The isolated storage boundary for one Capsule's uploaded file bytes and file metadata. Two Capsules do not share files even when they use the same File bucket names; the storage backend decides how that isolation is implemented.
+_Avoid_: shared storage, global bucket, app storage
+
+**Object bucket**:
+The concrete object-storage bucket/container used by MinIO, S3-compatible storage, or AWS S3 to hold uploaded file bytes. It is backend infrastructure, not the app-facing File bucket shown in File metadata.
+_Avoid_: File bucket, folder, directory
 
 **Public file URL**:
 A server-managed read URL record for a private uploaded file. It is explicit, has either a TTL or an explicit no-expiry setting, can be revoked before expiry, and does not change the file's private ownership.
