@@ -381,15 +381,15 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     close: () => sqlite.close(),
   };
   database.log = createRuntimeLogSink({
-    sqlite,
+    database: sqlite,
     config,
     serverEnv,
     dataDir: path.dirname(databasePath),
   });
   sqlite.ensureSystemTable();
-  createAnonymousAuthTables(sqlite, database.authConfig);
-  createFileStorageTables(sqlite);
-  createLogIndexTables(sqlite);
+  sqlite.ensureAuthStorage(database.authConfig);
+  sqlite.ensureFileStorage();
+  sqlite.ensureLogStorage();
   assertValidReferenceTargets(schema);
   sqlite.migrateAppSchema(schema);
 
@@ -426,14 +426,218 @@ export async function createSqliteDatabaseAdapter(databasePath) {
     ensureSystemTable() {
       return this.exec("CREATE TABLE IF NOT EXISTS sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     },
+    readSystemMetadata(key) {
+      return this.prepare("SELECT value FROM sporades WHERE key = ?").get(key) ?? null;
+    },
+    writeSystemMetadata(key, value) {
+      return this.prepare("INSERT OR REPLACE INTO sporades (key, value) VALUES (?, ?)").run(key, value);
+    },
     readSchemaMetadata() {
-      return this.prepare("SELECT value FROM sporades WHERE key = ?").get("schema") ?? null;
+      return this.readSystemMetadata("schema");
     },
     writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
-      const upsert = this.prepare("INSERT OR REPLACE INTO sporades (key, value) VALUES (?, ?)");
-      upsert.run("schemaVersion", schemaVersion);
-      upsert.run("schemaHash", schemaHash);
-      upsert.run("schema", schemaJson);
+      this.writeSystemMetadata("schemaVersion", schemaVersion);
+      this.writeSystemMetadata("schemaHash", schemaHash);
+      this.writeSystemMetadata("schema", schemaJson);
+    },
+    ensureLogStorage() {
+      return createLogIndexTables(this);
+    },
+    insertLogIndexEvent(event) {
+      return insertLogIndexEvent(this, event);
+    },
+    pruneLogIndex(limit) {
+      return pruneLogIndex(this, limit);
+    },
+    readRecentLogEvents(limit) {
+      return readRecentLogEvents(this, limit);
+    },
+    ensureFileStorage() {
+      return createFileStorageTables(this);
+    },
+    findFileBucket(ownerId, name) {
+      return this.prepare("SELECT * FROM sporades_file_buckets WHERE ownerId = ? AND name = ?").get(ownerId, name) ?? null;
+    },
+    createFileBucket(row) {
+      return this.prepare("INSERT INTO sporades_file_buckets (id, ownerId, name, createdAt) VALUES (?, ?, ?, ?)").run(
+        row.id,
+        row.ownerId,
+        row.name,
+        row.createdAt,
+      );
+    },
+    insertFileRow(row) {
+      return this.prepare(
+        "INSERT INTO sporades_files " +
+          "(id, ownerId, bucketId, bucketName, name, type, size, version, status, createdAt, updatedAt, deletedAt) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+      ).run(
+        row.id,
+        row.ownerId,
+        row.bucketId,
+        row.bucketName,
+        row.name,
+        row.type,
+        row.size,
+        row.version,
+        row.status,
+        row.createdAt,
+        row.updatedAt,
+      );
+    },
+    updatePendingFileRow(row) {
+      return this.prepare(
+        "UPDATE sporades_files SET name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ?, deletedAt = NULL WHERE id = ?",
+      ).run(row.name, row.type, row.size, row.version, row.status, row.updatedAt, row.id);
+    },
+    insertFileUpload(row) {
+      return this.prepare(
+        "INSERT INTO sporades_file_uploads (id, fileId, ownerId, version, expectedSize, createdAt) VALUES (?, ?, ?, ?, ?, ?)",
+      ).run(row.id, row.fileId, row.ownerId, row.version, row.expectedSize, row.createdAt);
+    },
+    selectFileById(fileId) {
+      return this.prepare("SELECT * FROM sporades_files WHERE id = ?").get(fileId) ?? null;
+    },
+    selectFileUpload(uploadId) {
+      return this.prepare("SELECT * FROM sporades_file_uploads WHERE id = ?").get(uploadId) ?? null;
+    },
+    completeFileUpload(upload, size, updatedAt) {
+      return this.prepare("UPDATE sporades_files SET size = ?, status = ?, updatedAt = ? WHERE id = ? AND version = ?").run(
+        size,
+        "uploaded",
+        updatedAt,
+        upload.fileId,
+        upload.version,
+      );
+    },
+    deleteFileUpload(uploadId) {
+      return this.prepare("DELETE FROM sporades_file_uploads WHERE id = ?").run(uploadId);
+    },
+    selectPublicFileRow(publicUrlId) {
+      return (
+        this.prepare(
+          "SELECT p.id AS publicUrlId, p.fileId, p.version AS publicVersion, p.expiresAt, p.revokedAt, " +
+            "f.id, f.ownerId, f.bucketId, f.bucketName, f.name, f.type, f.size, f.version, f.status, f.createdAt, f.updatedAt, f.deletedAt " +
+            "FROM sporades_file_public_urls p JOIN sporades_files f ON f.id = p.fileId " +
+            "WHERE p.id = ?",
+        ).get(publicUrlId) ?? null
+      );
+    },
+    insertPublicFileUrl(row) {
+      return this.prepare(
+        "INSERT INTO sporades_file_public_urls (id, fileId, ownerId, version, expiresAt, createdAt, revokedAt) VALUES (?, ?, ?, ?, ?, ?, NULL)",
+      ).run(row.id, row.fileId, row.ownerId, row.version, row.expiresAt, row.createdAt);
+    },
+    revokePublicFileUrl(publicUrlId, ownerId, revokedAt) {
+      return this.prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE id = ? AND ownerId = ? AND revokedAt IS NULL").run(
+        revokedAt,
+        publicUrlId,
+        ownerId,
+      );
+    },
+    revokePublicFileUrlsForFile(fileId, revokedAt) {
+      return this.prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE fileId = ? AND revokedAt IS NULL").run(
+        revokedAt,
+        fileId,
+      );
+    },
+    markFileDeleted(fileId, deletedAt) {
+      return this.prepare("UPDATE sporades_files SET deletedAt = ?, updatedAt = ? WHERE id = ?").run(deletedAt, deletedAt, fileId);
+    },
+    fileRowForOwner(fileId, ownerId) {
+      return (
+        this.prepare("SELECT * FROM sporades_files WHERE id = ? AND ownerId = ? AND deletedAt IS NULL AND status = ?").get(
+          fileId,
+          ownerId,
+          "uploaded",
+        ) ?? null
+      );
+    },
+    ensureAuthStorage(authConfig = null) {
+      return createAnonymousAuthTables(this, authConfig);
+    },
+    findAuthUserByProviderEmail(provider, email) {
+      return this.prepare("SELECT id FROM sporades_auth_users WHERE provider = ? AND email = ?").get(provider, email) ?? null;
+    },
+    insertAuthUser(row) {
+      return this.prepare(
+        "INSERT INTO sporades_auth_users " +
+          "(id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider);
+    },
+    updateAuthUserProfile(row) {
+      return this.prepare(
+        "UPDATE sporades_auth_users SET displayName = ?, picture = ?, isAuthenticated = ?, isGuest = ? WHERE id = ?",
+      ).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.id);
+    },
+    linkAuthUser(row) {
+      return this.prepare(
+        "UPDATE sporades_auth_users SET displayName = ?, email = ?, picture = ?, isAuthenticated = ?, isGuest = ?, provider = ? WHERE id = ?",
+      ).run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.id);
+    },
+    insertAuthSession(row) {
+      return this.prepare("INSERT INTO sporades_auth_sessions (token, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?)").run(
+        row.token,
+        row.userId,
+        row.createdAt,
+        row.expiresAt,
+      );
+    },
+    deleteAuthSession(token) {
+      return this.prepare("DELETE FROM sporades_auth_sessions WHERE token = ?").run(token);
+    },
+    refreshAuthSession(token, expiresAt) {
+      return this.prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE token = ?").run(expiresAt, token);
+    },
+    rotateAuthSession(previousToken, row) {
+      return this.prepare("UPDATE sporades_auth_sessions SET token = ?, userId = ?, createdAt = ?, expiresAt = ? WHERE token = ?").run(
+        row.token,
+        row.userId,
+        row.createdAt,
+        row.expiresAt,
+        previousToken,
+      );
+    },
+    readAuthSessionWithUser(token) {
+      return (
+        this.prepare(
+          "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, u.provider " +
+            "FROM sporades_auth_sessions s " +
+            "JOIN sporades_auth_users u ON u.id = s.userId " +
+            "WHERE s.token = ?",
+        ).get(token) ?? null
+      );
+    },
+    insertOAuthState(row) {
+      return this.prepare(
+        "INSERT INTO sporades_auth_oauth_states (state, sessionToken, returnTo, redirectUri, createdAt) VALUES (?, ?, ?, ?, ?)",
+      ).run(row.state, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt);
+    },
+    consumeOAuthState(state) {
+      const row =
+        this.prepare("SELECT state, sessionToken, returnTo, redirectUri FROM sporades_auth_oauth_states WHERE state = ?").get(state) ??
+        null;
+      this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
+      return row;
+    },
+    emailCredentialExists(email) {
+      return Boolean(this.prepare("SELECT email FROM sporades_auth_email_credentials WHERE email = ?").get(email));
+    },
+    insertEmailCredential(row) {
+      return this.prepare(
+        "INSERT INTO sporades_auth_email_credentials (email, userId, passwordHash, passwordSalt, createdAt) VALUES (?, ?, ?, ?, ?)",
+      ).run(row.email, row.userId, row.passwordHash, row.passwordSalt, row.createdAt);
+    },
+    findEmailCredentialWithUser(email) {
+      return (
+        this.prepare(
+          "SELECT c.email, c.userId, c.passwordHash, c.passwordSalt, u.displayName, u.picture, u.isAuthenticated, u.isGuest, u.provider " +
+            "FROM sporades_auth_email_credentials c " +
+            "JOIN sporades_auth_users u ON u.id = c.userId " +
+            "WHERE c.email = ?",
+        ).get(email) ?? null
+      );
     },
     migrateAppSchema(schema) {
       return migrateAppSchema(this, schema);
@@ -543,15 +747,15 @@ function createRuntimeLogSink(options) {
         serverEnv: options.serverEnv,
       });
       appendFileSync(logPath, `${JSON.stringify(event)}\n`);
-      insertLogIndexEvent(options.sqlite, event);
-      pruneLogIndex(options.sqlite, logIndexLimit(options.config));
+      options.database.insertLogIndexEvent(event);
+      options.database.pruneLogIndex(logIndexLimit(options.config));
       if (process.env.SPORADES_LOG_STDOUT === "1") {
         process.stdout.write(`${JSON.stringify(event)}\n`);
       }
       return event;
     },
     recent(limit = logIndexLimit(options.config)) {
-      return readRecentLogEvents(options.sqlite, limit);
+      return options.database.readRecentLogEvents(limit);
     },
     tail(limit = logIndexLimit(options.config)) {
       return readJsonlLogEvents(logPath, limit);
@@ -1625,14 +1829,7 @@ export async function handleFileHttpRoute(database, request, response, websocket
 
   const publicMatch = requestUrl.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
   if (publicMatch && request.method === "GET") {
-    const publicRow = database.sqlite
-      .prepare(
-        "SELECT p.id AS publicUrlId, p.fileId, p.version AS publicVersion, p.expiresAt, p.revokedAt, " +
-          "f.id, f.ownerId, f.bucketId, f.bucketName, f.name, f.type, f.size, f.version, f.status, f.createdAt, f.updatedAt, f.deletedAt " +
-          "FROM sporades_file_public_urls p JOIN sporades_files f ON f.id = p.fileId " +
-          "WHERE p.id = ?",
-      )
-      .get(publicMatch[1]);
+    const publicRow = database.sqlite.selectPublicFileRow(publicMatch[1]);
     if (
       !publicRow ||
       publicRow.revokedAt ||
@@ -1828,13 +2025,11 @@ function createPendingFileUpload(database, auth, message) {
 
   const now = new Date().toISOString();
   const bucket =
-    database.sqlite.prepare("SELECT * FROM sporades_file_buckets WHERE ownerId = ? AND name = ?").get(auth.userId, "default") ??
+    database.sqlite.findFileBucket(auth.userId, "default") ??
     (() => {
-      const bucketId = randomUUID();
-      database.sqlite
-        .prepare("INSERT INTO sporades_file_buckets (id, ownerId, name, createdAt) VALUES (?, ?, ?, ?)")
-        .run(bucketId, auth.userId, "default", now);
-      return { id: bucketId, ownerId: auth.userId, name: "default", createdAt: now };
+      const bucket = { id: randomUUID(), ownerId: auth.userId, name: "default", createdAt: now };
+      database.sqlite.createFileBucket(bucket);
+      return bucket;
     })();
 
   const replacing = message.replace === true;
@@ -1852,26 +2047,24 @@ function createPendingFileUpload(database, auth, message) {
   const name = String(input.name ?? "upload");
   const type = String(input.type ?? "application/octet-stream");
   if (existing) {
-    database.sqlite
-      .prepare(
-        "UPDATE sporades_files SET name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ?, deletedAt = NULL WHERE id = ?",
-      )
-      .run(name, type, size, version, "pending", now, fileId);
-    database.sqlite
-      .prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE fileId = ? AND revokedAt IS NULL")
-      .run(now, fileId);
+    database.sqlite.updatePendingFileRow({ id: fileId, name, type, size, version, status: "pending", updatedAt: now });
+    database.sqlite.revokePublicFileUrlsForFile(fileId, now);
   } else {
-    database.sqlite
-      .prepare(
-        "INSERT INTO sporades_files " +
-          "(id, ownerId, bucketId, bucketName, name, type, size, version, status, createdAt, updatedAt, deletedAt) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
-      )
-      .run(fileId, auth.userId, bucket.id, bucket.name, name, type, size, version, "pending", now, now);
+    database.sqlite.insertFileRow({
+      id: fileId,
+      ownerId: auth.userId,
+      bucketId: bucket.id,
+      bucketName: bucket.name,
+      name,
+      type,
+      size,
+      version,
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    });
   }
-  database.sqlite
-    .prepare("INSERT INTO sporades_file_uploads (id, fileId, ownerId, version, expectedSize, createdAt) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(uploadId, fileId, auth.userId, version, size, now);
+  database.sqlite.insertFileUpload({ id: uploadId, fileId, ownerId: auth.userId, version, expectedSize: size, createdAt: now });
 
   return {
     ok: true,
@@ -1879,16 +2072,14 @@ function createPendingFileUpload(database, auth, message) {
       uploadUrl: `/__sporades/uploads/${uploadId}`,
       method: "PUT",
       headers: {},
-      file: fileMetadataFromRow(
-        database.sqlite.prepare("SELECT * FROM sporades_files WHERE id = ?").get(fileId),
-      ),
+      file: fileMetadataFromRow(database.sqlite.selectFileById(fileId)),
     },
     error: null,
   };
 }
 
 async function completePendingFileUpload(database, uploadId, request, websocketHub = null) {
-  const upload = database.sqlite.prepare("SELECT * FROM sporades_file_uploads WHERE id = ?").get(uploadId);
+  const upload = database.sqlite.selectFileUpload(uploadId);
   if (!upload) {
     return {
       ok: false,
@@ -1909,11 +2100,9 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
     await mkdir(fileStoragePath(database, upload.fileId), { recursive: true });
     await writeFile(fileVersionPath(database, upload.fileId, upload.version), bytes);
     const now = new Date().toISOString();
-    database.sqlite
-      .prepare("UPDATE sporades_files SET size = ?, status = ?, updatedAt = ? WHERE id = ? AND version = ?")
-      .run(bytes.length, "uploaded", now, upload.fileId, upload.version);
-    database.sqlite.prepare("DELETE FROM sporades_file_uploads WHERE id = ?").run(uploadId);
-    const file = fileMetadataFromRow(database.sqlite.prepare("SELECT * FROM sporades_files WHERE id = ?").get(upload.fileId));
+    database.sqlite.completeFileUpload(upload, bytes.length, now);
+    database.sqlite.deleteFileUpload(uploadId);
+    const file = fileMetadataFromRow(database.sqlite.selectFileById(upload.fileId));
     websocketHub?.notifyFileEvent?.(upload.ownerId, {
       type: "file.upload.complete",
       file,
@@ -1971,11 +2160,14 @@ function createPublicFileUrl(database, auth, fileId, options = {}) {
   }
   const id = randomUUID();
   const now = new Date().toISOString();
-  database.sqlite
-    .prepare(
-      "INSERT INTO sporades_file_public_urls (id, fileId, ownerId, version, expiresAt, createdAt, revokedAt) VALUES (?, ?, ?, ?, ?, ?, NULL)",
-    )
-    .run(id, row.id, auth.userId, row.version, expiry.expiresAt, now);
+  database.sqlite.insertPublicFileUrl({
+    id,
+    fileId: row.id,
+    ownerId: auth.userId,
+    version: row.version,
+    expiresAt: expiry.expiresAt,
+    createdAt: now,
+  });
   return {
     ok: true,
     data: {
@@ -1993,9 +2185,7 @@ function createPublicFileUrl(database, auth, fileId, options = {}) {
 
 function revokePublicFileUrl(database, auth, publicUrlId) {
   const now = new Date().toISOString();
-  const result = database.sqlite
-    .prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE id = ? AND ownerId = ? AND revokedAt IS NULL")
-    .run(now, publicUrlId, auth.userId);
+  const result = database.sqlite.revokePublicFileUrl(publicUrlId, auth.userId, now);
   if (result.changes === 0) {
     return {
       ok: false,
@@ -2018,10 +2208,8 @@ async function deletePrivateFile(database, auth, fileId) {
     };
   }
   const now = new Date().toISOString();
-  database.sqlite.prepare("UPDATE sporades_files SET deletedAt = ?, updatedAt = ? WHERE id = ?").run(now, now, row.id);
-  database.sqlite
-    .prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE fileId = ? AND revokedAt IS NULL")
-    .run(now, row.id);
+  database.sqlite.markFileDeleted(row.id, now);
+  database.sqlite.revokePublicFileUrlsForFile(row.id, now);
   await removeFileVersionBestEffort(database, row.id, row.version);
   return {
     ok: true,
@@ -2065,11 +2253,7 @@ function validatePublicUrlExpiry(options) {
 }
 
 function fileRowForOwner(database, fileId, ownerId) {
-  return (
-    database.sqlite
-      .prepare("SELECT * FROM sporades_files WHERE id = ? AND ownerId = ? AND deletedAt IS NULL AND status = ?")
-      .get(fileId, ownerId, "uploaded") ?? null
-  );
+  return database.sqlite.fileRowForOwner(fileId, ownerId);
 }
 
 function fileMetadataFromRow(row) {
@@ -2778,30 +2962,25 @@ export function simulateLocalIdentitySession(database, options = {}) {
   const displayName = normalizeSimulatedText(options.displayName) ?? email;
   const picture = normalizeSimulatedText(options.picture);
   const now = new Date().toISOString();
-  const existing = database.sqlite
-    .prepare("SELECT id FROM sporades_auth_users WHERE provider = ? AND email = ?")
-    .get(provider, email);
+  const existing = database.sqlite.findAuthUserByProviderEmail(provider, email);
   const userId = existing?.id ?? randomUUID();
   const token = createSessionToken();
 
   if (existing) {
-    database.sqlite
-      .prepare(
-        "UPDATE sporades_auth_users SET displayName = ?, picture = ?, isAuthenticated = ?, isGuest = ? WHERE id = ?",
-      )
-      .run(displayName, picture, 1, 0, userId);
+    database.sqlite.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0 });
   } else {
-    database.sqlite
-      .prepare(
-        "INSERT INTO sporades_auth_users " +
-          "(id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-      )
-      .run(userId, now, displayName, email, picture, 1, 0, provider);
+    database.sqlite.insertAuthUser({
+      id: userId,
+      createdAt: now,
+      displayName,
+      email,
+      picture,
+      isAuthenticated: 1,
+      isGuest: 0,
+      provider,
+    });
   }
-  database.sqlite
-    .prepare("INSERT INTO sporades_auth_sessions (token, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?)")
-    .run(token, userId, now, sessionExpiresAt(now));
+  database.sqlite.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
 
   const auth = {
     userId,
@@ -3247,7 +3426,7 @@ export function createWebSocketHub(getDatabase) {
 
   function signOutSession(database, client) {
     try {
-      database.sqlite.prepare("DELETE FROM sporades_auth_sessions WHERE token = ?").run(client.session.token);
+      database.sqlite.deleteAuthSession(client.session.token);
       client.session = resolveAnonymousSession(database, null);
       return { ok: true };
     } catch (error) {
@@ -3300,10 +3479,7 @@ export async function routeSporadesAuth(database, request, response) {
     return true;
   }
 
-  const stateRow = database.sqlite
-    .prepare("SELECT state, sessionToken, returnTo, redirectUri FROM sporades_auth_oauth_states WHERE state = ?")
-    .get(state);
-  database.sqlite.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
+  const stateRow = database.sqlite.consumeOAuthState(state);
   if (!stateRow) {
     writeEndpointError(response, commandError("Invalid Google OAuth state.", "Retry Google sign-in from the app."));
     return true;
@@ -3338,11 +3514,7 @@ function beginGoogleSignIn(database, session, options) {
   const returnTo = normalizeReturnTo(options.returnTo, origin);
   const state = randomBytes(32).toString("base64url");
   const now = new Date().toISOString();
-  database.sqlite
-    .prepare(
-      "INSERT INTO sporades_auth_oauth_states (state, sessionToken, returnTo, redirectUri, createdAt) VALUES (?, ?, ?, ?, ?)",
-    )
-    .run(state, session.token, returnTo, redirectUri, now);
+  database.sqlite.insertOAuthState({ state, sessionToken: session.token, returnTo, redirectUri, createdAt: now });
 
   const clientId = database.serverEnv[database.authConfig.google.clientIdEnv];
   const params = new URLSearchParams({
@@ -3483,11 +3655,15 @@ function linkGoogleAccount(database, session, profile) {
     isGuest: false,
     provider: "google",
   };
-  database.sqlite
-    .prepare(
-      "UPDATE sporades_auth_users SET displayName = ?, email = ?, picture = ?, isAuthenticated = ?, isGuest = ?, provider = ? WHERE id = ?",
-    )
-    .run(auth.displayName, auth.email, auth.picture, 1, 0, "google", auth.userId);
+  database.sqlite.linkAuthUser({
+    id: auth.userId,
+    displayName: auth.displayName,
+    email: auth.email,
+    picture: auth.picture,
+    isAuthenticated: 1,
+    isGuest: 0,
+    provider: "google",
+  });
   refreshSession(database, session.token);
   return { ok: true, auth };
 }
@@ -3516,10 +3692,7 @@ function signUpWithEmail(database, session, provider, credentials) {
     return normalized;
   }
 
-  const existing = database.sqlite
-    .prepare("SELECT email FROM sporades_auth_email_credentials WHERE email = ?")
-    .get(normalized.email);
-  if (existing) {
+  if (database.sqlite.emailCredentialExists(normalized.email)) {
     return {
       ok: false,
       error: {
@@ -3540,16 +3713,22 @@ function signUpWithEmail(database, session, provider, credentials) {
     isGuest: false,
     provider: "email",
   };
-  database.sqlite
-    .prepare(
-      "INSERT INTO sporades_auth_email_credentials (email, userId, passwordHash, passwordSalt, createdAt) VALUES (?, ?, ?, ?, ?)",
-    )
-    .run(normalized.email, auth.userId, password.hash, password.salt, new Date().toISOString());
-  database.sqlite
-    .prepare(
-      "UPDATE sporades_auth_users SET displayName = ?, email = ?, picture = ?, isAuthenticated = ?, isGuest = ?, provider = ? WHERE id = ?",
-    )
-    .run(auth.displayName, auth.email, auth.picture, 1, 0, "email", auth.userId);
+  database.sqlite.insertEmailCredential({
+    email: normalized.email,
+    userId: auth.userId,
+    passwordHash: password.hash,
+    passwordSalt: password.salt,
+    createdAt: new Date().toISOString(),
+  });
+  database.sqlite.linkAuthUser({
+    id: auth.userId,
+    displayName: auth.displayName,
+    email: auth.email,
+    picture: auth.picture,
+    isAuthenticated: 1,
+    isGuest: 0,
+    provider: "email",
+  });
   return { ok: true, sessionToken: rotateSession(database, session, auth.userId), auth };
 }
 
@@ -3563,14 +3742,7 @@ function signInWithEmail(database, session, credentials) {
     return normalized;
   }
 
-  const row = database.sqlite
-    .prepare(
-      "SELECT c.email, c.userId, c.passwordHash, c.passwordSalt, u.displayName, u.picture, u.isAuthenticated, u.isGuest, u.provider " +
-        "FROM sporades_auth_email_credentials c " +
-        "JOIN sporades_auth_users u ON u.id = c.userId " +
-        "WHERE c.email = ?",
-    )
-    .get(normalized.email);
+  const row = database.sqlite.findEmailCredentialWithUser(normalized.email);
   if (!row || !verifyEmailPassword(normalized.password, row.passwordSalt, row.passwordHash)) {
     return {
       ok: false,
@@ -3708,32 +3880,23 @@ function createSessionToken() {
 function refreshSession(database, token) {
   const now = new Date().toISOString();
   const expiresAt = sessionExpiresAt(now);
-  database.sqlite.prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE token = ?").run(expiresAt, token);
+  database.sqlite.refreshAuthSession(token, expiresAt);
   return expiresAt;
 }
 
 function rotateSession(database, session, userId) {
   const now = new Date().toISOString();
   const token = createSessionToken();
-  database.sqlite
-    .prepare("UPDATE sporades_auth_sessions SET token = ?, userId = ?, createdAt = ?, expiresAt = ? WHERE token = ?")
-    .run(token, userId, now, sessionExpiresAt(now), session.token);
+  database.sqlite.rotateAuthSession(session.token, { token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
   return token;
 }
 
 function resolveAnonymousSession(database, sessionToken) {
   if (sessionToken) {
-    const existing = database.sqlite
-      .prepare(
-        "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, u.provider " +
-          "FROM sporades_auth_sessions s " +
-          "JOIN sporades_auth_users u ON u.id = s.userId " +
-          "WHERE s.token = ?",
-      )
-      .get(sessionToken);
+    const existing = database.sqlite.readAuthSessionWithUser(sessionToken);
     if (existing) {
       if (isExpiredSession(existing)) {
-        database.sqlite.prepare("DELETE FROM sporades_auth_sessions WHERE token = ?").run(sessionToken);
+        database.sqlite.deleteAuthSession(sessionToken);
       } else {
         return sessionFromRow(existing);
       }
@@ -3743,16 +3906,17 @@ function resolveAnonymousSession(database, sessionToken) {
   const now = new Date().toISOString();
   const userId = randomUUID();
   const token = createSessionToken();
-  database.sqlite
-    .prepare(
-      "INSERT INTO sporades_auth_users " +
-        "(id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .run(userId, now, "Anonymous", null, null, 0, 1, "anonymous");
-  database.sqlite
-    .prepare("INSERT INTO sporades_auth_sessions (token, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?)")
-    .run(token, userId, now, sessionExpiresAt(now));
+  database.sqlite.insertAuthUser({
+    id: userId,
+    createdAt: now,
+    displayName: "Anonymous",
+    email: null,
+    picture: null,
+    isAuthenticated: 0,
+    isGuest: 1,
+    provider: "anonymous",
+  });
+  database.sqlite.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
   return {
     token,
     auth: {

@@ -202,3 +202,144 @@ test("SQLite database adapter owns app schema metadata, migrations, references, 
     }
   });
 });
+
+test("SQLite database adapter owns runtime storage for auth, files, logs, and system metadata", async () => {
+  await withTempDir(async (dir) => {
+    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
+    try {
+      adapter.ensureSystemTable();
+      adapter.writeSystemMetadata("runtimeKey", "runtime-value");
+      assert.deepEqual({ ...adapter.readSystemMetadata("runtimeKey") }, { value: "runtime-value" });
+
+      adapter.ensureAuthStorage({ providers: { email: { enabled: true } } });
+      const now = "2026-07-04T10:00:00.000Z";
+      adapter.insertAuthUser({
+        id: "user-1",
+        createdAt: now,
+        displayName: "Anonymous",
+        email: null,
+        picture: null,
+        isAuthenticated: 0,
+        isGuest: 1,
+        provider: "anonymous",
+      });
+      adapter.insertAuthSession({
+        token: "session-1",
+        userId: "user-1",
+        createdAt: now,
+        expiresAt: "2026-08-03T10:00:00.000Z",
+      });
+      assert.equal(adapter.readAuthSessionWithUser("session-1").provider, "anonymous");
+
+      adapter.insertEmailCredential({
+        email: "mira@example.com",
+        userId: "user-1",
+        passwordHash: "hash",
+        passwordSalt: "salt",
+        createdAt: now,
+      });
+      assert.equal(adapter.emailCredentialExists("mira@example.com"), true);
+      adapter.linkAuthUser({
+        id: "user-1",
+        displayName: "Mira",
+        email: "mira@example.com",
+        picture: null,
+        isAuthenticated: 1,
+        isGuest: 0,
+        provider: "email",
+      });
+      assert.equal(adapter.findEmailCredentialWithUser("mira@example.com").displayName, "Mira");
+      adapter.rotateAuthSession("session-1", {
+        token: "session-2",
+        userId: "user-1",
+        createdAt: "2026-07-04T11:00:00.000Z",
+        expiresAt: "2026-08-03T11:00:00.000Z",
+      });
+      assert.equal(adapter.readAuthSessionWithUser("session-1"), null);
+      assert.equal(adapter.readAuthSessionWithUser("session-2").token, "session-2");
+      adapter.insertOAuthState({
+        state: "oauth-state",
+        sessionToken: "session-2",
+        returnTo: "http://127.0.0.1:4000/after",
+        redirectUri: "http://127.0.0.1:4000/__sporades/auth/google/callback",
+        createdAt: now,
+      });
+      assert.equal(adapter.consumeOAuthState("oauth-state").sessionToken, "session-2");
+      assert.equal(adapter.consumeOAuthState("oauth-state"), null);
+
+      adapter.ensureFileStorage();
+      adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });
+      assert.equal(adapter.findFileBucket("user-1", "default").id, "bucket-1");
+      adapter.insertFileRow({
+        id: "file-1",
+        ownerId: "user-1",
+        bucketId: "bucket-1",
+        bucketName: "default",
+        name: "hello.txt",
+        type: "text/plain",
+        size: 5,
+        version: "version-1",
+        status: "pending",
+        createdAt: now,
+        updatedAt: now,
+      });
+      adapter.insertFileUpload({
+        id: "upload-1",
+        fileId: "file-1",
+        ownerId: "user-1",
+        version: "version-1",
+        expectedSize: 5,
+        createdAt: now,
+      });
+      assert.equal(adapter.selectFileUpload("upload-1").fileId, "file-1");
+      adapter.completeFileUpload(adapter.selectFileUpload("upload-1"), 5, "2026-07-04T10:01:00.000Z");
+      adapter.deleteFileUpload("upload-1");
+      assert.equal(adapter.selectFileUpload("upload-1"), null);
+      assert.equal(adapter.fileRowForOwner("file-1", "user-1").status, "uploaded");
+      adapter.insertPublicFileUrl({
+        id: "public-1",
+        fileId: "file-1",
+        ownerId: "user-1",
+        version: "version-1",
+        expiresAt: null,
+        createdAt: now,
+      });
+      assert.equal(adapter.selectPublicFileRow("public-1").publicVersion, "version-1");
+      adapter.updatePendingFileRow({
+        id: "file-1",
+        name: "goodbye.txt",
+        type: "text/plain",
+        size: 7,
+        version: "version-2",
+        status: "pending",
+        updatedAt: "2026-07-04T10:02:00.000Z",
+      });
+      adapter.revokePublicFileUrlsForFile("file-1", "2026-07-04T10:02:00.000Z");
+      assert.equal(adapter.selectPublicFileRow("public-1").revokedAt, "2026-07-04T10:02:00.000Z");
+      adapter.markFileDeleted("file-1", "2026-07-04T10:03:00.000Z");
+      assert.equal(adapter.fileRowForOwner("file-1", "user-1"), null);
+
+      adapter.ensureLogStorage();
+      for (const index of [1, 2, 3]) {
+        adapter.insertLogIndexEvent({
+          timestamp: `2026-07-04T10:00:0${index}.000Z`,
+          category: "app",
+          event: "ctx.log",
+          level: "info",
+          message: `log-${index}`,
+          capsule: { name: "adapter-island" },
+          release: null,
+          request: null,
+          correlation: null,
+        });
+      }
+      adapter.pruneLogIndex(2);
+      assert.deepEqual(
+        adapter.readRecentLogEvents(10).map((entry) => entry.message),
+        ["log-2", "log-3"],
+      );
+    } finally {
+      adapter.close();
+    }
+  });
+});
