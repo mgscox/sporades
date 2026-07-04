@@ -51,6 +51,7 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
         selectFileUpload(uploadId: any): any;
         completeFileUpload(upload: any, size: any, updatedAt: any): any;
         deleteFileUploadsForPath(ownerId: any, path: any): any;
+        deleteFileUploadsForFile(ownerId: any, fileId: any): any;
         deleteFileUpload(uploadId: any): any;
         selectPublicFileRow(publicUrlId: any): any;
         insertPublicFileUrl(row: any): any;
@@ -168,6 +169,7 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
         selectFileUpload(uploadId: any): any;
         completeFileUpload(upload: any, size: any, updatedAt: any): any;
         deleteFileUploadsForPath(ownerId: any, path: any): any;
+        deleteFileUploadsForFile(ownerId: any, fileId: any): any;
         deleteFileUpload(uploadId: any): any;
         selectPublicFileRow(publicUrlId: any): any;
         insertPublicFileUrl(row: any): any;
@@ -261,6 +263,7 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
         selectFileUpload(uploadId: any): any;
         completeFileUpload(upload: any, size: any, updatedAt: any): any;
         deleteFileUploadsForPath(ownerId: any, path: any): any;
+        deleteFileUploadsForFile(ownerId: any, fileId: any): any;
         deleteFileUpload(uploadId: any): any;
         selectPublicFileRow(publicUrlId: any): any;
         insertPublicFileUrl(row: any): any;
@@ -324,6 +327,7 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
         selectFileUpload(uploadId: any): any;
         completeFileUpload(upload: any, size: any, updatedAt: any): any;
         deleteFileUploadsForPath(ownerId: any, path: any): any;
+        deleteFileUploadsForFile(ownerId: any, fileId: any): any;
         deleteFileUpload(uploadId: any): any;
         selectPublicFileRow(publicUrlId: any): any;
         insertPublicFileUrl(row: any): any;
@@ -441,6 +445,7 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
         selectFileUpload(uploadId: any): any;
         completeFileUpload(upload: any, size: any, updatedAt: any): any;
         deleteFileUploadsForPath(ownerId: any, path: any): any;
+        deleteFileUploadsForFile(ownerId: any, fileId: any): any;
         deleteFileUpload(uploadId: any): any;
         selectPublicFileRow(publicUrlId: any): any;
         insertPublicFileUrl(row: any): any;
@@ -534,6 +539,7 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
         selectFileUpload(uploadId: any): any;
         completeFileUpload(upload: any, size: any, updatedAt: any): any;
         deleteFileUploadsForPath(ownerId: any, path: any): any;
+        deleteFileUploadsForFile(ownerId: any, fileId: any): any;
         deleteFileUpload(uploadId: any): any;
         selectPublicFileRow(publicUrlId: any): any;
         insertPublicFileUrl(row: any): any;
@@ -668,6 +674,7 @@ declare function createRuntimeDatabaseAdapter(databasePath: any, serverEnv?: {},
     selectFileUpload(uploadId: any): any;
     completeFileUpload(upload: any, size: any, updatedAt: any): any;
     deleteFileUploadsForPath(ownerId: any, path: any): any;
+    deleteFileUploadsForFile(ownerId: any, fileId: any): any;
     deleteFileUpload(uploadId: any): any;
     selectPublicFileRow(publicUrlId: any): any;
     insertPublicFileUrl(row: any): any;
@@ -785,6 +792,7 @@ declare function createRuntimeDatabaseAdapter(databasePath: any, serverEnv?: {},
     selectFileUpload(uploadId: any): any;
     completeFileUpload(upload: any, size: any, updatedAt: any): any;
     deleteFileUploadsForPath(ownerId: any, path: any): any;
+    deleteFileUploadsForFile(ownerId: any, fileId: any): any;
     deleteFileUpload(uploadId: any): any;
     selectPublicFileRow(publicUrlId: any): any;
     insertPublicFileUrl(row: any): any;
@@ -878,6 +886,7 @@ declare function createRuntimeDatabaseAdapter(databasePath: any, serverEnv?: {},
     selectFileUpload(uploadId: any): any;
     completeFileUpload(upload: any, size: any, updatedAt: any): any;
     deleteFileUploadsForPath(ownerId: any, path: any): any;
+    deleteFileUploadsForFile(ownerId: any, fileId: any): any;
     deleteFileUpload(uploadId: any): any;
     selectPublicFileRow(publicUrlId: any): any;
     insertPublicFileUrl(row: any): any;
@@ -988,6 +997,7 @@ export declare function createSqliteDatabaseAdapter(databasePath: any, options?:
     selectFileUpload(uploadId: any): any;
     completeFileUpload(upload: any, size: any, updatedAt: any): any;
     deleteFileUploadsForPath(ownerId: any, path: any): any;
+    deleteFileUploadsForFile(ownerId: any, fileId: any): any;
     deleteFileUpload(uploadId: any): any;
     selectPublicFileRow(publicUrlId: any): any;
     insertPublicFileUrl(row: any): any;
@@ -1108,6 +1118,7 @@ export declare function createPostgresDatabaseAdapter(options: any): Promise<{
     selectFileUpload(uploadId: any): any;
     completeFileUpload(upload: any, size: any, updatedAt: any): any;
     deleteFileUploadsForPath(ownerId: any, path: any): any;
+    deleteFileUploadsForFile(ownerId: any, fileId: any): any;
     deleteFileUpload(uploadId: any): any;
     selectPublicFileRow(publicUrlId: any): any;
     insertPublicFileUrl(row: any): any;
@@ -1210,6 +1221,7 @@ export declare function createLibsqlDatabaseAdapter(options: any): Promise<{
     selectFileUpload(uploadId: any): any;
     completeFileUpload(upload: any, size: any, updatedAt: any): any;
     deleteFileUploadsForPath(ownerId: any, path: any): any;
+    deleteFileUploadsForFile(ownerId: any, fileId: any): any;
     deleteFileUpload(uploadId: any): any;
     selectPublicFileRow(publicUrlId: any): any;
     insertPublicFileUrl(row: any): any;

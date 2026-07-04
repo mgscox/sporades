@@ -228,6 +228,42 @@ test("runtime file operations accept absolute File paths and File references", a
       assert.equal(overlapRows.length, 1);
       assert.equal(overlapRows[0].id, explicit.id);
 
+      const inFlightA = await createPendingFileUpload(database, auth, {
+        file: { name: "in-flight-a.png", type: "image/png", size: 8, path: "/images/avatars/profile.png" },
+      });
+      assert.equal(inFlightA.ok, true, inFlightA.error?.message);
+      const inFlightAUploadId = inFlightA.data.uploadUrl.split("/").pop();
+      let releaseInFlightA;
+      const pausedBody = (async function* () {
+        await new Promise((resolve) => {
+          releaseInFlightA = resolve;
+        });
+        yield Buffer.from("older-a");
+      })();
+      const inFlightACompletion = completePendingFileUpload(database, inFlightAUploadId, pausedBody);
+      await Promise.resolve();
+
+      const inFlightB = await createPendingFileUpload(database, auth, {
+        file: { name: "in-flight-b.png", type: "image/png", size: 8, path: "/images/avatars/profile.png" },
+      });
+      assert.equal(inFlightB.ok, true, inFlightB.error?.message);
+      const inFlightBUploadId = inFlightB.data.uploadUrl.split("/").pop();
+      const inFlightBCompleted = await completePendingFileUpload(
+        database,
+        inFlightBUploadId,
+        Readable.from([Buffer.from("newer-b")]),
+      );
+      assert.equal(inFlightBCompleted.ok, true, inFlightBCompleted.error?.message);
+      assert.equal(inFlightBCompleted.data.file.version, inFlightB.data.file.version);
+
+      releaseInFlightA();
+      const inFlightACompleted = await inFlightACompletion;
+      assert.equal(inFlightACompleted.ok, false);
+      assert.equal(inFlightACompleted.error.message, "Upload URL was superseded.");
+      const liveAfterInFlightRace = await getPrivateFileUrl(database, auth, "/images/avatars/profile.png");
+      assert.equal(liveAfterInFlightRace.ok, true);
+      assert.equal(liveAfterInFlightRace.data.file.version, inFlightB.data.file.version);
+
       const overwritten = await uploadAndComplete({
         name: "replacement.png",
         type: "image/png",
@@ -260,9 +296,22 @@ test("runtime file operations accept absolute File paths and File references", a
       assert.equal(bucketPath.bucket, "media");
       assert.equal(bucketPath.path, "/media/photos/cat.jpg");
 
-      const deleted = await deletePrivateFile(database, auth, "/images/avatars/profile.png");
-      assert.equal(deleted.ok, true);
-      assert.equal(deleted.data.file.id, explicit.id);
+      const pendingBeforeDelete = await createPendingFileUpload(database, auth, {
+        file: { name: "zombie.png", type: "image/png", size: 6, path: "/images/avatars/profile.png" },
+      });
+      assert.equal(pendingBeforeDelete.ok, true, pendingBeforeDelete.error?.message);
+      assert.equal(pendingBeforeDelete.data.file.id, explicit.id);
+      const deleteAfterPending = await deletePrivateFile(database, auth, "/images/avatars/profile.png");
+      assert.equal(deleteAfterPending.ok, true);
+      assert.equal(deleteAfterPending.data.file.id, pendingBeforeDelete.data.file.id);
+      const zombieCompletion = await completePendingFileUpload(
+        database,
+        pendingBeforeDelete.data.uploadUrl.split("/").pop(),
+        Readable.from([Buffer.from("zombie")]),
+      );
+      assert.equal(zombieCompletion.ok, false);
+      assert.equal(zombieCompletion.error.message, "Upload URL not found.");
+      assert.equal((await getPrivateFileUrl(database, auth, pendingBeforeDelete.data.file.id)).ok, false);
 
       const recreated = await uploadAndComplete({
         name: "avatar.png",
@@ -1288,6 +1337,7 @@ function wrapAsyncRuntimeAdapter(adapter) {
     "selectFileUpload",
     "completeFileUpload",
     "deleteFileUploadsForPath",
+    "deleteFileUploadsForFile",
     "deleteFileUpload",
     "selectPublicFileRow",
     "insertPublicFileUrl",

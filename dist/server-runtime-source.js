@@ -617,9 +617,16 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
             return this.prepare("SELECT * FROM sporades_file_uploads WHERE id = ?").get(uploadId) ?? null;
         },
         completeFileUpload(upload, size, updatedAt) {
+            const consumed = this.prepare("DELETE FROM sporades_file_uploads WHERE id = ? AND fileId = ? AND version = ?").run(upload.id, upload.fileId, upload.version);
+            if (consumed.changes === 0) {
+                return consumed;
+            }
             const existing = this.selectFileById(upload.fileId);
             if (existing) {
-                return this.prepare("UPDATE sporades_files SET bucketId = ?, bucketName = ?, path = ?, name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ?, deletedAt = NULL WHERE id = ?").run(upload.bucketId, upload.bucketName, upload.path, upload.name, upload.type, size, upload.version, "uploaded", updatedAt, upload.fileId);
+                if (existing.deletedAt !== null && existing.deletedAt !== undefined) {
+                    return { changes: 0 };
+                }
+                return this.prepare("UPDATE sporades_files SET bucketId = ?, bucketName = ?, path = ?, name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ? WHERE id = ? AND deletedAt IS NULL").run(upload.bucketId, upload.bucketName, upload.path, upload.name, upload.type, size, upload.version, "uploaded", updatedAt, upload.fileId);
             }
             return this.insertFileRow({
                 id: upload.fileId,
@@ -638,6 +645,9 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         },
         deleteFileUploadsForPath(ownerId, path) {
             return this.prepare("DELETE FROM sporades_file_uploads WHERE ownerId = ? AND path = ?").run(ownerId, path);
+        },
+        deleteFileUploadsForFile(ownerId, fileId) {
+            return this.prepare("DELETE FROM sporades_file_uploads WHERE ownerId = ? AND fileId = ?").run(ownerId, fileId);
         },
         deleteFileUpload(uploadId) {
             return this.prepare("DELETE FROM sporades_file_uploads WHERE id = ?").run(uploadId);
@@ -3176,7 +3186,6 @@ export async function completePendingFileUpload(database, uploadId, request, web
                 error: createStructuredFileError("Upload URL was superseded.", "Request a fresh upload URL before retrying this file upload."),
             };
         }
-        await database.sqlite.deleteFileUpload(uploadId);
         await database.sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
         const file = fileMetadataFromRow(await database.sqlite.selectFileById(upload.fileId));
         websocketHub?.notifyFileEvent?.(upload.ownerId, {
@@ -3293,6 +3302,8 @@ export async function deletePrivateFile(database, auth, fileReference) {
         };
     }
     const now = new Date().toISOString();
+    await database.sqlite.deleteFileUploadsForFile(auth.userId, row.id);
+    await database.sqlite.deleteFileUploadsForPath(auth.userId, row.path);
     await database.sqlite.markFileDeleted(row.id, now);
     await database.sqlite.revokePublicFileUrlsForFile(row.id, now);
     await removeFileVersionBestEffort(database, row.id, row.version);
