@@ -6,7 +6,7 @@ export function createServerBundleSource({ config, serverEnv, sealedServerEnv = 
         .join("\n\n");
     const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
     return `// Sporades server bundle
-import { createDecipheriv, createHash, createHash as createHash2, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createDecipheriv, createHash, createHash as createHash2, createHmac, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, readFileSync as readFileSync2 } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -139,6 +139,8 @@ function readRuntimeServiceEnv() {
     "SPORADES_SERVICE_STORAGE_ACCESS_KEY",
     "SPORADES_SERVICE_STORAGE_SECRET_KEY",
     "SPORADES_SERVICE_STORAGE_BUCKET",
+    "SPORADES_SERVICE_STORAGE_REGION",
+    "SPORADES_SERVICE_STORAGE_NAMESPACE",
   ];
   return Object.fromEntries(keys.filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
 }

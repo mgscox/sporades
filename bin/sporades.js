@@ -685,7 +685,7 @@ function structuredError(error) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash2, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash as createHash2, createHmac, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   readJsonRequest,
@@ -844,6 +844,20 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createFileStorageTables,
   createRuntimeFileStorageAdapter,
   createLocalFileStorageAdapter,
+  createS3CompatibleFileStorageAdapter,
+  s3ObjectKey,
+  s3Request,
+  s3RequestBodyBuffer,
+  s3SignedHeaders,
+  s3Signature,
+  s3SigningKey,
+  s3CanonicalPath,
+  s3EncodedPathSegment,
+  s3StorageNamespace,
+  s3AmzDate,
+  s3Hmac,
+  s3Sha256Hex,
+  s3ObjectNotFoundError,
   routeRuntimeHealth,
   createRuntimeHealthResult,
   checkRuntimeSqlite,
@@ -1071,9 +1085,11 @@ function sanitizeResponseHeaders(headers) {
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
   const path5 = await import("node:path");
   const sqlite = await createRuntimeDatabaseAdapter(databasePath, options?.serviceEnv ?? serverEnv, config);
+  const serviceEnv = options?.serviceEnv ?? serverEnv;
   const fileStorage = await createRuntimeFileStorageAdapter({
     config,
-    databasePath
+    databasePath,
+    serviceEnv
   });
   const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
   const endpoints = extractEndpoints(serverSource);
@@ -1133,8 +1149,18 @@ async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config
   }
   return await createSqliteDatabaseAdapter(databasePath);
 }
-async function createRuntimeFileStorageAdapter({ config = {}, databasePath }) {
+async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
   const path5 = await import("node:path");
+  if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
+    return createS3CompatibleFileStorageAdapter({
+      endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT,
+      bucket: serviceEnv.SPORADES_SERVICE_STORAGE_BUCKET,
+      region: serviceEnv.SPORADES_SERVICE_STORAGE_REGION ?? "us-east-1",
+      accessKey: serviceEnv.SPORADES_SERVICE_STORAGE_ACCESS_KEY,
+      secretKey: serviceEnv.SPORADES_SERVICE_STORAGE_SECRET_KEY,
+      namespace: serviceEnv.SPORADES_SERVICE_STORAGE_NAMESPACE
+    });
+  }
   return createLocalFileStorageAdapter({
     storagePath: config.files?.storagePath ?? path5.join(path5.dirname(databasePath), "files")
   });
@@ -1184,6 +1210,214 @@ function localFileStoragePath(storagePath, fileId) {
 }
 function localFileVersionPath(storagePath, fileId, version) {
   return `${localFileStoragePath(storagePath, fileId)}/${version}`;
+}
+function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region, accessKey, secretKey, namespace }) {
+  if (typeof endpoint !== "string" || endpoint.length === 0) {
+    throw new Error("S3-compatible file storage requires an endpoint.");
+  }
+  if (typeof bucket !== "string" || bucket.length === 0) {
+    throw new Error("S3-compatible file storage requires a bucket.");
+  }
+  if (typeof region !== "string" || region.length === 0) {
+    throw new Error("S3-compatible file storage requires a region.");
+  }
+  if (typeof accessKey !== "string" || accessKey.length === 0 || typeof secretKey !== "string" || secretKey.length === 0) {
+    throw new Error("S3-compatible file storage requires access credentials.");
+  }
+  const isolatedNamespace = s3StorageNamespace(namespace);
+  const config = { endpoint, bucket, region, accessKey, secretKey };
+  let bucketReady = false;
+  const ensureBucket = async () => {
+    if (bucketReady) {
+      return;
+    }
+    const head = await s3Request(config, { method: "HEAD", key: null });
+    if (head.statusCode === 404) {
+      const created = await s3Request(config, { method: "PUT", key: null, body: Buffer.alloc(0) });
+      if (created.statusCode < 200 || created.statusCode >= 300) {
+        throw new Error(`S3-compatible file storage bucket setup failed with HTTP ${created.statusCode}.`);
+      }
+    } else if (head.statusCode < 200 || head.statusCode >= 300) {
+      throw new Error(`S3-compatible file storage bucket check failed with HTTP ${head.statusCode}.`);
+    }
+    bucketReady = true;
+  };
+  return {
+    engine: "s3-compatible",
+    endpoint,
+    bucket,
+    region,
+    namespace: isolatedNamespace,
+    objectKeyPrefix: `${isolatedNamespace}/files`,
+    async writeFileVersion({ fileId, version, bytes }) {
+      await ensureBucket();
+      const result = await s3Request(config, {
+        method: "PUT",
+        key: s3ObjectKey(isolatedNamespace, fileId, version),
+        body: bytes
+      });
+      if (result.statusCode < 200 || result.statusCode >= 300) {
+        throw new Error(`S3-compatible file write failed with HTTP ${result.statusCode}.`);
+      }
+    },
+    async readFileVersion({ fileId, version }) {
+      const result = await s3Request(config, {
+        method: "GET",
+        key: s3ObjectKey(isolatedNamespace, fileId, version)
+      });
+      if (result.statusCode === 404) {
+        throw s3ObjectNotFoundError();
+      }
+      if (result.statusCode < 200 || result.statusCode >= 300) {
+        throw new Error(`S3-compatible file read failed with HTTP ${result.statusCode}.`);
+      }
+      return result.body;
+    },
+    async deleteFileVersion({ fileId, version }) {
+      const result = await s3Request(config, {
+        method: "DELETE",
+        key: s3ObjectKey(isolatedNamespace, fileId, version)
+      });
+      if (result.statusCode === 404) {
+        return;
+      }
+      if (result.statusCode < 200 || result.statusCode >= 300) {
+        throw new Error(`S3-compatible file delete failed with HTTP ${result.statusCode}.`);
+      }
+    },
+    async checkHealth() {
+      try {
+        await ensureBucket();
+        return { ok: true, adapter: "s3-compatible" };
+      } catch {
+        return { ok: false, adapter: "s3-compatible" };
+      }
+    },
+    close() {
+    }
+  };
+}
+function s3ObjectKey(namespace, fileId, version) {
+  return `${namespace}/files/${fileId}/${version}`;
+}
+async function s3Request(config, { method, key = null, body = null }) {
+  const endpoint = new URL(config.endpoint);
+  const isHttps = endpoint.protocol === "https:";
+  const transport = await (isHttps ? import("node:https") : import("node:http"));
+  const payload = s3RequestBodyBuffer(body);
+  const amzDate = s3AmzDate(/* @__PURE__ */ new Date());
+  const date = amzDate.slice(0, 8);
+  const pathname = s3CanonicalPath(endpoint.pathname, config.bucket, key);
+  const payloadHash = s3Sha256Hex(payload);
+  const headers = s3SignedHeaders({
+    "host": endpoint.host,
+    "x-amz-content-sha256": payloadHash,
+    "x-amz-date": amzDate
+  });
+  headers.authorization = s3Signature({
+    method,
+    pathname,
+    query: "",
+    headers,
+    payloadHash,
+    accessKey: config.accessKey,
+    secretKey: config.secretKey,
+    region: config.region,
+    date,
+    amzDate
+  });
+  return await new Promise((resolve, reject) => {
+    const request = transport.request(
+      {
+        protocol: endpoint.protocol,
+        hostname: endpoint.hostname,
+        port: endpoint.port || void 0,
+        method,
+        path: `${pathname}${endpoint.search}`,
+        headers: {
+          ...headers,
+          "content-length": payload.length
+        }
+      },
+      (response) => {
+        const chunks = [];
+        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        response.on("end", () => {
+          resolve({
+            statusCode: response.statusCode ?? 0,
+            headers: response.headers,
+            body: Buffer.concat(chunks)
+          });
+        });
+      }
+    );
+    request.on("error", reject);
+    if (payload.length > 0) {
+      request.write(payload);
+    }
+    request.end();
+  });
+}
+function s3RequestBodyBuffer(body) {
+  if (body === null || body === void 0) {
+    return Buffer.alloc(0);
+  }
+  if (Buffer.isBuffer(body)) {
+    return body;
+  }
+  if (body instanceof Uint8Array) {
+    return Buffer.from(body);
+  }
+  return Buffer.from(String(body));
+}
+function s3SignedHeaders(headers) {
+  return Object.fromEntries(
+    Object.entries(headers).map(([name, value]) => [name.toLowerCase(), String(value).trim()]).sort(([left], [right]) => left.localeCompare(right))
+  );
+}
+function s3Signature({ method, pathname, query, headers, payloadHash, accessKey, secretKey, region, date, amzDate }) {
+  const signedHeaders = Object.keys(headers).join(";");
+  const canonicalHeaders = Object.entries(headers).map(([name, value]) => `${name}:${value}
+`).join("");
+  const canonicalRequest = [method, pathname, query, canonicalHeaders, signedHeaders, payloadHash].join("\n");
+  const credentialScope = `${date}/${region}/s3/aws4_request`;
+  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credentialScope, s3Sha256Hex(canonicalRequest)].join("\n");
+  const signature = s3Hmac(s3SigningKey(secretKey, date, region), stringToSign).toString("hex");
+  return `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+}
+function s3SigningKey(secretKey, date, region) {
+  const dateKey = s3Hmac(`AWS4${secretKey}`, date);
+  const dateRegionKey = s3Hmac(dateKey, region);
+  const dateRegionServiceKey = s3Hmac(dateRegionKey, "s3");
+  return s3Hmac(dateRegionServiceKey, "aws4_request");
+}
+function s3CanonicalPath(basePath, bucket, key) {
+  const base = String(basePath ?? "").split("/").filter(Boolean);
+  const parts = [...base, bucket, ...key ? String(key).split("/") : []].map(s3EncodedPathSegment);
+  return `/${parts.join("/")}`;
+}
+function s3EncodedPathSegment(segment) {
+  return encodeURIComponent(segment).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+function s3StorageNamespace(namespace) {
+  if (typeof namespace !== "string" || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(namespace)) {
+    throw new Error("S3-compatible file storage requires a capsule storage namespace.");
+  }
+  return `capsules/${namespace}`;
+}
+function s3AmzDate(date) {
+  return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
+}
+function s3Hmac(key, data) {
+  return createHmac("sha256", key).update(data).digest();
+}
+function s3Sha256Hex(data) {
+  return createHash2("sha256").update(data).digest("hex");
+}
+function s3ObjectNotFoundError() {
+  const error = new Error("S3-compatible file object not found.");
+  error.code = "ENOENT";
+  return error;
 }
 async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const { DatabaseSync } = await import("node:sqlite");
@@ -6272,7 +6506,7 @@ function createServerBundleSource({ config, serverEnv, sealedServerEnv = { enabl
   const runtimeFunctions = SERVER_RUNTIME_SOURCE_FUNCTIONS.map((fn) => fn.toString()).join("\n\n");
   const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
   return `// Sporades server bundle
-import { createDecipheriv, createHash, createHash as createHash2, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createDecipheriv, createHash, createHash as createHash2, createHmac, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, readFileSync as readFileSync2 } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -6405,6 +6639,8 @@ function readRuntimeServiceEnv() {
     "SPORADES_SERVICE_STORAGE_ACCESS_KEY",
     "SPORADES_SERVICE_STORAGE_SECRET_KEY",
     "SPORADES_SERVICE_STORAGE_BUCKET",
+    "SPORADES_SERVICE_STORAGE_REGION",
+    "SPORADES_SERVICE_STORAGE_NAMESPACE",
   ];
   return Object.fromEntries(keys.filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
 }
@@ -8097,6 +8333,7 @@ var MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z";
 var MINIO_ROOT_USER = "sporades";
 var MINIO_ROOT_PASSWORD = "sporades-minio-local-secret";
 var MINIO_BUCKET = "sporades-files";
+var MINIO_REGION = "us-east-1";
 var CAPSULE_SERVICES_COMPOSE_FILE = path3.join(".sporades", "compose", "capsule-services.compose.yml");
 var CAPSULE_SERVICES_STATE_DIR = path3.join(".sporades", "services");
 function validateCapsuleServicesConfig(services) {
@@ -8194,7 +8431,9 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd()) {
       command: 'server /data --console-address ":9001"',
       accessKey: MINIO_ROOT_USER,
       secretKey: MINIO_ROOT_PASSWORD,
-      bucket: MINIO_BUCKET
+      bucket: MINIO_BUCKET,
+      region: MINIO_REGION,
+      namespace: projectSlug
     };
   }
   const model = {
@@ -12635,6 +12874,8 @@ function capsuleServicesContainerEnv(capsuleServices) {
     env.SPORADES_SERVICE_STORAGE_ACCESS_KEY = service.accessKey;
     env.SPORADES_SERVICE_STORAGE_SECRET_KEY = service.secretKey;
     env.SPORADES_SERVICE_STORAGE_BUCKET = service.bucket;
+    env.SPORADES_SERVICE_STORAGE_REGION = service.region;
+    env.SPORADES_SERVICE_STORAGE_NAMESPACE = service.namespace;
   }
   return env;
 }
@@ -12652,6 +12893,8 @@ function capsuleServicesLocalEnv(capsuleServices, connections) {
     env.SPORADES_SERVICE_STORAGE_ACCESS_KEY = service.accessKey;
     env.SPORADES_SERVICE_STORAGE_SECRET_KEY = service.secretKey;
     env.SPORADES_SERVICE_STORAGE_BUCKET = service.bucket;
+    env.SPORADES_SERVICE_STORAGE_REGION = service.region;
+    env.SPORADES_SERVICE_STORAGE_NAMESPACE = service.namespace;
   }
   return env;
 }
