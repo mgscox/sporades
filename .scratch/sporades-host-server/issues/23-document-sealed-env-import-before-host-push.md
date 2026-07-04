@@ -1,8 +1,12 @@
 # Document Sealed Server env import before Host push
 
-Status: needs-triage
+Status: done
 
-## Problem
+## Parent
+
+.scratch/sporades-host-server/PRD.md
+
+## What to build
 
 The Host deployment smoke path in `docs/server-installation.md` and
 `docs/agents/host-provisioning.md` shows registering and pushing a Capsule, but
@@ -37,17 +41,21 @@ failure.
 
 ## Acceptance Criteria
 
-- [ ] `docs/server-installation.md` explains that Capsules with
+- [x] `docs/server-installation.md` explains that Capsules with
   `.env.sporades.server` must run `sporades env import --file
   .env.sporades.server --json` before `sporades host push`.
-- [ ] `docs/agents/host-provisioning.md` includes the same step in the optional
+- [x] `docs/agents/host-provisioning.md` includes the same step in the optional
   deploy script or clearly documents it immediately before the script.
-- [ ] The docs mention `sporades auth set google --client-json ...` before
+- [x] The docs mention `sporades auth set google --client-json ...` before
   `env import` for templates that use Google OAuth credentials.
-- [ ] The deploy smoke instructions avoid implying that legacy Server env files
+- [x] The deploy smoke instructions avoid implying that legacy Server env files
   are pushed directly.
-- [ ] A docs test or Host CLI test guards the expected hint/workflow so this
+- [x] A docs test or Host CLI test guards the expected hint/workflow so this
   step does not drift again.
+
+## Blocked by
+
+None - can start immediately
 
 ## Notes
 

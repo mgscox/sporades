@@ -1,8 +1,12 @@
 # Reuse Hetzner SSH keys by fingerprint during provisioning
 
-Status: needs-triage
+Status: done
 
-## Problem
+## Parent
+
+.scratch/sporades-host-server/PRD.md
+
+## What to build
 
 The documented Hetzner provider script creates an SSH key only by checking
 whether `SPORADES_SSH_KEY_NAME` exists:
@@ -19,23 +23,28 @@ with:
 hcloud: SSH key not unique (uniqueness_error, ...)
 ```
 
-Provisioning only continued after manually discovering the existing key name
-and setting `SPORADES_SSH_KEY_NAME` to that value. That is a provider-script
-workaround; the provisioning path should reuse an existing matching key by
-fingerprint, like the DigitalOcean script already does.
+Update the Hetzner Host provisioning path so it is safe to retry when the same
+local public key already exists in the Hetzner project under another name.
+Provisioning should first reuse a key with the requested name, then fall back to
+matching the local public key fingerprint against existing Hetzner SSH keys, and
+only create a new key when neither match exists.
 
 ## Acceptance Criteria
 
-- [ ] The Hetzner provider script first checks for a key matching
+- [x] The Hetzner provider script first checks for a key matching
   `SPORADES_SSH_KEY_NAME`.
-- [ ] If no name match exists, it computes the local public key fingerprint and
+- [x] If no name match exists, it computes the local public key fingerprint and
   searches existing Hetzner SSH keys for the same fingerprint.
-- [ ] If a fingerprint match exists, server creation reuses the matched Hetzner
+- [x] If a fingerprint match exists, server creation reuses the matched Hetzner
   SSH key instead of attempting to create a duplicate.
-- [ ] If no name or fingerprint match exists, provisioning creates a new key as
+- [x] If no name or fingerprint match exists, provisioning creates a new key as
   it does today.
-- [ ] `docs/agents/host-provisioning.md` documents the duplicate-key behavior
+- [x] `docs/agents/host-provisioning.md` documents the duplicate-key behavior
   and remains safe to retry.
+
+## Blocked by
+
+None - can start immediately
 
 ## Notes
 
