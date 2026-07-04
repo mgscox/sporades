@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { openDevDatabase, runMutation, SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../src/server-runtime-source.js";
-import { mutation, query, String, table } from "../src/server.js";
+import { openDevDatabase, runMutation, SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
+import { mutation, query, String, table } from "../dist/server.js";
 
 const createEndpointDatabaseApi = SERVER_RUNTIME_SOURCE_FUNCTIONS.find(
   (fn) => fn.name === "createEndpointDatabaseApi",

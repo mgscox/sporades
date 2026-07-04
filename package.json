@@ -9,14 +9,17 @@
   "exports": {
     "./server": {
       "types": "./src/types/server.d.ts",
-      "default": "./src/server.js"
+      "default": "./dist/server.js"
     },
     "./client": {
       "types": "./src/types/client.d.ts",
-      "default": "./src/client.js"
+      "default": "./dist/client.js"
     }
   },
   "scripts": {
+    "build": "tsc --project tsconfig.json && node ./scripts/build-bin.mjs",
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "pretest": "npm run build && node ./scripts/check-generated-bin.mjs",
     "test": "node --test --test-concurrency=1"
   },
   "engines": {
@@ -26,6 +29,7 @@
     "esbuild": "^0.25.12"
   },
   "devDependencies": {
+    "@types/node": "^24.0.0",
     "typescript": "^5.9.3"
   }
 }

@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { openDevDatabase, routeRuntimeHealth } from "../src/server-runtime-source.js";
+import { openDevDatabase, routeRuntimeHealth } from "../dist/server-runtime-source.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");

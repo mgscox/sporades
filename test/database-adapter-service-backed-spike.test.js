@@ -5,7 +5,7 @@ import path from "node:path";
 import test from "node:test";
 
 import { createServiceBackedSqliteAdapter } from "./support/service-backed-sqlite-adapter.js";
-import { dumpDatabase, listDatabaseTables, runReadOnlyQuery } from "../src/server-runtime-source.js";
+import { dumpDatabase, listDatabaseTables, runReadOnlyQuery } from "../dist/server-runtime-source.js";
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-service-backed-adapter-spike-"));

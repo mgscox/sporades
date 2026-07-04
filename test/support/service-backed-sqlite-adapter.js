@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 
-import { createSqliteDatabaseAdapter } from "../../src/server-runtime-source.js";
+import { createSqliteDatabaseAdapter } from "../../dist/server-runtime-source.js";
 
 const serviceScript = fileURLToPath(new URL("./sqlite-http-service.js", import.meta.url));
 const requestScript = fileURLToPath(new URL("./sqlite-http-request.js", import.meta.url));

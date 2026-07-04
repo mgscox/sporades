@@ -16,7 +16,7 @@ import {
   runMutation,
   runReadOnlyQuery,
   signUpWithEmail,
-} from "../src/server-runtime-source.js";
+} from "../dist/server-runtime-source.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
 async function withTempDir(fn) {

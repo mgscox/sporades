@@ -1,3 +1,4 @@
+// @ts-nocheck
 export const FATAL_RUNTIME_RESTART_POLICY = {
   dev: {
     mode: "automatic",

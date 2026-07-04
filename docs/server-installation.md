@@ -135,16 +135,14 @@ Node 22+ is recommended because the Host helper is an ESM Node script.
 ## 3. Install the Server Helper Runtime
 
 From the local Sporades repo, choose the remote root and create the expected
-helper location plus the small shared runtime files used by the helper:
+helper location:
 
 ```sh
 REMOTE=root@<server-ip>
 REMOTE_ROOT=/srv/sporades
 
-ssh "$REMOTE" "mkdir -p $REMOTE_ROOT/bin $REMOTE_ROOT/src $REMOTE_ROOT/incoming"
+ssh "$REMOTE" "mkdir -p $REMOTE_ROOT/bin $REMOTE_ROOT/incoming"
 scp ./bin/sporades-host-helper.js "$REMOTE:$REMOTE_ROOT/bin/sporades-host-helper"
-scp ./src/base-image.js "$REMOTE:$REMOTE_ROOT/src/base-image.js"
-scp ./src/runtime-restart-policy.js "$REMOTE:$REMOTE_ROOT/src/runtime-restart-policy.js"
 scp ./Dockerfile.base "$REMOTE:$REMOTE_ROOT/Dockerfile.base"
 ssh "$REMOTE" "chmod 0755 $REMOTE_ROOT/bin/sporades-host-helper"
 ```

@@ -1,7 +1,9 @@
+// @ts-nocheck
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv } from "./sealed-server-env.js";
+import { serverRuntimeModuleSource } from "./server.js";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 import { createServerBundleSource } from "./templates/server-bundle-template.js";
 
@@ -366,7 +368,7 @@ function sporadesServerPlugin() {
       }));
       build.onLoad({ filter: /^sporades\/server$/, namespace: "sporades-runtime" }, async () => ({
         loader: "js",
-        contents: await readFile(new URL("./server.js", import.meta.url), "utf8"),
+        contents: serverRuntimeModuleSource(),
       }));
     },
   };

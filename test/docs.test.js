@@ -61,7 +61,7 @@ test("canonical docs describe the implemented platform scope", async () => {
     readProjectFile("docs/adr/0001-env-file-mount-for-v0.md"),
     readProjectFile("docs/adr/0002-capitalised-field-builders.md"),
     readProjectFile("docs/adr/0005-better-auth-server-side-anonymous.md"),
-    readProjectFile("src/templates/scaffold-template.js"),
+    readProjectFile("src/templates/scaffold-template.ts"),
   ]);
 
   const staleClaims = [

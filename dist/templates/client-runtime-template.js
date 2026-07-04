@@ -1,5 +1,6 @@
+// @ts-nocheck
 export function createClientRuntimeSource() {
-  return `
+    return `
 const websocketPath = "/__sporades/ws";
 
 export function isAuthenticated() {
@@ -423,3 +424,4 @@ function structuredError(error) {
 }
 `;
 }
+//# sourceMappingURL=client-runtime-template.js.map

@@ -1,72 +1,62 @@
+// @ts-nocheck
 export function scaffoldFiles(options) {
-  const templateOptions = resolveTemplateOptions(options.template);
-  const framework = options.framework ?? templateOptions.framework;
-  const renderOptions = { ...options, framework };
-  const packageName = options.name;
-  const sporadesDependency = options.sporadesDependency ?? "sporades";
-  const frameworkDependencies =
-    framework === "react"
-      ? {
-          react: "^19.0.0",
-          "react-dom": "^19.0.0",
+    const templateOptions = resolveTemplateOptions(options.template);
+    const framework = options.framework ?? templateOptions.framework;
+    const renderOptions = { ...options, framework };
+    const packageName = options.name;
+    const sporadesDependency = options.sporadesDependency ?? "sporades";
+    const frameworkDependencies = framework === "react"
+        ? {
+            react: "^19.0.0",
+            "react-dom": "^19.0.0",
         }
-      : {
-          preact: "^10.25.0",
+        : {
+            preact: "^10.25.0",
         };
-  const frameworkDevDependencies =
-    framework === "react"
-      ? {
-          "@types/react": "^19.0.0",
-          "@types/react-dom": "^19.0.0",
+    const frameworkDevDependencies = framework === "react"
+        ? {
+            "@types/react": "^19.0.0",
+            "@types/react-dom": "^19.0.0",
         }
-      : {};
-  const templateFiles = templateOptions.files(renderOptions);
-
-  return {
-    "sporades.json": `${JSON.stringify(
-      {
-        name: options.name,
-        template: options.template,
-        client: { framework },
-        auth: templateOptions.auth,
-        security: {
-          cors: {
-            allowedOrigins: [],
-          },
-          csp: {
-            mode: "report-only",
-          },
-        },
-        deploy: { port: 4000 },
-        dev: { port: null },
-      },
-      null,
-      2,
-    )}\n`,
-    "package.json": `${JSON.stringify(
-      {
-        name: packageName,
-        private: true,
-        type: "module",
-        scripts: {
-          dev: "sporades dev",
-          deploy: "sporades deploy",
-        },
-        dependencies: frameworkDependencies,
-        devDependencies: {
-          ...frameworkDevDependencies,
-          sporades: sporadesDependency,
-          typescript: "^5.8.0",
-        },
-      },
-      null,
-      2,
-    )}\n`,
-    "AGENTS.md": agentsTemplate(options.template),
-    "CLAUDE.md": agentsTemplate(options.template),
-    ".gitignore": "node_modules/\n.sporades/\n.env*.local\n",
-    ".env.sporades.server": templateOptions.serverEnv,
-    "index.html": `<!doctype html>
+        : {};
+    const templateFiles = templateOptions.files(renderOptions);
+    return {
+        "sporades.json": `${JSON.stringify({
+            name: options.name,
+            template: options.template,
+            client: { framework },
+            auth: templateOptions.auth,
+            security: {
+                cors: {
+                    allowedOrigins: [],
+                },
+                csp: {
+                    mode: "report-only",
+                },
+            },
+            deploy: { port: 4000 },
+            dev: { port: null },
+        }, null, 2)}\n`,
+        "package.json": `${JSON.stringify({
+            name: packageName,
+            private: true,
+            type: "module",
+            scripts: {
+                dev: "sporades dev",
+                deploy: "sporades deploy",
+            },
+            dependencies: frameworkDependencies,
+            devDependencies: {
+                ...frameworkDevDependencies,
+                sporades: sporadesDependency,
+                typescript: "^5.8.0",
+            },
+        }, null, 2)}\n`,
+        "AGENTS.md": agentsTemplate(options.template),
+        "CLAUDE.md": agentsTemplate(options.template),
+        ".gitignore": "node_modules/\n.sporades/\n.env*.local\n",
+        ".env.sporades.server": templateOptions.serverEnv,
+        "index.html": `<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
@@ -79,57 +69,54 @@ export function scaffoldFiles(options) {
   </body>
 </html>
 `,
-    ...templateFiles,
-  };
+        ...templateFiles,
+    };
 }
-
 function resolveTemplateOptions(template) {
-  switch (template) {
-    case "todo":
-      return {
-        framework: "react",
-        auth: { mode: "anonymous" },
-        serverEnv: "# Server-only environment variables for Sporades.\n",
-        files: todoTemplateFiles,
-      };
-    case "guestbook":
-      return {
-        framework: "react",
-        auth: { mode: "anonymous" },
-        serverEnv: "# Server-only environment variables for Sporades.\n",
-        files: guestbookTemplateFiles,
-      };
-    case "photo-library":
-      return {
-        framework: "react",
-        auth: {
-          providers: {
-            anonymous: true,
-            google: {
-              clientIdEnv: "GOOGLE_CLIENT_ID",
-              clientSecretEnv: "GOOGLE_CLIENT_SECRET",
-            },
-          },
-        },
-        serverEnv:
-          "# Server-only environment variables for Sporades.\nGOOGLE_CLIENT_ID=replace-with-google-client-id\nGOOGLE_CLIENT_SECRET=replace-with-google-client-secret\n",
-        files: photoLibraryTemplateFiles,
-      };
-    case "blank":
-    default:
-      return {
-        framework: "react",
-        auth: { mode: "anonymous" },
-        serverEnv: "# Server-only environment variables for Sporades.\n",
-        files: blankTemplateFiles,
-      };
-  }
+    switch (template) {
+        case "todo":
+            return {
+                framework: "react",
+                auth: { mode: "anonymous" },
+                serverEnv: "# Server-only environment variables for Sporades.\n",
+                files: todoTemplateFiles,
+            };
+        case "guestbook":
+            return {
+                framework: "react",
+                auth: { mode: "anonymous" },
+                serverEnv: "# Server-only environment variables for Sporades.\n",
+                files: guestbookTemplateFiles,
+            };
+        case "photo-library":
+            return {
+                framework: "react",
+                auth: {
+                    providers: {
+                        anonymous: true,
+                        google: {
+                            clientIdEnv: "GOOGLE_CLIENT_ID",
+                            clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+                        },
+                    },
+                },
+                serverEnv: "# Server-only environment variables for Sporades.\nGOOGLE_CLIENT_ID=replace-with-google-client-id\nGOOGLE_CLIENT_SECRET=replace-with-google-client-secret\n",
+                files: photoLibraryTemplateFiles,
+            };
+        case "blank":
+        default:
+            return {
+                framework: "react",
+                auth: { mode: "anonymous" },
+                serverEnv: "# Server-only environment variables for Sporades.\n",
+                files: blankTemplateFiles,
+            };
+    }
 }
-
 function blankTemplateFiles(options) {
-  return {
-    "README.md": `# ${options.name}\n\nA blank Sporades capsule.\n`,
-    "server/index.ts": `import { capsule } from "sporades/server";
+    return {
+        "README.md": `# ${options.name}\n\nA blank Sporades capsule.\n`,
+        "server/index.ts": `import { capsule } from "sporades/server";
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
@@ -138,16 +125,15 @@ export default capsule({
   mutations: {},
 });
 `,
-    "client/index.tsx": blankClientTemplate(options.framework),
-    "shared/types.ts": `export {};
+        "client/index.tsx": blankClientTemplate(options.framework),
+        "shared/types.ts": `export {};
 `,
-  };
+    };
 }
-
 function todoTemplateFiles(options) {
-  return {
-    "README.md": `# ${options.name}\n\nA Sporades todo capsule.\n`,
-    "server/index.ts": `import { Boolean, capsule, mutation, query, String, table } from "sporades/server";
+    return {
+        "README.md": `# ${options.name}\n\nA Sporades todo capsule.\n`,
+        "server/index.ts": `import { Boolean, capsule, mutation, query, String, table } from "sporades/server";
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
@@ -176,8 +162,8 @@ export default capsule({
   },
 });
 `,
-    "client/index.tsx": todoClientTemplate(options.framework),
-    "shared/types.ts": `export type Todo = {
+        "client/index.tsx": todoClientTemplate(options.framework),
+        "shared/types.ts": `export type Todo = {
   id: string;
   text: string;
   done: boolean;
@@ -185,18 +171,17 @@ export default capsule({
   updatedAt: string;
 };
 `,
-  };
+    };
 }
-
 function guestbookTemplateFiles(options) {
-  return {
-    "README.md": `# ${options.name}
+    return {
+        "README.md": `# ${options.name}
 
 A Sporades guestbook capsule.
 
 Trusted author fields come from \`ctx.auth\` on the server, not from client-submitted input. Anonymous sessions can sign the guestbook, and Google-linked sessions display richer author metadata when configured with \`sporades auth set google\`.
 `,
-    "server/index.ts": `import { capsule, mutation, query, String, table } from "sporades/server";
+        "server/index.ts": `import { capsule, mutation, query, String, table } from "sporades/server";
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
@@ -239,8 +224,8 @@ export default capsule({
   },
 });
 `,
-    "client/index.tsx": guestbookClientTemplate(options.framework),
-    "shared/types.ts": `export type GuestbookEntry = {
+        "client/index.tsx": guestbookClientTemplate(options.framework),
+        "shared/types.ts": `export type GuestbookEntry = {
   id: string;
   body: string;
   authorId: string;
@@ -250,12 +235,11 @@ export default capsule({
   updatedAt: string;
 };
 `,
-  };
+    };
 }
-
 function photoLibraryTemplateFiles(options) {
-  return {
-    "README.md": `# ${options.name}
+    return {
+        "README.md": `# ${options.name}
 
 A Sporades photo library capsule.
 
@@ -263,7 +247,7 @@ Uploads use \`files.upload()\` from \`sporades/client\`, then store the returned
 
 Google is enabled in \`sporades.json\` with placeholder server env values so the Capsule starts immediately. Replace them with real OAuth credentials via \`sporades auth set google\` before using real Google sign-in.
 `,
-    "server/index.ts": `import { Boolean, capsule, mutation, Number, query, String, table } from "sporades/server";
+        "server/index.ts": `import { Boolean, capsule, mutation, Number, query, String, table } from "sporades/server";
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
@@ -345,8 +329,8 @@ export default capsule({
   },
 });
 `,
-    "client/index.tsx": photoLibraryClientTemplate(options.framework),
-    "shared/types.ts": `export type Photo = {
+        "client/index.tsx": photoLibraryClientTemplate(options.framework),
+        "shared/types.ts": `export type Photo = {
   id: string;
   title: string;
   fileId: string;
@@ -365,12 +349,11 @@ export default capsule({
   updatedAt: string;
 };
 `,
-  };
+    };
 }
-
 function blankClientTemplate(framework) {
-  if (framework === "preact") {
-    return `import { render } from "preact";
+    if (framework === "preact") {
+        return `import { render } from "preact";
 
 function App() {
   return (
@@ -383,9 +366,8 @@ function App() {
 
 render(<App />, document.getElementById("app")!);
 `;
-  }
-
-  return `import { createRoot } from "react-dom/client";
+    }
+    return `import { createRoot } from "react-dom/client";
 
 function App() {
   return (
@@ -399,10 +381,9 @@ function App() {
 createRoot(document.getElementById("app")!).render(<App />);
 `;
 }
-
 function todoClientTemplate(framework) {
-  if (framework === "preact") {
-    return `import { render } from "preact";
+    if (framework === "preact") {
+        return `import { render } from "preact";
 import { useState, useEffect } from "preact/hooks";
 import { auth, createHooks } from "sporades/client";
 
@@ -445,9 +426,8 @@ function App() {
 
 render(<App />, document.getElementById("app")!);
 `;
-  }
-
-  return `import { useEffect, useState } from "react";
+    }
+    return `import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { auth, createHooks } from "sporades/client";
 
@@ -491,10 +471,9 @@ function App() {
 createRoot(document.getElementById("app")!).render(<App />);
 `;
 }
-
 function guestbookClientTemplate(framework) {
-  if (framework === "preact") {
-    return `import { render } from "preact";
+    if (framework === "preact") {
+        return `import { render } from "preact";
 import { useState, useEffect } from "preact/hooks";
 import { auth, createHooks } from "sporades/client";
 
@@ -626,9 +605,8 @@ const styles = \`
   @media (max-width: 680px) { .intro, .composer-row { display: grid; } .auth-panel { justify-content: flex-start; } }
 \`;
 `;
-  }
-
-  return `import { useEffect, useState } from "react";
+    }
+    return `import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { auth, createHooks } from "sporades/client";
 
@@ -761,10 +739,9 @@ const styles = \`
 \`;
 `;
 }
-
 function photoLibraryClientTemplate(framework) {
-  if (framework === "preact") {
-    return `import { render } from "preact";
+    if (framework === "preact") {
+        return `import { render } from "preact";
 import { useState, useEffect } from "preact/hooks";
 import { auth, createHooks, files } from "sporades/client";
 
@@ -967,9 +944,8 @@ const styles = \`
   @media (max-width: 700px) { .topbar { display: grid; } .auth-panel { justify-content: flex-start; } }
 \`;
 `;
-  }
-
-  return `import { useEffect, useState } from "react";
+    }
+    return `import { useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { auth, createHooks, files } from "sporades/client";
 
@@ -1173,9 +1149,8 @@ const styles = \`
 \`;
 `;
 }
-
 function agentsTemplate(template) {
-  return `# Sporades App Instructions
+    return `# Sporades App Instructions
 
 This directory is for a Sporades app. Sporades is a CLI-first tool for building and running full-stack web apps.
 
@@ -1214,15 +1189,15 @@ sporades db dump
 - \`sporades.json\` - project configuration
 `;
 }
-
 function escapeHtml(value) {
-  return value.replace(/[&<>"']/g, (char) => {
-    return {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;",
-    }[char];
-  });
+    return value.replace(/[&<>"']/g, (char) => {
+        return {
+            "&": "&amp;",
+            "<": "&lt;",
+            ">": "&gt;",
+            '"': "&quot;",
+            "'": "&#39;",
+        }[char];
+    });
 }
+//# sourceMappingURL=scaffold-template.js.map

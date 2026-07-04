@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createClientRuntimeSource } from "../src/templates/client-runtime-template.js";
+import { createClientRuntimeSource } from "../dist/templates/client-runtime-template.js";
 
 async function importClientRuntime() {
   const source = createClientRuntimeSource();

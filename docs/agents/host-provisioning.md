@@ -475,8 +475,6 @@ fi
 : "${SPORADES_TLS_MODE:=automatic}"
 
 if [ ! -f ./bin/sporades-host-helper.js ] || \
-   [ ! -f ./src/base-image.js ] || \
-   [ ! -f ./src/runtime-restart-policy.js ] || \
    [ ! -f ./Dockerfile.base ]; then
   echo "Run this from the Sporades repository root." >&2
   exit 1
@@ -524,15 +522,11 @@ ssh -n "$SPORADES_SSH_TARGET" "set -euo pipefail
   apt-get install -y nodejs docker.io caddy
   systemctl enable --now docker
   systemctl enable --now caddy
-  mkdir -p '$SPORADES_REMOTE_ROOT/bin' '$SPORADES_REMOTE_ROOT/src' '$SPORADES_REMOTE_ROOT/incoming'
+  mkdir -p '$SPORADES_REMOTE_ROOT/bin' '$SPORADES_REMOTE_ROOT/incoming'
 "
 
 scp ./bin/sporades-host-helper.js \
   "$SPORADES_SSH_TARGET:$SPORADES_REMOTE_ROOT/bin/sporades-host-helper"
-scp ./src/base-image.js \
-  "$SPORADES_SSH_TARGET:$SPORADES_REMOTE_ROOT/src/base-image.js"
-scp ./src/runtime-restart-policy.js \
-  "$SPORADES_SSH_TARGET:$SPORADES_REMOTE_ROOT/src/runtime-restart-policy.js"
 scp ./Dockerfile.base \
   "$SPORADES_SSH_TARGET:$SPORADES_REMOTE_ROOT/Dockerfile.base"
 
@@ -642,9 +636,7 @@ packages the Host-encrypted envelope for the Hosted Capsule release.
 - `ssh "$SPORADES_SSH_TARGET" "node --version"` returns Node.js 22+.
 - `ssh "$SPORADES_SSH_TARGET" "docker --version && caddy version"` succeeds.
 - `<remote-root>/bin/sporades-host-helper` exists and is executable.
-- `<remote-root>/src/base-image.js`,
-  `<remote-root>/src/runtime-restart-policy.js`, and
-  `<remote-root>/Dockerfile.base` exist.
+- `<remote-root>/Dockerfile.base` exists.
 - `sporades host current --json` points at the expected SSH target, Hosted
   domain, remote root, and TLS mode.
 - `sporades host health --host <alias> --json` succeeds after DNS is in place.

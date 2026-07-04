@@ -1,14 +1,13 @@
+// @ts-nocheck
 import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../server-runtime-source.js";
-
 export function createServerBundleSource({ config, serverEnv, sealedServerEnv = { enabled: false }, serverSource, serverModuleSource }) {
-  const runtimeFunctions = SERVER_RUNTIME_SOURCE_FUNCTIONS
-    .map((fn) => fn.toString())
-    .join("\n\n");
-  const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
-
-return `// Sporades server bundle
-import { createDecipheriv, createHash, privateDecrypt, randomBytes, randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+    const runtimeFunctions = SERVER_RUNTIME_SOURCE_FUNCTIONS
+        .map((fn) => fn.toString())
+        .join("\n\n");
+    const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
+    return `// Sporades server bundle
+import { createDecipheriv, createHash, createHash as createHash2, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { appendFileSync, mkdirSync, readFileSync, readFileSync as readFileSync2 } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
@@ -154,3 +153,4 @@ function unsealRuntimeServerEnv(envelope, privateKey) {
 }
 `;
 }
+//# sourceMappingURL=server-bundle-template.js.map

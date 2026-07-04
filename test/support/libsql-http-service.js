@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 
-import { createSqliteDatabaseAdapter } from "../../src/server-runtime-source.js";
+import { createSqliteDatabaseAdapter } from "../../dist/server-runtime-source.js";
 
 export async function withFakeLibsqlService(databasePath, optionsOrFn, maybeFn) {
   const options = typeof optionsOrFn === "function" ? {} : optionsOrFn ?? {};
