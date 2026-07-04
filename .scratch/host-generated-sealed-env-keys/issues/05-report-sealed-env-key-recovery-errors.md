@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Report Sealed Env Key Recovery Errors
 
@@ -12,14 +12,13 @@ Return structured, agent-operable errors when Host sealed-env key material, matc
 
 ## Acceptance criteria
 
-- [ ] Missing Host private key errors include Hosted Capsule identity, expected fingerprint when known, and a re-key/re-seal recovery hint.
-- [ ] Missing local source value errors explain whether local Sealed Server env, legacy Server env import, or source-of-truth values are needed.
-- [ ] Errors do not print plaintext values or private keys.
-- [ ] Host inspection reports sealed-env key status without exposing private key material.
-- [ ] Docs describe the no-private-key/no-plaintext-crossing model and recovery when Host keys are lost.
-- [ ] Tests cover missing key, missing source values, redaction, and documentation examples where practical.
+- [x] Missing Host private key errors include Hosted Capsule identity, expected fingerprint when known, and a re-key/re-seal recovery hint.
+- [x] Missing local source value errors explain whether local Sealed Server env, legacy Server env import, or source-of-truth values are needed.
+- [x] Errors do not print plaintext values or private keys.
+- [x] Host inspection reports sealed-env key status without exposing private key material.
+- [x] Docs describe the no-private-key/no-plaintext-crossing model and recovery when Host keys are lost.
+- [x] Tests cover missing key, missing source values, redaction, and documentation examples where practical.
 
 ## Blocked by
 
 - .scratch/host-generated-sealed-env-keys/issues/04-rotate-host-generated-sealed-env-keys.md
-
