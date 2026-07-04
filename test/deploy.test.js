@@ -1637,7 +1637,7 @@ test("sporades deploy generates owned Compose for a declared database Capsule se
     assert.match(compose, /name: sporades-todo-island-services/);
     assert.match(compose, /sporades-todo-island-database:/);
     assert.match(compose, /image: ghcr\.io\/tursodatabase\/libsql-server:v0\.24\.32/);
-    assert.match(compose, /sporades-todo-island-database-data:/);
+    assert.match(compose, /todo-island\/\.sporades\/services\/database":\/var\/lib\/sqld:rw/);
     assert.match(compose, /sporades-todo-island-services:/);
     assert.match(compose, /com\.sporades\.managed: "true"/);
     assert.match(compose, /com\.sporades\.capsule-service\.kind: "database"/);
@@ -1728,7 +1728,7 @@ test("sporades deploy keeps Capsule service Compose names stable for a project",
     assert.equal(secondCompose, firstCompose);
     assert.match(firstCompose, /name: sporades-team-notes-services/);
     assert.match(firstCompose, /sporades-team-notes-database:/);
-    assert.match(firstCompose, /sporades-team-notes-database-data:/);
+    assert.match(firstCompose, /service-lab\/\.sporades\/services\/database":\/var\/lib\/sqld:rw/);
   });
 });
 
