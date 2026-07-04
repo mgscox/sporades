@@ -12,6 +12,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   isLocalDevOrigin,
   appendVaryHeader,
   sanitizeResponseHeaders,
+  createSqliteDatabaseAdapter,
   openDevDatabase,
   createRuntimeLogSink,
   requirePathModule,
@@ -343,10 +344,8 @@ function sanitizeResponseHeaders(headers) {
 }
 
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null) {
-  const { DatabaseSync } = await import("node:sqlite");
   const path = await import("node:path");
-  mkdirSync(path.dirname(databasePath), { recursive: true });
-  const sqlite = new DatabaseSync(databasePath);
+  const sqlite = await createSqliteDatabaseAdapter(databasePath);
   const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
   const endpoints = extractEndpoints(serverSource);
   const queries = extractQueryHandlersFromCapsule(capsuleDefinition) ?? extractQueryHandlers(serverSource);
@@ -380,7 +379,6 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     serverEnv,
     dataDir: path.dirname(databasePath),
   });
-  sqlite.exec("PRAGMA journal_mode = WAL");
   sqlite.exec("CREATE TABLE IF NOT EXISTS sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
   createAnonymousAuthTables(sqlite, database.authConfig);
   createFileStorageTables(sqlite);
@@ -389,6 +387,42 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
   migrateAppSchema(sqlite, schema);
 
   return database;
+}
+
+export async function createSqliteDatabaseAdapter(databasePath) {
+  const { DatabaseSync } = await import("node:sqlite");
+  const path = await import("node:path");
+  mkdirSync(path.dirname(databasePath), { recursive: true });
+  const connection = new DatabaseSync(databasePath);
+
+  const adapter = {
+    exec(sql) {
+      return connection.exec(sql);
+    },
+    prepare(sql) {
+      const statement = connection.prepare(sql);
+      return {
+        all(...params) {
+          return statement.all(...params);
+        },
+        get(...params) {
+          return statement.get(...params);
+        },
+        run(...params) {
+          return statement.run(...params);
+        },
+        columns() {
+          return statement.columns();
+        },
+      };
+    },
+    close() {
+      return connection.close();
+    },
+  };
+
+  adapter.exec("PRAGMA journal_mode = WAL");
+  return adapter;
 }
 
 function logIndexLimit(config = {}) {
