@@ -274,6 +274,13 @@ names, network, volume, and labels are Sporades-owned runtime state. Do not
 hand-edit the Compose YAML for the supported path; edit `sporades.json` and let
 Sporades regenerate it.
 
+The first Docker Compose Capsule service implementation is local-only. Dev
+sessions and local Container sessions can start, inspect, stop, and reset
+declared local service state. Hosted Capsule service orchestration is deferred:
+future Host servers should interpret the same `sporades.json` service intent
+through `sporades host ...` commands rather than requiring app code, hand-edited
+Compose files, or a separate top-level service namespace.
+
 ### Security Policy
 
 `security` controls the Capsule HTTP security posture for Sporades-owned
@@ -1180,6 +1187,13 @@ sporades host logs stdout --host personal --subname team-notes -n 200 --json
 sporades host restart team-notes --host personal --json
 sporades host stop team-notes --host personal --json
 ```
+
+If a Capsule declares `services` today, those services are only managed for
+local Dev sessions and local Container sessions. A later Hosted Capsule service
+implementation should extend the existing `sporades host` surface so operators
+can register, push, start, stop, restart, inspect, reset, back up, and recover a
+Hosted Capsule and its required services from the same Host profile. It should
+not introduce a separate `sporades services` namespace for Hosted operation.
 
 **Push validation**
 
