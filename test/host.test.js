@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readdir, readFile, readlink, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
@@ -2686,7 +2687,7 @@ process.exit(0);
     assert.equal(createResult.code, 0, createResult.stderr);
     const projectDir = path.join(dir, "todo-island");
     await installFakeReact(projectDir);
-    await writeFile(path.join(projectDir, ".env.sporades.server"), "SECRET_TOKEN=swordfish\nPUBLIC_LABEL=not-client\n");
+    await rm(path.join(projectDir, ".env.sporades.server"), { force: true });
 
     const env = {
       ...hostEnv(configDir),
@@ -2710,7 +2711,7 @@ process.exit(0);
     assert.equal(output.error, null);
     assert.equal(output.data.installed, true);
     assert.equal(output.data.restarted, false);
-    assert.equal(output.data.release.serverEnvIncluded, true);
+    assert.equal(output.data.release.serverEnvIncluded, false);
     assert.match(output.data.release.id, /^\d{8}T\d{6}Z-[a-f0-9]{8}$/);
     assert.equal(output.data.release.directory, `/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/releases/${output.data.release.id}`);
     assert.equal(output.data.release.currentLink, "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current");
@@ -2719,7 +2720,6 @@ process.exit(0);
       "client.js",
       "index.html",
       "sporades.json",
-      ".env.sporades.server",
     ]);
 
     const [scpCall] = await readJsonl(fakeScp.logPath);
@@ -2729,7 +2729,6 @@ process.exit(0);
     assert.deepEqual(uploadedArchives, [`${output.data.release.id}.tar.gz`]);
     const entries = await listArchiveEntries(path.join(fakeScp.uploadDir, uploadedArchives[0]), projectDir);
     assert.deepEqual(entries, [
-      ".env.sporades.server",
       "client.js",
       "index.html",
       "server.mjs",
@@ -2749,12 +2748,45 @@ process.exit(0);
   });
 });
 
-test("sporades host push packages Host-profile re-encrypted Sealed Server env without plaintext values", async () => {
+test("sporades host push automatically re-encrypts Sealed Server env to the Hosted Capsule public key", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
+    const hostKeyPair = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const hostPublicKeyFingerprint = createHash("sha256").update(hostKeyPair.publicKey).digest("hex").slice(0, 16);
     const fakeSsh = await installContractFakeSsh(
       path.join(dir, "fake-ssh"),
       `const request = JSON.parse(stdin);
+if (request.action === "capsule.list") {
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    data: {
+      capsules: [{
+        subname: "team-notes",
+        domain: request.host.domain,
+        hostedUrl: "https://team-notes." + request.host.domain,
+        sealedServerEnv: {
+          publicKey: process.env.FAKE_HOST_PUBLIC_KEY,
+          publicKeyFingerprint: process.env.FAKE_HOST_PUBLIC_KEY_FINGERPRINT,
+          publicKeyPath: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data/sealed-server-env/keys/" + process.env.FAKE_HOST_PUBLIC_KEY_FINGERPRINT + ".public.pem"
+        }
+      }]
+    },
+    error: null
+  }) + "\\n");
+  process.exit(0);
+}
+if (request.action !== "capsule.release.install") {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected action.", hint: "Use capsule.release.install." }
+  }) + "\\n");
+  process.exit(0);
+}
 process.stdout.write(JSON.stringify({
   ok: true,
   data: {
@@ -2764,7 +2796,8 @@ process.stdout.write(JSON.stringify({
       id: request.release.id,
       files: request.release.files,
       serverEnvIncluded: request.release.serverEnvIncluded,
-      sealedServerEnvIncluded: request.release.sealedServerEnvIncluded
+      sealedServerEnvIncluded: request.release.sealedServerEnvIncluded,
+      sealedServerEnv: request.release.sealedServerEnv
     }
   },
   error: null
@@ -2785,6 +2818,8 @@ process.exit(0);
       ...hostEnv(configDir),
       ...fakeSsh.env,
       ...fakeScp.env,
+      FAKE_HOST_PUBLIC_KEY: hostKeyPair.publicKey,
+      FAKE_HOST_PUBLIC_KEY_FINGERPRINT: hostPublicKeyFingerprint,
       PATH: `${fakeSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}`,
     };
     assert.equal(
@@ -2798,9 +2833,6 @@ process.exit(0);
     );
     assert.equal((await runCli(["host", "bind", "team-notes", "--host", "personal", "--json"], { cwd: projectDir, env })).code, 0);
     assert.equal((await runCli(["env", "import", "--json"], { cwd: projectDir, env })).code, 0);
-    const reencrypted = await runCli(["env", "reencrypt", "--host", "personal", "--json"], { cwd: projectDir, env });
-    assert.equal(reencrypted.code, 0, reencrypted.stderr);
-    assert.doesNotMatch(reencrypted.stdout, /swordfish|not-client|PRIVATE KEY/);
 
     const push = await runCli(["host", "push", "--json"], { cwd: projectDir, env });
     assert.equal(push.code, 0, `${push.stderr}\n${push.stdout}`);
@@ -2808,6 +2840,9 @@ process.exit(0);
     const output = JSON.parse(push.stdout);
     assert.equal(output.data.release.serverEnvIncluded, false);
     assert.equal(output.data.release.sealedServerEnvIncluded, true);
+    assert.equal(output.data.release.sealedServerEnv.publicKeyFingerprint, hostPublicKeyFingerprint);
+    assert.equal(output.data.release.sealedServerEnv.privateKey, undefined);
+    assert.equal(output.data.release.sealedServerEnv.privateKeyPath, undefined);
     assert.deepEqual(output.data.release.files, [
       "server.mjs",
       "client.js",
@@ -2841,13 +2876,103 @@ process.exit(0);
       child.on("close", (code) => (code === 0 ? resolve(stdout) : reject(new Error(stderr))));
     });
     assert.doesNotMatch(archiveEnvelope, /swordfish|not-client|PRIVATE KEY/);
+    assert.equal(JSON.parse(archiveEnvelope).publicKeyFingerprint, hostPublicKeyFingerprint);
 
-    const [sshCall] = await readJsonl(fakeSsh.logPath);
-    const request = JSON.parse(sshCall.stdin);
+    const [listCall, installCall] = await readJsonl(fakeSsh.logPath);
+    assert.equal(JSON.parse(listCall.stdin).action, "capsule.list");
+    const request = JSON.parse(installCall.stdin);
     assert.equal(request.release.sealedServerEnvIncluded, true);
-    assert.equal(typeof request.release.sealedServerEnv.privateKey, "string");
-    assert.match(request.release.sealedServerEnv.privateKey, /PRIVATE KEY/);
-    assert.doesNotMatch(JSON.stringify(request.release).replace(request.release.sealedServerEnv.privateKey, ""), /swordfish|not-client/);
+    assert.equal(request.release.sealedServerEnv.publicKeyFingerprint, hostPublicKeyFingerprint);
+    assert.equal(request.release.sealedServerEnv.privateKey, undefined);
+    assert.equal(request.release.sealedServerEnv.privateKeyPath, undefined);
+    assert.doesNotMatch(JSON.stringify(request.release), /swordfish|not-client|PRIVATE KEY/);
+  });
+});
+
+test("sporades host push refuses legacy Server env values instead of silently importing them", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      path.join(dir, "fake-ssh"),
+      `process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Should not be called.", hint: "Preflight should fail locally." } }) + "\\n");`,
+    );
+    const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
+    const createResult = await runCli(["create", "legacy-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "legacy-island");
+    await installFakeReact(projectDir);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "SECRET_TOKEN=swordfish\n");
+    const env = {
+      ...hostEnv(configDir),
+      ...fakeSsh.env,
+      ...fakeScp.env,
+      PATH: `${fakeSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+    assert.equal(
+      (
+        await runCli(
+          ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+          { cwd: projectDir, env },
+        )
+      ).code,
+      0,
+    );
+    assert.equal((await runCli(["host", "bind", "team-notes", "--host", "personal", "--json"], { cwd: projectDir, env })).code, 0);
+
+    const push = await runCli(["host", "push", "--json"], { cwd: projectDir, env });
+    assert.equal(push.code, 1);
+    assert.doesNotMatch(push.stdout, /swordfish|PRIVATE KEY/);
+    const output = JSON.parse(push.stdout);
+    assert.equal(output.error.message, "Hosted Capsule push requires Sealed Server env.");
+    assert.match(output.error.hint, /sporades env import/);
+    await fakeSsh.assertNotCalled?.();
+    await assert.rejects(readFile(fakeScp.logPath, "utf8"), { code: "ENOENT" });
+  });
+});
+
+test("sporades host push reports a structured recovery hint when local sealed source values are unavailable", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      path.join(dir, "fake-ssh"),
+      `process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Should not be called.", hint: "Preflight should fail locally." } }) + "\\n");`,
+    );
+    const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
+    const createResult = await runCli(["create", "missing-source-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "missing-source-island");
+    await installFakeReact(projectDir);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "SECRET_TOKEN=swordfish\n");
+    assert.equal((await runCli(["env", "import", "--json"], { cwd: projectDir })).code, 0);
+    await rm(path.join(projectDir, ".sporades", "sealed-server-env", "server-env.private.pem"));
+    await rm(path.join(projectDir, ".env.sporades.server"));
+    const env = {
+      ...hostEnv(configDir),
+      ...fakeSsh.env,
+      ...fakeScp.env,
+      PATH: `${fakeSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+    assert.equal(
+      (
+        await runCli(
+          ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+          { cwd: projectDir, env },
+        )
+      ).code,
+      0,
+    );
+    assert.equal((await runCli(["host", "bind", "team-notes", "--host", "personal", "--json"], { cwd: projectDir, env })).code, 0);
+
+    const push = await runCli(["host", "push", "--json"], { cwd: projectDir, env });
+    assert.equal(push.code, 1);
+    const output = JSON.parse(push.stdout);
+    assert.equal(output.error.message, "Local Sealed Server env source values are unavailable.");
+    assert.match(output.error.hint, /Restore \.sporades\/sealed-server-env\/server-env\.private\.pem|sporades env import/);
+    assert.doesNotMatch(push.stdout, /swordfish|PRIVATE KEY/);
   });
 });
 
@@ -3341,6 +3466,106 @@ test("sporades host helper rejects non-canonical Sealed Server env private key p
     });
     await assert.rejects(readFile(escapedPrivateKeyPath, "utf8"), { code: "ENOENT" });
     await assert.rejects(readFile(path.join(capsuleDir, "current"), "utf8"), { code: "ENOENT" });
+  });
+});
+
+test("sporades host helper starts public-key-only sealed releases with the Host-owned fingerprint key", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const incomingDir = path.join(remoteRoot, "incoming");
+    const runtimeDir = path.join(dir, "runtime-files");
+    const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    const fingerprint = "0123456789abcdef";
+    await mkdir(path.join(runtimeDir, ".sporades", "sealed-server-env"), { recursive: true });
+    await mkdir(incomingDir, { recursive: true });
+    await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
+    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
+    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
+    await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+    await writeFile(
+      path.join(runtimeDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+      `${JSON.stringify({ version: 1, valueAlgorithm: "aes-256-gcm", publicKeyFingerprint: fingerprint, entries: {} })}\n`,
+    );
+    await createTarGz(archivePath, runtimeDir, [
+      "server.mjs",
+      "client.js",
+      "index.html",
+      "sporades.json",
+      ".sporades/sealed-server-env/server-env.sealed.json",
+    ]);
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await mkdir(path.join(capsuleDir, "data", "sealed-server-env", "keys"), { recursive: true });
+    await writeFile(path.join(capsuleDir, "data", "sealed-server-env", "keys", `${fingerprint}.private.pem`), "host-owned private key\n");
+    await writeFile(
+      registryRecordPath,
+      `${JSON.stringify({
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        status: "registered",
+        sealedServerEnv: { currentKeyFingerprint: fingerprint },
+      })}\n`,
+    );
+
+    const docker = await installFakeDocker(dir);
+    const install = await runHostHelper(
+      {
+        action: "capsule.release.install",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        release: {
+          id: "20260630T221500Z-feedface",
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          remoteArchive: archivePath,
+          restart: true,
+          serverEnvIncluded: false,
+          sealedServerEnvIncluded: true,
+          sealedServerEnv: {
+            publicKeyFingerprint: fingerprint,
+            publicKeyPath: path.join(capsuleDir, "data", "sealed-server-env", "keys", `${fingerprint}.public.pem`),
+          },
+          files: ["server.mjs", "client.js", "index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
+          baseImage: {
+            name: "sporades-base",
+            image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+            version: "0.1.0-node22-alpine",
+            updatePolicy: { mode: "manual" },
+          },
+          directories: {
+            capsule: capsuleDir,
+            releases: path.join(capsuleDir, "releases"),
+            release: path.join(capsuleDir, "releases", "20260630T221500Z-feedface"),
+            data: path.join(capsuleDir, "data"),
+          },
+          currentLink: path.join(capsuleDir, "current"),
+        },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(install.code, 0, install.stderr);
+    const output = JSON.parse(install.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.installed, true);
+    assert.equal(output.data.restarted, true);
+    assert.equal(output.data.release.sealedServerEnvIncluded, true);
+    assert.doesNotMatch(install.stdout, /PRIVATE KEY|host-owned private key/);
+
+    const calls = await docker.calls();
+    const runCall = calls.find((call) => call.args[0] === "run");
+    assert(runCall);
+    const privateKeyMount = `${path.join(capsuleDir, "data", "sealed-server-env", "keys", `${fingerprint}.private.pem`)}:/app/.sporades/sealed-server-env/server-env.private.pem:ro`;
+    assert(runCall.args.includes(privateKeyMount));
+    assert(runCall.args.includes(`${path.join(capsuleDir, "current", ".sporades", "sealed-server-env", "server-env.sealed.json")}:/app/.sporades/sealed-server-env/server-env.sealed.json:ro`));
+    assert(runCall.args.includes("SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH=/app/.sporades/sealed-server-env/server-env.private.pem"));
+    assert(runCall.args.includes("SPORADES_SEALED_SERVER_ENV_PATH=/app/.sporades/sealed-server-env/server-env.sealed.json"));
+
+    const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
+    assert.equal(record.releases[0].source.sealedServerEnvIncluded, true);
+    assert.deepEqual(record.releases[0].source.sealedServerEnv, { publicKeyFingerprint: fingerprint });
   });
 });
 

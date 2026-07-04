@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -83,6 +84,37 @@ if (process.argv[2] === "run") {
   return {
     env: {
       PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    },
+  };
+}
+
+async function installContractFakeSsh(dir, scriptBody) {
+  const fakeBinDir = path.join(dir, "fake-ssh-bin");
+  const logPath = path.join(dir, "ssh-calls.jsonl");
+  const sshPath = path.join(fakeBinDir, "ssh");
+  await mkdir(fakeBinDir, { recursive: true });
+  await writeFile(
+    sshPath,
+    `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+let stdin = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  stdin += chunk;
+});
+process.stdin.on("end", () => {
+  appendFileSync(process.env.FAKE_SSH_LOG, JSON.stringify({ args: process.argv.slice(2), stdin }) + "\\n");
+  ${scriptBody}
+});
+`,
+  );
+  await chmod(sshPath, 0o755);
+  return {
+    fakeBinDir,
+    logPath,
+    env: {
+      PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
+      FAKE_SSH_LOG: logPath,
     },
   };
 }
@@ -284,6 +316,79 @@ test("sporades env reencrypt creates Host-profile sealed material without printi
     assert.equal(current.code, 0, current.stderr);
     assert.doesNotMatch(current.stdout, /swordfish|PRIVATE KEY/);
     assert.equal(JSON.parse(current.stdout).data.profile.sealedServerEnv.configured, true);
+  });
+});
+
+test("sporades env reencrypt can target a Hosted Capsule public key for inspection", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "config");
+    const hostKeyPair = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const hostPublicKeyFingerprint = createHash("sha256").update(hostKeyPair.publicKey).digest("hex").slice(0, 16);
+    const fakeSsh = await installContractFakeSsh(
+      path.join(dir, "fake-ssh"),
+      `const request = JSON.parse(stdin);
+if (request.action !== "capsule.list") {
+  process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Unexpected action.", hint: "Use capsule.list." } }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    capsules: [{
+      subname: "team-notes",
+      domain: request.host.domain,
+      hostedUrl: "https://team-notes." + request.host.domain,
+      sealedServerEnv: {
+        publicKey: process.env.FAKE_HOST_PUBLIC_KEY,
+        publicKeyFingerprint: process.env.FAKE_HOST_PUBLIC_KEY_FINGERPRINT,
+        publicKeyPath: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data/sealed-server-env/keys/" + process.env.FAKE_HOST_PUBLIC_KEY_FINGERPRINT + ".public.pem"
+      }
+    }]
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+    const createResult = await runCli(["create", "hosted-key-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "hosted-key-island");
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "SECRET_TOKEN=swordfish\n");
+    assert.equal((await runCli(["env", "import", "--json"], { cwd: projectDir })).code, 0);
+    assert.equal(
+      (
+        await runCli(
+          ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+          { cwd: projectDir, env: { SPORADES_CONFIG_DIR: configDir } },
+        )
+      ).code,
+      0,
+    );
+
+    const reencrypted = await runCli(["env", "reencrypt", "--host", "personal", "--subname", "team-notes", "--json"], {
+      cwd: projectDir,
+      env: {
+        SPORADES_CONFIG_DIR: configDir,
+        ...fakeSsh.env,
+        FAKE_HOST_PUBLIC_KEY: hostKeyPair.publicKey,
+        FAKE_HOST_PUBLIC_KEY_FINGERPRINT: hostPublicKeyFingerprint,
+      },
+    });
+    assert.equal(reencrypted.code, 0, reencrypted.stderr);
+    assert.doesNotMatch(reencrypted.stdout, /swordfish|PRIVATE KEY/);
+    const output = JSON.parse(reencrypted.stdout);
+    assert.equal(output.data.reencrypted, true);
+    assert.equal(output.data.hostAlias, "personal");
+    assert.equal(output.data.subname, "team-notes");
+    assert.equal(output.data.publicKeyFingerprint, hostPublicKeyFingerprint);
+
+    const hostEnvelope = await readFile(path.join(projectDir, ".sporades", "sealed-server-env", "hosts", "personal.team-notes.server-env.sealed.json"), "utf8");
+    assert.doesNotMatch(hostEnvelope, /swordfish|PRIVATE KEY/);
+    assert.equal(JSON.parse(hostEnvelope).publicKeyFingerprint, hostPublicKeyFingerprint);
   });
 });
 

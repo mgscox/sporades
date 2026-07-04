@@ -825,6 +825,9 @@ function validateSealedServerEnvPrivateKeyPath(release, paths) {
   if (!release.sealedServerEnvIncluded) {
     return;
   }
+  if (!release.sealedServerEnv?.privateKey && !release.sealedServerEnv?.privateKeyPath) {
+    return;
+  }
   const privateKeyPath = release.sealedServerEnv?.privateKeyPath;
   const expectedPrivateKeyPath = path.join(paths.data, "sealed-server-env", "server-env.private.pem");
   if (typeof privateKeyPath !== "string" || path.resolve(privateKeyPath) !== path.resolve(expectedPrivateKeyPath)) {
@@ -1419,6 +1422,7 @@ function normaliseLifecycle(request, registryRecord = null) {
   const routeFile = provided.routes?.running?.routeFile ?? path.join(request.host.remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
   const currentLink = provided.currentLink ?? paths.currentLink;
   const accessLog = provided.routes?.accessLog ?? provided.accessLog ?? defaultCapsuleHttpLogPath(request.host.remoteRoot, domain, subname);
+  const sealedServerEnvPrivateKey = releaseSealedServerEnvPrivateKeyMount(registryRecord, paths);
   const authoritativeBaseImage = request.release?.baseImage ?? registryRecord?.baseImage ?? null;
   const updatePolicyMode = normaliseBaseImageUpdatePolicy(
     authoritativeBaseImage?.updatePolicy ?? provided.container?.baseImage?.updatePolicy,
@@ -1454,7 +1458,7 @@ function normaliseLifecycle(request, registryRecord = null) {
           optional: true,
         },
         {
-          host: path.join(paths.data, "sealed-server-env", "server-env.private.pem"),
+          host: sealedServerEnvPrivateKey.host,
           container: "/app/.sporades/sealed-server-env/server-env.private.pem",
           mode: "ro",
           optional: true,
@@ -2915,6 +2919,9 @@ async function recordReleaseUploaded(request, release) {
         files: Array.isArray(release.files) ? [...release.files] : [],
         serverEnvIncluded: Boolean(release.serverEnvIncluded),
         sealedServerEnvIncluded: Boolean(release.sealedServerEnvIncluded),
+        sealedServerEnv: release.sealedServerEnv?.publicKeyFingerprint
+          ? { publicKeyFingerprint: release.sealedServerEnv.publicKeyFingerprint }
+          : undefined,
       },
     }));
     return record;
@@ -3177,6 +3184,22 @@ function normaliseReleaseSource(source) {
   return Object.fromEntries(
     Object.entries(source).filter(([, value]) => value !== undefined),
   );
+}
+
+function releaseSealedServerEnvPrivateKeyMount(registryRecord, paths) {
+  const releaseId = registryRecord?.currentRelease?.id ?? null;
+  const release = normaliseReleaseHistory(registryRecord).find((entry) => entry.id === releaseId);
+  const fingerprint = release?.source?.sealedServerEnv?.publicKeyFingerprint;
+  if (typeof fingerprint === "string" && /^[a-f0-9]{16}$/.test(fingerprint)) {
+    return {
+      host: path.join(paths.data, "sealed-server-env", "keys", `${fingerprint}.private.pem`),
+      fingerprint,
+    };
+  }
+  return {
+    host: path.join(paths.data, "sealed-server-env", "server-env.private.pem"),
+    fingerprint: null,
+  };
 }
 
 function normaliseReleaseEventList(value) {
