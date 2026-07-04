@@ -50,6 +50,10 @@ async function main() {
     await registerCapsule(request);
     return;
   }
+  if (request.action === "capsule.sealed-env.rotate-key") {
+    await rotateCapsuleSealedEnvKey(request);
+    return;
+  }
   if (request.action === "capsule.unregister") {
     await unregisterCapsule(request);
     return;
@@ -319,6 +323,56 @@ async function registerCapsule(request) {
     },
     error: null,
   });
+}
+
+async function rotateCapsuleSealedEnvKey(request) {
+  validateSealedEnvRotationRequest(request);
+  await mkdir(path.dirname(registryLockPath(request)), { recursive: true });
+
+  let data;
+  await withRegistryLock(request, async () => {
+    const record = await readRegistryRecordForCapsule(request, "rotate-key");
+    assertRegistryRecordMatchesRequest(request, record);
+    if (record.status === "unregistered") {
+      throw helperError(
+        "Hosted Capsule is unregistered.",
+        `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before rotating the sealed-env key.`,
+      );
+    }
+
+    const dataDirectory = path.join(request.host.remoteRoot, "hosts", request.host.domain, "capsules", request.capsule.subname, "data");
+    const previousPublicKeyFingerprint = record.sealedServerEnv?.currentKeyFingerprint ?? null;
+    const sealedServerEnv = await generateHostSealedEnvKeyPair(dataDirectory);
+    const now = new Date().toISOString();
+    const nextRecord = {
+      ...record,
+      sealedServerEnv: { ...(record.sealedServerEnv ?? {}), currentKeyFingerprint: sealedServerEnv.publicKeyFingerprint },
+      updatedAt: now,
+    };
+    await writeRegistryRecordAtomic(registryPath(request), nextRecord);
+
+    const referenced = referencedSealedEnvKeyFingerprints(nextRecord);
+    referenced.add(sealedServerEnv.publicKeyFingerprint);
+    const cleanup = await cleanupUnreferencedHostSealedEnvKeys(dataDirectory, referenced);
+    data = {
+      rotated: true,
+      capsule: {
+        subname: request.capsule.subname,
+        domain: request.host.domain,
+        hostedUrl: record.hostedUrl ?? `${request.host.scheme ?? "https"}://${request.capsule.subname}.${request.host.domain}`,
+        remoteCapsuleId: record.remoteCapsuleId ?? `${request.host.domain}/${request.capsule.subname}`,
+      },
+      sealedServerEnv: {
+        previousPublicKeyFingerprint,
+        publicKey: sealedServerEnv.publicKey,
+        publicKeyFingerprint: sealedServerEnv.publicKeyFingerprint,
+        publicKeyPath: sealedServerEnv.publicKeyPath,
+      },
+      cleanup,
+    };
+  });
+
+  writeEnvelope({ ok: true, data, error: null });
 }
 
 async function unregisterCapsule(request) {
@@ -2062,13 +2116,17 @@ async function ensureHostSealedEnvKeyPair(registration, existingRecord = null) {
     }
   }
 
+  return generateHostSealedEnvKeyPair(registration.directories.data);
+}
+
+async function generateHostSealedEnvKeyPair(dataDirectory) {
   const { publicKey, privateKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
     publicKeyEncoding: { type: "spki", format: "pem" },
     privateKeyEncoding: { type: "pkcs8", format: "pem" },
   });
   const publicKeyFingerprint = fingerprintPublicKey(publicKey);
-  const paths = hostSealedEnvKeyPaths(registration.directories.data, publicKeyFingerprint);
+  const paths = hostSealedEnvKeyPaths(dataDirectory, publicKeyFingerprint);
   await mkdir(paths.root, { recursive: true, mode: 0o700 });
   await chmod(paths.root, 0o700);
   await mkdir(paths.keys, { recursive: true, mode: 0o700 });
@@ -2082,6 +2140,52 @@ async function ensureHostSealedEnvKeyPair(registration, existingRecord = null) {
     publicKeyFingerprint,
     publicKeyPath: paths.publicKey,
   };
+}
+
+async function cleanupUnreferencedHostSealedEnvKeys(dataDirectory, referencedFingerprints) {
+  const paths = hostSealedEnvKeyPaths(dataDirectory, "placeholder");
+  let entries;
+  try {
+    entries = await readdir(paths.keys);
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return {
+        deletedKeyFingerprints: [],
+        retainedKeyFingerprints: [...referencedFingerprints].sort(),
+      };
+    }
+    throw error;
+  }
+
+  const deleted = new Set();
+  for (const entry of entries) {
+    const match = /^([a-f0-9]{16})\.(private|public)\.pem$/.exec(entry);
+    if (!match) {
+      continue;
+    }
+    const fingerprint = match[1];
+    if (referencedFingerprints.has(fingerprint)) {
+      continue;
+    }
+    await rm(path.join(paths.keys, entry), { force: true });
+    deleted.add(fingerprint);
+  }
+
+  return {
+    deletedKeyFingerprints: [...deleted].sort(),
+    retainedKeyFingerprints: [...referencedFingerprints].sort(),
+  };
+}
+
+function referencedSealedEnvKeyFingerprints(record) {
+  const fingerprints = new Set();
+  for (const release of normaliseReleaseHistory(record)) {
+    const fingerprint = release?.source?.sealedServerEnv?.publicKeyFingerprint;
+    if (typeof fingerprint === "string" && fingerprint.length > 0) {
+      fingerprints.add(fingerprint);
+    }
+  }
+  return fingerprints;
 }
 
 async function readPublicHostSealedEnvKey(record, remoteRoot) {
@@ -3633,6 +3737,18 @@ function validateLifecycleRequest(request) {
   ];
   if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule lifecycle request.", "Update the Sporades CLI and retry the host lifecycle command.");
+  }
+}
+
+function validateSealedEnvRotationRequest(request) {
+  const requiredStrings = [
+    request.host?.domain,
+    request.host?.alias,
+    request.host?.remoteRoot,
+    request.capsule?.subname,
+  ];
+  if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw helperError("Invalid Hosted Capsule sealed-env key rotation request.", "Update the Sporades CLI and retry `sporades host rotate-key`.");
   }
 }
 

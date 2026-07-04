@@ -590,7 +590,7 @@ function parseHostArgs(args) {
     if (arg.startsWith("--")) {
       throw commandError(
         `Unknown flag: ${arg}`,
-        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
+        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
       );
     }
     positional.push(arg);
@@ -678,6 +678,21 @@ function parseHostArgs(args) {
     }
     if (extra.length > 0) {
       throw commandError("Too many positional arguments.", "Use `sporades host register <subname> --host <alias>`.");
+    }
+    if (hostAlias) {
+      validateHostAlias(hostAlias);
+    }
+    validateCapsuleSubname(positionalSubname);
+    return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
+  }
+
+  if (subcommand === "rotate-key") {
+    const [positionalSubname, ...extra] = positional;
+    if (!positionalSubname) {
+      throw commandError("Missing Capsule subname.", "Use `sporades host rotate-key <subname> --host <alias>`.");
+    }
+    if (extra.length > 0) {
+      throw commandError("Too many positional arguments.", "Use `sporades host rotate-key <subname> --host <alias>`.");
     }
     if (hostAlias) {
       validateHostAlias(hostAlias);
@@ -850,7 +865,7 @@ function parseHostArgs(args) {
 
   throw commandError(
     `Unknown host command: ${subcommand ?? ""}`.trim(),
-    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
+    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
   );
 }
 
@@ -2115,6 +2130,30 @@ async function manageHost(options) {
     if (!options.restart) {
       process.stdout.write("The Hosted Capsule was not restarted.\n");
     }
+    return;
+  }
+
+  if (options.subcommand === "rotate-key") {
+    const config = await readHostConfig();
+    const resolved = resolveHostProfile(config, options.hostAlias);
+    const result = invokeRemoteHostHelper({
+      alias: resolved.alias,
+      profile: resolved.profile,
+      action: "capsule.sealed-env.rotate-key",
+      subname: options.subname,
+      projectDir: options.projectDir,
+    });
+
+    if (options.json) {
+      writeResult(result, !result.ok);
+      return;
+    }
+
+    if (!result.ok) {
+      throw commandError(result.error.message, result.error.hint);
+    }
+    const hostedUrl = result.data?.capsule?.hostedUrl ?? `${resolved.profile.scheme}://${options.subname}.${resolved.profile.domain}`;
+    process.stdout.write(`Hosted Capsule sealed-env key rotated: ${hostedUrl}\n`);
     return;
   }
 
