@@ -81,11 +81,16 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   toSqlLiteral,
   findMatchingParen,
   createEndpointContext,
+  createContextHolder,
+  createTableAclContext,
   applyContextMiddleware,
   runContextMiddleware,
   readEndpointSessionToken,
   createEndpointDatabaseApi,
   createEndpointTableApi,
+  isPromiseLike,
+  applyReadAcl,
+  filterRowsByReadAcl,
   fieldValueForWrite,
   invalidReferenceError,
   referenceExists,
@@ -2035,9 +2040,7 @@ async function createEndpointContext(database, requestUrl, request) {
   );
   const query = Object.fromEntries(requestUrl.searchParams.entries());
   const session = resolveAnonymousSession(database, readEndpointSessionToken(headers, query));
-
-  return {
-    db: createEndpointDatabaseApi(database),
+  const context = {
     auth: session.auth,
     env: database.serverEnv,
     log: createEndpointLogger(database, {
@@ -2054,6 +2057,27 @@ async function createEndpointContext(database, requestUrl, request) {
       body: await readEndpointBody(request, headers),
     },
   };
+  const holder = createContextHolder(context);
+  context.db = createEndpointDatabaseApi(database, () => holder.current);
+  return context;
+}
+
+function createContextHolder(context) {
+  const holder = { current: context };
+  Object.defineProperty(context, "__sporadesContextHolder", {
+    value: holder,
+    enumerable: false,
+    configurable: true,
+  });
+  return holder;
+}
+
+function createTableAclContext(context) {
+  const { db, request, __sporadesContextHolder, ...aclContext } = context ?? {};
+  return {
+    ...aclContext,
+    acl: aclContext.acl ?? {},
+  };
 }
 
 async function applyContextMiddleware(database, baseContext, kind) {
@@ -2061,9 +2085,26 @@ async function applyContextMiddleware(database, baseContext, kind) {
     ...baseContext,
     kind,
   };
+  const holder = baseContext.__sporadesContextHolder ?? createContextHolder(context);
+  holder.current = context;
+  if (!context.__sporadesContextHolder) {
+    Object.defineProperty(context, "__sporadesContextHolder", {
+      value: holder,
+      enumerable: false,
+      configurable: true,
+    });
+  }
   for (const middlewareSource of database.contextMiddleware) {
     const result = await runContextMiddleware(middlewareSource, context);
     context = result ?? context;
+    holder.current = context;
+    if (!context.__sporadesContextHolder) {
+      Object.defineProperty(context, "__sporadesContextHolder", {
+        value: holder,
+        enumerable: false,
+        configurable: true,
+      });
+    }
   }
   return context;
 }
@@ -2078,13 +2119,13 @@ function readEndpointSessionToken(headers, query) {
   return headers["x-sporades-session-token"] ?? query.sessionToken;
 }
 
-function createEndpointDatabaseApi(database) {
+function createEndpointDatabaseApi(database, contextGetter = null) {
   return Object.fromEntries(
-    database.schema.tables.map((table) => [table.name, createEndpointTableApi(database, table)]),
+    database.schema.tables.map((table) => [table.name, createEndpointTableApi(database, table, {}, contextGetter)]),
   );
 }
 
-function createEndpointTableApi(database, table, query = {}) {
+function createEndpointTableApi(database, table, query = {}, contextGetter = null) {
   return {
     insert(values) {
       const now = new Date().toISOString();
@@ -2145,13 +2186,34 @@ function createEndpointTableApi(database, table, query = {}) {
       return row ? deserializeRow(table, row) : null;
     },
     where(fieldName, value) {
-      return createEndpointTableApi(database, table, { ...query, where: { fieldName, value } });
+      return createEndpointTableApi(database, table, { ...query, where: { fieldName, value } }, contextGetter);
     },
     orderBy(fieldName, direction = "asc") {
-      return createEndpointTableApi(database, table, { ...query, orderBy: { fieldName, direction } });
+      return createEndpointTableApi(database, table, { ...query, orderBy: { fieldName, direction } }, contextGetter);
     },
     limit(count) {
-      return createEndpointTableApi(database, table, { ...query, limit: count });
+      return createEndpointTableApi(database, table, { ...query, limit: count }, contextGetter);
+    },
+    get() {
+      const whereSql = query.where ? ` WHERE ${quoteIdentifier(query.where.fieldName)} = ?` : "";
+      const orderSql = query.orderBy
+        ? ` ORDER BY ${quoteIdentifier(query.orderBy.fieldName)} ${
+            String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"
+          }`
+        : "";
+      const params = query.where ? [serializeFieldValue(table.fields.find((field) => field.name === query.where.fieldName), query.where.value)] : [];
+      const row = database.sqlite
+        .prepare(`SELECT * FROM ${quoteIdentifier(table.name)}${whereSql}${orderSql} LIMIT 1`)
+        .get(...params);
+      if (!row) {
+        return null;
+      }
+      const deserialized = deserializeRow(table, row);
+      const allowed = applyReadAcl(table, deserialized, contextGetter?.());
+      if (isPromiseLike(allowed)) {
+        return allowed.then((result) => (result ? deserialized : null));
+      }
+      return allowed ? deserialized : null;
     },
     all() {
       const whereSql = query.where ? ` WHERE ${quoteIdentifier(query.where.fieldName)} = ?` : "";
@@ -2163,12 +2225,38 @@ function createEndpointTableApi(database, table, query = {}) {
       const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
       const limitSql = limit === null ? "" : " LIMIT ?";
       const params = query.where ? [serializeFieldValue(table.fields.find((field) => field.name === query.where.fieldName), query.where.value)] : [];
-      return database.sqlite
+      const rows = database.sqlite
         .prepare(`SELECT * FROM ${quoteIdentifier(table.name)}${whereSql}${orderSql}${limitSql}`)
         .all(...(limit === null ? params : [...params, limit]))
         .map((row) => deserializeRow(table, row));
+      return filterRowsByReadAcl(table, rows, contextGetter?.());
     },
   };
+}
+
+function isPromiseLike(value) {
+  return value && typeof value === "object" && typeof value.then === "function";
+}
+
+function applyReadAcl(table, row, context) {
+  const rule = table.acl?.resolve?.("read");
+  if (!rule) {
+    return true;
+  }
+  return rule({
+    ctx: createTableAclContext(context),
+    operation: "read",
+    table: table.name,
+    row,
+  });
+}
+
+function filterRowsByReadAcl(table, rows, context) {
+  const decisions = rows.map((row) => applyReadAcl(table, row, context));
+  if (decisions.some(isPromiseLike)) {
+    return Promise.all(decisions).then((resolved) => rows.filter((_, index) => resolved[index]));
+  }
+  return rows.filter((_, index) => decisions[index]);
 }
 
 function fieldValueForWrite(database, field, value) {
@@ -3735,7 +3823,8 @@ async function runQuery(database, auth, queryName) {
     database.rowCache.set(cacheKey, rows);
   }
 
-  return { rows: database.rowCache.get(cacheKey), error: null };
+  const rows = await filterRowsByReadAcl(table, database.rowCache.get(cacheKey), context);
+  return { rows, error: null };
 }
 
 async function runCustomQuery(database, context, queryName) {
@@ -3924,12 +4013,14 @@ async function runMutationHook(hookSource, event) {
 }
 
 function createMutationContext(database, auth) {
-  return {
-    db: createEndpointDatabaseApi(database),
+  const context = {
     auth,
     env: database.serverEnv,
     log: createEndpointLogger(database),
   };
+  const holder = createContextHolder(context);
+  context.db = createEndpointDatabaseApi(database, () => holder.current);
+  return context;
 }
 
 function createHookErrorResult(error) {
