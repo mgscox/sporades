@@ -185,6 +185,40 @@ test("runtime file operations accept absolute File paths and File references", a
       assert.equal(publicByPath.ok, true);
       assert.equal(publicByPath.data.publicUrl.fileId, explicit.id);
 
+      const firstOverlap = await createPendingFileUpload(database, auth, {
+        file: { name: "first.png", type: "image/png", size: 5, path: "/images/avatars/profile.png" },
+      });
+      assert.equal(firstOverlap.ok, true, firstOverlap.error?.message);
+      assert.equal(firstOverlap.data.file.id, explicit.id);
+      assert.equal(firstOverlap.data.file.path, "/images/avatars/profile.png");
+
+      const secondOverlap = await createPendingFileUpload(database, auth, {
+        file: { name: "second.png", type: "image/png", size: 6, path: "/images/avatars/profile.png" },
+      });
+      assert.equal(secondOverlap.ok, true, secondOverlap.error?.message);
+      assert.equal(secondOverlap.data.file.id, explicit.id);
+      assert.equal(secondOverlap.data.file.path, "/images/avatars/profile.png");
+
+      const firstOverlapUploadId = firstOverlap.data.uploadUrl.split("/").pop();
+      const secondOverlapUploadId = secondOverlap.data.uploadUrl.split("/").pop();
+      const firstOverlapCompleted = await completePendingFileUpload(
+        database,
+        firstOverlapUploadId,
+        Readable.from([Buffer.from("first")]),
+      );
+      assert.equal(firstOverlapCompleted.ok, true, firstOverlapCompleted.error?.message);
+      const secondOverlapCompleted = await completePendingFileUpload(
+        database,
+        secondOverlapUploadId,
+        Readable.from([Buffer.from("second")]),
+      );
+      assert.equal(secondOverlapCompleted.ok, true, secondOverlapCompleted.error?.message);
+      assert.equal(secondOverlapCompleted.data.file.id, explicit.id);
+
+      const overlapRows = await database.sqlite.selectLiveFileByPath(auth.userId, "/images/avatars/profile.png");
+      assert.equal(overlapRows.length, 1);
+      assert.equal(overlapRows[0].id, explicit.id);
+
       const overwritten = await uploadAndComplete({
         name: "replacement.png",
         type: "image/png",
@@ -1235,6 +1269,7 @@ function wrapAsyncRuntimeAdapter(adapter) {
     "insertFileUpload",
     "selectFileById",
     "selectLiveFileByPath",
+    "selectActiveFileByPath",
     "selectFileUpload",
     "completeFileUpload",
     "deleteFileUpload",

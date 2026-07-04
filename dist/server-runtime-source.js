@@ -179,10 +179,12 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     normalizeFileName,
     isAbsoluteFilePath,
     resolveLiveFileReference,
+    singleActiveFileRowByPath,
     singleLiveFileRowByPath,
     ambiguousFileReferenceError,
     structuredFileException,
     isDuplicateColumnError,
+    filePathBackfillSql,
     createStructuredFileError,
     validatePublicUrlExpiry,
     fileRowForOwner,
@@ -599,6 +601,9 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         selectLiveFileByPath(ownerId, path) {
             return this.prepare("SELECT * FROM sporades_files WHERE ownerId = ? AND path = ? AND deletedAt IS NULL AND status = ?").all(ownerId, path, "uploaded");
         },
+        selectActiveFileByPath(ownerId, path) {
+            return this.prepare("SELECT * FROM sporades_files WHERE ownerId = ? AND path = ? AND deletedAt IS NULL AND status IN (?, ?)").all(ownerId, path, "pending", "uploaded");
+        },
         selectFileUpload(uploadId) {
             return this.prepare("SELECT * FROM sporades_file_uploads WHERE id = ?").get(uploadId) ?? null;
         },
@@ -949,8 +954,10 @@ export async function createPostgresDatabaseAdapter(options) {
                 if (!isDuplicateColumnError(error))
                     throw error;
             });
-            await this.exec("UPDATE sporades_files SET path = '/' || bucketName || '/' || name WHERE path IS NULL OR path = ''");
+            await this.exec(filePathBackfillSql());
             await this.exec("CREATE INDEX IF NOT EXISTS sporades_files_owner_path_live ON sporades_files (ownerId, path, deletedAt, status)");
+            await this.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_owner_path_active_unique " +
+                "ON sporades_files (ownerId, path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')");
             await this.exec("CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
                 "id TEXT PRIMARY KEY, " +
                 "fileId TEXT NOT NULL, " +
@@ -1594,8 +1601,10 @@ export async function createLibsqlDatabaseAdapter(options) {
                 if (!isDuplicateColumnError(error))
                     throw error;
             });
-            await this.exec("UPDATE sporades_files SET path = '/' || bucketName || '/' || name WHERE path IS NULL OR path = ''");
+            await this.exec(filePathBackfillSql());
             await this.exec("CREATE INDEX IF NOT EXISTS sporades_files_owner_path_live ON sporades_files (ownerId, path, deletedAt, status)");
+            await this.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_owner_path_active_unique " +
+                "ON sporades_files (ownerId, path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')");
             await this.exec("CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
                 "id TEXT PRIMARY KEY, " +
                 "fileId TEXT NOT NULL, " +
@@ -2945,8 +2954,10 @@ function createFileStorageTables(sqlite) {
         if (!isDuplicateColumnError(error))
             throw error;
     }
-    sqlite.exec("UPDATE sporades_files SET path = '/' || bucketName || '/' || name WHERE path IS NULL OR path = ''");
+    sqlite.exec(filePathBackfillSql());
     sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_files_owner_path_live ON sporades_files (ownerId, path, deletedAt, status)");
+    sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_owner_path_active_unique " +
+        "ON sporades_files (ownerId, path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')");
     sqlite.exec("CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
         "id TEXT PRIMARY KEY, " +
         "fileId TEXT NOT NULL, " +
@@ -3043,7 +3054,7 @@ export async function createPendingFileUpload(database, auth, message) {
             error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path."),
         };
     }
-    const existingByPath = target.path ? await singleLiveFileRowByPath(database, auth.userId, target.path) : null;
+    const existingByPath = target.path ? await singleActiveFileRowByPath(database, auth.userId, target.path) : null;
     if (existingByPath?.ambiguous) {
         return ambiguousFileReferenceError(target.path);
     }
@@ -3349,6 +3360,12 @@ async function singleLiveFileRowByPath(database, ownerId, path) {
         return { ambiguous: true };
     return rows[0] ?? null;
 }
+async function singleActiveFileRowByPath(database, ownerId, path) {
+    const rows = await database.sqlite.selectActiveFileByPath(ownerId, path);
+    if (rows.length > 1)
+        return { ambiguous: true };
+    return rows[0] ?? null;
+}
 function ambiguousFileReferenceError(reference) {
     return {
         ok: false,
@@ -3363,6 +3380,18 @@ function structuredFileException(message, hint) {
 function isDuplicateColumnError(error) {
     const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
     return /duplicate column|already exists/i.test(text);
+}
+function filePathBackfillSql() {
+    return ("UPDATE sporades_files SET path = CASE " +
+        "WHEN (SELECT COUNT(*) FROM sporades_files AS matching " +
+        "WHERE matching.ownerId = sporades_files.ownerId " +
+        "AND matching.bucketName = sporades_files.bucketName " +
+        "AND matching.name = sporades_files.name " +
+        "AND matching.deletedAt IS NULL " +
+        "AND matching.status IN ('pending', 'uploaded')) = 1 " +
+        "THEN '/' || bucketName || '/' || name " +
+        "ELSE '/' || bucketName || '/' || id || '/' || name END " +
+        "WHERE path IS NULL OR path = ''");
 }
 function createStructuredFileError(message, hint) {
     return { message, hint };
