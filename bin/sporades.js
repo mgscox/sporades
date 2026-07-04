@@ -3387,7 +3387,11 @@ async function createHostReleaseArchive(options) {
   if (sealedServerEnv) {
     tarArgs.push(".sporades/sealed-server-env/server-env.sealed.json");
   }
-  const result = spawnSync("tar", tarArgs, { cwd: packageDir, encoding: "utf8" });
+  const result = spawnSync("tar", tarArgs, {
+    cwd: packageDir,
+    encoding: "utf8",
+    env: { ...process.env, COPYFILE_DISABLE: "1" },
+  });
   if (result.error || result.status !== 0) {
     throw commandError(
       "Failed to package Hosted Capsule release.",

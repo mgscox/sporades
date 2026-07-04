@@ -91,6 +91,23 @@ Ubuntu-style hosts, the shape is:
 ```sh
 ssh root@<server-ip-or-hostname>
 
+if command -v cloud-init >/dev/null 2>&1; then
+  cloud-init status --wait
+fi
+apt_locks_clear=0
+for attempt in $(seq 1 60); do
+  if ! fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; then
+    apt_locks_clear=1
+    break
+  fi
+  echo "Waiting for apt/dpkg locks... ($attempt/60)"
+  sleep 5
+done
+if [ "$apt_locks_clear" -ne 1 ]; then
+  echo "Timed out waiting for apt/dpkg locks." >&2
+  exit 1
+fi
+
 apt-get update
 apt-get install -y ca-certificates curl gnupg tar
 
@@ -115,23 +132,30 @@ tar --version
 
 Node 22+ is recommended because the Host helper is an ESM Node script.
 
-## 3. Install the Server Helper Script
+## 3. Install the Server Helper Runtime
 
 From the local Sporades repo, choose the remote root and create the expected
-helper location:
+helper location plus the small shared runtime files used by the helper:
 
 ```sh
 REMOTE=root@<server-ip>
 REMOTE_ROOT=/srv/sporades
 
-ssh "$REMOTE" "mkdir -p $REMOTE_ROOT/bin $REMOTE_ROOT/incoming"
+ssh "$REMOTE" "mkdir -p $REMOTE_ROOT/bin $REMOTE_ROOT/src $REMOTE_ROOT/incoming"
 scp ./bin/sporades-host-helper.js "$REMOTE:$REMOTE_ROOT/bin/sporades-host-helper"
+scp ./src/base-image.js "$REMOTE:$REMOTE_ROOT/src/base-image.js"
+scp ./src/runtime-restart-policy.js "$REMOTE:$REMOTE_ROOT/src/runtime-restart-policy.js"
+scp ./Dockerfile.base "$REMOTE:$REMOTE_ROOT/Dockerfile.base"
 ssh "$REMOTE" "chmod 0755 $REMOTE_ROOT/bin/sporades-host-helper"
 ```
 
 The helper path must match the Host profile `remoteRoot`. If you later create a
 profile with `--remote-root /opt/sporades`, the helper must live at
 `/opt/sporades/bin/sporades-host-helper`.
+
+`Dockerfile.base` is installed beside the helper so a fresh Host server can
+build the Sporades Base image locally if the configured registry image is not
+already present and cannot be pulled.
 
 Optional production defaults can be set in
 `$REMOTE_ROOT/sporades-host-helper.json`. The file is JSON rather than TOML so

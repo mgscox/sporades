@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { constants as fsConstants } from "node:fs";
+import { constants as fsConstants, statSync } from "node:fs";
 import { access, chmod, chown, lstat, mkdir, readdir, readFile, readlink, rename, rm, stat, statfs, symlink, writeFile } from "node:fs/promises";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
@@ -779,6 +779,7 @@ async function startCapsule(request, options = {}) {
   await recordReleaseStartAttempt(request, releaseId);
 
   stopAndRemoveContainer(lifecycle.container.name);
+  ensureHostedBaseImage(lifecycle);
   const runArgs = await dockerRunArgs(lifecycle, releaseId);
   const run = runDocker(runArgs);
   if (!run.ok) {
@@ -1488,6 +1489,33 @@ function normaliseLifecycle(request, registryRecord = null) {
     image: authoritativeBaseImage?.image ?? provided.container?.baseImage?.image ?? provided.container?.image ?? HOSTED_CAPSULE_DOCKER_IMAGE,
     version: authoritativeBaseImage?.version ?? provided.container?.baseImage?.version ?? SPORADES_BASE_IMAGE.version,
   };
+  const defaultMounts = {
+    files: [
+      { host: path.join(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
+      { host: path.join(currentLink, "client.js"), container: "/app/client.js", mode: "ro" },
+      { host: path.join(currentLink, "index.html"), container: "/app/index.html", mode: "ro" },
+      { host: path.join(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
+      { host: path.join(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
+      {
+        host: path.join(currentLink, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+        container: "/app/.sporades/sealed-server-env/server-env.sealed.json",
+        mode: "ro",
+        optional: true,
+      },
+      {
+        host: sealedServerEnvPrivateKey.host,
+        container: "/app/.sporades/sealed-server-env/server-env.private.pem",
+        mode: "ro",
+        optional: !sealedServerEnvPrivateKey.fingerprint,
+        fingerprint: sealedServerEnvPrivateKey.fingerprint,
+      },
+    ],
+    data: { host: paths.data, container: "/app/data", mode: "rw" },
+  };
+  const fileMounts = authoritativeSealedServerEnvPrivateKeyMount(
+    provided.mounts?.files ?? defaultMounts.files,
+    sealedServerEnvPrivateKey,
+  );
   return {
     subname,
     domain,
@@ -1501,28 +1529,10 @@ function normaliseLifecycle(request, registryRecord = null) {
       logs: paths.logs,
     },
     remoteRoot: request.host.remoteRoot,
-    mounts: provided.mounts ?? {
-      files: [
-        { host: path.join(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
-        { host: path.join(currentLink, "client.js"), container: "/app/client.js", mode: "ro" },
-        { host: path.join(currentLink, "index.html"), container: "/app/index.html", mode: "ro" },
-        { host: path.join(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
-        { host: path.join(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
-        {
-          host: path.join(currentLink, ".sporades", "sealed-server-env", "server-env.sealed.json"),
-          container: "/app/.sporades/sealed-server-env/server-env.sealed.json",
-          mode: "ro",
-          optional: true,
-        },
-        {
-          host: sealedServerEnvPrivateKey.host,
-          container: "/app/.sporades/sealed-server-env/server-env.private.pem",
-          mode: "ro",
-          optional: !sealedServerEnvPrivateKey.fingerprint,
-          fingerprint: sealedServerEnvPrivateKey.fingerprint,
-        },
-      ],
-      data: { host: paths.data, container: "/app/data", mode: "rw" },
+    mounts: {
+      ...provided.mounts,
+      files: fileMounts,
+      data: provided.mounts?.data ?? defaultMounts.data,
     },
     container: {
       name: containerName,
@@ -1562,6 +1572,34 @@ function normaliseLifecycle(request, registryRecord = null) {
       ),
     },
   };
+}
+
+function authoritativeSealedServerEnvPrivateKeyMount(fileMounts, sealedServerEnvPrivateKey) {
+  const privateKeyContainerPath = "/app/.sporades/sealed-server-env/server-env.private.pem";
+  let replaced = false;
+  const next = fileMounts.map((mount) => {
+    if (mount.container !== privateKeyContainerPath) {
+      return mount;
+    }
+    replaced = true;
+    return {
+      ...mount,
+      host: sealedServerEnvPrivateKey.host,
+      mode: mount.mode ?? "ro",
+      optional: !sealedServerEnvPrivateKey.fingerprint,
+      fingerprint: sealedServerEnvPrivateKey.fingerprint,
+    };
+  });
+  if (!replaced && sealedServerEnvPrivateKey.fingerprint) {
+    next.push({
+      host: sealedServerEnvPrivateKey.host,
+      container: privateKeyContainerPath,
+      mode: "ro",
+      optional: false,
+      fingerprint: sealedServerEnvPrivateKey.fingerprint,
+    });
+  }
+  return next;
 }
 
 function withRouteAccessLog(route, accessLog) {
@@ -2764,6 +2802,35 @@ function stopAndRemoveContainer(containerName) {
   runDocker(["rm", containerName], { ignoreFailure: true });
 }
 
+function ensureHostedBaseImage(lifecycle) {
+  const image = lifecycle.container.image;
+  const inspect = runDocker(["image", "inspect", image], { ignoreFailure: true });
+  if (inspect.ok) {
+    return;
+  }
+
+  const pull = runDocker(["pull", image], { ignoreFailure: true });
+  if (pull.ok) {
+    return;
+  }
+
+  const dockerfilePath = path.join(lifecycle.remoteRoot, "Dockerfile.base");
+  if (!pathExistsSync(dockerfilePath)) {
+    throw helperError(
+      "Unable to prepare the Sporades Base image.",
+      `Docker could not pull ${image}, and ${dockerfilePath} is missing. Reinstall the Sporades Host helper files, then retry \`sporades host start ${lifecycle.subname} --host <alias>\`.`,
+    );
+  }
+
+  const build = runDocker(["build", "-f", dockerfilePath, "-t", image, lifecycle.remoteRoot], { ignoreFailure: true });
+  if (!build.ok) {
+    throw helperError(
+      "Unable to prepare the Sporades Base image.",
+      `Docker could not pull or build ${image}. Check Docker and ${dockerfilePath} on the Host server, then retry \`sporades host start ${lifecycle.subname} --host <alias>\`.`,
+    );
+  }
+}
+
 function runDocker(args, options = {}) {
   const result = spawnSync("docker", args, { encoding: "utf8" });
   if (options.ignoreFailure) {
@@ -3559,6 +3626,15 @@ async function pathExists(filePath) {
   }
 }
 
+function pathExistsSync(filePath) {
+  try {
+    statSync(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function pathReadable(filePath) {
   if (!filePath) {
     return false;
@@ -3748,7 +3824,11 @@ function normaliseArchiveEntryName(name) {
 
 function isDiscardableArchiveMetadata(name) {
   const normalisedName = normaliseArchiveEntryName(name);
-  return normalisedName === "__MACOSX" || normalisedName.startsWith("__MACOSX/") || normalisedName.startsWith("._");
+  return (
+    normalisedName === "__MACOSX" ||
+    normalisedName.startsWith("__MACOSX/") ||
+    normalisedName.split("/").some((segment) => segment.startsWith("._"))
+  );
 }
 
 function isSafeArchiveEntryType(entry) {

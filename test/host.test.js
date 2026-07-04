@@ -268,6 +268,15 @@ if (args[0] === "ps") {
   process.stdout.write(process.env.FAKE_DOCKER_PS_JSONL || "");
   process.exit(Number(process.env.FAKE_DOCKER_PS_STATUS || "0"));
 }
+if (args[0] === "image" && args[1] === "inspect") {
+  process.exit(Number(process.env.FAKE_DOCKER_IMAGE_INSPECT_STATUS || "0"));
+}
+if (args[0] === "pull") {
+  process.exit(Number(process.env.FAKE_DOCKER_PULL_STATUS || "0"));
+}
+if (args[0] === "build") {
+  process.exit(Number(process.env.FAKE_DOCKER_BUILD_STATUS || "0"));
+}
 if (args[0] === "network" && args[1] === "inspect") {
   process.exit(Number(process.env.FAKE_DOCKER_NETWORK_INSPECT_STATUS || "0"));
 }
@@ -3800,6 +3809,106 @@ test("sporades host helper rejects non-canonical Sealed Server env private key p
   });
 });
 
+test("sporades host helper ignores nested macOS archive metadata entries", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const incomingDir = path.join(remoteRoot, "incoming");
+    const runtimeDir = path.join(dir, "runtime-files");
+    const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
+    await mkdir(path.join(runtimeDir, ".sporades", "sealed-server-env"), { recursive: true });
+    await mkdir(incomingDir, { recursive: true });
+    await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
+    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
+    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
+    await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+    await writeFile(path.join(runtimeDir, ".sporades", "sealed-server-env", "server-env.sealed.json"), "{\"version\":1,\"valueAlgorithm\":\"aes-256-gcm\",\"entries\":{}}\n");
+    await writeFile(path.join(runtimeDir, "._server.mjs"), "discard me\n");
+    await writeFile(path.join(runtimeDir, ".sporades", "sealed-server-env", "._server-env.sealed.json"), "discard me too\n");
+    await createTarGz(archivePath, runtimeDir, [
+      "._server.mjs",
+      "server.mjs",
+      "client.js",
+      "index.html",
+      "sporades.json",
+      ".sporades/sealed-server-env/._server-env.sealed.json",
+      ".sporades/sealed-server-env/server-env.sealed.json",
+    ]);
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(
+      registryRecordPath,
+      `${JSON.stringify({
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        sealedServerEnv: { currentKeyFingerprint: "0123456789abcdef" },
+      })}\n`,
+    );
+    const keysDir = path.join(capsuleDir, "data", "sealed-server-env", "keys");
+    await mkdir(keysDir, { recursive: true });
+    await writeFile(path.join(keysDir, "0123456789abcdef.private.pem"), "-----BEGIN PRIVATE KEY-----\nnot-real\n-----END PRIVATE KEY-----\n");
+
+    const install = await runHostHelper(
+      {
+        action: "capsule.release.install",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        lifecycle: {
+          mounts: {
+            files: [
+              { host: path.join(capsuleDir, "current", "server.mjs"), container: "/app/server.mjs", mode: "ro" },
+              { host: path.join(capsuleDir, "current", "client.js"), container: "/app/client.js", mode: "ro" },
+              { host: path.join(capsuleDir, "current", "index.html"), container: "/app/index.html", mode: "ro" },
+              { host: path.join(capsuleDir, "current", "sporades.json"), container: "/app/sporades.json", mode: "ro" },
+              {
+                host: path.join(capsuleDir, "current", ".sporades", "sealed-server-env", "server-env.sealed.json"),
+                container: "/app/.sporades/sealed-server-env/server-env.sealed.json",
+                mode: "ro",
+                optional: true,
+              },
+              {
+                host: path.join(capsuleDir, "data", "sealed-server-env", "server-env.private.pem"),
+                container: "/app/.sporades/sealed-server-env/server-env.private.pem",
+                mode: "ro",
+                optional: true,
+              },
+            ],
+            data: { host: path.join(capsuleDir, "data"), container: "/app/data", mode: "rw" },
+          },
+        },
+        release: {
+          id: "20260630T221500Z-feedface",
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          remoteArchive: archivePath,
+          restart: false,
+          serverEnvIncluded: false,
+          sealedServerEnvIncluded: true,
+          sealedServerEnv: {
+            publicKeyFingerprint: "0123456789abcdef",
+            publicKeyPath: path.join(keysDir, "0123456789abcdef.public.pem"),
+          },
+          files: ["server.mjs", "client.js", "index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
+          directories: {
+            capsule: capsuleDir,
+            releases: path.join(capsuleDir, "releases"),
+            release: path.join(capsuleDir, "releases", "20260630T221500Z-feedface"),
+            data: path.join(capsuleDir, "data"),
+          },
+          currentLink: path.join(capsuleDir, "current"),
+        },
+      },
+      { cwd: dir },
+    );
+
+    assert.equal(install.code, 0, install.stderr);
+    assert.equal(JSON.parse(install.stdout).ok, true);
+    await assert.rejects(readFile(path.join(capsuleDir, "releases", "20260630T221500Z-feedface", "._server.mjs"), "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(path.join(capsuleDir, "releases", "20260630T221500Z-feedface", ".sporades", "sealed-server-env", "._server-env.sealed.json"), "utf8"), { code: "ENOENT" });
+  });
+});
+
 test("sporades host helper starts public-key-only sealed releases with the release manifest fingerprint key", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -3891,6 +4000,7 @@ test("sporades host helper starts public-key-only sealed releases with the relea
     assert(runCall);
     const privateKeyMount = `${path.join(capsuleDir, "data", "sealed-server-env", "keys", `${fingerprint}.private.pem`)}:/app/.sporades/sealed-server-env/server-env.private.pem:ro`;
     assert(runCall.args.includes(privateKeyMount));
+    assert(!runCall.args.includes(`${path.join(capsuleDir, "data", "sealed-server-env", "server-env.private.pem")}:/app/.sporades/sealed-server-env/server-env.private.pem:ro`));
     assert(runCall.args.includes(`${path.join(capsuleDir, "current", ".sporades", "sealed-server-env", "server-env.sealed.json")}:/app/.sporades/sealed-server-env/server-env.sealed.json:ro`));
     assert(runCall.args.includes("SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH=/app/.sporades/sealed-server-env/server-env.private.pem"));
     assert(runCall.args.includes("SPORADES_SEALED_SERVER_ENV_PATH=/app/.sporades/sealed-server-env/server-env.sealed.json"));
@@ -4219,8 +4329,9 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert.equal(output.data.route.upstream, "127.0.0.1:49153");
 
     const calls = await docker.calls();
-    assert.deepEqual(calls.map((call) => call.args[0]), ["stop", "rm", "run", "inspect", "inspect"]);
-    const runCall = calls[2];
+    assert.deepEqual(calls.map((call) => call.args[0]), ["stop", "rm", "image", "run", "inspect", "inspect"]);
+    assert.deepEqual(calls[2].args, ["image", "inspect", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"]);
+    const runCall = calls.find((call) => call.args[0] === "run");
     assert.equal(runCall.args[runCall.args.indexOf("--name") + 1], "sporades-capsules-example-dev-team-notes");
     assert.equal(runCall.args[runCall.args.indexOf("--network") + 1], "sporades-hosted-capsules");
     assert.equal(runCall.args[runCall.args.indexOf("--restart") + 1], "on-failure:3");
@@ -4249,7 +4360,8 @@ test("sporades host helper starts the current release in Docker and routes throu
       "node",
       "/app/server.mjs",
     ]);
-    assert.match(calls[4].args.join(" "), /NetworkSettings\.Ports/);
+    const portInspectCall = calls.find((call) => call.args.join(" ").includes("NetworkSettings.Ports"));
+    assert(portInspectCall, "expected Docker port inspection after container start");
     const routeContents = await readFile(routeFile, "utf8");
     assert.match(routeContents, /log \{\n    output file .*remote-root\/hosts\/capsules\.example\.dev\/capsules\/team-notes\/logs\/http\.log \{/);
     assert.match(routeContents, /roll_size 10MiB/);
@@ -6134,6 +6246,115 @@ test("sporades host helper reports no release and failed starts with unavailable
   });
 });
 
+test("sporades host helper builds the base image when registry pull is unavailable", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    const routeFile = path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "team-notes.caddy");
+    await mkdir(releaseDir, { recursive: true });
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(path.join(remoteRoot, "Dockerfile.base"), "FROM node:22-alpine\n");
+    await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
+    await symlink(releaseDir, path.join(capsuleDir, "current"));
+    const docker = await installFakeDocker(dir, {
+      env: {
+        FAKE_DOCKER_IMAGE_INSPECT_STATUS: "1",
+        FAKE_DOCKER_PULL_STATUS: "1",
+        FAKE_DOCKER_BUILD_STATUS: "0",
+      },
+    });
+
+    const start = await runHostHelper(
+      {
+        action: "capsule.start",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        lifecycle: {
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          container: { name: "sporades-capsules-example-dev-team-notes" },
+          routes: {
+            running: { hostname: "team-notes.capsules.example.dev", target: "container", containerName: "sporades-capsules-example-dev-team-notes", port: 4000, routeFile },
+            unavailable: { hostname: "team-notes.capsules.example.dev", target: "hosted-capsule-unavailable", statusCode: 503, routeFile },
+          },
+        },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(start.code, 0, start.stderr);
+    assert.equal(JSON.parse(start.stdout).ok, true);
+    const calls = await docker.calls();
+    assert.deepEqual(
+      calls.filter((call) => ["image", "pull", "build"].includes(call.args[0])).map((call) => call.args),
+      [
+        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"],
+        ["pull", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"],
+        ["build", "-f", path.join(remoteRoot, "Dockerfile.base"), "-t", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine", remoteRoot],
+      ],
+    );
+    assert.ok(calls.some((call) => call.args[0] === "run"));
+  });
+});
+
+test("sporades host helper fails start with guidance when the base image cannot be pulled or built", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    const routeFile = path.join(remoteRoot, "caddy", "hosts", "capsules.example.dev", "team-notes.caddy");
+    await mkdir(releaseDir, { recursive: true });
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
+    await symlink(releaseDir, path.join(capsuleDir, "current"));
+    const docker = await installFakeDocker(dir, {
+      env: {
+        FAKE_DOCKER_IMAGE_INSPECT_STATUS: "1",
+        FAKE_DOCKER_PULL_STATUS: "1",
+      },
+    });
+
+    const start = await runHostHelper(
+      {
+        action: "capsule.start",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        lifecycle: {
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          container: { name: "sporades-capsules-example-dev-team-notes" },
+          routes: {
+            running: { hostname: "team-notes.capsules.example.dev", target: "container", containerName: "sporades-capsules-example-dev-team-notes", port: 4000, routeFile },
+            unavailable: { hostname: "team-notes.capsules.example.dev", target: "hosted-capsule-unavailable", statusCode: 503, routeFile },
+          },
+        },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(start.code, 0, start.stderr);
+    assert.deepEqual(JSON.parse(start.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Unable to prepare the Sporades Base image.",
+        hint: `Docker could not pull ghcr.io/sporades/sporades-base:0.1.0-node22-alpine, and ${path.join(remoteRoot, "Dockerfile.base")} is missing. Reinstall the Sporades Host helper files, then retry \`sporades host start team-notes --host <alias>\`.`,
+      },
+    });
+    const calls = await docker.calls();
+    assert.deepEqual(
+      calls.map((call) => call.args),
+      [
+        ["stop", "sporades-capsules-example-dev-team-notes"],
+        ["rm", "sporades-capsules-example-dev-team-notes"],
+        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"],
+        ["pull", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"],
+      ],
+    );
+  });
+});
+
 test("sporades host helper fails start when Docker does not report a usable loopback published port", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -6184,6 +6405,7 @@ test("sporades host helper fails start when Docker does not report a usable loop
       [
         ["stop", "sporades-capsules-example-dev-team-notes"],
         ["rm", "sporades-capsules-example-dev-team-notes"],
+        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"],
         ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.1.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "client.js")}:/app/client.js:ro`, "--volume", `${path.join(capsuleDir, "current", "index.html")}:/app/index.html:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine", "node", "/app/server.mjs"],
         ["inspect", "-f", "{{.State.Running}}", "sporades-capsules-example-dev-team-notes"],
         ["inspect", "-f", "{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostIp}}:{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostPort}}", "sporades-capsules-example-dev-team-notes"],
@@ -7140,9 +7362,9 @@ test("sporades host helper restarts the current release after install when reque
     assert.equal(output.data.lifecycle.release.id, "20260630T221500Z-feedface");
     assert.deepEqual(
       (await docker.calls()).map((call) => call.args[0]),
-      ["stop", "rm", "stop", "rm", "run", "inspect", "inspect"],
+      ["stop", "rm", "stop", "rm", "image", "run", "inspect", "inspect"],
     );
-    const runCall = (await docker.calls())[4];
+    const runCall = (await docker.calls()).find((call) => call.args[0] === "run");
     assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");
     assert.equal(output.data.lifecycle.container.publishedPort.hostPort, 49153);
     assert.equal(output.data.lifecycle.route.upstream, "127.0.0.1:49153");

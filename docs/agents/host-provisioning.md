@@ -3,7 +3,7 @@
 Use this file when an agent needs to create a fresh cloud server and turn it
 into a Sporades Host server. Provider scripts are intentionally thin wrappers
 around one common contract: create an SSH-reachable Linux server, install the
-Host server packages, copy the Sporades Host helper, then run the normal
+Host server packages, copy the Sporades Host helper runtime, then run the normal
 `sporades host ...` commands from the local machine.
 
 This is a skill-type document, not a product feature. Prefer exact commands,
@@ -84,7 +84,8 @@ Use the most capable automation surface available in this order:
 MCP adapters must still honor the common contract. They may replace only the
 provider creation script. They must not replace the shared Sporades Host server
 installation script unless they also execute the same SSH, package, helper
-copy, `sporades host add`, `bootstrap`, `health`, and `stats` operations.
+runtime copy, `sporades host add`, `bootstrap`, `health`, and `stats`
+operations.
 
 When using an MCP, write a short local transcript in the agent response or
 scratch notes that includes:
@@ -448,7 +449,10 @@ fi
 : "${SPORADES_REMOTE_ROOT:?Missing SPORADES_REMOTE_ROOT}"
 : "${SPORADES_TLS_MODE:=automatic}"
 
-if [ ! -f ./bin/sporades-host-helper.js ]; then
+if [ ! -f ./bin/sporades-host-helper.js ] || \
+   [ ! -f ./src/base-image.js ] || \
+   [ ! -f ./src/runtime-restart-policy.js ] || \
+   [ ! -f ./Dockerfile.base ]; then
   echo "Run this from the Sporades repository root." >&2
   exit 1
 fi
@@ -471,6 +475,22 @@ done
 
 ssh -n "$SPORADES_SSH_TARGET" "set -euo pipefail
   export DEBIAN_FRONTEND=noninteractive
+  if command -v cloud-init >/dev/null 2>&1; then
+    cloud-init status --wait
+  fi
+  apt_locks_clear=0
+  for attempt in \$(seq 1 60); do
+    if ! fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1; then
+      apt_locks_clear=1
+      break
+    fi
+    echo \"Waiting for apt/dpkg locks... (\$attempt/60)\"
+    sleep 5
+  done
+  if [ \"\$apt_locks_clear\" -ne 1 ]; then
+    echo \"Timed out waiting for apt/dpkg locks.\" >&2
+    exit 1
+  fi
   apt-get update
   apt-get install -y ca-certificates curl gnupg tar
   if ! command -v node >/dev/null 2>&1 || ! node --version | grep -Eq '^v2[2-9]\\.'; then
@@ -479,11 +499,17 @@ ssh -n "$SPORADES_SSH_TARGET" "set -euo pipefail
   apt-get install -y nodejs docker.io caddy
   systemctl enable --now docker
   systemctl enable --now caddy
-  mkdir -p '$SPORADES_REMOTE_ROOT/bin' '$SPORADES_REMOTE_ROOT/incoming'
+  mkdir -p '$SPORADES_REMOTE_ROOT/bin' '$SPORADES_REMOTE_ROOT/src' '$SPORADES_REMOTE_ROOT/incoming'
 "
 
 scp ./bin/sporades-host-helper.js \
   "$SPORADES_SSH_TARGET:$SPORADES_REMOTE_ROOT/bin/sporades-host-helper"
+scp ./src/base-image.js \
+  "$SPORADES_SSH_TARGET:$SPORADES_REMOTE_ROOT/src/base-image.js"
+scp ./src/runtime-restart-policy.js \
+  "$SPORADES_SSH_TARGET:$SPORADES_REMOTE_ROOT/src/runtime-restart-policy.js"
+scp ./Dockerfile.base \
+  "$SPORADES_SSH_TARGET:$SPORADES_REMOTE_ROOT/Dockerfile.base"
 
 ssh -n "$SPORADES_SSH_TARGET" "set -euo pipefail
   chmod 0755 '$SPORADES_REMOTE_ROOT/bin/sporades-host-helper'
@@ -575,6 +601,9 @@ sporades host stats "$SPORADES_CAPSULE_SUBNAME" \
 - `ssh "$SPORADES_SSH_TARGET" "node --version"` returns Node.js 22+.
 - `ssh "$SPORADES_SSH_TARGET" "docker --version && caddy version"` succeeds.
 - `<remote-root>/bin/sporades-host-helper` exists and is executable.
+- `<remote-root>/src/base-image.js`,
+  `<remote-root>/src/runtime-restart-policy.js`, and
+  `<remote-root>/Dockerfile.base` exist.
 - `sporades host current --json` points at the expected SSH target, Hosted
   domain, remote root, and TLS mode.
 - `sporades host health --host <alias> --json` succeeds after DNS is in place.
