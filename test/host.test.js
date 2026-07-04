@@ -2466,6 +2466,86 @@ test("sporades host helper registers Hosted Capsules with registry state and una
   });
 });
 
+test("sporades host helper rotates a Hosted Capsule sealed-env key and cleans only unreferenced keys", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    const dataDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes", "data");
+    const keysDir = path.join(dataDir, "sealed-server-env", "keys");
+    const oldFingerprint = "0123456789abcdef";
+    const staleFingerprint = "9999999999999999";
+    await mkdir(keysDir, { recursive: true });
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(path.join(keysDir, `${oldFingerprint}.private.pem`), "old retained private key\n");
+    await writeFile(path.join(keysDir, `${oldFingerprint}.public.pem`), "old retained public key\n");
+    await writeFile(path.join(keysDir, `${staleFingerprint}.private.pem`), "stale private key\n");
+    await writeFile(path.join(keysDir, `${staleFingerprint}.public.pem`), "stale public key\n");
+    await writeFile(
+      registryRecordPath,
+      `${JSON.stringify({
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        status: "released",
+        currentRelease: { id: "20260630T221500Z-feedface" },
+        sealedServerEnv: { currentKeyFingerprint: oldFingerprint },
+        releases: [
+          {
+            id: "20260630T221500Z-feedface",
+            current: true,
+            state: "started",
+            source: {
+              sealedServerEnvIncluded: true,
+              sealedServerEnv: { publicKeyFingerprint: oldFingerprint },
+            },
+          },
+        ],
+      })}\n`,
+    );
+
+    const rotate = await runHostHelper(
+      {
+        action: "capsule.sealed-env.rotate-key",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+      },
+      { cwd: dir },
+    );
+
+    assert.equal(rotate.code, 0, rotate.stderr);
+    const output = JSON.parse(rotate.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.rotated, true);
+    assert.equal(output.data.sealedServerEnv.previousPublicKeyFingerprint, oldFingerprint);
+    assert.match(output.data.sealedServerEnv.publicKeyFingerprint, /^[a-f0-9]{16}$/);
+    assert.notEqual(output.data.sealedServerEnv.publicKeyFingerprint, oldFingerprint);
+    assert.match(output.data.sealedServerEnv.publicKey, /PUBLIC KEY/);
+    assert.equal(
+      output.data.sealedServerEnv.publicKeyPath,
+      path.join(keysDir, `${output.data.sealedServerEnv.publicKeyFingerprint}.public.pem`),
+    );
+    assert.doesNotMatch(rotate.stdout, /PRIVATE KEY|old retained private key|stale private key/);
+
+    const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
+    assert.equal(record.sealedServerEnv.currentKeyFingerprint, output.data.sealedServerEnv.publicKeyFingerprint);
+    assert.equal(record.releases[0].source.sealedServerEnv.publicKeyFingerprint, oldFingerprint);
+    assert.match(record.updatedAt, /^\d{4}-\d{2}-\d{2}T/);
+
+    assert.equal(await readFile(path.join(keysDir, `${oldFingerprint}.private.pem`), "utf8"), "old retained private key\n");
+    assert.equal(await readFile(path.join(keysDir, `${oldFingerprint}.public.pem`), "utf8"), "old retained public key\n");
+    await assert.rejects(readFile(path.join(keysDir, `${staleFingerprint}.private.pem`), "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(path.join(keysDir, `${staleFingerprint}.public.pem`), "utf8"), { code: "ENOENT" });
+    assert.match(await readFile(path.join(keysDir, `${output.data.sealedServerEnv.publicKeyFingerprint}.private.pem`), "utf8"), /PRIVATE KEY/);
+    assert.equal(
+      await readFile(path.join(keysDir, `${output.data.sealedServerEnv.publicKeyFingerprint}.public.pem`), "utf8"),
+      output.data.sealedServerEnv.publicKey,
+    );
+    assert.deepEqual(output.data.cleanup.deletedKeyFingerprints, [staleFingerprint]);
+    assert.deepEqual(output.data.cleanup.retainedKeyFingerprints.sort(), [oldFingerprint, output.data.sealedServerEnv.publicKeyFingerprint].sort());
+  });
+});
+
 test("sporades host helper does not commit registration when the unavailable route cannot be applied", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -2669,6 +2749,86 @@ process.exit(0);
   });
 });
 
+test("sporades host rotate-key invokes the Hosted Capsule sealed-env rotation helper contract", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+if (request.action !== "capsule.sealed-env.rotate-key") {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected action.", hint: "Use capsule.sealed-env.rotate-key." }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    rotated: true,
+    capsule: {
+      subname: request.capsule.subname,
+      domain: request.host.domain,
+      hostedUrl: "https://" + request.capsule.subname + "." + request.host.domain
+    },
+    sealedServerEnv: {
+      previousPublicKeyFingerprint: "0123456789abcdef",
+      publicKeyFingerprint: "fedcba9876543210",
+      publicKey: "-----BEGIN PUBLIC KEY-----\\\\nrotated\\\\n-----END PUBLIC KEY-----\\\\n",
+      publicKeyPath: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data/sealed-server-env/keys/fedcba9876543210.public.pem"
+    },
+    cleanup: {
+      deletedKeyFingerprints: ["9999999999999999"],
+      retainedKeyFingerprints: ["0123456789abcdef", "fedcba9876543210"]
+    }
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "todo-island");
+
+    const env = { ...hostEnv(configDir), ...fakeSsh.env };
+    const addHost = await runCli(
+      ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+      { cwd: projectDir, env },
+    );
+    assert.equal(addHost.code, 0, addHost.stderr);
+
+    const rotate = await runCli(["host", "rotate-key", "team-notes", "--host", "personal", "--json"], {
+      cwd: projectDir,
+      env,
+    });
+    assert.equal(rotate.code, 0, rotate.stderr);
+    const output = JSON.parse(rotate.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.rotated, true);
+    assert.equal(output.data.sealedServerEnv.previousPublicKeyFingerprint, "0123456789abcdef");
+    assert.equal(output.data.sealedServerEnv.publicKeyFingerprint, "fedcba9876543210");
+
+    const [sshCall] = await readJsonl(fakeSsh.logPath);
+    assert.deepEqual(JSON.parse(sshCall.stdin), {
+      action: "capsule.sealed-env.rotate-key",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot: "/opt/sporades",
+      },
+      capsule: {
+        subname: "team-notes",
+      },
+    });
+  });
+});
+
 test("sporades host push uploads a runtime-only release archive and installs it without restart by default", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
@@ -2772,6 +2932,137 @@ process.exit(0);
     assert.equal(request.release.directories.data, "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data");
     assert.equal(request.release.directories.release, `/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/releases/${output.data.release.id}`);
     assert.equal(request.release.currentLink, "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current");
+  });
+});
+
+test("sporades host push re-encrypts Sealed Server env to the rotated current Hosted Capsule key", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const oldHostKeyPair = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const rotatedHostKeyPair = generateKeyPairSync("rsa", {
+      modulusLength: 2048,
+      publicKeyEncoding: { type: "spki", format: "pem" },
+      privateKeyEncoding: { type: "pkcs8", format: "pem" },
+    });
+    const oldFingerprint = createHash("sha256").update(oldHostKeyPair.publicKey).digest("hex").slice(0, 16);
+    const rotatedFingerprint = createHash("sha256").update(rotatedHostKeyPair.publicKey).digest("hex").slice(0, 16);
+    const fakeSsh = await installContractFakeSsh(
+      path.join(dir, "fake-ssh"),
+      `const request = JSON.parse(stdin);
+if (request.action === "capsule.list") {
+  process.stdout.write(JSON.stringify({
+    ok: true,
+    data: {
+      capsules: [{
+        subname: "team-notes",
+        domain: request.host.domain,
+        hostedUrl: "https://team-notes." + request.host.domain,
+        registry: {
+          sealedServerEnv: { currentKeyFingerprint: process.env.FAKE_ROTATED_HOST_PUBLIC_KEY_FINGERPRINT }
+        },
+        currentRelease: {
+          id: "20260629T120000Z-deadbeef",
+          sealedServerEnv: { publicKeyFingerprint: process.env.FAKE_OLD_HOST_PUBLIC_KEY_FINGERPRINT }
+        },
+        sealedServerEnv: {
+          publicKey: process.env.FAKE_ROTATED_HOST_PUBLIC_KEY,
+          publicKeyFingerprint: process.env.FAKE_ROTATED_HOST_PUBLIC_KEY_FINGERPRINT,
+          publicKeyPath: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data/sealed-server-env/keys/" + process.env.FAKE_ROTATED_HOST_PUBLIC_KEY_FINGERPRINT + ".public.pem"
+        }
+      }]
+    },
+    error: null
+  }) + "\\n");
+  process.exit(0);
+}
+if (request.action !== "capsule.release.install") {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected action.", hint: "Use capsule.release.install." }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    installed: true,
+    restarted: false,
+    release: {
+      id: request.release.id,
+      files: request.release.files,
+      serverEnvIncluded: request.release.serverEnvIncluded,
+      sealedServerEnvIncluded: request.release.sealedServerEnvIncluded,
+      sealedServerEnv: request.release.sealedServerEnv
+    }
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+    const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
+    const createResult = await runCli(["create", "sealed-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "sealed-island");
+    await installFakeReact(projectDir);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "SECRET_TOKEN=swordfish\n");
+
+    const env = {
+      ...hostEnv(configDir),
+      ...fakeSsh.env,
+      ...fakeScp.env,
+      FAKE_OLD_HOST_PUBLIC_KEY_FINGERPRINT: oldFingerprint,
+      FAKE_ROTATED_HOST_PUBLIC_KEY: rotatedHostKeyPair.publicKey,
+      FAKE_ROTATED_HOST_PUBLIC_KEY_FINGERPRINT: rotatedFingerprint,
+      PATH: `${fakeSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+    assert.equal(
+      (
+        await runCli(
+          ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+          { cwd: projectDir, env },
+        )
+      ).code,
+      0,
+    );
+    assert.equal((await runCli(["host", "bind", "team-notes", "--host", "personal", "--json"], { cwd: projectDir, env })).code, 0);
+    assert.equal((await runCli(["env", "import", "--json"], { cwd: projectDir, env })).code, 0);
+
+    const push = await runCli(["host", "push", "--json"], { cwd: projectDir, env });
+    assert.equal(push.code, 0, `${push.stderr}\n${push.stdout}`);
+    const output = JSON.parse(push.stdout);
+    assert.equal(output.data.release.sealedServerEnvIncluded, true);
+    assert.equal(output.data.release.sealedServerEnv.publicKeyFingerprint, rotatedFingerprint);
+    assert.notEqual(output.data.release.sealedServerEnv.publicKeyFingerprint, oldFingerprint);
+
+    const [scpCall] = await readJsonl(fakeScp.logPath);
+    const archiveEnvelope = await new Promise((resolve, reject) => {
+      const child = spawn("tar", ["-xOzf", scpCall.copiedTo, ".sporades/sealed-server-env/server-env.sealed.json"], {
+        cwd: projectDir,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+      });
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.on("close", (code) => (code === 0 ? resolve(stdout) : reject(new Error(stderr))));
+    });
+    assert.equal(JSON.parse(archiveEnvelope).publicKeyFingerprint, rotatedFingerprint);
+
+    const [, installCall] = await readJsonl(fakeSsh.logPath);
+    const request = JSON.parse(installCall.stdin);
+    assert.equal(request.release.sealedServerEnv.publicKeyFingerprint, rotatedFingerprint);
   });
 });
 
@@ -7347,7 +7638,7 @@ test("sporades host helper rolls back to a recorded release and preserves persis
   });
 });
 
-test("sporades host helper rollback uses the retained release manifest fingerprint key", async () => {
+test("sporades host helper rollback after key rotation uses the retained release manifest fingerprint key", async () => {
   await withTempDir(async (dir) => {
     const currentFingerprint = "fedcba9876543210";
     const rollbackFingerprint = "0123456789abcdef";
