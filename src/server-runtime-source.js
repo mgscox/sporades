@@ -38,6 +38,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   extractSchema,
   schemaFromCapsuleDefinition,
   schemaTableFromCapsuleTable,
+  normalizeTableAcl,
+  resolveEffectiveAclRule,
   schemaFieldFromCapsuleField,
   sqliteTypeForFieldKind,
   extractEndpoints,
@@ -681,8 +683,60 @@ function schemaTableFromCapsuleTable(name, table) {
 
   return {
     name,
+    acl: normalizeTableAcl(name, table.aclRules),
     fields: Object.entries(table.fields).map(([fieldName, field]) => schemaFieldFromCapsuleField(fieldName, field)),
   };
+}
+
+function normalizeTableAcl(tableName, aclRules) {
+  const supportedOperations = new Set(["read", "write", "insert", "update", "delete"]);
+  if (aclRules === undefined) {
+    return {
+      allowByDefault: true,
+      resolve(operation) {
+        return resolveEffectiveAclRule(this, operation);
+      },
+    };
+  }
+  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
+    throw commandError(
+      `Invalid Capsule table ACL: ${tableName}`,
+      "Pass an object with function rules for read, write, insert, update, and delete.",
+    );
+  }
+
+  const normalized = {
+    allowByDefault: true,
+  };
+  for (const [operation, rule] of Object.entries(aclRules)) {
+    if (!supportedOperations.has(operation)) {
+      throw commandError(
+        `Unsupported Capsule table ACL operation: ${tableName}.${operation}`,
+        "Supported ACL operations are read, write, insert, update, and delete.",
+      );
+    }
+    if (typeof rule !== "function") {
+      throw commandError(
+        `Invalid Capsule table ACL: ${tableName}.${operation}`,
+        "ACL rules must be functions for read, write, insert, update, and delete.",
+      );
+    }
+    normalized[operation] = rule;
+  }
+  normalized.resolve = function resolve(operation) {
+    return resolveEffectiveAclRule(this, operation);
+  };
+  return normalized;
+}
+
+function resolveEffectiveAclRule(aclRules, operation) {
+  if (!aclRules || typeof aclRules !== "object") {
+    return undefined;
+  }
+  if (operation === "insert" || operation === "update" || operation === "delete") {
+    return aclRules[operation] ?? aclRules.write;
+  }
+  return aclRules[operation];
 }
 
 function schemaFieldFromCapsuleField(name, field) {

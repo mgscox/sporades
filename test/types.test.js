@@ -84,6 +84,13 @@ const app = capsule({
       meta: Json<{ tags: string[] }>().default({ tags: [] }),
       authorId: Reference("users").default(null),
       ownerId: String(),
+    }).acl({
+      read: ({ row, ctx }) => row?.ownerId === ctx.auth.userId,
+      write: async ({ next, previous, ctx }) => {
+        await Promise.resolve();
+        const ownerId = next?.ownerId ?? previous?.ownerId;
+        return ownerId === ctx.auth.userId;
+      },
     }),
   },
   middleware: [

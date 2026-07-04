@@ -382,6 +382,26 @@ you add one to a table that already has rows, existing rows read the new field
 as `null`; fresh tables use the same nullable column definition. Validate
 required business fields in your mutations before calling `ctx.db`.
 
+Tables can also declare ACL rules next to their fields. Rules may be sync or
+async functions. `read` applies to row reads, and `write` is the fallback for
+`insert`, `update`, and `delete` unless that operation has its own rule. Missing
+rules allow the operation by default.
+
+```ts
+schema: {
+  notes: table({
+    body: String(),
+    ownerId: String(),
+  }).acl({
+    read: ({ row, ctx }) => row.ownerId === ctx.auth.userId,
+    write: async ({ previous, next, ctx }) => {
+      const ownerId = next?.ownerId ?? previous?.ownerId;
+      return ownerId === ctx.auth.userId;
+    },
+  }),
+}
+```
+
 ### Read With Queries
 
 Queries receive `ctx` and return serializable data:

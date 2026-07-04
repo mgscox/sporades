@@ -35,9 +35,17 @@ export function message(handler) {
 }
 
 export function table(fields) {
+  return tableDefinition(fields);
+}
+
+function tableDefinition(fields, aclRules) {
   return {
     kind: "table",
     fields,
+    acl(rules) {
+      return tableDefinition(fields, rules);
+    },
+    ...(aclRules === undefined ? {} : { aclRules }),
   };
 }
 
