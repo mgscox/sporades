@@ -37,6 +37,7 @@ main().catch((error) => {
       error: {
         message: error.message,
         hint: error.hint ?? "Check the Host helper request and retry the command.",
+        ...(error.diagnostics ? { diagnostics: error.diagnostics } : {}),
       },
     },
     false,
@@ -1352,7 +1353,7 @@ async function listCapsules(request) {
       currentRelease: publicCurrentRelease(record),
       docker: lookupCapsuleDockerState(request, record),
     };
-    const sealedServerEnv = await readPublicHostSealedEnvKey(record, request.host.remoteRoot);
+    const sealedServerEnv = await inspectHostSealedEnvKey(record, request.host.remoteRoot);
     if (sealedServerEnv) {
       capsule.sealedServerEnv = sealedServerEnv;
     }
@@ -1488,6 +1489,8 @@ function normaliseLifecycle(request, registryRecord = null) {
     version: authoritativeBaseImage?.version ?? provided.container?.baseImage?.version ?? SPORADES_BASE_IMAGE.version,
   };
   return {
+    subname,
+    domain,
     hostedUrl,
     remoteCapsuleId,
     currentLink,
@@ -1516,6 +1519,7 @@ function normaliseLifecycle(request, registryRecord = null) {
           container: "/app/.sporades/sealed-server-env/server-env.private.pem",
           mode: "ro",
           optional: !sealedServerEnvPrivateKey.fingerprint,
+          fingerprint: sealedServerEnvPrivateKey.fingerprint,
         },
       ],
       data: { host: paths.data, container: "/app/data", mode: "rw" },
@@ -2189,24 +2193,63 @@ function referencedSealedEnvKeyFingerprints(record) {
 }
 
 async function readPublicHostSealedEnvKey(record, remoteRoot) {
+  const inspected = await inspectHostSealedEnvKey(record, remoteRoot);
+  if (!inspected?.publicKey || !inspected?.publicKeyFingerprint) {
+    return null;
+  }
+  return {
+    publicKey: inspected.publicKey,
+    publicKeyFingerprint: inspected.publicKeyFingerprint,
+    publicKeyPath: inspected.publicKeyPath,
+  };
+}
+
+async function inspectHostSealedEnvKey(record, remoteRoot) {
   const publicKeyFingerprint = record?.sealedServerEnv?.currentKeyFingerprint;
   if (typeof publicKeyFingerprint !== "string" || publicKeyFingerprint.length === 0) {
     return null;
   }
   const dataDirectory = path.join(remoteRoot, "hosts", record.domain, "capsules", record.subname, "data");
   const paths = hostSealedEnvKeyPaths(dataDirectory, publicKeyFingerprint);
+  const [publicKeyReadable, privateKeyReadable] = await Promise.all([
+    pathReadable(paths.publicKey),
+    pathReadable(paths.privateKey),
+  ]);
+  const keyStatus = hostSealedEnvKeyStatus(publicKeyReadable, privateKeyReadable);
+  const base = {
+    publicKeyFingerprint,
+    publicKeyPath: paths.publicKey,
+    status: keyStatus,
+    publicKeyAvailable: publicKeyReadable,
+    privateKeyAvailable: privateKeyReadable,
+  };
+  if (!publicKeyReadable) {
+    return base;
+  }
   try {
     return {
+      ...base,
       publicKey: await readFile(paths.publicKey, "utf8"),
-      publicKeyFingerprint,
-      publicKeyPath: paths.publicKey,
     };
   } catch (error) {
     if (error?.code === "ENOENT") {
-      return null;
+      return { ...base, publicKeyAvailable: false, status: hostSealedEnvKeyStatus(false, privateKeyReadable) };
     }
     throw error;
   }
+}
+
+function hostSealedEnvKeyStatus(publicKeyReadable, privateKeyReadable) {
+  if (publicKeyReadable && privateKeyReadable) {
+    return "available";
+  }
+  if (!publicKeyReadable && !privateKeyReadable) {
+    return "missing-key-material";
+  }
+  if (!publicKeyReadable) {
+    return "missing-public-key";
+  }
+  return "missing-private-key";
 }
 
 function publicRegistrySealedServerEnv(sealedServerEnv) {
@@ -2664,10 +2707,7 @@ async function dockerRunArgs(lifecycle, releaseId) {
       mount.container === "/app/.sporades/sealed-server-env/server-env.private.pem" &&
       !(await pathReadable(mount.host))
     ) {
-      throw helperError(
-        "Hosted Capsule Sealed Server env private key is missing.",
-        `Restore the Host-owned private key at ${mount.host}, or push a new release re-encrypted to the current Host key fingerprint.`,
-      );
+      throw missingHostSealedServerEnvPrivateKeyError(lifecycle, mount);
     }
     args.push("--volume", formatMount(mount));
     if (mount.container === "/app/.env.sporades.server") {
@@ -2695,6 +2735,28 @@ async function dockerRunArgs(lifecycle, releaseId) {
   args.push("--publish", `127.0.0.1::${lifecycle.routes.running.port ?? 4000}`);
   args.push(lifecycle.container.image, "node", "/app/server.mjs");
   return args;
+}
+
+function missingHostSealedServerEnvPrivateKeyError(lifecycle, mount) {
+  const fingerprint = mount.fingerprint ?? null;
+  const expected = fingerprint ? ` Expected sealed-env key fingerprint: ${fingerprint}.` : "";
+  return helperError(
+    "Hosted Capsule Sealed Server env private key is missing.",
+    `Host key material for ${lifecycle.remoteCapsuleId} is missing.${expected} Old Host-encrypted envelopes cannot be decrypted without that private key. To recover, re-key the Hosted Capsule, re-seal from source-of-truth Server env values, then push a new release.`,
+    {
+      capsule: {
+        subname: lifecycle.subname,
+        domain: lifecycle.domain,
+        hostedUrl: lifecycle.hostedUrl,
+        remoteCapsuleId: lifecycle.remoteCapsuleId,
+      },
+      sealedServerEnv: {
+        expectedPublicKeyFingerprint: fingerprint,
+        privateKeyPath: mount.host,
+        recovery: "re-key-and-re-seal-from-source-of-truth",
+      },
+    },
+  );
 }
 
 function stopAndRemoveContainer(containerName) {
@@ -4035,9 +4097,12 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function helperError(message, hint) {
+function helperError(message, hint, diagnostics = null) {
   const error = new Error(message);
   error.hint = hint;
+  if (diagnostics) {
+    error.diagnostics = diagnostics;
+  }
   return error;
 }
 

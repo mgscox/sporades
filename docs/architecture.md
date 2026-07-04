@@ -457,9 +457,16 @@ Sealed Server env lives under ignored Sporades Runtime or Host state. It is:
 
 - decrypted during Dev session startup,
 - mounted read-only into Container sessions,
-- packaged as a sealed envelope for Hosted Capsule releases,
+- re-encrypted locally to the Hosted Capsule Host public key and packaged as a
+  sealed envelope for Hosted Capsule releases,
 - exposed to server code as `ctx.env`,
 - never bundled into the browser client.
+
+For Hosted Capsules, Host private keys are generated and retained on the Host
+server. The CLI reads public keys and fingerprints, not Host private keys, and
+plaintext Server env values do not cross the local-to-Host boundary. If Host key
+material is lost, old Host-encrypted envelopes cannot be decrypted; recovery is
+to rotate/re-key and re-seal from source-of-truth values.
 
 Legacy `.env.sporades.server` files remain supported for import and fallback
 when no sealed envelope exists. This keeps secrets out of `client.js` and gives

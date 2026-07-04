@@ -131,3 +131,22 @@ test("canonical docs describe deferred Hosted Capsule service orchestration cont
   assert.match(architecture, /Portainer/i);
   assert.match(roadmap, /\.scratch\/docker-compose-capsule-services\/PRD\.md/);
 });
+
+test("docs describe Host-generated Sealed Server env custody and lost-key recovery", async () => {
+  const [userGuide, architecture, runtimeLayout] = await Promise.all([
+    readProjectFile("docs/user-guide.md"),
+    readProjectFile("docs/architecture.md"),
+    readProjectFile("docs/runtime-layout.md"),
+  ]);
+
+  assert.match(userGuide, /Host private keys never leave the Host server/);
+  assert.match(userGuide, /plaintext values never cross the local-to-Host boundary/);
+  assert.match(userGuide, /old Host-encrypted envelopes are\s+unrecoverable without that private key/);
+  assert.match(userGuide, /sporades host rotate-key/);
+  assert.doesNotMatch(userGuide, /sends\s+the matching private key/i);
+  assert.doesNotMatch(userGuide, /Host-profile private keys are stored in local\s+Host profile configuration/i);
+
+  assert.match(architecture, /CLI reads public keys and fingerprints, not Host private keys/);
+  assert.match(architecture, /re-seal from source-of-truth values/);
+  assert.match(runtimeLayout, /inspection reports key fingerprints and availability status without exposing\s+private key material/);
+});

@@ -3232,21 +3232,34 @@ async function prepareHostPushSealedServerEnv(options) {
       throw commandError(
         "Hosted Capsule push requires Sealed Server env.",
         "Run `sporades env import --file .env.sporades.server --json` explicitly, then retry `sporades host push`.",
+        {
+          source: "legacy-server-env",
+          legacyServerEnvFilePresent: true,
+          localSealedServerEnvConfigured: false,
+          requiresExplicitImport: true,
+        },
       );
     }
     return null;
   }
 
   const keyPair = await readKeyPair(paths);
+  const legacyServerEnvFilePresent = (await readServerEnvFile(path.join(options.projectDir, ".env.sporades.server"))).exists;
   if (!keyPair?.privateKey) {
-    throw missingLocalSealedServerEnvSourceError();
+    throw missingLocalSealedServerEnvSourceError({
+      localPrivateKeyConfigured: false,
+      legacyServerEnvFilePresent,
+    });
   }
 
   let values;
   try {
     values = unsealServerEnv(envelope, keyPair.privateKey);
   } catch {
-    throw missingLocalSealedServerEnvSourceError();
+    throw missingLocalSealedServerEnvSourceError({
+      localPrivateKeyConfigured: true,
+      legacyServerEnvFilePresent,
+    });
   }
 
   const hostKey = await readHostedCapsuleSealedEnvPublicKey(options.alias, options.profile, options.subname, options.projectDir);
@@ -3263,10 +3276,17 @@ async function prepareHostPushSealedServerEnv(options) {
   };
 }
 
-function missingLocalSealedServerEnvSourceError() {
+function missingLocalSealedServerEnvSourceError(details = {}) {
   return commandError(
     "Local Sealed Server env source values are unavailable.",
-    "Restore .sporades/sealed-server-env/server-env.private.pem or run `sporades env import --file .env.sporades.server --json` explicitly from source-of-truth values, then retry.",
+    "Restore the local Sealed Server env private key, or run `sporades env import --file .env.sporades.server --json` explicitly from source-of-truth values, then retry. Legacy Server env files are imported only by that explicit command.",
+    {
+      source: "local-sealed-server-env",
+      localSealedServerEnvConfigured: true,
+      localPrivateKeyConfigured: Boolean(details.localPrivateKeyConfigured),
+      legacyServerEnvFilePresent: Boolean(details.legacyServerEnvFilePresent),
+      requiresSourceOfTruthValues: true,
+    },
   );
 }
 
@@ -3286,6 +3306,22 @@ async function readHostedCapsuleSealedEnvPublicKey(alias, profile, subname, proj
     throw commandError(
       "Hosted Capsule Sealed Server env public key is unavailable.",
       `Run \`sporades host register ${subname} --host ${alias} --json\` or inspect \`sporades host list --host ${alias} --json\`, then retry.`,
+      {
+        capsule: {
+          subname,
+          domain: profile.domain,
+          hostedUrl: capsule?.hostedUrl ?? `${profile.scheme ?? DEFAULT_HOST_SCHEME}://${subname}.${profile.domain}`,
+          remoteCapsuleId: capsule?.registry?.remoteCapsuleId ?? `${profile.domain}/${subname}`,
+        },
+        sealedServerEnv: {
+          expectedPublicKeyFingerprint:
+            sealedServerEnv?.publicKeyFingerprint ?? capsule?.registry?.sealedServerEnv?.currentKeyFingerprint ?? null,
+          status: sealedServerEnv?.status ?? "unavailable",
+          publicKeyAvailable: sealedServerEnv?.publicKeyAvailable ?? false,
+          privateKeyAvailable: sealedServerEnv?.privateKeyAvailable ?? null,
+          recovery: "inspect-host-key-status-and-re-key-if-host-key-material-is-lost",
+        },
+      },
     );
   }
   return {
@@ -4784,9 +4820,12 @@ function isMissingDockerContainerError(result) {
   return /No such container/i.test(`${result.stderr ?? ""}\n${result.stdout ?? ""}`);
 }
 
-function commandError(message, hint) {
+function commandError(message, hint, diagnostics = null) {
   const error = new Error(message);
   error.hint = hint;
+  if (diagnostics) {
+    error.diagnostics = diagnostics;
+  }
   return error;
 }
 
