@@ -28,6 +28,7 @@ import {
 } from "../src/sealed-server-env.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../src/runtime-restart-policy.js";
 import {
+  createSqliteDatabaseAdapter,
   createWebSocketHub,
   dumpDatabase,
   handleFileHttpRoute,
@@ -1081,7 +1082,7 @@ async function startDevSession(options) {
     wait: true,
     emit: (data, error) => emitDevEvent(options, data, error),
   });
-  bundle.serverRuntime.env = { ...bundle.serverRuntime.env, ...capsuleServiceEnv };
+  let runtimeServiceEnv = capsuleServiceEnv;
 
   const sessionFilePath = path.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path.join(options.projectDir, ".sporades", "data.db");
@@ -1089,6 +1090,7 @@ async function startDevSession(options) {
     databasePath,
     serverSource: bundle.serverRuntime.source,
     serverEnv: bundle.serverRuntime.env,
+    serviceEnv: capsuleServiceEnv,
     capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
     config: withRuntimeSecuritySession(config, session),
   });
@@ -1305,6 +1307,7 @@ async function startDevSession(options) {
       await runtime.restart(
         bundle.serverRuntime.source,
         bundle.serverRuntime.env,
+        runtimeServiceEnv,
         bundle.serverRuntime.capsuleModuleSource,
         withRuntimeSecuritySession(config, session),
       );
@@ -1370,17 +1373,18 @@ async function startDevSession(options) {
         wait: true,
         emit: (data, error) => emitDevEvent(options, data, error),
       });
-      rebuild.serverRuntime.env = { ...rebuild.serverRuntime.env, ...nextCapsuleServiceEnv };
       const affectsServerRuntime =
         change.affectsServerRuntime || (change.configChanged && configChangeAffectsServerRuntime(config, nextConfig));
       if (affectsServerRuntime) {
         await runtime.restart(
           rebuild.serverRuntime.source,
           rebuild.serverRuntime.env,
+          nextCapsuleServiceEnv,
           rebuild.serverRuntime.capsuleModuleSource,
           withRuntimeSecuritySession(nextConfig, session),
         );
         bundle = rebuild;
+        runtimeServiceEnv = nextCapsuleServiceEnv;
         fatalRestartAttempts = 0;
         websocketHub.disconnectAll();
       }
@@ -1442,19 +1446,21 @@ async function createDevRuntime(options) {
     options.serverEnv,
     options.config,
     await importCapsuleDefinition(options.capsuleModuleSource),
+    { serviceEnv: options.serviceEnv },
   );
 
   return {
     get database() {
       return database;
     },
-    async restart(serverSource, serverEnv, capsuleModuleSource, config) {
+    async restart(serverSource, serverEnv, serviceEnv, capsuleModuleSource, config) {
       const nextDatabase = await openDevDatabase(
         options.databasePath,
         serverSource,
         serverEnv,
         config,
         await importCapsuleDefinition(capsuleModuleSource),
+        { serviceEnv },
       );
       database.close();
       database = nextDatabase;
@@ -2723,12 +2729,11 @@ function parseDockerLogLine(line) {
 
 async function inspectContainerDatabase(options) {
   const databasePath = resolveLocalContainerDatabasePath(options);
-  const { DatabaseSync } = await import("node:sqlite");
-  const sqlite = new DatabaseSync(databasePath, { readOnly: true });
+  const sqlite = await createSqliteDatabaseAdapter(databasePath, { readOnly: true });
   try {
     sqlite.exec("PRAGMA busy_timeout = 1000");
     sqlite.exec("PRAGMA query_only = ON");
-    const database = { sqlite };
+    const database = { adapter: sqlite, sqlite };
     if (options.subcommand === "list") {
       return { ok: true, data: { source: "sqlite-file", tables: await listDatabaseTables(database) }, error: null };
     }
@@ -4564,9 +4569,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
   if (options.connection === "container") {
     return {
       env: capsuleServicesContainerEnv(capsuleServices),
-      services: capsuleServicesJsonSummary(capsuleServices, "ready", {
-        includeContainerUrl: true,
-      }),
+      services: capsuleServicesJsonSummary(capsuleServices, "ready"),
     };
   }
   options.emit?.({
@@ -4592,7 +4595,7 @@ function capsuleServicesContainerEnv(capsuleServices) {
   };
 }
 
-function capsuleServicesJsonSummary(capsuleServices, status, options = {}) {
+function capsuleServicesJsonSummary(capsuleServices, status) {
   const service = capsuleServices.services.database;
   return {
     database: {
@@ -4601,7 +4604,6 @@ function capsuleServicesJsonSummary(capsuleServices, status, options = {}) {
       network: capsuleServices.networks.services,
       containerName: service.name,
       statePath: path.join(CAPSULE_SERVICES_STATE_DIR, "database"),
-      ...(options.includeContainerUrl ? { url: `http://${service.name}:${service.targetPort}` } : {}),
     },
   };
 }

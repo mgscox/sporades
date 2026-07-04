@@ -8,6 +8,8 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { withFakeLibsqlService } from "./support/libsql-http-service.js";
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
 const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
@@ -538,6 +540,78 @@ test("sporades deploy writes a server bundle that serves the capsule", async () 
   });
 });
 
+test("container server bundle reads injected service env and selects the libSQL adapter", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.services = { database: { kind: "database", engine: "libsql" } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    await withFakeCapsuleService(async ({ port: serviceReadyPort }) => {
+      const docker = await installFakeDocker(dir, "container-with-libsql-bundle", {
+        composePortOutput: `127.0.0.1:${serviceReadyPort}`,
+      });
+
+      const deployResult = await runCli(["deploy", "--json"], {
+        cwd: projectDir,
+        env: docker.env,
+      });
+      assert.equal(deployResult.code, 0, deployResult.stderr || deployResult.stdout);
+    });
+
+    await withFakeLibsqlService(path.join(dir, "container-libsql.db"), async ({ url, requests }) => {
+      const port = await getAvailablePort();
+      const serverBundlePath = path.join(projectDir, ".sporades", "build", "server.mjs");
+      const child = spawn(process.execPath, [serverBundlePath], {
+        cwd: projectDir,
+        env: {
+          ...process.env,
+          PORT: String(port),
+          SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data", "data.db"),
+          SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
+          SPORADES_SERVICE_DATABASE_URL: url,
+          SPORADES_SERVICE_DATABASE_AUTH_TOKEN: "server-only-token",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      try {
+        await waitForHttp(`http://127.0.0.1:${port}/`, child);
+        const health = await fetch(`http://127.0.0.1:${port}/__sporades/health/runtime`, {
+          headers: { "x-sporades-host-probe": "test" },
+        });
+        assert.equal(health.status, 200, await health.text());
+        assert(
+          requests.some((request) => request.requests?.some((entry) => entry.stmt?.sql === "SELECT 1 AS ok")),
+          JSON.stringify(requests),
+        );
+        const socket = await openSocket(`http://127.0.0.1:${port}`);
+        try {
+          socket.send(JSON.stringify({ id: "env-1", type: "query.subscribe", query: "ctx.env" }));
+          assert.deepEqual(await readSocketMessage(socket), {
+            id: "env-1",
+            type: "query.result",
+            query: "ctx.env",
+            data: {},
+            error: null,
+          });
+        } finally {
+          socket.close();
+        }
+      } finally {
+        await stopChild(child);
+      }
+    });
+  });
+});
+
 test("sporades logs and db can inspect a local Container session by published port", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -604,7 +678,7 @@ test("sporades logs and db can inspect a local Container session by published po
       cwd: projectDir,
       env: docker.env,
     });
-    assert.equal(dbResult.code, 0, dbResult.stderr);
+    assert.equal(dbResult.code, 0, dbResult.stderr || dbResult.stdout);
     assert.deepEqual(JSON.parse(dbResult.stdout).data, {
       source: "sqlite-file",
       tables: [
@@ -1758,9 +1832,9 @@ test("sporades deploy starts declared services before replacing the local Contai
           network: "sporades-todo-island-services",
           containerName: "sporades-todo-island-database",
           statePath: path.join(".sporades", "services", "database"),
-          url: "http://sporades-todo-island-database:8080",
         },
       });
+      assert.doesNotMatch(deployResult.stdout, /sporades-todo-island-database:8080/);
 
       const calls = await docker.calls();
       const composeUpIndex = calls.findIndex((call) => call.args[0] === "compose" && call.args.includes("up"));

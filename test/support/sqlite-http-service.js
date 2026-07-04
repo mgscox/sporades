@@ -3,6 +3,11 @@ import { createServer } from "node:http";
 import { createSqliteDatabaseAdapter } from "../../src/server-runtime-source.js";
 
 const databasePath = process.argv[2];
+
+if (!databasePath) {
+  process.exit(0);
+}
+
 const adapter = await createSqliteDatabaseAdapter(databasePath);
 
 const server = createServer(async (request, response) => {

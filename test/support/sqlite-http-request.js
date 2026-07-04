@@ -1,5 +1,9 @@
 const url = process.argv[2];
 
+if (!url) {
+  process.exit(0);
+}
+
 let input = "";
 process.stdin.setEncoding("utf8");
 process.stdin.on("data", (chunk) => {

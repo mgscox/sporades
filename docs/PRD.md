@@ -412,6 +412,14 @@ generated Compose YAML. The current Capsule service implementation is
 local-only for Dev sessions and local Container sessions. Hosted Capsule
 service orchestration remains future Host-server work.
 
+When a local Dev session or local Container session starts a declared
+`services.database` service with `engine: "libsql"`, Sporades injects a
+server-only service URL and selects the internal libSQL service-backed Database
+adapter for runtime persistence. Embedded SQLite remains the default when no
+service-backed database URL is provided. Service connection details are runtime
+plumbing and must not be exposed through client bundles, inspection JSON, or app
+authoring APIs.
+
 Sealed Server env lives in ignored Runtime or Host state, is decrypted for Dev
 sessions, local Container sessions, and Hosted Capsules, is exposed to server
 code as `ctx.env`, and is never bundled into `client.js`. Legacy

@@ -25,7 +25,10 @@ ${runtimeFunctions}
 const port = Number(process.env.PORT ?? sporadesConfig.deploy?.port ?? 4000);
 const databasePath = process.env.SPORADES_DATABASE_PATH ?? path.join(process.cwd(), "data", "data.db");
 const runtimeServerEnv = await readRuntimeServerEnv(sporadesServerEnv, sporadesSealedServerEnv);
-const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, sporadesConfig, sporadesCapsuleDefinition);
+const runtimeServiceEnv = readRuntimeServiceEnv();
+const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, sporadesConfig, sporadesCapsuleDefinition, {
+  serviceEnv: runtimeServiceEnv,
+});
 database.log.emit({
   category: "platform",
   event: "runtime.started",
@@ -115,13 +118,25 @@ async function readRuntimeFile(containerFileName, fallbackPath) {
 }
 
 async function readRuntimeServerEnv(fallbackEnv, sealed) {
+  let env;
   if (!sealed?.enabled) {
-    return fallbackEnv;
+    env = fallbackEnv;
+  } else {
+    const envelopePath = process.env.SPORADES_SEALED_SERVER_ENV_PATH ?? path.join(process.cwd(), ".sporades", "sealed-server-env", "server-env.sealed.json");
+    const privateKeyPath = process.env.SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH ?? path.join(process.cwd(), ".sporades", "sealed-server-env", "server-env.private.pem");
+    const [envelopeRaw, privateKey] = await Promise.all([readFile(envelopePath, "utf8"), readFile(privateKeyPath, "utf8")]);
+    env = unsealRuntimeServerEnv(JSON.parse(envelopeRaw), privateKey);
   }
-  const envelopePath = process.env.SPORADES_SEALED_SERVER_ENV_PATH ?? path.join(process.cwd(), ".sporades", "sealed-server-env", "server-env.sealed.json");
-  const privateKeyPath = process.env.SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH ?? path.join(process.cwd(), ".sporades", "sealed-server-env", "server-env.private.pem");
-  const [envelopeRaw, privateKey] = await Promise.all([readFile(envelopePath, "utf8"), readFile(privateKeyPath, "utf8")]);
-  return unsealRuntimeServerEnv(JSON.parse(envelopeRaw), privateKey);
+  return env;
+}
+
+function readRuntimeServiceEnv() {
+  const keys = [
+    "SPORADES_SERVICE_DATABASE_ENGINE",
+    "SPORADES_SERVICE_DATABASE_URL",
+    "SPORADES_SERVICE_DATABASE_AUTH_TOKEN",
+  ];
+  return Object.fromEntries(keys.filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
 }
 
 function unsealRuntimeServerEnv(envelope, privateKey) {
