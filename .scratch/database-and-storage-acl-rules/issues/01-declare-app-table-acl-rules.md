@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Declare App Table ACL Rules
 
@@ -23,4 +23,3 @@ Add Capsule definition support for app-table ACL rules declared in server code. 
 ## Blocked by
 
 None - can start immediately
-
