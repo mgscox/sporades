@@ -397,8 +397,8 @@ test("runtime file operations accept absolute File paths and File references", a
     });
     const auth = { userId: "user-1", displayName: "Ada", isAuthenticated: false, isGuest: true, provider: "anonymous" };
     try {
-      const uploadAndComplete = async (file, body = "bytes") => {
-        const pending = await createPendingFileUpload(database, auth, { file });
+      const uploadAndComplete = async (file, body = "bytes", uploadAuth = auth) => {
+        const pending = await createPendingFileUpload(database, uploadAuth, { file });
         assert.equal(pending.ok, true, pending.error?.message);
         const uploadId = pending.data.uploadUrl.split("/").pop();
         const completed = await completePendingFileUpload(database, uploadId, Readable.from([Buffer.from(body)]));
@@ -426,6 +426,49 @@ test("runtime file operations accept absolute File paths and File references", a
       const publicByPath = await createPublicFileUrl(database, auth, "/images/avatars/profile.png", { noExpiry: true });
       assert.equal(publicByPath.ok, true);
       assert.equal(publicByPath.data.publicUrl.fileId, explicit.id);
+
+      const otherAuth = { userId: "user-2", displayName: "Grace", isAuthenticated: false, isGuest: true, provider: "anonymous" };
+      const otherByPath = await getPrivateFileUrl(database, otherAuth, "/images/avatars/profile.png");
+      assert.equal(otherByPath.ok, false);
+      assert.equal(otherByPath.error.message, "File not found.");
+
+      const otherSamePath = await createPendingFileUpload(database, otherAuth, {
+        file: { name: "other.png", type: "image/png", size: 5, path: "/images/avatars/profile.png" },
+      });
+      assert.equal(otherSamePath.ok, false);
+      assert.equal(otherSamePath.error.message, "File path already exists.");
+      assert.equal((await getPrivateFileUrl(database, auth, "/images/avatars/profile.png")).data.file.id, explicit.id);
+
+      const [crossOwnerPathA, crossOwnerPathB] = await Promise.all([
+        createPendingFileUpload(database, auth, {
+          file: { name: "a.txt", type: "text/plain", size: 6, path: "/race/cross-owner.txt" },
+        }),
+        createPendingFileUpload(database, otherAuth, {
+          file: { name: "b.txt", type: "text/plain", size: 6, path: "/race/cross-owner.txt" },
+        }),
+      ]);
+      assert.equal(crossOwnerPathA.ok, true, crossOwnerPathA.error?.message);
+      assert.equal(crossOwnerPathB.ok, true, crossOwnerPathB.error?.message);
+      assert.notEqual(crossOwnerPathA.data.file.id, crossOwnerPathB.data.file.id);
+
+      const crossOwnerACompleted = await completePendingFileUpload(
+        database,
+        crossOwnerPathA.data.uploadUrl.split("/").pop(),
+        Readable.from([Buffer.from("ownerA")]),
+      );
+      const crossOwnerBCompleted = await completePendingFileUpload(
+        database,
+        crossOwnerPathB.data.uploadUrl.split("/").pop(),
+        Readable.from([Buffer.from("ownerB")]),
+      );
+      assert.equal(crossOwnerACompleted.ok, false);
+      assert.equal(crossOwnerACompleted.error.message, "Upload URL not found.");
+      assert.equal(crossOwnerBCompleted.ok, true, crossOwnerBCompleted.error?.message);
+      assert.equal((await database.sqlite.selectLiveFileByPath("/race/cross-owner.txt")).length, 1);
+      assert.equal((await getPrivateFileUrl(database, otherAuth, "/race/cross-owner.txt")).data.file.id, crossOwnerPathB.data.file.id);
+      const crossOwnerPrivate = await getPrivateFileUrl(database, auth, "/race/cross-owner.txt");
+      assert.equal(crossOwnerPrivate.ok, false);
+      assert.equal(crossOwnerPrivate.error.message, "File not found.");
 
       const firstOverlap = await createPendingFileUpload(database, auth, {
         file: { name: "first.png", type: "image/png", size: 5, path: "/images/avatars/profile.png" },
@@ -466,7 +509,7 @@ test("runtime file operations accept absolute File paths and File references", a
       assert.equal(secondOverlapCompleted.data.file.version, secondOverlap.data.file.version);
       assert.equal((await getPrivateFileUrl(database, auth, "/images/avatars/profile.png")).data.file.version, secondOverlap.data.file.version);
 
-      const overlapRows = await database.sqlite.selectLiveFileByPath(auth.userId, "/images/avatars/profile.png");
+      const overlapRows = await database.sqlite.selectLiveFileByPath("/images/avatars/profile.png");
       assert.equal(overlapRows.length, 1);
       assert.equal(overlapRows[0].id, explicit.id);
 
@@ -499,7 +542,7 @@ test("runtime file operations accept absolute File paths and File references", a
       assert.equal(newPathResults.filter((result) => !result.ok).length, 1);
       assert.equal(newPathResults.find((result) => result.ok).data.file.id, newPathA.data.file.id);
       assert.match(newPathResults.find((result) => !result.ok).error.message, /Upload URL (not found|was superseded)/);
-      assert.equal((await database.sqlite.selectLiveFileByPath(auth.userId, "/race/new.txt")).length, 1);
+      assert.equal((await database.sqlite.selectLiveFileByPath("/race/new.txt")).length, 1);
 
       const inFlightA = await createPendingFileUpload(database, auth, {
         file: { name: "in-flight-a.png", type: "image/png", size: 8, path: "/images/avatars/profile.png" },
@@ -605,6 +648,22 @@ test("runtime file operations accept absolute File paths and File references", a
       });
       assert.notEqual(recreated.id, explicit.id);
       assert.equal(recreated.path, "/images/avatars/profile.png");
+
+      const deleteRecreated = await deletePrivateFile(database, auth, "/images/avatars/profile.png");
+      assert.equal(deleteRecreated.ok, true);
+      const recreatedByOtherOwner = await uploadAndComplete(
+        {
+          name: "other-avatar.png",
+          type: "image/png",
+          size: 5,
+          path: "/images/avatars/profile.png",
+        },
+        "other",
+        otherAuth,
+      );
+      assert.notEqual(recreatedByOtherOwner.id, recreated.id);
+      assert.equal(recreatedByOtherOwner.path, "/images/avatars/profile.png");
+      assert.equal((await getPrivateFileUrl(database, otherAuth, "/images/avatars/profile.png")).data.file.id, recreatedByOtherOwner.id);
 
       const missing = await getPrivateFileUrl(database, auth, "/missing/file.txt");
       assert.equal(missing.ok, false);
