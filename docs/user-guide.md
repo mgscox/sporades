@@ -306,6 +306,24 @@ Switch to active enforcement when the Capsule is ready:
 }
 ```
 
+Override individual CSP directives with `security.csp.directives`. Sporades
+merges these values over its defaults, so the JSON only needs to contain the
+directives that differ for the Capsule:
+
+```json
+{
+  "security": {
+    "csp": {
+      "mode": "report-only",
+      "directives": {
+        "connect-src": ["'self'", "https://api.example.com", "ws:", "wss:"],
+        "img-src": ["'self'", "data:", "blob:", "https://images.example.com"]
+      }
+    }
+  }
+}
+```
+
 Inspect the effective policy without starting the server Bundle:
 
 ```sh
