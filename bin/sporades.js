@@ -42,6 +42,7 @@ import {
 } from "../src/server-runtime-source.js";
 import { scaffoldFiles } from "../src/templates/scaffold-template.js";
 import {
+  CAPSULE_SERVICES_STATE_DIR,
   validateCapsuleServicesConfig,
   writeCapsuleServicesCompose,
 } from "../src/capsule-services.js";
@@ -84,6 +85,7 @@ main().catch((error) => {
       error: {
         message: error.message,
         hint: error.hint ?? "Check the command arguments and try again.",
+        ...(error.diagnostics ? { diagnostics: error.diagnostics } : {}),
       },
     },
     true,
@@ -1028,9 +1030,13 @@ async function startDevSession(options) {
   let security = resolveEffectiveSecurityPolicy(config, session);
   const restartPolicy = restartPolicyForMode("dev");
   const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4000;
-  const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   let bundle = await createBundle(options.projectDir, config);
-  startCapsuleServices(capsuleServices, options.projectDir);
+  const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
+  const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
+    wait: true,
+    emit: (data, error) => emitDevEvent(options, data, error),
+  });
+  bundle.serverRuntime.env = { ...bundle.serverRuntime.env, ...capsuleServiceEnv };
 
   const sessionFilePath = path.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path.join(options.projectDir, ".sporades", "data.db");
@@ -1315,7 +1321,11 @@ async function startDevSession(options) {
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
       const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig);
       const rebuild = await createBundle(options.projectDir, nextConfig);
-      startCapsuleServices(nextCapsuleServices, options.projectDir);
+      const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
+        wait: true,
+        emit: (data, error) => emitDevEvent(options, data, error),
+      });
+      rebuild.serverRuntime.env = { ...rebuild.serverRuntime.env, ...nextCapsuleServiceEnv };
       const affectsServerRuntime =
         change.affectsServerRuntime || (change.configChanged && configChangeAffectsServerRuntime(config, nextConfig));
       if (affectsServerRuntime) {
@@ -1534,6 +1544,9 @@ function emitDevEvent(options, data, error = null) {
 
   if (data.event === "started") {
     process.stdout.write(`Sporades dev session started at ${data.url}\n`);
+    return;
+  }
+  if (data.event === "service") {
     return;
   }
   if (data.event === "fatal") {
@@ -2378,7 +2391,7 @@ async function startContainerSession(options) {
   }
 
   ensureLocalBaseImage(options.projectDir);
-  startCapsuleServices(capsuleServices, options.projectDir);
+  await startCapsuleServices(capsuleServices, options.projectDir);
 
   const envArgs = bundle.containerMounts.serverEnv
     ? [
@@ -4211,16 +4224,158 @@ function runDocker(args, cwd, message, hint) {
   return result.stdout.trim();
 }
 
-function startCapsuleServices(capsuleServices, projectDir) {
+async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
   if (!capsuleServices) {
-    return;
+    return {};
   }
+  options.emit?.({
+    event: "service",
+    service: "database",
+    status: "starting",
+    engine: "libsql",
+    statePath: path.join(CAPSULE_SERVICES_STATE_DIR, "database"),
+  });
   runDocker(
     ["compose", "-f", capsuleServices.path, "up", "--detach"],
     projectDir,
     "Failed to start Capsule services.",
     "Check Docker is running and supports `docker compose`, then retry the command.",
   );
+  if (!options.wait) {
+    return {};
+  }
+  const connection = await waitForCapsuleDatabaseService(capsuleServices, projectDir);
+  options.emit?.({
+    event: "service",
+    service: "database",
+    status: "ready",
+    engine: "libsql",
+    statePath: path.join(CAPSULE_SERVICES_STATE_DIR, "database"),
+    host: connection.host,
+    port: connection.port,
+  });
+  return {
+    SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
+    SPORADES_SERVICE_DATABASE_URL: connection.url,
+  };
+}
+
+async function waitForCapsuleDatabaseService(capsuleServices, projectDir) {
+  const service = capsuleServices.services.database;
+  const deadline = Date.now() + capsuleServiceReadinessTimeoutMs();
+  let lastStatus = null;
+  let lastError = null;
+  let lastProbe = null;
+
+  while (Date.now() < deadline) {
+    const status = capsuleServiceStatus(capsuleServices, projectDir, service.name);
+    lastStatus = status;
+    if (["exited", "dead", "removing"].includes(status.state) || status.health === "unhealthy") {
+      lastError = status;
+      break;
+    }
+    if (status.state === "running") {
+      const port = capsuleServicePort(capsuleServices, projectDir, service.name, service.targetPort);
+      const connection = {
+        host: "127.0.0.1",
+        port,
+        url: `http://127.0.0.1:${port}`,
+      };
+      lastProbe = await probeCapsuleDatabaseService(connection.url);
+      if (lastProbe.ok) {
+        return connection;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  const diagnostics = {
+    service: "database",
+    engine: "libsql",
+    status: lastError ?? lastStatus ?? { state: "unknown", health: null },
+    probe: lastProbe,
+  };
+  const error = commandError(
+    "Capsule database service did not become ready.",
+    "Run `docker compose -f .sporades/compose/capsule-services.compose.yml ps` and inspect the service logs.",
+  );
+  error.diagnostics = diagnostics;
+  throw error;
+}
+
+async function probeCapsuleDatabaseService(url) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 500);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    return {
+      ok: response.status < 500,
+      statusCode: response.status,
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      message: error.name === "AbortError" ? "probe timed out" : error.message,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+function capsuleServiceReadinessTimeoutMs() {
+  const raw = process.env.SPORADES_SERVICE_READINESS_TIMEOUT_MS;
+  if (!raw) {
+    return 30000;
+  }
+  const value = Number(raw);
+  return Number.isFinite(value) && value > 0 ? value : 30000;
+}
+
+function capsuleServiceStatus(capsuleServices, projectDir, serviceName) {
+  const output = runDocker(
+    ["compose", "-f", capsuleServices.path, "ps", "--format", "json", serviceName],
+    projectDir,
+    "Failed to inspect Capsule service readiness.",
+    "Check Docker is running and supports `docker compose ps --format json`, then retry the command.",
+  );
+  const parsed = parseComposeJsonOutput(output);
+  const record = Array.isArray(parsed) ? parsed[0] : parsed;
+  return {
+    state: String(record?.State ?? record?.state ?? "").toLowerCase(),
+    health: record?.Health ? String(record.Health).toLowerCase() : null,
+  };
+}
+
+function capsuleServicePort(capsuleServices, projectDir, serviceName, targetPort) {
+  const output = runDocker(
+    ["compose", "-f", capsuleServices.path, "port", serviceName, String(targetPort)],
+    projectDir,
+    "Failed to inspect Capsule service port.",
+    "Check Docker is running and supports `docker compose port`, then retry the command.",
+  );
+  const match = output.match(/:(\d+)\s*$/);
+  if (!match) {
+    throw commandError(
+      "Capsule database service port was not published.",
+      "Restart Docker and rerun `sporades dev` so Compose can publish the local service port.",
+    );
+  }
+  return Number(match[1]);
+}
+
+function parseComposeJsonOutput(output) {
+  const trimmed = output.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return trimmed
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  }
 }
 
 function ensureLocalBaseImage(cwd) {

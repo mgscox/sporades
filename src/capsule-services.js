@@ -6,6 +6,7 @@ const SUPPORTED_DATABASE_ENGINES = new Set(["libsql"]);
 const LIBSQL_IMAGE = "ghcr.io/tursodatabase/libsql-server:v0.24.32";
 
 export const CAPSULE_SERVICES_COMPOSE_FILE = path.join(".sporades", "compose", "capsule-services.compose.yml");
+export const CAPSULE_SERVICES_STATE_DIR = path.join(".sporades", "services");
 
 export function validateCapsuleServicesConfig(services) {
   if (services === undefined) {
@@ -40,7 +41,8 @@ export async function writeCapsuleServicesCompose(projectDir, config) {
 
   validateCapsuleServicesConfig(config.services);
   await mkdir(path.dirname(composePath), { recursive: true });
-  const model = capsuleServicesComposeModel(config);
+  const model = capsuleServicesComposeModel(config, projectDir);
+  await mkdir(model.services.database.stateDir, { recursive: true });
   const source = renderCapsuleServicesCompose(model);
   await writeFile(composePath, source);
   return {
@@ -50,11 +52,11 @@ export async function writeCapsuleServicesCompose(projectDir, config) {
   };
 }
 
-export function capsuleServicesComposeModel(config) {
+export function capsuleServicesComposeModel(config, projectDir = process.cwd()) {
   const projectSlug = slugify(config.name ?? "capsule");
   const serviceName = `sporades-${projectSlug}-database`;
   const networkName = `sporades-${projectSlug}-services`;
-  const volumeName = `sporades-${projectSlug}-database-data`;
+  const stateDir = path.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "database");
 
   return {
     projectSlug,
@@ -63,14 +65,12 @@ export function capsuleServicesComposeModel(config) {
       database: {
         name: serviceName,
         image: LIBSQL_IMAGE,
-        volume: volumeName,
+        stateDir,
+        targetPort: 8080,
       },
     },
     networks: {
       services: networkName,
-    },
-    volumes: {
-      databaseData: volumeName,
     },
     labels: {
       "com.sporades.managed": "true",
@@ -116,18 +116,14 @@ services:
 ${renderLabels(model.labels, 6)}
     networks:
       - ${model.networks.services}
+    ports:
+      - "127.0.0.1::${model.services.database.targetPort}"
     volumes:
-      - ${model.volumes.databaseData}:/var/lib/sqld:rw
+      - ${JSON.stringify(model.services.database.stateDir)}:/var/lib/sqld:rw
 
 networks:
   ${model.networks.services}:
     name: ${model.networks.services}
-    labels:
-${renderLabels(model.labels, 6)}
-
-volumes:
-  ${model.volumes.databaseData}:
-    name: ${model.volumes.databaseData}
     labels:
 ${renderLabels(model.labels, 6)}
 `;
