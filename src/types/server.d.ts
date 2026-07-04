@@ -101,7 +101,7 @@ export type MessageScope =
     };
 
 export type MessageApi = {
-  send(message: { type: string; data?: unknown; scope?: MessageScope }): void | Promise<void>;
+  send(message: { type: string; data?: unknown; scope?: MessageScope }): number;
 };
 
 export type CapsuleContext<Schema extends SchemaDefinition = SchemaDefinition> = {

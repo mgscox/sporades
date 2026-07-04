@@ -130,8 +130,8 @@ const app = capsule({
   },
   messages: {
     typing: message(async (ctx, data) => {
-      await ctx.messages.send({ type: "typing", data, scope: "currentUser" });
-      return { ok: true };
+      const sentToClients: number = ctx.messages.send({ type: "typing", data, scope: "currentUser" });
+      return { ok: true, sentToClients };
     }),
   },
   hooks: {

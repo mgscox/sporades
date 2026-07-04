@@ -5592,8 +5592,8 @@ export default capsule({
 
   messages: {
     typing: message((ctx, data) => {
-      ctx.messages.send({ type: "typing", data });
-      return { ok: true };
+      const sentToClients = ctx.messages.send({ type: "typing", data });
+      return { ok: true, sentToClients };
     }),
   },
 });
@@ -5650,7 +5650,7 @@ export default capsule({
         id: "typing",
         type: "app.result",
         message: "typing",
-        data: { ok: true },
+        data: { ok: true, sentToClients: 2 },
         error: null,
       });
 

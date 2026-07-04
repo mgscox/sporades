@@ -164,8 +164,8 @@ export default capsule({
 
   messages: {
     typing: message((ctx, data) => {
-      ctx.messages.send({ type: "typing", data, scope: "currentUser" });
-      return { ok: true };
+      const sentToClients = ctx.messages.send({ type: "typing", data, scope: "currentUser" });
+      return { ok: true, sentToClients };
     })
   }
 });

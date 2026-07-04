@@ -215,8 +215,8 @@ import { capsule, message } from "sporades/server";
 export default capsule({
   messages: {
     typing: message((ctx, data) => {
-      ctx.messages.send({ type: "typing", data });
-      return { ok: true };
+      const sentToClients = ctx.messages.send({ type: "typing", data });
+      return { ok: true, sentToClients };
     }),
   },
 });
@@ -241,8 +241,9 @@ namespaces such as `app.`, `auth.`, `query.`, `mutation.`, `files.`, and
 run through declared Capsule handlers; the platform does not directly relay
 arbitrary client messages. `ctx.messages.send()` defaults to the current user's
 connected clients, and handlers can explicitly target users with
-`{ scope: "users", userIds: [...] }`. App-wide `{ scope: "all" }` broadcasts are
-not available from client-origin handlers.
+`{ scope: "users", userIds: [...] }`. It returns the number of connected clients
+the message was sent to. App-wide `{ scope: "all" }` broadcasts are not
+available from client-origin handlers.
 
 App messages are a real-time escape hatch for JSON-serializable, ephemeral
 events. Use queries and mutations for durable state, auth APIs for identity, and
