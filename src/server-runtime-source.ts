@@ -4289,16 +4289,18 @@ async function resolveLiveFileReference(database, ownerId, reference) {
   return { ok: true, row: await database.sqlite.fileRowForOwner(value, ownerId) };
 }
 
-async function singleLiveFileRowByPath(database, path) {
-  const rows = await database.sqlite.selectLiveFileByPath(path);
-  if (rows.length > 1) return { ambiguous: true };
-  return rows[0] ?? null;
+function singleLiveFileRowByPath(database, path) {
+  return thenIfPromise(database.sqlite.selectLiveFileByPath(path), (rows) => {
+    if (rows.length > 1) return { ambiguous: true };
+    return rows[0] ?? null;
+  });
 }
 
-async function singleActiveFileRowByPath(database, path) {
-  const rows = await database.sqlite.selectActiveFileByPath(path);
-  if (rows.length > 1) return { ambiguous: true };
-  return rows[0] ?? null;
+function singleActiveFileRowByPath(database, path) {
+  return thenIfPromise(database.sqlite.selectActiveFileByPath(path), (rows) => {
+    if (rows.length > 1) return { ambiguous: true };
+    return rows[0] ?? null;
+  });
 }
 
 function ambiguousFileReferenceError(reference) {
@@ -4799,24 +4801,45 @@ function createAclDbHelpers(database, state) {
 
 function createAclStorageHelpers(database, state) {
   return Object.freeze({
-    get(resourceName, id) {
+    get(resourceName, reference) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        return thenIfPromise(database.sqlite.selectFileById(String(id)), (row) => {
+        return thenIfPromise(resolveAclStorageFileReference(database, reference), (row) => {
           return row ? aclStorageMetadataFromFileRow(row) : null;
         });
       }
       return null;
     },
-    exists(resourceName, id) {
+    exists(resourceName, reference) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        return thenIfPromise(database.sqlite.selectFileById(String(id)), (row) => Boolean(row));
+        return thenIfPromise(resolveAclStorageFileReference(database, reference), (row) => Boolean(row));
       }
       return false;
     },
+  });
+}
+
+function resolveAclStorageFileReference(database, reference) {
+  const value = String(reference ?? "");
+  if (isAbsoluteFilePath(value)) {
+    let path;
+    try {
+      path = normalizeAbsoluteFilePath(value);
+    } catch {
+      return null;
+    }
+    return thenIfPromise(singleLiveFileRowByPath(database, path), (resolved) => {
+      return resolved?.ambiguous ? null : resolved;
+    });
+  }
+  return thenIfPromise(database.sqlite.selectFileById(value), (row) => {
+    if (!row || row.deletedAt !== null || row.status !== "uploaded") {
+      return null;
+    }
+    return row;
   });
 }
 
@@ -4848,6 +4871,8 @@ function aclStorageMetadataFromFileRow(row) {
   const metadata = fileMetadataFromRow(row);
   return {
     ...metadata,
+    originalName: row.name,
+    owner: row.ownerId,
     ownerId: row.ownerId,
     bucketId: row.bucketId,
     status: row.status,

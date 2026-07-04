@@ -553,7 +553,7 @@ test("denied ACL reads emit structured diagnosis logs without exposing filtered 
   });
 });
 
-test("ACL user guide documents policy behavior and reserved storage enforcement", async () => {
+test("ACL user guide documents policy behavior and storage helper boundaries", async () => {
   const guide = await readFile(new URL("../docs/user-guide.md", import.meta.url), "utf8");
 
   assert.match(guide, /invisible accept\/reject authorization policy/);
@@ -561,7 +561,8 @@ test("ACL user guide documents policy behavior and reserved storage enforcement"
   assert.match(guide, /`write` is the fallback for `insert`, `update`,\s+and `delete`/);
   assert.match(guide, /Read ACLs filter rows after fetch/);
   assert.match(guide, /insert receives `previous = null`/);
-  assert.match(guide, /`ctx\.acl\.storage`.*reserved for a later\s+storage-enforcement slice/s);
+  assert.match(guide, /resolved by File ID or absolute File path/);
+  assert.match(guide, /do not\s+expose filesystem paths, object keys, Object buckets, runtime table names, or\s+generated read URLs/);
   assert.match(guide, /`sporades doctor` may later warn about missing ACLs or\s+open-to-the-world data/);
 });
 
@@ -759,17 +760,23 @@ test("ACL helpers expose async db exists checks and do not recursively evaluate 
   });
 });
 
-test("ACL storage helpers expose stable file metadata resource names", async () => {
+test("ACL storage helpers expose live files by File ID and absolute File path", async () => {
   await withTempDir(async (dir) => {
+    const seenFiles = new Map();
     const database = await openCapsuleDatabase(dir, {
       schema: {
         attachments: table({
           title: String(),
-          fileId: String(),
+          fileRef: String(),
         }).acl({
           read: ({ row, ctx }) => {
-            const file = ctx.acl.storage.get("files", row.fileId);
-            return file?.ownerId === ctx.auth.userId && file?.name === "report.txt";
+            const file = ctx.acl.storage.get("files", row.fileRef);
+            seenFiles.set(row.title, file);
+            return (
+              ctx.acl.storage.exists("files", row.fileRef) &&
+              file?.ownerId === ctx.auth.userId &&
+              file?.path.startsWith("/teams/u1/")
+            );
           },
         }),
       },
@@ -784,7 +791,7 @@ test("ACL storage helpers expose stable file metadata resource names", async () 
         ownerId: "u1",
         bucketId: "bucket-1",
         bucketName: "default",
-        path: "/default/report.txt",
+        path: "/teams/u1/reports/report.txt",
         name: "report.txt",
         type: "text/plain",
         size: 12,
@@ -793,15 +800,144 @@ test("ACL storage helpers expose stable file metadata resource names", async () 
         createdAt: "2026-07-04T10:00:00.000Z",
         updatedAt: "2026-07-04T10:00:00.000Z",
       });
+      database.sqlite.insertFileRow({
+        id: "file-2",
+        ownerId: "u1",
+        bucketId: "bucket-1",
+        bucketName: "default",
+        path: "/teams/u1/reports/annual.txt",
+        name: "annual.txt",
+        type: "text/plain",
+        size: 13,
+        version: "version-2",
+        status: "uploaded",
+        createdAt: "2026-07-04T10:01:00.000Z",
+        updatedAt: "2026-07-04T10:01:00.000Z",
+      });
+      database.sqlite.insertFileRow({
+        id: "file-3",
+        ownerId: "u1",
+        bucketId: "bucket-1",
+        bucketName: "default",
+        path: "/teams/u1/images/2026/07/profile.png",
+        name: "profile.png",
+        type: "image/png",
+        size: 14,
+        version: "version-3",
+        status: "uploaded",
+        createdAt: "2026-07-04T10:02:00.000Z",
+        updatedAt: "2026-07-04T10:02:00.000Z",
+      });
+      database.sqlite.insertFileRow({
+        id: "file-deleted",
+        ownerId: "u1",
+        bucketId: "bucket-1",
+        bucketName: "default",
+        path: "/teams/u1/reports/deleted.txt",
+        name: "deleted.txt",
+        type: "text/plain",
+        size: 15,
+        version: "version-deleted",
+        status: "uploaded",
+        createdAt: "2026-07-04T10:03:00.000Z",
+        updatedAt: "2026-07-04T10:03:00.000Z",
+      });
+      database.sqlite.markFileDeleted("file-deleted", "2026-07-04T10:04:00.000Z");
+      database.sqlite.insertFileRow({
+        id: "file-pending",
+        ownerId: "u1",
+        bucketId: "bucket-1",
+        bucketName: "default",
+        path: "/teams/u1/reports/pending.txt",
+        name: "pending.txt",
+        type: "text/plain",
+        size: 16,
+        version: "version-pending",
+        status: "pending",
+        createdAt: "2026-07-04T10:05:00.000Z",
+        updatedAt: "2026-07-04T10:05:00.000Z",
+      });
+      database.sqlite.insertFileRow({
+        id: "file-other",
+        ownerId: "u2",
+        bucketId: "bucket-2",
+        bucketName: "default",
+        path: "/teams/u2/private.txt",
+        name: "private.txt",
+        type: "text/plain",
+        size: 17,
+        version: "version-other",
+        status: "uploaded",
+        createdAt: "2026-07-04T10:06:00.000Z",
+        updatedAt: "2026-07-04T10:06:00.000Z",
+      });
+      const selectLiveFileByPath = database.sqlite.selectLiveFileByPath.bind(database.sqlite);
+      database.sqlite.selectLiveFileByPath = (filePath) => {
+        if (filePath === "/teams/u1/ambiguous.txt") {
+          return [database.sqlite.selectFileById("file-1"), database.sqlite.selectFileById("file-2")];
+        }
+        return selectLiveFileByPath(filePath);
+      };
+
       const db = createEndpointDatabaseApi(database);
-      db.attachments.insert({ title: "Report", fileId: "file-1" });
+      db.attachments.insert({ title: "Allowed by ID", fileRef: "file-1" });
+      db.attachments.insert({ title: "Allowed by path", fileRef: "/teams/u1/reports/annual.txt" });
+      db.attachments.insert({ title: "Allowed slash path", fileRef: "/teams/u1/images/2026/07/profile.png" });
+      db.attachments.insert({ title: "Deleted by ID", fileRef: "file-deleted" });
+      db.attachments.insert({ title: "Deleted by path", fileRef: "/teams/u1/reports/deleted.txt" });
+      db.attachments.insert({ title: "Pending by ID", fileRef: "file-pending" });
+      db.attachments.insert({ title: "Missing by path", fileRef: "/teams/u1/reports/missing.txt" });
+      db.attachments.insert({ title: "Other owner", fileRef: "/teams/u2/private.txt" });
+      db.attachments.insert({ title: "Ambiguous path", fileRef: "/teams/u1/ambiguous.txt" });
 
       const result = await runQuery(database, auth("u1"), "attachments");
 
       assert.equal(result.error, null);
       assert.deepEqual(
         result.data.map((row) => row.title),
-        ["Report"],
+        ["Allowed by ID", "Allowed by path", "Allowed slash path"],
+      );
+      assert.deepEqual(seenFiles.get("Allowed by path"), {
+        id: "file-2",
+        bucket: "default",
+        size: 13,
+        type: "text/plain",
+        name: "annual.txt",
+        path: "/teams/u1/reports/annual.txt",
+        version: "version-2",
+        originalName: "annual.txt",
+        owner: "u1",
+        ownerId: "u1",
+        bucketId: "bucket-1",
+        status: "uploaded",
+        createdAt: "2026-07-04T10:01:00.000Z",
+        updatedAt: "2026-07-04T10:01:00.000Z",
+        deletedAt: null,
+      });
+      assert.equal(seenFiles.get("Deleted by ID"), null);
+      assert.equal(seenFiles.get("Deleted by path"), null);
+      assert.equal(seenFiles.get("Pending by ID"), null);
+      assert.equal(seenFiles.get("Missing by path"), null);
+      assert.equal(seenFiles.get("Ambiguous path"), null);
+      assert.deepEqual(
+        Object.keys(seenFiles.get("Allowed by ID")).sort(),
+        [
+          "bucket",
+          "bucketId",
+          "createdAt",
+          "deletedAt",
+          "id",
+          "name",
+          "originalName",
+          "owner",
+          "ownerId",
+          "path",
+          "size",
+          "status",
+          "type",
+          "updatedAt",
+          "version",
+        ],
       );
     } finally {
       database.close();

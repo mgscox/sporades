@@ -85,7 +85,11 @@ const app = capsule({
       authorId: Reference("users").default(null),
       ownerId: String(),
     }).acl({
-      read: ({ row, ctx }) => row?.ownerId === ctx.auth.userId,
+      read: ({ row, ctx }) => {
+        const file = ctx.acl.storage.get("files", "/avatars/profile.png");
+        const hasFile = ctx.acl.storage.exists("files", file?.id ?? "/avatars/profile.png");
+        return row?.ownerId === ctx.auth.userId && hasFile === (file !== null) && file !== null && file.path.startsWith("/");
+      },
       write: async ({ next, previous, ctx }) => {
         await Promise.resolve();
         const ownerId = next?.ownerId ?? previous?.ownerId;

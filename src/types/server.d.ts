@@ -34,8 +34,42 @@ export type AnyFieldDefinition =
 
 export type TableAclOperation = "read" | "write" | "insert" | "update" | "delete";
 
+export type AclStorageFileMetadata = {
+  id: string;
+  path: string;
+  bucket: string;
+  bucketId: string;
+  owner: string;
+  ownerId: string;
+  status: string;
+  size: number;
+  type: string;
+  name: string;
+  originalName: string;
+  version: string;
+  createdAt: string;
+  updatedAt: string;
+  deletedAt: string | null;
+};
+
+export type AclDatabaseHelpers = {
+  get(tableName: string, id: string): Record<string, unknown> | null;
+  exists(tableName: string, id: string): boolean;
+};
+
+export type AclStorageHelpers = {
+  get(resourceName: "files", reference: string): AclStorageFileMetadata | null;
+  exists(resourceName: "files", reference: string): boolean;
+};
+
+export type AclHelpers = {
+  db: AclDatabaseHelpers;
+  storage: AclStorageHelpers;
+};
+
 export type TableAclContext = {
   auth: AuthContext;
+  acl: AclHelpers;
   [key: string]: unknown;
 };
 

@@ -460,8 +460,11 @@ checks. `ctx.acl.db.get()` and `ctx.acl.db.exists()` can inspect Capsule app
 tables by stable table name; they cannot access runtime-owned tables such as
 auth, system metadata, logs, or raw storage tables. `ctx.acl.storage.get()` and
 `ctx.acl.storage.exists()` expose stable storage metadata resources such as
-`files`. `ctx.acl.storage` enforcement is reserved for a later
-storage-enforcement slice and shares the same model.
+`files`, resolved by File ID or absolute File path. Storage helpers return
+logical File metadata such as File ID, absolute File path, owner, bucket,
+status, timestamps, size, MIME type, original name, and version; they do not
+expose filesystem paths, object keys, Object buckets, runtime table names, or
+generated read URLs.
 
 When an ACL denies a write, clients receive an opaque `DENIED` error rather than
 policy internals. Sporades writes structured internal `acl.denied` log events
