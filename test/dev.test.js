@@ -462,7 +462,7 @@ test("sporades dev generates owned Compose for declared database Capsule service
         assert.match(compose, /# Sporades-owned runtime state/);
         assert.match(compose, /sporades-todo-island-database:/);
         assert.match(compose, /127\.0\.0\.1::8080/);
-        assert.match(compose, /todo-island\/\.sporades\/services\/database":\/var\/lib\/sqld:rw/);
+        assert.match(compose, /todo-island\/\.sporades\/services\/database\:\/var\/lib\/sqld:rw"/);
         const calls = await docker.calls();
         assert.equal(calls.length, 3);
         assert.deepEqual(calls[0].args.slice(0, 2), ["compose", "-f"]);

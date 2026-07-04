@@ -277,6 +277,60 @@ async function withFakeCapsuleService(fn) {
   }
 }
 
+async function withFakePostgresService(fn) {
+  const server = createServer((socket) => {
+    let buffer = Buffer.alloc(0);
+    let startupHandled = false;
+    socket.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      if (!startupHandled && buffer.length >= 4) {
+        const length = buffer.readInt32BE(0);
+        if (buffer.length < length) {
+          return;
+        }
+        buffer = buffer.subarray(length);
+        startupHandled = true;
+        socket.write(postgresMessage("R", int32(0)));
+        socket.write(postgresMessage("Z", Buffer.from("I")));
+      }
+      while (startupHandled && buffer.length >= 5) {
+        const type = String.fromCharCode(buffer[0]);
+        const length = buffer.readInt32BE(1);
+        if (buffer.length < 1 + length) {
+          return;
+        }
+        buffer = buffer.subarray(1 + length);
+        if (type === "Q") {
+          socket.write(postgresMessage("C", Buffer.from("SELECT 1\0")));
+          socket.write(postgresMessage("Z", Buffer.from("I")));
+        }
+      }
+    });
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+
+  const port = server.address().port;
+  try {
+    return await fn({ port });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+function postgresMessage(type, body) {
+  return Buffer.concat([Buffer.from(type), int32(body.length + 4), body]);
+}
+
+function int32(value) {
+  const buffer = Buffer.alloc(4);
+  buffer.writeInt32BE(value, 0);
+  return buffer;
+}
+
 async function getAvailablePort() {
   const server = createServer();
   await new Promise((resolve, reject) => {
@@ -1767,7 +1821,7 @@ test("sporades deploy generates owned Compose for a declared database Capsule se
       assert.match(compose, /name: sporades-todo-island-services/);
       assert.match(compose, /sporades-todo-island-database:/);
       assert.match(compose, /image: ghcr\.io\/tursodatabase\/libsql-server:v0\.24\.32/);
-      assert.match(compose, /todo-island\/\.sporades\/services\/database":\/var\/lib\/sqld:rw/);
+      assert.match(compose, /todo-island\/\.sporades\/services\/database\:\/var\/lib\/sqld:rw"/);
       assert.match(compose, /sporades-todo-island-services:/);
       assert.match(compose, /com\.sporades\.managed: "true"/);
       assert.match(compose, /com\.sporades\.capsule-service\.kind: "database"/);
@@ -1884,7 +1938,60 @@ test("sporades deploy connects the Capsule container to declared services on the
       assert(runCall.args.includes("SPORADES_SERVICE_DATABASE_URL=http://sporades-todo-island-database:8080"), runCall.args.join(" "));
 
       const compose = await readFile(path.join(projectDir, ".sporades", "compose", "capsule-services.compose.yml"), "utf8");
-      assert.match(compose, new RegExp(`${projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\/\\.sporades\\/services\\/database":\\/var\\/lib\\/sqld:rw`));
+      assert.match(compose, new RegExp(`${projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\/\\.sporades\\/services\\/database\:\\/var\\/lib\\/sqld:rw"`));
+    });
+  });
+});
+
+test("sporades deploy wires Postgres Capsule database services through Compose", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.services = {
+      database: {
+        kind: "database",
+        engine: "postgres",
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    await withFakePostgresService(async ({ port }) => {
+      const docker = await installFakeDocker(dir, "container-with-postgres-service", {
+        composePortOutput: `127.0.0.1:${port}`,
+      });
+
+      const deployResult = await runCli(["deploy", "--json"], {
+        cwd: projectDir,
+        env: docker.env,
+      });
+
+      assert.equal(deployResult.code, 0, deployResult.stderr);
+      const output = JSON.parse(deployResult.stdout);
+      assert.equal(output.data.services.database.engine, "postgres");
+
+      const compose = await readFile(path.join(projectDir, ".sporades", "compose", "capsule-services.compose.yml"), "utf8");
+      assert.match(compose, /image: postgres:16-alpine/);
+      assert.match(compose, /POSTGRES_USER: "sporades"/);
+      assert.match(compose, /POSTGRES_DB: "sporades"/);
+      assert.match(compose, /POSTGRES_HOST_AUTH_METHOD: "trust"/);
+      assert.match(compose, /127\.0\.0\.1::5432/);
+      assert.match(compose, /todo-island\/\.sporades\/services\/database\:\/var\/lib\/postgresql\/data:rw"/);
+      assert.match(compose, /com\.sporades\.capsule-service\.engine: "postgres"/);
+
+      const runCall = firstDockerRunCall(await docker.calls());
+      assert.equal(runCall.args[runCall.args.indexOf("--network") + 1], "sporades-todo-island-services");
+      assert(runCall.args.includes("SPORADES_SERVICE_DATABASE_ENGINE=postgres"), runCall.args.join(" "));
+      assert(
+        runCall.args.includes("SPORADES_SERVICE_DATABASE_URL=postgres://sporades:sporades@sporades-todo-island-database:5432/sporades"),
+        runCall.args.join(" "),
+      );
     });
   });
 });
@@ -2135,7 +2242,7 @@ test("sporades deploy keeps Capsule service Compose names stable for a project",
       assert.equal(secondCompose, firstCompose);
       assert.match(firstCompose, /name: sporades-team-notes-services/);
       assert.match(firstCompose, /sporades-team-notes-database:/);
-      assert.match(firstCompose, /service-lab\/\.sporades\/services\/database":\/var\/lib\/sqld:rw/);
+      assert.match(firstCompose, /service-lab\/\.sporades\/services\/database\:\/var\/lib\/sqld:rw"/);
     });
   });
 });

@@ -1,4 +1,4 @@
-export declare const SERVER_RUNTIME_SOURCE_FUNCTIONS: (typeof resolveRuntimeSecurityPolicy | typeof createRuntimeDatabaseAdapter | typeof logPayloadMaxBytes | typeof completePendingFileUpload | typeof runAppMessage | typeof createPublicFileUrl | typeof openDevDatabase | typeof readRecentLogEvents | typeof isInternalLogIndexMetadataRow | typeof createAppTable | typeof createEndpointTableApi | typeof runTableWriteWithAcl | typeof createAclDeniedError | typeof handleFileHttpRoute | typeof sessionExpiresAt)[];
+export declare const SERVER_RUNTIME_SOURCE_FUNCTIONS: (typeof resolveRuntimeSecurityPolicy | typeof createRuntimeDatabaseAdapter | typeof postgresInterpolate | typeof logPayloadMaxBytes | typeof completePendingFileUpload | typeof runAppMessage | typeof createPublicFileUrl | typeof openDevDatabase | typeof readRecentLogEvents | typeof isInternalLogIndexMetadataRow | typeof createAppTable | typeof createEndpointTableApi | typeof runTableWriteWithAcl | typeof createAclDeniedError | typeof handleFileHttpRoute | typeof sessionExpiresAt)[];
 export declare function readJsonRequest(request: any): Promise<any>;
 export declare function prepareHttpSecurity(database: any, request: any, response: any): boolean;
 declare function resolveRuntimeSecurityPolicy(config?: {}): {
@@ -187,6 +187,95 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
         updateAppRow(table: any, id: any, values: any, options?: {}): any;
         deleteAppRow(table: any, id: any): any;
         selectAppRows(table: any, query?: {}): any;
+    } | {
+        engine: string;
+        exec(sql: any): Promise<any>;
+        prepare(sql: any): {
+            all(...params: any[]): Promise<any>;
+            get(...params: any[]): any;
+            run(...params: any[]): Promise<{
+                changes: number;
+                lastInsertRowid: any;
+            }>;
+            columns(): Promise<{
+                name: any;
+            }[]>;
+        };
+        writeSystemMetadata(keyOrMetadata: any, maybeValue: any): Promise<any>;
+        writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: {
+            schemaVersion: any;
+            schemaHash: any;
+            schemaJson: any;
+        }): Promise<void>;
+        ensureAuthStorage(authConfig?: any): Promise<void>;
+        ensureLogStorage(): Promise<void>;
+        ensureFileStorage(): Promise<void>;
+        insertLogIndexEvent(event: any): Promise<void>;
+        pruneLogIndex(limit: any): Promise<void>;
+        readRecentLogEvents(limit?: number): Promise<any>;
+        migrateAppSchema(schema: any): Promise<void>;
+        createAppTable(table: any, tableName?: any): Promise<void>;
+        migrateExistingAppTable(existingTable: any, nextTable: any): Promise<void>;
+        listInspectableTables(): Promise<any>;
+        dumpInspectableDatabase(): Promise<any[]>;
+        runReadOnlyInspectionQuery(sql: any): Promise<{
+            ok: boolean;
+            data: {
+                columns: any[];
+                rows: any;
+            };
+            error: any;
+        } | {
+            ok: boolean;
+            data: any;
+            error: {
+                message: any;
+                hint: string;
+            };
+        }>;
+        checkHealth(): Promise<{
+            ok: boolean;
+        }>;
+        withTransaction(fn: any): Promise<any>;
+        close(): Promise<void>;
+        ensureSystemTable(): any;
+        readSystemMetadata(key: any): any;
+        readSchemaMetadata(): any;
+        findFileBucket(ownerId: any, name: any): any;
+        createFileBucket(row: any): any;
+        insertFileRow(row: any): any;
+        updatePendingFileRow(row: any): any;
+        insertFileUpload(row: any): any;
+        selectFileById(fileId: any): any;
+        selectFileUpload(uploadId: any): any;
+        completeFileUpload(upload: any, size: any, updatedAt: any): any;
+        deleteFileUpload(uploadId: any): any;
+        selectPublicFileRow(publicUrlId: any): any;
+        insertPublicFileUrl(row: any): any;
+        revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any): any;
+        revokePublicFileUrlsForFile(fileId: any, revokedAt: any): any;
+        markFileDeleted(fileId: any, deletedAt: any): any;
+        fileRowForOwner(fileId: any, ownerId: any): any;
+        findAuthUserByProviderEmail(provider: any, email: any): any;
+        insertAuthUser(row: any): any;
+        updateAuthUserProfile(row: any): any;
+        linkAuthUser(row: any): any;
+        insertAuthSession(row: any): any;
+        deleteAuthSession(token: any): any;
+        refreshAuthSession(token: any, expiresAt: any): any;
+        rotateAuthSession(previousToken: any, row: any): any;
+        readAuthSessionWithUser(token: any): any;
+        insertOAuthState(row: any): any;
+        consumeOAuthState(state: any): any;
+        emailCredentialExists(email: any): boolean;
+        insertEmailCredential(row: any): any;
+        findEmailCredentialWithUser(email: any): any;
+        referenceExists(field: any, value: any): boolean;
+        insertAppRow(table: any, row: any): any;
+        selectAppRowById(table: any, id: any): any;
+        updateAppRow(table: any, id: any, values: any, options?: {}): any;
+        deleteAppRow(table: any, id: any): any;
+        selectAppRows(table: any, query?: {}): any;
     };
     sqlite: {
         engine: string;
@@ -353,6 +442,95 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
         insertEmailCredential(row: any): any;
         findEmailCredentialWithUser(email: any): any;
         createAppTable(table: any, tableName?: any): any;
+        referenceExists(field: any, value: any): boolean;
+        insertAppRow(table: any, row: any): any;
+        selectAppRowById(table: any, id: any): any;
+        updateAppRow(table: any, id: any, values: any, options?: {}): any;
+        deleteAppRow(table: any, id: any): any;
+        selectAppRows(table: any, query?: {}): any;
+    } | {
+        engine: string;
+        exec(sql: any): Promise<any>;
+        prepare(sql: any): {
+            all(...params: any[]): Promise<any>;
+            get(...params: any[]): any;
+            run(...params: any[]): Promise<{
+                changes: number;
+                lastInsertRowid: any;
+            }>;
+            columns(): Promise<{
+                name: any;
+            }[]>;
+        };
+        writeSystemMetadata(keyOrMetadata: any, maybeValue: any): Promise<any>;
+        writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: {
+            schemaVersion: any;
+            schemaHash: any;
+            schemaJson: any;
+        }): Promise<void>;
+        ensureAuthStorage(authConfig?: any): Promise<void>;
+        ensureLogStorage(): Promise<void>;
+        ensureFileStorage(): Promise<void>;
+        insertLogIndexEvent(event: any): Promise<void>;
+        pruneLogIndex(limit: any): Promise<void>;
+        readRecentLogEvents(limit?: number): Promise<any>;
+        migrateAppSchema(schema: any): Promise<void>;
+        createAppTable(table: any, tableName?: any): Promise<void>;
+        migrateExistingAppTable(existingTable: any, nextTable: any): Promise<void>;
+        listInspectableTables(): Promise<any>;
+        dumpInspectableDatabase(): Promise<any[]>;
+        runReadOnlyInspectionQuery(sql: any): Promise<{
+            ok: boolean;
+            data: {
+                columns: any[];
+                rows: any;
+            };
+            error: any;
+        } | {
+            ok: boolean;
+            data: any;
+            error: {
+                message: any;
+                hint: string;
+            };
+        }>;
+        checkHealth(): Promise<{
+            ok: boolean;
+        }>;
+        withTransaction(fn: any): Promise<any>;
+        close(): Promise<void>;
+        ensureSystemTable(): any;
+        readSystemMetadata(key: any): any;
+        readSchemaMetadata(): any;
+        findFileBucket(ownerId: any, name: any): any;
+        createFileBucket(row: any): any;
+        insertFileRow(row: any): any;
+        updatePendingFileRow(row: any): any;
+        insertFileUpload(row: any): any;
+        selectFileById(fileId: any): any;
+        selectFileUpload(uploadId: any): any;
+        completeFileUpload(upload: any, size: any, updatedAt: any): any;
+        deleteFileUpload(uploadId: any): any;
+        selectPublicFileRow(publicUrlId: any): any;
+        insertPublicFileUrl(row: any): any;
+        revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any): any;
+        revokePublicFileUrlsForFile(fileId: any, revokedAt: any): any;
+        markFileDeleted(fileId: any, deletedAt: any): any;
+        fileRowForOwner(fileId: any, ownerId: any): any;
+        findAuthUserByProviderEmail(provider: any, email: any): any;
+        insertAuthUser(row: any): any;
+        updateAuthUserProfile(row: any): any;
+        linkAuthUser(row: any): any;
+        insertAuthSession(row: any): any;
+        deleteAuthSession(token: any): any;
+        refreshAuthSession(token: any, expiresAt: any): any;
+        rotateAuthSession(previousToken: any, row: any): any;
+        readAuthSessionWithUser(token: any): any;
+        insertOAuthState(row: any): any;
+        consumeOAuthState(state: any): any;
+        emailCredentialExists(email: any): boolean;
+        insertEmailCredential(row: any): any;
+        findEmailCredentialWithUser(email: any): any;
         referenceExists(field: any, value: any): boolean;
         insertAppRow(table: any, row: any): any;
         selectAppRowById(table: any, id: any): any;
@@ -582,6 +760,95 @@ declare function createRuntimeDatabaseAdapter(databasePath: any, serverEnv?: {},
     updateAppRow(table: any, id: any, values: any, options?: {}): any;
     deleteAppRow(table: any, id: any): any;
     selectAppRows(table: any, query?: {}): any;
+} | {
+    engine: string;
+    exec(sql: any): Promise<any>;
+    prepare(sql: any): {
+        all(...params: any[]): Promise<any>;
+        get(...params: any[]): any;
+        run(...params: any[]): Promise<{
+            changes: number;
+            lastInsertRowid: any;
+        }>;
+        columns(): Promise<{
+            name: any;
+        }[]>;
+    };
+    writeSystemMetadata(keyOrMetadata: any, maybeValue: any): Promise<any>;
+    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: {
+        schemaVersion: any;
+        schemaHash: any;
+        schemaJson: any;
+    }): Promise<void>;
+    ensureAuthStorage(authConfig?: any): Promise<void>;
+    ensureLogStorage(): Promise<void>;
+    ensureFileStorage(): Promise<void>;
+    insertLogIndexEvent(event: any): Promise<void>;
+    pruneLogIndex(limit: any): Promise<void>;
+    readRecentLogEvents(limit?: number): Promise<any>;
+    migrateAppSchema(schema: any): Promise<void>;
+    createAppTable(table: any, tableName?: any): Promise<void>;
+    migrateExistingAppTable(existingTable: any, nextTable: any): Promise<void>;
+    listInspectableTables(): Promise<any>;
+    dumpInspectableDatabase(): Promise<any[]>;
+    runReadOnlyInspectionQuery(sql: any): Promise<{
+        ok: boolean;
+        data: {
+            columns: any[];
+            rows: any;
+        };
+        error: any;
+    } | {
+        ok: boolean;
+        data: any;
+        error: {
+            message: any;
+            hint: string;
+        };
+    }>;
+    checkHealth(): Promise<{
+        ok: boolean;
+    }>;
+    withTransaction(fn: any): Promise<any>;
+    close(): Promise<void>;
+    ensureSystemTable(): any;
+    readSystemMetadata(key: any): any;
+    readSchemaMetadata(): any;
+    findFileBucket(ownerId: any, name: any): any;
+    createFileBucket(row: any): any;
+    insertFileRow(row: any): any;
+    updatePendingFileRow(row: any): any;
+    insertFileUpload(row: any): any;
+    selectFileById(fileId: any): any;
+    selectFileUpload(uploadId: any): any;
+    completeFileUpload(upload: any, size: any, updatedAt: any): any;
+    deleteFileUpload(uploadId: any): any;
+    selectPublicFileRow(publicUrlId: any): any;
+    insertPublicFileUrl(row: any): any;
+    revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any): any;
+    revokePublicFileUrlsForFile(fileId: any, revokedAt: any): any;
+    markFileDeleted(fileId: any, deletedAt: any): any;
+    fileRowForOwner(fileId: any, ownerId: any): any;
+    findAuthUserByProviderEmail(provider: any, email: any): any;
+    insertAuthUser(row: any): any;
+    updateAuthUserProfile(row: any): any;
+    linkAuthUser(row: any): any;
+    insertAuthSession(row: any): any;
+    deleteAuthSession(token: any): any;
+    refreshAuthSession(token: any, expiresAt: any): any;
+    rotateAuthSession(previousToken: any, row: any): any;
+    readAuthSessionWithUser(token: any): any;
+    insertOAuthState(row: any): any;
+    consumeOAuthState(state: any): any;
+    emailCredentialExists(email: any): boolean;
+    insertEmailCredential(row: any): any;
+    findEmailCredentialWithUser(email: any): any;
+    referenceExists(field: any, value: any): boolean;
+    insertAppRow(table: any, row: any): any;
+    selectAppRowById(table: any, id: any): any;
+    updateAppRow(table: any, id: any, values: any, options?: {}): any;
+    deleteAppRow(table: any, id: any): any;
+    selectAppRows(table: any, query?: {}): any;
 }>;
 export declare function createSqliteDatabaseAdapter(databasePath: any, options?: {}): Promise<{
     engine: string;
@@ -668,6 +935,106 @@ export declare function createSqliteDatabaseAdapter(databasePath: any, options?:
     };
     close(): void;
 }>;
+export declare function createPostgresDatabaseAdapter(options: any): Promise<{
+    engine: string;
+    exec(sql: any): Promise<any>;
+    prepare(sql: any): {
+        all(...params: any[]): Promise<any>;
+        get(...params: any[]): any;
+        run(...params: any[]): Promise<{
+            changes: number;
+            lastInsertRowid: any;
+        }>;
+        columns(): Promise<{
+            name: any;
+        }[]>;
+    };
+    writeSystemMetadata(keyOrMetadata: any, maybeValue: any): Promise<any>;
+    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: {
+        schemaVersion: any;
+        schemaHash: any;
+        schemaJson: any;
+    }): Promise<void>;
+    ensureAuthStorage(authConfig?: any): Promise<void>;
+    ensureLogStorage(): Promise<void>;
+    ensureFileStorage(): Promise<void>;
+    insertLogIndexEvent(event: any): Promise<void>;
+    pruneLogIndex(limit: any): Promise<void>;
+    readRecentLogEvents(limit?: number): Promise<any>;
+    migrateAppSchema(schema: any): Promise<void>;
+    createAppTable(table: any, tableName?: any): Promise<void>;
+    migrateExistingAppTable(existingTable: any, nextTable: any): Promise<void>;
+    listInspectableTables(): Promise<any>;
+    dumpInspectableDatabase(): Promise<any[]>;
+    runReadOnlyInspectionQuery(sql: any): Promise<{
+        ok: boolean;
+        data: {
+            columns: any[];
+            rows: any;
+        };
+        error: any;
+    } | {
+        ok: boolean;
+        data: any;
+        error: {
+            message: any;
+            hint: string;
+        };
+    }>;
+    checkHealth(): Promise<{
+        ok: boolean;
+    }>;
+    withTransaction(fn: any): Promise<any>;
+    close(): Promise<void>;
+    ensureSystemTable(): any;
+    readSystemMetadata(key: any): any;
+    readSchemaMetadata(): any;
+    findFileBucket(ownerId: any, name: any): any;
+    createFileBucket(row: any): any;
+    insertFileRow(row: any): any;
+    updatePendingFileRow(row: any): any;
+    insertFileUpload(row: any): any;
+    selectFileById(fileId: any): any;
+    selectFileUpload(uploadId: any): any;
+    completeFileUpload(upload: any, size: any, updatedAt: any): any;
+    deleteFileUpload(uploadId: any): any;
+    selectPublicFileRow(publicUrlId: any): any;
+    insertPublicFileUrl(row: any): any;
+    revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any): any;
+    revokePublicFileUrlsForFile(fileId: any, revokedAt: any): any;
+    markFileDeleted(fileId: any, deletedAt: any): any;
+    fileRowForOwner(fileId: any, ownerId: any): any;
+    findAuthUserByProviderEmail(provider: any, email: any): any;
+    insertAuthUser(row: any): any;
+    updateAuthUserProfile(row: any): any;
+    linkAuthUser(row: any): any;
+    insertAuthSession(row: any): any;
+    deleteAuthSession(token: any): any;
+    refreshAuthSession(token: any, expiresAt: any): any;
+    rotateAuthSession(previousToken: any, row: any): any;
+    readAuthSessionWithUser(token: any): any;
+    insertOAuthState(row: any): any;
+    consumeOAuthState(state: any): any;
+    emailCredentialExists(email: any): boolean;
+    insertEmailCredential(row: any): any;
+    findEmailCredentialWithUser(email: any): any;
+    referenceExists(field: any, value: any): boolean;
+    insertAppRow(table: any, row: any): any;
+    selectAppRowById(table: any, id: any): any;
+    updateAppRow(table: any, id: any, values: any, options?: {}): any;
+    deleteAppRow(table: any, id: any): any;
+    selectAppRows(table: any, query?: {}): any;
+}>;
+export declare function createPostgresConnection(url: any): Promise<{
+    readonly backendKeyData: any;
+    query(sql: any): Promise<{
+        fields: any[];
+        rows: any[];
+        rowCount: number;
+    }>;
+    close(): Promise<void>;
+}>;
+declare function postgresInterpolate(sql: any, params?: any[]): string;
 export declare function createLibsqlDatabaseAdapter(options: any): Promise<{
     engine: string;
     writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: {
@@ -941,6 +1308,19 @@ export declare function resolveAnonymousSession(database: any, sessionToken: any
         isGuest: boolean;
         provider: any;
     };
+}>;
+export declare function runQuery(database: any, auth: any, queryName: any): Promise<{
+    data: any;
+    error: any;
+} | {
+    rows: any;
+    error: {
+        message: any;
+        hint: any;
+    };
+} | {
+    rows: any;
+    error: any;
 }>;
 export declare function runMutation(database: any, auth: any, mutationName: any, args: any): Promise<any>;
 declare function runAppMessage(database: any, auth: any, messageName: any, data: any, options?: {}): Promise<{

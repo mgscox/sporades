@@ -3,8 +3,12 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const SUPPORTED_SERVICE_KEYS = new Set(["database"]);
-const SUPPORTED_DATABASE_ENGINES = new Set(["libsql"]);
+const SUPPORTED_DATABASE_ENGINES = new Set(["libsql", "postgres"]);
 const LIBSQL_IMAGE = "ghcr.io/tursodatabase/libsql-server:v0.24.32";
+const POSTGRES_IMAGE = "postgres:16-alpine";
+const POSTGRES_USER = "sporades";
+const POSTGRES_PASSWORD = "sporades";
+const POSTGRES_DATABASE = "sporades";
 
 export const CAPSULE_SERVICES_COMPOSE_FILE = path.join(".sporades", "compose", "capsule-services.compose.yml");
 export const CAPSULE_SERVICES_STATE_DIR = path.join(".sporades", "services");
@@ -58,6 +62,28 @@ export function capsuleServicesComposeModel(config, projectDir = process.cwd()) 
   const serviceName = `sporades-${projectSlug}-database`;
   const networkName = `sporades-${projectSlug}-services`;
   const stateDir = path.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "database");
+  const engine = config.services?.database?.engine ?? "libsql";
+  const engineModel =
+    engine === "postgres"
+      ? {
+          engine,
+          image: POSTGRES_IMAGE,
+          targetPort: 5432,
+          volumeTarget: "/var/lib/postgresql/data",
+          environment: {
+            POSTGRES_USER,
+            POSTGRES_PASSWORD,
+            POSTGRES_DB: POSTGRES_DATABASE,
+            POSTGRES_HOST_AUTH_METHOD: "trust",
+          },
+        }
+      : {
+          engine: "libsql",
+          image: LIBSQL_IMAGE,
+          targetPort: 8080,
+          volumeTarget: "/var/lib/sqld",
+          environment: {},
+        };
 
   return {
     projectSlug,
@@ -65,9 +91,12 @@ export function capsuleServicesComposeModel(config, projectDir = process.cwd()) 
     services: {
       database: {
         name: serviceName,
-        image: LIBSQL_IMAGE,
+        engine: engineModel.engine,
+        image: engineModel.image,
         stateDir,
-        targetPort: 8080,
+        targetPort: engineModel.targetPort,
+        volumeTarget: engineModel.volumeTarget,
+        environment: engineModel.environment,
       },
     },
     networks: {
@@ -78,7 +107,7 @@ export function capsuleServicesComposeModel(config, projectDir = process.cwd()) 
       "com.sporades.runtime-state": "true",
       "com.sporades.project": projectSlug,
       "com.sporades.capsule-service.kind": "database",
-      "com.sporades.capsule-service.engine": "libsql",
+      "com.sporades.capsule-service.engine": engineModel.engine,
     },
   };
 }
@@ -87,7 +116,7 @@ function validateDatabaseServiceConfig(database) {
   if (!database || typeof database !== "object" || Array.isArray(database)) {
     throw commandError(
       "Invalid database Capsule service declaration.",
-      "Set `services.database` to `{ \"kind\": \"database\", \"engine\": \"libsql\" }`.",
+      "Set `services.database` to `{ \"kind\": \"database\", \"engine\": \"libsql\" }` or `{ \"kind\": \"database\", \"engine\": \"postgres\" }`.",
     );
   }
   if (database.kind !== "database") {
@@ -99,7 +128,7 @@ function validateDatabaseServiceConfig(database) {
   if (!SUPPORTED_DATABASE_ENGINES.has(database.engine)) {
     throw commandError(
       `Unsupported database Capsule service engine: ${database.engine ?? "missing"}`,
-      "Use `services.database.engine` of `libsql`.",
+      "Use `services.database.engine` of `libsql` or `postgres`.",
     );
   }
 }
@@ -115,12 +144,13 @@ services:
     container_name: ${model.services.database.name}
     labels:
 ${renderLabels(model.labels, 6)}
+${renderEnvironment(model.services.database.environment, 4)}
     networks:
       - ${model.networks.services}
     ports:
       - "127.0.0.1::${model.services.database.targetPort}"
     volumes:
-      - ${JSON.stringify(model.services.database.stateDir)}:/var/lib/sqld:rw
+      - ${JSON.stringify(`${model.services.database.stateDir}:${model.services.database.volumeTarget}:rw`)}
 
 networks:
   ${model.networks.services}:
@@ -128,6 +158,15 @@ networks:
     labels:
 ${renderLabels(model.labels, 6)}
 `;
+}
+
+function renderEnvironment(environment, indent) {
+  const entries = Object.entries(environment ?? {});
+  if (entries.length === 0) {
+    return "";
+  }
+  const padding = " ".repeat(indent);
+  return `${padding}environment:\n${entries.map(([key, value]) => `${padding}  ${key}: ${JSON.stringify(value)}`).join("\n")}\n`;
 }
 
 function renderLabels(labels, indent) {

@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   checkRuntimeSqlite,
   createLibsqlDatabaseAdapter,
+  createPostgresDatabaseAdapter,
   createPendingFileUpload,
   createSqliteDatabaseAdapter,
   dumpDatabase,
@@ -14,6 +15,7 @@ import {
   openDevDatabase,
   resolveAnonymousSession,
   runMutation,
+  runQuery,
   runReadOnlyQuery,
   signUpWithEmail,
 } from "../dist/server-runtime-source.js";
@@ -341,6 +343,135 @@ test("libSQL database adapter supports runtime storage, migrations, health, and 
     });
   });
 });
+
+test(
+  "Postgres database adapter supports runtime storage, migrations, health, and inspection paths",
+  { skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the Postgres adapter integration test." },
+  async () => {
+    const adapter = await createPostgresDatabaseAdapter({ url: process.env.SPORADES_POSTGRES_TEST_URL });
+    const database = { adapter, sqlite: adapter };
+    try {
+      await adapter.exec(
+        "DROP TABLE IF EXISTS notes, sporades, sporades_auth_users, sporades_auth_sessions, sporades_auth_email_credentials, " +
+          "sporades_auth_oauth_states, sporades_file_buckets, sporades_files, sporades_file_uploads, sporades_file_public_urls, " +
+          "sporades_log_events",
+      );
+
+      const notesTable = {
+        name: "notes",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+          { name: "done", kind: "Boolean", sqliteType: "INTEGER", defaultValue: false },
+        ],
+      };
+
+      await adapter.ensureSystemTable();
+      await adapter.writeSystemMetadata("adapter", "postgres");
+      await adapter.migrateAppSchema({ tables: [notesTable] });
+      assert.equal((await adapter.readSystemMetadata("adapter")).value, "postgres");
+
+      const now = "2026-07-04T10:00:00.000Z";
+      await adapter.insertAppRow(notesTable, {
+        id: "note-1",
+        createdAt: now,
+        updatedAt: now,
+        text: "postgres backed",
+        ownerId: "user-1",
+        done: 0,
+      });
+      await adapter.updateAppRow(notesTable, "note-1", { done: 1, updatedAt: "2026-07-04T10:01:00.000Z" });
+      assert.deepEqual(await adapter.selectAppRows(notesTable, { columns: ["text", "done"] }), [{ text: "postgres backed", done: 1 }]);
+
+      const migratedNotesTable = {
+        ...notesTable,
+        fields: [...notesTable.fields, { name: "summary", kind: "String", sqliteType: "TEXT", defaultValue: "draft" }],
+      };
+      await adapter.migrateAppSchema({ tables: [migratedNotesTable] });
+      assert.deepEqual(await adapter.selectAppRows(migratedNotesTable, { columns: ["text", "summary"] }), [
+        { text: "postgres backed", summary: "draft" },
+      ]);
+
+      await adapter.ensureAuthStorage({ providers: { email: { enabled: true } } });
+      await adapter.insertAuthUser({
+        id: "user-1",
+        createdAt: now,
+        displayName: "Postgres User",
+        email: "postgres@example.com",
+        picture: null,
+        isAuthenticated: 1,
+        isGuest: 0,
+        provider: "email",
+      });
+      await adapter.insertAuthSession({
+        token: "session-1",
+        userId: "user-1",
+        createdAt: now,
+        expiresAt: "2026-08-03T10:00:00.000Z",
+      });
+      assert.equal((await adapter.readAuthSessionWithUser("session-1")).email, "postgres@example.com");
+
+      await adapter.ensureFileStorage();
+      await adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });
+      await adapter.insertFileRow({
+        id: "file-1",
+        ownerId: "user-1",
+        bucketId: "bucket-1",
+        bucketName: "default",
+        name: "proof.txt",
+        type: "text/plain",
+        size: 5,
+        version: "version-1",
+        status: "uploaded",
+        createdAt: now,
+        updatedAt: now,
+      });
+      assert.equal((await adapter.fileRowForOwner("file-1", "user-1")).name, "proof.txt");
+
+      await adapter.ensureLogStorage();
+      await adapter.insertLogIndexEvent({
+        timestamp: "2026-07-04T10:02:00.000Z",
+        category: "app",
+        event: "ctx.log",
+        level: "info",
+        message: "postgres log",
+        capsule: { name: "postgres-adapter" },
+      });
+      assert.deepEqual((await adapter.readRecentLogEvents(1)).map((event) => event.message), ["postgres log"]);
+
+      await assert.rejects(
+        adapter.withTransaction(async (transaction) => {
+          await transaction.insertAppRow(migratedNotesTable, {
+            id: "note-rolled-back",
+            createdAt: now,
+            updatedAt: now,
+            text: "rolled back",
+            ownerId: "user-1",
+            done: 0,
+            summary: "draft",
+          });
+          throw new Error("rollback path");
+        }),
+        /rollback path/,
+      );
+      assert.equal(await adapter.selectAppRowById(migratedNotesTable, "note-rolled-back"), null);
+
+      assert.deepEqual(await checkRuntimeSqlite(database), { ok: true });
+      assert.deepEqual((await listDatabaseTables(database)).filter((name) => name === "notes"), ["notes"]);
+      assert.equal((await dumpDatabase(database)).find((table) => table.name === "notes").rows.length, 1);
+      assert.deepEqual(await runReadOnlyQuery(database, 'SELECT "text", "summary" FROM "notes"'), {
+        ok: true,
+        data: {
+          columns: ["text", "summary"],
+          rows: [{ text: "postgres backed", summary: "draft" }],
+        },
+        error: null,
+      });
+    } finally {
+      await adapter.close();
+    }
+  },
+);
 
 test("SQLite database adapter propagates execution failures", async () => {
   await withTempDir(async (dir) => {
@@ -800,7 +931,16 @@ test("runtime database paths await promise-returning adapter operations", async 
         [{ text: "await me" }],
       );
 
+      const emptyAuth = { userId: "user-empty", displayName: "Empty", isAuthenticated: false, isGuest: true, provider: "anonymous" };
+      assert.deepEqual(await runQuery(database, emptyAuth, "notes"), { rows: [], error: null });
+
       database.mutations = [
+        {
+          name: "addAsyncNote",
+          handler: (ctx) => {
+            ctx.db.notes.insert({ text: "visible after async write", ownerId: ctx.auth.userId });
+          },
+        },
         {
           name: "addThenFail",
           handler: (ctx) => {
@@ -809,12 +949,24 @@ test("runtime database paths await promise-returning adapter operations", async 
           },
         },
       ];
+      const customInserted = await runMutation(database, emptyAuth, "addAsyncNote", []);
+      assert.equal(customInserted.ok, true);
+      const refreshedQuery = await runQuery(database, emptyAuth, "notes");
+      assert.equal(refreshedQuery.error, null);
+      assert.deepEqual(refreshedQuery.rows.map((row) => ({ text: row.text, ownerId: row.ownerId })), [
+        { text: "visible after async write", ownerId: "user-empty" },
+      ]);
+
       const failed = await runMutation(database, auth, "addThenFail", []);
       assert.equal(failed.ok, false);
       assert.deepEqual(
-        (await database.sqlite.selectAppRows(table, { columns: ["text"], orderBy: { fieldName: "createdAt", direction: "asc" } })).map(
-          (row) => ({ ...row }),
-        ),
+        (
+          await database.sqlite.selectAppRows(table, {
+            columns: ["text"],
+            where: { fieldName: "ownerId", value: auth.userId },
+            orderBy: { fieldName: "createdAt", direction: "asc" },
+          })
+        ).map((row) => ({ ...row })),
         [{ text: "await me" }],
       );
 
@@ -858,10 +1010,10 @@ test("runtime database paths await promise-returning adapter operations", async 
       );
 
       assert.deepEqual((await listDatabaseTables(database)).filter((name) => name === "notes"), ["notes"]);
-      assert.equal((await dumpDatabase(database)).find((dumpedTable) => dumpedTable.name === "notes").rows.length, 1);
+      assert.equal((await dumpDatabase(database)).find((dumpedTable) => dumpedTable.name === "notes").rows.length, 2);
       assert.deepEqual(
-        (await runReadOnlyQuery(database, "SELECT text FROM notes")).data.rows.map((row) => ({ ...row })),
-        [{ text: "await me" }],
+        (await runReadOnlyQuery(database, "SELECT text FROM notes ORDER BY text")).data.rows.map((row) => ({ ...row })),
+        [{ text: "await me" }, { text: "visible after async write" }],
       );
       assert.deepEqual(await checkRuntimeSqlite(database), { ok: true });
     } finally {

@@ -14,7 +14,25 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     sanitizeResponseHeaders,
     createSqliteDatabaseAdapter,
     createLibsqlDatabaseAdapter,
+    createPostgresDatabaseAdapter,
     createRuntimeDatabaseAdapter,
+    postgresPlaceholders,
+    postgresInterpolate,
+    createPostgresConnection,
+    postgresUrlOptions,
+    postgresStartupMessage,
+    postgresQueryMessage,
+    postgresInt32,
+    waitForPostgresData,
+    wakePostgresWaiters,
+    postgresParseRowDescription,
+    postgresParseDataRow,
+    postgresValueFromText,
+    postgresRowCountFromCommand,
+    postgresErrorFromBody,
+    postgresRowsFromResult,
+    postgresRuntimeColumnName,
+    postgresAppTableColumnDefinitions,
     libsqlPipelineUrl,
     assertLibsqlOpen,
     libsqlHasMultipleStatements,
@@ -422,6 +440,13 @@ async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config
             authToken: serverEnv.SPORADES_SERVICE_DATABASE_AUTH_TOKEN,
         });
     }
+    if (config.services?.database?.engine === "postgres" &&
+        serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "postgres" &&
+        serverEnv.SPORADES_SERVICE_DATABASE_URL) {
+        return await createPostgresDatabaseAdapter({
+            url: serverEnv.SPORADES_SERVICE_DATABASE_URL,
+        });
+    }
     return await createSqliteDatabaseAdapter(databasePath);
 }
 export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
@@ -720,6 +745,667 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         adapter.exec("PRAGMA journal_mode = WAL");
     }
     return adapter;
+}
+export async function createPostgresDatabaseAdapter(options) {
+    const url = typeof options === "string" ? options : options?.url;
+    if (!url) {
+        throw commandError("Missing Postgres database service URL.", "Start a Dev session or local Container session with services.database.engine set to postgres.");
+    }
+    const client = await createPostgresConnection(url);
+    let closed = false;
+    const shape = await createSqliteDatabaseAdapter(":memory:");
+    shape.close();
+    const assertOpen = () => {
+        if (closed) {
+            throw new Error("database is not open");
+        }
+    };
+    const query = async (sql, params = []) => {
+        assertOpen();
+        return await client.query(postgresInterpolate(sql, params));
+    };
+    const adapter = {
+        ...shape,
+        engine: "postgres",
+        exec(sql) {
+            return query(sql).then(() => undefined);
+        },
+        prepare(sql) {
+            assertOpen();
+            return {
+                all(...params) {
+                    return query(sql, params).then((result) => postgresRowsFromResult(result));
+                },
+                get(...params) {
+                    return this.all(...params).then((rows) => rows[0] ?? null);
+                },
+                run(...params) {
+                    return query(sql, params).then((result) => ({
+                        changes: Number(result.rowCount ?? 0),
+                        lastInsertRowid: undefined,
+                    }));
+                },
+                columns() {
+                    return query(`SELECT * FROM (${sql}) AS __sporades_columns LIMIT 0`).then((result) => result.fields.map((field) => ({ name: postgresRuntimeColumnName(field.name) })));
+                },
+            };
+        },
+        async writeSystemMetadata(keyOrMetadata, maybeValue) {
+            if (typeof keyOrMetadata === "object" && keyOrMetadata !== null) {
+                return await this.writeSchemaMetadata(keyOrMetadata);
+            }
+            return await this.prepare("INSERT INTO sporades (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value").run(keyOrMetadata, maybeValue);
+        },
+        async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
+            await this.writeSystemMetadata("schemaVersion", schemaVersion);
+            await this.writeSystemMetadata("schemaHash", schemaHash);
+            await this.writeSystemMetadata("schema", schemaJson);
+        },
+        async ensureAuthStorage(authConfig = null) {
+            await this.exec("CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
+                "id TEXT PRIMARY KEY, " +
+                "createdAt TEXT NOT NULL, " +
+                "displayName TEXT NOT NULL, " +
+                "email TEXT, " +
+                "picture TEXT, " +
+                "isAuthenticated INTEGER NOT NULL, " +
+                "isGuest INTEGER NOT NULL, " +
+                "provider TEXT NOT NULL" +
+                ")");
+            await this.exec("CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
+                "token TEXT PRIMARY KEY, " +
+                "userId TEXT NOT NULL, " +
+                "createdAt TEXT NOT NULL, " +
+                "expiresAt TEXT NOT NULL" +
+                ")");
+            if (authConfig?.providers?.email?.enabled) {
+                await this.exec("CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
+                    "email TEXT PRIMARY KEY, " +
+                    "userId TEXT NOT NULL, " +
+                    "passwordHash TEXT NOT NULL, " +
+                    "passwordSalt TEXT NOT NULL, " +
+                    "createdAt TEXT NOT NULL" +
+                    ")");
+            }
+            await this.exec("CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
+                "state TEXT PRIMARY KEY, " +
+                "sessionToken TEXT NOT NULL, " +
+                "returnTo TEXT NOT NULL, " +
+                "redirectUri TEXT NOT NULL, " +
+                "createdAt TEXT NOT NULL" +
+                ")");
+        },
+        async ensureLogStorage() {
+            await this.exec("CREATE TABLE IF NOT EXISTS sporades_log_events (" +
+                "id TEXT PRIMARY KEY, " +
+                "timestamp TEXT NOT NULL, " +
+                "category TEXT NOT NULL, " +
+                "event TEXT NOT NULL, " +
+                "level TEXT NOT NULL, " +
+                "message TEXT NOT NULL, " +
+                "capsuleName TEXT, " +
+                "capsuleId TEXT, " +
+                "releaseId TEXT, " +
+                "requestId TEXT, " +
+                "correlationId TEXT, " +
+                "payload TEXT NOT NULL" +
+                ")");
+        },
+        async ensureFileStorage() {
+            await this.exec("CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
+                "id TEXT PRIMARY KEY, " +
+                "ownerId TEXT NOT NULL, " +
+                "name TEXT NOT NULL, " +
+                "createdAt TEXT NOT NULL, " +
+                "UNIQUE(ownerId, name)" +
+                ")");
+            await this.exec("CREATE TABLE IF NOT EXISTS sporades_files (" +
+                "id TEXT PRIMARY KEY, " +
+                "ownerId TEXT NOT NULL, " +
+                "bucketId TEXT NOT NULL, " +
+                "bucketName TEXT NOT NULL, " +
+                "name TEXT NOT NULL, " +
+                "type TEXT NOT NULL, " +
+                "size INTEGER NOT NULL, " +
+                "version TEXT NOT NULL, " +
+                "status TEXT NOT NULL, " +
+                "createdAt TEXT NOT NULL, " +
+                "updatedAt TEXT NOT NULL, " +
+                "deletedAt TEXT" +
+                ")");
+            await this.exec("CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
+                "id TEXT PRIMARY KEY, " +
+                "fileId TEXT NOT NULL, " +
+                "ownerId TEXT NOT NULL, " +
+                "version TEXT NOT NULL, " +
+                "expectedSize INTEGER NOT NULL, " +
+                "createdAt TEXT NOT NULL" +
+                ")");
+            await this.exec("CREATE TABLE IF NOT EXISTS sporades_file_public_urls (" +
+                "id TEXT PRIMARY KEY, " +
+                "fileId TEXT NOT NULL, " +
+                "ownerId TEXT NOT NULL, " +
+                "version TEXT NOT NULL, " +
+                "expiresAt TEXT, " +
+                "createdAt TEXT NOT NULL, " +
+                "revokedAt TEXT" +
+                ")");
+        },
+        async insertLogIndexEvent(event) {
+            await this.prepare("INSERT INTO sporades_log_events " +
+                "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(randomUUID(), event.timestamp, event.category, event.event, event.level, event.message, event.capsule?.name ?? null, event.capsule?.id ?? null, event.release?.id ?? event.release ?? null, event.request?.id ?? null, event.correlation?.id ?? event.correlation ?? null, JSON.stringify(event));
+        },
+        async pruneLogIndex(limit) {
+            await this.prepare("DELETE FROM sporades_log_events WHERE id IN (" +
+                "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, id DESC OFFSET ?" +
+                ")").run(limit);
+        },
+        async readRecentLogEvents(limit = 200) {
+            const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
+            const rows = await this.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, id DESC LIMIT ?").all(safeLimit);
+            return rows.reverse().map((row) => JSON.parse(row.payload));
+        },
+        async migrateAppSchema(schema) {
+            return await migrateLibsqlAppSchema(this, schema);
+        },
+        async createAppTable(table, tableName = table.name) {
+            await this.exec(`CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` +
+                postgresAppTableColumnDefinitions(table).join(", ") +
+                ")");
+        },
+        async migrateExistingAppTable(existingTable, nextTable) {
+            return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
+        },
+        async listInspectableTables() {
+            const rows = await this.prepare("SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name").all();
+            return rows.map((row) => row.name).filter((name) => name !== "sporades_log_events");
+        },
+        async dumpInspectableDatabase() {
+            const tableNames = await this.listInspectableTables();
+            const tables = [];
+            for (const tableName of tableNames) {
+                const columns = (await this.prepare("SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? ORDER BY ordinal_position").all(tableName)).map((column) => column.name);
+                const rows = await this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all();
+                tables.push({ name: tableName, columns, rows });
+            }
+            return tables;
+        },
+        async runReadOnlyInspectionQuery(sql) {
+            try {
+                if (targetsInternalLogIndexTable(sql)) {
+                    return {
+                        ok: false,
+                        data: null,
+                        error: {
+                            message: "Internal log index tables are not available through generic DB inspection.",
+                            hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
+                        },
+                    };
+                }
+                const result = await query(sql);
+                return {
+                    ok: true,
+                    data: {
+                        columns: result.fields.map((field) => postgresRuntimeColumnName(field.name)),
+                        rows: postgresRowsFromResult(result).filter((row) => !isInternalLogIndexMetadataRow(row, sql)),
+                    },
+                    error: null,
+                };
+            }
+            catch (error) {
+                return {
+                    ok: false,
+                    data: null,
+                    error: {
+                        message: error.message,
+                        hint: "Check the SQL syntax and table names, then retry the query.",
+                    },
+                };
+            }
+        },
+        async checkHealth() {
+            try {
+                await this.prepare("SELECT 1 AS ok").get();
+                return { ok: true };
+            }
+            catch {
+                return { ok: false };
+            }
+        },
+        async withTransaction(fn) {
+            await this.exec("BEGIN");
+            try {
+                const result = await fn(this);
+                await this.exec("COMMIT");
+                return result;
+            }
+            catch (error) {
+                try {
+                    await this.exec("ROLLBACK");
+                }
+                catch { }
+                throw error;
+            }
+        },
+        async close() {
+            closed = true;
+            await client.close();
+        },
+    };
+    return adapter;
+}
+export async function createPostgresConnection(url) {
+    const net = await import("node:net");
+    const options = postgresUrlOptions(url);
+    const socket = net.createConnection({ host: options.host, port: options.port });
+    socket.setNoDelay(true);
+    let buffer = Buffer.alloc(0);
+    let ready = false;
+    let closed = false;
+    let backendKeyData = null;
+    let queryQueue = Promise.resolve();
+    const waiters = [];
+    socket.on("data", (chunk) => {
+        buffer = Buffer.concat([buffer, chunk]);
+        wakePostgresWaiters(waiters);
+    });
+    socket.on("error", (error) => {
+        for (const waiter of waiters.splice(0)) {
+            waiter.reject(error);
+        }
+    });
+    socket.on("close", () => {
+        closed = true;
+        for (const waiter of waiters.splice(0)) {
+            waiter.reject(new Error("database is not open"));
+        }
+    });
+    await new Promise((resolve, reject) => {
+        socket.once("connect", resolve);
+        socket.once("error", reject);
+    });
+    socket.write(postgresStartupMessage(options));
+    while (!ready) {
+        const message = await readPostgresMessage();
+        if (message.type === "R") {
+            const authType = message.body.readInt32BE(0);
+            if (authType !== 0) {
+                throw commandError("Unsupported Postgres authentication method.", "Use the Sporades-managed local Postgres Capsule service, which is configured for local trust authentication.");
+            }
+            continue;
+        }
+        if (message.type === "K") {
+            backendKeyData = message.body;
+            continue;
+        }
+        if (message.type === "E") {
+            throw postgresErrorFromBody(message.body);
+        }
+        if (message.type === "Z") {
+            ready = true;
+        }
+    }
+    return {
+        get backendKeyData() {
+            return backendKeyData;
+        },
+        query(sql) {
+            if (closed) {
+                throw new Error("database is not open");
+            }
+            const pending = queryQueue.then(() => executePostgresQuery(sql), () => executePostgresQuery(sql));
+            queryQueue = pending.catch(() => { });
+            return pending;
+        },
+        async close() {
+            await queryQueue.catch(() => { });
+            if (closed) {
+                return;
+            }
+            closed = true;
+            socket.write(Buffer.from([0x58, 0, 0, 0, 4]));
+            socket.end();
+        },
+    };
+    async function executePostgresQuery(sql) {
+        if (closed) {
+            throw new Error("database is not open");
+        }
+        socket.write(postgresQueryMessage(sql));
+        const fields = [];
+        const rows = [];
+        let rowCount = 0;
+        while (true) {
+            const message = await readPostgresMessage();
+            if (message.type === "T") {
+                fields.splice(0, fields.length, ...postgresParseRowDescription(message.body));
+                continue;
+            }
+            if (message.type === "D") {
+                rows.push(postgresParseDataRow(message.body, fields));
+                continue;
+            }
+            if (message.type === "C") {
+                rowCount = postgresRowCountFromCommand(message.body.toString("utf8").replace(/\0$/, ""));
+                continue;
+            }
+            if (message.type === "E") {
+                throw postgresErrorFromBody(message.body);
+            }
+            if (message.type === "Z") {
+                return { fields, rows, rowCount };
+            }
+        }
+    }
+    async function readPostgresMessage() {
+        while (buffer.length < 5) {
+            await waitForPostgresData(waiters);
+        }
+        const type = String.fromCharCode(buffer[0]);
+        const length = buffer.readInt32BE(1);
+        while (buffer.length < 1 + length) {
+            await waitForPostgresData(waiters);
+        }
+        const body = buffer.subarray(5, 1 + length);
+        buffer = buffer.subarray(1 + length);
+        return { type, body };
+    }
+}
+function postgresUrlOptions(url) {
+    const parsed = new URL(String(url));
+    return {
+        host: parsed.hostname || "127.0.0.1",
+        port: parsed.port ? Number(parsed.port) : 5432,
+        user: decodeURIComponent(parsed.username || "sporades"),
+        database: decodeURIComponent(parsed.pathname.replace(/^\/+/, "") || "sporades"),
+    };
+}
+function postgresStartupMessage(options) {
+    const params = [
+        ["user", options.user],
+        ["database", options.database],
+        ["client_encoding", "UTF8"],
+    ];
+    const bodyParts = [postgresInt32(196608)];
+    for (const [key, value] of params) {
+        bodyParts.push(Buffer.from(`${key}\0${value}\0`, "utf8"));
+    }
+    bodyParts.push(Buffer.from([0]));
+    const body = Buffer.concat(bodyParts);
+    return Buffer.concat([postgresInt32(body.length + 4), body]);
+}
+function postgresQueryMessage(sql) {
+    const body = Buffer.from(`${sql}\0`, "utf8");
+    return Buffer.concat([Buffer.from("Q"), postgresInt32(body.length + 4), body]);
+}
+function postgresInt32(value) {
+    const buffer = Buffer.alloc(4);
+    buffer.writeInt32BE(value, 0);
+    return buffer;
+}
+function waitForPostgresData(waiters) {
+    return new Promise((resolve, reject) => waiters.push({ resolve, reject }));
+}
+function wakePostgresWaiters(waiters) {
+    for (const waiter of waiters.splice(0)) {
+        waiter.resolve();
+    }
+}
+function postgresParseRowDescription(body) {
+    const fields = [];
+    let offset = 0;
+    const count = body.readInt16BE(offset);
+    offset += 2;
+    for (let index = 0; index < count; index += 1) {
+        const nameEnd = body.indexOf(0, offset);
+        const name = body.subarray(offset, nameEnd).toString("utf8");
+        offset = nameEnd + 1;
+        offset += 6;
+        const dataTypeID = body.readInt32BE(offset);
+        offset += 4;
+        offset += 8;
+        fields.push({ name, dataTypeID });
+    }
+    return fields;
+}
+function postgresParseDataRow(body, fields) {
+    const row = {};
+    let offset = 0;
+    const count = body.readInt16BE(offset);
+    offset += 2;
+    for (let index = 0; index < count; index += 1) {
+        const field = fields[index];
+        if (!field) {
+            throw new Error("Postgres protocol error: data row did not match row description.");
+        }
+        const length = body.readInt32BE(offset);
+        offset += 4;
+        if (length === -1) {
+            row[field.name] = null;
+            continue;
+        }
+        const raw = body.subarray(offset, offset + length).toString("utf8");
+        offset += length;
+        row[field.name] = postgresValueFromText(raw, field.dataTypeID);
+    }
+    return row;
+}
+function postgresValueFromText(value, dataTypeID) {
+    if ([20, 21, 23].includes(dataTypeID)) {
+        return Number(value);
+    }
+    if ([700, 701, 1700].includes(dataTypeID)) {
+        return Number(value);
+    }
+    if (dataTypeID === 16) {
+        return value === "t";
+    }
+    return value;
+}
+function postgresRowCountFromCommand(tag) {
+    const match = tag.match(/\s(\d+)$/);
+    return match ? Number(match[1]) : 0;
+}
+function postgresErrorFromBody(body) {
+    const fields = {};
+    let offset = 0;
+    while (offset < body.length && body[offset] !== 0) {
+        const type = String.fromCharCode(body[offset]);
+        offset += 1;
+        const end = body.indexOf(0, offset);
+        fields[type] = body.subarray(offset, end).toString("utf8");
+        offset = end + 1;
+    }
+    return new Error(fields.M ?? "Postgres query failed.");
+}
+function postgresInterpolate(sql, params = []) {
+    let index = 0;
+    let quote = null;
+    let escaped = false;
+    let lineComment = false;
+    let blockComment = false;
+    let result = "";
+    const text = String(sql ?? "");
+    for (let position = 0; position < text.length; position += 1) {
+        const char = text[position];
+        const next = text[position + 1];
+        if (lineComment) {
+            result += char;
+            if (char === "\n") {
+                lineComment = false;
+            }
+            continue;
+        }
+        if (blockComment) {
+            result += char;
+            if (char === "*" && next === "/") {
+                result += next;
+                position += 1;
+                blockComment = false;
+            }
+            continue;
+        }
+        if (quote) {
+            result += char;
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (char === "\\") {
+                escaped = true;
+                continue;
+            }
+            if (char === quote) {
+                quote = null;
+            }
+            continue;
+        }
+        if (char === "-" && next === "-") {
+            result += char + next;
+            position += 1;
+            lineComment = true;
+            continue;
+        }
+        if (char === "/" && next === "*") {
+            result += char + next;
+            position += 1;
+            blockComment = true;
+            continue;
+        }
+        if (char === '"' || char === "'" || char === "`") {
+            quote = char;
+            result += char;
+            continue;
+        }
+        if (char === "?") {
+            if (index >= params.length) {
+                throw new Error("Missing Postgres query parameter.");
+            }
+            result += toSqlLiteral(params[index]);
+            index += 1;
+            continue;
+        }
+        result += char;
+    }
+    if (index < params.length) {
+        throw new Error("Too many Postgres query parameters.");
+    }
+    return result;
+}
+function postgresPlaceholders(sql) {
+    let index = 0;
+    let quote = null;
+    let escaped = false;
+    let lineComment = false;
+    let blockComment = false;
+    let result = "";
+    const text = String(sql ?? "");
+    for (let position = 0; position < text.length; position += 1) {
+        const char = text[position];
+        const next = text[position + 1];
+        if (lineComment) {
+            result += char;
+            if (char === "\n") {
+                lineComment = false;
+            }
+            continue;
+        }
+        if (blockComment) {
+            result += char;
+            if (char === "*" && next === "/") {
+                result += next;
+                position += 1;
+                blockComment = false;
+            }
+            continue;
+        }
+        if (quote) {
+            result += char;
+            if (escaped) {
+                escaped = false;
+                continue;
+            }
+            if (char === "\\") {
+                escaped = true;
+                continue;
+            }
+            if (char === quote) {
+                quote = null;
+            }
+            continue;
+        }
+        if (char === "-" && next === "-") {
+            result += char + next;
+            position += 1;
+            lineComment = true;
+            continue;
+        }
+        if (char === "/" && next === "*") {
+            result += char + next;
+            position += 1;
+            blockComment = true;
+            continue;
+        }
+        if (char === '"' || char === "'" || char === "`") {
+            quote = char;
+            result += char;
+            continue;
+        }
+        if (char === "?") {
+            index += 1;
+            result += `$${index}`;
+            continue;
+        }
+        result += char;
+    }
+    return result;
+}
+function postgresRowsFromResult(result) {
+    return result.rows.map((row) => {
+        const normalized = {};
+        for (const [key, value] of Object.entries(row)) {
+            normalized[postgresRuntimeColumnName(key)] = value;
+        }
+        return normalized;
+    });
+}
+function postgresRuntimeColumnName(name) {
+    return ({
+        ownerid: "ownerId",
+        bucketid: "bucketId",
+        bucketname: "bucketName",
+        createdat: "createdAt",
+        updatedat: "updatedAt",
+        deletedat: "deletedAt",
+        fileid: "fileId",
+        expectedsize: "expectedSize",
+        publicurlid: "publicUrlId",
+        publicversion: "publicVersion",
+        expiresat: "expiresAt",
+        revokedat: "revokedAt",
+        userid: "userId",
+        displayname: "displayName",
+        isauthenticated: "isAuthenticated",
+        isguest: "isGuest",
+        passwordhash: "passwordHash",
+        passwordsalt: "passwordSalt",
+        sessiontoken: "sessionToken",
+        redirecturi: "redirectUri",
+        capsulename: "capsuleName",
+        capsuleid: "capsuleId",
+        releaseid: "releaseId",
+        requestid: "requestId",
+        correlationid: "correlationId",
+    }[name] ?? name);
+}
+function postgresAppTableColumnDefinitions(table) {
+    return [
+        `${quoteIdentifier("id")} TEXT PRIMARY KEY`,
+        `${quoteIdentifier("createdAt")} TEXT NOT NULL`,
+        `${quoteIdentifier("updatedAt")} TEXT NOT NULL`,
+        ...table.fields.map((field) => appFieldColumnDefinition(field)),
+    ];
 }
 export async function createLibsqlDatabaseAdapter(options) {
     const url = typeof options === "string" ? options : options?.url;
@@ -4379,7 +5065,7 @@ function sendJson(client, message) {
     }
     client.socket.write(Buffer.concat([header, payload]));
 }
-async function runQuery(database, auth, queryName) {
+export async function runQuery(database, auth, queryName) {
     let context;
     try {
         context = await applyContextMiddleware(database, createMutationContext(database, auth), "query");
@@ -4497,11 +5183,11 @@ async function runCustomMutation(database, context, mutationName, args) {
     }
     finally {
         await drainPendingAclWrites(context);
+        database.rowCache.clear();
     }
     if (result !== undefined) {
         assertJsonCompatible(result);
     }
-    database.rowCache.clear();
     return { ok: true, data: result ?? null, error: null };
 }
 async function runAppMessage(database, auth, messageName, data, options = {}) {

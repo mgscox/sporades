@@ -142,11 +142,20 @@ function createConnection() {
   const authStateListeners = new Set();
   let latestAuthMessage = null;
 
+  function syncSessionTokenFromStorage() {
+    const storedToken = localStorage.getItem("sporades.sessionToken");
+    if (storedToken && storedToken !== sessionToken) {
+      sessionToken = storedToken;
+    }
+    return sessionToken;
+  }
+
   function open() {
     if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
       return socket;
     }
 
+    syncSessionTokenFromStorage();
     const url = new URL(websocketPath, window.location.href);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
     if (sessionToken) {
@@ -191,6 +200,7 @@ function createConnection() {
   }
 
   function send(message) {
+    syncSessionTokenFromStorage();
     const activeSocket = open();
     if (activeSocket.readyState === WebSocket.OPEN) {
       activeSocket.send(JSON.stringify(message));

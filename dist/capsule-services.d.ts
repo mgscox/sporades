@@ -7,9 +7,22 @@ export declare function writeCapsuleServicesCompose(projectDir: any, config: any
     services: {
         database: {
             name: string;
+            engine: any;
             image: string;
             stateDir: string;
             targetPort: number;
+            volumeTarget: string;
+            environment: {
+                POSTGRES_USER: string;
+                POSTGRES_PASSWORD: string;
+                POSTGRES_DB: string;
+                POSTGRES_HOST_AUTH_METHOD: string;
+            } | {
+                POSTGRES_USER?: undefined;
+                POSTGRES_PASSWORD?: undefined;
+                POSTGRES_DB?: undefined;
+                POSTGRES_HOST_AUTH_METHOD?: undefined;
+            };
         };
     };
     networks: {
@@ -20,7 +33,7 @@ export declare function writeCapsuleServicesCompose(projectDir: any, config: any
         "com.sporades.runtime-state": string;
         "com.sporades.project": string;
         "com.sporades.capsule-service.kind": string;
-        "com.sporades.capsule-service.engine": string;
+        "com.sporades.capsule-service.engine": any;
     };
     path: string;
     relativePath: string;
@@ -31,9 +44,22 @@ export declare function capsuleServicesComposeModel(config: any, projectDir?: st
     services: {
         database: {
             name: string;
+            engine: any;
             image: string;
             stateDir: string;
             targetPort: number;
+            volumeTarget: string;
+            environment: {
+                POSTGRES_USER: string;
+                POSTGRES_PASSWORD: string;
+                POSTGRES_DB: string;
+                POSTGRES_HOST_AUTH_METHOD: string;
+            } | {
+                POSTGRES_USER?: undefined;
+                POSTGRES_PASSWORD?: undefined;
+                POSTGRES_DB?: undefined;
+                POSTGRES_HOST_AUTH_METHOD?: undefined;
+            };
         };
     };
     networks: {
@@ -44,7 +70,7 @@ export declare function capsuleServicesComposeModel(config: any, projectDir?: st
         "com.sporades.runtime-state": string;
         "com.sporades.project": string;
         "com.sporades.capsule-service.kind": string;
-        "com.sporades.capsule-service.engine": string;
+        "com.sporades.capsule-service.engine": any;
     };
 };
 //# sourceMappingURL=capsule-services.d.ts.map

@@ -11,7 +11,7 @@ import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageMetadata, baseImageRuntimeUser, normaliseBaseImageUpdatePolicy, } from "../base-image.js";
 import { ensureSealedServerEnvKeyPair, envelopeSummary, exportedEnvelope, readKeyPair, readSealedServerEnv, sealServerEnv, sealedServerEnvPaths, unsealServerEnv, writeSealedServerEnv, } from "../sealed-server-env.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
-import { createSqliteDatabaseAdapter, createWebSocketHub, dumpDatabase, handleFileHttpRoute, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeEndpoint, routeSporadesAuth, runReadOnlyQuery, simulateLocalIdentitySession, } from "../server-runtime-source.js";
+import { createSqliteDatabaseAdapter, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeEndpoint, routeSporadesAuth, runReadOnlyQuery, simulateLocalIdentitySession, } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { CAPSULE_SERVICES_COMPOSE_FILE, CAPSULE_SERVICES_STATE_DIR, capsuleServicesComposeModel, validateCapsuleServicesConfig, writeCapsuleServicesCompose, } from "../capsule-services.js";
 const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
@@ -3948,7 +3948,7 @@ async function localCapsuleServicesStatus(capsuleServices, projectDir) {
     return {
         database: {
             declared: true,
-            engine: "libsql",
+            engine: service.engine,
             status: runtime.state || "unknown",
             health: runtime.health,
             network: {
@@ -4024,7 +4024,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
         event: "service",
         service: "database",
         status: "starting",
-        engine: "libsql",
+        engine: capsuleServices.services.database.engine,
         statePath: path.join(CAPSULE_SERVICES_STATE_DIR, "database"),
     });
     try {
@@ -4065,7 +4065,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
         event: "service",
         service: "database",
         status: "ready",
-        engine: "libsql",
+        engine: capsuleServices.services.database.engine,
         statePath: path.join(CAPSULE_SERVICES_STATE_DIR, "database"),
         host: connection.host,
         port: connection.port,
@@ -4078,8 +4078,10 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
 function capsuleServicesContainerEnv(capsuleServices) {
     const service = capsuleServices.services.database;
     return {
-        SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
-        SPORADES_SERVICE_DATABASE_URL: `http://${service.name}:${service.targetPort}`,
+        SPORADES_SERVICE_DATABASE_ENGINE: service.engine,
+        SPORADES_SERVICE_DATABASE_URL: service.engine === "postgres"
+            ? `postgres://sporades:sporades@${service.name}:${service.targetPort}/sporades`
+            : `http://${service.name}:${service.targetPort}`,
     };
 }
 function capsuleServicesJsonSummary(capsuleServices, status) {
@@ -4087,7 +4089,7 @@ function capsuleServicesJsonSummary(capsuleServices, status) {
     return {
         database: {
             status,
-            engine: "libsql",
+            engine: service.engine,
             network: capsuleServices.networks.services,
             containerName: service.name,
             statePath: path.join(CAPSULE_SERVICES_STATE_DIR, "database"),
@@ -4114,7 +4116,7 @@ async function waitForCapsuleDatabaseService(capsuleServices, projectDir) {
                 port,
                 url: `http://127.0.0.1:${port}`,
             };
-            lastProbe = await probeCapsuleDatabaseService(connection.url);
+            lastProbe = await probeCapsuleDatabaseService(capsuleServices, connection.url);
             if (lastProbe.ok) {
                 return connection;
             }
@@ -4123,7 +4125,7 @@ async function waitForCapsuleDatabaseService(capsuleServices, projectDir) {
     }
     const diagnostics = {
         service: "database",
-        engine: "libsql",
+        engine: service.engine,
         status: lastError ?? lastStatus ?? { state: "unknown", health: null },
         probe: lastProbe,
     };
@@ -4131,7 +4133,10 @@ async function waitForCapsuleDatabaseService(capsuleServices, projectDir) {
     error.diagnostics = diagnostics;
     throw error;
 }
-async function probeCapsuleDatabaseService(url) {
+async function probeCapsuleDatabaseService(capsuleServices, url) {
+    if (capsuleServices.services.database.engine === "postgres") {
+        return await probePostgresCapsuleDatabaseService(`postgres://sporades:sporades@${new URL(url).hostname}:${new URL(url).port}/sporades`);
+    }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 500);
     try {
@@ -4149,6 +4154,24 @@ async function probeCapsuleDatabaseService(url) {
     }
     finally {
         clearTimeout(timeout);
+    }
+}
+async function probePostgresCapsuleDatabaseService(url) {
+    try {
+        const client = await createPostgresConnection(url);
+        try {
+            await client.query("SELECT 1 AS ok");
+            return { ok: true, statusCode: 200 };
+        }
+        finally {
+            await client.close().catch(() => { });
+        }
+    }
+    catch (error) {
+        return {
+            ok: false,
+            message: error.message,
+        };
     }
 }
 function capsuleServiceReadinessTimeoutMs() {

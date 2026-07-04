@@ -55,6 +55,12 @@ and whether the work belongs in one release or separate tracks.
 | Job queue | candidate | Durable background work with retry/failure visibility. Should stay local-first unless an adapter is explicitly configured. |
 | Job scheduling | candidate | Cron-like recurring jobs with persistence, missed-run behavior, timezone handling, and duplicate-run protection. Can build on or sit beside the job queue depending on design. |
 
+## Engineering Hygiene
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| Test-only internal export namespace | candidate | Move private/protected runtime helpers that are exported only for tests under a single `_csu: { ... }` export namespace. This keeps the reason for those exports explicit, preserves old-school CSU/CSC/CSCI vocabulary for support-unit internals, and makes it easy to audit or remove the test-only surface later without mistaking it for public API. |
+
 ## Promotion Rule
 
 When a roadmap item becomes concrete enough to build:
