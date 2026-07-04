@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Extract SQLite Database Adapter
 
@@ -22,4 +22,3 @@ Introduce an internal SQLite Database adapter that owns connection creation, ini
 ## Blocked by
 
 None - can start immediately
-
