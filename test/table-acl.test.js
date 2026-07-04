@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -374,8 +374,9 @@ test("denied write ACLs roll back mutation writes and skip after hooks", async (
       const result = await runMutation(database, auth("user-1"), "addTwoNotes", ["allowed", "blocked"]);
       assert.equal(result.ok, false);
       assert.deepEqual(result.error, {
-        message: "Write denied.",
-        hint: "The current user is not allowed to change this row.",
+        code: "DENIED",
+        message: "Denied.",
+        hint: "The current user is not allowed to perform this operation.",
       });
 
       assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[0], {}).map((row) => ({ title: row.title })), []);
@@ -429,8 +430,9 @@ test("async ACL writes from after hooks are awaited before commit and can roll b
       const denied = await runMutation(database, auth("user-1"), "addTodo", ["deny"]);
       assert.equal(denied.ok, false);
       assert.deepEqual(denied.error, {
-        message: "Write denied.",
-        hint: "The current user is not allowed to change this row.",
+        code: "DENIED",
+        message: "Denied.",
+        hint: "The current user is not allowed to perform this operation.",
       });
       assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[0], {}).map((row) => ({ title: row.title })), [
         { title: "allow" },
@@ -442,6 +444,125 @@ test("async ACL writes from after hooks are awaited before commit and can roll b
       database.close();
     }
   });
+});
+
+test("denied ACL writes return opaque errors and emit structured redacted diagnosis logs", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        notes: table({
+          title: String(),
+          passwordSecret: String(),
+          ownerId: String(),
+        }).acl({
+          update: ({ next }) => next.title !== "locked",
+        }),
+      },
+      mutations: {
+        addNote: mutation((ctx, title, passwordSecret) =>
+          ctx.db.notes.insert({ title, passwordSecret, ownerId: ctx.auth.userId }),
+        ),
+        renameNote: mutation((ctx, id, title) => ctx.db.notes.update(id, { title })),
+      },
+    });
+
+    try {
+      const inserted = await runMutation(database, auth("user-1"), "addNote", ["draft", "raw-super-secret"]);
+      assert.equal(inserted.ok, true);
+
+      const denied = await runMutation(database, auth("user-1"), "renameNote", [inserted.data.id, "locked"]);
+
+      assert.equal(denied.ok, false);
+      assert.deepEqual(denied.error, {
+        code: "DENIED",
+        message: "Denied.",
+        hint: "The current user is not allowed to perform this operation.",
+      });
+
+      const [entry] = database.log.recent(10).filter((candidate) => candidate.event === "acl.denied");
+      assert.equal(entry.category, "platform");
+      assert.equal(entry.level, "warn");
+      assert.equal(entry.data.resource.kind, "table");
+      assert.equal(entry.data.resource.name, "notes");
+      assert.equal(entry.data.operation, "update");
+      assert.deepEqual(entry.data.rule, {
+        category: "table",
+        declaredOperation: "update",
+      });
+      assert.deepEqual(entry.data.actor, {
+        userId: "user-1",
+        provider: "anonymous",
+        isAuthenticated: false,
+        isGuest: true,
+      });
+      assert.equal(entry.data.row.previousId, inserted.data.id);
+      assert.equal(entry.data.row.nextId, inserted.data.id);
+      assert.deepEqual(entry.data.row.changedFields, ["title"]);
+      assert.equal(entry.data.row.previousFields.includes("title"), true);
+      assert.equal(entry.data.row.previousFields.includes("passwordSecret"), false);
+      assert.equal(JSON.stringify(entry).includes("raw-super-secret"), false);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("denied ACL reads emit structured diagnosis logs without exposing filtered rows to queries", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        notes: table({
+          title: String(),
+          secretToken: String(),
+          ownerId: String(),
+        }).acl({
+          read: ({ row, ctx }) => row.ownerId === ctx.auth.userId,
+        }),
+      },
+      queries: {
+        notes: query((ctx) => ctx.db.notes.orderBy("title").all()),
+      },
+    });
+
+    try {
+      const db = createEndpointDatabaseApi(database);
+      db.notes.insert({ title: "Mine", secretToken: "mine-token", ownerId: "u1" });
+      const theirs = db.notes.insert({ title: "Theirs", secretToken: "theirs-token", ownerId: "u2" });
+
+      const result = await runQuery(database, auth("u1"), "notes");
+
+      assert.equal(result.error, null);
+      assert.deepEqual(
+        result.data.map((row) => row.title),
+        ["Mine"],
+      );
+      const [entry] = database.log.recent(10).filter((candidate) => candidate.event === "acl.denied");
+      assert.equal(entry.data.resource.name, "notes");
+      assert.equal(entry.data.operation, "read");
+      assert.deepEqual(entry.data.rule, {
+        category: "table",
+        declaredOperation: "read",
+      });
+      assert.equal(entry.data.row.id, theirs.id);
+      assert.equal(entry.data.row.fields.includes("title"), true);
+      assert.equal(entry.data.row.fields.includes("secretToken"), false);
+      assert.equal(JSON.stringify(entry).includes("theirs-token"), false);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("ACL user guide documents policy behavior and reserved storage enforcement", async () => {
+  const guide = await readFile(new URL("../docs/user-guide.md", import.meta.url), "utf8");
+
+  assert.match(guide, /invisible accept\/reject authorization policy/);
+  assert.match(guide, /Missing rules allow the\s+operation by default/);
+  assert.match(guide, /`write` is the fallback for `insert`, `update`,\s+and `delete`/);
+  assert.match(guide, /Read ACLs filter rows after fetch/);
+  assert.match(guide, /insert receives `previous = null`/);
+  assert.match(guide, /`ctx\.acl\.storage`.*reserved for a later\s+storage-enforcement slice/s);
+  assert.match(guide, /`sporades doctor` may later warn about missing ACLs or\s+open-to-the-world data/);
 });
 
 test("write ACL fallback, operation-specific override, missing ACL, and async rules apply to writes", async () => {
