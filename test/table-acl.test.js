@@ -4,8 +4,25 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { openDevDatabase } from "../src/server-runtime-source.js";
-import { String, table } from "../src/server.js";
+import { openDevDatabase, SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../src/server-runtime-source.js";
+import { query, String, table } from "../src/server.js";
+
+const createEndpointDatabaseApi = SERVER_RUNTIME_SOURCE_FUNCTIONS.find(
+  (fn) => fn.name === "createEndpointDatabaseApi",
+);
+const runQuery = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runQuery");
+
+function auth(userId) {
+  return {
+    userId,
+    displayName: userId,
+    email: null,
+    picture: null,
+    isAuthenticated: false,
+    isGuest: true,
+    provider: "anonymous",
+  };
+}
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-table-acl-"));
@@ -122,5 +139,144 @@ test("invalid ACL declarations fail with structured Capsule errors", async () =>
         return true;
       },
     );
+  });
+});
+
+test("read ACL filters multi-row query results without exposing denied rows", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        notes: table({
+          title: String(),
+          ownerId: String(),
+        }).acl({
+          read: ({ row, ctx }) => row.ownerId === ctx.auth.userId,
+        }),
+      },
+      queries: {
+        notes: query((ctx) => ctx.db.notes.orderBy("title").all()),
+      },
+    });
+
+    try {
+      const db = createEndpointDatabaseApi(database);
+      db.notes.insert({ title: "Mine", ownerId: "u1" });
+      db.notes.insert({ title: "Theirs", ownerId: "u2" });
+
+      const result = await runQuery(database, auth("u1"), "notes");
+
+      assert.equal(result.error, null);
+      assert.deepEqual(
+        result.data.map((row) => row.title),
+        ["Mine"],
+      );
+      assert.equal(result.data.some((row) => row.title === "Theirs"), false);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("tables without read ACLs preserve open read behavior", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        notes: table({
+          title: String(),
+          ownerId: String(),
+        }),
+      },
+      queries: {
+        notes: query((ctx) => ctx.db.notes.orderBy("title").all()),
+      },
+    });
+
+    try {
+      const db = createEndpointDatabaseApi(database);
+      db.notes.insert({ title: "Mine", ownerId: "u1" });
+      db.notes.insert({ title: "Theirs", ownerId: "u2" });
+
+      const result = await runQuery(database, auth("u1"), "notes");
+
+      assert.equal(result.error, null);
+      assert.deepEqual(
+        result.data.map((row) => row.title),
+        ["Mine", "Theirs"],
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("read ACL filters single-row table API reads", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        notes: table({
+          title: String(),
+          ownerId: String(),
+        }).acl({
+          read: ({ row, ctx }) => row.ownerId === ctx.auth.userId,
+        }),
+      },
+      queries: {
+        mine: query((ctx) => ctx.db.notes.where("title", "Mine").get()),
+        theirs: query((ctx) => ctx.db.notes.where("title", "Theirs").get()),
+      },
+    });
+
+    try {
+      const db = createEndpointDatabaseApi(database);
+      db.notes.insert({ title: "Mine", ownerId: "u1" });
+      db.notes.insert({ title: "Theirs", ownerId: "u2" });
+
+      const allowed = await runQuery(database, auth("u1"), "mine");
+      const denied = await runQuery(database, auth("u1"), "theirs");
+
+      assert.equal(allowed.error, null);
+      assert.equal(allowed.data.title, "Mine");
+      assert.equal(denied.error, null);
+      assert.equal(denied.data, null);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("async read ACL rules are awaited before returning query results", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        notes: table({
+          title: String(),
+          ownerId: String(),
+        }).acl({
+          read: async ({ row, ctx }) => {
+            await Promise.resolve();
+            return row.ownerId === ctx.auth.userId;
+          },
+        }),
+      },
+      queries: {
+        notes: query((ctx) => ctx.db.notes.orderBy("title").all()),
+      },
+    });
+
+    try {
+      const db = createEndpointDatabaseApi(database);
+      db.notes.insert({ title: "Mine", ownerId: "u1" });
+      db.notes.insert({ title: "Theirs", ownerId: "u2" });
+
+      const result = await runQuery(database, auth("u1"), "notes");
+
+      assert.equal(result.error, null);
+      assert.deepEqual(
+        result.data.map((row) => row.title),
+        ["Mine"],
+      );
+    } finally {
+      database.close();
+    }
   });
 });
