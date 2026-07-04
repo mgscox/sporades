@@ -590,6 +590,7 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
         endpoint: string;
         bucket: string;
         region: string;
+        namespace: string;
         objectKeyPrefix: string;
         writeFileVersion({ fileId, version, bytes }: {
             fileId: any;
@@ -903,6 +904,7 @@ export declare function createRuntimeFileStorageAdapter({ config, databasePath, 
     endpoint: string;
     bucket: string;
     region: string;
+    namespace: string;
     objectKeyPrefix: string;
     writeFileVersion({ fileId, version, bytes }: {
         fileId: any;
@@ -966,17 +968,19 @@ export declare function createLocalFileStorageAdapter({ storagePath }: {
     }>;
     close(): void;
 };
-export declare function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region, accessKey, secretKey }: {
+export declare function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region, accessKey, secretKey, namespace }: {
     endpoint: any;
     bucket: any;
     region: any;
     accessKey: any;
     secretKey: any;
+    namespace: any;
 }): {
     engine: string;
     endpoint: string;
     bucket: string;
     region: string;
+    namespace: string;
     objectKeyPrefix: string;
     writeFileVersion({ fileId, version, bytes }: {
         fileId: any;

@@ -112,6 +112,7 @@ export function capsuleServicesComposeModel(config, projectDir = process.cwd()) 
             secretKey: MINIO_ROOT_PASSWORD,
             bucket: MINIO_BUCKET,
             region: MINIO_REGION,
+            namespace: projectSlug,
         };
     }
     const model = {

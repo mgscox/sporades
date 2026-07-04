@@ -167,6 +167,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     s3SigningKey,
     s3CanonicalPath,
     s3EncodedPathSegment,
+    s3StorageNamespace,
     s3AmzDate,
     s3Hmac,
     s3Sha256Hex,
@@ -474,13 +475,14 @@ async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config
 }
 export async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
     const path = await import("node:path");
-    if (serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
+    if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
         return createS3CompatibleFileStorageAdapter({
             endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT,
             bucket: serviceEnv.SPORADES_SERVICE_STORAGE_BUCKET,
             region: serviceEnv.SPORADES_SERVICE_STORAGE_REGION ?? "us-east-1",
             accessKey: serviceEnv.SPORADES_SERVICE_STORAGE_ACCESS_KEY,
             secretKey: serviceEnv.SPORADES_SERVICE_STORAGE_SECRET_KEY,
+            namespace: serviceEnv.SPORADES_SERVICE_STORAGE_NAMESPACE,
         });
     }
     return createLocalFileStorageAdapter({
@@ -532,7 +534,7 @@ function localFileStoragePath(storagePath, fileId) {
 function localFileVersionPath(storagePath, fileId, version) {
     return `${localFileStoragePath(storagePath, fileId)}/${version}`;
 }
-export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region, accessKey, secretKey }) {
+export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region, accessKey, secretKey, namespace }) {
     if (typeof endpoint !== "string" || endpoint.length === 0) {
         throw new Error("S3-compatible file storage requires an endpoint.");
     }
@@ -545,6 +547,7 @@ export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region,
     if (typeof accessKey !== "string" || accessKey.length === 0 || typeof secretKey !== "string" || secretKey.length === 0) {
         throw new Error("S3-compatible file storage requires access credentials.");
     }
+    const isolatedNamespace = s3StorageNamespace(namespace);
     const config = { endpoint, bucket, region, accessKey, secretKey };
     let bucketReady = false;
     const ensureBucket = async () => {
@@ -568,12 +571,13 @@ export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region,
         endpoint,
         bucket,
         region,
-        objectKeyPrefix: "files",
+        namespace: isolatedNamespace,
+        objectKeyPrefix: `${isolatedNamespace}/files`,
         async writeFileVersion({ fileId, version, bytes }) {
             await ensureBucket();
             const result = await s3Request(config, {
                 method: "PUT",
-                key: s3ObjectKey(fileId, version),
+                key: s3ObjectKey(isolatedNamespace, fileId, version),
                 body: bytes,
             });
             if (result.statusCode < 200 || result.statusCode >= 300) {
@@ -583,7 +587,7 @@ export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region,
         async readFileVersion({ fileId, version }) {
             const result = await s3Request(config, {
                 method: "GET",
-                key: s3ObjectKey(fileId, version),
+                key: s3ObjectKey(isolatedNamespace, fileId, version),
             });
             if (result.statusCode === 404) {
                 throw s3ObjectNotFoundError();
@@ -596,7 +600,7 @@ export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region,
         async deleteFileVersion({ fileId, version }) {
             const result = await s3Request(config, {
                 method: "DELETE",
-                key: s3ObjectKey(fileId, version),
+                key: s3ObjectKey(isolatedNamespace, fileId, version),
             });
             if (result.statusCode === 404) {
                 return;
@@ -617,8 +621,8 @@ export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region,
         close() { },
     };
 }
-function s3ObjectKey(fileId, version) {
-    return `files/${fileId}/${version}`;
+function s3ObjectKey(namespace, fileId, version) {
+    return `${namespace}/files/${fileId}/${version}`;
 }
 async function s3Request(config, { method, key = null, body = null }) {
     const endpoint = new URL(config.endpoint);
@@ -712,13 +716,18 @@ function s3SigningKey(secretKey, date, region) {
 function s3CanonicalPath(basePath, bucket, key) {
     const base = String(basePath ?? "")
         .split("/")
-        .filter(Boolean)
-        .map(s3EncodedPathSegment);
+        .filter(Boolean);
     const parts = [...base, bucket, ...(key ? String(key).split("/") : [])].map(s3EncodedPathSegment);
     return `/${parts.join("/")}`;
 }
 function s3EncodedPathSegment(segment) {
     return encodeURIComponent(segment).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+function s3StorageNamespace(namespace) {
+    if (typeof namespace !== "string" || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(namespace)) {
+        throw new Error("S3-compatible file storage requires a capsule storage namespace.");
+    }
+    return `capsules/${namespace}`;
 }
 function s3AmzDate(date) {
     return date.toISOString().replace(/[:-]|\.\d{3}/g, "");

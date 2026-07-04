@@ -4100,6 +4100,7 @@ function capsuleServicesContainerEnv(capsuleServices) {
         env.SPORADES_SERVICE_STORAGE_SECRET_KEY = service.secretKey;
         env.SPORADES_SERVICE_STORAGE_BUCKET = service.bucket;
         env.SPORADES_SERVICE_STORAGE_REGION = service.region;
+        env.SPORADES_SERVICE_STORAGE_NAMESPACE = service.namespace;
     }
     return env;
 }
@@ -4118,6 +4119,7 @@ function capsuleServicesLocalEnv(capsuleServices, connections) {
         env.SPORADES_SERVICE_STORAGE_SECRET_KEY = service.secretKey;
         env.SPORADES_SERVICE_STORAGE_BUCKET = service.bucket;
         env.SPORADES_SERVICE_STORAGE_REGION = service.region;
+        env.SPORADES_SERVICE_STORAGE_NAMESPACE = service.namespace;
     }
     return env;
 }

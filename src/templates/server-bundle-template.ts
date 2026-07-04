@@ -142,6 +142,7 @@ function readRuntimeServiceEnv() {
     "SPORADES_SERVICE_STORAGE_SECRET_KEY",
     "SPORADES_SERVICE_STORAGE_BUCKET",
     "SPORADES_SERVICE_STORAGE_REGION",
+    "SPORADES_SERVICE_STORAGE_NAMESPACE",
   ];
   return Object.fromEntries(keys.filter((key) => process.env[key] !== undefined).map((key) => [key, process.env[key]]));
 }

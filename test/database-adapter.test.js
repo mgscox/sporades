@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash, createHmac } from "node:crypto";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -53,6 +54,11 @@ async function withFakeS3CompatibleService(fn) {
       headers: request.headers,
       body,
     });
+    if (!verifyFakeS3Signature(request, body)) {
+      response.writeHead(403);
+      response.end();
+      return;
+    }
 
     const bucketPrefix = "/sporades-files";
     if (request.url === bucketPrefix) {
@@ -120,6 +126,42 @@ async function withFakeS3CompatibleService(fn) {
   }
 }
 
+function verifyFakeS3Signature(request, body) {
+  const authorization = request.headers.authorization ?? "";
+  const match = /^AWS4-HMAC-SHA256 Credential=([^/]+)\/(\d{8})\/([^/]+)\/s3\/aws4_request, SignedHeaders=([^,]+), Signature=([0-9a-f]{64})$/.exec(
+    authorization,
+  );
+  if (!match) {
+    return false;
+  }
+  const [, accessKey, date, region, signedHeadersSource, signature] = match;
+  if (accessKey !== "sporades") {
+    return false;
+  }
+  const payloadHash = createHash("sha256").update(body).digest("hex");
+  if (request.headers["x-amz-content-sha256"] !== payloadHash) {
+    return false;
+  }
+
+  const signedHeaders = signedHeadersSource.split(";");
+  const canonicalHeaders = signedHeaders.map((name) => `${name}:${String(request.headers[name] ?? "").trim()}\n`).join("");
+  const pathname = new URL(request.url, "http://127.0.0.1").pathname;
+  const canonicalRequest = [request.method, pathname, "", canonicalHeaders, signedHeadersSource, payloadHash].join("\n");
+  const amzDate = request.headers["x-amz-date"];
+  const credentialScope = `${date}/${region}/s3/aws4_request`;
+  const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credentialScope, createHash("sha256").update(canonicalRequest).digest("hex")].join("\n");
+  const signingKey = fakeS3SigningKey("sporades-minio-local-secret", date, region);
+  const expected = createHmac("sha256", signingKey).update(stringToSign).digest("hex");
+  return expected === signature;
+}
+
+function fakeS3SigningKey(secretKey, date, region) {
+  const dateKey = createHmac("sha256", `AWS4${secretKey}`).update(date).digest();
+  const dateRegionKey = createHmac("sha256", dateKey).update(region).digest();
+  const dateRegionServiceKey = createHmac("sha256", dateRegionKey).update("s3").digest();
+  return createHmac("sha256", dateRegionServiceKey).update("aws4_request").digest();
+}
+
 test("SQLite database adapter owns setup, query execution, and close lifecycle", async () => {
   await withTempDir(async (dir) => {
     const adapter = await createSqliteDatabaseAdapter(path.join(dir, "nested", "data.db"));
@@ -170,6 +212,7 @@ test("S3-compatible file storage adapter uses MinIO-style path URLs, SigV4 signi
       region: "eu-west-2",
       accessKey: "sporades",
       secretKey: "sporades-minio-local-secret",
+      namespace: "todo-island",
     });
 
     await adapter.writeFileVersion({
@@ -179,11 +222,11 @@ test("S3-compatible file storage adapter uses MinIO-style path URLs, SigV4 signi
     });
 
     assert.equal((await adapter.readFileVersion({ fileId: "file-1", version: "version-1" })).toString("utf8"), "hello minio");
-    assert.equal(objects.has("files/file-1/version-1"), true);
+    assert.equal(objects.has("capsules/todo-island/files/file-1/version-1"), true);
     assert.deepEqual(await adapter.checkHealth(), { ok: true, adapter: "s3-compatible" });
 
     await adapter.deleteFileVersion({ fileId: "file-1", version: "version-1" });
-    assert.equal(objects.has("files/file-1/version-1"), false);
+    assert.equal(objects.has("capsules/todo-island/files/file-1/version-1"), false);
     await assert.rejects(() => adapter.readFileVersion({ fileId: "file-1", version: "version-1" }), { code: "ENOENT" });
     assert.equal(adapter.close(), undefined);
 
@@ -192,10 +235,10 @@ test("S3-compatible file storage adapter uses MinIO-style path URLs, SigV4 signi
       [
         ["HEAD", "/sporades-files"],
         ["PUT", "/sporades-files"],
-        ["PUT", "/sporades-files/files/file-1/version-1"],
-        ["GET", "/sporades-files/files/file-1/version-1"],
-        ["DELETE", "/sporades-files/files/file-1/version-1"],
-        ["GET", "/sporades-files/files/file-1/version-1"],
+        ["PUT", "/sporades-files/capsules/todo-island/files/file-1/version-1"],
+        ["GET", "/sporades-files/capsules/todo-island/files/file-1/version-1"],
+        ["DELETE", "/sporades-files/capsules/todo-island/files/file-1/version-1"],
+        ["GET", "/sporades-files/capsules/todo-island/files/file-1/version-1"],
       ],
     );
     for (const request of requests) {
@@ -208,9 +251,38 @@ test("S3-compatible file storage adapter uses MinIO-style path URLs, SigV4 signi
   });
 });
 
-test("runtime selects S3-compatible file storage when MinIO service env is present", async () => {
+test("S3-compatible file storage adapter isolates capsules that share an object bucket", async () => {
+  await withFakeS3CompatibleService(async ({ endpoint, objects }) => {
+    const first = createS3CompatibleFileStorageAdapter({
+      endpoint,
+      bucket: "sporades-files",
+      region: "eu-west-2",
+      accessKey: "sporades",
+      secretKey: "sporades-minio-local-secret",
+      namespace: "alpha-capsule",
+    });
+    const second = createS3CompatibleFileStorageAdapter({
+      endpoint,
+      bucket: "sporades-files",
+      region: "eu-west-2",
+      accessKey: "sporades",
+      secretKey: "sporades-minio-local-secret",
+      namespace: "beta-capsule",
+    });
+
+    await first.writeFileVersion({ fileId: "same-file", version: "same-version", bytes: Buffer.from("alpha") });
+    await second.writeFileVersion({ fileId: "same-file", version: "same-version", bytes: Buffer.from("beta") });
+
+    assert.equal((await first.readFileVersion({ fileId: "same-file", version: "same-version" })).toString("utf8"), "alpha");
+    assert.equal((await second.readFileVersion({ fileId: "same-file", version: "same-version" })).toString("utf8"), "beta");
+    assert.equal(objects.get("capsules/alpha-capsule/files/same-file/same-version").toString("utf8"), "alpha");
+    assert.equal(objects.get("capsules/beta-capsule/files/same-file/same-version").toString("utf8"), "beta");
+  });
+});
+
+test("runtime selects S3-compatible file storage only when MinIO service env matches declared storage intent", async () => {
   await withFakeS3CompatibleService(async ({ endpoint }) => {
-    const adapter = await createRuntimeFileStorageAdapter({
+    const ambientOnly = await createRuntimeFileStorageAdapter({
       config: {},
       databasePath: "/tmp/sporades-data.db",
       serviceEnv: {
@@ -220,12 +292,29 @@ test("runtime selects S3-compatible file storage when MinIO service env is prese
         SPORADES_SERVICE_STORAGE_SECRET_KEY: "sporades-minio-local-secret",
         SPORADES_SERVICE_STORAGE_BUCKET: "sporades-files",
         SPORADES_SERVICE_STORAGE_REGION: "eu-west-2",
+        SPORADES_SERVICE_STORAGE_NAMESPACE: "todo-island",
+      },
+    });
+    assert.equal(ambientOnly.engine, "local");
+
+    const adapter = await createRuntimeFileStorageAdapter({
+      config: { services: { storage: { kind: "storage", engine: "minio" } } },
+      databasePath: "/tmp/sporades-data.db",
+      serviceEnv: {
+        SPORADES_SERVICE_STORAGE_ENGINE: "minio",
+        SPORADES_SERVICE_STORAGE_ENDPOINT: endpoint,
+        SPORADES_SERVICE_STORAGE_ACCESS_KEY: "sporades",
+        SPORADES_SERVICE_STORAGE_SECRET_KEY: "sporades-minio-local-secret",
+        SPORADES_SERVICE_STORAGE_BUCKET: "sporades-files",
+        SPORADES_SERVICE_STORAGE_REGION: "eu-west-2",
+        SPORADES_SERVICE_STORAGE_NAMESPACE: "todo-island",
       },
     });
 
     assert.equal(adapter.engine, "s3-compatible");
     assert.equal(adapter.bucket, "sporades-files");
     assert.equal(adapter.region, "eu-west-2");
+    assert.equal(adapter.namespace, "capsules/todo-island");
   });
 });
 
