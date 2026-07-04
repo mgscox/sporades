@@ -2372,6 +2372,10 @@ async function startContainerSession(options) {
   const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
   const existingBinding = await readContainerBinding(bindingPath);
   const updatePolicyMode = readBaseImageUpdatePolicy(config);
+  const containerCapsuleServices = await startCapsuleServices(capsuleServices, options.projectDir, {
+    connection: "container",
+    wait: true,
+  });
 
   if (existingBinding?.containerId) {
     runDockerCleanup(
@@ -2391,7 +2395,6 @@ async function startContainerSession(options) {
   }
 
   ensureLocalBaseImage(options.projectDir);
-  await startCapsuleServices(capsuleServices, options.projectDir);
 
   const envArgs = bundle.containerMounts.serverEnv
     ? [
@@ -2415,6 +2418,10 @@ async function startContainerSession(options) {
     : [];
   const bundleMountArgs = bundle.containerMounts.files.flatMap((mount) => ["--volume", formatMount(mount)]);
   const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
+  const capsuleServicesEnvArgs = Object.entries(containerCapsuleServices.env ?? {}).flatMap(([key, value]) => [
+    "--env",
+    `${key}=${value}`,
+  ]);
   const containerId = runDocker(
     [
       "run",
@@ -2439,6 +2446,7 @@ async function startContainerSession(options) {
       ...bundleMountArgs,
       ...envArgs,
       ...sealedEnvArgs,
+      ...capsuleServicesEnvArgs,
       "--volume",
       `${dataDir}:/app/data:rw`,
       "--workdir",
@@ -2464,7 +2472,17 @@ async function startContainerSession(options) {
 
   const url = `http://localhost:${port}`;
   if (options.json) {
-    writeResult({ ok: true, data: { url, port, containerId, restartPolicy: restartPolicyStatus("container") }, error: null });
+    writeResult({
+      ok: true,
+      data: {
+        url,
+        port,
+        containerId,
+        restartPolicy: restartPolicyStatus("container"),
+        ...(containerCapsuleServices.services ? { services: containerCapsuleServices.services } : {}),
+      },
+      error: null,
+    });
   } else {
     process.stdout.write(`Sporades container session started at ${url}\n`);
   }
@@ -4226,7 +4244,7 @@ function runDocker(args, cwd, message, hint) {
 
 async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
   if (!capsuleServices) {
-    return {};
+    return options.connection === "container" ? { env: {}, services: null } : {};
   }
   options.emit?.({
     event: "service",
@@ -4235,16 +4253,45 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
     engine: "libsql",
     statePath: path.join(CAPSULE_SERVICES_STATE_DIR, "database"),
   });
-  runDocker(
-    ["compose", "-f", capsuleServices.path, "up", "--detach"],
-    projectDir,
-    "Failed to start Capsule services.",
-    "Check Docker is running and supports `docker compose`, then retry the command.",
-  );
+  try {
+    runDocker(
+      ["compose", "-f", capsuleServices.path, "up", "--detach"],
+      projectDir,
+      "Failed to start Capsule services.",
+      "Check Docker is running and supports `docker compose`, then retry the command.",
+    );
+  } catch (error) {
+    if (options.connection === "container") {
+      error.diagnostics = {
+        ...(error.diagnostics ?? {}),
+        services: capsuleServicesJsonSummary(capsuleServices, "failed"),
+      };
+    }
+    throw error;
+  }
   if (!options.wait) {
     return {};
   }
-  const connection = await waitForCapsuleDatabaseService(capsuleServices, projectDir);
+  let connection;
+  try {
+    connection = await waitForCapsuleDatabaseService(capsuleServices, projectDir);
+  } catch (error) {
+    if (options.connection === "container") {
+      error.diagnostics = {
+        ...(error.diagnostics ?? {}),
+        services: capsuleServicesJsonSummary(capsuleServices, "failed"),
+      };
+    }
+    throw error;
+  }
+  if (options.connection === "container") {
+    return {
+      env: capsuleServicesContainerEnv(capsuleServices),
+      services: capsuleServicesJsonSummary(capsuleServices, "ready", {
+        includeContainerUrl: true,
+      }),
+    };
+  }
   options.emit?.({
     event: "service",
     service: "database",
@@ -4257,6 +4304,28 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
   return {
     SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
     SPORADES_SERVICE_DATABASE_URL: connection.url,
+  };
+}
+
+function capsuleServicesContainerEnv(capsuleServices) {
+  const service = capsuleServices.services.database;
+  return {
+    SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
+    SPORADES_SERVICE_DATABASE_URL: `http://${service.name}:${service.targetPort}`,
+  };
+}
+
+function capsuleServicesJsonSummary(capsuleServices, status, options = {}) {
+  const service = capsuleServices.services.database;
+  return {
+    database: {
+      status,
+      engine: "libsql",
+      network: capsuleServices.networks.services,
+      containerName: service.name,
+      statePath: path.join(CAPSULE_SERVICES_STATE_DIR, "database"),
+      ...(options.includeContainerUrl ? { url: `http://${service.name}:${service.targetPort}` } : {}),
+    },
   };
 }
 
