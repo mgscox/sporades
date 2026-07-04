@@ -1126,7 +1126,7 @@ async function startDevSession(options) {
       if (request.method === "GET" && requestUrl.pathname === "/__sporades/debug/logs") {
         writeJsonResponse(response, 200, {
           ok: true,
-          data: { source: "sqlite", entries: runtime.database.log.recent() },
+          data: { source: "sqlite", entries: await runtime.database.log.recent() },
           error: null,
         });
         return;
@@ -1144,7 +1144,7 @@ async function startDevSession(options) {
       if (request.method === "GET" && requestUrl.pathname === "/__sporades/debug/db/list") {
         writeJsonResponse(response, 200, {
           ok: true,
-          data: { tables: listDatabaseTables(runtime.database) },
+          data: { tables: await listDatabaseTables(runtime.database) },
           error: null,
         });
         return;
@@ -1153,7 +1153,7 @@ async function startDevSession(options) {
       if (request.method === "GET" && requestUrl.pathname === "/__sporades/debug/db/dump") {
         writeJsonResponse(response, 200, {
           ok: true,
-          data: { tables: dumpDatabase(runtime.database) },
+          data: { tables: await dumpDatabase(runtime.database) },
           error: null,
         });
         return;
@@ -1161,13 +1161,13 @@ async function startDevSession(options) {
 
       if (request.method === "POST" && requestUrl.pathname === "/__sporades/debug/db/query") {
         const body = await readJsonRequest(request);
-        writeJsonResponse(response, 200, runReadOnlyQuery(runtime.database, body.sql));
+        writeJsonResponse(response, 200, await runReadOnlyQuery(runtime.database, body.sql));
         return;
       }
 
       if (request.method === "POST" && requestUrl.pathname === "/__sporades/debug/auth/as") {
         const body = await readJsonRequest(request);
-        const result = simulateLocalIdentitySession(runtime.database, body);
+        const result = await simulateLocalIdentitySession(runtime.database, body);
         if (result.ok && body.client) {
           result.data.delivery = websocketHub.deliverAuthSession(body.client, result.data);
         }
@@ -2730,12 +2730,12 @@ async function inspectContainerDatabase(options) {
     sqlite.exec("PRAGMA query_only = ON");
     const database = { sqlite };
     if (options.subcommand === "list") {
-      return { ok: true, data: { source: "sqlite-file", tables: listDatabaseTables(database) }, error: null };
+      return { ok: true, data: { source: "sqlite-file", tables: await listDatabaseTables(database) }, error: null };
     }
     if (options.subcommand === "dump") {
-      return { ok: true, data: { source: "sqlite-file", tables: dumpDatabase(database) }, error: null };
+      return { ok: true, data: { source: "sqlite-file", tables: await dumpDatabase(database) }, error: null };
     }
-    return runReadOnlyQuery(database, options.sql);
+    return await runReadOnlyQuery(database, options.sql);
   } finally {
     sqlite.close();
   }

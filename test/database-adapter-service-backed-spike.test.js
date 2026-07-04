@@ -116,9 +116,9 @@ test("spike proof: a service-backed SQLite-compatible adapter can run representa
       );
       assert.equal(adapter.selectAppRowById(notesTable, "note-rolled-back"), null);
 
-      assert.deepEqual(listDatabaseTables(database).filter((name) => name === "notes"), ["notes"]);
-      assert.equal(dumpDatabase(database).find((table) => table.name === "notes").rows.length, 1);
-      assert.deepEqual(runReadOnlyQuery(database, "SELECT text FROM notes").data.rows, [{ text: "prove app table path" }]);
+      assert.deepEqual((await listDatabaseTables(database)).filter((name) => name === "notes"), ["notes"]);
+      assert.equal((await dumpDatabase(database)).find((table) => table.name === "notes").rows.length, 1);
+      assert.deepEqual((await runReadOnlyQuery(database, "SELECT text FROM notes")).data.rows, [{ text: "prove app table path" }]);
     } finally {
       adapter.close();
     }
