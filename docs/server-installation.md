@@ -1,5 +1,11 @@
 # Sporades Host Server Installation
 
+> For agent-led provisioning that creates or reuses a cloud server, installs Host
+> packages, copies the helper, and runs the Host bootstrap flow, 
+> instruct your agent to follow the common
+> contract in [host-provisioning.md](./agents/host-provisioning.md). This guide is
+> the manual installation reference for an already SSH-reachable Host server.
+
 This guide prepares a Linux Host server to run Sporades Hosted Capsules through
 the `sporades host ...` CLI commands.
 
@@ -30,13 +36,13 @@ Host server:
 - Docker available to run Hosted Capsule containers.
 - Caddy available to serve and reload generated routes.
 - `tar` available to extract pushed Capsule releases.
-- Ports 80 and 443 reachable from the public internet or from Cloudflare.
+- Ports 80 and 443 reachable from the public internet or via proxy (e.g. Cloudflare).
 - A DNS Hosted domain that resolves to the Host server. Wildcard DNS is expected
   for Capsule subdomains, for example `*.example.com`.
 - Caddy-managed automatic HTTPS by default, or Cloudflare wildcard Edge TLS in
   front of the Host server when using `--tls cloudflare-origin`.
 
-**Note:** Example bash commands to install server dependencies from a fresh Debian/ Ubuntu-type installation are detailed in section 2 below.
+> **Note:** Example bash commands to install server dependencies from a fresh Debian/ Ubuntu-type installation are detailed in section 2 below.
 
 When a Host profile is added with `--tls cloudflare-origin`, each Hosted domain
 must have readable Cloudflare origin certificate files at:
@@ -67,12 +73,15 @@ Caddy automatic HTTPS is the default TLS mode. In that mode, Caddy obtains and
 renews public certificates for generated Capsule routes, so ports 80 and 443
 must be reachable for ACME HTTP/TLS challenges.
 
-If the domain is proxied through Cloudflare, either:
-
-- Keep the default `--tls automatic` mode and allow Caddy to obtain certificates
-  through the proxied domain.
-- Use `--tls cloudflare-origin` and install a Cloudflare origin certificate and
-  key on the Host server before running `sporades host bootstrap`.
+> If the domain is proxied through Cloudflare, either:
+>
+> - Keep the default `--tls automatic` mode and allow Caddy to obtain certificates
+>   through the proxied domain.
+> - Use `--tls cloudflare-origin` and install a Cloudflare origin certificate and
+>   key on the Host server before running `sporades host bootstrap`.
+>
+> Ensure your client certificate policy is configured in the Cloudflare dashboard to
+> reflect the certificate provision method you are using to avoid connection errors.
 
 ## 2. Install Host Packages
 
@@ -240,7 +249,7 @@ Bootstrap prepares the Host server substrate for the selected Hosted domain:
 Bootstrap does not configure Cloudflare, create DNS records, create origin
 certificates, register Capsules, push releases, or start containers.
 
-## 7. Register and Push a Capsule
+## 7. Register and Push a Capsule - Smoke Test
 
 From a Sporades Capsule project directory:
 
@@ -416,3 +425,5 @@ updated instead of copying the tree into procedural install docs.
   container name and check the Caddy route reload result.
 - Caddy log retrieval fails: rerun `sporades host bootstrap --host <alias>` and
   check that Caddy is installed and running on the Host server.
+- Node warning that SQLite integration is experimental - this is expected and can 
+  be safely ignored. To avoid this use a plugin for an alternative database (roadmap feature)

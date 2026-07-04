@@ -12,6 +12,10 @@ sections must explain how to use that provider's local CLI and how to adapt an
 available MCP, SDK, Terraform provider, or other automation surface to the same
 output contract.
 
+## Host environment
+
+These instructions depend upon a Linux-like (Linux, MacOS, WSL) host environment.
+
 ## Common contract
 
 An implementation must accept these inputs, either as environment variables or
@@ -586,7 +590,7 @@ sporades host stats "$SPORADES_CAPSULE_SUBNAME" \
 - `sporades host health` fails before DNS is configured: finish DNS first. Host
   bootstrap can prepare files, but health checks need the public domain.
 - Caddy automatic HTTPS fails: confirm ports 80 and 443 reach the Host server
-  and the Hosted domain plus wildcard resolve to the server IP.
+  and the Hosted domain plus wildcard resolve to the server IP (double-check firewall rules).
 - `cloudflare-origin` bootstrap fails: install readable `origin.crt` and
   `origin.key` under `<remote-root>/hosts/<domain>/tls/`.
 - Release push fails: confirm `<remote-root>/incoming` exists and the SSH user
