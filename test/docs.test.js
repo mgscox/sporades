@@ -92,3 +92,12 @@ test("canonical docs describe Host stats without introducing host status", async
     assert.doesNotMatch(contents, /sporades host status/);
   }
 });
+
+test("user guide documents Capsule service reset without blanket Runtime deletion", async () => {
+  const userGuide = await readProjectFile("docs/user-guide.md");
+
+  assert.match(userGuide, /sporades dev status --json/);
+  assert.match(userGuide, /sporades deploy reset --json/);
+  assert.match(userGuide, /does not remove\s+shared third-party service images/);
+  assert.doesNotMatch(userGuide, /rm -rf \.sporades/);
+});

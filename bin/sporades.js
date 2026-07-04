@@ -42,7 +42,9 @@ import {
 } from "../src/server-runtime-source.js";
 import { scaffoldFiles } from "../src/templates/scaffold-template.js";
 import {
+  CAPSULE_SERVICES_COMPOSE_FILE,
   CAPSULE_SERVICES_STATE_DIR,
+  capsuleServicesComposeModel,
   validateCapsuleServicesConfig,
   writeCapsuleServicesCompose,
 } from "../src/capsule-services.js";
@@ -113,7 +115,7 @@ async function main() {
   }
 
   if (command === "dev") {
-    await startDevSession(parseDevArgs(args));
+    await manageLocalLifecycle("dev", parseDevArgs(args));
     return;
   }
 
@@ -133,7 +135,7 @@ async function main() {
   }
 
   if (command === "deploy") {
-    await startContainerSession(parseDeployArgs(args));
+    await manageLocalLifecycle("deploy", parseDeployArgs(args));
     return;
   }
 
@@ -239,15 +241,18 @@ function parseCreateArgs(args) {
 }
 
 function parseDevArgs(args) {
+  const lifecycleCommands = new Set(["status", "stop", "reset"]);
+  const subcommand = lifecycleCommands.has(args[0]) ? args[0] : "start";
+  const rest = subcommand === "start" ? args : args.slice(1);
   let port = null;
   let json = false;
   let publicDev = false;
 
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
 
-    if (arg === "--port") {
-      const value = Number.parseInt(readFlagValue(args, ++index, "--port"), 10);
+    if (arg === "--port" && subcommand === "start") {
+      const value = Number.parseInt(readFlagValue(rest, ++index, "--port"), 10);
       if (Number.isNaN(value) || value < 0) {
         throw commandError("Invalid dev port.", "Pass --port <number>.");
       }
@@ -258,14 +263,15 @@ function parseDevArgs(args) {
       json = true;
       continue;
     }
-    if (arg === "--public") {
+    if (arg === "--public" && subcommand === "start") {
       publicDev = true;
       continue;
     }
-    throw commandError(`Unknown flag: ${arg}`, "Use `sporades dev --port <number> --public --json`.");
+    throw commandError(`Unknown flag: ${arg}`, "Use `sporades dev [status|stop|reset] --json`.");
   }
 
   return {
+    subcommand,
     port,
     json,
     publicDev,
@@ -274,29 +280,33 @@ function parseDevArgs(args) {
 }
 
 function parseDeployArgs(args) {
+  const lifecycleCommands = new Set(["status", "stop", "reset"]);
+  const subcommand = lifecycleCommands.has(args[0]) ? args[0] : "start";
+  const rest = subcommand === "start" ? args : args.slice(1);
   let port = null;
   let json = false;
   let force = false;
 
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
+  for (let index = 0; index < rest.length; index += 1) {
+    const arg = rest[index];
 
-    if (arg === "--port") {
-      port = readPort(readFlagValue(args, ++index, "--port"));
+    if (arg === "--port" && subcommand === "start") {
+      port = readPort(readFlagValue(rest, ++index, "--port"));
       continue;
     }
     if (arg === "--json") {
       json = true;
       continue;
     }
-    if (arg === "--force") {
+    if (arg === "--force" && subcommand === "start") {
       force = true;
       continue;
     }
-    throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy --port <number> --force --json`.");
+    throw commandError(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|reset] --json`.");
   }
 
   return {
+    subcommand,
     port,
     force,
     json,
@@ -1022,6 +1032,26 @@ async function createProject(options) {
   if (options.git) {
     run("git", ["init"], options.projectDir, "Git initialization failed.", "Run `git init` inside the scaffold.");
   }
+}
+
+async function manageLocalLifecycle(surface, options) {
+  if (options.subcommand === "status") {
+    await printLocalCapsuleServiceStatus(options);
+    return;
+  }
+  if (options.subcommand === "stop") {
+    await stopLocalCapsuleServices(options);
+    return;
+  }
+  if (options.subcommand === "reset") {
+    await resetLocalCapsuleServices(options);
+    return;
+  }
+  if (surface === "dev") {
+    await startDevSession(options);
+    return;
+  }
+  await startContainerSession(options);
 }
 
 async function startDevSession(options) {
@@ -4240,6 +4270,178 @@ function runDocker(args, cwd, message, hint) {
     throw commandError(message, hint);
   }
   return result.stdout.trim();
+}
+
+async function printLocalCapsuleServiceStatus(options) {
+  const config = await readProjectConfig(options.projectDir);
+  const capsuleServices = localCapsuleServicesFromConfig(config, options.projectDir);
+  const data = { services: await localCapsuleServicesStatus(capsuleServices, options.projectDir) };
+
+  if (options.json) {
+    writeResult({ ok: true, data, error: null });
+    return;
+  }
+  for (const [name, service] of Object.entries(data.services)) {
+    process.stdout.write(`${name}: ${service.status}${service.health ? ` (${service.health})` : ""}\n`);
+  }
+}
+
+function localCapsuleServicesFromConfig(config, projectDir) {
+  if (!config.services?.database) {
+    validateCapsuleServicesConfig(config.services);
+    return null;
+  }
+  validateCapsuleServicesConfig(config.services);
+  return {
+    path: path.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
+    relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
+    ...capsuleServicesComposeModel(config, projectDir),
+  };
+}
+
+async function stopLocalCapsuleServices(options) {
+  const config = await readProjectConfig(options.projectDir);
+  const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
+  const services = {};
+  if (capsuleServices) {
+    runDocker(
+      ["compose", "-f", capsuleServices.path, "down", "--remove-orphans"],
+      options.projectDir,
+      "Failed to stop Capsule services.",
+      "Check Docker is running and supports `docker compose down`, then retry the command.",
+    );
+    services.database = {
+      ...capsuleServicesJsonSummary(capsuleServices, "stopped").database,
+    };
+  }
+
+  if (options.json) {
+    writeResult({ ok: true, data: { services }, error: null });
+    return;
+  }
+  process.stdout.write("Capsule services stopped.\n");
+}
+
+async function resetLocalCapsuleServices(options) {
+  const config = await readProjectConfig(options.projectDir);
+  validateCapsuleServicesConfig(config.services);
+  const capsuleServices = config.services?.database ? await writeCapsuleServicesCompose(options.projectDir, config) : null;
+  const services = {};
+  if (capsuleServices) {
+    runDocker(
+      ["compose", "-f", capsuleServices.path, "down", "--remove-orphans", "--volumes"],
+      options.projectDir,
+      "Failed to reset Capsule services.",
+      "Check Docker is running and supports `docker compose down`, then retry the command.",
+    );
+    await rm(capsuleServices.services.database.stateDir, { recursive: true, force: true });
+    const removedImages = removeSporadesOwnedCapsuleImages(capsuleServices, options.projectDir);
+    services.database = {
+      ...capsuleServicesJsonSummary(capsuleServices, "reset").database,
+      removedImages,
+    };
+  }
+
+  if (options.json) {
+    writeResult({ ok: true, data: { services }, error: null });
+    return;
+  }
+  process.stdout.write("Capsule service state reset.\n");
+}
+
+async function localCapsuleServicesStatus(capsuleServices, projectDir) {
+  if (!capsuleServices) {
+    return {};
+  }
+  const service = capsuleServices.services.database;
+  const diagnostics = [];
+  let runtime = { state: "unknown", health: null };
+  try {
+    runtime = capsuleServiceStatus(capsuleServices, projectDir, service.name);
+  } catch (error) {
+    diagnostics.push({
+      code: "compose-status-unavailable",
+      message: error.message,
+    });
+  }
+  return {
+    database: {
+      declared: true,
+      engine: "libsql",
+      status: runtime.state || "unknown",
+      health: runtime.health,
+      network: {
+        name: capsuleServices.networks.services,
+        exists: dockerResourceExists(["network", "inspect", capsuleServices.networks.services], projectDir),
+      },
+      volume: {
+        type: "bind",
+        path: path.join(CAPSULE_SERVICES_STATE_DIR, "database"),
+        exists: await pathExists(service.stateDir),
+      },
+      containerName: service.name,
+      composeFile: capsuleServices.relativePath,
+      diagnostics,
+    },
+  };
+}
+
+function removeSporadesOwnedCapsuleImages(capsuleServices, projectDir) {
+  const images = new Set();
+  for (const args of [
+    [
+      "image",
+      "ls",
+      "--quiet",
+      "--filter",
+      "label=com.sporades.managed=true",
+      "--filter",
+      `label=com.sporades.project=${capsuleServices.projectSlug}`,
+    ],
+    ["image", "ls", "--quiet", `sporades-${capsuleServices.projectSlug}-*`],
+  ]) {
+    for (const image of dockerList(args, projectDir)) {
+      images.add(image);
+    }
+  }
+  if (images.size > 0) {
+    runDocker(
+      ["rmi", ...images],
+      projectDir,
+      "Failed to remove Sporades-owned Capsule images.",
+      "Check Docker is running, then retry the reset command.",
+    );
+  }
+  return [...images];
+}
+
+function dockerList(args, cwd) {
+  const result = spawnSync("docker", args, { cwd, encoding: "utf8" });
+  if (result.status !== 0) {
+    return [];
+  }
+  return result.stdout
+    .trim()
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function dockerResourceExists(args, cwd) {
+  const result = spawnSync("docker", args, { cwd, encoding: "utf8" });
+  return result.status === 0;
+}
+
+async function pathExists(targetPath) {
+  try {
+    await lstat(targetPath);
+    return true;
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
 }
 
 async function startCapsuleServices(capsuleServices, projectDir, options = {}) {

@@ -1237,14 +1237,30 @@ Do not put secrets in `client/`, `shared/`, `index.html`, or `sporades.json`.
 
 ### Reset Local Runtime State
 
-Stop any running Dev or Container session, then remove `.sporades/`:
+Stop generated Capsule services without deleting persisted service data:
 
 ```sh
-rm -rf .sporades
+sporades dev stop --json
+sporades deploy stop --json
 ```
 
-Start `sporades dev` again to recreate runtime state from the current Capsule
-definition.
+Inspect generated Capsule service state with structured JSON:
+
+```sh
+sporades dev status --json
+sporades deploy status --json
+```
+
+Reset generated Capsule service state, including Compose networks, volumes,
+orphans, and Sporades-owned Capsule service data for the current project:
+
+```sh
+sporades dev reset --json
+sporades deploy reset --json
+```
+
+Reset only removes Sporades-managed Capsule service state. It does not remove
+shared third-party service images such as database images.
 
 ## Troubleshooting
 

@@ -107,6 +107,23 @@ if (call.args[0] === "compose" && call.args.includes("port")) {
   process.stdout.write(process.env.FAKE_DOCKER_COMPOSE_PORT_OUTPUT + "\\n");
   process.exit(0);
 }
+if (call.args[0] === "compose" && call.args.includes("down")) {
+  process.exit(Number(process.env.FAKE_DOCKER_COMPOSE_DOWN_STATUS ?? "0"));
+}
+if (call.args[0] === "network" && call.args[1] === "inspect") {
+  process.exit(Number(process.env.FAKE_DOCKER_NETWORK_INSPECT_STATUS ?? "0"));
+}
+if (call.args[0] === "image" && call.args[1] === "ls") {
+  if (call.args.includes("ghcr.io/tursodatabase/libsql-server:v0.24.32")) {
+    process.stdout.write("third-party-libsql\\n");
+    process.exit(0);
+  }
+  process.stdout.write(process.env.FAKE_DOCKER_SPORADES_IMAGES ?? "");
+  process.exit(0);
+}
+if (call.args[0] === "rmi") {
+  process.exit(0);
+}
 if (call.args[0] === "run") {
   process.stdout.write(process.env.FAKE_DOCKER_CONTAINER_ID + "\\n");
 }
@@ -125,8 +142,11 @@ if (call.args[0] === "run") {
       FAKE_DOCKER_PULL_STATUS: String(options.pullStatus ?? 0),
       FAKE_DOCKER_BUILD_STATUS: String(options.buildStatus ?? 0),
       FAKE_DOCKER_COMPOSE_UP_STATUS: String(options.composeUpStatus ?? 0),
+      FAKE_DOCKER_COMPOSE_DOWN_STATUS: String(options.composeDownStatus ?? 0),
       FAKE_DOCKER_COMPOSE_PS_OUTPUT: options.composePsOutput ?? JSON.stringify({ State: "running", Health: "" }),
       FAKE_DOCKER_COMPOSE_PORT_OUTPUT: options.composePortOutput ?? "127.0.0.1:49161",
+      FAKE_DOCKER_NETWORK_INSPECT_STATUS: String(options.networkInspectStatus ?? 0),
+      FAKE_DOCKER_SPORADES_IMAGES: options.sporadesImages ?? "",
     },
     async calls() {
       const raw = await readFile(logPath, "utf8");
@@ -2043,6 +2063,122 @@ test("sporades deploy keeps Capsule service Compose names stable for a project",
       assert.match(firstCompose, /sporades-team-notes-database:/);
       assert.match(firstCompose, /service-lab\/\.sporades\/services\/database":\/var\/lib\/sqld:rw/);
     });
+  });
+});
+
+test("sporades deploy status reports declared Capsule service and generated state as JSON", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.services = { database: { kind: "database", engine: "libsql" } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await mkdir(path.join(projectDir, ".sporades", "services", "database"), { recursive: true });
+    const docker = await installFakeDocker(dir, "container-status", {
+      composePsOutput: JSON.stringify({ State: "running", Health: "healthy" }),
+    });
+
+    const status = await runCli(["deploy", "status", "--json"], { cwd: projectDir, env: docker.env });
+
+    assert.equal(status.code, 0, status.stderr);
+    assert.deepEqual(JSON.parse(status.stdout), {
+      ok: true,
+      data: {
+        services: {
+          database: {
+            declared: true,
+            engine: "libsql",
+            status: "running",
+            health: "healthy",
+            network: {
+              name: "sporades-todo-island-services",
+              exists: true,
+            },
+            volume: {
+              type: "bind",
+              path: path.join(".sporades", "services", "database"),
+              exists: true,
+            },
+            containerName: "sporades-todo-island-database",
+            composeFile: path.join(".sporades", "compose", "capsule-services.compose.yml"),
+            diagnostics: [],
+          },
+        },
+      },
+      error: null,
+    });
+  });
+});
+
+test("sporades dev stop stops Capsule services without deleting persisted service data", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.services = { database: { kind: "database", engine: "libsql" } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const stateDir = path.join(projectDir, ".sporades", "services", "database");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(path.join(stateDir, "kept.txt"), "still here\n");
+    const docker = await installFakeDocker(dir);
+
+    const stop = await runCli(["dev", "stop", "--json"], { cwd: projectDir, env: docker.env });
+
+    assert.equal(stop.code, 0, stop.stderr);
+    assert.equal(await readFile(path.join(stateDir, "kept.txt"), "utf8"), "still here\n");
+    assert.deepEqual(JSON.parse(stop.stdout).data.services.database.status, "stopped");
+    const calls = await docker.calls();
+    const downCall = calls.find((call) => call.args[0] === "compose" && call.args.includes("down"));
+    assert.deepEqual(downCall.args.slice(3), ["down", "--remove-orphans"]);
+  });
+});
+
+test("sporades deploy reset removes generated Capsule service state and orphans without third-party images", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.services = { database: { kind: "database", engine: "libsql" } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const stateDir = path.join(projectDir, ".sporades", "services", "database");
+    await mkdir(stateDir, { recursive: true });
+    await writeFile(path.join(stateDir, "removed.txt"), "gone\n");
+    const docker = await installFakeDocker(dir, "container-reset", {
+      sporadesImages: "sporades-owned-image\n",
+    });
+
+    const reset = await runCli(["deploy", "reset", "--json"], { cwd: projectDir, env: docker.env });
+
+    assert.equal(reset.code, 0, reset.stderr);
+    await assert.rejects(readFile(path.join(stateDir, "removed.txt"), "utf8"), { code: "ENOENT" });
+    assert.deepEqual(JSON.parse(reset.stdout).data.services.database, {
+      status: "reset",
+      engine: "libsql",
+      network: "sporades-todo-island-services",
+      containerName: "sporades-todo-island-database",
+      statePath: path.join(".sporades", "services", "database"),
+      removedImages: ["sporades-owned-image"],
+    });
+    const calls = await docker.calls();
+    const downCall = calls.find((call) => call.args[0] === "compose" && call.args.includes("down"));
+    assert.deepEqual(downCall.args.slice(3), ["down", "--remove-orphans", "--volumes"]);
+    assert(calls.some((call) => call.args[0] === "rmi" && call.args.includes("sporades-owned-image")));
+    assert.equal(calls.some((call) => call.args[0] === "rmi" && call.args.includes("third-party-libsql")), false);
   });
 });
 
