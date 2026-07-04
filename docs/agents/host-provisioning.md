@@ -277,15 +277,18 @@ cat sporades-host.env
 Use a Hetzner Cloud MCP when one is available and exposes equivalent server and
 SSH-key operations. The MCP adapter must:
 
-1. Find or create a project SSH key named `SPORADES_SSH_KEY_NAME` from
-   `SPORADES_SSH_PUBLIC_KEY`.
-2. Find or create a server named `SPORADES_SERVER_NAME`.
-3. Use image `ubuntu-24.04` unless the caller explicitly sets a supported
+1. Find an existing project SSH key named `SPORADES_SSH_KEY_NAME`.
+2. If no name match exists, compute the local `SPORADES_SSH_PUBLIC_KEY`
+   fingerprint and reuse any existing project SSH key with the same fingerprint.
+3. Create a project SSH key named `SPORADES_SSH_KEY_NAME` only when neither the
+   requested name nor the local public key fingerprint already exists.
+4. Find or create a server named `SPORADES_SERVER_NAME`.
+5. Use image `ubuntu-24.04` unless the caller explicitly sets a supported
    replacement.
-4. Use `SPORADES_REGION` as the Hetzner location and `SPORADES_SERVER_SIZE` as
+6. Use `SPORADES_REGION` as the Hetzner location and `SPORADES_SERVER_SIZE` as
    the server type.
-5. Read the server public IPv4 address.
-6. Write `sporades-host.env` with the common contract fields.
+7. Read the server public IPv4 address.
+8. Write `sporades-host.env` with the common contract fields.
 
 If there is no Hetzner Cloud MCP, use `hcloud`. Authenticate with either:
 
@@ -312,7 +315,11 @@ server. Use `--location`; do not use the older datacenter flag for new
 automation. Hetzner capacity and type availability varies by account, location,
 and date. If server creation returns `resource_unavailable` or
 `unsupported location for server type`, try another small type/location pair
-before giving up.
+before giving up. Hetzner enforces SSH-key uniqueness by public key, so the
+script is safe to retry when the same local public key already exists under a
+different project key name: it reuses the requested name first, falls back to a
+matching local public key fingerprint, and creates a new project key only when
+no existing key matches either check.
 
 Default image: `ubuntu-24.04`.
 Default smoke-test fallbacks:
@@ -359,10 +366,28 @@ if ! command -v hcloud >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! hcloud ssh-key describe "$SPORADES_SSH_KEY_NAME" >/dev/null 2>&1; then
+key_ref="$(
+  hcloud ssh-key list -o columns=id,name,fingerprint -o noheader |
+    awk -v name="$SPORADES_SSH_KEY_NAME" '$2 == name { print $1; exit }'
+)"
+
+if [ -z "$key_ref" ]; then
+  key_fingerprint="$(
+    ssh-keygen -l -E md5 -f "$SPORADES_SSH_PUBLIC_KEY" |
+      awk '{ print $2 }' |
+      sed 's/^MD5://'
+  )"
+  key_ref="$(
+    hcloud ssh-key list -o columns=id,name,fingerprint -o noheader |
+      awk -v fingerprint="$key_fingerprint" '$3 == fingerprint { print $1; exit }'
+  )"
+fi
+
+if [ -z "$key_ref" ]; then
   hcloud ssh-key create \
     --name "$SPORADES_SSH_KEY_NAME" \
     --public-key-from-file "$SPORADES_SSH_PUBLIC_KEY" >/dev/null
+  key_ref="$SPORADES_SSH_KEY_NAME"
 fi
 
 server_id="$(
@@ -382,7 +407,7 @@ if [ -z "$server_id" ]; then
       --type "$server_type" \
       --image ubuntu-24.04 \
       --location "$location" \
-      --ssh-key "$SPORADES_SSH_KEY_NAME" \
+      --ssh-key "$key_ref" \
       --start-after-create >/dev/null; then
       created="yes"
       break
