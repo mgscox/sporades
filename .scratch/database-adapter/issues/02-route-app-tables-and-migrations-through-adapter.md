@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Route App Tables And Migrations Through Adapter
 
@@ -12,13 +12,12 @@ Move app table creation, schema metadata, additive migrations, reference checks,
 
 ## Acceptance criteria
 
-- [ ] App table creation and additive migrations execute through the Database adapter.
-- [ ] Query, insert, update, delete, reference validation, and row serialization behavior remains compatible.
-- [ ] Unsupported schema changes still produce structured errors and hints.
-- [ ] `ctx.db` remains unchanged for Capsule handlers.
-- [ ] Tests cover fresh schema, additive table/field migrations, unsupported changes, references, and query/mutation behavior.
+- [x] App table creation and additive migrations execute through the Database adapter.
+- [x] Query, insert, update, delete, reference validation, and row serialization behavior remains compatible.
+- [x] Unsupported schema changes still produce structured errors and hints.
+- [x] `ctx.db` remains unchanged for Capsule handlers.
+- [x] Tests cover fresh schema, additive table/field migrations, unsupported changes, references, and query/mutation behavior.
 
 ## Blocked by
 
 - .scratch/database-adapter/issues/01-extract-sqlite-database-adapter.md
-
