@@ -398,12 +398,12 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     serverEnv,
     dataDir: path.dirname(databasePath),
   });
-  sqlite.ensureSystemTable();
-  sqlite.ensureAuthStorage(database.authConfig);
-  sqlite.ensureFileStorage();
-  sqlite.ensureLogStorage();
+  await sqlite.ensureSystemTable();
+  await sqlite.ensureAuthStorage(database.authConfig);
+  await sqlite.ensureFileStorage();
+  await sqlite.ensureLogStorage();
   assertValidReferenceTargets(schema);
-  sqlite.migrateAppSchema(schema);
+  await sqlite.migrateAppSchema(schema);
 
   return database;
 }
@@ -827,12 +827,14 @@ function createRuntimeLogSink(options) {
         serverEnv: options.serverEnv,
       });
       appendFileSync(logPath, `${JSON.stringify(event)}\n`);
-      options.database.insertLogIndexEvent(event);
-      options.database.pruneLogIndex(logIndexLimit(options.config));
+      const inserted = options.database.insertLogIndexEvent(event);
+      const indexed = isPromiseLike(inserted)
+        ? inserted.then(() => options.database.pruneLogIndex(logIndexLimit(options.config)))
+        : options.database.pruneLogIndex(logIndexLimit(options.config));
       if (process.env.SPORADES_LOG_STDOUT === "1") {
         process.stdout.write(`${JSON.stringify(event)}\n`);
       }
-      return event;
+      return isPromiseLike(indexed) ? indexed.then(() => event) : event;
     },
     recent(limit = logIndexLimit(options.config)) {
       return options.database.readRecentLogEvents(limit);
@@ -1897,8 +1899,8 @@ export async function handleFileHttpRoute(database, request, response, websocket
   const privateMatch = requestUrl.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
   if (privateMatch && request.method === "GET") {
     const token = request.headers["x-sporades-session-token"];
-    const session = resolveAnonymousSession(database, token);
-    const row = fileRowForOwner(database, privateMatch[1], session.auth.userId);
+    const session = await resolveAnonymousSession(database, token);
+    const row = await fileRowForOwner(database, privateMatch[1], session.auth.userId);
     if (!row || row.version !== requestUrl.searchParams.get("v")) {
       writeNotFound(response);
       return true;
@@ -1909,7 +1911,7 @@ export async function handleFileHttpRoute(database, request, response, websocket
 
   const publicMatch = requestUrl.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
   if (publicMatch && request.method === "GET") {
-    const publicRow = database.sqlite.selectPublicFileRow(publicMatch[1]);
+    const publicRow = await database.sqlite.selectPublicFileRow(publicMatch[1]);
     if (
       !publicRow ||
       publicRow.revokedAt ||
@@ -1947,7 +1949,7 @@ export async function routeRuntimeHealth(database, request, response) {
 
 async function createRuntimeHealthResult(database) {
   const checks = {
-    sqlite: checkRuntimeSqlite(database),
+    sqlite: await checkRuntimeSqlite(database),
     fileStorage: await checkRuntimeFileStorage(database),
   };
   const ready = checks.sqlite.ok && checks.fileStorage.ok;
@@ -1966,8 +1968,8 @@ async function createRuntimeHealthResult(database) {
   };
 }
 
-export function checkRuntimeSqlite(database) {
-  return (database.adapter ?? database.sqlite).checkHealth();
+export async function checkRuntimeSqlite(database) {
+  return await (database.adapter ?? database.sqlite).checkHealth();
 }
 
 async function checkRuntimeFileStorage(database) {
@@ -2079,7 +2081,7 @@ function contentTypeForFile(type) {
   return type || "application/octet-stream";
 }
 
-function createPendingFileUpload(database, auth, message) {
+export async function createPendingFileUpload(database, auth, message) {
   const input = message.file ?? {};
   const size = Number(input.size ?? 0);
   if (!Number.isFinite(size) || size < 0) {
@@ -2100,16 +2102,16 @@ function createPendingFileUpload(database, auth, message) {
 
   const now = new Date().toISOString();
   const bucket =
-    database.sqlite.findFileBucket(auth.userId, "default") ??
-    (() => {
+    (await database.sqlite.findFileBucket(auth.userId, "default")) ??
+    (await (async () => {
       const bucket = { id: randomUUID(), ownerId: auth.userId, name: "default", createdAt: now };
-      database.sqlite.createFileBucket(bucket);
+      await database.sqlite.createFileBucket(bucket);
       return bucket;
-    })();
+    })());
 
   const replacing = message.replace === true;
   const fileId = replacing ? String(message.fileId ?? "") : randomUUID();
-  const existing = replacing ? fileRowForOwner(database, fileId, auth.userId) : null;
+  const existing = replacing ? await fileRowForOwner(database, fileId, auth.userId) : null;
   if (replacing && !existing) {
     return {
       ok: false,
@@ -2122,10 +2124,10 @@ function createPendingFileUpload(database, auth, message) {
   const name = String(input.name ?? "upload");
   const type = String(input.type ?? "application/octet-stream");
   if (existing) {
-    database.sqlite.updatePendingFileRow({ id: fileId, name, type, size, version, status: "pending", updatedAt: now });
-    database.sqlite.revokePublicFileUrlsForFile(fileId, now);
+    await database.sqlite.updatePendingFileRow({ id: fileId, name, type, size, version, status: "pending", updatedAt: now });
+    await database.sqlite.revokePublicFileUrlsForFile(fileId, now);
   } else {
-    database.sqlite.insertFileRow({
+    await database.sqlite.insertFileRow({
       id: fileId,
       ownerId: auth.userId,
       bucketId: bucket.id,
@@ -2139,7 +2141,7 @@ function createPendingFileUpload(database, auth, message) {
       updatedAt: now,
     });
   }
-  database.sqlite.insertFileUpload({ id: uploadId, fileId, ownerId: auth.userId, version, expectedSize: size, createdAt: now });
+  await database.sqlite.insertFileUpload({ id: uploadId, fileId, ownerId: auth.userId, version, expectedSize: size, createdAt: now });
 
   return {
     ok: true,
@@ -2147,14 +2149,14 @@ function createPendingFileUpload(database, auth, message) {
       uploadUrl: `/__sporades/uploads/${uploadId}`,
       method: "PUT",
       headers: {},
-      file: fileMetadataFromRow(database.sqlite.selectFileById(fileId)),
+      file: fileMetadataFromRow(await database.sqlite.selectFileById(fileId)),
     },
     error: null,
   };
 }
 
 async function completePendingFileUpload(database, uploadId, request, websocketHub = null) {
-  const upload = database.sqlite.selectFileUpload(uploadId);
+  const upload = await database.sqlite.selectFileUpload(uploadId);
   if (!upload) {
     return {
       ok: false,
@@ -2175,9 +2177,9 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
     await mkdir(fileStoragePath(database, upload.fileId), { recursive: true });
     await writeFile(fileVersionPath(database, upload.fileId, upload.version), bytes);
     const now = new Date().toISOString();
-    database.sqlite.completeFileUpload(upload, bytes.length, now);
-    database.sqlite.deleteFileUpload(uploadId);
-    const file = fileMetadataFromRow(database.sqlite.selectFileById(upload.fileId));
+    await database.sqlite.completeFileUpload(upload, bytes.length, now);
+    await database.sqlite.deleteFileUpload(uploadId);
+    const file = fileMetadataFromRow(await database.sqlite.selectFileById(upload.fileId));
     websocketHub?.notifyFileEvent?.(upload.ownerId, {
       type: "file.upload.complete",
       file,
@@ -2203,8 +2205,8 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
   }
 }
 
-function getPrivateFileUrl(database, auth, fileId) {
-  const row = fileRowForOwner(database, fileId, auth.userId);
+async function getPrivateFileUrl(database, auth, fileId) {
+  const row = await fileRowForOwner(database, fileId, auth.userId);
   if (!row) {
     return {
       ok: false,
@@ -2221,8 +2223,8 @@ function getPrivateFileUrl(database, auth, fileId) {
   };
 }
 
-function createPublicFileUrl(database, auth, fileId, options = {}) {
-  const row = fileRowForOwner(database, fileId, auth.userId);
+async function createPublicFileUrl(database, auth, fileId, options = {}) {
+  const row = await fileRowForOwner(database, fileId, auth.userId);
   if (!row) {
     return {
       ok: false,
@@ -2235,7 +2237,7 @@ function createPublicFileUrl(database, auth, fileId, options = {}) {
   }
   const id = randomUUID();
   const now = new Date().toISOString();
-  database.sqlite.insertPublicFileUrl({
+  await database.sqlite.insertPublicFileUrl({
     id,
     fileId: row.id,
     ownerId: auth.userId,
@@ -2258,9 +2260,9 @@ function createPublicFileUrl(database, auth, fileId, options = {}) {
   };
 }
 
-function revokePublicFileUrl(database, auth, publicUrlId) {
+async function revokePublicFileUrl(database, auth, publicUrlId) {
   const now = new Date().toISOString();
-  const result = database.sqlite.revokePublicFileUrl(publicUrlId, auth.userId, now);
+  const result = await database.sqlite.revokePublicFileUrl(publicUrlId, auth.userId, now);
   if (result.changes === 0) {
     return {
       ok: false,
@@ -2275,7 +2277,7 @@ function revokePublicFileUrl(database, auth, publicUrlId) {
 }
 
 async function deletePrivateFile(database, auth, fileId) {
-  const row = fileRowForOwner(database, fileId, auth.userId);
+  const row = await fileRowForOwner(database, fileId, auth.userId);
   if (!row) {
     return {
       ok: false,
@@ -2283,8 +2285,8 @@ async function deletePrivateFile(database, auth, fileId) {
     };
   }
   const now = new Date().toISOString();
-  database.sqlite.markFileDeleted(row.id, now);
-  database.sqlite.revokePublicFileUrlsForFile(row.id, now);
+  await database.sqlite.markFileDeleted(row.id, now);
+  await database.sqlite.revokePublicFileUrlsForFile(row.id, now);
   await removeFileVersionBestEffort(database, row.id, row.version);
   return {
     ok: true,
@@ -2327,8 +2329,8 @@ function validatePublicUrlExpiry(options) {
   return { ok: true, expiresAt: expiresAt.toISOString() };
 }
 
-function fileRowForOwner(database, fileId, ownerId) {
-  return database.sqlite.fileRowForOwner(fileId, ownerId);
+async function fileRowForOwner(database, fileId, ownerId) {
+  return await database.sqlite.fileRowForOwner(fileId, ownerId);
 }
 
 function fileMetadataFromRow(row) {
@@ -2379,7 +2381,7 @@ async function createEndpointContext(database, requestUrl, request) {
     ]),
   );
   const query = Object.fromEntries(requestUrl.searchParams.entries());
-  const session = resolveAnonymousSession(database, readEndpointSessionToken(headers, query));
+  const session = await resolveAnonymousSession(database, readEndpointSessionToken(headers, query));
   const context = {
     auth: session.auth,
     env: database.serverEnv,
@@ -2476,70 +2478,92 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
         id: randomUUID(),
         createdAt: now,
         updatedAt: now,
-        ...Object.fromEntries(
-          table.fields.map((field) => [
-            field.name,
-            fieldValueForWrite(
-              database,
-              field,
-              Object.hasOwn(values, field.name) && values[field.name] !== undefined
-                ? values[field.name]
-                : field.defaultValue,
-            ),
-          ]),
-        ),
       };
-      const columns = Object.keys(row);
-      const next = deserializeRow(table, row);
-      return runTableWriteWithAcl(database, table, "insert", null, next, contextGetter, () => {
-        database.sqlite.insertAppRow(table, Object.fromEntries(columns.map((column) => [column, row[column]])));
-        database.rowCache.clear();
-        return next;
-      });
+      const fieldValues = table.fields.map((field) =>
+        fieldValueForWrite(
+          database,
+          field,
+          Object.hasOwn(values, field.name) && values[field.name] !== undefined ? values[field.name] : field.defaultValue,
+        ),
+      );
+      const finish = (resolvedValues) => {
+        for (const [index, field] of table.fields.entries()) {
+          row[field.name] = resolvedValues[index];
+        }
+        const columns = Object.keys(row);
+        const next = deserializeRow(table, row);
+        return runTableWriteWithAcl(database, table, "insert", null, next, contextGetter, () => {
+          const result = database.sqlite.insertAppRow(table, Object.fromEntries(columns.map((column) => [column, row[column]])));
+          database.rowCache.clear();
+          return thenIfPromise(result, () => next);
+        });
+      };
+      const operation = fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finish) : finish(fieldValues);
+      if (isPromiseLike(operation)) {
+        contextGetter?.()?.__pendingAclWrites?.push(operation);
+      }
+      return operation;
     },
     update(id, values) {
-      const existing = database.sqlite.selectAppRowById(table, id);
-      if (!existing) {
-        return null;
-      }
-      const previous = deserializeRow(table, existing);
-      const fieldsToUpdate = table.fields.filter((field) => Object.hasOwn(values, field.name));
-      if (fieldsToUpdate.length === 0) {
-        return runTableWriteWithAcl(database, table, "update", previous, previous, contextGetter, () => previous);
-      }
-
-      const now = new Date().toISOString();
-      const serializedValues = {
-        ...Object.fromEntries(
-          fieldsToUpdate.map((field) => [field.name, fieldValueForWrite(database, field, values[field.name])]),
-        ),
-        updatedAt: now,
-      };
-      const next = {
-        ...previous,
-        updatedAt: now,
-        ...Object.fromEntries(fieldsToUpdate.map((field) => [field.name, deserializeFieldValue(field, serializedValues[field.name])])),
-      };
-      return runTableWriteWithAcl(database, table, "update", previous, next, contextGetter, () => {
-        const result = database.sqlite.updateAppRow(table, id, serializedValues);
-        database.rowCache.clear();
-        if (result.changes === 0) {
+      const finishExisting = (existing) => {
+        if (!existing) {
           return null;
         }
-        return next;
-      });
+        const previous = deserializeRow(table, existing);
+        const fieldsToUpdate = table.fields.filter((field) => Object.hasOwn(values, field.name));
+        if (fieldsToUpdate.length === 0) {
+          return runTableWriteWithAcl(database, table, "update", previous, previous, contextGetter, () => previous);
+        }
+
+        const now = new Date().toISOString();
+        const serializedValues = { updatedAt: now };
+        const fieldValues = fieldsToUpdate.map((field) => fieldValueForWrite(database, field, values[field.name]));
+        const finishValues = (resolvedValues) => {
+          for (const [index, field] of fieldsToUpdate.entries()) {
+            serializedValues[field.name] = resolvedValues[index];
+          }
+          const next = {
+            ...previous,
+            updatedAt: now,
+            ...Object.fromEntries(fieldsToUpdate.map((field) => [field.name, deserializeFieldValue(field, serializedValues[field.name])])),
+          };
+          return runTableWriteWithAcl(database, table, "update", previous, next, contextGetter, () => {
+            const result = database.sqlite.updateAppRow(table, id, serializedValues);
+            database.rowCache.clear();
+            return thenIfPromise(result, (writeResult) => {
+              if (writeResult.changes === 0) {
+                return null;
+              }
+              return next;
+            });
+          });
+        };
+        return fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finishValues) : finishValues(fieldValues);
+      };
+      const selected = database.sqlite.selectAppRowById(table, id);
+      const operation = thenIfPromise(selected, finishExisting);
+      if (isPromiseLike(operation)) {
+        contextGetter?.()?.__pendingAclWrites?.push(operation);
+      }
+      return operation;
     },
     delete(id) {
-      const existing = database.sqlite.selectAppRowById(table, id);
-      if (!existing) {
-        return false;
+      const finish = (existing) => {
+        if (!existing) {
+          return false;
+        }
+        const previous = deserializeRow(table, existing);
+        return runTableWriteWithAcl(database, table, "delete", previous, null, contextGetter, () => {
+          const result = database.sqlite.deleteAppRow(table, id);
+          database.rowCache.clear();
+          return thenIfPromise(result, (writeResult) => writeResult.changes > 0);
+        });
+      };
+      const operation = thenIfPromise(database.sqlite.selectAppRowById(table, id), finish);
+      if (isPromiseLike(operation)) {
+        contextGetter?.()?.__pendingAclWrites?.push(operation);
       }
-      const previous = deserializeRow(table, existing);
-      return runTableWriteWithAcl(database, table, "delete", previous, null, contextGetter, () => {
-        const result = database.sqlite.deleteAppRow(table, id);
-        database.rowCache.clear();
-        return result.changes > 0;
-      });
+      return operation;
     },
     where(fieldName, value) {
       return createEndpointTableApi(database, table, { ...query, where: { fieldName, value } }, contextGetter);
@@ -2551,48 +2575,48 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       return createEndpointTableApi(database, table, { ...query, limit: count }, contextGetter);
     },
     get() {
-      const row =
-        database.sqlite.selectAppRows(table, {
-          where: query.where
-            ? {
-                fieldName: query.where.fieldName,
-                value: serializeFieldValue(
-                  table.fields.find((field) => field.name === query.where.fieldName),
-                  query.where.value,
-                ),
-              }
-            : null,
-          orderBy: query.orderBy,
-          limit: 1,
-        })[0] ?? null;
-      if (!row) {
-        return null;
-      }
-      const deserialized = deserializeRow(table, row);
-      const allowed = applyReadAcl(database, table, deserialized, contextGetter?.());
-      if (isPromiseLike(allowed)) {
-        return allowed.then((result) => (result ? deserialized : null));
-      }
-      return allowed ? deserialized : null;
+      const selected = database.sqlite.selectAppRows(table, {
+        where: query.where
+          ? {
+              fieldName: query.where.fieldName,
+              value: serializeFieldValue(
+                table.fields.find((field) => field.name === query.where.fieldName),
+                query.where.value,
+              ),
+            }
+          : null,
+        orderBy: query.orderBy,
+        limit: 1,
+      });
+      return thenIfPromise(selected, (rows) => {
+        const row = rows[0] ?? null;
+        if (!row) {
+          return null;
+        }
+        const deserialized = deserializeRow(table, row);
+        const allowed = applyReadAcl(database, table, deserialized, contextGetter?.());
+        return thenIfPromise(allowed, (result) => (result ? deserialized : null));
+      });
     },
     all() {
       const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
-      const rows = database.sqlite
-        .selectAppRows(table, {
-          where: query.where
-            ? {
-                fieldName: query.where.fieldName,
-                value: serializeFieldValue(
-                  table.fields.find((field) => field.name === query.where.fieldName),
-                  query.where.value,
-                ),
-              }
-            : null,
-          orderBy: query.orderBy,
-          limit,
-        })
-        .map((row) => deserializeRow(table, row));
-      return filterRowsByReadAcl(database, table, rows, contextGetter?.());
+      const selected = database.sqlite.selectAppRows(table, {
+        where: query.where
+          ? {
+              fieldName: query.where.fieldName,
+              value: serializeFieldValue(
+                table.fields.find((field) => field.name === query.where.fieldName),
+                query.where.value,
+              ),
+            }
+          : null,
+        orderBy: query.orderBy,
+        limit,
+      });
+      return thenIfPromise(selected, (selectedRows) => {
+        const rows = selectedRows.map((row) => deserializeRow(table, row));
+        return filterRowsByReadAcl(database, table, rows, contextGetter?.());
+      });
     },
   };
 }
@@ -2630,6 +2654,10 @@ function isPromiseLike(value) {
   return value && typeof value === "object" && typeof value.then === "function";
 }
 
+function thenIfPromise(value, onResolved) {
+  return isPromiseLike(value) ? value.then(onResolved) : onResolved(value);
+}
+
 function applyReadAcl(database, table, row, context) {
   const rule = table.acl?.resolve?.("read");
   if (!rule) {
@@ -2664,13 +2692,14 @@ function createAclDbHelpers(database, state) {
     get(tableName, id) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
-      const row = database.sqlite.selectAppRowById(table, id);
-      return row ? deserializeRow(table, row) : null;
+      return thenIfPromise(database.sqlite.selectAppRowById(table, id), (row) => {
+        return row ? deserializeRow(table, row) : null;
+      });
     },
     exists(tableName, id) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
-      return Boolean(database.sqlite.selectAppRowById(table, id));
+      return thenIfPromise(database.sqlite.selectAppRowById(table, id), (row) => Boolean(row));
     },
   });
 }
@@ -2681,8 +2710,9 @@ function createAclStorageHelpers(database, state) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        const row = database.sqlite.selectFileById(String(id));
-        return row ? aclStorageMetadataFromFileRow(row) : null;
+        return thenIfPromise(database.sqlite.selectFileById(String(id)), (row) => {
+          return row ? aclStorageMetadataFromFileRow(row) : null;
+        });
       }
       return null;
     },
@@ -2690,7 +2720,7 @@ function createAclStorageHelpers(database, state) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        return Boolean(database.sqlite.selectFileById(String(id)));
+        return thenIfPromise(database.sqlite.selectFileById(String(id)), (row) => Boolean(row));
       }
       return false;
     },
@@ -2739,8 +2769,13 @@ function createAclDeniedError() {
 }
 
 function fieldValueForWrite(database, field, value) {
-  if (field.kind === "Reference" && value !== undefined && value !== null && !referenceExists(database, field, value)) {
-    throw invalidReferenceError(field);
+  if (field.kind === "Reference" && value !== undefined && value !== null) {
+    return thenIfPromise(referenceExists(database, field, value), (exists) => {
+      if (!exists) {
+        throw invalidReferenceError(field);
+      }
+      return serializeFieldValue(field, value);
+    });
   }
   return serializeFieldValue(field, value);
 }
@@ -3010,16 +3045,16 @@ function toSqlLiteral(value, field = null) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-export function listDatabaseTables(database) {
-  return (database.adapter ?? database.sqlite).listInspectableTables();
+export async function listDatabaseTables(database) {
+  return await (database.adapter ?? database.sqlite).listInspectableTables();
 }
 
-export function dumpDatabase(database) {
-  return (database.adapter ?? database.sqlite).dumpInspectableDatabase();
+export async function dumpDatabase(database) {
+  return await (database.adapter ?? database.sqlite).dumpInspectableDatabase();
 }
 
-export function runReadOnlyQuery(database, sql) {
-  return (database.adapter ?? database.sqlite).runReadOnlyInspectionQuery(sql);
+export async function runReadOnlyQuery(database, sql) {
+  return await (database.adapter ?? database.sqlite).runReadOnlyInspectionQuery(sql);
 }
 
 function targetsInternalLogIndexTable(sql) {
@@ -3120,7 +3155,7 @@ function isInternalLogIndexMetadataRow(row, sql = "") {
   );
 }
 
-export function simulateLocalIdentitySession(database, options = {}) {
+export async function simulateLocalIdentitySession(database, options = {}) {
   const provider = String(options.provider ?? "").trim().toLowerCase();
   if (!["email", "google"].includes(provider)) {
     return {
@@ -3148,14 +3183,14 @@ export function simulateLocalIdentitySession(database, options = {}) {
   const displayName = normalizeSimulatedText(options.displayName) ?? email;
   const picture = normalizeSimulatedText(options.picture);
   const now = new Date().toISOString();
-  const existing = database.sqlite.findAuthUserByProviderEmail(provider, email);
+  const existing = await database.sqlite.findAuthUserByProviderEmail(provider, email);
   const userId = existing?.id ?? randomUUID();
   const token = createSessionToken();
 
   if (existing) {
-    database.sqlite.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0 });
+    await database.sqlite.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0 });
   } else {
-    database.sqlite.insertAuthUser({
+    await database.sqlite.insertAuthUser({
       id: userId,
       createdAt: now,
       displayName,
@@ -3166,7 +3201,7 @@ export function simulateLocalIdentitySession(database, options = {}) {
       provider,
     });
   }
-  database.sqlite.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
+  await database.sqlite.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
 
   const auth = {
     userId,
@@ -3211,7 +3246,7 @@ export function createWebSocketHub(getDatabase) {
   let nextClientId = 1;
 
   return {
-    accept(request, socket) {
+    async accept(request, socket) {
       const key = request.headers["sec-websocket-key"];
       if (!key) {
         socket.destroy();
@@ -3233,7 +3268,7 @@ export function createWebSocketHub(getDatabase) {
       const sessionToken = requestUrl.searchParams.get("sessionToken");
       const origin = requestOrigin(request);
       const database = getDatabase();
-      const session = resolveAnonymousSession(database, sessionToken);
+      const session = await resolveAnonymousSession(database, sessionToken);
       const now = new Date().toISOString();
       const client = {
         id: `client-${(nextClientId++).toString(36)}`,
@@ -3387,14 +3422,14 @@ export function createWebSocketHub(getDatabase) {
     }
 
     const database = getDatabase();
-    client.session = resolveAnonymousSession(database, client.session.token);
+    client.session = await resolveAnonymousSession(database, client.session.token);
     if (message.type === "auth.get") {
-      sendAuthResult(client, message.id ?? null);
+      await sendAuthResult(client, message.id ?? null);
       return;
     }
 
     if (message.type === "auth.signOut") {
-      const result = signOutSession(database, client);
+      const result = await signOutSession(database, client);
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "auth.signOut.result" : "error",
@@ -3405,7 +3440,7 @@ export function createWebSocketHub(getDatabase) {
     }
 
     if (message.type === "auth.signUp") {
-      const result = signUpWithEmail(database, client.session, message.provider, message.credentials ?? {});
+      const result = await signUpWithEmail(database, client.session, message.provider, message.credentials ?? {});
       if (result.ok) {
         client.session = {
           token: result.sessionToken,
@@ -3424,7 +3459,7 @@ export function createWebSocketHub(getDatabase) {
     if (message.type === "auth.signIn" || message.type === "auth.signInWithGoogle") {
       const provider = message.type === "auth.signInWithGoogle" ? "google" : message.provider;
       if (provider === "email") {
-        const result = signInWithEmail(database, client.session, message.credentials ?? {});
+        const result = await signInWithEmail(database, client.session, message.credentials ?? {});
         if (result.ok) {
           client.session = {
             token: result.sessionToken,
@@ -3450,7 +3485,7 @@ export function createWebSocketHub(getDatabase) {
         });
         return;
       }
-      const result = beginGoogleSignIn(database, client.session, {
+      const result = await beginGoogleSignIn(database, client.session, {
         origin: client.origin,
         returnTo: message.returnTo,
       });
@@ -3515,7 +3550,7 @@ export function createWebSocketHub(getDatabase) {
     }
 
     if (message.type === "file.uploadUrl") {
-      const result = createPendingFileUpload(database, client.session.auth, message);
+      const result = await createPendingFileUpload(database, client.session.auth, message);
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "file.uploadUrl.result" : "error",
@@ -3526,7 +3561,7 @@ export function createWebSocketHub(getDatabase) {
     }
 
     if (message.type === "file.url") {
-      const result = getPrivateFileUrl(database, client.session.auth, message.fileId);
+      const result = await getPrivateFileUrl(database, client.session.auth, message.fileId);
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "file.url.result" : "error",
@@ -3537,7 +3572,7 @@ export function createWebSocketHub(getDatabase) {
     }
 
     if (message.type === "file.publicUrl.create") {
-      const result = createPublicFileUrl(database, client.session.auth, message.fileId, message.options ?? {});
+      const result = await createPublicFileUrl(database, client.session.auth, message.fileId, message.options ?? {});
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "file.publicUrl.result" : "error",
@@ -3548,7 +3583,7 @@ export function createWebSocketHub(getDatabase) {
     }
 
     if (message.type === "file.publicUrl.revoke") {
-      const result = revokePublicFileUrl(database, client.session.auth, message.publicUrlId);
+      const result = await revokePublicFileUrl(database, client.session.auth, message.publicUrlId);
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "file.publicUrl.revoke.result" : "error",
@@ -3595,9 +3630,9 @@ export function createWebSocketHub(getDatabase) {
     });
   }
 
-  function sendAuthResult(client, id) {
+  async function sendAuthResult(client, id) {
     const database = getDatabase();
-    client.session = resolveAnonymousSession(database, client.session.token);
+    client.session = await resolveAnonymousSession(database, client.session.token);
     sendJson(client, {
       id,
       type: "auth.result",
@@ -3610,10 +3645,10 @@ export function createWebSocketHub(getDatabase) {
     });
   }
 
-  function signOutSession(database, client) {
+  async function signOutSession(database, client) {
     try {
-      database.sqlite.deleteAuthSession(client.session.token);
-      client.session = resolveAnonymousSession(database, null);
+      await database.sqlite.deleteAuthSession(client.session.token);
+      client.session = await resolveAnonymousSession(database, null);
       return { ok: true };
     } catch (error) {
       return {
@@ -3665,7 +3700,7 @@ export async function routeSporadesAuth(database, request, response) {
     return true;
   }
 
-  const stateRow = database.sqlite.consumeOAuthState(state);
+  const stateRow = await database.sqlite.consumeOAuthState(state);
   if (!stateRow) {
     writeEndpointError(response, commandError("Invalid Google OAuth state.", "Retry Google sign-in from the app."));
     return true;
@@ -3673,8 +3708,8 @@ export async function routeSporadesAuth(database, request, response) {
 
   try {
     const profile = await exchangeGoogleCode(database, code, stateRow.redirectUri);
-    const session = resolveAnonymousSession(database, stateRow.sessionToken);
-    const result = linkGoogleAccount(database, session, profile);
+    const session = await resolveAnonymousSession(database, stateRow.sessionToken);
+    const result = await linkGoogleAccount(database, session, profile);
     if (!result.ok) {
       throw commandError(result.error.message, result.error.hint);
     }
@@ -3685,7 +3720,7 @@ export async function routeSporadesAuth(database, request, response) {
   return true;
 }
 
-function beginGoogleSignIn(database, session, options) {
+async function beginGoogleSignIn(database, session, options) {
   if (!database.authConfig.providers.google.enabled || !database.authConfig.google.configured) {
     return {
       ok: false,
@@ -3700,7 +3735,7 @@ function beginGoogleSignIn(database, session, options) {
   const returnTo = normalizeReturnTo(options.returnTo, origin);
   const state = randomBytes(32).toString("base64url");
   const now = new Date().toISOString();
-  database.sqlite.insertOAuthState({ state, sessionToken: session.token, returnTo, redirectUri, createdAt: now });
+  await database.sqlite.insertOAuthState({ state, sessionToken: session.token, returnTo, redirectUri, createdAt: now });
 
   const clientId = database.serverEnv[database.authConfig.google.clientIdEnv];
   const params = new URLSearchParams({
@@ -3821,7 +3856,7 @@ async function fetchGoogleProfile(accessToken) {
   };
 }
 
-function linkGoogleAccount(database, session, profile) {
+async function linkGoogleAccount(database, session, profile) {
   if (!profile.email) {
     return {
       ok: false,
@@ -3841,7 +3876,7 @@ function linkGoogleAccount(database, session, profile) {
     isGuest: false,
     provider: "google",
   };
-  database.sqlite.linkAuthUser({
+  await database.sqlite.linkAuthUser({
     id: auth.userId,
     displayName: auth.displayName,
     email: auth.email,
@@ -3850,7 +3885,7 @@ function linkGoogleAccount(database, session, profile) {
     isGuest: 0,
     provider: "google",
   });
-  refreshSession(database, session.token);
+  await refreshSession(database, session.token);
   return { ok: true, auth };
 }
 
@@ -3859,7 +3894,7 @@ function writeRedirect(response, location) {
   response.end();
 }
 
-function signUpWithEmail(database, session, provider, credentials) {
+export async function signUpWithEmail(database, session, provider, credentials) {
   if (provider !== "email") {
     return {
       ok: false,
@@ -3878,7 +3913,7 @@ function signUpWithEmail(database, session, provider, credentials) {
     return normalized;
   }
 
-  if (database.sqlite.emailCredentialExists(normalized.email)) {
+  if (await database.sqlite.emailCredentialExists(normalized.email)) {
     return {
       ok: false,
       error: {
@@ -3899,14 +3934,14 @@ function signUpWithEmail(database, session, provider, credentials) {
     isGuest: false,
     provider: "email",
   };
-  database.sqlite.insertEmailCredential({
+  await database.sqlite.insertEmailCredential({
     email: normalized.email,
     userId: auth.userId,
     passwordHash: password.hash,
     passwordSalt: password.salt,
     createdAt: new Date().toISOString(),
   });
-  database.sqlite.linkAuthUser({
+  await database.sqlite.linkAuthUser({
     id: auth.userId,
     displayName: auth.displayName,
     email: auth.email,
@@ -3915,10 +3950,10 @@ function signUpWithEmail(database, session, provider, credentials) {
     isGuest: 0,
     provider: "email",
   });
-  return { ok: true, sessionToken: rotateSession(database, session, auth.userId), auth };
+  return { ok: true, sessionToken: await rotateSession(database, session, auth.userId), auth };
 }
 
-function signInWithEmail(database, session, credentials) {
+async function signInWithEmail(database, session, credentials) {
   if (!database.authConfig.providers.email.enabled) {
     return { ok: false, error: emailAuthDisabledError() };
   }
@@ -3928,7 +3963,7 @@ function signInWithEmail(database, session, credentials) {
     return normalized;
   }
 
-  const row = database.sqlite.findEmailCredentialWithUser(normalized.email);
+  const row = await database.sqlite.findEmailCredentialWithUser(normalized.email);
   if (!row || !verifyEmailPassword(normalized.password, row.passwordSalt, row.passwordHash)) {
     return {
       ok: false,
@@ -3948,7 +3983,7 @@ function signInWithEmail(database, session, credentials) {
     isGuest: Boolean(row.isGuest),
     provider: row.provider,
   };
-  return { ok: true, sessionToken: rotateSession(database, session, auth.userId), auth };
+  return { ok: true, sessionToken: await rotateSession(database, session, auth.userId), auth };
 }
 
 function normalizeEmailCredentials(credentials) {
@@ -4063,26 +4098,26 @@ function createSessionToken() {
   return randomBytes(32).toString("base64url");
 }
 
-function refreshSession(database, token) {
+async function refreshSession(database, token) {
   const now = new Date().toISOString();
   const expiresAt = sessionExpiresAt(now);
-  database.sqlite.refreshAuthSession(token, expiresAt);
+  await database.sqlite.refreshAuthSession(token, expiresAt);
   return expiresAt;
 }
 
-function rotateSession(database, session, userId) {
+async function rotateSession(database, session, userId) {
   const now = new Date().toISOString();
   const token = createSessionToken();
-  database.sqlite.rotateAuthSession(session.token, { token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
+  await database.sqlite.rotateAuthSession(session.token, { token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
   return token;
 }
 
-function resolveAnonymousSession(database, sessionToken) {
+export async function resolveAnonymousSession(database, sessionToken) {
   if (sessionToken) {
-    const existing = database.sqlite.readAuthSessionWithUser(sessionToken);
+    const existing = await database.sqlite.readAuthSessionWithUser(sessionToken);
     if (existing) {
       if (isExpiredSession(existing)) {
-        database.sqlite.deleteAuthSession(sessionToken);
+        await database.sqlite.deleteAuthSession(sessionToken);
       } else {
         return sessionFromRow(existing);
       }
@@ -4092,7 +4127,7 @@ function resolveAnonymousSession(database, sessionToken) {
   const now = new Date().toISOString();
   const userId = randomUUID();
   const token = createSessionToken();
-  database.sqlite.insertAuthUser({
+  await database.sqlite.insertAuthUser({
     id: userId,
     createdAt: now,
     displayName: "Anonymous",
@@ -4102,7 +4137,7 @@ function resolveAnonymousSession(database, sessionToken) {
     isGuest: 1,
     provider: "anonymous",
   });
-  database.sqlite.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
+  await database.sqlite.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
   return {
     token,
     auth: {
@@ -4238,13 +4273,11 @@ async function runQuery(database, auth, queryName) {
   if (!database.rowCache.has(cacheKey)) {
     const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
     const ownerScoped = table.fields.some((field) => field.name === "ownerId");
-    const rows = database.sqlite
-      .selectAppRows(table, {
+    const rows = (await database.sqlite.selectAppRows(table, {
         columns,
         ownerId: ownerScoped ? context.auth.userId : undefined,
         orderBy: { fieldName: "createdAt", direction: "desc" },
-      })
-      .map((row) => rowToApiValue(row, table));
+      })).map((row) => rowToApiValue(row, table));
     database.rowCache.set(cacheKey, rows);
   }
 
@@ -4321,8 +4354,12 @@ async function runCustomMutation(database, context, mutationName, args) {
     typeof handler.handler === "function"
       ? handler.handler
       : new Function(`return (${handler.handlerSource});`)();
-  const result = await mutationHandler(context, ...args);
-  await drainPendingAclWrites(context);
+  let result;
+  try {
+    result = await mutationHandler(context, ...args);
+  } finally {
+    await drainPendingAclWrites(context);
+  }
   if (result !== undefined) {
     assertJsonCompatible(result);
   }
@@ -4498,11 +4535,11 @@ async function runInsertMutation(database, context, mutationName, args) {
       }
       const positionalIndex = table.fields.filter((candidate) => candidate.name !== "ownerId").indexOf(field);
       if (args[positionalIndex] !== undefined) {
-        values[field.name] = fieldValueForWrite(database, field, args[positionalIndex]);
+        values[field.name] = await fieldValueForWrite(database, field, args[positionalIndex]);
         continue;
       }
       if (field.defaultValue !== undefined) {
-        values[field.name] = fieldValueForWrite(database, field, field.defaultValue);
+        values[field.name] = await fieldValueForWrite(database, field, field.defaultValue);
       } else {
         values[field.name] = null;
       }
@@ -4521,8 +4558,8 @@ async function runInsertMutation(database, context, mutationName, args) {
     };
   }
 
-  await runTableWriteWithAcl(database, table, "insert", null, deserializeRow(table, values), () => context, () => {
-    database.sqlite.insertAppRow(table, values);
+  await runTableWriteWithAcl(database, table, "insert", null, deserializeRow(table, values), () => context, async () => {
+    await database.sqlite.insertAppRow(table, values);
     database.rowCache.clear();
   });
   return { ok: true, error: null };
@@ -4563,20 +4600,20 @@ async function runUpdateMutation(database, context, mutationName, args) {
   const now = new Date().toISOString();
   const ownerScoped = resolved.table.fields.some((field) => field.name === "ownerId");
   const previousRow =
-    database.sqlite.selectAppRows(resolved.table, {
+    (await database.sqlite.selectAppRows(resolved.table, {
       ownerId: ownerScoped ? context.auth.userId : undefined,
       where: { fieldName: "id", value: String(id) },
       limit: 1,
-    })[0] ?? null;
+    }))[0] ?? null;
   let nextValue;
   try {
-    nextValue = fieldValueForWrite(database, resolved.field, value);
+    nextValue = await fieldValueForWrite(database, resolved.field, value);
   } catch (error) {
     return { ok: false, error: { message: error.message, hint: error.hint } };
   }
 
-  const write = () => {
-    database.sqlite.updateAppRow(
+  const write = async () => {
+    await database.sqlite.updateAppRow(
       resolved.table,
       id,
       {
@@ -4596,7 +4633,7 @@ async function runUpdateMutation(database, context, mutationName, args) {
     };
     await runTableWriteWithAcl(database, resolved.table, "update", previous, next, () => context, write);
   } else {
-    write();
+    await write();
   }
   return { ok: true, error: null };
 }

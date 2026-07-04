@@ -6,12 +6,15 @@ import test from "node:test";
 
 import {
   checkRuntimeSqlite,
+  createPendingFileUpload,
   createSqliteDatabaseAdapter,
   dumpDatabase,
   listDatabaseTables,
   openDevDatabase,
+  resolveAnonymousSession,
   runMutation,
   runReadOnlyQuery,
+  signUpWithEmail,
 } from "../src/server-runtime-source.js";
 
 async function withTempDir(fn) {
@@ -431,8 +434,8 @@ test("SQLite database adapter owns inspection and health surfaces", async () => 
       assert.equal(typeof database.sqlite.runReadOnlyInspectionQuery, "function");
       assert.equal(typeof database.sqlite.checkHealth, "function");
       assert.equal(database.adapter, database.sqlite);
-      assert.deepEqual(listDatabaseTables(database).filter((name) => name === "todos"), ["todos"]);
-      const dumpedTodos = dumpDatabase(database).find((dumpedTable) => dumpedTable.name === "todos");
+      assert.deepEqual((await listDatabaseTables(database)).filter((name) => name === "todos"), ["todos"]);
+      const dumpedTodos = (await dumpDatabase(database)).find((dumpedTable) => dumpedTable.name === "todos");
       assert.deepEqual({ ...dumpedTodos, rows: dumpedTodos.rows.map((row) => ({ ...row })) }, {
         name: "todos",
         columns: ["id", "createdAt", "updatedAt", "text", "ownerId"],
@@ -446,7 +449,7 @@ test("SQLite database adapter owns inspection and health surfaces", async () => 
           },
         ],
       });
-      const queryResult = runReadOnlyQuery(database, "SELECT text FROM todos");
+      const queryResult = await runReadOnlyQuery(database, "SELECT text FROM todos");
       assert.deepEqual(
         {
           ...queryResult,
@@ -464,9 +467,176 @@ test("SQLite database adapter owns inspection and health surfaces", async () => 
           error: null,
         },
       );
-      assert.deepEqual(checkRuntimeSqlite(database), { ok: true });
+      assert.deepEqual(await checkRuntimeSqlite(database), { ok: true });
     } finally {
       database.close();
     }
   });
 });
+
+test("runtime database paths await promise-returning adapter operations", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true, email: { enabled: true } } },
+      files: { storagePath: path.join(dir, "files") },
+    });
+    const syncAdapter = database.sqlite;
+    const asyncAdapter = wrapAsyncRuntimeAdapter(syncAdapter);
+    database.adapter = asyncAdapter;
+    database.sqlite = asyncAdapter;
+    database.close = () => syncAdapter.close();
+
+    try {
+      const table = {
+        name: "notes",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+        ],
+      };
+      database.schema = { tables: [table] };
+      await database.sqlite.migrateAppSchema(database.schema);
+
+      const auth = { userId: "user-1", displayName: "Ada", isAuthenticated: false, isGuest: true, provider: "anonymous" };
+      const inserted = await runMutation(database, auth, "addNote", ["await me"]);
+      assert.equal(inserted.ok, true);
+      assert.deepEqual(
+        (await database.sqlite.selectAppRows(table, { columns: ["text"] })).map((row) => ({ ...row })),
+        [{ text: "await me" }],
+      );
+
+      database.mutations = [
+        {
+          name: "addThenFail",
+          handler: (ctx) => {
+            ctx.db.notes.insert({ text: "rolled back", ownerId: ctx.auth.userId });
+            throw new Error("rollback me");
+          },
+        },
+      ];
+      const failed = await runMutation(database, auth, "addThenFail", []);
+      assert.equal(failed.ok, false);
+      assert.deepEqual(
+        (await database.sqlite.selectAppRows(table, { columns: ["text"], orderBy: { fieldName: "createdAt", direction: "asc" } })).map(
+          (row) => ({ ...row }),
+        ),
+        [{ text: "await me" }],
+      );
+
+      const originalUpdateAppRow = asyncAdapter.updateAppRow.bind(asyncAdapter);
+      let asyncUpdateSettled = false;
+      asyncAdapter.updateAppRow = async (...args) => {
+        if (args[1] === "missing-note") {
+          await Promise.resolve();
+          asyncUpdateSettled = true;
+          throw new Error("async update exploded");
+        }
+        return await originalUpdateAppRow(...args);
+      };
+      const failedMissingUpdate = await runMutation(database, auth, "updateNoteText", ["missing-note", "should fail"]);
+      assert.equal(asyncUpdateSettled, true);
+      assert.deepEqual(failedMissingUpdate, {
+        ok: false,
+        error: {
+          message: "async update exploded",
+          hint: "Check the Capsule mutation hooks and retry the mutation.",
+        },
+      });
+
+      const session = await resolveAnonymousSession(database, null);
+      const signUp = await signUpWithEmail(database, session, "email", {
+        email: "ada@example.com",
+        password: "correct horse",
+        name: "Ada",
+      });
+      assert.equal(signUp.ok, true);
+
+      const upload = await createPendingFileUpload(database, signUp.auth, {
+        file: { name: "proof.txt", type: "text/plain", size: 5 },
+      });
+      assert.equal(upload.ok, true);
+
+      await database.log.emit({ category: "app", event: "ctx.log", level: "info", message: "async log" });
+      assert.deepEqual(
+        (await database.log.recent(1)).map((event) => event.message),
+        ["async log"],
+      );
+
+      assert.deepEqual((await listDatabaseTables(database)).filter((name) => name === "notes"), ["notes"]);
+      assert.equal((await dumpDatabase(database)).find((dumpedTable) => dumpedTable.name === "notes").rows.length, 1);
+      assert.deepEqual(
+        (await runReadOnlyQuery(database, "SELECT text FROM notes")).data.rows.map((row) => ({ ...row })),
+        [{ text: "await me" }],
+      );
+      assert.deepEqual(await checkRuntimeSqlite(database), { ok: true });
+    } finally {
+      database.close();
+    }
+  });
+});
+
+function wrapAsyncRuntimeAdapter(adapter) {
+  const asyncMethods = new Set([
+    "ensureSystemTable",
+    "readSystemMetadata",
+    "writeSystemMetadata",
+    "readSchemaMetadata",
+    "writeSchemaMetadata",
+    "ensureLogStorage",
+    "insertLogIndexEvent",
+    "pruneLogIndex",
+    "readRecentLogEvents",
+    "ensureFileStorage",
+    "findFileBucket",
+    "createFileBucket",
+    "insertFileRow",
+    "updatePendingFileRow",
+    "insertFileUpload",
+    "selectFileById",
+    "selectFileUpload",
+    "completeFileUpload",
+    "deleteFileUpload",
+    "selectPublicFileRow",
+    "insertPublicFileUrl",
+    "revokePublicFileUrl",
+    "revokePublicFileUrlsForFile",
+    "markFileDeleted",
+    "fileRowForOwner",
+    "ensureAuthStorage",
+    "findAuthUserByProviderEmail",
+    "insertAuthUser",
+    "updateAuthUserProfile",
+    "linkAuthUser",
+    "insertAuthSession",
+    "deleteAuthSession",
+    "refreshAuthSession",
+    "rotateAuthSession",
+    "readAuthSessionWithUser",
+    "insertOAuthState",
+    "consumeOAuthState",
+    "emailCredentialExists",
+    "insertEmailCredential",
+    "findEmailCredentialWithUser",
+    "migrateAppSchema",
+    "referenceExists",
+    "withTransaction",
+    "insertAppRow",
+    "selectAppRowById",
+    "updateAppRow",
+    "deleteAppRow",
+    "selectAppRows",
+    "listInspectableTables",
+    "dumpInspectableDatabase",
+    "runReadOnlyInspectionQuery",
+    "checkHealth",
+  ]);
+  return new Proxy(adapter, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof property !== "string" || !asyncMethods.has(property) || typeof value !== "function") {
+        return value;
+      }
+      return async (...args) => await value.apply(target, args);
+    },
+  });
+}
