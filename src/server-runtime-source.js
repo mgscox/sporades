@@ -88,13 +88,16 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   readEndpointSessionToken,
   createEndpointDatabaseApi,
   createEndpointTableApi,
+  runTableWriteWithAcl,
   isPromiseLike,
   applyReadAcl,
   filterRowsByReadAcl,
+  createAclDeniedError,
   fieldValueForWrite,
   invalidReferenceError,
   referenceExists,
   serializeFieldValue,
+  deserializeFieldValue,
   normalizeDateValue,
   dateValueError,
   assertJsonCompatible,
@@ -172,6 +175,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   isAllAppMessageScope,
   runMutationHook,
   createMutationContext,
+  drainPendingAclWrites,
   createMessageContext,
   createHookErrorResult,
   runInsertMutation,
@@ -2338,7 +2342,7 @@ function createContextHolder(context) {
 }
 
 function createTableAclContext(context) {
-  const { db, request, __sporadesContextHolder, ...aclContext } = context ?? {};
+  const { db, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
   return {
     ...aclContext,
     acl: aclContext.acl ?? {},
@@ -2369,6 +2373,9 @@ async function applyContextMiddleware(database, baseContext, kind) {
         enumerable: false,
         configurable: true,
       });
+    }
+    if (baseContext.__pendingAclWrites && !context.__pendingAclWrites) {
+      context.__pendingAclWrites = baseContext.__pendingAclWrites;
     }
   }
   return context;
@@ -2412,35 +2419,56 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
         ),
       };
       const columns = Object.keys(row);
-      database.sqlite.insertAppRow(table, Object.fromEntries(columns.map((column) => [column, row[column]])));
-      database.rowCache.clear();
-      return deserializeRow(table, row);
+      const next = deserializeRow(table, row);
+      return runTableWriteWithAcl(database, table, "insert", null, next, contextGetter, () => {
+        database.sqlite.insertAppRow(table, Object.fromEntries(columns.map((column) => [column, row[column]])));
+        database.rowCache.clear();
+        return next;
+      });
     },
     update(id, values) {
+      const existing = database.sqlite.selectAppRowById(table, id);
+      if (!existing) {
+        return null;
+      }
+      const previous = deserializeRow(table, existing);
       const fieldsToUpdate = table.fields.filter((field) => Object.hasOwn(values, field.name));
       if (fieldsToUpdate.length === 0) {
-        const existing = database.sqlite.selectAppRowById(table, id);
-        return existing ? deserializeRow(table, existing) : null;
+        return runTableWriteWithAcl(database, table, "update", previous, previous, contextGetter, () => previous);
       }
 
       const now = new Date().toISOString();
-      const result = database.sqlite.updateAppRow(table, id, {
+      const serializedValues = {
         ...Object.fromEntries(
           fieldsToUpdate.map((field) => [field.name, fieldValueForWrite(database, field, values[field.name])]),
         ),
         updatedAt: now,
+      };
+      const next = {
+        ...previous,
+        updatedAt: now,
+        ...Object.fromEntries(fieldsToUpdate.map((field) => [field.name, deserializeFieldValue(field, serializedValues[field.name])])),
+      };
+      return runTableWriteWithAcl(database, table, "update", previous, next, contextGetter, () => {
+        const result = database.sqlite.updateAppRow(table, id, serializedValues);
+        database.rowCache.clear();
+        if (result.changes === 0) {
+          return null;
+        }
+        return next;
       });
-      database.rowCache.clear();
-      if (result.changes === 0) {
-        return null;
-      }
-      const row = database.sqlite.selectAppRowById(table, id);
-      return row ? deserializeRow(table, row) : null;
     },
     delete(id) {
-      const result = database.sqlite.deleteAppRow(table, id);
-      database.rowCache.clear();
-      return result.changes > 0;
+      const existing = database.sqlite.selectAppRowById(table, id);
+      if (!existing) {
+        return false;
+      }
+      const previous = deserializeRow(table, existing);
+      return runTableWriteWithAcl(database, table, "delete", previous, null, contextGetter, () => {
+        const result = database.sqlite.deleteAppRow(table, id);
+        database.rowCache.clear();
+        return result.changes > 0;
+      });
     },
     where(fieldName, value) {
       return createEndpointTableApi(database, table, { ...query, where: { fieldName, value } }, contextGetter);
@@ -2498,6 +2526,35 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
   };
 }
 
+function runTableWriteWithAcl(database, table, operation, previous, next, contextGetter, write) {
+  const rule = table.acl?.resolve?.(operation);
+  if (!rule) {
+    return write();
+  }
+  const context = contextGetter?.();
+  const result = rule({
+    ctx: createTableAclContext(context),
+    operation,
+    table: table.name,
+    previous,
+    next,
+  });
+  if (!isPromiseLike(result)) {
+    if (!result) {
+      throw createAclDeniedError();
+    }
+    return write();
+  }
+  const pending = Promise.resolve(result).then((allowed) => {
+    if (!allowed) {
+      throw createAclDeniedError();
+    }
+    return write();
+  });
+  context?.__pendingAclWrites?.push(pending);
+  return pending;
+}
+
 function isPromiseLike(value) {
   return value && typeof value === "object" && typeof value.then === "function";
 }
@@ -2521,6 +2578,10 @@ function filterRowsByReadAcl(table, rows, context) {
     return Promise.all(decisions).then((resolved) => rows.filter((_, index) => resolved[index]));
   }
   return rows.filter((_, index) => decisions[index]);
+}
+
+function createAclDeniedError() {
+  return commandError("Write denied.", "The current user is not allowed to change this row.");
 }
 
 function fieldValueForWrite(database, field, value) {
@@ -2562,6 +2623,19 @@ function serializeFieldValue(field, value) {
     return String(value);
   }
   return String(value ?? "");
+}
+
+function deserializeFieldValue(field, value) {
+  if (field.kind === "Boolean") {
+    return value === null ? null : Boolean(value);
+  }
+  if (field.kind === "Json") {
+    return value === null ? null : JSON.parse(value);
+  }
+  if (field.kind === "Number") {
+    return value === null ? null : Number(value);
+  }
+  return value;
 }
 
 function normalizeDateValue(value, fieldName) {
@@ -4091,7 +4165,7 @@ async function runCustomQuery(database, context, queryName) {
   }
 }
 
-async function runMutation(database, auth, mutationName, args) {
+export async function runMutation(database, auth, mutationName, args) {
   let context;
   let result;
   database.sqlite.exec("BEGIN");
@@ -4105,14 +4179,16 @@ async function runMutation(database, auth, mutationName, args) {
     result = await runCustomMutation(database, context, mutationName, args);
     if (!result) {
       result = mutationName.startsWith("update")
-        ? runUpdateMutation(database, context.auth, mutationName, args)
-        : runInsertMutation(database, context.auth, mutationName, args);
+        ? await runUpdateMutation(database, context, mutationName, args)
+        : await runInsertMutation(database, context, mutationName, args);
     }
+    await drainPendingAclWrites(context);
 
     if (result.ok) {
       for (const hookSource of database.mutationHooks.afterMutation) {
         await runMutationHook(hookSource, { name: mutationName, args, ctx: context, result });
       }
+      await drainPendingAclWrites(context);
     }
 
     database.sqlite.exec("COMMIT");
@@ -4135,6 +4211,7 @@ async function runCustomMutation(database, context, mutationName, args) {
       ? handler.handler
       : new Function(`return (${handler.handlerSource});`)();
   const result = await mutationHandler(context, ...args);
+  await drainPendingAclWrites(context);
   if (result !== undefined) {
     assertJsonCompatible(result);
   }
@@ -4256,10 +4333,18 @@ function createMutationContext(database, auth) {
     auth,
     env: database.serverEnv,
     log: createEndpointLogger(database),
+    __pendingAclWrites: [],
   };
   const holder = createContextHolder(context);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
   return context;
+}
+
+async function drainPendingAclWrites(context) {
+  while (context?.__pendingAclWrites?.length > 0) {
+    const pending = context.__pendingAclWrites.splice(0);
+    await Promise.all(pending);
+  }
 }
 
 function createHookErrorResult(error) {
@@ -4272,7 +4357,7 @@ function createHookErrorResult(error) {
   };
 }
 
-function runInsertMutation(database, auth, mutationName, args) {
+async function runInsertMutation(database, context, mutationName, args) {
   const table = resolveTableForAddMutation(database.schema, mutationName);
   if (!table) {
     return {
@@ -4293,7 +4378,7 @@ function runInsertMutation(database, auth, mutationName, args) {
   try {
     for (const field of table.fields) {
       if (field.name === "ownerId") {
-        values[field.name] = auth.userId;
+        values[field.name] = context.auth.userId;
         continue;
       }
       if (field.name === "text") {
@@ -4325,12 +4410,14 @@ function runInsertMutation(database, auth, mutationName, args) {
     };
   }
 
-  database.sqlite.insertAppRow(table, values);
-  database.rowCache.clear();
+  await runTableWriteWithAcl(database, table, "insert", null, deserializeRow(table, values), () => context, () => {
+    database.sqlite.insertAppRow(table, values);
+    database.rowCache.clear();
+  });
   return { ok: true, error: null };
 }
 
-function runUpdateMutation(database, auth, mutationName, args) {
+async function runUpdateMutation(database, context, mutationName, args) {
   const resolved = resolveTableForUpdateMutation(database.schema, mutationName);
   if (!resolved) {
     return {
@@ -4364,6 +4451,12 @@ function runUpdateMutation(database, auth, mutationName, args) {
 
   const now = new Date().toISOString();
   const ownerScoped = resolved.table.fields.some((field) => field.name === "ownerId");
+  const previousRow =
+    database.sqlite.selectAppRows(resolved.table, {
+      ownerId: ownerScoped ? context.auth.userId : undefined,
+      where: { fieldName: "id", value: String(id) },
+      limit: 1,
+    })[0] ?? null;
   let nextValue;
   try {
     nextValue = fieldValueForWrite(database, resolved.field, value);
@@ -4371,16 +4464,29 @@ function runUpdateMutation(database, auth, mutationName, args) {
     return { ok: false, error: { message: error.message, hint: error.hint } };
   }
 
-  database.sqlite.updateAppRow(
-    resolved.table,
-    id,
-    {
-      [resolved.field.name]: nextValue,
+  const write = () => {
+    database.sqlite.updateAppRow(
+      resolved.table,
+      id,
+      {
+        [resolved.field.name]: nextValue,
+        updatedAt: now,
+      },
+      { ownerId: ownerScoped ? context.auth.userId : undefined },
+    );
+    database.rowCache.clear();
+  };
+  if (previousRow) {
+    const previous = deserializeRow(resolved.table, previousRow);
+    const next = {
+      ...previous,
       updatedAt: now,
-    },
-    { ownerId: ownerScoped ? auth.userId : undefined },
-  );
-  database.rowCache.clear();
+      [resolved.field.name]: deserializeFieldValue(resolved.field, nextValue),
+    };
+    await runTableWriteWithAcl(database, resolved.table, "update", previous, next, () => context, write);
+  } else {
+    write();
+  }
   return { ok: true, error: null };
 }
 
