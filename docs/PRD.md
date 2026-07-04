@@ -34,6 +34,9 @@ The repository currently includes:
 - `sporades deploy` for local Docker Container sessions with read-only runtime
   file mounts, read-write persistent data, and single-container replacement on
   redeploy.
+- Local-only Docker Compose Capsule services for declared database service
+  intent, shared by Dev sessions and local Container sessions through
+  Sporades-owned generated Compose runtime state.
 - Host server commands for Host profiles, remote bindings, Hosted Capsule
   registration, release push, start, stop, restart, unregister, storage delete,
   list, stats, logs, bootstrap, and low-level helper invocation.
@@ -91,6 +94,10 @@ The following work is intentionally deferred:
   dashboards, rollback commands, external database support, and object-storage
   backends. Planning lives under `.scratch/post-v2-platform-hardening-and-ops/`
   until promoted into a concrete release PRD.
+- Hosted Capsule service orchestration. The first Docker Compose Capsule
+  service implementation is local-only; Host-server orchestration for Capsule
+  services is deferred until the local lifecycle model has proven the required
+  service contract.
 
 ## Product Principles
 
@@ -401,7 +408,9 @@ does not discover project configuration by walking the filesystem.
 `services.database` declares database Capsule service intent. Sporades
 validates supported service declarations and generates Docker Compose runtime
 state under `.sporades/`; users edit `sporades.json` rather than hand-editing
-generated Compose YAML.
+generated Compose YAML. The current Capsule service implementation is
+local-only for Dev sessions and local Container sessions. Hosted Capsule
+service orchestration remains future Host-server work.
 
 Sealed Server env lives in ignored Runtime or Host state, is decrypted for Dev
 sessions, local Container sessions, and Hosted Capsules, is exposed to server

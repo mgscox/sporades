@@ -101,3 +101,33 @@ test("user guide documents Capsule service reset without blanket Runtime deletio
   assert.match(userGuide, /does not remove\s+shared third-party service images/);
   assert.doesNotMatch(userGuide, /rm -rf \.sporades/);
 });
+
+test("canonical docs describe deferred Hosted Capsule service orchestration contract", async () => {
+  const [prd, userGuide, architecture, roadmap] = await Promise.all([
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/user-guide.md"),
+    readProjectFile("docs/architecture.md"),
+    readProjectFile("docs/ROADMAP.md"),
+  ]);
+
+  assert.match(prd, /first Docker Compose Capsule\s+service implementation is local-only/i);
+  assert.match(userGuide, /Hosted Capsule service orchestration is deferred/i);
+  assert.match(architecture, /Hosted Capsule service orchestration contract/i);
+
+  for (const required of [
+    "service lifecycle",
+    "networking",
+    "persistence",
+    "backup",
+    "reset",
+    "inspection",
+    "failure recovery",
+  ]) {
+    assert.match(architecture, new RegExp(required, "i"));
+  }
+
+  assert.match(architecture, /sporades host/i);
+  assert.match(architecture, /new top-level service\s+namespace/i);
+  assert.match(architecture, /Portainer/i);
+  assert.match(roadmap, /\.scratch\/docker-compose-capsule-services\/PRD\.md/);
+});

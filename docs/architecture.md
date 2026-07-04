@@ -243,6 +243,57 @@ non-root user `10001:10001`, read-only root filesystem, a writable hardened
 SQLite state, uploaded file bytes, and required runtime metadata stay in the
 explicit `/app/data` read-write mount.
 
+## Hosted Capsule Service Orchestration Contract
+
+The first Docker Compose Capsule service implementation is local-only. It
+provisions declared database Capsule services for Dev sessions and local
+Container sessions from `sporades.json`, using generated runtime Compose files
+under `.sporades/`. Hosted Capsule service orchestration is deliberately
+deferred until that local lifecycle model proves the service declaration,
+health, reset, and data-sharing shape.
+
+When Hosted Capsule services are implemented, the Host server must own these
+responsibilities for each Hosted Capsule:
+
+- service lifecycle: create, start, stop, restart, upgrade, and remove declared
+  services in coordination with the Hosted Capsule release lifecycle;
+- networking: attach Capsule containers and their services to Host-managed
+  private networks, avoid public service ports by default, and preserve Caddy as
+  the public HTTP/WebSocket edge;
+- persistence: allocate deterministic Host-server storage for service data,
+  keep it outside immutable release directories, and preserve it across release
+  pushes, Capsule restarts, and Host helper upgrades;
+- backup: expose a Host-level backup contract for service data alongside
+  SQLite data, uploaded file bytes, sealed env keys, release metadata, registry
+  records, and route state;
+- reset: provide explicit Host-scoped reset behavior that removes
+  Sporades-owned service data, networks, volumes, containers, and orphans for
+  the selected Hosted Capsule without deleting shared third-party service
+  images or unrelated Host state;
+- inspection: report declared service configuration, generated Host state,
+  health, container/resource status, connection details, ownership labels, and
+  actionable diagnostics through structured Host command output;
+- failure recovery: detect failed service starts, dependency health failures,
+  drift from the declared service intent, failed route reloads, and partial
+  cleanup, then leave the Capsule in an inspectable state with its HTTP route
+  returning the Hosted Capsule unavailable response when the app cannot run.
+
+Future Hosted service orchestration should extend the existing
+`sporades host ...` surface rather than introduce a new top-level service
+namespace. The natural shape is for Host commands such as `register`, `push`,
+`start`, `stop`, `restart`, `list`, `stats`, `logs`, `delete`, and future
+Host-scoped `reset` or `backup` operations to include Capsule service state
+where relevant. Agents should keep using Host profiles and structured JSON
+output as the automation boundary.
+
+Open questions remain intentionally unimplemented. Local Docker Compose may be
+enough for one-node Host servers, or Host servers may need Portainer, another
+container management layer, or a Sporades-owned supervisor to make service
+health, backups, upgrades, and recovery reliable. The later design must also
+settle retention policy, restore semantics, service image update policy,
+resource limits, and whether any Host UI is allowed without weakening the
+CLI-first contract.
+
 ## Database Architecture
 
 Each Capsule owns a SQLite database. SQLite is the source of truth for:
