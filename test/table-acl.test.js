@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { openDevDatabase, SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../src/server-runtime-source.js";
-import { query, String, table } from "../src/server.js";
+import { openDevDatabase, runMutation, SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../src/server-runtime-source.js";
+import { mutation, query, String, table } from "../src/server.js";
 
 const createEndpointDatabaseApi = SERVER_RUNTIME_SOURCE_FUNCTIONS.find(
   (fn) => fn.name === "createEndpointDatabaseApi",
@@ -275,6 +275,272 @@ test("async read ACL rules are awaited before returning query results", async ()
         result.data.map((row) => row.title),
         ["Mine"],
       );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("write ACLs receive insert, update, and delete row state inside mutations", async () => {
+  await withTempDir(async (dir) => {
+    const calls = [];
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        notes: table({
+          title: String(),
+          ownerId: String(),
+        }).acl({
+          insert: ({ previous, next, ctx }) => {
+            calls.push({ operation: "insert", previous, next, userId: ctx.auth.userId });
+            return true;
+          },
+          update: ({ previous, next, ctx }) => {
+            calls.push({ operation: "update", previous, next, userId: ctx.auth.userId });
+            return true;
+          },
+          delete: ({ previous, next, ctx }) => {
+            calls.push({ operation: "delete", previous, next, userId: ctx.auth.userId });
+            return true;
+          },
+        }),
+      },
+      mutations: {
+        addNote: mutation((ctx, title) => ctx.db.notes.insert({ title, ownerId: ctx.auth.userId })),
+        renameNote: mutation((ctx, id, title) => ctx.db.notes.update(id, { title })),
+        deleteNote: mutation((ctx, id) => ctx.db.notes.delete(id)),
+      },
+    });
+
+    try {
+      const inserted = await runMutation(database, auth("user-1"), "addNote", ["first"]);
+      assert.equal(inserted.ok, true);
+      const noteId = inserted.data.id;
+
+      const updated = await runMutation(database, auth("user-1"), "renameNote", [noteId, "second"]);
+      assert.equal(updated.ok, true);
+      const deleted = await runMutation(database, auth("user-1"), "deleteNote", [noteId]);
+      assert.equal(deleted.ok, true);
+
+      assert.equal(calls.length, 3);
+      assert.equal(calls[0].operation, "insert");
+      assert.equal(calls[0].previous, null);
+      assert.equal(calls[0].next.title, "first");
+      assert.equal(calls[0].next.ownerId, "user-1");
+      assert.equal(calls[0].userId, "user-1");
+
+      assert.equal(calls[1].operation, "update");
+      assert.equal(calls[1].previous.title, "first");
+      assert.equal(calls[1].next.title, "second");
+      assert.equal(calls[1].next.ownerId, "user-1");
+
+      assert.equal(calls[2].operation, "delete");
+      assert.equal(calls[2].previous.title, "second");
+      assert.equal(calls[2].next, null);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("denied write ACLs roll back mutation writes and skip after hooks", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        notes: table({
+          title: String(),
+          ownerId: String(),
+        }).acl({
+          insert: ({ next }) => next.title !== "blocked",
+        }),
+        auditLogs: table({
+          title: String(),
+          ownerId: String(),
+        }),
+      },
+      mutations: {
+        addTwoNotes: mutation((ctx, first, second) => {
+          ctx.db.notes.insert({ title: first, ownerId: ctx.auth.userId });
+          ctx.db.notes.insert({ title: second, ownerId: ctx.auth.userId });
+        }),
+      },
+    });
+    database.mutationHooks.afterMutation = [
+      `({ ctx }) => {
+        ctx.db.auditLogs.insert({ title: "after-hook", ownerId: ctx.auth.userId });
+      }`,
+    ];
+
+    try {
+      const result = await runMutation(database, auth("user-1"), "addTwoNotes", ["allowed", "blocked"]);
+      assert.equal(result.ok, false);
+      assert.deepEqual(result.error, {
+        message: "Write denied.",
+        hint: "The current user is not allowed to change this row.",
+      });
+
+      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[0], {}).map((row) => ({ title: row.title })), []);
+      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[1], {}).map((row) => ({ title: row.title })), []);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("async ACL writes from after hooks are awaited before commit and can roll back the mutation", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        todos: table({
+          title: String(),
+          ownerId: String(),
+        }),
+        auditLogs: table({
+          title: String(),
+          ownerId: String(),
+        }).acl({
+          insert: async ({ next }) => {
+            await Promise.resolve();
+            return next.title !== "deny";
+          },
+        }),
+      },
+      mutations: {
+        addTodo: mutation((ctx, title) => {
+          ctx.db.todos.insert({ title, ownerId: ctx.auth.userId });
+        }),
+      },
+    });
+    database.mutationHooks.afterMutation = [
+      `({ args, ctx }) => {
+        ctx.db.auditLogs.insert({ title: args[0], ownerId: ctx.auth.userId });
+      }`,
+    ];
+
+    try {
+      const allowed = await runMutation(database, auth("user-1"), "addTodo", ["allow"]);
+      assert.equal(allowed.ok, true);
+      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[0], {}).map((row) => ({ title: row.title })), [
+        { title: "allow" },
+      ]);
+      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[1], {}).map((row) => ({ title: row.title })), [
+        { title: "allow" },
+      ]);
+
+      const denied = await runMutation(database, auth("user-1"), "addTodo", ["deny"]);
+      assert.equal(denied.ok, false);
+      assert.deepEqual(denied.error, {
+        message: "Write denied.",
+        hint: "The current user is not allowed to change this row.",
+      });
+      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[0], {}).map((row) => ({ title: row.title })), [
+        { title: "allow" },
+      ]);
+      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[1], {}).map((row) => ({ title: row.title })), [
+        { title: "allow" },
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("write ACL fallback, operation-specific override, missing ACL, and async rules apply to writes", async () => {
+  await withTempDir(async (dir) => {
+    const calls = [];
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        documents: table({
+          title: String(),
+          ownerId: String(),
+        }).acl({
+          write: ({ previous, next }) => {
+            calls.push({ rule: "write", previous, next });
+            return next?.ownerId === "user-1" || previous?.ownerId === "user-1";
+          },
+          update: async ({ previous, next }) => {
+            await Promise.resolve();
+            calls.push({ rule: "update", previous, next });
+            return next.title !== "locked";
+          },
+        }),
+        openLogs: table({
+          title: String(),
+        }),
+      },
+      mutations: {
+        addDocument: mutation((ctx, title, ownerId) => ctx.db.documents.insert({ title, ownerId })),
+        renameDocument: mutation(async (ctx, id, title) => ctx.db.documents.update(id, { title })),
+        deleteDocument: mutation((ctx, id) => ctx.db.documents.delete(id)),
+        addOpenLog: mutation((ctx, title) => ctx.db.openLogs.insert({ title })),
+      },
+    });
+
+    try {
+      const inserted = await runMutation(database, auth("user-1"), "addDocument", ["draft", "user-1"]);
+      assert.equal(inserted.ok, true);
+      assert.equal(calls[0].rule, "write");
+      assert.equal(calls[0].previous, null);
+
+      const deniedUpdate = await runMutation(database, auth("user-1"), "renameDocument", [inserted.data.id, "locked"]);
+      assert.equal(deniedUpdate.ok, false);
+      assert.equal(calls[1].rule, "update");
+      assert.equal(calls[1].previous.title, "draft");
+      assert.equal(calls[1].next.title, "locked");
+      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[0], {}).map((row) => ({ title: row.title })), [
+        { title: "draft" },
+      ]);
+
+      const deleted = await runMutation(database, auth("user-1"), "deleteDocument", [inserted.data.id]);
+      assert.equal(deleted.ok, true);
+      assert.equal(calls[2].rule, "write");
+      assert.equal(calls[2].previous.title, "draft");
+      assert.equal(calls[2].next, null);
+
+      const open = await runMutation(database, auth("user-1"), "addOpenLog", ["open"]);
+      assert.equal(open.ok, true);
+      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[1], {}).map((row) => ({ title: row.title })), [
+        { title: "open" },
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("generated insert and update mutations apply write ACLs", async () => {
+  await withTempDir(async (dir) => {
+    const calls = [];
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        todos: table({
+          text: String(),
+          ownerId: String(),
+        }).acl({
+          write: ({ operation, previous, next }) => {
+            calls.push({ operation, previous, next });
+            return next?.text !== "blocked";
+          },
+        }),
+      },
+    });
+
+    try {
+      const inserted = await runMutation(database, auth("user-1"), "addTodo", ["first"]);
+      assert.equal(inserted.ok, true);
+      assert.equal(calls[0].operation, "insert");
+      assert.equal(calls[0].previous, null);
+      assert.equal(calls[0].next.text, "first");
+      assert.equal(calls[0].next.ownerId, "user-1");
+
+      const [{ id }] = database.sqlite.selectAppRows(database.schema.tables[0], {});
+      const deniedUpdate = await runMutation(database, auth("user-1"), "updateTodoText", [id, "blocked"]);
+      assert.equal(deniedUpdate.ok, false);
+      assert.equal(calls[1].operation, "update");
+      assert.equal(calls[1].previous.text, "first");
+      assert.equal(calls[1].next.text, "blocked");
+      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[0], {}).map((row) => ({ text: row.text })), [
+        { text: "first" },
+      ]);
     } finally {
       database.close();
     }
