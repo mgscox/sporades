@@ -19,11 +19,12 @@ The completed slice should make uploaded bytes live in MinIO objects while prese
 - [ ] The adapter supports Object bucket setup, write file version, read file version, best-effort delete file version, health check, and close/no-op lifecycle.
 - [ ] MinIO uses path-style URLs and service-provided endpoint, bucket, region, access key, and secret key values.
 - [ ] Stored object keys use a stable file-version layout such as `files/<fileId>/<version>`.
+- [ ] Capsule storage isolation is enforced by the provider adapter without requiring app code to add Capsule-specific prefixes.
 - [ ] Missing objects are translated into the same direct-read `404` behavior as local filesystem storage.
-- [ ] MinIO-specific behavior is limited to service provisioning/env defaults, not spread through upload, download, public URL, or delete call sites.
-- [ ] Fake S3-compatible service tests cover signing, path-style URLs, Object bucket creation, object read/write/delete, health checks, and object key layout.
+- [ ] MinIO-specific behavior is limited to service provisioning/env defaults, not spread through upload, download, public URL, delete, File path, or ACL helper call sites.
+- [ ] Fake S3-compatible service tests cover signing, path-style URLs, Object bucket creation, object read/write/delete, health checks, isolation mapping, and object key layout.
 
 ## Blocked by
 
-- .scratch/minio-storage-s3-compatible-adapter/issues/01-extract-local-file-bytes-behind-storage-adapter.md
-- .scratch/minio-storage-s3-compatible-adapter/issues/02-add-minio-local-capsule-storage-service.md
+- .scratch/minio-storage-s3-compatible-adapter/issues/01-extract-local-file-storage-adapter.md
+- .scratch/minio-storage-s3-compatible-adapter/issues/04-add-minio-local-capsule-storage-service.md

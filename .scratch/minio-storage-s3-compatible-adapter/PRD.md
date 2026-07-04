@@ -67,8 +67,10 @@ Add an internal Storage adapter boundary for uploaded file bytes. Local filesyst
 
 ## Implementation Issues
 
-- `issues/01-extract-local-file-bytes-behind-storage-adapter.md`
-- `issues/02-add-minio-local-capsule-storage-service.md`
-- `issues/03-implement-s3-compatible-storage-adapter-for-minio.md`
-- `issues/04-verify-minio-file-lifecycle-parity.md`
-- `issues/05-document-minio-storage-and-s3-compatibility.md`
+- `issues/01-extract-local-file-storage-adapter.md`
+- `issues/02-add-absolute-file-paths-and-file-references.md`
+- `issues/03-expose-file-references-in-acl-storage-helpers.md`
+- `issues/04-add-minio-local-capsule-storage-service.md`
+- `issues/05-implement-s3-compatible-storage-adapter-for-minio.md`
+- `issues/06-verify-minio-file-lifecycle-parity.md`
+- `issues/07-document-minio-storage-and-file-references.md`
