@@ -38,7 +38,6 @@ export type AclStorageFileMetadata = {
   id: string;
   path: string;
   bucket: string;
-  bucketId: string;
   owner: string;
   ownerId: string;
   status: string;

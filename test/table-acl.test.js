@@ -24,6 +24,10 @@ function auth(userId) {
   };
 }
 
+function isPromiseLike(value) {
+  return value && typeof value === "object" && typeof value.then === "function";
+}
+
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-table-acl-"));
   try {
@@ -763,6 +767,7 @@ test("ACL helpers expose async db exists checks and do not recursively evaluate 
 test("ACL storage helpers expose live files by File ID and absolute File path", async () => {
   await withTempDir(async (dir) => {
     const seenFiles = new Map();
+    const seenExists = new Map();
     const database = await openCapsuleDatabase(dir, {
       schema: {
         attachments: table({
@@ -771,9 +776,11 @@ test("ACL storage helpers expose live files by File ID and absolute File path", 
         }).acl({
           read: ({ row, ctx }) => {
             const file = ctx.acl.storage.get("files", row.fileRef);
+            const exists = ctx.acl.storage.exists("files", row.fileRef);
             seenFiles.set(row.title, file);
+            seenExists.set(row.title, exists);
             return (
-              ctx.acl.storage.exists("files", row.fileRef) &&
+              exists &&
               file?.ownerId === ctx.auth.userId &&
               file?.path.startsWith("/teams/u1/")
             );
@@ -908,12 +915,15 @@ test("ACL storage helpers expose live files by File ID and absolute File path", 
         originalName: "annual.txt",
         owner: "u1",
         ownerId: "u1",
-        bucketId: "bucket-1",
         status: "uploaded",
         createdAt: "2026-07-04T10:01:00.000Z",
         updatedAt: "2026-07-04T10:01:00.000Z",
         deletedAt: null,
       });
+      assert.equal(isPromiseLike(seenFiles.get("Allowed by ID")), false);
+      assert.equal(isPromiseLike(seenExists.get("Allowed by ID")), false);
+      assert.equal(seenExists.get("Allowed by ID"), true);
+      assert.equal(seenExists.get("Deleted by ID"), false);
       assert.equal(seenFiles.get("Deleted by ID"), null);
       assert.equal(seenFiles.get("Deleted by path"), null);
       assert.equal(seenFiles.get("Pending by ID"), null);
@@ -923,7 +933,6 @@ test("ACL storage helpers expose live files by File ID and absolute File path", 
         Object.keys(seenFiles.get("Allowed by ID")).sort(),
         [
           "bucket",
-          "bucketId",
           "createdAt",
           "deletedAt",
           "id",
@@ -939,6 +948,45 @@ test("ACL storage helpers expose live files by File ID and absolute File path", 
           "version",
         ],
       );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("ACL storage helpers fail closed when sync rules touch async file lookups", async () => {
+  await withTempDir(async (dir) => {
+    const observedExists = [];
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        attachments: table({
+          title: String(),
+          fileRef: String(),
+          ownerId: String(),
+        }).acl({
+          read: ({ row, ctx }) => {
+            const exists = ctx.acl.storage.exists("files", row.fileRef);
+            observedExists.push(exists);
+            return exists && row.ownerId === ctx.auth.userId;
+          },
+        }),
+      },
+      queries: {
+        attachments: query((ctx) => ctx.db.attachments.all()),
+      },
+    });
+
+    try {
+      database.sqlite.selectFileById = async () => null;
+
+      const db = createEndpointDatabaseApi(database);
+      db.attachments.insert({ title: "Missing async file", fileRef: "missing-file", ownerId: "u1" });
+
+      const result = await runQuery(database, auth("u1"), "attachments");
+
+      assert.equal(result.error, null);
+      assert.deepEqual(result.data, []);
+      assert.equal(observedExists.some(isPromiseLike), true);
     } finally {
       database.close();
     }

@@ -88,6 +88,11 @@ const app = capsule({
       read: ({ row, ctx }) => {
         const file = ctx.acl.storage.get("files", "/avatars/profile.png");
         const hasFile = ctx.acl.storage.exists("files", file?.id ?? "/avatars/profile.png");
+        if (file) {
+          file.bucket.toUpperCase();
+          // @ts-expect-error ACL file metadata exposes logical bucket names, not internal bucket row IDs.
+          file.bucketId;
+        }
         return row?.ownerId === ctx.auth.userId && hasFile === (file !== null) && file !== null && file.path.startsWith("/");
       },
       write: async ({ next, previous, ctx }) => {

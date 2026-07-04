@@ -4694,15 +4694,16 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
     }
     throw createAclDeniedError(denialLogData);
   };
+  const aclContext = createTableAclContext(context, database);
   const result = rule({
-    ctx: createTableAclContext(context, database),
+    ctx: aclContext,
     operation,
     table: table.name,
     previous,
     next,
   });
   if (!isPromiseLike(result)) {
-    if (!result) {
+    if (!result || aclSyncRuleTouchedAsyncHelper(aclContext)) {
       deny();
     }
     return write();
@@ -4745,8 +4746,9 @@ function applyReadAcl(database, table, row, context) {
   if (!rule) {
     return true;
   }
+  const aclContext = createTableAclContext(context, database);
   const result = rule({
-    ctx: createTableAclContext(context, database),
+    ctx: aclContext,
     operation: "read",
     table: table.name,
     row,
@@ -4761,7 +4763,7 @@ function applyReadAcl(database, table, row, context) {
     return false;
   };
   if (!isPromiseLike(result)) {
-    return result ? true : deny();
+    return result && !aclSyncRuleTouchedAsyncHelper(aclContext) ? true : deny();
   }
   return Promise.resolve(result).then((allowed) => (allowed ? true : deny()));
 }
@@ -4774,12 +4776,30 @@ function filterRowsByReadAcl(database, table, rows, context) {
   return rows.filter((_, index) => decisions[index]);
 }
 
+const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
+
 function createAclHelpers(database) {
-  const state = { readCount: 0, maxReads: 32 };
-  return Object.freeze({
+  const state = { readCount: 0, maxReads: 32, asyncReadCount: 0 };
+  const helpers = {
     db: createAclDbHelpers(database, state),
     storage: createAclStorageHelpers(database, state),
+  };
+  Object.defineProperty(helpers, ACL_HELPER_STATE, {
+    value: state,
+    enumerable: false,
   });
+  return Object.freeze(helpers);
+}
+
+function aclSyncRuleTouchedAsyncHelper(aclContext) {
+  return (aclContext?.acl?.[ACL_HELPER_STATE]?.asyncReadCount ?? 0) > 0;
+}
+
+function trackAclHelperResult(state, result) {
+  if (isPromiseLike(result)) {
+    state.asyncReadCount += 1;
+  }
+  return result;
 }
 
 function createAclDbHelpers(database, state) {
@@ -4787,14 +4807,16 @@ function createAclDbHelpers(database, state) {
     get(tableName, id) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
-      return thenIfPromise(database.sqlite.selectAppRowById(table, id), (row) => {
+      const selected = trackAclHelperResult(state, database.sqlite.selectAppRowById(table, id));
+      return thenIfPromise(selected, (row) => {
         return row ? deserializeRow(table, row) : null;
       });
     },
     exists(tableName, id) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
-      return thenIfPromise(database.sqlite.selectAppRowById(table, id), (row) => Boolean(row));
+      const selected = trackAclHelperResult(state, database.sqlite.selectAppRowById(table, id));
+      return thenIfPromise(selected, (row) => Boolean(row));
     },
   });
 }
@@ -4805,7 +4827,7 @@ function createAclStorageHelpers(database, state) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        return thenIfPromise(resolveAclStorageFileReference(database, reference), (row) => {
+        return thenIfPromise(resolveAclStorageFileReference(database, state, reference), (row) => {
           return row ? aclStorageMetadataFromFileRow(row) : null;
         });
       }
@@ -4815,14 +4837,14 @@ function createAclStorageHelpers(database, state) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        return thenIfPromise(resolveAclStorageFileReference(database, reference), (row) => Boolean(row));
+        return thenIfPromise(resolveAclStorageFileReference(database, state, reference), (row) => Boolean(row));
       }
       return false;
     },
   });
 }
 
-function resolveAclStorageFileReference(database, reference) {
+function resolveAclStorageFileReference(database, state, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
     let path;
@@ -4831,11 +4853,14 @@ function resolveAclStorageFileReference(database, reference) {
     } catch {
       return null;
     }
-    return thenIfPromise(singleLiveFileRowByPath(database, path), (resolved) => {
+    const selected = trackAclHelperResult(state, database.sqlite.selectLiveFileByPath(path));
+    return thenIfPromise(selected, (rows) => {
+      const resolved = rows.length > 1 ? { ambiguous: true } : (rows[0] ?? null);
       return resolved?.ambiguous ? null : resolved;
     });
   }
-  return thenIfPromise(database.sqlite.selectFileById(value), (row) => {
+  const selected = trackAclHelperResult(state, database.sqlite.selectFileById(value));
+  return thenIfPromise(selected, (row) => {
     if (!row || row.deletedAt !== null || row.status !== "uploaded") {
       return null;
     }
@@ -4874,7 +4899,6 @@ function aclStorageMetadataFromFileRow(row) {
     originalName: row.name,
     owner: row.ownerId,
     ownerId: row.ownerId,
-    bucketId: row.bucketId,
     status: row.status,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
