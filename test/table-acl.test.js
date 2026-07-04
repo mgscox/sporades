@@ -546,3 +546,181 @@ test("generated insert and update mutations apply write ACLs", async () => {
     }
   });
 });
+
+test("ACL db helpers can inspect app tables by stable table name", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        projects: table({
+          name: String(),
+          ownerId: String(),
+        }),
+        notes: table({
+          title: String(),
+          projectId: String(),
+        }).acl({
+          read: ({ row, ctx }) => {
+            const project = ctx.acl.db.get("projects", row.projectId);
+            return project?.ownerId === ctx.auth.userId;
+          },
+        }),
+      },
+      queries: {
+        notes: query((ctx) => ctx.db.notes.orderBy("title").all()),
+      },
+    });
+
+    try {
+      const db = createEndpointDatabaseApi(database);
+      const mine = db.projects.insert({ name: "Mine", ownerId: "u1" });
+      const theirs = db.projects.insert({ name: "Theirs", ownerId: "u2" });
+      db.notes.insert({ title: "Mine", projectId: mine.id });
+      db.notes.insert({ title: "Theirs", projectId: theirs.id });
+
+      const result = await runQuery(database, auth("u1"), "notes");
+
+      assert.equal(result.error, null);
+      assert.deepEqual(
+        result.data.map((row) => row.title),
+        ["Mine"],
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("ACL helpers expose async db exists checks and do not recursively evaluate read ACLs", async () => {
+  await withTempDir(async (dir) => {
+    let projectAclCalls = 0;
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        projects: table({
+          name: String(),
+          ownerId: String(),
+        }).acl({
+          read: () => {
+            projectAclCalls += 1;
+            return false;
+          },
+        }),
+        notes: table({
+          title: String(),
+          projectId: String(),
+        }).acl({
+          read: async ({ row, ctx }) => {
+            await Promise.resolve();
+            return ctx.acl.db.exists("projects", row.projectId);
+          },
+        }),
+      },
+      queries: {
+        notes: query((ctx) => ctx.db.notes.all()),
+      },
+    });
+
+    try {
+      const db = createEndpointDatabaseApi(database);
+      const project = db.projects.insert({ name: "Hidden", ownerId: "u2" });
+      db.notes.insert({ title: "Allowed by helper", projectId: project.id });
+
+      const result = await runQuery(database, auth("u1"), "notes");
+
+      assert.equal(result.error, null);
+      assert.deepEqual(
+        result.data.map((row) => row.title),
+        ["Allowed by helper"],
+      );
+      assert.equal(projectAclCalls, 0);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("ACL storage helpers expose stable file metadata resource names", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        attachments: table({
+          title: String(),
+          fileId: String(),
+        }).acl({
+          read: ({ row, ctx }) => {
+            const file = ctx.acl.storage.get("files", row.fileId);
+            return file?.ownerId === ctx.auth.userId && file?.name === "report.txt";
+          },
+        }),
+      },
+      queries: {
+        attachments: query((ctx) => ctx.db.attachments.all()),
+      },
+    });
+
+    try {
+      database.sqlite.insertFileRow({
+        id: "file-1",
+        ownerId: "u1",
+        bucketId: "bucket-1",
+        bucketName: "default",
+        name: "report.txt",
+        type: "text/plain",
+        size: 12,
+        version: "version-1",
+        status: "uploaded",
+        createdAt: "2026-07-04T10:00:00.000Z",
+        updatedAt: "2026-07-04T10:00:00.000Z",
+      });
+      const db = createEndpointDatabaseApi(database);
+      db.attachments.insert({ title: "Report", fileId: "file-1" });
+
+      const result = await runQuery(database, auth("u1"), "attachments");
+
+      assert.equal(result.error, null);
+      assert.deepEqual(
+        result.data.map((row) => row.title),
+        ["Report"],
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("ACL helpers block runtime table names and guard helper read count", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        notes: table({
+          title: String(),
+        }).acl({
+          read: ({ ctx }) => {
+            assert.throws(() => ctx.acl.db.get("sporades", "schema"), /Unknown ACL database resource/);
+            assert.throws(() => ctx.acl.db.exists("sporades_auth_users", "u1"), /Unknown ACL database resource/);
+            assert.throws(() => ctx.acl.db.exists("sporades_log_events", "event-1"), /Unknown ACL database resource/);
+            assert.throws(() => ctx.acl.storage.get("sporades_files", "file-1"), /Unknown ACL storage resource/);
+            for (let index = 0; index < 33; index += 1) {
+              ctx.acl.db.exists("notes", "missing");
+            }
+            return true;
+          },
+        }),
+      },
+      queries: {
+        notes: query((ctx) => ctx.db.notes.all()),
+      },
+    });
+
+    try {
+      const db = createEndpointDatabaseApi(database);
+      db.notes.insert({ title: "first" });
+
+      const result = await runQuery(database, auth("u1"), "notes");
+
+      assert.equal(result.error.message, "ACL helper read limit exceeded.");
+      assert.equal(result.error.hint, "Keep ACL policies bounded; each rule may perform at most 32 helper reads.");
+    } finally {
+      database.close();
+    }
+  });
+});
