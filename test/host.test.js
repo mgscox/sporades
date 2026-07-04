@@ -458,6 +458,8 @@ async function writeHostedCapsuleRollbackFixture(dir, options = {}) {
   const rollbackReleaseId = Object.hasOwn(options, "rollbackReleaseId") ? options.rollbackReleaseId : "20260629T120000Z-deadbeef";
   const releaseIds = options.releaseIds ?? [currentReleaseId, rollbackReleaseId];
   const missingFiles = new Set(options.missingFiles ?? []);
+  const sealedReleaseFingerprints = options.sealedReleaseFingerprints ?? {};
+  const missingPrivateKeyFingerprints = new Set(options.missingPrivateKeyFingerprints ?? []);
   await mkdir(path.join(dataDir, "uploads"), { recursive: true });
   await mkdir(path.dirname(registryRecordPath), { recursive: true });
   for (const releaseId of releaseIds) {
@@ -472,6 +474,18 @@ async function writeHostedCapsuleRollbackFixture(dir, options = {}) {
     for (const [file, contents] of Object.entries(files)) {
       if (!missingFiles.has(`${releaseId}/${file}`) && !missingFiles.has(file)) {
         await writeFile(path.join(releaseDir, file), contents);
+      }
+    }
+    const fingerprint = sealedReleaseFingerprints[releaseId];
+    if (fingerprint) {
+      await mkdir(path.join(releaseDir, ".sporades", "sealed-server-env"), { recursive: true });
+      await writeFile(
+        path.join(releaseDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+        `${JSON.stringify({ version: 1, valueAlgorithm: "aes-256-gcm", publicKeyFingerprint: fingerprint, entries: {} })}\n`,
+      );
+      if (!missingPrivateKeyFingerprints.has(fingerprint)) {
+        await mkdir(path.join(dataDir, "sealed-server-env", "keys"), { recursive: true });
+        await writeFile(path.join(dataDir, "sealed-server-env", "keys", `${fingerprint}.private.pem`), `private key for ${fingerprint}\n`);
       }
     }
   }
@@ -492,7 +506,19 @@ async function writeHostedCapsuleRollbackFixture(dir, options = {}) {
         source: {
           hostedUrl: `https://${subname}.${domain}`,
           remoteCapsuleId: `${domain}/${subname}`,
-          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          files: [
+            "server.mjs",
+            "client.js",
+            "index.html",
+            "sporades.json",
+            ...(sealedReleaseFingerprints[releaseId] ? [".sporades/sealed-server-env/server-env.sealed.json"] : []),
+          ],
+          ...(sealedReleaseFingerprints[releaseId]
+            ? {
+                sealedServerEnvIncluded: true,
+                sealedServerEnv: { publicKeyFingerprint: sealedReleaseFingerprints[releaseId] },
+              }
+            : {}),
         },
         startAttempts: releaseId === currentReleaseId ? [{ startedAt: "2026-06-30T22:16:00.000Z" }] : [],
         verificationAttempts: releaseId === currentReleaseId ? [] : [{ verifiedAt: "2026-06-29T12:02:00.000Z" }],
@@ -507,6 +533,7 @@ async function writeHostedCapsuleRollbackFixture(dir, options = {}) {
       hostedUrl: `https://${subname}.${domain}`,
       status: options.status ?? "running",
       currentRelease: currentReleaseId ? { id: currentReleaseId } : null,
+      ...(options.currentRegistryFingerprint ? { sealedServerEnv: { currentKeyFingerprint: options.currentRegistryFingerprint } } : {}),
       releases,
     })}\n`,
   );
@@ -3469,7 +3496,7 @@ test("sporades host helper rejects non-canonical Sealed Server env private key p
   });
 });
 
-test("sporades host helper starts public-key-only sealed releases with the Host-owned fingerprint key", async () => {
+test("sporades host helper starts public-key-only sealed releases with the release manifest fingerprint key", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
     const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
@@ -3478,6 +3505,7 @@ test("sporades host helper starts public-key-only sealed releases with the Host-
     const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     const fingerprint = "0123456789abcdef";
+    const currentRegistryFingerprint = "fedcba9876543210";
     await mkdir(path.join(runtimeDir, ".sporades", "sealed-server-env"), { recursive: true });
     await mkdir(incomingDir, { recursive: true });
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
@@ -3506,7 +3534,7 @@ test("sporades host helper starts public-key-only sealed releases with the Host-
         remoteCapsuleId: "capsules.example.dev/team-notes",
         hostedUrl: "https://team-notes.capsules.example.dev",
         status: "registered",
-        sealedServerEnv: { currentKeyFingerprint: fingerprint },
+        sealedServerEnv: { currentKeyFingerprint: currentRegistryFingerprint },
       })}\n`,
     );
 
@@ -3564,8 +3592,76 @@ test("sporades host helper starts public-key-only sealed releases with the Host-
     assert(runCall.args.includes("SPORADES_SEALED_SERVER_ENV_PATH=/app/.sporades/sealed-server-env/server-env.sealed.json"));
 
     const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
+    assert.equal(record.sealedServerEnv.currentKeyFingerprint, currentRegistryFingerprint);
     assert.equal(record.releases[0].source.sealedServerEnvIncluded, true);
     assert.deepEqual(record.releases[0].source.sealedServerEnv, { publicKeyFingerprint: fingerprint });
+  });
+});
+
+test("sporades host helper rejects sealed release start when the manifest fingerprint key is missing", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const currentReleaseId = "20260630T221500Z-feedface";
+    const fingerprint = "0123456789abcdef";
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    const releaseDir = path.join(capsuleDir, "releases", currentReleaseId);
+    await mkdir(path.join(releaseDir, ".sporades", "sealed-server-env"), { recursive: true });
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(path.join(releaseDir, "server.mjs"), "export default 'server bundle';\n");
+    await writeFile(path.join(releaseDir, "client.js"), "console.log('client bundle');\n");
+    await writeFile(path.join(releaseDir, "index.html"), "<div id=\"root\"></div>\n");
+    await writeFile(path.join(releaseDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+    await writeFile(
+      path.join(releaseDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+      `${JSON.stringify({ version: 1, valueAlgorithm: "aes-256-gcm", publicKeyFingerprint: fingerprint, entries: {} })}\n`,
+    );
+    await symlink(releaseDir, path.join(capsuleDir, "current"));
+    await writeFile(
+      registryRecordPath,
+      `${JSON.stringify({
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        status: "released",
+        currentRelease: { id: currentReleaseId },
+        sealedServerEnv: { currentKeyFingerprint: "fedcba9876543210" },
+        releases: [
+          {
+            id: currentReleaseId,
+            createdAt: "2026-06-30T22:15:00.000Z",
+            uploadedAt: "2026-06-30T22:15:00.000Z",
+            state: "uploaded",
+            current: true,
+            source: {
+              hostedUrl: "https://team-notes.capsules.example.dev",
+              files: ["server.mjs", "client.js", "index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
+              sealedServerEnvIncluded: true,
+              sealedServerEnv: { publicKeyFingerprint: fingerprint },
+            },
+          },
+        ],
+      })}\n`,
+    );
+    const docker = await installFakeDocker(dir);
+
+    const start = await runHostHelper(
+      {
+        action: "capsule.start",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        lifecycle: { remoteRoot },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(start.code, 0, start.stderr);
+    const output = JSON.parse(start.stdout);
+    assert.equal(output.ok, false);
+    assert.equal(output.error.message, "Hosted Capsule Sealed Server env private key is missing.");
+    assert.match(output.error.hint, /0123456789abcdef/);
+    assert.equal((await docker.calls()).some((call) => call.args[0] === "run"), false);
   });
 });
 
@@ -4530,6 +4626,22 @@ test("sporades host helper lists registry records enriched with Docker container
           createdAt: "2026-01-03T00:00:00.000Z",
           bundleHash: "sha256:abc123",
         },
+        sealedServerEnv: { currentKeyFingerprint: "fedcba9876543210" },
+        releases: [
+          {
+            id: "20260103T000000Z-abcdef12",
+            createdAt: "2026-01-03T00:00:00.000Z",
+            uploadedAt: "2026-01-03T00:00:00.000Z",
+            state: "started",
+            current: true,
+            source: {
+              hostedUrl: "https://notes.capsules.example.dev",
+              files: ["server.mjs", "client.js", "index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
+              sealedServerEnvIncluded: true,
+              sealedServerEnv: { publicKeyFingerprint: "0123456789abcdef" },
+            },
+          },
+        ],
         baseImage: {
           updatePolicy: { mode: "manual" },
         },
@@ -4662,11 +4774,13 @@ test("sporades host helper lists registry records enriched with Docker container
               createdAt: "2026-01-02T00:00:00.000Z",
               updatedAt: "2026-01-03T00:00:00.000Z",
               status: "running",
+              sealedServerEnv: { currentKeyFingerprint: "fedcba9876543210" },
             },
             currentRelease: {
               id: "20260103T000000Z-abcdef12",
               createdAt: "2026-01-03T00:00:00.000Z",
               bundleHash: "sha256:abc123",
+              sealedServerEnv: { publicKeyFingerprint: "0123456789abcdef" },
             },
             docker: {
               containerId: "abc123def456",
@@ -7230,6 +7344,52 @@ test("sporades host helper rolls back to a recorded release and preserves persis
       ],
     );
     assert.equal(record.releases[1].startAttempts.length, 1);
+  });
+});
+
+test("sporades host helper rollback uses the retained release manifest fingerprint key", async () => {
+  await withTempDir(async (dir) => {
+    const currentFingerprint = "fedcba9876543210";
+    const rollbackFingerprint = "0123456789abcdef";
+    const fixture = await writeHostedCapsuleRollbackFixture(dir, {
+      currentRegistryFingerprint: currentFingerprint,
+      sealedReleaseFingerprints: {
+        "20260630T221500Z-feedface": currentFingerprint,
+        "20260629T120000Z-deadbeef": rollbackFingerprint,
+      },
+    });
+    const docker = await installFakeDocker(dir);
+
+    const rollback = await runHostHelper(
+      {
+        action: "capsule.release.rollback",
+        host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname },
+        rollback: { releaseId: fixture.rollbackReleaseId },
+        lifecycle: { remoteRoot: fixture.remoteRoot },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(rollback.code, 0, rollback.stderr);
+    const output = JSON.parse(rollback.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.currentRelease.id, fixture.rollbackReleaseId);
+    const runCall = (await docker.calls()).find((call) => call.args[0] === "run");
+    assert.ok(runCall);
+    assert.ok(
+      runCall.args.includes(
+        `${path.join(fixture.dataDir, "sealed-server-env", "keys", `${rollbackFingerprint}.private.pem`)}:/app/.sporades/sealed-server-env/server-env.private.pem:ro`,
+      ),
+    );
+    assert.ok(
+      !runCall.args.includes(
+        `${path.join(fixture.dataDir, "sealed-server-env", "keys", `${currentFingerprint}.private.pem`)}:/app/.sporades/sealed-server-env/server-env.private.pem:ro`,
+      ),
+    );
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    assert.equal(record.sealedServerEnv.currentKeyFingerprint, currentFingerprint);
+    assert.equal(record.releases.find((release) => release.id === fixture.rollbackReleaseId).source.sealedServerEnv.publicKeyFingerprint, rollbackFingerprint);
   });
 });
 
