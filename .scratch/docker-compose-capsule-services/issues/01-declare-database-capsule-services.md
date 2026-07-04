@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Declare Database Capsule Services
 
@@ -23,4 +23,3 @@ Add a `sporades.json` declaration shape for database Capsule services and genera
 ## Blocked by
 
 None - can start immediately
-
