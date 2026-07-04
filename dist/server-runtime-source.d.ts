@@ -45,6 +45,7 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
         updatePendingFileRow(row: any): any;
         insertFileUpload(row: any): any;
         selectFileById(fileId: any): any;
+        selectLiveFileByPath(ownerId: any, path: any): any;
         selectFileUpload(uploadId: any): any;
         completeFileUpload(upload: any, size: any, updatedAt: any): any;
         deleteFileUpload(uploadId: any): any;
@@ -158,6 +159,7 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
         updatePendingFileRow(row: any): any;
         insertFileUpload(row: any): any;
         selectFileById(fileId: any): any;
+        selectLiveFileByPath(ownerId: any, path: any): any;
         selectFileUpload(uploadId: any): any;
         completeFileUpload(upload: any, size: any, updatedAt: any): any;
         deleteFileUpload(uploadId: any): any;
@@ -247,6 +249,7 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
         updatePendingFileRow(row: any): any;
         insertFileUpload(row: any): any;
         selectFileById(fileId: any): any;
+        selectLiveFileByPath(ownerId: any, path: any): any;
         selectFileUpload(uploadId: any): any;
         completeFileUpload(upload: any, size: any, updatedAt: any): any;
         deleteFileUpload(uploadId: any): any;
@@ -306,6 +309,7 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
         updatePendingFileRow(row: any): any;
         insertFileUpload(row: any): any;
         selectFileById(fileId: any): any;
+        selectLiveFileByPath(ownerId: any, path: any): any;
         selectFileUpload(uploadId: any): any;
         completeFileUpload(upload: any, size: any, updatedAt: any): any;
         deleteFileUpload(uploadId: any): any;
@@ -419,6 +423,7 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
         updatePendingFileRow(row: any): any;
         insertFileUpload(row: any): any;
         selectFileById(fileId: any): any;
+        selectLiveFileByPath(ownerId: any, path: any): any;
         selectFileUpload(uploadId: any): any;
         completeFileUpload(upload: any, size: any, updatedAt: any): any;
         deleteFileUpload(uploadId: any): any;
@@ -508,6 +513,7 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
         updatePendingFileRow(row: any): any;
         insertFileUpload(row: any): any;
         selectFileById(fileId: any): any;
+        selectLiveFileByPath(ownerId: any, path: any): any;
         selectFileUpload(uploadId: any): any;
         completeFileUpload(upload: any, size: any, updatedAt: any): any;
         deleteFileUpload(uploadId: any): any;
@@ -638,6 +644,7 @@ declare function createRuntimeDatabaseAdapter(databasePath: any, serverEnv?: {},
     updatePendingFileRow(row: any): any;
     insertFileUpload(row: any): any;
     selectFileById(fileId: any): any;
+    selectLiveFileByPath(ownerId: any, path: any): any;
     selectFileUpload(uploadId: any): any;
     completeFileUpload(upload: any, size: any, updatedAt: any): any;
     deleteFileUpload(uploadId: any): any;
@@ -751,6 +758,7 @@ declare function createRuntimeDatabaseAdapter(databasePath: any, serverEnv?: {},
     updatePendingFileRow(row: any): any;
     insertFileUpload(row: any): any;
     selectFileById(fileId: any): any;
+    selectLiveFileByPath(ownerId: any, path: any): any;
     selectFileUpload(uploadId: any): any;
     completeFileUpload(upload: any, size: any, updatedAt: any): any;
     deleteFileUpload(uploadId: any): any;
@@ -840,6 +848,7 @@ declare function createRuntimeDatabaseAdapter(databasePath: any, serverEnv?: {},
     updatePendingFileRow(row: any): any;
     insertFileUpload(row: any): any;
     selectFileById(fileId: any): any;
+    selectLiveFileByPath(ownerId: any, path: any): any;
     selectFileUpload(uploadId: any): any;
     completeFileUpload(upload: any, size: any, updatedAt: any): any;
     deleteFileUpload(uploadId: any): any;
@@ -946,6 +955,7 @@ export declare function createSqliteDatabaseAdapter(databasePath: any, options?:
     updatePendingFileRow(row: any): any;
     insertFileUpload(row: any): any;
     selectFileById(fileId: any): any;
+    selectLiveFileByPath(ownerId: any, path: any): any;
     selectFileUpload(uploadId: any): any;
     completeFileUpload(upload: any, size: any, updatedAt: any): any;
     deleteFileUpload(uploadId: any): any;
@@ -1062,6 +1072,7 @@ export declare function createPostgresDatabaseAdapter(options: any): Promise<{
     updatePendingFileRow(row: any): any;
     insertFileUpload(row: any): any;
     selectFileById(fileId: any): any;
+    selectLiveFileByPath(ownerId: any, path: any): any;
     selectFileUpload(uploadId: any): any;
     completeFileUpload(upload: any, size: any, updatedAt: any): any;
     deleteFileUpload(uploadId: any): any;
@@ -1160,6 +1171,7 @@ export declare function createLibsqlDatabaseAdapter(options: any): Promise<{
     updatePendingFileRow(row: any): any;
     insertFileUpload(row: any): any;
     selectFileById(fileId: any): any;
+    selectLiveFileByPath(ownerId: any, path: any): any;
     selectFileUpload(uploadId: any): any;
     completeFileUpload(upload: any, size: any, updatedAt: any): any;
     deleteFileUpload(uploadId: any): any;
@@ -1204,7 +1216,9 @@ export declare function createPendingFileUpload(database: any, auth: any, messag
         message: any;
         hint: any;
     };
-    data?: undefined;
+} | {
+    ok: boolean;
+    row: any;
 } | {
     ok: boolean;
     data: {
@@ -1217,7 +1231,7 @@ export declare function createPendingFileUpload(database: any, auth: any, messag
             size: number;
             type: any;
             name: any;
-            path: string;
+            path: any;
             version: any;
         };
     };
@@ -1239,19 +1253,46 @@ export declare function completePendingFileUpload(database: any, uploadId: any, 
             size: number;
             type: any;
             name: any;
-            path: string;
+            path: any;
             version: any;
         };
     };
     error: any;
 }>;
-declare function createPublicFileUrl(database: any, auth: any, fileId: any, options?: {}): Promise<{
+export declare function getPrivateFileUrl(database: any, auth: any, fileReference: any): Promise<{
     ok: boolean;
     error: {
         message: any;
         hint: any;
     };
-    expiresAt?: undefined;
+} | {
+    ok: boolean;
+    row: any;
+} | {
+    ok: boolean;
+    data: {
+        url: string;
+        file: {
+            id: any;
+            bucket: any;
+            size: number;
+            type: any;
+            name: any;
+            path: any;
+            version: any;
+        };
+    };
+    error: any;
+}>;
+export declare function createPublicFileUrl(database: any, auth: any, fileReference: any, options?: {}): Promise<{
+    ok: boolean;
+    error: {
+        message: any;
+        hint: any;
+    };
+} | {
+    ok: boolean;
+    row: any;
 } | {
     ok: boolean;
     expiresAt: string;
@@ -1265,6 +1306,30 @@ declare function createPublicFileUrl(database: any, auth: any, fileId: any, opti
             url: string;
             expiresAt: string;
             revokedAt: any;
+        };
+    };
+    error: any;
+}>;
+export declare function deletePrivateFile(database: any, auth: any, fileReference: any): Promise<{
+    ok: boolean;
+    error: {
+        message: any;
+        hint: any;
+    };
+} | {
+    ok: boolean;
+    row: any;
+} | {
+    ok: boolean;
+    data: {
+        file: {
+            id: any;
+            bucket: any;
+            size: number;
+            type: any;
+            name: any;
+            path: any;
+            version: any;
         };
     };
     error: any;

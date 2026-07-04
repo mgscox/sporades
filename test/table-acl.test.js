@@ -784,6 +784,7 @@ test("ACL storage helpers expose stable file metadata resource names", async () 
         ownerId: "u1",
         bucketId: "bucket-1",
         bucketName: "default",
+        path: "/default/report.txt",
         name: "report.txt",
         type: "text/plain",
         size: 12,

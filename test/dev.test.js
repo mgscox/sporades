@@ -5294,6 +5294,7 @@ test("sporades db dump returns structured table data from the running dev sessio
                 "ownerId",
                 "bucketId",
                 "bucketName",
+                "path",
                 "name",
                 "type",
                 "size",
@@ -7354,7 +7355,7 @@ test("sporades dev persists private file uploads across dev session restarts", a
       assert.equal(uploadUrl.data.file.name, "hello.txt");
       assert.equal(uploadUrl.data.file.size, 11);
       assert.equal(uploadUrl.data.file.type, "text/plain");
-      assert.match(uploadUrl.data.file.path, /^\/__sporades\/files\/private\//);
+      assert.equal(uploadUrl.data.file.path, "/default/hello.txt");
       assert.doesNotMatch(uploadUrl.data.file.path, /sessionToken/);
       assert.equal(uploadUrl.data.file.path.includes(auth.data.sessionToken), false);
 

@@ -361,9 +361,11 @@ function createConnection() {
           name: file.name ?? "upload",
           type: file.type ?? "application/octet-stream",
           size: file.size ?? 0,
+          path: options.path ?? null,
         },
         replace: options.replace === true,
         fileId: options.fileId ?? null,
+        fileReference: options.fileReference ?? options.fileId ?? null,
       });
       if (negotiate.error) {
         throw structuredError(negotiate.error);
@@ -387,13 +389,13 @@ function createConnection() {
       options.onComplete?.({ type: "complete", file: metadata });
       return metadata;
     },
-    async fileUrl(fileId) {
-      const result = await request("file.url", { fileId });
+    async fileUrl(fileReference) {
+      const result = await request("file.url", { fileReference, fileId: fileReference });
       if (result.error) throw structuredError(result.error);
       return result.data.url;
     },
-    async downloadFile(fileId) {
-      const url = await this.fileUrl(fileId);
+    async downloadFile(fileReference) {
+      const url = await this.fileUrl(fileReference);
       if (!sessionToken) {
         await request("auth.get");
       }
@@ -408,13 +410,13 @@ function createConnection() {
       }
       return response.blob();
     },
-    async deleteFile(fileId) {
-      const result = await request("file.delete", { fileId });
+    async deleteFile(fileReference) {
+      const result = await request("file.delete", { fileReference, fileId: fileReference });
       if (result.error) throw structuredError(result.error);
       return result.data.file;
     },
-    async createPublicFileUrl(fileId, options) {
-      const result = await request("file.publicUrl.create", { fileId, options: options ?? {} });
+    async createPublicFileUrl(fileReference, options) {
+      const result = await request("file.publicUrl.create", { fileReference, fileId: fileReference, options: options ?? {} });
       if (result.error) throw structuredError(result.error);
       return result.data.publicUrl;
     },

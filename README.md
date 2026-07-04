@@ -161,8 +161,11 @@ async function signOutAndGoHome(navigate: (path: string) => void) {
 Client code uses `files.upload()` from `sporades/client` to upload browser
 `File` or `Blob` values. The SDK first asks the Sporades server for an upload
 URL, transfers the bytes internally, and resolves with Sporades-owned metadata:
-file ID, original filename, MIME type, size, bucket, storage path, and version.
-Arrays are accepted as a convenience and are uploaded sequentially.
+file ID, absolute File path, original filename, MIME type, size, bucket, and
+version. Pass `path: "/images/avatar.png"` to choose an absolute Capsule-scoped
+File path; omitted paths use the browser file name in the Default File bucket,
+falling back to `/default/upload` when no name exists. Arrays are accepted as a
+convenience and are uploaded sequentially.
 
 Uploaded bytes are private by default and scoped to the current authenticated
 user in that user's `default` bucket. During dev sessions, bytes live under
@@ -170,11 +173,15 @@ user in that user's `default` bucket. During dev sessions, bytes live under
 live in the `.sporades/data.db` SQLite database. Container sessions use the
 mounted `/app/data` volume for the same platform-managed storage.
 
-Private reads go through `files.url(fileId)` or `files.download(fileId)`.
+Private reads go through `files.url(fileReference)` or
+`files.download(fileReference)`, where the File reference is either a File ID or
+an absolute File path.
 Public reads must be created explicitly with exactly one expiry choice:
 `ttlSeconds`, `expires`, or `noExpiry: true`. Replacing a file preserves the file
 ID, creates a new version, and invalidates previously generated private and
-public URLs.
+public URLs. Uploading to an existing live File path overwrites that file while
+preserving its File ID; deleting a file frees the path for a later upload with a
+new File ID.
 
 ## Endpoint handlers
 

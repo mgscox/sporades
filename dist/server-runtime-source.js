@@ -174,6 +174,15 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     revokePublicFileUrl,
     deletePrivateFile,
     fileMetadataFromRow,
+    resolveFileWriteTarget,
+    normalizeAbsoluteFilePath,
+    normalizeFileName,
+    isAbsoluteFilePath,
+    resolveLiveFileReference,
+    singleLiveFileRowByPath,
+    ambiguousFileReferenceError,
+    structuredFileException,
+    isDuplicateColumnError,
     createStructuredFileError,
     validatePublicUrlExpiry,
     fileRowForOwner,
@@ -575,17 +584,20 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         },
         insertFileRow(row) {
             return this.prepare("INSERT INTO sporades_files " +
-                "(id, ownerId, bucketId, bucketName, name, type, size, version, status, createdAt, updatedAt, deletedAt) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)").run(row.id, row.ownerId, row.bucketId, row.bucketName, row.name, row.type, row.size, row.version, row.status, row.createdAt, row.updatedAt);
+                "(id, ownerId, bucketId, bucketName, path, name, type, size, version, status, createdAt, updatedAt, deletedAt) " +
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)").run(row.id, row.ownerId, row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.createdAt, row.updatedAt);
         },
         updatePendingFileRow(row) {
-            return this.prepare("UPDATE sporades_files SET name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ?, deletedAt = NULL WHERE id = ?").run(row.name, row.type, row.size, row.version, row.status, row.updatedAt, row.id);
+            return this.prepare("UPDATE sporades_files SET bucketId = ?, bucketName = ?, path = ?, name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ?, deletedAt = NULL WHERE id = ?").run(row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.updatedAt, row.id);
         },
         insertFileUpload(row) {
             return this.prepare("INSERT INTO sporades_file_uploads (id, fileId, ownerId, version, expectedSize, createdAt) VALUES (?, ?, ?, ?, ?, ?)").run(row.id, row.fileId, row.ownerId, row.version, row.expectedSize, row.createdAt);
         },
         selectFileById(fileId) {
             return this.prepare("SELECT * FROM sporades_files WHERE id = ?").get(fileId) ?? null;
+        },
+        selectLiveFileByPath(ownerId, path) {
+            return this.prepare("SELECT * FROM sporades_files WHERE ownerId = ? AND path = ? AND deletedAt IS NULL AND status = ?").all(ownerId, path, "uploaded");
         },
         selectFileUpload(uploadId) {
             return this.prepare("SELECT * FROM sporades_file_uploads WHERE id = ?").get(uploadId) ?? null;
@@ -598,7 +610,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         },
         selectPublicFileRow(publicUrlId) {
             return (this.prepare("SELECT p.id AS publicUrlId, p.fileId, p.version AS publicVersion, p.expiresAt, p.revokedAt, " +
-                "f.id, f.ownerId, f.bucketId, f.bucketName, f.name, f.type, f.size, f.version, f.status, f.createdAt, f.updatedAt, f.deletedAt " +
+                "f.id, f.ownerId, f.bucketId, f.bucketName, f.path, f.name, f.type, f.size, f.version, f.status, f.createdAt, f.updatedAt, f.deletedAt " +
                 "FROM sporades_file_public_urls p JOIN sporades_files f ON f.id = p.fileId " +
                 "WHERE p.id = ?").get(publicUrlId) ?? null);
         },
@@ -923,6 +935,7 @@ export async function createPostgresDatabaseAdapter(options) {
                 "ownerId TEXT NOT NULL, " +
                 "bucketId TEXT NOT NULL, " +
                 "bucketName TEXT NOT NULL, " +
+                "path TEXT NOT NULL, " +
                 "name TEXT NOT NULL, " +
                 "type TEXT NOT NULL, " +
                 "size INTEGER NOT NULL, " +
@@ -932,6 +945,12 @@ export async function createPostgresDatabaseAdapter(options) {
                 "updatedAt TEXT NOT NULL, " +
                 "deletedAt TEXT" +
                 ")");
+            await this.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT").catch((error) => {
+                if (!isDuplicateColumnError(error))
+                    throw error;
+            });
+            await this.exec("UPDATE sporades_files SET path = '/' || bucketName || '/' || name WHERE path IS NULL OR path = ''");
+            await this.exec("CREATE INDEX IF NOT EXISTS sporades_files_owner_path_live ON sporades_files (ownerId, path, deletedAt, status)");
             await this.exec("CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
                 "id TEXT PRIMARY KEY, " +
                 "fileId TEXT NOT NULL, " +
@@ -1561,6 +1580,7 @@ export async function createLibsqlDatabaseAdapter(options) {
                 "ownerId TEXT NOT NULL, " +
                 "bucketId TEXT NOT NULL, " +
                 "bucketName TEXT NOT NULL, " +
+                "path TEXT NOT NULL, " +
                 "name TEXT NOT NULL, " +
                 "type TEXT NOT NULL, " +
                 "size INTEGER NOT NULL, " +
@@ -1570,6 +1590,12 @@ export async function createLibsqlDatabaseAdapter(options) {
                 "updatedAt TEXT NOT NULL, " +
                 "deletedAt TEXT" +
                 ")");
+            await this.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT").catch((error) => {
+                if (!isDuplicateColumnError(error))
+                    throw error;
+            });
+            await this.exec("UPDATE sporades_files SET path = '/' || bucketName || '/' || name WHERE path IS NULL OR path = ''");
+            await this.exec("CREATE INDEX IF NOT EXISTS sporades_files_owner_path_live ON sporades_files (ownerId, path, deletedAt, status)");
             await this.exec("CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
                 "id TEXT PRIMARY KEY, " +
                 "fileId TEXT NOT NULL, " +
@@ -2902,6 +2928,7 @@ function createFileStorageTables(sqlite) {
         "ownerId TEXT NOT NULL, " +
         "bucketId TEXT NOT NULL, " +
         "bucketName TEXT NOT NULL, " +
+        "path TEXT NOT NULL, " +
         "name TEXT NOT NULL, " +
         "type TEXT NOT NULL, " +
         "size INTEGER NOT NULL, " +
@@ -2911,6 +2938,15 @@ function createFileStorageTables(sqlite) {
         "updatedAt TEXT NOT NULL, " +
         "deletedAt TEXT" +
         ")");
+    try {
+        sqlite.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT");
+    }
+    catch (error) {
+        if (!isDuplicateColumnError(error))
+            throw error;
+    }
+    sqlite.exec("UPDATE sporades_files SET path = '/' || bucketName || '/' || name WHERE path IS NULL OR path = ''");
+    sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_files_owner_path_live ON sporades_files (ownerId, path, deletedAt, status)");
     sqlite.exec("CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
         "id TEXT PRIMARY KEY, " +
         "fileId TEXT NOT NULL, " +
@@ -2981,35 +3017,64 @@ export async function createPendingFileUpload(database, auth, message) {
         };
     }
     const now = new Date().toISOString();
-    const bucket = (await database.sqlite.findFileBucket(auth.userId, "default")) ??
-        (await (async () => {
-            const bucket = { id: randomUUID(), ownerId: auth.userId, name: "default", createdAt: now };
-            await database.sqlite.createFileBucket(bucket);
-            return bucket;
-        })());
     const replacing = message.replace === true;
-    const fileId = replacing ? String(message.fileId ?? "") : randomUUID();
-    const existing = replacing ? await fileRowForOwner(database, fileId, auth.userId) : null;
-    if (replacing && !existing) {
+    const replaceReference = message.fileReference ?? message.fileId;
+    const resolvedReplacement = replacing ? await resolveLiveFileReference(database, auth.userId, replaceReference) : { ok: true, row: null };
+    if (!resolvedReplacement.ok) {
+        return resolvedReplacement;
+    }
+    const existingByReference = resolvedReplacement.row;
+    if (replacing && !existingByReference) {
         return {
             ok: false,
-            error: createStructuredFileError("File not found.", "Pass the id of a private file owned by the current user."),
+            error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
         };
     }
+    let target;
+    try {
+        target =
+            replacing && existingByReference && (input.path === undefined || input.path === null)
+                ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path }
+                : await resolveFileWriteTarget(database, auth.userId, input, now);
+    }
+    catch (error) {
+        return {
+            ok: false,
+            error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path."),
+        };
+    }
+    const existingByPath = target.path ? await singleLiveFileRowByPath(database, auth.userId, target.path) : null;
+    if (existingByPath?.ambiguous) {
+        return ambiguousFileReferenceError(target.path);
+    }
+    const existing = existingByReference ?? existingByPath;
+    const fileId = existing?.id ?? randomUUID();
     const uploadId = randomUUID();
     const version = randomUUID();
-    const name = String(input.name ?? "upload");
+    const name = normalizeFileName(input.name, target.path);
     const type = String(input.type ?? "application/octet-stream");
     if (existing) {
-        await database.sqlite.updatePendingFileRow({ id: fileId, name, type, size, version, status: "pending", updatedAt: now });
+        await database.sqlite.updatePendingFileRow({
+            id: fileId,
+            bucketId: target.bucket.id,
+            bucketName: target.bucket.name,
+            path: target.path,
+            name,
+            type,
+            size,
+            version,
+            status: "pending",
+            updatedAt: now,
+        });
         await database.sqlite.revokePublicFileUrlsForFile(fileId, now);
     }
     else {
         await database.sqlite.insertFileRow({
             id: fileId,
             ownerId: auth.userId,
-            bucketId: bucket.id,
-            bucketName: bucket.name,
+            bucketId: target.bucket.id,
+            bucketName: target.bucket.name,
+            path: target.path,
             name,
             type,
             size,
@@ -3078,12 +3143,16 @@ export async function completePendingFileUpload(database, uploadId, request, web
         };
     }
 }
-async function getPrivateFileUrl(database, auth, fileId) {
-    const row = await fileRowForOwner(database, fileId, auth.userId);
+export async function getPrivateFileUrl(database, auth, fileReference) {
+    const resolved = await resolveLiveFileReference(database, auth.userId, fileReference);
+    if (!resolved.ok) {
+        return resolved;
+    }
+    const row = resolved.row;
     if (!row) {
         return {
             ok: false,
-            error: createStructuredFileError("File not found.", "Pass the id of a private file owned by the current user."),
+            error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
         };
     }
     return {
@@ -3095,12 +3164,16 @@ async function getPrivateFileUrl(database, auth, fileId) {
         error: null,
     };
 }
-async function createPublicFileUrl(database, auth, fileId, options = {}) {
-    const row = await fileRowForOwner(database, fileId, auth.userId);
+export async function createPublicFileUrl(database, auth, fileReference, options = {}) {
+    const resolved = await resolveLiveFileReference(database, auth.userId, fileReference);
+    if (!resolved.ok) {
+        return resolved;
+    }
+    const row = resolved.row;
     if (!row) {
         return {
             ok: false,
-            error: createStructuredFileError("File not found.", "Pass the id of a private file owned by the current user."),
+            error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
         };
     }
     const expiry = validatePublicUrlExpiry(options);
@@ -3146,12 +3219,16 @@ async function revokePublicFileUrl(database, auth, publicUrlId) {
         error: null,
     };
 }
-async function deletePrivateFile(database, auth, fileId) {
-    const row = await fileRowForOwner(database, fileId, auth.userId);
+export async function deletePrivateFile(database, auth, fileReference) {
+    const resolved = await resolveLiveFileReference(database, auth.userId, fileReference);
+    if (!resolved.ok) {
+        return resolved;
+    }
+    const row = resolved.row;
     if (!row) {
         return {
             ok: false,
-            error: createStructuredFileError("File not found.", "Pass the id of a private file owned by the current user."),
+            error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
         };
     }
     const now = new Date().toISOString();
@@ -3195,7 +3272,12 @@ function validatePublicUrlExpiry(options) {
     return { ok: true, expiresAt: expiresAt.toISOString() };
 }
 async function fileRowForOwner(database, fileId, ownerId) {
-    return await database.sqlite.fileRowForOwner(fileId, ownerId);
+    const reference = String(fileId ?? "");
+    if (isAbsoluteFilePath(reference)) {
+        const resolved = await resolveLiveFileReference(database, ownerId, reference);
+        return resolved.ok ? resolved.row : null;
+    }
+    return await database.sqlite.fileRowForOwner(reference, ownerId);
 }
 function fileMetadataFromRow(row) {
     return {
@@ -3204,9 +3286,83 @@ function fileMetadataFromRow(row) {
         size: Number(row.size),
         type: row.type,
         name: row.name,
-        path: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
+        path: row.path,
         version: row.version,
     };
+}
+async function resolveFileWriteTarget(database, ownerId, input, now) {
+    const explicitPath = input.path === undefined || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
+    const path = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
+    const firstSegment = path.split("/").filter(Boolean)[0] ?? "default";
+    const existingBucket = await database.sqlite.findFileBucket(ownerId, firstSegment);
+    const bucket = existingBucket ??
+        (await database.sqlite.findFileBucket(ownerId, "default")) ??
+        (await (async () => {
+            const bucket = { id: randomUUID(), ownerId, name: "default", createdAt: now };
+            await database.sqlite.createFileBucket(bucket);
+            return bucket;
+        })());
+    return { bucket, path };
+}
+function normalizeAbsoluteFilePath(value) {
+    const raw = String(value ?? "").trim();
+    if (!raw.startsWith("/")) {
+        throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path that starts with '/'.");
+    }
+    const segments = raw.split("/").filter(Boolean);
+    if (segments.length === 0) {
+        throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path with a file name.");
+    }
+    return `/${segments.join("/")}`;
+}
+function normalizeFileName(name, filePath) {
+    const candidate = String(name ?? "").trim();
+    if (candidate)
+        return candidate;
+    const pathName = filePath?.split("/").filter(Boolean).at(-1);
+    return pathName || "upload";
+}
+function isAbsoluteFilePath(value) {
+    return typeof value === "string" && value.startsWith("/");
+}
+async function resolveLiveFileReference(database, ownerId, reference) {
+    const value = String(reference ?? "");
+    if (isAbsoluteFilePath(value)) {
+        let path;
+        try {
+            path = normalizeAbsoluteFilePath(value);
+        }
+        catch {
+            return { ok: true, row: null };
+        }
+        const resolved = await singleLiveFileRowByPath(database, ownerId, path);
+        if (resolved?.ambiguous) {
+            return ambiguousFileReferenceError(value);
+        }
+        return { ok: true, row: resolved };
+    }
+    return { ok: true, row: await database.sqlite.fileRowForOwner(value, ownerId) };
+}
+async function singleLiveFileRowByPath(database, ownerId, path) {
+    const rows = await database.sqlite.selectLiveFileByPath(ownerId, path);
+    if (rows.length > 1)
+        return { ambiguous: true };
+    return rows[0] ?? null;
+}
+function ambiguousFileReferenceError(reference) {
+    return {
+        ok: false,
+        error: createStructuredFileError("File reference is ambiguous.", `The File reference ${reference} must resolve to exactly one live file before this operation can proceed.`),
+    };
+}
+function structuredFileException(message, hint) {
+    const error = new Error(message);
+    error.hint = hint;
+    return error;
+}
+function isDuplicateColumnError(error) {
+    const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
+    return /duplicate column|already exists/i.test(text);
 }
 function createStructuredFileError(message, hint) {
     return { message, hint };
@@ -4401,7 +4557,7 @@ export function createWebSocketHub(getDatabase) {
             return;
         }
         if (message.type === "file.url") {
-            const result = await getPrivateFileUrl(database, client.session.auth, message.fileId);
+            const result = await getPrivateFileUrl(database, client.session.auth, message.fileReference ?? message.fileId);
             sendJson(client, {
                 id: message.id ?? null,
                 type: result.ok ? "file.url.result" : "error",
@@ -4411,7 +4567,7 @@ export function createWebSocketHub(getDatabase) {
             return;
         }
         if (message.type === "file.publicUrl.create") {
-            const result = await createPublicFileUrl(database, client.session.auth, message.fileId, message.options ?? {});
+            const result = await createPublicFileUrl(database, client.session.auth, message.fileReference ?? message.fileId, message.options ?? {});
             sendJson(client, {
                 id: message.id ?? null,
                 type: result.ok ? "file.publicUrl.result" : "error",
@@ -4431,7 +4587,7 @@ export function createWebSocketHub(getDatabase) {
             return;
         }
         if (message.type === "file.delete") {
-            const result = await deletePrivateFile(database, client.session.auth, message.fileId);
+            const result = await deletePrivateFile(database, client.session.auth, message.fileReference ?? message.fileId);
             sendJson(client, {
                 id: message.id ?? null,
                 type: result.ok ? "file.delete.result" : "error",

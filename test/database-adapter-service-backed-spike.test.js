@@ -76,6 +76,7 @@ test("spike proof: a service-backed SQLite-compatible adapter can run representa
         ownerId: "user-1",
         bucketId: "bucket-1",
         bucketName: "default",
+        path: "/default/proof.txt",
         name: "proof.txt",
         type: "text/plain",
         size: 5,

@@ -295,6 +295,7 @@ Implemented file behavior includes:
 
 - `files.upload(file)` and sequential array uploads,
 - upload progress and completion callbacks,
+- absolute File path metadata and File references by ID or path,
 - private file URLs and downloads,
 - owner-scoped delete,
 - replacement with stable file IDs and new file versions,

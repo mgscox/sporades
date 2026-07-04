@@ -9,12 +9,15 @@ import {
   checkRuntimeFileStorage,
   checkRuntimeSqlite,
   completePendingFileUpload,
+  createPublicFileUrl,
   createLocalFileStorageAdapter,
   createLibsqlDatabaseAdapter,
   createPostgresDatabaseAdapter,
   createPendingFileUpload,
+  deletePrivateFile,
   createSqliteDatabaseAdapter,
   dumpDatabase,
+  getPrivateFileUrl,
   listDatabaseTables,
   openDevDatabase,
   resolveAnonymousSession,
@@ -141,6 +144,97 @@ test("runtime file lifecycle paths use the configured file storage adapter", asy
     } finally {
       database.close();
       assert.deepEqual(closed, [true]);
+    }
+  });
+});
+
+test("runtime file operations accept absolute File paths and File references", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      files: { storagePath: path.join(dir, "files") },
+    });
+    const auth = { userId: "user-1", displayName: "Ada", isAuthenticated: false, isGuest: true, provider: "anonymous" };
+    try {
+      const uploadAndComplete = async (file, body = "bytes") => {
+        const pending = await createPendingFileUpload(database, auth, { file });
+        assert.equal(pending.ok, true, pending.error?.message);
+        const uploadId = pending.data.uploadUrl.split("/").pop();
+        const completed = await completePendingFileUpload(database, uploadId, Readable.from([Buffer.from(body)]));
+        assert.equal(completed.ok, true, completed.error?.message);
+        return completed.data.file;
+      };
+
+      const explicit = await uploadAndComplete({
+        name: "avatar.png",
+        type: "image/png",
+        size: 5,
+        path: "/images/avatars/profile.png",
+      });
+      assert.equal(explicit.bucket, "default");
+      assert.equal(explicit.path, "/images/avatars/profile.png");
+
+      const byId = await getPrivateFileUrl(database, auth, explicit.id);
+      assert.equal(byId.ok, true);
+      assert.match(byId.data.url, new RegExp(`/__sporades/files/private/${explicit.id}`));
+
+      const byPath = await getPrivateFileUrl(database, auth, "/images/avatars/profile.png");
+      assert.equal(byPath.ok, true);
+      assert.equal(byPath.data.file.id, explicit.id);
+
+      const publicByPath = await createPublicFileUrl(database, auth, "/images/avatars/profile.png", { noExpiry: true });
+      assert.equal(publicByPath.ok, true);
+      assert.equal(publicByPath.data.publicUrl.fileId, explicit.id);
+
+      const overwritten = await uploadAndComplete({
+        name: "replacement.png",
+        type: "image/png",
+        size: 7,
+        path: "/images/avatars/profile.png",
+      });
+      assert.equal(overwritten.id, explicit.id);
+      assert.notEqual(overwritten.version, explicit.version);
+      assert.equal(overwritten.path, "/images/avatars/profile.png");
+
+      const namedDefault = await uploadAndComplete({ name: "readme.txt", type: "text/plain", size: 4 });
+      assert.equal(namedDefault.path, "/default/readme.txt");
+
+      const unnamedDefault = await uploadAndComplete({ type: "application/octet-stream", size: 4 });
+      assert.equal(unnamedDefault.name, "upload");
+      assert.equal(unnamedDefault.path, "/default/upload");
+
+      await database.sqlite.createFileBucket({
+        id: "bucket-media",
+        ownerId: auth.userId,
+        name: "media",
+        createdAt: "2026-07-04T10:00:00.000Z",
+      });
+      const bucketPath = await uploadAndComplete({
+        name: "cat.jpg",
+        type: "image/jpeg",
+        size: 3,
+        path: "/media/photos/cat.jpg",
+      });
+      assert.equal(bucketPath.bucket, "media");
+      assert.equal(bucketPath.path, "/media/photos/cat.jpg");
+
+      const deleted = await deletePrivateFile(database, auth, "/images/avatars/profile.png");
+      assert.equal(deleted.ok, true);
+      assert.equal(deleted.data.file.id, explicit.id);
+
+      const recreated = await uploadAndComplete({
+        name: "avatar.png",
+        type: "image/png",
+        size: 5,
+        path: "/images/avatars/profile.png",
+      });
+      assert.notEqual(recreated.id, explicit.id);
+      assert.equal(recreated.path, "/images/avatars/profile.png");
+
+      const missing = await getPrivateFileUrl(database, auth, "/missing/file.txt");
+      assert.equal(missing.ok, false);
+      assert.equal(missing.error.message, "File not found.");
+    } finally {
+      database.close();
     }
   });
 });
@@ -382,6 +476,7 @@ test("libSQL database adapter supports runtime storage, migrations, health, and 
           ownerId: "user-1",
           bucketId: "bucket-1",
           bucketName: "default",
+          path: "/default/proof.txt",
           name: "proof.txt",
           type: "text/plain",
           size: 5,
@@ -512,6 +607,7 @@ test(
         ownerId: "user-1",
         bucketId: "bucket-1",
         bucketName: "default",
+        path: "/default/proof.txt",
         name: "proof.txt",
         type: "text/plain",
         size: 5,
@@ -807,6 +903,7 @@ test("SQLite database adapter owns runtime storage for auth, files, logs, and sy
         ownerId: "user-1",
         bucketId: "bucket-1",
         bucketName: "default",
+        path: "/default/hello.txt",
         name: "hello.txt",
         type: "text/plain",
         size: 5,
@@ -839,6 +936,9 @@ test("SQLite database adapter owns runtime storage for auth, files, logs, and sy
       assert.equal(adapter.selectPublicFileRow("public-1").publicVersion, "version-1");
       adapter.updatePendingFileRow({
         id: "file-1",
+        bucketId: "bucket-1",
+        bucketName: "default",
+        path: "/default/goodbye.txt",
         name: "goodbye.txt",
         type: "text/plain",
         size: 7,
@@ -1134,6 +1234,7 @@ function wrapAsyncRuntimeAdapter(adapter) {
     "updatePendingFileRow",
     "insertFileUpload",
     "selectFileById",
+    "selectLiveFileByPath",
     "selectFileUpload",
     "completeFileUpload",
     "deleteFileUpload",

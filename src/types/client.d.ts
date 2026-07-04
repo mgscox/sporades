@@ -78,6 +78,8 @@ export type PublicFileUrl = {
   [key: string]: unknown;
 };
 
+export type FileReference = string;
+
 export type UploadProgressEvent = {
   type: "progress";
   fileId: string;
@@ -93,6 +95,8 @@ export type UploadCompleteEvent = {
 export type UploadOptions = {
   replace?: boolean;
   fileId?: string;
+  fileReference?: FileReference;
+  path?: string;
   onProgress?(event: UploadProgressEvent): void;
   onComplete?(event: UploadCompleteEvent): void;
 };
@@ -106,10 +110,10 @@ export type PublicUrlOptions = {
 export type FilesApi = {
   upload(file: Blob | File, options?: UploadOptions): Promise<FileMetadata>;
   upload(files: Array<Blob | File>, options?: UploadOptions): Promise<FileMetadata[]>;
-  url(fileId: string): Promise<string>;
-  download(fileId: string): Promise<Blob>;
-  delete(fileId: string): Promise<FileMetadata>;
-  publicUrl(fileId: string, options?: PublicUrlOptions): Promise<PublicFileUrl>;
+  url(fileReference: FileReference): Promise<string>;
+  download(fileReference: FileReference): Promise<Blob>;
+  delete(fileReference: FileReference): Promise<FileMetadata>;
+  publicUrl(fileReference: FileReference, options?: PublicUrlOptions): Promise<PublicFileUrl>;
   revokePublicUrl(publicUrlId: string): Promise<PublicFileUrl>;
 };
 

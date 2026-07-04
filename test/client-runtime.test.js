@@ -628,27 +628,31 @@ test("client applies internal auth session replacement messages to localStorage 
 });
 
 test("client files.upload negotiates an upload URL and transfers one file", async () => {
+  let negotiatedMessage = null;
   const browser = installBrowserFakes(anonymousAuth, {
     autoOpen: false,
     handlers: {
-      "file.uploadUrl": async () => ({
-        type: "file.uploadUrl.result",
-        data: {
-          uploadUrl: "/__sporades/uploads/file-1",
-          method: "PUT",
-          headers: {},
-          file: {
-            id: "file-1",
-            bucket: "default",
-            size: 11,
-            type: "text/plain",
-            name: "hello.txt",
-            path: "/__sporades/files/private/file-1?v=version-1",
-            version: "version-1",
+      "file.uploadUrl": async (message) => {
+        negotiatedMessage = message;
+        return {
+          type: "file.uploadUrl.result",
+          data: {
+            uploadUrl: "/__sporades/uploads/file-1",
+            method: "PUT",
+            headers: {},
+            file: {
+              id: "file-1",
+              bucket: "default",
+              size: 11,
+              type: "text/plain",
+              name: "hello.txt",
+              path: "/docs/hello.txt",
+              version: "version-1",
+            },
           },
-        },
-        error: null,
-      }),
+          error: null,
+        };
+      },
     },
   });
   const uploads = [];
@@ -667,7 +671,7 @@ test("client files.upload negotiates an upload URL and transfers one file", asyn
               size: 11,
               type: "text/plain",
               name: "hello.txt",
-              path: "/__sporades/files/private/file-1?v=version-1",
+              path: "/docs/hello.txt",
               version: "version-1",
             },
           },
@@ -684,6 +688,7 @@ test("client files.upload negotiates an upload URL and transfers one file", asyn
     file.name = "hello.txt";
 
     const uploadPromise = runtime.files.upload(file, {
+      path: "/docs/hello.txt",
       onProgress: (event) => events.push(event),
       onComplete: (event) => events.push(event),
     });
@@ -703,7 +708,8 @@ test("client files.upload negotiates an upload URL and transfers one file", asyn
     assert.equal(metadata.type, "text/plain");
     assert.equal(metadata.name, "hello.txt");
     assert.equal(metadata.version, "version-1");
-    assert.equal(metadata.path, "/__sporades/files/private/file-1?v=version-1");
+    assert.equal(metadata.path, "/docs/hello.txt");
+    assert.equal(negotiatedMessage.file.path, "/docs/hello.txt");
     assert.deepEqual(events.map((event) => event.type), ["progress", "complete"]);
   } finally {
     delete globalThis.fetch;
@@ -788,25 +794,29 @@ test("client files.upload uploads arrays sequentially through the single-file pa
 });
 
 test("client files.download authenticates private reads with a header instead of a URL token", async () => {
+  let requestedReference = null;
   const browser = installBrowserFakes(anonymousAuth, {
     autoOpen: false,
     handlers: {
-      "file.url": async () => ({
-        type: "file.url.result",
-        data: {
-          url: "/__sporades/files/private/file-1?v=version-1",
-          file: {
-            id: "file-1",
-            bucket: "default",
-            size: 11,
-            type: "text/plain",
-            name: "hello.txt",
-            path: "/__sporades/files/private/file-1?v=version-1",
-            version: "version-1",
+      "file.url": async (message) => {
+        requestedReference = message.fileReference;
+        return {
+          type: "file.url.result",
+          data: {
+            url: "/__sporades/files/private/file-1?v=version-1",
+            file: {
+              id: "file-1",
+              bucket: "default",
+              size: 11,
+              type: "text/plain",
+              name: "hello.txt",
+              path: "/docs/hello.txt",
+              version: "version-1",
+            },
           },
-        },
-        error: null,
-      }),
+          error: null,
+        };
+      },
     },
   });
   const downloads = [];
@@ -823,11 +833,12 @@ test("client files.download authenticates private reads with a header instead of
 
   try {
     const runtime = await importClientRuntime();
-    const downloadPromise = runtime.files.download("file-1");
+    const downloadPromise = runtime.files.download("/docs/hello.txt");
     browser.openSockets();
     const blob = await downloadPromise;
 
     assert.equal(blob.type, "text/plain");
+    assert.equal(requestedReference, "/docs/hello.txt");
     assert.deepEqual(downloads, [
       {
         url: "/__sporades/files/private/file-1?v=version-1",

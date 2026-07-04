@@ -878,15 +878,19 @@ Use the `files` API from `sporades/client` for browser `File` or `Blob` values:
 import { files } from "sporades/client";
 
 const file = await files.upload(selectedFile, {
+  path: "/photos/profile.jpg",
   onProgress(event) {
     console.log(event.loaded, event.total);
   },
 });
 ```
 
-File upload is automatically handled as multi-part.
+Sporades negotiates and transfers the upload bytes internally.
 The returned file metadata includes fields such as `id`, `name`, `type`, `size`,
-`path`, and `version`. Uploaded bytes are private by default and scoped to the current user.
+`path`, and `version`. `path` is the absolute Capsule-scoped File path, not a
+runtime URL or backend storage key. Omit `path` to use the uploaded file name in
+the Default File bucket, with `/default/upload` as the fallback when no file name
+exists. Uploaded bytes are private by default and scoped to the current user.
 
 If you want to store the file information in a database table,
 you must explicitly do so using a normal mutation:
@@ -903,8 +907,12 @@ Private reads use:
 
 ```tsx
 const url = await files.url(file.id);
-const blob = await files.download(file.id);
+const blob = await files.download(file.path);
 ```
+
+File operations that identify an existing file accept a File reference: either
+the stable File ID or the absolute File path. The reference must resolve to one
+live file owned by the current user.
 
 Create public URLs explicitly:
 
@@ -935,6 +943,10 @@ Replace file bytes while preserving the file ID:
 ```tsx
 await files.upload(replacementFile, { replace: true, fileId: file.id });
 ```
+
+Uploading new bytes to an existing live File path also replaces that file,
+preserves its File ID, and creates a new File version. Deleting the file frees
+the path; a later upload to the same path creates a new File ID.
 
 ## Custom HTTP Endpoints
 
