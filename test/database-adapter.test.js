@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -12,6 +13,8 @@ import {
   createLocalFileStorageAdapter,
   createLibsqlDatabaseAdapter,
   createPostgresDatabaseAdapter,
+  createRuntimeFileStorageAdapter,
+  createS3CompatibleFileStorageAdapter,
   createPendingFileUpload,
   createSqliteDatabaseAdapter,
   dumpDatabase,
@@ -31,6 +34,89 @@ async function withTempDir(fn) {
     return await fn(dir);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+}
+
+async function withFakeS3CompatibleService(fn) {
+  const requests = [];
+  const objects = new Map();
+  let bucketCreated = false;
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) {
+      chunks.push(Buffer.from(chunk));
+    }
+    const body = Buffer.concat(chunks);
+    requests.push({
+      method: request.method,
+      url: request.url,
+      headers: request.headers,
+      body,
+    });
+
+    const bucketPrefix = "/sporades-files";
+    if (request.url === bucketPrefix) {
+      if (request.method === "HEAD") {
+        response.writeHead(bucketCreated ? 200 : 404);
+        response.end();
+        return;
+      }
+      if (request.method === "PUT") {
+        bucketCreated = true;
+        response.writeHead(200);
+        response.end();
+        return;
+      }
+    }
+
+    if (!request.url?.startsWith(`${bucketPrefix}/`)) {
+      response.writeHead(404);
+      response.end();
+      return;
+    }
+
+    const objectKey = decodeURIComponent(request.url.slice(bucketPrefix.length + 1));
+    if (request.method === "PUT") {
+      objects.set(objectKey, body);
+      response.writeHead(200);
+      response.end();
+      return;
+    }
+    if (request.method === "GET") {
+      const stored = objects.get(objectKey);
+      if (!stored) {
+        response.writeHead(404);
+        response.end();
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/octet-stream" });
+      response.end(stored);
+      return;
+    }
+    if (request.method === "DELETE") {
+      objects.delete(objectKey);
+      response.writeHead(204);
+      response.end();
+      return;
+    }
+
+    response.writeHead(405);
+    response.end();
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = server.address();
+    return await fn({
+      endpoint: `http://127.0.0.1:${address.port}`,
+      requests,
+      objects,
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
   }
 }
 
@@ -73,6 +159,73 @@ test("LocalFileStorageAdapter owns local file bytes, health, and close lifecycle
     await adapter.deleteFileVersion({ fileId: "file-1", version: "version-1" });
     await assert.rejects(() => adapter.readFileVersion({ fileId: "file-1", version: "version-1" }), { code: "ENOENT" });
     assert.equal(adapter.close(), undefined);
+  });
+});
+
+test("S3-compatible file storage adapter uses MinIO-style path URLs, SigV4 signing, bucket setup, and object lifecycle", async () => {
+  await withFakeS3CompatibleService(async ({ endpoint, requests, objects }) => {
+    const adapter = createS3CompatibleFileStorageAdapter({
+      endpoint,
+      bucket: "sporades-files",
+      region: "eu-west-2",
+      accessKey: "sporades",
+      secretKey: "sporades-minio-local-secret",
+    });
+
+    await adapter.writeFileVersion({
+      fileId: "file-1",
+      version: "version-1",
+      bytes: Buffer.from("hello minio"),
+    });
+
+    assert.equal((await adapter.readFileVersion({ fileId: "file-1", version: "version-1" })).toString("utf8"), "hello minio");
+    assert.equal(objects.has("files/file-1/version-1"), true);
+    assert.deepEqual(await adapter.checkHealth(), { ok: true, adapter: "s3-compatible" });
+
+    await adapter.deleteFileVersion({ fileId: "file-1", version: "version-1" });
+    assert.equal(objects.has("files/file-1/version-1"), false);
+    await assert.rejects(() => adapter.readFileVersion({ fileId: "file-1", version: "version-1" }), { code: "ENOENT" });
+    assert.equal(adapter.close(), undefined);
+
+    assert.deepEqual(
+      requests.map((request) => [request.method, request.url]),
+      [
+        ["HEAD", "/sporades-files"],
+        ["PUT", "/sporades-files"],
+        ["PUT", "/sporades-files/files/file-1/version-1"],
+        ["GET", "/sporades-files/files/file-1/version-1"],
+        ["DELETE", "/sporades-files/files/file-1/version-1"],
+        ["GET", "/sporades-files/files/file-1/version-1"],
+      ],
+    );
+    for (const request of requests) {
+      assert.match(request.headers.authorization ?? "", /^AWS4-HMAC-SHA256 Credential=sporades\/\d{8}\/eu-west-2\/s3\/aws4_request/);
+      assert.match(request.headers.authorization ?? "", /SignedHeaders=host;x-amz-content-sha256;x-amz-date/);
+      assert.match(request.headers.authorization ?? "", /Signature=[0-9a-f]{64}$/);
+      assert.equal(typeof request.headers["x-amz-content-sha256"], "string");
+      assert.equal(typeof request.headers["x-amz-date"], "string");
+    }
+  });
+});
+
+test("runtime selects S3-compatible file storage when MinIO service env is present", async () => {
+  await withFakeS3CompatibleService(async ({ endpoint }) => {
+    const adapter = await createRuntimeFileStorageAdapter({
+      config: {},
+      databasePath: "/tmp/sporades-data.db",
+      serviceEnv: {
+        SPORADES_SERVICE_STORAGE_ENGINE: "minio",
+        SPORADES_SERVICE_STORAGE_ENDPOINT: endpoint,
+        SPORADES_SERVICE_STORAGE_ACCESS_KEY: "sporades",
+        SPORADES_SERVICE_STORAGE_SECRET_KEY: "sporades-minio-local-secret",
+        SPORADES_SERVICE_STORAGE_BUCKET: "sporades-files",
+        SPORADES_SERVICE_STORAGE_REGION: "eu-west-2",
+      },
+    });
+
+    assert.equal(adapter.engine, "s3-compatible");
+    assert.equal(adapter.bucket, "sporades-files");
+    assert.equal(adapter.region, "eu-west-2");
   });
 });
 

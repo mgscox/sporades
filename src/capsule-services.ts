@@ -14,6 +14,7 @@ const MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z";
 const MINIO_ROOT_USER = "sporades";
 const MINIO_ROOT_PASSWORD = "sporades-minio-local-secret";
 const MINIO_BUCKET = "sporades-files";
+const MINIO_REGION = "us-east-1";
 
 export const CAPSULE_SERVICES_COMPOSE_FILE = path.join(".sporades", "compose", "capsule-services.compose.yml");
 export const CAPSULE_SERVICES_STATE_DIR = path.join(".sporades", "services");
@@ -125,6 +126,7 @@ export function capsuleServicesComposeModel(config, projectDir = process.cwd()) 
       accessKey: MINIO_ROOT_USER,
       secretKey: MINIO_ROOT_PASSWORD,
       bucket: MINIO_BUCKET,
+      region: MINIO_REGION,
     };
   }
 

@@ -1,5 +1,5 @@
 // @ts-nocheck
-import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     readJsonRequest,
@@ -158,6 +158,19 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     createFileStorageTables,
     createRuntimeFileStorageAdapter,
     createLocalFileStorageAdapter,
+    createS3CompatibleFileStorageAdapter,
+    s3ObjectKey,
+    s3Request,
+    s3RequestBodyBuffer,
+    s3SignedHeaders,
+    s3Signature,
+    s3SigningKey,
+    s3CanonicalPath,
+    s3EncodedPathSegment,
+    s3AmzDate,
+    s3Hmac,
+    s3Sha256Hex,
+    s3ObjectNotFoundError,
     routeRuntimeHealth,
     createRuntimeHealthResult,
     checkRuntimeSqlite,
@@ -389,9 +402,11 @@ function sanitizeResponseHeaders(headers) {
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
     const path = await import("node:path");
     const sqlite = await createRuntimeDatabaseAdapter(databasePath, options?.serviceEnv ?? serverEnv, config);
+    const serviceEnv = options?.serviceEnv ?? serverEnv;
     const fileStorage = await createRuntimeFileStorageAdapter({
         config,
         databasePath,
+        serviceEnv,
     });
     const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
     const endpoints = extractEndpoints(serverSource);
@@ -457,8 +472,17 @@ async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config
     }
     return await createSqliteDatabaseAdapter(databasePath);
 }
-export async function createRuntimeFileStorageAdapter({ config = {}, databasePath }) {
+export async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
     const path = await import("node:path");
+    if (serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
+        return createS3CompatibleFileStorageAdapter({
+            endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT,
+            bucket: serviceEnv.SPORADES_SERVICE_STORAGE_BUCKET,
+            region: serviceEnv.SPORADES_SERVICE_STORAGE_REGION ?? "us-east-1",
+            accessKey: serviceEnv.SPORADES_SERVICE_STORAGE_ACCESS_KEY,
+            secretKey: serviceEnv.SPORADES_SERVICE_STORAGE_SECRET_KEY,
+        });
+    }
     return createLocalFileStorageAdapter({
         storagePath: config.files?.storagePath ?? path.join(path.dirname(databasePath), "files"),
     });
@@ -507,6 +531,208 @@ function localFileStoragePath(storagePath, fileId) {
 }
 function localFileVersionPath(storagePath, fileId, version) {
     return `${localFileStoragePath(storagePath, fileId)}/${version}`;
+}
+export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region, accessKey, secretKey }) {
+    if (typeof endpoint !== "string" || endpoint.length === 0) {
+        throw new Error("S3-compatible file storage requires an endpoint.");
+    }
+    if (typeof bucket !== "string" || bucket.length === 0) {
+        throw new Error("S3-compatible file storage requires a bucket.");
+    }
+    if (typeof region !== "string" || region.length === 0) {
+        throw new Error("S3-compatible file storage requires a region.");
+    }
+    if (typeof accessKey !== "string" || accessKey.length === 0 || typeof secretKey !== "string" || secretKey.length === 0) {
+        throw new Error("S3-compatible file storage requires access credentials.");
+    }
+    const config = { endpoint, bucket, region, accessKey, secretKey };
+    let bucketReady = false;
+    const ensureBucket = async () => {
+        if (bucketReady) {
+            return;
+        }
+        const head = await s3Request(config, { method: "HEAD", key: null });
+        if (head.statusCode === 404) {
+            const created = await s3Request(config, { method: "PUT", key: null, body: Buffer.alloc(0) });
+            if (created.statusCode < 200 || created.statusCode >= 300) {
+                throw new Error(`S3-compatible file storage bucket setup failed with HTTP ${created.statusCode}.`);
+            }
+        }
+        else if (head.statusCode < 200 || head.statusCode >= 300) {
+            throw new Error(`S3-compatible file storage bucket check failed with HTTP ${head.statusCode}.`);
+        }
+        bucketReady = true;
+    };
+    return {
+        engine: "s3-compatible",
+        endpoint,
+        bucket,
+        region,
+        objectKeyPrefix: "files",
+        async writeFileVersion({ fileId, version, bytes }) {
+            await ensureBucket();
+            const result = await s3Request(config, {
+                method: "PUT",
+                key: s3ObjectKey(fileId, version),
+                body: bytes,
+            });
+            if (result.statusCode < 200 || result.statusCode >= 300) {
+                throw new Error(`S3-compatible file write failed with HTTP ${result.statusCode}.`);
+            }
+        },
+        async readFileVersion({ fileId, version }) {
+            const result = await s3Request(config, {
+                method: "GET",
+                key: s3ObjectKey(fileId, version),
+            });
+            if (result.statusCode === 404) {
+                throw s3ObjectNotFoundError();
+            }
+            if (result.statusCode < 200 || result.statusCode >= 300) {
+                throw new Error(`S3-compatible file read failed with HTTP ${result.statusCode}.`);
+            }
+            return result.body;
+        },
+        async deleteFileVersion({ fileId, version }) {
+            const result = await s3Request(config, {
+                method: "DELETE",
+                key: s3ObjectKey(fileId, version),
+            });
+            if (result.statusCode === 404) {
+                return;
+            }
+            if (result.statusCode < 200 || result.statusCode >= 300) {
+                throw new Error(`S3-compatible file delete failed with HTTP ${result.statusCode}.`);
+            }
+        },
+        async checkHealth() {
+            try {
+                await ensureBucket();
+                return { ok: true, adapter: "s3-compatible" };
+            }
+            catch {
+                return { ok: false, adapter: "s3-compatible" };
+            }
+        },
+        close() { },
+    };
+}
+function s3ObjectKey(fileId, version) {
+    return `files/${fileId}/${version}`;
+}
+async function s3Request(config, { method, key = null, body = null }) {
+    const endpoint = new URL(config.endpoint);
+    const isHttps = endpoint.protocol === "https:";
+    const transport = await import(isHttps ? "node:https" : "node:http");
+    const payload = s3RequestBodyBuffer(body);
+    const amzDate = s3AmzDate(new Date());
+    const date = amzDate.slice(0, 8);
+    const pathname = s3CanonicalPath(endpoint.pathname, config.bucket, key);
+    const payloadHash = s3Sha256Hex(payload);
+    const headers = s3SignedHeaders({
+        "host": endpoint.host,
+        "x-amz-content-sha256": payloadHash,
+        "x-amz-date": amzDate,
+    });
+    headers.authorization = s3Signature({
+        method,
+        pathname,
+        query: "",
+        headers,
+        payloadHash,
+        accessKey: config.accessKey,
+        secretKey: config.secretKey,
+        region: config.region,
+        date,
+        amzDate,
+    });
+    return await new Promise((resolve, reject) => {
+        const request = transport.request({
+            protocol: endpoint.protocol,
+            hostname: endpoint.hostname,
+            port: endpoint.port || undefined,
+            method,
+            path: `${pathname}${endpoint.search}`,
+            headers: {
+                ...headers,
+                "content-length": payload.length,
+            },
+        }, (response) => {
+            const chunks = [];
+            response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+            response.on("end", () => {
+                resolve({
+                    statusCode: response.statusCode ?? 0,
+                    headers: response.headers,
+                    body: Buffer.concat(chunks),
+                });
+            });
+        });
+        request.on("error", reject);
+        if (payload.length > 0) {
+            request.write(payload);
+        }
+        request.end();
+    });
+}
+function s3RequestBodyBuffer(body) {
+    if (body === null || body === undefined) {
+        return Buffer.alloc(0);
+    }
+    if (Buffer.isBuffer(body)) {
+        return body;
+    }
+    if (body instanceof Uint8Array) {
+        return Buffer.from(body);
+    }
+    return Buffer.from(String(body));
+}
+function s3SignedHeaders(headers) {
+    return Object.fromEntries(Object.entries(headers)
+        .map(([name, value]) => [name.toLowerCase(), String(value).trim()])
+        .sort(([left], [right]) => left.localeCompare(right)));
+}
+function s3Signature({ method, pathname, query, headers, payloadHash, accessKey, secretKey, region, date, amzDate }) {
+    const signedHeaders = Object.keys(headers).join(";");
+    const canonicalHeaders = Object.entries(headers)
+        .map(([name, value]) => `${name}:${value}\n`)
+        .join("");
+    const canonicalRequest = [method, pathname, query, canonicalHeaders, signedHeaders, payloadHash].join("\n");
+    const credentialScope = `${date}/${region}/s3/aws4_request`;
+    const stringToSign = ["AWS4-HMAC-SHA256", amzDate, credentialScope, s3Sha256Hex(canonicalRequest)].join("\n");
+    const signature = s3Hmac(s3SigningKey(secretKey, date, region), stringToSign).toString("hex");
+    return `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+}
+function s3SigningKey(secretKey, date, region) {
+    const dateKey = s3Hmac(`AWS4${secretKey}`, date);
+    const dateRegionKey = s3Hmac(dateKey, region);
+    const dateRegionServiceKey = s3Hmac(dateRegionKey, "s3");
+    return s3Hmac(dateRegionServiceKey, "aws4_request");
+}
+function s3CanonicalPath(basePath, bucket, key) {
+    const base = String(basePath ?? "")
+        .split("/")
+        .filter(Boolean)
+        .map(s3EncodedPathSegment);
+    const parts = [...base, bucket, ...(key ? String(key).split("/") : [])].map(s3EncodedPathSegment);
+    return `/${parts.join("/")}`;
+}
+function s3EncodedPathSegment(segment) {
+    return encodeURIComponent(segment).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+function s3AmzDate(date) {
+    return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
+}
+function s3Hmac(key, data) {
+    return createHmac("sha256", key).update(data).digest();
+}
+function s3Sha256Hex(data) {
+    return createHash("sha256").update(data).digest("hex");
+}
+function s3ObjectNotFoundError() {
+    const error = new Error("S3-compatible file object not found.");
+    error.code = "ENOENT";
+    return error;
 }
 export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     const { DatabaseSync } = await import("node:sqlite");

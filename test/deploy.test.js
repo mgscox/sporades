@@ -2069,6 +2069,7 @@ test("sporades deploy wires database and MinIO storage Capsule services through 
       assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_ACCESS_KEY=sporades"), runCall.args.join(" "));
       assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_SECRET_KEY=sporades-minio-local-secret"), runCall.args.join(" "));
       assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_BUCKET=sporades-files"), runCall.args.join(" "));
+      assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_REGION=us-east-1"), runCall.args.join(" "));
       assert(calls.some((call) => call.args.slice(3).join(" ") === "port sporades-todo-island-storage 9000"));
 
       const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
@@ -2077,6 +2078,7 @@ test("sporades deploy wires database and MinIO storage Capsule services through 
       assert.match(serverBundle, /"SPORADES_SERVICE_STORAGE_ACCESS_KEY"/);
       assert.match(serverBundle, /"SPORADES_SERVICE_STORAGE_SECRET_KEY"/);
       assert.match(serverBundle, /"SPORADES_SERVICE_STORAGE_BUCKET"/);
+      assert.match(serverBundle, /"SPORADES_SERVICE_STORAGE_REGION"/);
     });
   });
 });

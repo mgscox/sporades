@@ -587,6 +587,30 @@ export declare function openDevDatabase(databasePath: any, serverSource: any, se
     };
     fileStorage: {
         engine: string;
+        endpoint: string;
+        bucket: string;
+        region: string;
+        objectKeyPrefix: string;
+        writeFileVersion({ fileId, version, bytes }: {
+            fileId: any;
+            version: any;
+            bytes: any;
+        }): Promise<void>;
+        readFileVersion({ fileId, version }: {
+            fileId: any;
+            version: any;
+        }): Promise<any>;
+        deleteFileVersion({ fileId, version }: {
+            fileId: any;
+            version: any;
+        }): Promise<void>;
+        checkHealth(): Promise<{
+            ok: boolean;
+            adapter: string;
+        }>;
+        close(): void;
+    } | {
+        engine: string;
         storagePath: string;
         writeFileVersion({ fileId, version, bytes }: {
             fileId: any;
@@ -870,10 +894,35 @@ declare function createRuntimeDatabaseAdapter(databasePath: any, serverEnv?: {},
     deleteAppRow(table: any, id: any): any;
     selectAppRows(table: any, query?: {}): any;
 }>;
-export declare function createRuntimeFileStorageAdapter({ config, databasePath }: {
+export declare function createRuntimeFileStorageAdapter({ config, databasePath, serviceEnv }: {
     config?: {};
     databasePath: any;
+    serviceEnv?: {};
 }): Promise<{
+    engine: string;
+    endpoint: string;
+    bucket: string;
+    region: string;
+    objectKeyPrefix: string;
+    writeFileVersion({ fileId, version, bytes }: {
+        fileId: any;
+        version: any;
+        bytes: any;
+    }): Promise<void>;
+    readFileVersion({ fileId, version }: {
+        fileId: any;
+        version: any;
+    }): Promise<any>;
+    deleteFileVersion({ fileId, version }: {
+        fileId: any;
+        version: any;
+    }): Promise<void>;
+    checkHealth(): Promise<{
+        ok: boolean;
+        adapter: string;
+    }>;
+    close(): void;
+} | {
     engine: string;
     storagePath: string;
     writeFileVersion({ fileId, version, bytes }: {
@@ -914,6 +963,37 @@ export declare function createLocalFileStorageAdapter({ storagePath }: {
     }): Promise<void>;
     checkHealth(): Promise<{
         ok: boolean;
+    }>;
+    close(): void;
+};
+export declare function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region, accessKey, secretKey }: {
+    endpoint: any;
+    bucket: any;
+    region: any;
+    accessKey: any;
+    secretKey: any;
+}): {
+    engine: string;
+    endpoint: string;
+    bucket: string;
+    region: string;
+    objectKeyPrefix: string;
+    writeFileVersion({ fileId, version, bytes }: {
+        fileId: any;
+        version: any;
+        bytes: any;
+    }): Promise<void>;
+    readFileVersion({ fileId, version }: {
+        fileId: any;
+        version: any;
+    }): Promise<any>;
+    deleteFileVersion({ fileId, version }: {
+        fileId: any;
+        version: any;
+    }): Promise<void>;
+    checkHealth(): Promise<{
+        ok: boolean;
+        adapter: string;
     }>;
     close(): void;
 };
