@@ -41,6 +41,9 @@ Common entries:
   services.
 - `services/storage/`: persistent data for generated local storage Capsule
   services such as MinIO.
+- `services/credentials.json`: generated per-project Capsule service
+  credentials (database password, storage secret key). Server-only; not
+  app-facing.
 - `sealed-server-env/`: Sealed Server env envelopes and local key material.
 - `compose/capsule-services.compose.yml`: generated Docker Compose for
   declared Capsule services.
@@ -55,10 +58,13 @@ need them.
 `services` declarations. It is marked with Sporades ownership comments and
 Docker labels; users should edit the declaration intent, not this runtime file.
 When `services.storage` declares MinIO, this Compose file contains the MinIO
-service, its private services network, labels, loopback-only published port for
-Dev-session access, and a bind mount from `.sporades/services/storage/` to
-MinIO's `/data`. The MinIO Object bucket, object keys, endpoint, and
-credentials are generated runtime state and are not app-facing File paths.
+service, its private services network, labels, a service healthcheck, and a
+bind mount from `.sporades/services/storage/` to MinIO's `/data`. A
+loopback-only published port is included only when the file is generated for a
+Dev session; Container sessions reach services by Compose DNS name on the
+services network, and no service port is published to the host. The MinIO
+Object bucket, object keys, endpoint, and credentials are generated runtime
+state and are not app-facing File paths.
 
 ## Capsule Runtime Files
 

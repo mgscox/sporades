@@ -7567,6 +7567,20 @@ test("sporades dev preserves file lifecycle parity with MinIO-backed storage", a
     };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     await installFakeReact(projectDir);
+    await mkdir(path.join(projectDir, ".sporades", "services"), { recursive: true });
+    await writeFile(
+      path.join(projectDir, ".sporades", "services", "credentials.json"),
+      `${JSON.stringify(
+        {
+          databaseUser: "sporades",
+          databasePassword: "sporades",
+          storageAccessKey: "sporades",
+          storageSecretKey: "sporades-minio-local-secret",
+        },
+        null,
+        2,
+      )}\n`,
+    );
 
     await withFakeS3CompatibleService(async ({ port, requests, objects }) => {
       const docker = await installFakeDocker(dir);

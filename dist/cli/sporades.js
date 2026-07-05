@@ -930,7 +930,7 @@ async function startDevSession(options) {
     const restartPolicy = restartPolicyForMode("dev");
     const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4000;
     let bundle = await createBundle(options.projectDir, config);
-    const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
+    const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
     const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
         wait: true,
         emit: (data, error) => emitDevEvent(options, data, error),
@@ -1182,7 +1182,7 @@ async function startDevSession(options) {
         try {
             const nextConfig = await readProjectConfig(options.projectDir);
             const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
-            const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig);
+            const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
             const rebuild = await createBundle(options.projectDir, nextConfig);
             const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
                 wait: true,
@@ -4050,7 +4050,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
     const connections = {};
     try {
         for (const [name, service] of Object.entries(capsuleServices.services)) {
-            connections[name] = await waitForCapsuleService(capsuleServices, projectDir, name, service);
+            connections[name] = await waitForCapsuleService(capsuleServices, projectDir, name, service, options.connection);
         }
     }
     catch (error) {
@@ -4089,7 +4089,7 @@ function capsuleServicesContainerEnv(capsuleServices) {
         env.SPORADES_SERVICE_DATABASE_ENGINE = service.engine;
         env.SPORADES_SERVICE_DATABASE_URL =
             service.engine === "postgres"
-                ? `postgres://sporades:sporades@${service.name}:${service.targetPort}/sporades`
+                ? `postgres://${encodeURIComponent(service.user)}:${encodeURIComponent(service.password)}@${service.name}:${service.targetPort}/${service.databaseName}`
                 : `http://${service.name}:${service.targetPort}`;
     }
     if (capsuleServices.services.storage) {
@@ -4135,7 +4135,10 @@ function capsuleServicesJsonSummary(capsuleServices, status) {
         },
     ]));
 }
-async function waitForCapsuleService(capsuleServices, projectDir, name, service) {
+async function waitForCapsuleService(capsuleServices, projectDir, name, service, connection) {
+    if (connection === "container") {
+        return await waitForHealthyCapsuleService(capsuleServices, projectDir, name, service);
+    }
     if (service.kind === "database") {
         return await waitForCapsuleDatabaseService(capsuleServices, projectDir);
     }
@@ -4174,6 +4177,35 @@ async function waitForCapsuleService(capsuleServices, projectDir, name, service)
     error.diagnostics = diagnostics;
     throw error;
 }
+async function waitForHealthyCapsuleService(capsuleServices, projectDir, name, service) {
+    const deadline = Date.now() + capsuleServiceReadinessTimeoutMs();
+    let lastStatus = null;
+    let lastError = null;
+    while (Date.now() < deadline) {
+        const status = capsuleServiceStatus(capsuleServices, projectDir, service.name);
+        lastStatus = status;
+        if (["exited", "dead", "removing"].includes(status.state) || status.health === "unhealthy") {
+            lastError = status;
+            break;
+        }
+        if (status.state === "running" && status.health === "healthy") {
+            return {
+                host: service.name,
+                port: service.targetPort,
+            };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    const diagnostics = {
+        service: name,
+        engine: service.engine,
+        status: lastError ?? lastStatus ?? { state: "unknown", health: null },
+        probe: null,
+    };
+    const error = commandError(`Capsule ${service.kind} service did not become ready.`, "Run `docker compose -f .sporades/compose/capsule-services.compose.yml ps` and inspect the service logs.");
+    error.diagnostics = diagnostics;
+    throw error;
+}
 async function waitForCapsuleDatabaseService(capsuleServices, projectDir) {
     const service = capsuleServices.services.database;
     const deadline = Date.now() + capsuleServiceReadinessTimeoutMs();
@@ -4192,7 +4224,7 @@ async function waitForCapsuleDatabaseService(capsuleServices, projectDir) {
             const connection = {
                 host: "127.0.0.1",
                 port,
-                url: `http://127.0.0.1:${port}`,
+                url: localCapsuleDatabaseUrl(service, port),
             };
             lastProbe = await probeCapsuleDatabaseService(capsuleServices, connection.url);
             if (lastProbe.ok) {
@@ -4211,9 +4243,15 @@ async function waitForCapsuleDatabaseService(capsuleServices, projectDir) {
     error.diagnostics = diagnostics;
     throw error;
 }
+function localCapsuleDatabaseUrl(service, port) {
+    if (service.engine === "postgres") {
+        return `postgres://${encodeURIComponent(service.user)}:${encodeURIComponent(service.password)}@127.0.0.1:${port}/${service.databaseName}`;
+    }
+    return `http://127.0.0.1:${port}`;
+}
 async function probeCapsuleDatabaseService(capsuleServices, url) {
     if (capsuleServices.services.database.engine === "postgres") {
-        return await probePostgresCapsuleDatabaseService(`postgres://sporades:sporades@${new URL(url).hostname}:${new URL(url).port}/sporades`);
+        return await probePostgresCapsuleDatabaseService(url);
     }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 500);

@@ -146,7 +146,7 @@ if (call.args[0] === "run") {
       FAKE_DOCKER_BUILD_STATUS: String(options.buildStatus ?? 0),
       FAKE_DOCKER_COMPOSE_UP_STATUS: String(options.composeUpStatus ?? 0),
       FAKE_DOCKER_COMPOSE_DOWN_STATUS: String(options.composeDownStatus ?? 0),
-      FAKE_DOCKER_COMPOSE_PS_OUTPUT: options.composePsOutput ?? JSON.stringify({ State: "running", Health: "" }),
+      FAKE_DOCKER_COMPOSE_PS_OUTPUT: options.composePsOutput ?? JSON.stringify({ State: "running", Health: "healthy" }),
       FAKE_DOCKER_COMPOSE_PORT_OUTPUT: options.composePortOutput ?? "127.0.0.1:49161",
       FAKE_DOCKER_NETWORK_INSPECT_STATUS: String(options.networkInspectStatus ?? 0),
       FAKE_DOCKER_SPORADES_IMAGES: options.sporadesImages ?? "",
@@ -173,6 +173,27 @@ function expectedLocalContainerRuntimeUser() {
 
 function firstDockerRunCall(calls) {
   return calls.find((call) => call.args[0] === "run");
+}
+
+function capsuleServiceCredentialsPath(projectDir) {
+  return path.join(projectDir, ".sporades", "services", "credentials.json");
+}
+
+async function readCapsuleServiceCredentials(projectDir) {
+  return JSON.parse(await readFile(capsuleServiceCredentialsPath(projectDir), "utf8"));
+}
+
+async function seedCapsuleServiceCredentials(projectDir, overrides = {}) {
+  const credentials = {
+    databaseUser: "sporades",
+    databasePassword: "sporades",
+    storageAccessKey: "sporades",
+    storageSecretKey: "sporades-minio-local-secret",
+    ...overrides,
+  };
+  await mkdir(path.dirname(capsuleServiceCredentialsPath(projectDir)), { recursive: true });
+  await writeFile(capsuleServiceCredentialsPath(projectDir), `${JSON.stringify(credentials, null, 2)}\n`);
+  return credentials;
 }
 
 function dockerRunEnv(runCall, prefix) {
@@ -738,6 +759,7 @@ test("container server bundle uses injected MinIO storage env for file lifecycle
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.services = { storage: { kind: "storage", engine: "minio" } };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await seedCapsuleServiceCredentials(projectDir);
 
     await withFakeS3CompatibleService(async ({ endpoint, port: serviceReadyPort, requests, objects }) => {
       const docker = await installFakeDocker(dir, "container-with-minio-bundle", {
@@ -2199,12 +2221,17 @@ test("sporades deploy wires Postgres Capsule database services through Compose",
       const output = JSON.parse(deployResult.stdout);
       assert.equal(output.data.services.database.engine, "postgres");
 
+      const credentials = await readCapsuleServiceCredentials(projectDir);
       const compose = await readFile(path.join(projectDir, ".sporades", "compose", "capsule-services.compose.yml"), "utf8");
       assert.match(compose, /image: postgres:16-alpine/);
       assert.match(compose, /POSTGRES_USER: "sporades"/);
       assert.match(compose, /POSTGRES_DB: "sporades"/);
-      assert.match(compose, /POSTGRES_HOST_AUTH_METHOD: "trust"/);
-      assert.match(compose, /127\.0\.0\.1::5432/);
+      assert(compose.includes(`POSTGRES_PASSWORD: ${JSON.stringify(credentials.databasePassword)}`), compose);
+      assert.doesNotMatch(compose, /POSTGRES_HOST_AUTH_METHOD/);
+      assert.doesNotMatch(compose, /ports:/);
+      assert.doesNotMatch(compose, /127\.0\.0\.1::5432/);
+      assert.match(compose, /healthcheck:/);
+      assert.match(compose, /pg_isready/);
       assert.match(compose, /todo-island\/\.sporades\/services\/database\:\/var\/lib\/postgresql\/data:rw"/);
       assert.match(compose, /com\.sporades\.capsule-service\.engine: "postgres"/);
 
@@ -2212,7 +2239,9 @@ test("sporades deploy wires Postgres Capsule database services through Compose",
       assert.equal(runCall.args[runCall.args.indexOf("--network") + 1], "sporades-todo-island-services");
       assert(runCall.args.includes("SPORADES_SERVICE_DATABASE_ENGINE=postgres"), runCall.args.join(" "));
       assert(
-        runCall.args.includes("SPORADES_SERVICE_DATABASE_URL=postgres://sporades:sporades@sporades-todo-island-database:5432/sporades"),
+        runCall.args.includes(
+          `SPORADES_SERVICE_DATABASE_URL=postgres://sporades:${encodeURIComponent(credentials.databasePassword)}@sporades-todo-island-database:5432/sporades`,
+        ),
         runCall.args.join(" "),
       );
     });
@@ -2271,14 +2300,15 @@ test("sporades deploy wires database and MinIO storage Capsule services through 
           statePath: path.join(".sporades", "services", "storage"),
         },
       });
-      assert.doesNotMatch(deployResult.stdout, /sporades-minio-local-secret/);
+      const credentials = await readCapsuleServiceCredentials(projectDir);
+      assert.equal(deployResult.stdout.includes(credentials.storageSecretKey), false, deployResult.stdout);
       assert.doesNotMatch(deployResult.stdout, /super-secret-token/);
 
       const compose = await readFile(path.join(projectDir, ".sporades", "compose", "capsule-services.compose.yml"), "utf8");
       assert.match(compose, /sporades-todo-island-database:/);
       assert.match(compose, /sporades-todo-island-storage:/);
       assert.match(compose, /command: "server \/data --console-address \\":9001\\""/);
-      assert.match(compose, /MINIO_ROOT_PASSWORD: "sporades-minio-local-secret"/);
+      assert(compose.includes(`MINIO_ROOT_PASSWORD: ${JSON.stringify(credentials.storageSecretKey)}`), compose);
       assert.match(compose, /com\.sporades\.capsule-service\.kind: "storage"/);
       assert.match(compose, new RegExp(`${projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\/\\.sporades\\/services\\/storage\:\\/data:rw"`));
 
@@ -2290,11 +2320,15 @@ test("sporades deploy wires database and MinIO storage Capsule services through 
       assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_ENGINE=minio"), runCall.args.join(" "));
       assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_ENDPOINT=http://sporades-todo-island-storage:9000"), runCall.args.join(" "));
       assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_ACCESS_KEY=sporades"), runCall.args.join(" "));
-      assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_SECRET_KEY=sporades-minio-local-secret"), runCall.args.join(" "));
+      assert(runCall.args.includes(`SPORADES_SERVICE_STORAGE_SECRET_KEY=${credentials.storageSecretKey}`), runCall.args.join(" "));
       assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_BUCKET=sporades-files"), runCall.args.join(" "));
       assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_REGION=us-east-1"), runCall.args.join(" "));
       assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_NAMESPACE=todo-island"), runCall.args.join(" "));
-      assert(calls.some((call) => call.args.slice(3).join(" ") === "port sporades-todo-island-storage 9000"));
+      assert.equal(
+        calls.some((call) => call.args[0] === "compose" && call.args.includes("port")),
+        false,
+        "container sessions must not rely on published service ports",
+      );
 
       const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
       assert.match(serverBundle, /"SPORADES_SERVICE_STORAGE_ENGINE"/);
@@ -2418,7 +2452,7 @@ test("sporades deploy fails before replacement when a declared service is unheal
   });
 });
 
-test("sporades deploy fails before replacement when a declared service probe cannot connect", async () => {
+test("sporades deploy fails before replacement when a declared service never reports healthy", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
@@ -2442,9 +2476,8 @@ test("sporades deploy fails before replacement when a declared service probe can
       path.join(projectDir, ".sporades", "binding.json"),
       `${JSON.stringify({ containerId: "container-old", containerName: "sporades-todo-island" }, null, 2)}\n`,
     );
-    const unusedPort = await getAvailablePort();
     const docker = await installFakeDocker(dir, "container-never-started", {
-      composePortOutput: `127.0.0.1:${unusedPort}`,
+      composePsOutput: JSON.stringify({ State: "running", Health: "" }),
     });
 
     const deployResult = await runCli(["deploy", "--json"], {
@@ -2461,7 +2494,7 @@ test("sporades deploy fails before replacement when a declared service probe can
     assert.equal(output.error.diagnostics.service, "database");
     assert.equal(output.error.diagnostics.engine, "libsql");
     assert.deepEqual(output.error.diagnostics.status, { state: "running", health: null });
-    assert.equal(output.error.diagnostics.probe.ok, false);
+    assert.equal(output.error.diagnostics.probe, null);
     assert.deepEqual(output.error.diagnostics.services, {
       database: {
         status: "failed",

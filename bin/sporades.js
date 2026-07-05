@@ -3,10 +3,10 @@
 
 // src/cli/sporades.ts
 import { spawnSync } from "node:child_process";
-import { createHash as createHash3, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes3 } from "node:crypto";
+import { createHash as createHash3, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes4 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { chmod, lstat, mkdir as mkdir4, readdir, readFile as readFile3, rm as rm2, writeFile as writeFile4 } from "node:fs/promises";
+import { chmod, lstat, mkdir as mkdir4, readdir, readFile as readFile4, rm as rm2, writeFile as writeFile4 } from "node:fs/promises";
 import path4 from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -708,6 +708,8 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   postgresInterpolate,
   createPostgresConnection,
   postgresUrlOptions,
+  postgresPasswordMessage,
+  createPostgresScramSession,
   postgresStartupMessage,
   postgresQueryMessage,
   postgresInt32,
@@ -1199,8 +1201,8 @@ function createLocalFileStorageAdapter({ storagePath }) {
       await writeFile5(localFileVersionPath(storagePath, fileId, version), bytes);
     },
     async readFileVersion({ fileId, version }) {
-      const { readFile: readFile4 } = await import("node:fs/promises");
-      return await readFile4(localFileVersionPath(storagePath, fileId, version));
+      const { readFile: readFile5 } = await import("node:fs/promises");
+      return await readFile5(localFileVersionPath(storagePath, fileId, version));
     },
     async deleteFileVersion({ fileId, version }) {
       const { rm: rm3 } = await import("node:fs/promises");
@@ -2087,6 +2089,7 @@ async function createPostgresDatabaseAdapter(options) {
 }
 async function createPostgresConnection(url) {
   const net = await import("node:net");
+  const crypto = await import("node:crypto");
   const options = postgresUrlOptions(url);
   const socket = net.createConnection({ host: options.host, port: options.port });
   socket.setNoDelay(true);
@@ -2115,18 +2118,49 @@ async function createPostgresConnection(url) {
     socket.once("connect", resolve);
     socket.once("error", reject);
   });
+  let scram = null;
   socket.write(postgresStartupMessage(options));
   while (!ready) {
     const message = await readPostgresMessage();
     if (message.type === "R") {
       const authType = message.body.readInt32BE(0);
-      if (authType !== 0) {
-        throw commandError(
-          "Unsupported Postgres authentication method.",
-          "Use the Sporades-managed local Postgres Capsule service, which is configured for local trust authentication."
-        );
+      if (authType === 0) {
+        continue;
       }
-      continue;
+      if (authType === 3) {
+        socket.write(postgresPasswordMessage(Buffer.from(`${options.password}\0`, "utf8")));
+        continue;
+      }
+      if (authType === 10) {
+        const mechanisms = message.body.subarray(4).toString("utf8").split("\0").filter(Boolean);
+        if (!mechanisms.includes("SCRAM-SHA-256")) {
+          throw commandError(
+            "Unsupported Postgres SASL mechanism.",
+            "Use the Sporades-managed Postgres Capsule service, which authenticates with SCRAM-SHA-256."
+          );
+        }
+        scram = createPostgresScramSession(crypto, options.password);
+        const clientFirst = Buffer.from(scram.clientFirstMessage, "utf8");
+        socket.write(
+          postgresPasswordMessage(
+            Buffer.concat([Buffer.from("SCRAM-SHA-256\0", "utf8"), postgresInt32(clientFirst.length), clientFirst])
+          )
+        );
+        continue;
+      }
+      if (authType === 11 && scram) {
+        const clientFinal = scram.continue(message.body.subarray(4).toString("utf8"));
+        socket.write(postgresPasswordMessage(Buffer.from(clientFinal, "utf8")));
+        continue;
+      }
+      if (authType === 12 && scram) {
+        scram.verify(message.body.subarray(4).toString("utf8"));
+        continue;
+      }
+      throw commandError(
+        "Unsupported Postgres authentication method.",
+        "Use the Sporades-managed Postgres Capsule service with the generated Capsule service credentials."
+      );
     }
     if (message.type === "K") {
       backendKeyData = message.body;
@@ -2174,6 +2208,7 @@ async function createPostgresConnection(url) {
     const fields = [];
     const rows = [];
     let rowCount = 0;
+    let queryError = null;
     while (true) {
       const message = await readPostgresMessage();
       if (message.type === "T") {
@@ -2189,9 +2224,13 @@ async function createPostgresConnection(url) {
         continue;
       }
       if (message.type === "E") {
-        throw postgresErrorFromBody(message.body);
+        queryError = postgresErrorFromBody(message.body);
+        continue;
       }
       if (message.type === "Z") {
+        if (queryError) {
+          throw queryError;
+        }
         return { fields, rows, rowCount };
       }
     }
@@ -2216,7 +2255,43 @@ function postgresUrlOptions(url) {
     host: parsed.hostname || "127.0.0.1",
     port: parsed.port ? Number(parsed.port) : 5432,
     user: decodeURIComponent(parsed.username || "sporades"),
+    password: decodeURIComponent(parsed.password || ""),
     database: decodeURIComponent(parsed.pathname.replace(/^\/+/, "") || "sporades")
+  };
+}
+function postgresPasswordMessage(body) {
+  return Buffer.concat([Buffer.from("p"), postgresInt32(body.length + 4), body]);
+}
+function createPostgresScramSession(crypto, password) {
+  const clientNonce = crypto.randomBytes(18).toString("base64");
+  const clientFirstBare = `n=,r=${clientNonce}`;
+  let serverSignature = null;
+  return {
+    clientFirstMessage: `n,,${clientFirstBare}`,
+    continue(serverFirstMessage) {
+      const attributes = new Map(serverFirstMessage.split(",").map((part) => [part.slice(0, 1), part.slice(2)]));
+      const serverNonce = attributes.get("r") ?? "";
+      const salt = Buffer.from(attributes.get("s") ?? "", "base64");
+      const iterations = Number(attributes.get("i") ?? "0");
+      if (!serverNonce.startsWith(clientNonce) || salt.length === 0 || !Number.isInteger(iterations) || iterations <= 0) {
+        throw new Error("Invalid Postgres SCRAM server-first message.");
+      }
+      const saltedPassword = crypto.pbkdf2Sync(password, salt, iterations, 32, "sha256");
+      const clientKey = crypto.createHmac("sha256", saltedPassword).update("Client Key").digest();
+      const storedKey = crypto.createHash("sha256").update(clientKey).digest();
+      const clientFinalWithoutProof = `c=biws,r=${serverNonce}`;
+      const authMessage = `${clientFirstBare},${serverFirstMessage},${clientFinalWithoutProof}`;
+      const clientSignature = crypto.createHmac("sha256", storedKey).update(authMessage).digest();
+      const clientProof = Buffer.from(clientKey.map((byte, index) => byte ^ clientSignature[index]));
+      const serverKey = crypto.createHmac("sha256", saltedPassword).update("Server Key").digest();
+      serverSignature = crypto.createHmac("sha256", serverKey).update(authMessage).digest("base64");
+      return `${clientFinalWithoutProof},p=${clientProof.toString("base64")}`;
+    },
+    verify(serverFinalMessage) {
+      if (serverFinalMessage !== `v=${serverSignature}`) {
+        throw new Error("Postgres SCRAM server signature verification failed.");
+      }
+    }
   };
 }
 function postgresStartupMessage(options) {
@@ -8746,7 +8821,8 @@ function escapeHtml(value) {
 }
 
 // src/capsule-services.ts
-import { mkdir as mkdir3, rm, writeFile as writeFile3 } from "node:fs/promises";
+import { randomBytes as randomBytes3 } from "node:crypto";
+import { mkdir as mkdir3, readFile as readFile3, rm, writeFile as writeFile3 } from "node:fs/promises";
 import path3 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
 var SUPPORTED_DATABASE_ENGINES = /* @__PURE__ */ new Set(["libsql", "postgres"]);
@@ -8754,15 +8830,14 @@ var SUPPORTED_STORAGE_ENGINES = /* @__PURE__ */ new Set(["minio"]);
 var LIBSQL_IMAGE = "ghcr.io/tursodatabase/libsql-server:v0.24.32";
 var POSTGRES_IMAGE = "postgres:16-alpine";
 var POSTGRES_USER = "sporades";
-var POSTGRES_PASSWORD = "sporades";
 var POSTGRES_DATABASE = "sporades";
 var MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z";
 var MINIO_ROOT_USER = "sporades";
-var MINIO_ROOT_PASSWORD = "sporades-minio-local-secret";
 var MINIO_BUCKET = "sporades-files";
 var MINIO_REGION = "us-east-1";
 var CAPSULE_SERVICES_COMPOSE_FILE = path3.join(".sporades", "compose", "capsule-services.compose.yml");
 var CAPSULE_SERVICES_STATE_DIR = path3.join(".sporades", "services");
+var CAPSULE_SERVICES_CREDENTIALS_FILE = path3.join(".sporades", "services", "credentials.json");
 function validateCapsuleServicesConfig(services) {
   if (services === void 0) {
     return null;
@@ -8786,7 +8861,7 @@ function validateCapsuleServicesConfig(services) {
   }
   return services;
 }
-async function writeCapsuleServicesCompose(projectDir, config) {
+async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
   const composePath = path3.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   if (!hasDeclaredCapsuleServices(config)) {
     await rm(composePath, { force: true });
@@ -8794,7 +8869,11 @@ async function writeCapsuleServicesCompose(projectDir, config) {
   }
   validateCapsuleServicesConfig(config.services);
   await mkdir3(path3.dirname(composePath), { recursive: true });
-  const model = capsuleServicesComposeModel(config, projectDir);
+  const credentials = await loadOrCreateCapsuleServiceCredentials(projectDir);
+  const model = capsuleServicesComposeModel(config, projectDir, {
+    credentials,
+    publishPorts: options.publishPorts === true
+  });
   await Promise.all(Object.values(model.services).map((service) => mkdir3(service.stateDir, { recursive: true })));
   const source = renderCapsuleServicesCompose(model);
   await writeFile3(composePath, source);
@@ -8804,7 +8883,35 @@ async function writeCapsuleServicesCompose(projectDir, config) {
     ...model
   };
 }
-function capsuleServicesComposeModel(config, projectDir = process.cwd()) {
+async function loadOrCreateCapsuleServiceCredentials(projectDir) {
+  const credentialsPath = path3.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
+  let existing = {};
+  try {
+    const parsed = JSON.parse(await readFile3(credentialsPath, "utf8"));
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      existing = parsed;
+    }
+  } catch {
+  }
+  const credentials = {
+    databaseUser: typeof existing.databaseUser === "string" && existing.databaseUser ? existing.databaseUser : POSTGRES_USER,
+    databasePassword: typeof existing.databasePassword === "string" && existing.databasePassword ? existing.databasePassword : randomBytes3(24).toString("base64url"),
+    storageAccessKey: typeof existing.storageAccessKey === "string" && existing.storageAccessKey ? existing.storageAccessKey : MINIO_ROOT_USER,
+    storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes3(24).toString("base64url")
+  };
+  if (credentials.databaseUser !== existing.databaseUser || credentials.databasePassword !== existing.databasePassword || credentials.storageAccessKey !== existing.storageAccessKey || credentials.storageSecretKey !== existing.storageSecretKey) {
+    await mkdir3(path3.dirname(credentialsPath), { recursive: true });
+    await writeFile3(credentialsPath, `${JSON.stringify(credentials, null, 2)}
+`, { mode: 384 });
+  }
+  return credentials;
+}
+function capsuleServicesComposeModel(config, projectDir = process.cwd(), options = {}) {
+  const credentials = options.credentials ?? {};
+  const databaseUser = credentials.databaseUser ?? POSTGRES_USER;
+  const databasePassword = credentials.databasePassword ?? "";
+  const storageAccessKey = credentials.storageAccessKey ?? MINIO_ROOT_USER;
+  const storageSecretKey = credentials.storageSecretKey ?? "";
   const projectSlug = slugify(config.name ?? "capsule");
   const networkName = `sporades-${projectSlug}-services`;
   const services = {};
@@ -8818,17 +8925,18 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd()) {
       targetPort: 5432,
       volumeTarget: "/var/lib/postgresql/data",
       environment: {
-        POSTGRES_USER,
-        POSTGRES_PASSWORD,
-        POSTGRES_DB: POSTGRES_DATABASE,
-        POSTGRES_HOST_AUTH_METHOD: "trust"
-      }
+        POSTGRES_USER: databaseUser,
+        POSTGRES_PASSWORD: databasePassword,
+        POSTGRES_DB: POSTGRES_DATABASE
+      },
+      healthcheck: ["CMD", "pg_isready", "-U", databaseUser, "-d", POSTGRES_DATABASE]
     } : {
       engine: "libsql",
       image: LIBSQL_IMAGE,
       targetPort: 8080,
       volumeTarget: "/var/lib/sqld",
-      environment: {}
+      environment: {},
+      healthcheck: ["CMD", "/bin/bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
     };
     services.database = {
       kind: "database",
@@ -8839,7 +8947,11 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd()) {
       targetPort: engineModel.targetPort,
       volumeTarget: engineModel.volumeTarget,
       environment: engineModel.environment,
-      command: null
+      healthcheck: engineModel.healthcheck,
+      command: null,
+      user: databaseUser,
+      password: databasePassword,
+      databaseName: POSTGRES_DATABASE
     };
   }
   if (storage) {
@@ -8852,12 +8964,13 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd()) {
       targetPort: 9e3,
       volumeTarget: "/data",
       environment: {
-        MINIO_ROOT_USER,
-        MINIO_ROOT_PASSWORD
+        MINIO_ROOT_USER: storageAccessKey,
+        MINIO_ROOT_PASSWORD: storageSecretKey
       },
+      healthcheck: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"],
       command: 'server /data --console-address ":9001"',
-      accessKey: MINIO_ROOT_USER,
-      secretKey: MINIO_ROOT_PASSWORD,
+      accessKey: storageAccessKey,
+      secretKey: storageSecretKey,
       bucket: MINIO_BUCKET,
       region: MINIO_REGION,
       namespace: projectSlug
@@ -8866,6 +8979,13 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd()) {
   const model = {
     projectSlug,
     composeProjectName: `sporades-${projectSlug}-services`,
+    publishPorts: options.publishPorts === true,
+    credentials: {
+      databaseUser,
+      databasePassword,
+      storageAccessKey,
+      storageSecretKey
+    },
     services,
     networks: {
       services: networkName
@@ -8942,18 +9062,33 @@ ${renderLabels(model.labels, 6)}
 `;
 }
 function renderServiceCompose(service, model) {
+  const ports = model.publishPorts ? `    ports:
+      - "127.0.0.1::${service.targetPort}"
+` : "";
   return `  ${service.name}:
     image: ${service.image}
     container_name: ${service.name}
     labels:
 ${renderLabels(service.labels, 6)}
-${renderEnvironment(service.environment, 4)}${renderCommand(service.command, 4)}
+${renderEnvironment(service.environment, 4)}${renderCommand(service.command, 4)}${renderHealthcheck(service.healthcheck, 4)}
     networks:
       - ${model.networks.services}
-    ports:
-      - "127.0.0.1::${service.targetPort}"
-    volumes:
+${ports}    volumes:
       - ${JSON.stringify(`${service.stateDir}:${service.volumeTarget}:rw`)}
+`;
+}
+function renderHealthcheck(healthcheck, indent) {
+  if (!healthcheck) {
+    return "";
+  }
+  const padding = " ".repeat(indent);
+  return `${padding}healthcheck:
+${padding}  test: ${JSON.stringify(healthcheck)}
+${padding}  interval: 5s
+${padding}  timeout: 3s
+${padding}  retries: 3
+${padding}  start_period: 60s
+${padding}  start_interval: 1s
 `;
 }
 function renderCommand(command, indent) {
@@ -9969,7 +10104,7 @@ async function startDevSession(options) {
   const restartPolicy = restartPolicyForMode("dev");
   const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4e3;
   let bundle = await createBundle(options.projectDir, config);
-  const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
+  const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
   const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
     wait: true,
     emit: (data, error) => emitDevEvent(options, data, error)
@@ -10077,12 +10212,12 @@ async function startDevSession(options) {
       }
       if (request.url === "/" || request.url === "/index.html") {
         response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-        response.end(await readFile3(bundle.staticFiles.indexHtml, "utf8"));
+        response.end(await readFile4(bundle.staticFiles.indexHtml, "utf8"));
         return;
       }
       if (request.url === "/client.js") {
         response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
-        response.end(await readFile3(bundle.staticFiles.clientBundle, "utf8"));
+        response.end(await readFile4(bundle.staticFiles.clientBundle, "utf8"));
         return;
       }
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
@@ -10240,7 +10375,7 @@ async function startDevSession(options) {
     try {
       const nextConfig = await readProjectConfig(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
-      const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig);
+      const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
       const rebuild = await createBundle(options.projectDir, nextConfig);
       const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
         wait: true,
@@ -10704,7 +10839,7 @@ async function manageEnv(options) {
 async function readPortableSealedServerEnvEnvelope(filePath) {
   let envelope;
   try {
-    envelope = JSON.parse(await readFile3(filePath, "utf8"));
+    envelope = JSON.parse(await readFile4(filePath, "utf8"));
   } catch (error) {
     if (error?.code === "ENOENT") {
       throw commandError4(
@@ -11738,7 +11873,7 @@ function readBaseImageUpdatePolicy(config) {
 }
 async function readRequiredFile2(filePath, message, hint) {
   try {
-    return await readFile3(filePath, "utf8");
+    return await readFile4(filePath, "utf8");
   } catch (error) {
     if (error?.code === "ENOENT") {
       throw commandError4(message, hint);
@@ -11748,7 +11883,7 @@ async function readRequiredFile2(filePath, message, hint) {
 }
 async function readContainerBinding(bindingPath) {
   try {
-    return JSON.parse(await readFile3(bindingPath, "utf8"));
+    return JSON.parse(await readFile4(bindingPath, "utf8"));
   } catch (error) {
     if (error?.code === "ENOENT") {
       return null;
@@ -11764,7 +11899,7 @@ async function readContainerBinding(bindingPath) {
 }
 async function readRemoteBinding(projectDir) {
   try {
-    return JSON.parse(await readFile3(path4.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
+    return JSON.parse(await readFile4(path4.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
   } catch (error) {
     if (error?.code === "ENOENT") {
       return null;
@@ -11794,7 +11929,7 @@ async function resolveHostPushTarget(config, options) {
 }
 async function readHostConfig() {
   try {
-    const parsed = JSON.parse(await readFile3(hostConfigPath(), "utf8"));
+    const parsed = JSON.parse(await readFile4(hostConfigPath(), "utf8"));
     return normaliseHostConfig(parsed);
   } catch (error) {
     if (error?.code === "ENOENT") {
@@ -12064,13 +12199,13 @@ async function createHostReleaseArchive(options) {
   await rm2(packageDir, { recursive: true, force: true });
   await mkdir4(path4.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
   await Promise.all([
-    writeFile4(path4.join(packageDir, "server.mjs"), await readFile3(path4.join(options.bundle.buildDir, "server.mjs"), "utf8")),
-    writeFile4(path4.join(packageDir, "client.js"), await readFile3(path4.join(options.bundle.buildDir, "client.js"), "utf8")),
-    writeFile4(path4.join(packageDir, "index.html"), await readFile3(path4.join(options.projectDir, "index.html"), "utf8")),
-    writeFile4(path4.join(packageDir, "sporades.json"), await readFile3(path4.join(options.projectDir, "sporades.json"), "utf8"))
+    writeFile4(path4.join(packageDir, "server.mjs"), await readFile4(path4.join(options.bundle.buildDir, "server.mjs"), "utf8")),
+    writeFile4(path4.join(packageDir, "client.js"), await readFile4(path4.join(options.bundle.buildDir, "client.js"), "utf8")),
+    writeFile4(path4.join(packageDir, "index.html"), await readFile4(path4.join(options.projectDir, "index.html"), "utf8")),
+    writeFile4(path4.join(packageDir, "sporades.json"), await readFile4(path4.join(options.projectDir, "sporades.json"), "utf8"))
   ]);
   if (options.bundle.containerMounts.serverEnv) {
-    await writeFile4(path4.join(packageDir, ".env.sporades.server"), await readFile3(options.bundle.containerMounts.serverEnv.host, "utf8"));
+    await writeFile4(path4.join(packageDir, ".env.sporades.server"), await readFile4(options.bundle.containerMounts.serverEnv.host, "utf8"));
   }
   if (sealedServerEnv) {
     await writeFile4(
@@ -12266,7 +12401,7 @@ function createHostedContainerName(domain, subname) {
 }
 function createHostReleaseId(now = /* @__PURE__ */ new Date()) {
   const timestamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-  return `${timestamp}-${randomBytes3(4).toString("hex")}`;
+  return `${timestamp}-${randomBytes4(4).toString("hex")}`;
 }
 function normaliseHostLogEntries(data) {
   if (!Array.isArray(data?.entries)) {
@@ -12614,7 +12749,7 @@ async function writeGithubAutodeployWorkflow(options) {
     };
   }
   try {
-    await readFile3(outputPath, "utf8");
+    await readFile4(outputPath, "utf8");
     if (!options.force) {
       throw commandError4(
         "GitHub Actions workflow already exists.",
@@ -13256,7 +13391,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
   const connections = {};
   try {
     for (const [name, service] of Object.entries(capsuleServices.services)) {
-      connections[name] = await waitForCapsuleService(capsuleServices, projectDir, name, service);
+      connections[name] = await waitForCapsuleService(capsuleServices, projectDir, name, service, options.connection);
     }
   } catch (error) {
     if (options.connection === "container") {
@@ -13292,7 +13427,7 @@ function capsuleServicesContainerEnv(capsuleServices) {
   if (capsuleServices.services.database) {
     const service = capsuleServices.services.database;
     env.SPORADES_SERVICE_DATABASE_ENGINE = service.engine;
-    env.SPORADES_SERVICE_DATABASE_URL = service.engine === "postgres" ? `postgres://sporades:sporades@${service.name}:${service.targetPort}/sporades` : `http://${service.name}:${service.targetPort}`;
+    env.SPORADES_SERVICE_DATABASE_URL = service.engine === "postgres" ? `postgres://${encodeURIComponent(service.user)}:${encodeURIComponent(service.password)}@${service.name}:${service.targetPort}/${service.databaseName}` : `http://${service.name}:${service.targetPort}`;
   }
   if (capsuleServices.services.storage) {
     const service = capsuleServices.services.storage;
@@ -13339,7 +13474,10 @@ function capsuleServicesJsonSummary(capsuleServices, status) {
     ])
   );
 }
-async function waitForCapsuleService(capsuleServices, projectDir, name, service) {
+async function waitForCapsuleService(capsuleServices, projectDir, name, service, connection) {
+  if (connection === "container") {
+    return await waitForHealthyCapsuleService(capsuleServices, projectDir, name, service);
+  }
   if (service.kind === "database") {
     return await waitForCapsuleDatabaseService(capsuleServices, projectDir);
   }
@@ -13356,14 +13494,14 @@ async function waitForCapsuleService(capsuleServices, projectDir, name, service)
     }
     if (status.state === "running") {
       const port = capsuleServicePort(capsuleServices, projectDir, service.name, service.targetPort, name);
-      const connection = {
+      const connection2 = {
         host: "127.0.0.1",
         port,
         url: `http://127.0.0.1:${port}`
       };
-      lastProbe = await probeCapsuleStorageService(connection.url);
+      lastProbe = await probeCapsuleStorageService(connection2.url);
       if (lastProbe.ok) {
-        return connection;
+        return connection2;
       }
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
@@ -13376,6 +13514,38 @@ async function waitForCapsuleService(capsuleServices, projectDir, name, service)
   };
   const error = commandError4(
     "Capsule storage service did not become ready.",
+    "Run `docker compose -f .sporades/compose/capsule-services.compose.yml ps` and inspect the service logs."
+  );
+  error.diagnostics = diagnostics;
+  throw error;
+}
+async function waitForHealthyCapsuleService(capsuleServices, projectDir, name, service) {
+  const deadline = Date.now() + capsuleServiceReadinessTimeoutMs();
+  let lastStatus = null;
+  let lastError = null;
+  while (Date.now() < deadline) {
+    const status = capsuleServiceStatus(capsuleServices, projectDir, service.name);
+    lastStatus = status;
+    if (["exited", "dead", "removing"].includes(status.state) || status.health === "unhealthy") {
+      lastError = status;
+      break;
+    }
+    if (status.state === "running" && status.health === "healthy") {
+      return {
+        host: service.name,
+        port: service.targetPort
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  const diagnostics = {
+    service: name,
+    engine: service.engine,
+    status: lastError ?? lastStatus ?? { state: "unknown", health: null },
+    probe: null
+  };
+  const error = commandError4(
+    `Capsule ${service.kind} service did not become ready.`,
     "Run `docker compose -f .sporades/compose/capsule-services.compose.yml ps` and inspect the service logs."
   );
   error.diagnostics = diagnostics;
@@ -13399,7 +13569,7 @@ async function waitForCapsuleDatabaseService(capsuleServices, projectDir) {
       const connection = {
         host: "127.0.0.1",
         port,
-        url: `http://127.0.0.1:${port}`
+        url: localCapsuleDatabaseUrl(service, port)
       };
       lastProbe = await probeCapsuleDatabaseService(capsuleServices, connection.url);
       if (lastProbe.ok) {
@@ -13421,11 +13591,15 @@ async function waitForCapsuleDatabaseService(capsuleServices, projectDir) {
   error.diagnostics = diagnostics;
   throw error;
 }
+function localCapsuleDatabaseUrl(service, port) {
+  if (service.engine === "postgres") {
+    return `postgres://${encodeURIComponent(service.user)}:${encodeURIComponent(service.password)}@127.0.0.1:${port}/${service.databaseName}`;
+  }
+  return `http://127.0.0.1:${port}`;
+}
 async function probeCapsuleDatabaseService(capsuleServices, url) {
   if (capsuleServices.services.database.engine === "postgres") {
-    return await probePostgresCapsuleDatabaseService(
-      `postgres://sporades:sporades@${new URL(url).hostname}:${new URL(url).port}/sporades`
-    );
+    return await probePostgresCapsuleDatabaseService(url);
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 500);

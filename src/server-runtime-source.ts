@@ -21,6 +21,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   postgresInterpolate,
   createPostgresConnection,
   postgresUrlOptions,
+  postgresPasswordMessage,
+  createPostgresScramSession,
   postgresStartupMessage,
   postgresQueryMessage,
   postgresInt32,
@@ -1592,6 +1594,7 @@ export async function createPostgresDatabaseAdapter(options) {
 
 export async function createPostgresConnection(url) {
   const net = await import("node:net");
+  const crypto = await import("node:crypto");
   const options = postgresUrlOptions(url);
   const socket = net.createConnection({ host: options.host, port: options.port });
   socket.setNoDelay(true);
@@ -1624,18 +1627,49 @@ export async function createPostgresConnection(url) {
     socket.once("error", reject);
   });
 
+  let scram = null;
   socket.write(postgresStartupMessage(options));
   while (!ready) {
     const message = await readPostgresMessage();
     if (message.type === "R") {
       const authType = message.body.readInt32BE(0);
-      if (authType !== 0) {
-        throw commandError(
-          "Unsupported Postgres authentication method.",
-          "Use the Sporades-managed local Postgres Capsule service, which is configured for local trust authentication.",
-        );
+      if (authType === 0) {
+        continue;
       }
-      continue;
+      if (authType === 3) {
+        socket.write(postgresPasswordMessage(Buffer.from(`${options.password}\0`, "utf8")));
+        continue;
+      }
+      if (authType === 10) {
+        const mechanisms = message.body.subarray(4).toString("utf8").split("\0").filter(Boolean);
+        if (!mechanisms.includes("SCRAM-SHA-256")) {
+          throw commandError(
+            "Unsupported Postgres SASL mechanism.",
+            "Use the Sporades-managed Postgres Capsule service, which authenticates with SCRAM-SHA-256.",
+          );
+        }
+        scram = createPostgresScramSession(crypto, options.password);
+        const clientFirst = Buffer.from(scram.clientFirstMessage, "utf8");
+        socket.write(
+          postgresPasswordMessage(
+            Buffer.concat([Buffer.from("SCRAM-SHA-256\0", "utf8"), postgresInt32(clientFirst.length), clientFirst]),
+          ),
+        );
+        continue;
+      }
+      if (authType === 11 && scram) {
+        const clientFinal = scram.continue(message.body.subarray(4).toString("utf8"));
+        socket.write(postgresPasswordMessage(Buffer.from(clientFinal, "utf8")));
+        continue;
+      }
+      if (authType === 12 && scram) {
+        scram.verify(message.body.subarray(4).toString("utf8"));
+        continue;
+      }
+      throw commandError(
+        "Unsupported Postgres authentication method.",
+        "Use the Sporades-managed Postgres Capsule service with the generated Capsule service credentials.",
+      );
     }
     if (message.type === "K") {
       backendKeyData = message.body;
@@ -1683,6 +1717,7 @@ export async function createPostgresConnection(url) {
     const fields = [];
     const rows = [];
     let rowCount = 0;
+    let queryError = null;
     while (true) {
       const message = await readPostgresMessage();
       if (message.type === "T") {
@@ -1698,9 +1733,15 @@ export async function createPostgresConnection(url) {
         continue;
       }
       if (message.type === "E") {
-        throw postgresErrorFromBody(message.body);
+        // Keep reading to the ReadyForQuery message so the next queued query
+        // does not consume this query's remaining response messages.
+        queryError = postgresErrorFromBody(message.body);
+        continue;
       }
       if (message.type === "Z") {
+        if (queryError) {
+          throw queryError;
+        }
         return { fields, rows, rowCount };
       }
     }
@@ -1727,7 +1768,45 @@ function postgresUrlOptions(url) {
     host: parsed.hostname || "127.0.0.1",
     port: parsed.port ? Number(parsed.port) : 5432,
     user: decodeURIComponent(parsed.username || "sporades"),
+    password: decodeURIComponent(parsed.password || ""),
     database: decodeURIComponent(parsed.pathname.replace(/^\/+/, "") || "sporades"),
+  };
+}
+
+function postgresPasswordMessage(body) {
+  return Buffer.concat([Buffer.from("p"), postgresInt32(body.length + 4), body]);
+}
+
+function createPostgresScramSession(crypto, password) {
+  const clientNonce = crypto.randomBytes(18).toString("base64");
+  const clientFirstBare = `n=,r=${clientNonce}`;
+  let serverSignature = null;
+  return {
+    clientFirstMessage: `n,,${clientFirstBare}`,
+    continue(serverFirstMessage) {
+      const attributes = new Map(serverFirstMessage.split(",").map((part) => [part.slice(0, 1), part.slice(2)]));
+      const serverNonce = attributes.get("r") ?? "";
+      const salt = Buffer.from(attributes.get("s") ?? "", "base64");
+      const iterations = Number(attributes.get("i") ?? "0");
+      if (!serverNonce.startsWith(clientNonce) || salt.length === 0 || !Number.isInteger(iterations) || iterations <= 0) {
+        throw new Error("Invalid Postgres SCRAM server-first message.");
+      }
+      const saltedPassword = crypto.pbkdf2Sync(password, salt, iterations, 32, "sha256");
+      const clientKey = crypto.createHmac("sha256", saltedPassword).update("Client Key").digest();
+      const storedKey = crypto.createHash("sha256").update(clientKey).digest();
+      const clientFinalWithoutProof = `c=biws,r=${serverNonce}`;
+      const authMessage = `${clientFirstBare},${serverFirstMessage},${clientFinalWithoutProof}`;
+      const clientSignature = crypto.createHmac("sha256", storedKey).update(authMessage).digest();
+      const clientProof = Buffer.from(clientKey.map((byte, index) => byte ^ clientSignature[index]));
+      const serverKey = crypto.createHmac("sha256", saltedPassword).update("Server Key").digest();
+      serverSignature = crypto.createHmac("sha256", serverKey).update(authMessage).digest("base64");
+      return `${clientFinalWithoutProof},p=${clientProof.toString("base64")}`;
+    },
+    verify(serverFinalMessage) {
+      if (serverFinalMessage !== `v=${serverSignature}`) {
+        throw new Error("Postgres SCRAM server signature verification failed.");
+      }
+    },
   };
 }
 
