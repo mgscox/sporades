@@ -4745,13 +4745,13 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
     next
   });
   if (!isPromiseLike(result)) {
-    if (!result || aclRuleHasUnobservedAsyncHelper(aclContext)) {
+    if (!result || aclRuleHasUnobservedHelperRead(aclContext)) {
       deny();
     }
     return write();
   }
   const pending = Promise.resolve(result).then((allowed) => {
-    if (!allowed || aclRuleHasUnobservedAsyncHelper(aclContext)) {
+    if (!allowed || aclRuleHasUnobservedHelperRead(aclContext)) {
       deny();
     }
     return write();
@@ -4801,9 +4801,9 @@ function applyReadAcl(database, table, row, context) {
     return false;
   };
   if (!isPromiseLike(result)) {
-    return result && !aclRuleHasUnobservedAsyncHelper(aclContext) ? true : deny();
+    return result && !aclRuleHasUnobservedHelperRead(aclContext) ? true : deny();
   }
-  return Promise.resolve(result).then((allowed) => allowed && !aclRuleHasUnobservedAsyncHelper(aclContext) ? true : deny());
+  return Promise.resolve(result).then((allowed) => allowed && !aclRuleHasUnobservedHelperRead(aclContext) ? true : deny());
 }
 function filterRowsByReadAcl(database, table, rows, context) {
   const decisions = rows.map((row) => applyReadAcl(database, table, row, context));
@@ -4814,7 +4814,7 @@ function filterRowsByReadAcl(database, table, rows, context) {
 }
 var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 function createAclHelpers(database) {
-  const state = { readCount: 0, maxReads: 32, asyncHelperReads: [] };
+  const state = { readCount: 0, maxReads: 32, helperReads: [] };
   const helpers = {
     db: createAclDbHelpers(database, state),
     storage: createAclStorageHelpers(database, state)
@@ -4825,15 +4825,12 @@ function createAclHelpers(database) {
   });
   return Object.freeze(helpers);
 }
-function aclRuleHasUnobservedAsyncHelper(aclContext) {
-  return (aclContext?.acl?.[ACL_HELPER_STATE]?.asyncHelperReads ?? []).some((helperRead) => !helperRead.observed);
+function aclRuleHasUnobservedHelperRead(aclContext) {
+  return (aclContext?.acl?.[ACL_HELPER_STATE]?.helperReads ?? []).some((helperRead) => !helperRead.observed);
 }
 function trackAclHelperReturn(state, result) {
-  if (!isPromiseLike(result)) {
-    return result;
-  }
   const helperRead = { observed: false };
-  state.asyncHelperReads.push(helperRead);
+  state.helperReads.push(helperRead);
   const promise = Promise.resolve(result);
   const observe = () => {
     helperRead.observed = true;
