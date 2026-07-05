@@ -11,7 +11,6 @@ import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../
 import {
   SPORADES_BASE_IMAGE,
   baseImageLabels,
-  baseImageMetadata,
   baseImageRuntimeUser,
   normaliseBaseImageUpdatePolicy,
 } from "../base-image.js";
@@ -50,6 +49,16 @@ import {
   validateCapsuleServicesConfig,
   writeCapsuleServicesCompose,
 } from "../capsule-services.js";
+import {
+  createHostBootstrapRequest,
+  createHostDeleteRequest,
+  createHostLifecycleRequest,
+  createHostRegistrationRequest,
+  createHostReleaseRequest,
+  createHostRuntimeHealthRequest,
+  createHostStatsRequest,
+  createHostUnregisterRequest,
+} from "./host-request-builders.js";
 import { WithImplicitCoercion } from "buffer";
 import { PathLike } from "fs";
 import { FileHandle } from "fs/promises";
@@ -57,12 +66,9 @@ import { SpawnSyncReturns } from "child_process";
 import { ServerResponse, IncomingMessage } from "http";
 import type {
   HostHelperEnvelope,
-  HostHelperRelease,
-  HostLifecycleOptions,
 } from "./host-helper-contract.js";
+import { commandError, errorDetails, writeResult, type CommandError, type LooseRecord } from "./cli-support.js";
 
-type LooseRecord = Record<string, any>;
-type CommandError = Error & { hint?: string; diagnostics?: unknown };
 type HostProfile = LooseRecord;
 type CapsuleService = LooseRecord;
 type CapsuleServicesModel = LooseRecord & {
@@ -79,10 +85,6 @@ type StartCapsuleServicesOptions = {
   emit?: (data: LooseRecord, error?: unknown) => void;
   wait?: boolean;
 };
-
-function errorDetails(error: unknown): LooseRecord {
-  return error && typeof error === "object" ? (error as LooseRecord) : { message: String(error) };
-}
 
 const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
 const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library"]);
@@ -110,7 +112,6 @@ const RESERVED_CAPSULE_SUBNAMES = new Set(["www", "api", "admin", "root", "host"
 const MAX_HOST_LOG_LINES = 10000;
 const HOST_LOG_SOURCES = new Set(["http", "stdout", "stderr"]);
 const HOST_HEALTH_PATH = "/__sporades/health";
-const CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
 const DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW = ".github/workflows/sporades-autodeploy.yml";
 const CLI_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -3838,145 +3839,6 @@ function uploadHostReleaseArchive(options: LooseRecord) {
   }
 }
 
-function createHostReleaseRequest(options: LooseRecord): HostHelperRelease {
-  const registration = createHostRegistrationRequest(options.alias, options.profile, options.subname);
-  const releaseDirectory = posixJoin(registration.directories.releases, options.releaseId);
-  const files = ["server.mjs", "client.js", "index.html", "sporades.json"];
-  if (options.bundle.containerMounts.serverEnv) {
-    files.push(".env.sporades.server");
-  }
-  if (options.sealedServerEnv) {
-    files.push(".sporades/sealed-server-env/server-env.sealed.json");
-  }
-  return {
-    id: options.releaseId,
-    domain: options.profile.domain,
-    subname: options.subname,
-    hostedUrl: options.binding.hostedUrl,
-    remoteCapsuleId: options.binding.remoteCapsuleId,
-    remoteArchive: options.remoteArchive,
-    restart: options.restart,
-    serverEnvIncluded: Boolean(options.bundle.containerMounts.serverEnv),
-    sealedServerEnvIncluded: Boolean(options.sealedServerEnv),
-    sealedServerEnv: options.sealedServerEnv
-      ? {
-          publicKeyFingerprint: options.sealedServerEnv.publicKeyFingerprint,
-          publicKeyPath: options.sealedServerEnv.publicKeyPath,
-        }
-      : null,
-    baseImage: baseImageMetadata(options.updatePolicyMode),
-    files,
-    directories: {
-      capsule: registration.directories.capsule,
-      releases: registration.directories.releases,
-      release: releaseDirectory,
-      data: registration.directories.data,
-    },
-    currentLink: posixJoin(registration.directories.capsule, "current"),
-  };
-}
-
-function createHostLifecycleRequest(
-  alias: any,
-  profile: LooseRecord,
-  subname: any,
-  options: LooseRecord = {},
-): HostLifecycleOptions {
-  const registration = createHostRegistrationRequest(alias, profile, subname);
-  const currentLink = posixJoin(registration.directories.capsule, "current");
-  const containerName = createHostedContainerName(profile.domain, subname);
-  const remoteCapsuleId = `${profile.domain}/${subname}`;
-  const baseImage = baseImageMetadata(options.updatePolicyMode);
-  return {
-    domain: profile.domain,
-    subname,
-    hostedUrl: `${profile.scheme}://${subname}.${profile.domain}`,
-    remoteCapsuleId,
-    currentLink,
-    directories: registration.directories,
-    mounts: {
-      files: [
-        { host: posixJoin(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
-        { host: posixJoin(currentLink, "client.js"), container: "/app/client.js", mode: "ro" },
-        { host: posixJoin(currentLink, "index.html"), container: "/app/index.html", mode: "ro" },
-        { host: posixJoin(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
-        { host: posixJoin(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
-        {
-          host: posixJoin(currentLink, ".sporades/sealed-server-env/server-env.sealed.json"),
-          container: "/app/.sporades/sealed-server-env/server-env.sealed.json",
-          mode: "ro",
-          optional: true,
-        },
-        {
-          host: posixJoin(registration.directories.data, "sealed-server-env/server-env.private.pem"),
-          container: "/app/.sporades/sealed-server-env/server-env.private.pem",
-          mode: "ro",
-          optional: true,
-        },
-      ],
-      data: {
-        host: registration.directories.data,
-        container: "/app/data",
-        mode: "rw",
-      },
-    },
-    container: {
-      name: containerName,
-      image: baseImage.image,
-      user: baseImageRuntimeUser(),
-      baseImage,
-      labels: {
-        "com.sporades.managed": "true",
-        "com.sporades.hosted-domain": profile.domain,
-        "com.sporades.capsule-subname": subname,
-        "com.sporades.capsule-id": remoteCapsuleId,
-        ...baseImageLabels(baseImage.updatePolicy.mode),
-      },
-    },
-    routes: {
-      running: {
-        hostname: `${subname}.${profile.domain}`,
-        target: "container",
-        containerName,
-        port: 4000,
-        routeFile: registration.route.routeFile,
-        tls: registration.route.tls,
-      },
-      unavailable: registration.route,
-    },
-  };
-}
-
-function createHostStatsRequest(profile: LooseRecord, subname: any) {
-  return {
-    domain: profile.domain,
-    subname,
-    hostedUrl: `${profile.scheme}://${subname}.${profile.domain}`,
-    remoteCapsuleId: `${profile.domain}/${subname}`,
-    container: {
-      name: createHostedContainerName(profile.domain, subname),
-    },
-  };
-}
-
-function createHostRuntimeHealthRequest(profile: LooseRecord, subname: any) {
-  const hostedUrl = `${profile.scheme}://${subname}.${profile.domain}`;
-  return {
-    domain: profile.domain,
-    subname,
-    hostedUrl,
-    remoteCapsuleId: `${profile.domain}/${subname}`,
-    runtimeHealthUrl: `${hostedUrl}${CAPSULE_RUNTIME_HEALTH_PATH}`,
-    container: {
-      name: createHostedContainerName(profile.domain, subname),
-    },
-  };
-}
-
-function createHostedContainerName(domain: string, subname: any) {
-  return `sporades-${domain.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase()}-${subname}`;
-}
-
 function createHostReleaseId(now = new Date()) {
   const timestamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
   return `${timestamp}-${randomBytes(4).toString("hex")}`;
@@ -4209,126 +4071,6 @@ function unexpectedHostHealthResponse(alias: any, healthUrl: string, statusCode:
 
 function remoteHostHelperPath(profile: LooseRecord) {
   return `${profile.remoteRoot}/bin/sporades-host-helper`;
-}
-
-function createHostBootstrapRequest(profile: LooseRecord) {
-  const caddyDirectory = posixJoin(profile.remoteRoot, "caddy");
-  const hostsDirectory = posixJoin(profile.remoteRoot, "hosts");
-  const domainDirectory = posixJoin(profile.remoteRoot, "hosts", profile.domain);
-  const tlsDirectory = posixJoin(domainDirectory, "tls");
-  const tlsMode = normaliseHostTls(profile.tls).mode;
-  return {
-    substrate: {
-      packages: ["docker", "caddy"],
-      services: ["docker", "caddy"],
-    },
-    directories: {
-      remoteRoot: profile.remoteRoot,
-      bin: posixJoin(profile.remoteRoot, "bin"),
-      incoming: posixJoin(profile.remoteRoot, "incoming"),
-      caddy: caddyDirectory,
-      caddyHosts: posixJoin(caddyDirectory, "hosts"),
-      hosts: hostsDirectory,
-      domain: domainDirectory,
-      tls: tlsDirectory,
-      registry: posixJoin(domainDirectory, "registry"),
-      capsules: posixJoin(domainDirectory, "capsules"),
-    },
-    domainDirectory,
-    tls: {
-      mode: tlsMode,
-      directory: tlsDirectory,
-      certificate: tlsMode === "cloudflare-origin" ? posixJoin(tlsDirectory, "origin.crt") : null,
-      key: tlsMode === "cloudflare-origin" ? posixJoin(tlsDirectory, "origin.key") : null,
-    },
-    caddy: {
-      managedInclude: posixJoin(caddyDirectory, "sporades-hosted-domains.caddy"),
-      domainInclude: posixJoin(caddyDirectory, "hosts", `${profile.domain}.caddy`),
-    },
-  };
-}
-
-function createHostRegistrationRequest(alias: any, profile: LooseRecord, subname: any) {
-  const bootstrap = createHostBootstrapRequest(profile);
-  const capsuleDirectory = posixJoin(bootstrap.directories.capsules, subname);
-  const capsuleLog = posixJoin(capsuleDirectory, "logs", "http.log");
-  return {
-    subname,
-    domain: profile.domain,
-    hostedUrl: `${profile.scheme}://${subname}.${profile.domain}`,
-    remoteCapsuleId: `${profile.domain}/${subname}`,
-    registryRecord: posixJoin(bootstrap.directories.registry, "capsules", `${subname}.json`),
-    directories: {
-      capsule: capsuleDirectory,
-      releases: posixJoin(capsuleDirectory, "releases"),
-      data: posixJoin(capsuleDirectory, "data"),
-      logs: posixJoin(capsuleDirectory, "logs"),
-    },
-    route: {
-      hostname: `${subname}.${profile.domain}`,
-      target: "hosted-capsule-unavailable",
-      statusCode: 503,
-      routeFile: posixJoin(bootstrap.directories.caddyHosts, profile.domain, `${subname}.caddy`),
-      tls: bootstrap.tls,
-      log: { file: capsuleLog },
-    },
-    baseImage: baseImageMetadata(),
-    bootstrap: {
-      command: `sporades host bootstrap --host ${alias}`,
-      tls: bootstrap.tls,
-    },
-  };
-}
-
-function createHostUnregisterRequest(profile: LooseRecord, subname: any) {
-  const bootstrap = createHostBootstrapRequest(profile);
-  const capsuleDirectory = posixJoin(bootstrap.directories.capsules, subname);
-  return {
-    subname,
-    domain: profile.domain,
-    hostedUrl: `${profile.scheme}://${subname}.${profile.domain}`,
-    remoteCapsuleId: `${profile.domain}/${subname}`,
-    registryRecord: posixJoin(bootstrap.directories.registry, "capsules", `${subname}.json`),
-    directories: {
-      capsule: capsuleDirectory,
-      releases: posixJoin(capsuleDirectory, "releases"),
-      data: posixJoin(capsuleDirectory, "data"),
-    },
-    container: {
-      name: createHostedContainerName(profile.domain, subname),
-    },
-    routes: {
-      removed: {
-        hostname: `${subname}.${profile.domain}`,
-        target: "removed",
-        routeFile: posixJoin(bootstrap.directories.caddyHosts, profile.domain, `${subname}.caddy`),
-      },
-    },
-  };
-}
-
-function createHostDeleteRequest(profile: LooseRecord, subname: any) {
-  const bootstrap = createHostBootstrapRequest(profile);
-  const capsuleDirectory = posixJoin(bootstrap.directories.capsules, subname);
-  return {
-    subname,
-    domain: profile.domain,
-    hostedUrl: `${profile.scheme}://${subname}.${profile.domain}`,
-    remoteCapsuleId: `${profile.domain}/${subname}`,
-    registryRecord: posixJoin(bootstrap.directories.registry, "capsules", `${subname}.json`),
-    directories: {
-      capsule: capsuleDirectory,
-      releases: posixJoin(capsuleDirectory, "releases"),
-      data: posixJoin(capsuleDirectory, "data"),
-    },
-    routes: {
-      removed: {
-        hostname: `${subname}.${profile.domain}`,
-        target: "removed",
-        routeFile: posixJoin(bootstrap.directories.caddyHosts, profile.domain, `${subname}.caddy`),
-      },
-    },
-  };
 }
 
 async function writeGithubAutodeployWorkflow(options: LooseRecord) {
@@ -5535,23 +5277,7 @@ function isMissingDockerContainerError(result: SpawnSyncReturns<string>) {
   return /No such container/i.test(`${result.stderr ?? ""}\n${result.stdout ?? ""}`);
 }
 
-function commandError(message: string, hint: string, diagnostics: unknown = null): CommandError {
-  const error: CommandError = new Error(message);
-  error.hint = hint;
-  if (diagnostics) {
-    error.diagnostics = diagnostics;
-  }
-  return error;
-}
-
 function writeJsonResponse(response: ServerResponse<IncomingMessage>, status: number, result: LooseRecord) {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(`${JSON.stringify(result)}\n`);
-}
-
-function writeResult(result: LooseRecord, failed = false) {
-  process.stdout.write(`${JSON.stringify(result)}\n`);
-  if (failed) {
-    process.exitCode = 1;
-  }
 }

@@ -33,8 +33,37 @@ import type {
   JsonObject,
   JsonValue,
 } from "./host-helper-contract.js";
+import {
+  delay,
+  errorDetails,
+  helperError,
+  readStdin,
+  writeEnvelope,
+  type HelperError,
+  type LooseRecord,
+} from "./cli-support.js";
+import { removeDiscardedArchiveMetadata, validateReleaseArchive } from "./host-helper-archive.js";
+import { defaultHostHelperConfig, loadHostHelperConfig, type HostHelperConfig } from "./host-helper-config.js";
+import {
+  hostRegistryRetryCommand,
+  missingCapsuleHint,
+  validateBootstrapRequest,
+  validateDeleteRequest,
+  validateHealthRequest,
+  validateHostLogsRequest,
+  validateHostStatsRequest,
+  validateInstallRequest,
+  validateLifecycleRequest,
+  validateListRegistryRecord,
+  validateListRequest,
+  validateRegisterRequest,
+  validateReleaseListRequest,
+  validateRollbackRequest,
+  validateSealedEnvRotationRequest,
+  validateStatsRequest,
+  validateUnregisterRequest,
+} from "./host-helper-validation.js";
 
-type LooseRecord = JsonObject;
 type HostHelperRequest = HostHelperContractRequest & {
   capsule: HostHelperCapsuleTarget;
   release: HostHelperRelease;
@@ -47,29 +76,10 @@ type ReleasePaths = {
   logs: string;
   currentLink: string;
 };
-type HelperError = Error & { hint?: string; diagnostics?: unknown };
-
-function errorDetails(error: unknown): LooseRecord {
-  if (error === null || error === undefined) {
-    return {};
-  }
-  return typeof error === "object" ? (error as LooseRecord) : { message: String(error) };
-}
-
-const HOST_HELPER_CONFIG_FILE = "sporades-host-helper.json";
-const DEFAULT_HOSTED_CAPSULE_DOCKER_IMAGE = SPORADES_BASE_IMAGE.image;
-const DEFAULT_HOSTED_CAPSULE_DOCKER_NETWORK = "sporades-hosted-capsules";
-const DEFAULT_HOSTED_CAPSULE_GRACE_CHECK_MS = 500;
-const DEFAULT_HOST_LOG_LINES_VALUE = 200;
-const DEFAULT_MAX_HOST_LOG_LINES = 10000;
 const CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
 const RUNTIME_PROBE_HEADER = "x-sporades-host-probe";
 
-let HOSTED_CAPSULE_DOCKER_IMAGE = DEFAULT_HOSTED_CAPSULE_DOCKER_IMAGE;
-let HOSTED_CAPSULE_DOCKER_NETWORK = DEFAULT_HOSTED_CAPSULE_DOCKER_NETWORK;
-let HOSTED_CAPSULE_GRACE_CHECK_MS = DEFAULT_HOSTED_CAPSULE_GRACE_CHECK_MS;
-let DEFAULT_HOST_LOG_LINES = DEFAULT_HOST_LOG_LINES_VALUE;
-let MAX_HOST_LOG_LINES = DEFAULT_MAX_HOST_LOG_LINES;
+let hostHelperConfig: HostHelperConfig = defaultHostHelperConfig();
 
 main().catch((error: HelperError) => {
   writeEnvelope(
@@ -88,7 +98,7 @@ main().catch((error: HelperError) => {
 
 async function main() {
   const request = JSON.parse(await readStdin()) as HostHelperRequest;
-  await loadHostHelperConfig(request);
+  hostHelperConfig = await loadHostHelperConfig(request);
   if (request.action === "capsule.register") {
     await registerCapsule(request);
     return;
@@ -155,132 +165,6 @@ async function main() {
   }
 
   throw helperError("Unsupported Host helper action.", "Update the Host helper or use a supported Sporades host command.");
-}
-
-async function loadHostHelperConfig(request: HostHelperRequest) {
-  resetHostHelperConfig();
-  const configPath = hostHelperConfigPath(request);
-  if (!configPath) {
-    return;
-  }
-
-  let contents;
-  try {
-    contents = await readFile(configPath, "utf8");
-  } catch (error) {
-    if (errorDetails(error).code === "ENOENT" && !process.env.SPORADES_HOST_HELPER_CONFIG) {
-      return;
-    }
-    throw helperError(
-      "Failed to read Host helper config.",
-      `Check that ${configPath} exists and is readable by the Host helper.`,
-    );
-  }
-
-  let config;
-  try {
-    config = JSON.parse(contents);
-  } catch {
-    throw helperError(
-      "Host helper config is invalid JSON.",
-      `Fix ${configPath}, then retry the Host helper command.`,
-    );
-  }
-
-  applyHostHelperConfig(config, configPath);
-}
-
-function resetHostHelperConfig() {
-  HOSTED_CAPSULE_DOCKER_IMAGE = DEFAULT_HOSTED_CAPSULE_DOCKER_IMAGE;
-  HOSTED_CAPSULE_DOCKER_NETWORK = DEFAULT_HOSTED_CAPSULE_DOCKER_NETWORK;
-  HOSTED_CAPSULE_GRACE_CHECK_MS = DEFAULT_HOSTED_CAPSULE_GRACE_CHECK_MS;
-  DEFAULT_HOST_LOG_LINES = DEFAULT_HOST_LOG_LINES_VALUE;
-  MAX_HOST_LOG_LINES = DEFAULT_MAX_HOST_LOG_LINES;
-}
-
-function hostHelperConfigPath(request: HostHelperRequest) {
-  if (process.env.SPORADES_HOST_HELPER_CONFIG) {
-    return process.env.SPORADES_HOST_HELPER_CONFIG;
-  }
-  if (typeof request.host?.remoteRoot !== "string" || request.host.remoteRoot.length === 0) {
-    return null;
-  }
-  return path.join(request.host.remoteRoot, HOST_HELPER_CONFIG_FILE);
-}
-
-function applyHostHelperConfig(config: unknown, configPath: string) {
-  assertPlainObject(config, "Host helper config", configPath);
-  assertKnownKeys(config, ["hostedCapsule", "logs"], "Host helper config", configPath);
-
-  const hostedCapsule = config.hostedCapsule ?? {};
-  assertPlainObject(hostedCapsule, "Host helper hostedCapsule config", configPath);
-  assertKnownKeys(hostedCapsule, ["dockerImage", "dockerNetwork", "graceCheckMs"], "Host helper hostedCapsule config", configPath);
-
-  const logs = config.logs ?? {};
-  assertPlainObject(logs, "Host helper logs config", configPath);
-  assertKnownKeys(logs, ["defaultLines", "maxLines"], "Host helper logs config", configPath);
-
-  if (Object.hasOwn(hostedCapsule, "dockerImage")) {
-    HOSTED_CAPSULE_DOCKER_IMAGE = readConfigString(hostedCapsule.dockerImage, "hostedCapsule.dockerImage", configPath);
-  }
-  if (Object.hasOwn(hostedCapsule, "dockerNetwork")) {
-    HOSTED_CAPSULE_DOCKER_NETWORK = readConfigString(hostedCapsule.dockerNetwork, "hostedCapsule.dockerNetwork", configPath);
-  }
-  if (Object.hasOwn(hostedCapsule, "graceCheckMs")) {
-    HOSTED_CAPSULE_GRACE_CHECK_MS = readConfigPositiveInteger(hostedCapsule.graceCheckMs, "hostedCapsule.graceCheckMs", configPath);
-  }
-  if (Object.hasOwn(logs, "defaultLines")) {
-    DEFAULT_HOST_LOG_LINES = readConfigPositiveInteger(logs.defaultLines, "logs.defaultLines", configPath);
-  }
-  if (Object.hasOwn(logs, "maxLines")) {
-    MAX_HOST_LOG_LINES = readConfigPositiveInteger(logs.maxLines, "logs.maxLines", configPath);
-  }
-  if (DEFAULT_HOST_LOG_LINES > MAX_HOST_LOG_LINES) {
-    throw helperError(
-      "Host helper config is invalid.",
-      `Set logs.defaultLines less than or equal to logs.maxLines in ${configPath}.`,
-    );
-  }
-}
-
-function assertPlainObject(value: unknown, label: string, configPath: string): asserts value is LooseRecord {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw helperError(
-      "Host helper config is invalid.",
-      `${label} must be a JSON object in ${configPath}.`,
-    );
-  }
-}
-
-function assertKnownKeys(value: LooseRecord, knownKeys: readonly string[], label: string, configPath: string) {
-  for (const key of Object.keys(value)) {
-    if (!knownKeys.includes(key)) {
-      throw helperError(
-        "Host helper config is invalid.",
-        `${label} contains unsupported key "${key}" in ${configPath}.`,
-      );
-    }
-  }
-}
-
-function readConfigString(value: unknown, key: string, configPath: string) {
-  if (typeof value !== "string" || value.trim().length === 0) {
-    throw helperError(
-      "Host helper config is invalid.",
-      `Set ${key} to a non-empty string in ${configPath}.`,
-    );
-  }
-  return value;
-}
-
-function readConfigPositiveInteger(value: unknown, key: string, configPath: string) {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw helperError(
-      "Host helper config is invalid.",
-      `Set ${key} to a positive whole number in ${configPath}.`,
-    );
-  }
-  return value;
 }
 
 async function bootstrapHost(request: HostHelperRequest) {
@@ -1355,7 +1239,7 @@ async function statsHost(request: HostHelperRequest) {
 }
 
 async function logsHost(request: HostHelperRequest) {
-  validateHostLogsRequest(request);
+  validateHostLogsRequest(request, hostHelperConfig.logs);
   const logs = normaliseHostLogs(request);
   if (logs.source === "stdout" || logs.source === "stderr") {
     const container = logs.container;
@@ -1550,7 +1434,7 @@ function normaliseLifecycle(request: HostHelperRequest, registryRecord: any = nu
   const baseImage = {
     ...baseImageMetadata(updatePolicyMode),
     name: authoritativeBaseImage?.name ?? provided.container?.baseImage?.name ?? SPORADES_BASE_IMAGE.name,
-    image: authoritativeBaseImage?.image ?? provided.container?.baseImage?.image ?? provided.container?.image ?? HOSTED_CAPSULE_DOCKER_IMAGE,
+    image: authoritativeBaseImage?.image ?? provided.container?.baseImage?.image ?? provided.container?.image ?? hostHelperConfig.hostedCapsule.dockerImage,
     version: authoritativeBaseImage?.version ?? provided.container?.baseImage?.version ?? SPORADES_BASE_IMAGE.version,
   };
   const defaultMounts = {
@@ -1600,11 +1484,11 @@ function normaliseLifecycle(request: HostHelperRequest, registryRecord: any = nu
     },
     container: {
       name: containerName,
-      network: provided.container?.network ?? HOSTED_CAPSULE_DOCKER_NETWORK,
+      network: provided.container?.network ?? hostHelperConfig.hostedCapsule.dockerNetwork,
       image: provided.container?.image ?? baseImage.image,
       user: provided.container?.user ?? baseImageRuntimeUser(),
       baseImage,
-      graceCheckMs: provided.container?.graceCheckMs ?? HOSTED_CAPSULE_GRACE_CHECK_MS,
+      graceCheckMs: provided.container?.graceCheckMs ?? hostHelperConfig.hostedCapsule.graceCheckMs,
       labels: {
         ...(provided.container?.labels ?? {}),
         "com.sporades.managed": "true",
@@ -1948,10 +1832,6 @@ function lookupCapsuleDockerState(request: HostHelperRequest, record: any) {
   const remoteCapsuleId = record.remoteCapsuleId ?? `${request.host.domain}/${subname}`;
   const match = containers.find((container: any) => dockerPsContainerMatches(container, containerName, remoteCapsuleId, subname));
   return match ? normaliseDockerPsContainer(match, containerName) : null;
-}
-
-function hostRegistryRetryCommand(request: HostHelperRequest) {
-  return request.action === "host.stats" ? `sporades host stats --host ${request.host.alias}` : `sporades host list --host ${request.host.alias}`;
 }
 
 function parseDockerPsJsonLines(output: string) {
@@ -2420,7 +2300,7 @@ function reactivateRegistrationRecord(record: any, sealedServerEnv: any = null) 
 
 function normaliseHostLogs(request: HostHelperRequest) {
   const provided: HostLogsOptions = request.logs ?? {};
-  const lines = provided.lines ?? DEFAULT_HOST_LOG_LINES;
+  const lines = provided.lines ?? hostHelperConfig.logs.defaultLines;
   const explicitFile = Boolean(provided.file ?? provided.path ?? provided.accessLog?.file);
   const source = provided.source === "caddy-combined" ? "http" : (provided.source ?? "http");
   const subname = request.capsule?.subname;
@@ -2503,7 +2383,7 @@ function normaliseBootstrap(request: HostHelperRequest) {
     directories,
     domainDirectory: provided.domainDirectory ?? directories.domain,
     tls,
-    network: provided.network ?? HOSTED_CAPSULE_DOCKER_NETWORK,
+    network: provided.network ?? hostHelperConfig.hostedCapsule.dockerNetwork,
     caddy: {
       caddyfile: path.join(directories.caddy, "Caddyfile"),
       managedInclude: provided.caddy?.managedInclude ?? path.join(directories.caddy, "sporades-hosted-domains.caddy"),
@@ -3808,85 +3688,6 @@ function defaultCapsuleHttpLogPath(remoteRoot: any, domain: string, subname: any
   return path.join(remoteRoot, "hosts", domain, "capsules", subname, "logs", "http.log");
 }
 
-function validateReleaseArchive(request: HostHelperRequest) {
-  const release = request.release;
-  const entries = listArchiveEntries(release.remoteArchive);
-  const expectedFiles = expectedReleaseFiles(release);
-  const allNames = entries.map((entry: any) => normaliseArchiveEntryName(entry.name));
-  const runtimeEntries = entries.filter((entry: any) => !isDiscardableArchiveMetadata(entry.name));
-  const actualNames = runtimeEntries.map((entry: any) => normaliseArchiveEntryName(entry.name));
-
-  if (entries.some((entry: any) => !isSafeArchiveEntryType(entry))) {
-    throw helperError(
-      "Hosted Capsule release archive contains unsafe entries.",
-      "Push again so Sporades can package regular runtime files only.",
-    );
-  }
-  if (allNames.some((name: any) => !isSafeArchiveEntryName(name))) {
-    throw helperError(
-      "Hosted Capsule release archive contains unsafe paths.",
-      "Push again so Sporades can package runtime files without absolute or parent-relative paths.",
-    );
-  }
-
-  const actual = [...actualNames].sort();
-  const expected = [...expectedFiles].sort();
-  if (actual.length !== expected.length || actual.some((name: any, index: any) => name !== expected[index])) {
-    throw helperError(
-      "Hosted Capsule release archive contains unexpected files.",
-      "Push again so Sporades can package only runtime files.",
-    );
-  }
-}
-
-async function removeDiscardedArchiveMetadata(directory: any) {
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const entryPath = path.join(directory, entry.name);
-    if (entry.name === "__MACOSX" || entry.name.startsWith("._")) {
-      await rm(entryPath, { recursive: entry.isDirectory(), force: true });
-      continue;
-    }
-    if (entry.isDirectory()) {
-      await removeDiscardedArchiveMetadata(entryPath);
-    }
-  }
-}
-
-function listArchiveEntries(archivePath: any) {
-  const namesResult = spawnSync("tar", ["-tzf", archivePath], { encoding: "utf8" });
-  const verboseResult = spawnSync("tar", ["-tvzf", archivePath], { encoding: "utf8" });
-  if (namesResult.error || namesResult.status !== 0 || verboseResult.error || verboseResult.status !== 0) {
-    throw helperError(
-      "Failed to inspect Hosted Capsule release archive.",
-      "Upload the release again with `sporades host push` and check that tar is installed on the Host server.",
-    );
-  }
-
-  const names = namesResult.stdout.trim().split("\n").filter(Boolean);
-  const verboseLines = verboseResult.stdout.trim().split("\n").filter(Boolean);
-  if (names.length !== verboseLines.length) {
-    throw helperError(
-      "Hosted Capsule release archive could not be validated.",
-      "Push again so Sporades can package a clean runtime archive.",
-    );
-  }
-  return names.map((name: any, index: any) => ({
-    name,
-    type: verboseLines[index]?.[0],
-  }));
-}
-
-function expectedReleaseFiles(release: HostHelperRelease) {
-  const files = ["server.mjs", "client.js", "index.html", "sporades.json"];
-  if (release.serverEnvIncluded) {
-    files.push(".env.sporades.server");
-  }
-  if (release.sealedServerEnvIncluded) {
-    files.push(".sporades/sealed-server-env/server-env.sealed.json");
-  }
-  return files;
-}
-
 async function assertRollbackReleaseFiles(request: HostHelperRequest, releaseDirectory: string) {
   const requiredFiles = ["server.mjs", "client.js", "index.html", "sporades.json"];
   for (const file of requiredFiles) {
@@ -3899,33 +3700,6 @@ async function assertRollbackReleaseFiles(request: HostHelperRequest, releaseDir
   }
 }
 
-function normaliseArchiveEntryName(name: any) {
-  return String(name).replace(/^\.\//, "").replace(/\/+$/, "");
-}
-
-function isDiscardableArchiveMetadata(name: any) {
-  const normalisedName = normaliseArchiveEntryName(name);
-  return (
-    normalisedName === "__MACOSX" ||
-    normalisedName.startsWith("__MACOSX/") ||
-    normalisedName.split("/").some((segment: any) => segment.startsWith("._"))
-  );
-}
-
-function isSafeArchiveEntryType(entry: any) {
-  if (entry.type === "-") {
-    return true;
-  }
-  return entry.type === "d" && isDiscardableArchiveMetadata(entry.name);
-}
-
-function isSafeArchiveEntryName(name: any) {
-  if (!name || name.startsWith("/") || name.includes("\0")) {
-    return false;
-  }
-  return name.split("/").every((segment: any) => segment && segment !== "." && segment !== "..");
-}
-
 async function verifyRegisteredCapsule(request: HostHelperRequest, purpose: any = "push") {
   const record = await readRegistryRecordForCapsule(request, purpose);
   assertRegistryRecordMatchesRequest(request, record);
@@ -3936,345 +3710,4 @@ async function verifyRegisteredCapsule(request: HostHelperRequest, purpose: any 
     );
   }
   return record;
-}
-
-function missingCapsuleHint(request: HostHelperRequest, purpose: any) {
-  if (purpose === "push") {
-    return `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before pushing a release.`;
-  }
-  if (purpose === "stats") {
-    return `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before reading stats.`;
-  }
-  if (purpose === "unregister") {
-    return `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before unregistering the Hosted Capsule.`;
-  }
-  return `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before managing the Hosted Capsule lifecycle.`;
-}
-
-function validateLifecycleRequest(request: HostHelperRequest) {
-  const requiredStrings = [
-    request.host?.domain,
-    request.host?.alias,
-    request.host?.remoteRoot,
-    request.capsule?.subname,
-  ];
-  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
-    throw helperError("Invalid Hosted Capsule lifecycle request.", "Update the Sporades CLI and retry the host lifecycle command.");
-  }
-}
-
-function validateSealedEnvRotationRequest(request: HostHelperRequest) {
-  const requiredStrings = [
-    request.host?.domain,
-    request.host?.alias,
-    request.host?.remoteRoot,
-    request.capsule?.subname,
-  ];
-  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
-    throw helperError("Invalid Hosted Capsule sealed-env key rotation request.", "Update the Sporades CLI and retry `sporades host rotate-key`.");
-  }
-}
-
-function validateStatsRequest(request: HostHelperRequest) {
-  const requiredStrings = [
-    request.host?.domain,
-    request.host?.alias,
-    request.host?.remoteRoot,
-    request.capsule?.subname,
-  ];
-  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
-    throw helperError("Invalid Hosted Capsule stats request.", "Update the Sporades CLI and retry the host stats command.");
-  }
-}
-
-function validateReleaseListRequest(request: HostHelperRequest) {
-  const requiredStrings = [
-    request.host?.domain,
-    request.host?.alias,
-    request.host?.remoteRoot,
-    request.capsule?.subname,
-  ];
-  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
-    throw helperError("Invalid Hosted Capsule releases request.", "Update the Sporades CLI and retry `sporades host releases`.");
-  }
-}
-
-function validateHealthRequest(request: HostHelperRequest) {
-  const requiredStrings = [
-    request.host?.domain,
-    request.host?.alias,
-    request.host?.remoteRoot,
-    request.capsule?.subname,
-  ];
-  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
-    throw helperError("Invalid Hosted Capsule health request.", "Update the Sporades CLI and retry the host health command.");
-  }
-}
-
-function validateHostStatsRequest(request: HostHelperRequest) {
-  const requiredStrings = [
-    request.host?.domain,
-    request.host?.alias,
-    request.host?.remoteRoot,
-  ];
-  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
-    throw helperError("Invalid Host stats request.", "Update the Sporades CLI and retry `sporades host stats`.");
-  }
-}
-
-function validateRollbackRequest(request: HostHelperRequest) {
-  const requiredStrings = [
-    request.host?.domain,
-    request.host?.alias,
-    request.host?.remoteRoot,
-    request.capsule?.subname,
-    request.rollback?.releaseId,
-  ];
-  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
-    throw helperError("Invalid Hosted Capsule rollback request.", "Update the Sporades CLI and retry `sporades host rollback`.");
-  }
-  const releaseId = request.rollback?.releaseId;
-  if (!releaseId || !/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(releaseId)) {
-    throw helperError(
-      "Invalid Hosted Capsule release ID.",
-      `Choose a recorded release ID from \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\`.`,
-    );
-  }
-}
-
-function validateHostLogsRequest(request: HostHelperRequest) {
-  const requiredStrings = [
-    request.host?.alias,
-    request.host?.domain,
-    request.host?.remoteRoot,
-  ];
-  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
-    throw helperError("Invalid Host logs request.", "Update the Sporades CLI and retry `sporades host logs`.");
-  }
-  const source = request.logs?.source ?? "caddy-combined";
-  if (!["http", "caddy-combined", "stdout", "stderr"].includes(source)) {
-    throw helperError(
-      "Invalid Host log source.",
-      "Use `http`, `stdout`, or `stderr` for `sporades host logs`.",
-    );
-  }
-  if ((source === "stdout" || source === "stderr") && (typeof request.capsule?.subname !== "string" || request.capsule.subname.length === 0)) {
-    throw helperError(
-      "Missing Capsule subname for container logs.",
-      "Pass `--subname <capsule-subname>` or run the command from a project with a Hosted Capsule binding.",
-    );
-  }
-  const lines = request.logs?.lines ?? DEFAULT_HOST_LOG_LINES;
-  if (!Number.isInteger(lines) || lines < 1 || lines > MAX_HOST_LOG_LINES) {
-    throw helperError(
-      "Invalid Host log line count.",
-      `Pass \`--lines <n>\` with a whole number between 1 and ${MAX_HOST_LOG_LINES}.`,
-    );
-  }
-}
-
-function validateListRequest(request: HostHelperRequest) {
-  const requiredStrings = [
-    request.host?.domain,
-    request.host?.alias,
-    request.host?.remoteRoot,
-  ];
-  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
-    throw helperError("Invalid Hosted Capsule list request.", "Update the Sporades CLI and retry `sporades host list`.");
-  }
-}
-
-function validateListRegistryRecord(request: HostHelperRequest, record: any, recordPath: any) {
-  const expectedSubname = path.basename(recordPath, ".json");
-  const expectedRemoteCapsuleId = `${request.host.domain}/${record?.subname ?? expectedSubname}`;
-  const valid =
-    record &&
-    typeof record.subname === "string" &&
-    record.subname.length > 0 &&
-    record.subname === expectedSubname &&
-    record.domain === request.host.domain &&
-    (record.remoteCapsuleId ?? expectedRemoteCapsuleId) === expectedRemoteCapsuleId;
-  if (!valid) {
-    throw helperError(
-      "Hosted Capsule registry record is invalid.",
-      `Repair the Host server registry record at ${recordPath}, then retry \`${hostRegistryRetryCommand(request)}\`.`,
-    );
-  }
-}
-
-function validateBootstrapRequest(request: HostHelperRequest) {
-  const requiredStrings = [
-    request.host?.domain,
-    request.host?.alias,
-    request.host?.remoteRoot,
-  ];
-  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
-    throw helperError("Invalid Host bootstrap request.", "Update the Sporades CLI and retry `sporades host bootstrap`.");
-  }
-  const tlsMode = request.bootstrap?.tls?.mode ?? "automatic";
-  if (tlsMode !== "automatic" && tlsMode !== "cloudflare-origin") {
-    throw helperError(
-      "Invalid Host TLS mode.",
-      "Use `--tls automatic` for Caddy-managed certificates or `--tls cloudflare-origin` for preinstalled Cloudflare origin certificates.",
-    );
-  }
-}
-
-function validateRegisterRequest(request: HostHelperRequest) {
-  const requiredStrings = [
-    request.host?.domain,
-    request.host?.alias,
-    request.host?.remoteRoot,
-    request.capsule?.subname,
-  ];
-  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
-    throw helperError("Invalid Hosted Capsule registration request.", "Update the Sporades CLI and retry `sporades host register`.");
-  }
-  const registration = request.registration ?? {};
-  const mismatchedIdentity =
-    (registration.subname && registration.subname !== request.capsule.subname) ||
-    (registration.domain && registration.domain !== request.host.domain) ||
-    (registration.remoteCapsuleId && registration.remoteCapsuleId !== `${request.host.domain}/${request.capsule.subname}`);
-  if (mismatchedIdentity) {
-    throw helperError(
-      "Hosted Capsule registration request does not match the Host profile.",
-      "Rebind the local project or pass the correct Host profile and Capsule subname.",
-    );
-  }
-  const tlsMode = request.registration?.bootstrap?.tls?.mode ?? request.bootstrap?.tls?.mode ?? "automatic";
-  if (tlsMode !== "automatic" && tlsMode !== "cloudflare-origin") {
-    throw helperError(
-      "Invalid Host TLS mode.",
-      "Use `--tls automatic` for Caddy-managed certificates or `--tls cloudflare-origin` for preinstalled Cloudflare origin certificates.",
-    );
-  }
-}
-
-function validateUnregisterRequest(request: HostHelperRequest) {
-  const requiredStrings = [
-    request.host?.domain,
-    request.host?.alias,
-    request.host?.remoteRoot,
-    request.capsule?.subname,
-  ];
-  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
-    throw helperError("Invalid Hosted Capsule unregister request.", "Update the Sporades CLI and retry `sporades host unregister`.");
-  }
-  const unregister = request.unregister ?? {};
-  const mismatchedIdentity =
-    (unregister.subname && unregister.subname !== request.capsule.subname) ||
-    (unregister.domain && unregister.domain !== request.host.domain) ||
-    (unregister.remoteCapsuleId && unregister.remoteCapsuleId !== `${request.host.domain}/${request.capsule.subname}`);
-  if (mismatchedIdentity) {
-    throw helperError(
-      "Hosted Capsule unregister request does not match the Host profile.",
-      "Rebind the local project or pass the correct Host profile and Capsule subname.",
-    );
-  }
-}
-
-function validateDeleteRequest(request: HostHelperRequest) {
-  const requiredStrings = [
-    request.host?.domain,
-    request.host?.alias,
-    request.host?.remoteRoot,
-    request.capsule?.subname,
-  ];
-  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
-    throw helperError("Invalid Hosted Capsule delete request.", "Update the Sporades CLI and retry `sporades host delete`.");
-  }
-  const deletion = request.delete ?? {};
-  const mismatchedIdentity =
-    (deletion.subname && deletion.subname !== request.capsule.subname) ||
-    (deletion.domain && deletion.domain !== request.host.domain) ||
-    (deletion.remoteCapsuleId && deletion.remoteCapsuleId !== `${request.host.domain}/${request.capsule.subname}`);
-  if (mismatchedIdentity) {
-    throw helperError(
-      "Hosted Capsule delete request does not match the Host profile.",
-      "Rebind the local project or pass the correct Host profile and Capsule subname.",
-    );
-  }
-}
-
-function validateInstallRequest(request: HostHelperRequest) {
-  const release = request.release;
-  const requiredStrings = [
-    request.host?.domain,
-    request.host?.alias,
-    request.host?.remoteRoot,
-    request.capsule?.subname,
-    release?.id,
-    release?.remoteArchive,
-    release?.hostedUrl,
-    release?.directories?.releases,
-    release?.directories?.release,
-    release?.directories?.data,
-    release?.currentLink,
-  ];
-  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
-    throw helperError("Invalid release install request.", "Update the Sporades CLI and retry `sporades host push`.");
-  }
-  if (!/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(release.id)) {
-    throw helperError("Invalid Hosted Capsule release ID.", "Push again to generate a fresh UTC-sortable release ID.");
-  }
-  if (!Array.isArray(release.files) || release.files.some((file: any) => !isExpectedClaimedReleaseFile(file))) {
-    throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
-  }
-  const expectedFiles = expectedReleaseFiles(release);
-  const claimedFiles = [...release.files].sort();
-  const sortedExpectedFiles = [...expectedFiles].sort();
-  if (claimedFiles.length !== sortedExpectedFiles.length || claimedFiles.some((file: any, index: any) => file !== sortedExpectedFiles[index])) {
-    throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
-  }
-  const directories = release.directories;
-  if (!directories?.releases || !directories.release) {
-    throw helperError("Invalid Hosted Capsule release directory.", "Update the Sporades CLI and retry `sporades host push`.");
-  }
-  const expectedReleaseDirectory = path.join(directories.releases, release.id);
-  if (path.resolve(directories.release) !== path.resolve(expectedReleaseDirectory)) {
-    throw helperError("Invalid Hosted Capsule release directory.", "Update the Sporades CLI and retry `sporades host push`.");
-  }
-}
-
-function isExpectedClaimedReleaseFile(file: any) {
-  return [
-    "server.mjs",
-    "client.js",
-    "index.html",
-    "sporades.json",
-    ".env.sporades.server",
-    ".sporades/sealed-server-env/server-env.sealed.json",
-  ].includes(file);
-}
-
-function readStdin(): Promise<string> {
-  return new Promise((resolve: any, reject: any) => {
-    let stdin = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk: any) => {
-      stdin += chunk;
-    });
-    process.stdin.on("end", () => resolve(stdin));
-    process.stdin.on("error", reject);
-  });
-}
-
-function delay(ms: number) {
-  return new Promise((resolve: any) => setTimeout(resolve, ms));
-}
-
-function helperError(message: string, hint: any, diagnostics: any = null): HelperError {
-  const error: HelperError = new Error(message);
-  error.hint = hint;
-  if (diagnostics) {
-    error.diagnostics = diagnostics;
-  }
-  return error;
-}
-
-function writeEnvelope(result: any, failed: any = false) {
-  process.stdout.write(`${JSON.stringify(result)}\n`);
-  if (failed) {
-    process.exitCode = 1;
-  }
 }
