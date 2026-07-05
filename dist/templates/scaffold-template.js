@@ -1,8 +1,7 @@
-// @ts-nocheck
 export function scaffoldFiles(options) {
     const templateOptions = resolveTemplateOptions(options.template);
     const framework = options.framework ?? templateOptions.framework;
-    const renderOptions = { ...options, framework };
+    const renderOptions = { ...options, name: options.name, framework };
     const packageName = options.name;
     const sporadesDependency = options.sporadesDependency ?? "sporades";
     const frameworkDependencies = framework === "react"
@@ -1190,14 +1189,13 @@ sporades db dump
 `;
 }
 function escapeHtml(value) {
-    return value.replace(/[&<>"']/g, (char) => {
-        return {
-            "&": "&amp;",
-            "<": "&lt;",
-            ">": "&gt;",
-            '"': "&quot;",
-            "'": "&#39;",
-        }[char];
-    });
+    const replacements = {
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#39;",
+    };
+    return value.replace(/[&<>"']/g, (char) => replacements[char] ?? char);
 }
 //# sourceMappingURL=scaffold-template.js.map

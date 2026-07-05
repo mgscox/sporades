@@ -1,4 +1,3 @@
-// @ts-nocheck
 export function capsule(definition) {
     return {
         kind: "capsule",

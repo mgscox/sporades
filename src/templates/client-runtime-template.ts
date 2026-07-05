@@ -1,4 +1,3 @@
-// @ts-nocheck
 export function createClientRuntimeSource() {
   return `
 const websocketPath = "/__sporades/ws";

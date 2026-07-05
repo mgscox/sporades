@@ -1,4 +1,3 @@
-// @ts-nocheck
 export const SPORADES_BASE_IMAGE = {
     name: "sporades-base",
     image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",

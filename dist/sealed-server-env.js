@@ -1,5 +1,4 @@
-// @ts-nocheck
-import { createCipheriv, createDecipheriv, createHash, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes } from "node:crypto";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 const ENVELOPE_VERSION = 1;
@@ -47,7 +46,7 @@ export async function readKeyPair(paths) {
         };
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorCode(error) === "ENOENT") {
             return null;
         }
         throw error;
@@ -93,10 +92,12 @@ export function unsealServerEnv(envelope, privateKey) {
 }
 export async function readSealedServerEnv(paths) {
     try {
-        return JSON.parse(await readFile(paths.envelope, "utf8"));
+        const envelope = JSON.parse(await readFile(paths.envelope, "utf8"));
+        validateEnvelope(envelope);
+        return envelope;
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorCode(error) === "ENOENT") {
             return null;
         }
         throw error;
@@ -123,11 +124,47 @@ export function exportedEnvelope(envelope) {
     };
 }
 export function fingerprintPublicKey(publicKey) {
-    return createHash("sha256").update(publicKey).digest("hex").slice(0, 16);
+    const fingerprintSource = isBinaryLike(publicKey)
+        ? publicKey
+        : createPublicKey(publicKey).export({ type: "spki", format: "pem" });
+    return createHash("sha256").update(fingerprintSource).digest("hex").slice(0, 16);
 }
 function validateEnvelope(envelope) {
-    if (!envelope || envelope.version !== ENVELOPE_VERSION || envelope.valueAlgorithm !== VALUE_ALGORITHM || !envelope.entries) {
+    if (!isRecord(envelope)) {
         throw new Error("Invalid sealed Server env envelope.");
     }
+    if (envelope.version !== ENVELOPE_VERSION || envelope.keyAlgorithm !== KEY_ALGORITHM || envelope.valueAlgorithm !== VALUE_ALGORITHM) {
+        throw new Error("Invalid sealed Server env envelope.");
+    }
+    if (typeof envelope.publicKeyFingerprint !== "string" || typeof envelope.sealedAt !== "string" || !isRecord(envelope.metadata)) {
+        throw new Error("Invalid sealed Server env envelope.");
+    }
+    if (!isRecord(envelope.entries)) {
+        throw new Error("Invalid sealed Server env envelope.");
+    }
+    for (const entry of Object.values(envelope.entries)) {
+        if (!isEnvelopeEntry(entry)) {
+            throw new Error("Invalid sealed Server env envelope.");
+        }
+    }
+}
+function isEnvelopeEntry(value) {
+    return (isRecord(value) &&
+        typeof value.encryptedKey === "string" &&
+        typeof value.iv === "string" &&
+        typeof value.tag === "string" &&
+        typeof value.ciphertext === "string");
+}
+function isRecord(value) {
+    return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+function isBinaryLike(value) {
+    return typeof value === "string" || Buffer.isBuffer(value) || value instanceof ArrayBuffer || ArrayBuffer.isView(value);
+}
+function errorCode(error) {
+    return isNodeError(error) ? error.code : undefined;
+}
+function isNodeError(error) {
+    return Boolean(error && typeof error === "object" && "code" in error);
 }
 //# sourceMappingURL=sealed-server-env.js.map

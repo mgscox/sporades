@@ -1,39 +1,29 @@
-export declare const FATAL_RUNTIME_RESTART_POLICY: {
-    dev: {
-        mode: string;
-        maxAttempts: number;
-        backoffMs: number;
-        restartFatalEvents: string[];
-        exitFatalEvents: string[];
-    };
-    container: {
-        mode: string;
-        maxAttempts: number;
-        backoffMs: number;
-        dockerRestart: string;
-        restartFatalEvents: string[];
-        exitFatalEvents: string[];
-    };
-    hosted: {
-        mode: string;
-        maxAttempts: number;
-        backoffMs: number;
-        dockerRestart: string;
-        restartFatalEvents: string[];
-        exitFatalEvents: string[];
-        exhaustedRouteTarget: string;
-        verificationFallbackOnly: boolean;
-    };
+export type BaseRestartPolciy = {
+    mode: string;
+    maxAttempts: number;
+    backoffMs: number;
+    dockerRestart?: string;
+    restartFatalEvents: string[];
+    exitFatalEvents: string[];
 };
-export declare function restartPolicyForMode(mode: any): any;
-export declare function restartPolicyStatus(mode: any, overrides?: {}): {
+export type DockerRestartPolcy = BaseRestartPolciy & {
+    dockerRestart: string;
+};
+export type CloudDockerRestartPolcy = BaseRestartPolciy & {
+    exhaustedRouteTarget: string;
+    verificationFallbackOnly: boolean;
+};
+export type RestartPolicy = CloudDockerRestartPolcy | DockerRestartPolcy | BaseRestartPolciy;
+export declare const FATAL_RUNTIME_RESTART_POLICY: Record<string, RestartPolicy>;
+export declare function restartPolicyForMode(mode: string): RestartPolicy;
+export declare function restartPolicyStatus(mode: string, overrides?: {}): {
     verificationFallbackOnly?: boolean | undefined;
-    exhaustedRouteTarget?: any;
-    mode: any;
-    maxAttempts: any;
-    backoffMs: any;
-    dockerRestart: any;
-    restartFatalEvents: any;
-    exitFatalEvents: any;
+    exhaustedRouteTarget?: string | undefined;
+    mode: string;
+    maxAttempts: number;
+    backoffMs: number;
+    dockerRestart: string;
+    restartFatalEvents: string[];
+    exitFatalEvents: string[];
 };
 //# sourceMappingURL=runtime-restart-policy.d.ts.map

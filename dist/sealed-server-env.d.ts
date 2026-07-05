@@ -1,45 +1,56 @@
-export declare function sealedServerEnvPaths(projectDir: any): {
+import type { BinaryLike, KeyLike } from "node:crypto";
+import type { PathLike } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
+export type SealedServerEnvPaths = {
     root: string;
     envelope: string;
     privateKey: string;
     publicKey: string;
     hosts: string;
 };
-export declare function ensureSealedServerEnvKeyPair(paths?: {
-    root: string;
-    envelope: string;
-    privateKey: string;
-    publicKey: string;
-    hosts: string;
-}): Promise<{
+export type SealedServerEnvKeyPair = {
     publicKey: string;
     privateKey: string;
     publicKeyFingerprint: string;
-}>;
-export declare function readKeyPair(paths: any): Promise<{
-    publicKey: string;
-    privateKey: string;
-    publicKeyFingerprint: string;
-} | null>;
-export declare function sealServerEnv(values: any, publicKey: any, metadata?: {}): {
+};
+export type SealedServerEnvEntry = {
+    encryptedKey: string;
+    iv: string;
+    tag: string;
+    ciphertext: string;
+};
+export type SealedServerEnvEnvelope = {
     version: number;
     keyAlgorithm: string;
     valueAlgorithm: string;
     publicKeyFingerprint: string;
     sealedAt: string;
-    metadata: {};
-    entries: {};
+    metadata: Record<string, unknown>;
+    entries: Record<string, SealedServerEnvEntry>;
 };
-export declare function unsealServerEnv(envelope: any, privateKey: any): {};
-export declare function readSealedServerEnv(paths: any): Promise<any>;
-export declare function writeSealedServerEnv(paths: any, envelope: any): Promise<void>;
-export declare function envelopeSummary(envelope: any, paths?: null): {
+export type SealedServerEnvSummary = {
     configured: boolean;
     keyCount: number;
-    publicKeyFingerprint: any;
-    envelopePath: any;
-    privateKeyPath: any;
+    publicKeyFingerprint: string | null;
+    envelopePath: string | null;
+    privateKeyPath: string | null;
 };
-export declare function exportedEnvelope(envelope: any): any;
-export declare function fingerprintPublicKey(publicKey: any): string;
+type PublicEncryptionKey = KeyLike;
+type PrivateEncryptionKey = KeyLike;
+export declare function sealedServerEnvPaths(projectDir: string): SealedServerEnvPaths;
+export declare function ensureSealedServerEnvKeyPair(paths?: SealedServerEnvPaths): Promise<SealedServerEnvKeyPair>;
+export declare function readKeyPair(paths: Pick<SealedServerEnvPaths, "privateKey" | "publicKey">): Promise<SealedServerEnvKeyPair | null>;
+export declare function sealServerEnv(values: Record<string, unknown>, publicKey: PublicEncryptionKey, metadata?: Record<string, unknown>): SealedServerEnvEnvelope;
+export declare function unsealServerEnv(envelope: unknown, privateKey: PrivateEncryptionKey): Record<string, string>;
+export declare function readSealedServerEnv(paths: Pick<SealedServerEnvPaths, "envelope">): Promise<SealedServerEnvEnvelope | null>;
+export declare function writeSealedServerEnv(paths: {
+    root: PathLike;
+    envelope: PathLike | FileHandle;
+}, envelope: SealedServerEnvEnvelope): Promise<void>;
+export declare function envelopeSummary(envelope: SealedServerEnvEnvelope | null, paths?: Pick<SealedServerEnvPaths, "envelope" | "privateKey"> | null): SealedServerEnvSummary;
+export declare function exportedEnvelope(envelope: unknown): SealedServerEnvEnvelope & {
+    exportedAt: string;
+};
+export declare function fingerprintPublicKey(publicKey: BinaryLike | PublicEncryptionKey): string;
+export {};
 //# sourceMappingURL=sealed-server-env.d.ts.map

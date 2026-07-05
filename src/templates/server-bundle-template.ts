@@ -1,7 +1,18 @@
-// @ts-nocheck
 import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../server-runtime-source.js";
 
-export function createServerBundleSource({ config, serverEnv, sealedServerEnv = { enabled: false }, serverSource, serverModuleSource }) {
+export function createServerBundleSource({
+  config, 
+  serverEnv, 
+  sealedServerEnv = { enabled: false }, 
+  serverSource, 
+  serverModuleSource 
+}: {
+  config: any;
+  serverEnv: any;
+  sealedServerEnv?: any;
+  serverSource: string;
+  serverModuleSource: string;
+}) {
   const runtimeFunctions = SERVER_RUNTIME_SOURCE_FUNCTIONS
     .map((fn) => fn.toString())
     .join("\n\n");

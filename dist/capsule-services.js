@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -20,7 +19,7 @@ export function validateCapsuleServicesConfig(services) {
     if (services === undefined) {
         return null;
     }
-    if (!services || typeof services !== "object" || Array.isArray(services)) {
+    if (!isRecord(services)) {
         throw commandError("Invalid Capsule services declaration.", "Set `services` in sporades.json to an object.");
     }
     for (const key of Object.keys(services)) {
@@ -63,7 +62,7 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
     let existing = {};
     try {
         const parsed = JSON.parse(await readFile(credentialsPath, "utf8"));
-        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        if (isRecord(parsed)) {
             existing = parsed;
         }
     }
@@ -100,6 +99,11 @@ export function capsuleServicesComposeModel(config, projectDir = process.cwd(), 
     const services = {};
     const database = config.services?.database;
     const storage = config.services?.storage;
+    const labels = {
+        "com.sporades.managed": "true",
+        "com.sporades.runtime-state": "true",
+        "com.sporades.project": projectSlug,
+    };
     if (database) {
         const engine = database.engine ?? "libsql";
         const engineModel = engine === "postgres"
@@ -134,6 +138,7 @@ export function capsuleServicesComposeModel(config, projectDir = process.cwd(), 
             environment: engineModel.environment,
             healthcheck: engineModel.healthcheck,
             command: null,
+            labels: serviceLabels(labels, "database", engineModel.engine),
             user: databaseUser,
             password: databasePassword,
             databaseName: POSTGRES_DATABASE,
@@ -154,6 +159,7 @@ export function capsuleServicesComposeModel(config, projectDir = process.cwd(), 
             },
             healthcheck: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"],
             command: 'server /data --console-address ":9001"',
+            labels: serviceLabels(labels, "storage", "minio"),
             accessKey: storageAccessKey,
             secretKey: storageSecretKey,
             bucket: MINIO_BUCKET,
@@ -175,40 +181,29 @@ export function capsuleServicesComposeModel(config, projectDir = process.cwd(), 
         networks: {
             services: networkName,
         },
-        labels: {
-            "com.sporades.managed": "true",
-            "com.sporades.runtime-state": "true",
-            "com.sporades.project": projectSlug,
-        },
+        labels,
     };
-    for (const service of Object.values(model.services)) {
-        service.labels = {
-            ...model.labels,
-            "com.sporades.capsule-service.kind": service.kind,
-            "com.sporades.capsule-service.engine": service.engine,
-        };
-    }
     return model;
 }
 function validateDatabaseServiceConfig(database) {
-    if (!database || typeof database !== "object" || Array.isArray(database)) {
+    if (!isRecord(database)) {
         throw commandError("Invalid database Capsule service declaration.", "Set `services.database` to `{ \"kind\": \"database\", \"engine\": \"libsql\" }` or `{ \"kind\": \"database\", \"engine\": \"postgres\" }`.");
     }
     if (database.kind !== "database") {
         throw commandError("Unsupported database Capsule service kind.", "Use `services.database.kind` of `database`.");
     }
-    if (!SUPPORTED_DATABASE_ENGINES.has(database.engine)) {
+    if (typeof database.engine !== "string" || !SUPPORTED_DATABASE_ENGINES.has(database.engine)) {
         throw commandError(`Unsupported database Capsule service engine: ${database.engine ?? "missing"}`, "Use `services.database.engine` of `libsql` or `postgres`.");
     }
 }
 function validateStorageServiceConfig(storage) {
-    if (!storage || typeof storage !== "object" || Array.isArray(storage)) {
+    if (!isRecord(storage)) {
         throw commandError("Invalid storage Capsule service declaration.", "Set `services.storage` to `{ \"kind\": \"storage\", \"engine\": \"minio\" }`.");
     }
     if (storage.kind !== "storage") {
         throw commandError("Unsupported storage Capsule service kind.", "Use `services.storage.kind` of `storage`.");
     }
-    if (!SUPPORTED_STORAGE_ENGINES.has(storage.engine)) {
+    if (typeof storage.engine !== "string" || !SUPPORTED_STORAGE_ENGINES.has(storage.engine)) {
         throw commandError(`Unsupported storage Capsule service engine: ${storage.engine ?? "missing"}`, "Use `services.storage.engine` of `minio`.");
     }
 }
@@ -296,6 +291,16 @@ function slugify(value) {
 }
 function hasDeclaredCapsuleServices(config) {
     return Boolean(config.services?.database || config.services?.storage);
+}
+function serviceLabels(labels, kind, engine) {
+    return {
+        ...labels,
+        "com.sporades.capsule-service.kind": kind,
+        "com.sporades.capsule-service.engine": engine,
+    };
+}
+function isRecord(value) {
+    return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 function commandError(message, hint) {
     const error = new Error(message);

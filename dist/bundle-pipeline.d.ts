@@ -1,4 +1,23 @@
-export declare function createBundle(projectDir: any, config: any): Promise<{
+import type { PathLike } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
+type JsonRecord = Record<string, unknown>;
+type ServerEnv = Record<string, string>;
+type ServerEnvFile = {
+    exists: boolean;
+    raw: string;
+};
+type ProjectConfig = JsonRecord & {
+    auth?: AuthConfig;
+    client?: {
+        framework?: unknown;
+    };
+};
+type AuthConfig = JsonRecord & {
+    mode?: unknown;
+    providers?: unknown;
+    google?: unknown;
+};
+export declare function createBundle(projectDir: string, config: ProjectConfig): Promise<{
     paths: {
         config: string;
         serverEntry: string;
@@ -11,7 +30,7 @@ export declare function createBundle(projectDir: any, config: any): Promise<{
     buildDir: string;
     serverRuntime: {
         source: string;
-        env: {};
+        env: Record<string, string>;
         capsuleModuleSource: string;
     };
     staticFiles: {
@@ -43,13 +62,10 @@ export declare function createBundle(projectDir: any, config: any): Promise<{
         } | null;
     };
 }>;
-export declare function readServerEnvFile(envPath: any): Promise<{
-    exists: boolean;
-    raw: string;
-}>;
-export declare function parseServerEnv(envFile: any): {};
-export declare function authStatus(config: any, serverEnv: any): {
-    mode: any;
+export declare function readServerEnvFile(envPath: PathLike | FileHandle): Promise<ServerEnvFile>;
+export declare function parseServerEnv(envFile: ServerEnvFile): ServerEnv;
+export declare function authStatus(config: ProjectConfig, serverEnv: ServerEnv): {
+    mode: string;
     providers: {
         anonymous: {
             enabled: boolean;
@@ -57,14 +73,18 @@ export declare function authStatus(config: any, serverEnv: any): {
         google: {
             enabled: boolean;
             configured: boolean;
-            clientIdEnv: any;
-            clientSecretEnv: any;
+            clientIdEnv: string | null;
+            clientSecretEnv: string | null;
+        };
+        email?: {
+            enabled: boolean;
         };
     };
     google: {
         configured: boolean;
-        clientIdEnv: any;
-        clientSecretEnv: any;
+        clientIdEnv: string | null;
+        clientSecretEnv: string | null;
     };
 };
+export {};
 //# sourceMappingURL=bundle-pipeline.d.ts.map

@@ -1,8 +1,48 @@
-// @ts-nocheck
+import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "http";
+import { IncomingMessage, ServerResponse } from "http";
+import { WithImplicitCoercion } from "buffer";
+import { BinaryLike, KeyObject } from "crypto";
+import { PathLike } from "fs";
+import { PathOrFileDescriptor } from "fs";
 import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { SQLOutputValue, StatementResultingChanges, StatementColumnMetadata } from "node:sqlite";
+import { Duplex } from "stream";
 
-export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
+type LooseRecord = Record<string, any>;
+type RuntimeConfig = LooseRecord;
+type RuntimeEnv = Record<string, string | undefined>;
+type RuntimeSecurityPolicy = {
+  cors: {
+    sameOrigin: boolean;
+    publicDev: boolean;
+    allowedOrigins: string[];
+    allowedOriginPatterns: string[];
+    requireExplicitCrossOrigin: boolean;
+  };
+  csp: {
+    mode: string;
+    header: string;
+    directives: Record<string, string[] | string>;
+  };
+};
+type RuntimeRequestLike = {
+  headers: IncomingHttpHeaders | LooseRecord;
+  socket?: any;
+};
+type S3RequestResult = {
+  statusCode: number;
+  headers: IncomingHttpHeaders | LooseRecord;
+  body: Buffer;
+};
+type HelperError = Error & {
+  code?: string;
+  hint?: string;
+  sporadesAclDenialLogData?: any;
+  sporadesEndpointResponse?: boolean;
+};
+
+export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   readJsonRequest,
   prepareHttpSecurity,
   resolveRuntimeSecurityPolicy,
@@ -273,8 +313,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   quoteIdentifier,
 ];
 
-export async function readJsonRequest(request) {
-  const chunks = [];
+export async function readJsonRequest(request: IncomingMessage): Promise<LooseRecord> {
+  const chunks: Buffer[] = [];
   for await (const chunk of request) {
     chunks.push(chunk);
   }
@@ -282,13 +322,13 @@ export async function readJsonRequest(request) {
   return raw ? JSON.parse(raw) : {};
 }
 
-export function prepareHttpSecurity(database, request, response) {
+export function prepareHttpSecurity(database: { securityPolicy?: RuntimeSecurityPolicy }, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }) {
   const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
   const originalWriteHead = response.writeHead.bind(response);
-  response.writeHead = (statusCode, statusMessageOrHeaders, maybeHeaders) => {
+  response.writeHead = ((statusCode: number, statusMessageOrHeaders?: string | OutgoingHttpHeaders, maybeHeaders?: OutgoingHttpHeaders) => {
     const statusMessage = typeof statusMessageOrHeaders === "string" ? statusMessageOrHeaders : undefined;
-    const inputHeaders = statusMessage ? maybeHeaders : statusMessageOrHeaders;
-    const headers = {
+    const inputHeaders = statusMessage ? maybeHeaders : typeof statusMessageOrHeaders === "string" ? {} : statusMessageOrHeaders;
+    const headers: OutgoingHttpHeaders = {
       ...sanitizeResponseHeaders(inputHeaders ?? {}),
       "x-content-type-options": "nosniff",
       "referrer-policy": "no-referrer",
@@ -299,7 +339,7 @@ export function prepareHttpSecurity(database, request, response) {
     };
     const origin = request.headers.origin;
     if (requestOriginAllowed(policy, request)) {
-      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : origin;
+      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(origin);
       if (!policy.cors.publicDev) {
         headers.vary = appendVaryHeader(headers.vary, "Origin");
       }
@@ -308,17 +348,18 @@ export function prepareHttpSecurity(database, request, response) {
       return originalWriteHead(statusCode, statusMessage, headers);
     }
     return originalWriteHead(statusCode, headers);
-  };
+  }) as typeof response.writeHead;
 
   if (request.method === "OPTIONS" && request.headers.origin && request.headers["access-control-request-method"]) {
-    const headers = {
+    const headers: OutgoingHttpHeaders = {
       "content-length": "0",
     };
     if (requestOriginAllowed(policy, request)) {
-      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : request.headers.origin;
+      headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(request.headers.origin);
       headers["access-control-allow-methods"] = "GET,POST,PUT,DELETE,OPTIONS";
-      headers["access-control-allow-headers"] =
-        request.headers["access-control-request-headers"] ?? "content-type,x-sporades-session-token";
+      headers["access-control-allow-headers"] = String(
+        request.headers["access-control-request-headers"] ?? "content-type,x-sporades-session-token",
+      );
       headers["access-control-max-age"] = "600";
       if (!policy.cors.publicDev) {
         headers.vary = "Origin";
@@ -332,14 +373,14 @@ export function prepareHttpSecurity(database, request, response) {
   return false;
 }
 
-function resolveRuntimeSecurityPolicy(config = {}) {
+function resolveRuntimeSecurityPolicy(config: RuntimeConfig = {}): RuntimeSecurityPolicy {
   const security = config.security ?? {};
   const cors = security.cors ?? {};
   const csp = security.csp ?? {};
   const session = config.__sporadesSession ?? "container";
   const publicDev = session === "public-dev";
   const dev = session === "dev" || publicDev;
-  const configuredOrigins = Array.isArray(cors.allowedOrigins) ? cors.allowedOrigins.filter((origin) => typeof origin === "string") : [];
+  const configuredOrigins = Array.isArray(cors.allowedOrigins) ? cors.allowedOrigins.filter((origin: any) => typeof origin === "string") : [];
   const directives = {
     ...defaultRuntimeCspDirectives(),
     ...(csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}),
@@ -362,7 +403,7 @@ function resolveRuntimeSecurityPolicy(config = {}) {
   };
 }
 
-function defaultRuntimeCspDirectives() {
+function defaultRuntimeCspDirectives(): Record<string, string[]> {
   return {
     "default-src": ["'self'"],
     "script-src": ["'self'", "'unsafe-inline'"],
@@ -376,13 +417,13 @@ function defaultRuntimeCspDirectives() {
   };
 }
 
-function serializeCspDirectives(directives) {
+function serializeCspDirectives(directives: Record<string, unknown>) {
   return Object.entries(directives)
     .map(([name, values]) => `${name} ${Array.isArray(values) ? values.join(" ") : String(values)}`)
     .join("; ");
 }
 
-function requestOriginAllowed(policy, request) {
+function requestOriginAllowed(policy: RuntimeSecurityPolicy, request: RuntimeRequestLike) {
   const origin = request.headers.origin;
   if (!origin) {
     return false;
@@ -399,7 +440,7 @@ function requestOriginAllowed(policy, request) {
   return policy.cors.allowedOriginPatterns.length > 0 && isLocalDevOrigin(origin);
 }
 
-function isSameOriginRequest(request, origin) {
+function isSameOriginRequest(request: RuntimeRequestLike, origin: string) {
   const host = request.headers["x-forwarded-host"] ?? request.headers.host;
   if (!host) {
     return false;
@@ -408,7 +449,7 @@ function isSameOriginRequest(request, origin) {
   return origin === `${protocol}://${host}`;
 }
 
-function isLocalDevOrigin(origin) {
+function isLocalDevOrigin(origin: string | URL) {
   try {
     const parsed = new URL(origin);
     return parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
@@ -417,17 +458,17 @@ function isLocalDevOrigin(origin) {
   }
 }
 
-function appendVaryHeader(existing, value) {
+function appendVaryHeader(existing: unknown, value: string) {
   if (!existing) {
     return value;
   }
   const parts = String(existing)
     .split(",")
     .map((part) => part.trim().toLowerCase());
-  return parts.includes(value.toLowerCase()) ? existing : `${existing}, ${value}`;
+  return parts.includes(value.toLowerCase()) ? String(existing) : `${existing}, ${value}`;
 }
 
-function sanitizeResponseHeaders(headers) {
+function sanitizeResponseHeaders(headers: OutgoingHttpHeaders | LooseRecord) {
   const entries = headers instanceof Map ? headers.entries() : Object.entries(headers ?? {});
   return Object.fromEntries(
     [...entries].filter(([name]) => {
@@ -437,7 +478,14 @@ function sanitizeResponseHeaders(headers) {
   );
 }
 
-export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
+export async function openDevDatabase(
+  databasePath: string,
+  serverSource: any,
+  serverEnv: RuntimeEnv = {},
+  config: RuntimeConfig = {},
+  capsuleDefinition: any = null,
+  options: LooseRecord = {},
+) {
   const path = await import("node:path");
   const sqlite = await createRuntimeDatabaseAdapter(databasePath, options?.serviceEnv ?? serverEnv, config);
   const serviceEnv = options?.serviceEnv ?? serverEnv;
@@ -448,15 +496,15 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
   });
   const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
   const endpoints = extractEndpoints(serverSource);
-  const queries = extractQueryHandlersFromCapsule(capsuleDefinition) ?? extractQueryHandlers(serverSource);
-  const mutations = capsuleDefinition
+  const queries: any[] = (extractQueryHandlersFromCapsule(capsuleDefinition) as any) ?? (extractQueryHandlers(serverSource) as any);
+  const mutations: any[] = (capsuleDefinition
     ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition)
-    : extractMutationHandlers(serverSource);
+    : extractMutationHandlers(serverSource)) as any[];
   const messages = extractMessageHandlers(serverSource);
   const contextMiddleware = extractContextMiddleware(serverSource);
   const mutationHooks = extractMutationHooks(serverSource);
   const rowCache = new Map();
-  const database = {
+  const database: LooseRecord = {
     adapter: sqlite,
     sqlite,
     schema,
@@ -494,7 +542,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
   return database;
 }
 
-async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
+async function createRuntimeDatabaseAdapter(databasePath: any, serverEnv: RuntimeEnv = {}, config: RuntimeConfig = {}) {
   if (
     config.services?.database?.engine === "libsql" &&
     serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" &&
@@ -517,16 +565,16 @@ async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config
   return await createSqliteDatabaseAdapter(databasePath);
 }
 
-export async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
+export async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }: { config?: RuntimeConfig; databasePath: string; serviceEnv?: RuntimeEnv }) {
   const path = await import("node:path");
   if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
     return createS3CompatibleFileStorageAdapter({
-      endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT,
-      bucket: serviceEnv.SPORADES_SERVICE_STORAGE_BUCKET,
+      endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT ?? "",
+      bucket: serviceEnv.SPORADES_SERVICE_STORAGE_BUCKET ?? "sporades",
       region: serviceEnv.SPORADES_SERVICE_STORAGE_REGION ?? "us-east-1",
-      accessKey: serviceEnv.SPORADES_SERVICE_STORAGE_ACCESS_KEY,
-      secretKey: serviceEnv.SPORADES_SERVICE_STORAGE_SECRET_KEY,
-      namespace: serviceEnv.SPORADES_SERVICE_STORAGE_NAMESPACE,
+      accessKey: serviceEnv.SPORADES_SERVICE_STORAGE_ACCESS_KEY ?? "",
+      secretKey: serviceEnv.SPORADES_SERVICE_STORAGE_SECRET_KEY ?? "",
+      namespace: serviceEnv.SPORADES_SERVICE_STORAGE_NAMESPACE ?? "capsule",
     });
   }
   return createLocalFileStorageAdapter({
@@ -534,7 +582,7 @@ export async function createRuntimeFileStorageAdapter({ config = {}, databasePat
   });
 }
 
-export function createLocalFileStorageAdapter({ storagePath }) {
+export function createLocalFileStorageAdapter({ storagePath }: { storagePath: string }) {
   if (typeof storagePath !== "string" || storagePath.length === 0) {
     throw new Error("Local file storage requires a storagePath.");
   }
@@ -542,16 +590,16 @@ export function createLocalFileStorageAdapter({ storagePath }) {
   return {
     engine: "local",
     storagePath,
-    async writeFileVersion({ fileId, version, bytes }) {
+    async writeFileVersion({ fileId, version, bytes }: { fileId: string; version: string | number; bytes: Uint8Array | Buffer | string }) {
       const { mkdir, writeFile } = await import("node:fs/promises");
       await mkdir(localFileStoragePath(storagePath, fileId), { recursive: true });
       await writeFile(localFileVersionPath(storagePath, fileId, version), bytes);
     },
-    async readFileVersion({ fileId, version }) {
+    async readFileVersion({ fileId, version }: { fileId: string; version: string | number }) {
       const { readFile } = await import("node:fs/promises");
       return await readFile(localFileVersionPath(storagePath, fileId, version));
     },
-    async deleteFileVersion({ fileId, version }) {
+    async deleteFileVersion({ fileId, version }: { fileId: string; version: string | number }) {
       const { rm } = await import("node:fs/promises");
       await rm(localFileVersionPath(storagePath, fileId, version), { force: true });
     },
@@ -574,15 +622,29 @@ export function createLocalFileStorageAdapter({ storagePath }) {
   };
 }
 
-function localFileStoragePath(storagePath, fileId) {
+function localFileStoragePath(storagePath: string, fileId: string) {
   return `${storagePath}/${fileId}`;
 }
 
-function localFileVersionPath(storagePath, fileId, version) {
+function localFileVersionPath(storagePath: string, fileId: string, version: string | number) {
   return `${localFileStoragePath(storagePath, fileId)}/${version}`;
 }
 
-export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region, accessKey, secretKey, namespace }) {
+export function createS3CompatibleFileStorageAdapter({
+  endpoint,
+  bucket,
+  region,
+  accessKey,
+  secretKey,
+  namespace,
+}: {
+  endpoint: string;
+  bucket: string;
+  region: string;
+  accessKey: string;
+  secretKey: string;
+  namespace: string;
+}) {
   if (typeof endpoint !== "string" || endpoint.length === 0) {
     throw new Error("S3-compatible file storage requires an endpoint.");
   }
@@ -622,7 +684,7 @@ export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region,
     region,
     namespace: isolatedNamespace,
     objectKeyPrefix: `${isolatedNamespace}/files`,
-    async writeFileVersion({ fileId, version, bytes }) {
+    async writeFileVersion({ fileId, version, bytes }: { fileId: string; version: string | number; bytes: Uint8Array | Buffer | string }) {
       await ensureBucket();
       const result = await s3Request(config, {
         method: "PUT",
@@ -633,7 +695,7 @@ export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region,
         throw new Error(`S3-compatible file write failed with HTTP ${result.statusCode}.`);
       }
     },
-    async readFileVersion({ fileId, version }) {
+    async readFileVersion({ fileId, version }: { fileId: string; version: string | number }) {
       const result = await s3Request(config, {
         method: "GET",
         key: s3ObjectKey(isolatedNamespace, fileId, version),
@@ -646,7 +708,7 @@ export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region,
       }
       return result.body;
     },
-    async deleteFileVersion({ fileId, version }) {
+    async deleteFileVersion({ fileId, version }: { fileId: string; version: string | number }) {
       const result = await s3Request(config, {
         method: "DELETE",
         key: s3ObjectKey(isolatedNamespace, fileId, version),
@@ -670,11 +732,14 @@ export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region,
   };
 }
 
-function s3ObjectKey(namespace, fileId, version) {
+function s3ObjectKey(namespace: string, fileId: string, version: string | number) {
   return `${namespace}/files/${fileId}/${version}`;
 }
 
-async function s3Request(config, { method, key = null, body = null }) {
+async function s3Request(
+  config: { endpoint: string; bucket: string; region: string; accessKey: string; secretKey: string },
+  { method, key = null, body = null }: { method: string; key: string | null; body?: any },
+): Promise<S3RequestResult> {
   const endpoint = new URL(config.endpoint);
   const isHttps = endpoint.protocol === "https:";
   const transport = await import(isHttps ? "node:https" : "node:http");
@@ -701,7 +766,7 @@ async function s3Request(config, { method, key = null, body = null }) {
     amzDate,
   });
 
-  return await new Promise((resolve, reject) => {
+  return await new Promise<S3RequestResult>((resolve, reject) => {
     const request = transport.request(
       {
         protocol: endpoint.protocol,
@@ -714,9 +779,9 @@ async function s3Request(config, { method, key = null, body = null }) {
           "content-length": payload.length,
         },
       },
-      (response) => {
-        const chunks = [];
-        response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      (response: IncomingMessage) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk: any) => chunks.push(Buffer.from(chunk)));
         response.on("end", () => {
           resolve({
             statusCode: response.statusCode ?? 0,
@@ -734,7 +799,7 @@ async function s3Request(config, { method, key = null, body = null }) {
   });
 }
 
-function s3RequestBodyBuffer(body) {
+function s3RequestBodyBuffer(body: WithImplicitCoercion<ArrayLike<number>> | null | undefined) {
   if (body === null || body === undefined) {
     return Buffer.alloc(0);
   }
@@ -747,7 +812,7 @@ function s3RequestBodyBuffer(body) {
   return Buffer.from(String(body));
 }
 
-function s3SignedHeaders(headers) {
+function s3SignedHeaders(headers: Record<string, unknown>) {
   return Object.fromEntries(
     Object.entries(headers)
       .map(([name, value]) => [name.toLowerCase(), String(value).trim()])
@@ -755,7 +820,29 @@ function s3SignedHeaders(headers) {
   );
 }
 
-function s3Signature({ method, pathname, query, headers, payloadHash, accessKey, secretKey, region, date, amzDate }) {
+function s3Signature({
+  method,
+  pathname,
+  query,
+  headers,
+  payloadHash,
+  accessKey,
+  secretKey,
+  region,
+  date,
+  amzDate,
+}: {
+  method: string;
+  pathname: string;
+  query: string;
+  headers: Record<string, string>;
+  payloadHash: string;
+  accessKey: string;
+  secretKey: string;
+  region: string;
+  date: string;
+  amzDate: string;
+}) {
   const signedHeaders = Object.keys(headers).join(";");
   const canonicalHeaders = Object.entries(headers)
     .map(([name, value]) => `${name}:${value}\n`)
@@ -767,14 +854,14 @@ function s3Signature({ method, pathname, query, headers, payloadHash, accessKey,
   return `AWS4-HMAC-SHA256 Credential=${accessKey}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
 }
 
-function s3SigningKey(secretKey, date, region) {
+function s3SigningKey(secretKey: any, date: any, region: any) {
   const dateKey = s3Hmac(`AWS4${secretKey}`, date);
   const dateRegionKey = s3Hmac(dateKey, region);
   const dateRegionServiceKey = s3Hmac(dateRegionKey, "s3");
   return s3Hmac(dateRegionServiceKey, "aws4_request");
 }
 
-function s3CanonicalPath(basePath, bucket, key) {
+function s3CanonicalPath(basePath: string, bucket: string, key: string | null) {
   const base = String(basePath ?? "")
     .split("/")
     .filter(Boolean);
@@ -782,56 +869,56 @@ function s3CanonicalPath(basePath, bucket, key) {
   return `/${parts.join("/")}`;
 }
 
-function s3EncodedPathSegment(segment) {
+function s3EncodedPathSegment(segment: string | number | boolean) {
   return encodeURIComponent(segment).replace(/[!'()*]/g, (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`);
 }
 
-function s3StorageNamespace(namespace) {
+function s3StorageNamespace(namespace: string) {
   if (typeof namespace !== "string" || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(namespace)) {
     throw new Error("S3-compatible file storage requires a capsule storage namespace.");
   }
   return `capsules/${namespace}`;
 }
 
-function s3AmzDate(date) {
+function s3AmzDate(date: Date) {
   return date.toISOString().replace(/[:-]|\.\d{3}/g, "");
 }
 
-function s3Hmac(key, data) {
+function s3Hmac(key: BinaryLike | NonSharedBuffer | KeyObject, data: BinaryLike) {
   return createHmac("sha256", key).update(data).digest();
 }
 
-function s3Sha256Hex(data) {
+function s3Sha256Hex(data: BinaryLike | Buffer<ArrayBufferLike>) {
   return createHash("sha256").update(data).digest("hex");
 }
 
 function s3ObjectNotFoundError() {
-  const error = new Error("S3-compatible file object not found.");
+  const error: HelperError = new Error("S3-compatible file object not found.");
   error.code = "ENOENT";
   return error;
 }
 
-export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
+export async function createSqliteDatabaseAdapter(databasePath: PathLike, options: LooseRecord = {}) {
   const { DatabaseSync } = await import("node:sqlite");
   const path = await import("node:path");
-  mkdirSync(path.dirname(databasePath), { recursive: true });
+  mkdirSync(path.dirname(String(databasePath)), { recursive: true });
   const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
 
   const adapter = {
     engine: "sqlite",
-    exec(sql) {
+    exec(sql: string) {
       return connection.exec(sql);
     },
-    prepare(sql) {
+    prepare(sql: string) {
       const statement = connection.prepare(sql);
       return {
-        all(...params) {
+        all(...params: any[]) {
           return statement.all(...params);
         },
-        get(...params) {
+        get(...params: any[]) {
           return statement.get(...params);
         },
-        run(...params) {
+        run(...params: string[]) {
           return statement.run(...params);
         },
         columns() {
@@ -842,16 +929,16 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     ensureSystemTable() {
       return this.exec("CREATE TABLE IF NOT EXISTS sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     },
-    readSystemMetadata(key) {
+    readSystemMetadata(key: string) {
       return this.prepare("SELECT value FROM sporades WHERE key = ?").get(key) ?? null;
     },
-    writeSystemMetadata(key, value) {
+    writeSystemMetadata(key: string, value: any) {
       return this.prepare("INSERT OR REPLACE INTO sporades (key, value) VALUES (?, ?)").run(key, value);
     },
     readSchemaMetadata() {
       return this.readSystemMetadata("schema");
     },
-    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
+    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord) {
       this.writeSystemMetadata("schemaVersion", schemaVersion);
       this.writeSystemMetadata("schemaHash", schemaHash);
       this.writeSystemMetadata("schema", schemaJson);
@@ -859,22 +946,22 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     ensureLogStorage() {
       return createLogIndexTables(this);
     },
-    insertLogIndexEvent(event) {
+    insertLogIndexEvent(event: any) {
       return insertLogIndexEvent(this, event);
     },
-    pruneLogIndex(limit) {
+    pruneLogIndex(limit: any) {
       return pruneLogIndex(this, limit);
     },
-    readRecentLogEvents(limit) {
+    readRecentLogEvents(limit: number | undefined) {
       return readRecentLogEvents(this, limit);
     },
     ensureFileStorage() {
       return createFileStorageTables(this);
     },
-    findFileBucket(ownerId, name) {
+    findFileBucket(ownerId: any, name: any) {
       return this.prepare("SELECT * FROM sporades_file_buckets WHERE ownerId = ? AND name = ?").get(ownerId, name) ?? null;
     },
-    createFileBucket(row) {
+    createFileBucket(row: { id: any; ownerId: any; name: any; createdAt: any; }) {
       return this.prepare("INSERT INTO sporades_file_buckets (id, ownerId, name, createdAt) VALUES (?, ?, ?, ?)").run(
         row.id,
         row.ownerId,
@@ -882,7 +969,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         row.createdAt,
       );
     },
-    insertFileRow(row) {
+    insertFileRow(row: { id: any; ownerId: any; bucketId: any; bucketName: any; path: any; name: any; type: any; size: any; version: any; status: any; createdAt: any; updatedAt: any; }) {
       return this.prepare(
         "INSERT INTO sporades_files " +
           "(id, ownerId, bucketId, bucketName, path, name, type, size, version, status, createdAt, updatedAt, deletedAt) " +
@@ -902,12 +989,12 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         row.updatedAt,
       );
     },
-    updatePendingFileRow(row) {
+    updatePendingFileRow(row: { bucketId: any; bucketName: any; path: any; name: any; type: any; size: any; version: any; status: any; updatedAt: any; id: any; }) {
       return this.prepare(
         "UPDATE sporades_files SET bucketId = ?, bucketName = ?, path = ?, name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ?, deletedAt = NULL WHERE id = ?",
       ).run(row.bucketId, row.bucketName, row.path, row.name, row.type, row.size, row.version, row.status, row.updatedAt, row.id);
     },
-    insertFileUpload(row) {
+    insertFileUpload(row: { id: any; fileId: any; ownerId: any; bucketId: any; bucketName: any; path: any; name: any; type: any; version: any; expectedSize: any; createdAt: any; }) {
       return this.prepare(
         "INSERT INTO sporades_file_uploads " +
           "(id, fileId, ownerId, bucketId, bucketName, path, name, type, version, expectedSize, createdAt) " +
@@ -926,28 +1013,28 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         row.createdAt,
       );
     },
-    selectFileById(fileId) {
+    selectFileById(fileId: any) {
       return this.prepare("SELECT * FROM sporades_files WHERE id = ?").get(fileId) ?? null;
     },
-    selectLiveFileByPath(path) {
+    selectLiveFileByPath(path: any) {
       return this.prepare("SELECT * FROM sporades_files WHERE path = ? AND deletedAt IS NULL AND status = ?").all(path, "uploaded");
     },
-    selectActiveFileByPath(path) {
+    selectActiveFileByPath(path: any) {
       return this.prepare("SELECT * FROM sporades_files WHERE path = ? AND deletedAt IS NULL AND status IN (?, ?)").all(
         path,
         "pending",
         "uploaded",
       );
     },
-    selectPendingFileUploadByPath(path) {
+    selectPendingFileUploadByPath(path: any) {
       return (
         this.prepare("SELECT * FROM sporades_file_uploads WHERE path = ? ORDER BY createdAt DESC, id DESC LIMIT 1").get(path) ?? null
       );
     },
-    selectFileUpload(uploadId) {
+    selectFileUpload(uploadId: any) {
       return this.prepare("SELECT * FROM sporades_file_uploads WHERE id = ?").get(uploadId) ?? null;
     },
-    completeFileUpload(upload, size, updatedAt) {
+    completeFileUpload(upload: { id: any; fileId: any; version: any; bucketId: any; bucketName: any; path: any; name: any; type: any; ownerId: any; createdAt: any; }, size: any, updatedAt: any) {
       const consumed = this.prepare("DELETE FROM sporades_file_uploads WHERE id = ? AND fileId = ? AND version = ?").run(
         upload.id,
         upload.fileId,
@@ -991,16 +1078,16 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         updatedAt,
       });
     },
-    deleteFileUploadsForPath(path) {
+    deleteFileUploadsForPath(path: any) {
       return this.prepare("DELETE FROM sporades_file_uploads WHERE path = ?").run(path);
     },
-    deleteFileUploadsForFile(ownerId, fileId) {
+    deleteFileUploadsForFile(ownerId: any, fileId: any) {
       return this.prepare("DELETE FROM sporades_file_uploads WHERE ownerId = ? AND fileId = ?").run(ownerId, fileId);
     },
-    deleteFileUpload(uploadId) {
+    deleteFileUpload(uploadId: any) {
       return this.prepare("DELETE FROM sporades_file_uploads WHERE id = ?").run(uploadId);
     },
-    selectPublicFileRow(publicUrlId) {
+    selectPublicFileRow(publicUrlId: any) {
       return (
         this.prepare(
           "SELECT p.id AS publicUrlId, p.fileId, p.version AS publicVersion, p.expiresAt, p.revokedAt, " +
@@ -1010,28 +1097,28 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         ).get(publicUrlId) ?? null
       );
     },
-    insertPublicFileUrl(row) {
+    insertPublicFileUrl(row: { id: any; fileId: any; ownerId: any; version: any; expiresAt: any; createdAt: any; }) {
       return this.prepare(
         "INSERT INTO sporades_file_public_urls (id, fileId, ownerId, version, expiresAt, createdAt, revokedAt) VALUES (?, ?, ?, ?, ?, ?, NULL)",
       ).run(row.id, row.fileId, row.ownerId, row.version, row.expiresAt, row.createdAt);
     },
-    revokePublicFileUrl(publicUrlId, ownerId, revokedAt) {
+    revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any) {
       return this.prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE id = ? AND ownerId = ? AND revokedAt IS NULL").run(
         revokedAt,
         publicUrlId,
         ownerId,
       );
     },
-    revokePublicFileUrlsForFile(fileId, revokedAt) {
+    revokePublicFileUrlsForFile(fileId: any, revokedAt: any) {
       return this.prepare("UPDATE sporades_file_public_urls SET revokedAt = ? WHERE fileId = ? AND revokedAt IS NULL").run(
         revokedAt,
         fileId,
       );
     },
-    markFileDeleted(fileId, deletedAt) {
+    markFileDeleted(fileId: any, deletedAt: any) {
       return this.prepare("UPDATE sporades_files SET deletedAt = ?, updatedAt = ? WHERE id = ?").run(deletedAt, deletedAt, fileId);
     },
-    fileRowForOwner(fileId, ownerId) {
+    fileRowForOwner(fileId: any, ownerId: any) {
       return (
         this.prepare("SELECT * FROM sporades_files WHERE id = ? AND ownerId = ? AND deletedAt IS NULL AND status = ?").get(
           fileId,
@@ -1040,30 +1127,30 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         ) ?? null
       );
     },
-    ensureAuthStorage(authConfig = null) {
+    ensureAuthStorage(authConfig: any = null) {
       return createAnonymousAuthTables(this, authConfig);
     },
-    findAuthUserByProviderEmail(provider, email) {
+    findAuthUserByProviderEmail(provider: any, email: any) {
       return this.prepare("SELECT id FROM sporades_auth_users WHERE provider = ? AND email = ?").get(provider, email) ?? null;
     },
-    insertAuthUser(row) {
+    insertAuthUser(row: { id: any; createdAt: any; displayName: any; email: any; picture: any; isAuthenticated: any; isGuest: any; provider: any; }) {
       return this.prepare(
         "INSERT INTO sporades_auth_users " +
           "(id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) " +
           "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider);
     },
-    updateAuthUserProfile(row) {
+    updateAuthUserProfile(row: { displayName: any; picture: any; isAuthenticated: any; isGuest: any; id: any; }) {
       return this.prepare(
         "UPDATE sporades_auth_users SET displayName = ?, picture = ?, isAuthenticated = ?, isGuest = ? WHERE id = ?",
       ).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.id);
     },
-    linkAuthUser(row) {
+    linkAuthUser(row: { displayName: any; email: any; picture: any; isAuthenticated: any; isGuest: any; provider: any; id: any; }) {
       return this.prepare(
         "UPDATE sporades_auth_users SET displayName = ?, email = ?, picture = ?, isAuthenticated = ?, isGuest = ?, provider = ? WHERE id = ?",
       ).run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.id);
     },
-    insertAuthSession(row) {
+    insertAuthSession(row: { token: any; userId: any; createdAt: any; expiresAt: any; }) {
       return this.prepare("INSERT INTO sporades_auth_sessions (token, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?)").run(
         row.token,
         row.userId,
@@ -1071,13 +1158,13 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         row.expiresAt,
       );
     },
-    deleteAuthSession(token) {
+    deleteAuthSession(token: any) {
       return this.prepare("DELETE FROM sporades_auth_sessions WHERE token = ?").run(token);
     },
-    refreshAuthSession(token, expiresAt) {
+    refreshAuthSession(token: any, expiresAt: any) {
       return this.prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE token = ?").run(expiresAt, token);
     },
-    rotateAuthSession(previousToken, row) {
+    rotateAuthSession(previousToken: any, row: { token: any; userId: any; createdAt: any; expiresAt: any; }) {
       return this.prepare("UPDATE sporades_auth_sessions SET token = ?, userId = ?, createdAt = ?, expiresAt = ? WHERE token = ?").run(
         row.token,
         row.userId,
@@ -1086,7 +1173,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         previousToken,
       );
     },
-    readAuthSessionWithUser(token) {
+    readAuthSessionWithUser(token: any) {
       return (
         this.prepare(
           "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, u.provider " +
@@ -1096,27 +1183,27 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         ).get(token) ?? null
       );
     },
-    insertOAuthState(row) {
+    insertOAuthState(row: { state: any; sessionToken: any; returnTo: any; redirectUri: any; createdAt: any; }) {
       return this.prepare(
         "INSERT INTO sporades_auth_oauth_states (state, sessionToken, returnTo, redirectUri, createdAt) VALUES (?, ?, ?, ?, ?)",
       ).run(row.state, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt);
     },
-    consumeOAuthState(state) {
+    consumeOAuthState(state: any) {
       const row =
         this.prepare("SELECT state, sessionToken, returnTo, redirectUri FROM sporades_auth_oauth_states WHERE state = ?").get(state) ??
         null;
       this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
       return row;
     },
-    emailCredentialExists(email) {
+    emailCredentialExists(email: any) {
       return Boolean(this.prepare("SELECT email FROM sporades_auth_email_credentials WHERE email = ?").get(email));
     },
-    insertEmailCredential(row) {
+    insertEmailCredential(row: { email: any; userId: any; passwordHash: any; passwordSalt: any; createdAt: any; }) {
       return this.prepare(
         "INSERT INTO sporades_auth_email_credentials (email, userId, passwordHash, passwordSalt, createdAt) VALUES (?, ?, ?, ?, ?)",
       ).run(row.email, row.userId, row.passwordHash, row.passwordSalt, row.createdAt);
     },
-    findEmailCredentialWithUser(email) {
+    findEmailCredentialWithUser(email: any) {
       return (
         this.prepare(
           "SELECT c.email, c.userId, c.passwordHash, c.passwordSalt, u.displayName, u.picture, u.isAuthenticated, u.isGuest, u.provider " +
@@ -1126,21 +1213,21 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         ).get(email) ?? null
       );
     },
-    migrateAppSchema(schema) {
+    migrateAppSchema(schema: { tables: { name: any; acl: { allowByDefault: boolean; } | { allowByDefault: boolean; resolve(operation: any): any; }; fields: { name: any; kind: any; sqliteType: string; targetTable: string | undefined; defaultValue: any; }[]; }[]; } | { tables: { name: string; fields: ({ name: any; kind: any; sqliteType: string; targetTable: any; defaultValue: any; } | null)[]; }[]; }) {
       return migrateAppSchema(this, schema);
     },
-    createAppTable(table, tableName = table.name) {
+    createAppTable(table: { name: any; }, tableName = table.name) {
       return createAppTable(this, table, tableName);
     },
-    migrateExistingAppTable(existingTable, nextTable) {
+    migrateExistingAppTable(existingTable: any, nextTable: any) {
       return migrateExistingAppTable(this, existingTable, nextTable);
     },
-    referenceExists(field, value) {
+    referenceExists(field: { targetTable: any; }, value: any) {
       return Boolean(
         this.prepare(`SELECT 1 FROM ${quoteIdentifier(field.targetTable)} WHERE id = ? LIMIT 1`).get(String(value)),
       );
     },
-    async withTransaction(fn) {
+    async withTransaction(fn: (arg0: { engine: string; exec(sql: any): void; prepare(sql: any): { all(...params: any[]): Record<string, SQLOutputValue>[]; get(...params: any[]): Record<string, SQLOutputValue> | undefined; run(...params: any[]): StatementResultingChanges; columns(): StatementColumnMetadata[]; }; ensureSystemTable(): void; readSystemMetadata(key: any): Record<string, SQLOutputValue> | null; writeSystemMetadata(key: any, value: any): StatementResultingChanges; readSchemaMetadata(): Record<string, SQLOutputValue> | null; writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }): void; ensureLogStorage(): void; insertLogIndexEvent(event: any): void; pruneLogIndex(limit: any): void; readRecentLogEvents(limit: any): any; ensureFileStorage(): void; findFileBucket(ownerId: any, name: any): Record<string, SQLOutputValue> | null; createFileBucket(row: any): StatementResultingChanges; insertFileRow(row: any): StatementResultingChanges; updatePendingFileRow(row: any): StatementResultingChanges; insertFileUpload(row: any): StatementResultingChanges; selectFileById(fileId: any): Record<string, SQLOutputValue> | null; selectLiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectActiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath(path: any): Record<string, SQLOutputValue> | null; selectFileUpload(uploadId: any): Record<string, SQLOutputValue> | null; completeFileUpload(upload: any, size: any, updatedAt: any): StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath(path: any): StatementResultingChanges; deleteFileUploadsForFile(ownerId: any, fileId: any): StatementResultingChanges; deleteFileUpload(uploadId: any): StatementResultingChanges; selectPublicFileRow(publicUrlId: any): Record<string, SQLOutputValue> | null; insertPublicFileUrl(row: any): StatementResultingChanges; revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any): StatementResultingChanges; revokePublicFileUrlsForFile(fileId: any, revokedAt: any): StatementResultingChanges; markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges; fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null; ensureAuthStorage(authConfig?: null): void; findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null; insertAuthUser(row: any): StatementResultingChanges; updateAuthUserProfile(row: any): StatementResultingChanges; linkAuthUser(row: any): StatementResultingChanges; insertAuthSession(row: any): StatementResultingChanges; deleteAuthSession(token: any): StatementResultingChanges; refreshAuthSession(token: any, expiresAt: any): StatementResultingChanges; rotateAuthSession(previousToken: any, row: any): StatementResultingChanges; readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null; insertOAuthState(row: any): StatementResultingChanges; consumeOAuthState(state: any): Record<string, SQLOutputValue> | null; emailCredentialExists(email: any): boolean; insertEmailCredential(row: any): StatementResultingChanges; findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null; migrateAppSchema(schema: any): any; createAppTable(table: any, tableName?: any): any; migrateExistingAppTable(existingTable: any, nextTable: any): any; referenceExists(field: any, value: any): boolean; withTransaction(fn: any): Promise<any>; insertAppRow(table: any, row: any): StatementResultingChanges; selectAppRowById(table: any, id: any): Record<string, SQLOutputValue> | null; updateAppRow(table: any, id: any, values: any, options?: {}): StatementResultingChanges | { changes: number; }; deleteAppRow(table: any, id: any): StatementResultingChanges; selectAppRows(table: any, query?: {}): Record<string, SQLOutputValue>[]; listInspectableTables(): SQLOutputValue[]; dumpInspectableDatabase(): { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery(sql: any): { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth(): { ok: boolean; }; close(): void; }) => any) {
       this.exec("BEGIN");
       try {
         const result = await fn(this);
@@ -1151,7 +1238,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         throw error;
       }
     },
-    insertAppRow(table, row) {
+    insertAppRow(table: { name: any; }, row: { [x: string]: any; }) {
       const columns = Object.keys(row);
       return this.prepare(
         `INSERT INTO ${quoteIdentifier(table.name)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns
@@ -1159,10 +1246,10 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
           .join(", ")})`,
       ).run(...columns.map((column) => row[column]));
     },
-    selectAppRowById(table, id) {
+    selectAppRowById(table: { name: any; }, id: any) {
       return this.prepare(`SELECT * FROM ${quoteIdentifier(table.name)} WHERE id = ?`).get(String(id)) ?? null;
     },
-    updateAppRow(table, id, values, options = {}) {
+    updateAppRow(table: { name: any; }, id: any, values: { [x: string]: any; }, options: LooseRecord = {}) {
       const columns = Object.keys(values);
       if (columns.length === 0) {
         return { changes: 0 };
@@ -1176,10 +1263,10 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         ...(options.ownerId === undefined ? [] : [options.ownerId]),
       );
     },
-    deleteAppRow(table, id) {
+    deleteAppRow(table: { name: any; }, id: any) {
       return this.prepare(`DELETE FROM ${quoteIdentifier(table.name)} WHERE id = ?`).run(String(id));
     },
-    selectAppRows(table, query = {}) {
+    selectAppRows(table: { name: any; }, query: LooseRecord = {}) {
       const columns = query.columns ?? ["*"];
       const whereClauses = [];
       const params = [];
@@ -1200,7 +1287,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
       const limitSql = limit === null ? "" : " LIMIT ?";
       return this.prepare(
-        `SELECT ${columns.map((column) => (column === "*" ? "*" : quoteIdentifier(column))).join(", ")} FROM ${quoteIdentifier(
+        `SELECT ${columns.map((column: string) => (column === "*" ? "*" : quoteIdentifier(column))).join(", ")} FROM ${quoteIdentifier(
           table.name,
         )}${whereSql}${orderSql}${limitSql}`,
       ).all(...(limit === null ? params : [...params, limit]));
@@ -1208,19 +1295,19 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     listInspectableTables() {
       return this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .all()
-        .map((row) => row.name)
-        .filter((name) => name !== "sporades_log_events");
+        .map((row: any) => row.name)
+        .filter((name: any) => name !== "sporades_log_events");
     },
     dumpInspectableDatabase() {
-      return this.listInspectableTables().map((tableName) => ({
+      return this.listInspectableTables().map((tableName: any) => ({
         name: tableName,
         columns: this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`)
           .all()
-          .map((column) => column.name),
+          .map((column: any) => column.name),
         rows: this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all(),
       }));
     },
-    runReadOnlyInspectionQuery(sql) {
+    runReadOnlyInspectionQuery(sql: string | undefined) {
       try {
         if (targetsInternalLogIndexTable(sql)) {
           return {
@@ -1232,18 +1319,18 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
             },
           };
         }
-        const statement = this.prepare(sql);
-        const columns = statement.columns().map((column) => column.name);
-        const rows = statement.all().filter((row) => !isInternalLogIndexMetadataRow(row, sql));
+        const statement = this.prepare(String(sql ?? ""));
+        const columns = statement.columns().map((column: any) => column.name);
+        const rows = statement.all().filter((row: any) => !isInternalLogIndexMetadataRow(row, sql));
         return {
           ok: true,
           data: {
             columns,
             rows,
           },
-          error: null,
+          error: null as any,
         };
-      } catch (error) {
+      } catch (error: any) {
         return {
           ok: false,
           data: null,
@@ -1273,7 +1360,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   return adapter;
 }
 
-export async function createPostgresDatabaseAdapter(options) {
+export async function createPostgresDatabaseAdapter(options: { url: any; }) {
   const url = typeof options === "string" ? options : options?.url;
   if (!url) {
     throw commandError(
@@ -1294,7 +1381,7 @@ export async function createPostgresDatabaseAdapter(options) {
     }
   };
 
-  const query = async (sql, params = []) => {
+  const query = async (sql: string, params: any[] = []) => {
     assertOpen();
     return await client.query(postgresInterpolate(sql, params));
   };
@@ -1302,22 +1389,22 @@ export async function createPostgresDatabaseAdapter(options) {
   const adapter = {
     ...shape,
     engine: "postgres",
-    exec(sql) {
-      return query(sql).then(() => undefined);
+    exec(sql: string) {
+      return query(sql).then((): undefined => undefined);
     },
-    prepare(sql) {
+    prepare(sql: string) {
       assertOpen();
       return {
-        all(...params) {
-          return query(sql, params).then((result) => postgresRowsFromResult(result));
+        all(...params: (number | undefined)[]) {
+          return query(sql, params).then((result: any) => postgresRowsFromResult(result));
         },
-        get(...params) {
-          return this.all(...params).then((rows) => rows[0] ?? null);
+        get(...params: undefined[]) {
+          return this.all(...params).then((rows: any[]) => rows[0] ?? null);
         },
-        run(...params) {
+        run(...params: string[]) {
           return query(sql, params).then((result) => ({
             changes: Number(result.rowCount ?? 0),
-            lastInsertRowid: undefined,
+            lastInsertRowid: undefined as any,
           }));
         },
         columns() {
@@ -1327,20 +1414,20 @@ export async function createPostgresDatabaseAdapter(options) {
         },
       };
     },
-    async writeSystemMetadata(keyOrMetadata, maybeValue) {
+    async writeSystemMetadata(keyOrMetadata: string | null, maybeValue: any) {
       if (typeof keyOrMetadata === "object" && keyOrMetadata !== null) {
         return await this.writeSchemaMetadata(keyOrMetadata);
       }
       return await this.prepare(
         "INSERT INTO sporades (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-      ).run(keyOrMetadata, maybeValue);
+      ).run(keyOrMetadata ?? "", maybeValue);
     },
-    async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
+    async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord) {
       await this.writeSystemMetadata("schemaVersion", schemaVersion);
       await this.writeSystemMetadata("schemaHash", schemaHash);
       await this.writeSystemMetadata("schema", schemaJson);
     },
-    async ensureAuthStorage(authConfig = null) {
+    async ensureAuthStorage(authConfig: any = null) {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
           "id TEXT PRIMARY KEY, " +
@@ -1427,7 +1514,7 @@ export async function createPostgresDatabaseAdapter(options) {
           "deletedAt TEXT" +
           ")",
       );
-      await this.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT").catch((error) => {
+      await this.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT").catch((error: any) => {
         if (!isDuplicateColumnError(error)) throw error;
       });
       await this.exec(filePathBackfillSql());
@@ -1465,7 +1552,7 @@ export async function createPostgresDatabaseAdapter(options) {
           ")",
       );
     },
-    async insertLogIndexEvent(event) {
+    async insertLogIndexEvent(event: { timestamp: any; category: any; event: any; level: any; message: any; capsule: { name: any; id: any; }; release: { id: any; }; request: { id: any; }; correlation: { id: any; }; }) {
       await this.prepare(
         "INSERT INTO sporades_log_events " +
           "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
@@ -1485,7 +1572,7 @@ export async function createPostgresDatabaseAdapter(options) {
         JSON.stringify(event),
       );
     },
-    async pruneLogIndex(limit) {
+    async pruneLogIndex(limit: any) {
       await this.prepare(
         "DELETE FROM sporades_log_events WHERE id IN (" +
           "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, id DESC OFFSET ?" +
@@ -1495,26 +1582,26 @@ export async function createPostgresDatabaseAdapter(options) {
     async readRecentLogEvents(limit = 200) {
       const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
       const rows = await this.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, id DESC LIMIT ?").all(safeLimit);
-      return rows.reverse().map((row) => JSON.parse(row.payload));
+      return rows.reverse().map((row: { payload: string; }) => JSON.parse(row.payload));
     },
-    async migrateAppSchema(schema) {
+    async migrateAppSchema(schema: { tables: { name: any; acl: { allowByDefault: boolean; } | { allowByDefault: boolean; resolve(operation: any): any; }; fields: { name: any; kind: any; sqliteType: string; targetTable: string | undefined; defaultValue: any; }[]; }[]; } | { tables: { name: string; fields: ({ name: any; kind: any; sqliteType: string; targetTable: any; defaultValue: any; } | null)[]; }[]; }) {
       return await migrateLibsqlAppSchema(this, schema);
     },
-    async createAppTable(table, tableName = table.name) {
+    async createAppTable(table: { name: any; }, tableName = table.name) {
       await this.exec(
         `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` +
           postgresAppTableColumnDefinitions(table).join(", ") +
           ")",
       );
     },
-    async migrateExistingAppTable(existingTable, nextTable) {
+    async migrateExistingAppTable(existingTable: any, nextTable: any) {
       return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
     },
     async listInspectableTables() {
       const rows = await this.prepare(
         "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name",
       ).all();
-      return rows.map((row) => row.name).filter((name) => name !== "sporades_log_events");
+      return rows.map((row: { name: any; }) => row.name).filter((name: string) => name !== "sporades_log_events");
     },
     async dumpInspectableDatabase() {
       const tableNames = await this.listInspectableTables();
@@ -1524,13 +1611,13 @@ export async function createPostgresDatabaseAdapter(options) {
           await this.prepare(
             "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? ORDER BY ordinal_position",
           ).all(tableName)
-        ).map((column) => column.name);
+        ).map((column: { name: any; }) => column.name);
         const rows = await this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all();
         tables.push({ name: tableName, columns, rows });
       }
       return tables;
     },
-    async runReadOnlyInspectionQuery(sql) {
+    async runReadOnlyInspectionQuery(sql: string | undefined) {
       try {
         if (targetsInternalLogIndexTable(sql)) {
           return {
@@ -1542,16 +1629,16 @@ export async function createPostgresDatabaseAdapter(options) {
             },
           };
         }
-        const result = await query(sql);
+        const result = await query(String(sql ?? ""));
         return {
           ok: true,
           data: {
             columns: result.fields.map((field) => postgresRuntimeColumnName(field.name)),
-            rows: postgresRowsFromResult(result).filter((row) => !isInternalLogIndexMetadataRow(row, sql)),
+            rows: postgresRowsFromResult(result).filter((row: any) => !isInternalLogIndexMetadataRow(row, sql)),
           },
-          error: null,
+          error: null as any,
         };
-      } catch (error) {
+      } catch (error: any) {
         return {
           ok: false,
           data: null,
@@ -1570,7 +1657,7 @@ export async function createPostgresDatabaseAdapter(options) {
         return { ok: false };
       }
     },
-    async withTransaction(fn) {
+    async withTransaction(fn: (arg0: { engine: string; exec(sql: any): Promise<undefined>; prepare(sql: any): { all(...params: any[]): Promise<any>; get(...params: any[]): Promise<any>; run(...params: any[]): Promise<{ changes: number; lastInsertRowid: undefined; }>; columns(): Promise<{ name: any; }[]>; }; writeSystemMetadata(keyOrMetadata: any, maybeValue: any): Promise<void | { changes: number; lastInsertRowid: undefined; }>; writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }): Promise<void>; ensureAuthStorage(authConfig?: null): Promise<void>; ensureLogStorage(): Promise<void>; ensureFileStorage(): Promise<void>; insertLogIndexEvent(event: any): Promise<void>; pruneLogIndex(limit: any): Promise<void>; readRecentLogEvents(limit?: number): Promise<any>; migrateAppSchema(schema: any): Promise<void>; createAppTable(table: any, tableName?: any): Promise<void>; migrateExistingAppTable(existingTable: any, nextTable: any): Promise<void>; listInspectableTables(): Promise<any>; dumpInspectableDatabase(): Promise<{ name: any; columns: any; rows: any; }[]>; runReadOnlyInspectionQuery(sql: any): Promise<{ ok: boolean; data: { columns: any[]; rows: any; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }>; checkHealth(): Promise<{ ok: boolean; }>; withTransaction(fn: any): Promise<any>; close(): Promise<void>; ensureSystemTable(): void; readSystemMetadata(key: any): Record<string, SQLOutputValue> | null; readSchemaMetadata(): Record<string, SQLOutputValue> | null; findFileBucket(ownerId: any, name: any): Record<string, SQLOutputValue> | null; createFileBucket(row: any): StatementResultingChanges; insertFileRow(row: any): StatementResultingChanges; updatePendingFileRow(row: any): StatementResultingChanges; insertFileUpload(row: any): StatementResultingChanges; selectFileById(fileId: any): Record<string, SQLOutputValue> | null; selectLiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectActiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath(path: any): Record<string, SQLOutputValue> | null; selectFileUpload(uploadId: any): Record<string, SQLOutputValue> | null; completeFileUpload(upload: any, size: any, updatedAt: any): StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath(path: any): StatementResultingChanges; deleteFileUploadsForFile(ownerId: any, fileId: any): StatementResultingChanges; deleteFileUpload(uploadId: any): StatementResultingChanges; selectPublicFileRow(publicUrlId: any): Record<string, SQLOutputValue> | null; insertPublicFileUrl(row: any): StatementResultingChanges; revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any): StatementResultingChanges; revokePublicFileUrlsForFile(fileId: any, revokedAt: any): StatementResultingChanges; markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges; fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null; findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null; insertAuthUser(row: any): StatementResultingChanges; updateAuthUserProfile(row: any): StatementResultingChanges; linkAuthUser(row: any): StatementResultingChanges; insertAuthSession(row: any): StatementResultingChanges; deleteAuthSession(token: any): StatementResultingChanges; refreshAuthSession(token: any, expiresAt: any): StatementResultingChanges; rotateAuthSession(previousToken: any, row: any): StatementResultingChanges; readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null; insertOAuthState(row: any): StatementResultingChanges; consumeOAuthState(state: any): Record<string, SQLOutputValue> | null; emailCredentialExists(email: any): boolean; insertEmailCredential(row: any): StatementResultingChanges; findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null; referenceExists(field: any, value: any): boolean; insertAppRow(table: any, row: any): StatementResultingChanges; selectAppRowById(table: any, id: any): Record<string, SQLOutputValue> | null; updateAppRow(table: any, id: any, values: any, options?: {}): StatementResultingChanges | { changes: number; }; deleteAppRow(table: any, id: any): StatementResultingChanges; selectAppRows(table: any, query?: {}): Record<string, SQLOutputValue>[]; }) => any) {
       await this.exec("BEGIN");
       try {
         const result = await fn(this);
@@ -1592,7 +1679,7 @@ export async function createPostgresDatabaseAdapter(options) {
   return adapter;
 }
 
-export async function createPostgresConnection(url) {
+export async function createPostgresConnection(url: any) {
   const net = await import("node:net");
   const crypto = await import("node:crypto");
   const options = postgresUrlOptions(url);
@@ -1603,8 +1690,8 @@ export async function createPostgresConnection(url) {
   let ready = false;
   let closed = false;
   let backendKeyData = null;
-  let queryQueue = Promise.resolve();
-  const waiters = [];
+  let queryQueue: Promise<any> = Promise.resolve();
+  const waiters: any[] = [];
 
   socket.on("data", (chunk) => {
     buffer = Buffer.concat([buffer, chunk]);
@@ -1687,7 +1774,7 @@ export async function createPostgresConnection(url) {
     get backendKeyData() {
       return backendKeyData;
     },
-    query(sql) {
+    query(sql: string) {
       if (closed) {
         throw new Error("database is not open");
       }
@@ -1709,12 +1796,12 @@ export async function createPostgresConnection(url) {
     },
   };
 
-  async function executePostgresQuery(sql) {
+  async function executePostgresQuery(sql: any) {
     if (closed) {
       throw new Error("database is not open");
     }
     socket.write(postgresQueryMessage(sql));
-    const fields = [];
+    const fields: any[] = [];
     const rows = [];
     let rowCount = 0;
     let queryError = null;
@@ -1762,7 +1849,7 @@ export async function createPostgresConnection(url) {
   }
 }
 
-function postgresUrlOptions(url) {
+function postgresUrlOptions(url: any) {
   const parsed = new URL(String(url));
   return {
     host: parsed.hostname || "127.0.0.1",
@@ -1773,18 +1860,19 @@ function postgresUrlOptions(url) {
   };
 }
 
-function postgresPasswordMessage(body) {
-  return Buffer.concat([Buffer.from("p"), postgresInt32(body.length + 4), body]);
+function postgresPasswordMessage(body: string | Uint8Array | Buffer) {
+  const bodyBuffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  return Buffer.concat([Buffer.from("p"), postgresInt32(bodyBuffer.length + 4), bodyBuffer]);
 }
 
-function createPostgresScramSession(crypto, password) {
+function createPostgresScramSession(crypto: typeof import("node:crypto"), password: string) {
   const clientNonce = crypto.randomBytes(18).toString("base64");
   const clientFirstBare = `n=,r=${clientNonce}`;
-  let serverSignature = null;
+  let serverSignature: string | null = null;
   return {
     clientFirstMessage: `n,,${clientFirstBare}`,
-    continue(serverFirstMessage) {
-      const attributes = new Map(serverFirstMessage.split(",").map((part) => [part.slice(0, 1), part.slice(2)]));
+    continue(serverFirstMessage: string) {
+      const attributes = new Map(serverFirstMessage.split(",").map((part: string) => [part.slice(0, 1), part.slice(2)]));
       const serverNonce = attributes.get("r") ?? "";
       const salt = Buffer.from(attributes.get("s") ?? "", "base64");
       const iterations = Number(attributes.get("i") ?? "0");
@@ -1797,12 +1885,12 @@ function createPostgresScramSession(crypto, password) {
       const clientFinalWithoutProof = `c=biws,r=${serverNonce}`;
       const authMessage = `${clientFirstBare},${serverFirstMessage},${clientFinalWithoutProof}`;
       const clientSignature = crypto.createHmac("sha256", storedKey).update(authMessage).digest();
-      const clientProof = Buffer.from(clientKey.map((byte, index) => byte ^ clientSignature[index]));
+      const clientProof = Buffer.from(clientKey.map((byte: number, index: number) => byte ^ clientSignature[index]));
       const serverKey = crypto.createHmac("sha256", saltedPassword).update("Server Key").digest();
       serverSignature = crypto.createHmac("sha256", serverKey).update(authMessage).digest("base64");
       return `${clientFinalWithoutProof},p=${clientProof.toString("base64")}`;
     },
-    verify(serverFinalMessage) {
+    verify(serverFinalMessage: string) {
       if (serverFinalMessage !== `v=${serverSignature}`) {
         throw new Error("Postgres SCRAM server signature verification failed.");
       }
@@ -1810,7 +1898,7 @@ function createPostgresScramSession(crypto, password) {
   };
 }
 
-function postgresStartupMessage(options) {
+function postgresStartupMessage(options: { host?: string; port?: number; user: any; password?: string; database: any; }) {
   const params = [
     ["user", options.user],
     ["database", options.database],
@@ -1825,28 +1913,28 @@ function postgresStartupMessage(options) {
   return Buffer.concat([postgresInt32(body.length + 4), body]);
 }
 
-function postgresQueryMessage(sql) {
+function postgresQueryMessage(sql: any) {
   const body = Buffer.from(`${sql}\0`, "utf8");
   return Buffer.concat([Buffer.from("Q"), postgresInt32(body.length + 4), body]);
 }
 
-function postgresInt32(value) {
+function postgresInt32(value: number) {
   const buffer = Buffer.alloc(4);
   buffer.writeInt32BE(value, 0);
   return buffer;
 }
 
-function waitForPostgresData(waiters) {
+function waitForPostgresData(waiters: any[]) {
   return new Promise((resolve, reject) => waiters.push({ resolve, reject }));
 }
 
-function wakePostgresWaiters(waiters) {
+function wakePostgresWaiters(waiters: any[]) {
   for (const waiter of waiters.splice(0)) {
     waiter.resolve();
   }
 }
 
-function postgresParseRowDescription(body) {
+function postgresParseRowDescription(body: Buffer<ArrayBuffer>) {
   const fields = [];
   let offset = 0;
   const count = body.readInt16BE(offset);
@@ -1864,8 +1952,8 @@ function postgresParseRowDescription(body) {
   return fields;
 }
 
-function postgresParseDataRow(body, fields) {
-  const row = {};
+function postgresParseDataRow(body: Buffer<ArrayBuffer>, fields: any[]) {
+  const row: LooseRecord = {};
   let offset = 0;
   const count = body.readInt16BE(offset);
   offset += 2;
@@ -1887,7 +1975,7 @@ function postgresParseDataRow(body, fields) {
   return row;
 }
 
-function postgresValueFromText(value, dataTypeID) {
+function postgresValueFromText(value: string, dataTypeID: number) {
   if ([20, 21, 23].includes(dataTypeID)) {
     return Number(value);
   }
@@ -1900,13 +1988,13 @@ function postgresValueFromText(value, dataTypeID) {
   return value;
 }
 
-function postgresRowCountFromCommand(tag) {
+function postgresRowCountFromCommand(tag: string) {
   const match = tag.match(/\s(\d+)$/);
   return match ? Number(match[1]) : 0;
 }
 
-function postgresErrorFromBody(body) {
-  const fields = {};
+function postgresErrorFromBody(body: Buffer) {
+  const fields: LooseRecord = {};
   let offset = 0;
   while (offset < body.length && body[offset] !== 0) {
     const type = String.fromCharCode(body[offset]);
@@ -1918,7 +2006,7 @@ function postgresErrorFromBody(body) {
   return new Error(fields.M ?? "Postgres query failed.");
 }
 
-function postgresInterpolate(sql, params = []) {
+function postgresInterpolate(sql: any, params: any[] = []) {
   let index = 0;
   let quote = null;
   let escaped = false;
@@ -1995,7 +2083,7 @@ function postgresInterpolate(sql, params = []) {
   return result;
 }
 
-function postgresPlaceholders(sql) {
+function postgresPlaceholders(sql: any) {
   let index = 0;
   let quote = null;
   let escaped = false;
@@ -2067,9 +2155,9 @@ function postgresPlaceholders(sql) {
   return result;
 }
 
-function postgresRowsFromResult(result) {
-  return result.rows.map((row) => {
-    const normalized = {};
+function postgresRowsFromResult(result: { fields?: any[]; rows: any; rowCount?: number; }) {
+  return result.rows.map((row: { [s: string]: unknown; } | ArrayLike<unknown>) => {
+    const normalized: LooseRecord = {};
     for (const [key, value] of Object.entries(row)) {
       normalized[postgresRuntimeColumnName(key)] = value;
     }
@@ -2077,7 +2165,7 @@ function postgresRowsFromResult(result) {
   });
 }
 
-function postgresRuntimeColumnName(name) {
+function postgresRuntimeColumnName(name: string) {
   return (
     {
       ownerid: "ownerId",
@@ -2109,16 +2197,16 @@ function postgresRuntimeColumnName(name) {
   );
 }
 
-function postgresAppTableColumnDefinitions(table) {
+function postgresAppTableColumnDefinitions(table: any) {
   return [
     `${quoteIdentifier("id")} TEXT PRIMARY KEY`,
     `${quoteIdentifier("createdAt")} TEXT NOT NULL`,
     `${quoteIdentifier("updatedAt")} TEXT NOT NULL`,
-    ...table.fields.map((field) => appFieldColumnDefinition(field)),
+    ...table.fields.map((field: any) => appFieldColumnDefinition(field)),
   ];
 }
 
-export async function createLibsqlDatabaseAdapter(options) {
+export async function createLibsqlDatabaseAdapter(options: { url: any; authToken: any; }) {
   const url = typeof options === "string" ? options : options?.url;
   if (!url) {
     throw commandError(
@@ -2130,31 +2218,31 @@ export async function createLibsqlDatabaseAdapter(options) {
   const endpoint = libsqlPipelineUrl(url);
   const authToken = typeof options === "object" ? options.authToken : null;
   let closed = false;
-  const activeTransactions = new Set();
+  const activeTransactions = new Set<any>();
 
   const shape = await createSqliteDatabaseAdapter(":memory:");
   shape.close();
 
-  const createOperations = (transaction = null) => ({
-    exec(sql) {
+  const createOperations = (transaction: any = null) => ({
+    exec(sql: string) {
       assertLibsqlOpen(closed);
       const request = libsqlHasMultipleStatements(sql)
         ? { type: "sequence", sql }
         : { type: "execute", stmt: { sql } };
-      return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then(() => undefined);
+      return libsqlPipeline({ endpoint, authToken, transaction, requests: [request], close: !transaction }).then((): undefined => undefined);
     },
-    prepare(sql) {
+    prepare(sql: string) {
       assertLibsqlOpen(closed);
       return {
-        all(...params) {
+        all(...params: (number | undefined)[]) {
           return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) =>
             libsqlRowsFromResult(result),
           );
         },
-        get(...params) {
-          return this.all(...params).then((rows) => rows[0] ?? null);
+        get(...params: undefined[]) {
+          return this.all(...params).then((rows: any[]) => rows[0] ?? null);
         },
-        run(...params) {
+        run(...params: string[]) {
           return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => ({
             changes: Number(result.affected_row_count ?? result.affectedRowCount ?? 0),
             lastInsertRowid:
@@ -2174,7 +2262,7 @@ export async function createLibsqlDatabaseAdapter(options) {
     ...shape,
     ...createOperations(),
     engine: "libsql",
-    async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
+    async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord) {
       await this.writeSystemMetadata("schemaVersion", schemaVersion);
       await this.writeSystemMetadata("schemaHash", schemaHash);
       await this.writeSystemMetadata("schema", schemaJson);
@@ -2197,7 +2285,7 @@ export async function createLibsqlDatabaseAdapter(options) {
           ")",
       );
     },
-    async insertLogIndexEvent(event) {
+    async insertLogIndexEvent(event: { timestamp: any; category: any; event: any; level: any; message: any; capsule: { name: any; id: any; }; release: { id: any; }; request: { id: any; }; correlation: { id: any; }; }) {
       await this.prepare(
         "INSERT INTO sporades_log_events " +
           "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
@@ -2217,7 +2305,7 @@ export async function createLibsqlDatabaseAdapter(options) {
         JSON.stringify(event),
       );
     },
-    async pruneLogIndex(limit) {
+    async pruneLogIndex(limit: any) {
       await this.prepare(
         "DELETE FROM sporades_log_events WHERE id IN (" +
           "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?" +
@@ -2227,7 +2315,7 @@ export async function createLibsqlDatabaseAdapter(options) {
     async readRecentLogEvents(limit = 200) {
       const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
       const rows = await this.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?").all(safeLimit);
-      return rows.reverse().map((row) => JSON.parse(row.payload));
+      return rows.reverse().map((row: { payload: string; }) => JSON.parse(row.payload));
     },
     async ensureFileStorage() {
       await this.exec(
@@ -2256,7 +2344,7 @@ export async function createLibsqlDatabaseAdapter(options) {
           "deletedAt TEXT" +
           ")",
       );
-      await this.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT").catch((error) => {
+      await this.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT").catch((error: any) => {
         if (!isDuplicateColumnError(error)) throw error;
       });
       await this.exec(filePathBackfillSql());
@@ -2294,7 +2382,7 @@ export async function createLibsqlDatabaseAdapter(options) {
           ")",
       );
     },
-    async ensureAuthStorage(authConfig = null) {
+    async ensureAuthStorage(authConfig: any = null) {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
           "id TEXT PRIMARY KEY, " +
@@ -2337,32 +2425,32 @@ export async function createLibsqlDatabaseAdapter(options) {
           ")",
       );
     },
-    async consumeOAuthState(state) {
+    async consumeOAuthState(state: any) {
       const row = (await this.prepare("SELECT state, sessionToken, returnTo, redirectUri FROM sporades_auth_oauth_states WHERE state = ?").get(state)) ?? null;
       await this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
       return row;
     },
-    async migrateAppSchema(schema) {
+    async migrateAppSchema(schema: { tables: { name: any; acl: { allowByDefault: boolean; } | { allowByDefault: boolean; resolve(operation: any): any; }; fields: { name: any; kind: any; sqliteType: string; targetTable: string | undefined; defaultValue: any; }[]; }[]; } | { tables: { name: string; fields: ({ name: any; kind: any; sqliteType: string; targetTable: any; defaultValue: any; } | null)[]; }[]; }) {
       return await migrateLibsqlAppSchema(this, schema);
     },
-    async migrateExistingAppTable(existingTable, nextTable) {
+    async migrateExistingAppTable(existingTable: any, nextTable: any) {
       return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
     },
     async listInspectableTables() {
       const rows = await this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-      return rows.map((row) => row.name).filter((name) => name !== "sporades_log_events");
+      return rows.map((row: { name: any; }) => row.name).filter((name: string) => name !== "sporades_log_events");
     },
     async dumpInspectableDatabase() {
       const tableNames = await this.listInspectableTables();
       const tables = [];
       for (const tableName of tableNames) {
-        const columns = (await this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all()).map((column) => column.name);
+        const columns = (await this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all()).map((column: { name: any; }) => column.name);
         const rows = await this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all();
         tables.push({ name: tableName, columns, rows });
       }
       return tables;
     },
-    async runReadOnlyInspectionQuery(sql) {
+    async runReadOnlyInspectionQuery(sql: string | undefined) {
       try {
         if (targetsInternalLogIndexTable(sql)) {
           return {
@@ -2374,11 +2462,11 @@ export async function createLibsqlDatabaseAdapter(options) {
             },
           };
         }
-        const statement = this.prepare(sql);
-        const columns = (await statement.columns()).map((column) => column.name);
-        const rows = (await statement.all()).filter((row) => !isInternalLogIndexMetadataRow(row, sql));
-        return { ok: true, data: { columns, rows }, error: null };
-      } catch (error) {
+        const statement = this.prepare(String(sql ?? ""));
+        const columns = (await statement.columns()).map((column: { name: any; }) => column.name);
+        const rows = (await statement.all()).filter((row: any) => !isInternalLogIndexMetadataRow(row, sql));
+        return { ok: true, data: { columns, rows }, error: null as any };
+      } catch (error: any) {
         return {
           ok: false,
           data: null,
@@ -2397,8 +2485,8 @@ export async function createLibsqlDatabaseAdapter(options) {
         return { ok: false };
       }
     },
-    async withTransaction(fn) {
-      const transaction = { baton: null, baseUrl: endpoint };
+    async withTransaction(fn: (transactionAdapter: LooseRecord) => any) {
+      const transaction = { baton: null as any, baseUrl: endpoint };
       const transactionAdapter = {
         ...adapter,
         ...createOperations(transaction),
@@ -2423,7 +2511,7 @@ export async function createLibsqlDatabaseAdapter(options) {
     },
     async close() {
       closed = true;
-      for (const transaction of activeTransactions) {
+  for (const transaction of activeTransactions as Set<any>) {
         if (transaction.baton) {
           await libsqlPipeline({ endpoint, authToken, transaction, requests: [], close: true }).catch(() => {});
         }
@@ -2435,7 +2523,7 @@ export async function createLibsqlDatabaseAdapter(options) {
   return adapter;
 }
 
-function libsqlPipelineUrl(url) {
+function libsqlPipelineUrl(url: any) {
   const parsed = new URL(String(url));
   parsed.pathname = `${parsed.pathname.replace(/\/+$/, "")}/v2/pipeline`;
   parsed.search = "";
@@ -2443,17 +2531,17 @@ function libsqlPipelineUrl(url) {
   return parsed.toString();
 }
 
-function assertLibsqlOpen(closed) {
+function assertLibsqlOpen(closed: boolean) {
   if (closed) {
     throw new Error("database is not open");
   }
 }
 
-function libsqlHasMultipleStatements(sql) {
+function libsqlHasMultipleStatements(sql: any) {
   return splitSqlStatements(sql).length > 1;
 }
 
-async function libsqlExecute({ endpoint, authToken, transaction, sql, params = [], close }) {
+async function libsqlExecute({ endpoint, authToken, transaction, sql, params = [], close }: LooseRecord) {
   const [result] = await libsqlPipeline({
     endpoint,
     authToken,
@@ -2464,7 +2552,7 @@ async function libsqlExecute({ endpoint, authToken, transaction, sql, params = [
   return result.result;
 }
 
-async function libsqlDescribe({ endpoint, authToken, transaction, sql, close }) {
+async function libsqlDescribe({ endpoint, authToken, transaction, sql, close }: LooseRecord) {
   const [result] = await libsqlPipeline({
     endpoint,
     authToken,
@@ -2472,10 +2560,10 @@ async function libsqlDescribe({ endpoint, authToken, transaction, sql, close }) 
     requests: [{ type: "describe", sql }],
     close,
   });
-  return (result.result?.cols ?? []).map((column) => ({ name: column.name }));
+  return (result.result?.cols ?? []).map((column: { name: any; }) => ({ name: column.name }));
 }
 
-async function libsqlPipeline({ endpoint, authToken, transaction = null, requests, close = true }) {
+async function libsqlPipeline({ endpoint, authToken, transaction = null, requests, close = true }: LooseRecord) {
   const requestUrl = transaction?.baseUrl ?? endpoint;
   const payload = {
     ...(transaction ? { baton: transaction.baton } : {}),
@@ -2498,24 +2586,24 @@ async function libsqlPipeline({ endpoint, authToken, transaction = null, request
     transaction.baseUrl = body.base_url ? new URL("/v2/pipeline", body.base_url).toString() : requestUrl;
   }
   const results = body.results ?? [];
-  const errorResult = results.find((result) => result.type === "error");
+  const errorResult = results.find((result: { type: string; }) => result.type === "error");
   if (errorResult) {
     throw new Error(errorResult.error?.message ?? "libSQL statement failed.");
   }
-  return results.filter((result) => result.response?.type !== "close").map((result) => result.response);
+  return results.filter((result: { response: { type: string; }; }) => result.response?.type !== "close").map((result: { response: any; }) => result.response);
 }
 
-function libsqlRowsFromResult(result) {
-  const columns = (result.cols ?? []).map((column) => column.name);
-  return (result.rows ?? []).map((row) => {
+function libsqlRowsFromResult(result: { cols: any; rows: any; }) {
+  const columns = (result.cols ?? []).map((column: { name: any; }) => column.name);
+  return (result.rows ?? []).map((row: { [s: string]: unknown; } | ArrayLike<unknown>) => {
     if (!Array.isArray(row)) {
       return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, libsqlValueToJs(value)]));
     }
-    return Object.fromEntries(columns.map((column, index) => [column, libsqlValueToJs(row[index])]));
+    return Object.fromEntries(columns.map((column: any, index: number) => [column, libsqlValueToJs(row[index])]));
   });
 }
 
-function libsqlValueFromJs(value) {
+function libsqlValueFromJs(value: unknown) {
   if (value === null || value === undefined) {
     return { type: "null" };
   }
@@ -2537,7 +2625,7 @@ function libsqlValueFromJs(value) {
   return { type: "text", value: String(value) };
 }
 
-function libsqlValueToJs(value) {
+function libsqlValueToJs(value: any) {
   if (value === null || value === undefined || value.type === "null") {
     return null;
   }
@@ -2557,12 +2645,12 @@ function libsqlValueToJs(value) {
   return value;
 }
 
-function logIndexLimit(config = {}) {
+function logIndexLimit(config: LooseRecord = {}) {
   const configured = Number(config.logs?.indexLimit ?? config.logging?.indexLimit);
   return Number.isInteger(configured) && configured > 0 ? configured : 500;
 }
 
-function logPayloadMaxBytes(config = {}) {
+function logPayloadMaxBytes(config: LooseRecord = {}) {
   const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
   return Number.isInteger(configured) && configured > 0 ? configured : 4096;
 }
@@ -2571,7 +2659,7 @@ function logRedactedValue() {
   return "[REDACTED]";
 }
 
-function createRuntimeLogSink(options) {
+function createRuntimeLogSink(options: { database: any; config: any; serverEnv: any; dataDir: any; }) {
   const path = requirePathModule();
   const logPath =
     options.config.logs?.jsonlPath ??
@@ -2581,7 +2669,7 @@ function createRuntimeLogSink(options) {
   mkdirSync(path.dirname(logPath), { recursive: true });
   return {
     path: logPath,
-    emit(input) {
+    emit(input: any) {
       const event = createLogEnvelope({
         ...input,
         config: options.config,
@@ -2608,13 +2696,13 @@ function createRuntimeLogSink(options) {
 
 function requirePathModule() {
   return {
-    join: (...parts) => parts.join("/").replace(/\/+/g, "/"),
-    dirname: (filePath) => String(filePath).replace(/\/[^/]*$/, "") || ".",
+    join: (...parts: any[]) => parts.join("/").replace(/\/+/g, "/"),
+    dirname: (filePath: any) => String(filePath).replace(/\/[^/]*$/, "") || ".",
   };
 }
 
-function createRuntimeLogger(database, context = {}) {
-  const write = (level, args) => {
+function createRuntimeLogger(database: { log: { emit: (arg0: { category: any; event: any; level: any; message: string; data: any; request: any; release: any; correlation: any; }) => void; }; }, context: LooseRecord = {}) {
+  const write = (level: string, args: any[]) => {
     const [message, data, ...rest] = args;
     const structuredData =
       data !== undefined && rest.length === 0
@@ -2635,13 +2723,13 @@ function createRuntimeLogger(database, context = {}) {
   };
 
   return {
-    info: (...args) => write("info", args),
-    warn: (...args) => write("warn", args),
-    error: (...args) => write("error", args),
+    info: (...args: any) => write("info", args),
+    warn: (...args: any) => write("warn", args),
+    error: (...args: any) => write("error", args),
   };
 }
 
-function createLogEnvelope(input) {
+function createLogEnvelope(input: { config: LooseRecord; timestamp: any; category: any; event: any; level: any; message: any; release: any; request: { id: any; method: any; path: any; }; correlation: any; data: any; serverEnv: any; }) {
   const now = new Date().toISOString();
   const config = input.config ?? {};
   const capsuleName = String(config.name ?? "unknown");
@@ -2670,11 +2758,11 @@ function createLogEnvelope(input) {
   return capLogEnvelope(envelope, logPayloadMaxBytes(config));
 }
 
-function sanitizeLogData(value, serverEnv) {
+function sanitizeLogData(value: any, serverEnv: any) {
   return redactLogData(value, serverEnv);
 }
 
-function redactLogData(value, serverEnv) {
+function redactLogData(value: unknown, serverEnv: any): any {
   if (value === null || value === undefined) {
     return null;
   }
@@ -2685,11 +2773,11 @@ function redactLogData(value, serverEnv) {
     return value;
   }
   if (Array.isArray(value)) {
-    return value.map((item) => redactLogData(item, serverEnv));
+    return value.map((item: any) => redactLogData(item, serverEnv));
   }
   if (typeof value === "object") {
     return Object.fromEntries(
-      Object.entries(value).map(([key, nestedValue]) => [
+      Object.entries(value).map(([key, nestedValue]: [string, any]) => [
         key,
         isSensitiveLogKey(key) || logDataContainsServerEnvValue(nestedValue, serverEnv)
           ? logRedactedValue()
@@ -2700,7 +2788,7 @@ function redactLogData(value, serverEnv) {
   return String(value);
 }
 
-function logDataContainsServerEnvValue(value, serverEnv) {
+function logDataContainsServerEnvValue(value: unknown, serverEnv: any) {
   const values = Object.values(serverEnv ?? {}).filter((candidate) => typeof candidate === "string" && candidate.length > 0);
   if (values.length === 0) {
     return false;
@@ -2714,17 +2802,17 @@ function logDataContainsServerEnvValue(value, serverEnv) {
   const serialized = JSON.stringify(value, (_key, nestedValue) =>
     typeof nestedValue === "bigint" ? String(nestedValue) : nestedValue,
   );
-  return values.some((secret) => serialized.includes(secret));
+  return values.some((secret) => serialized.includes(String(secret)));
 }
 
-function isSensitiveLogKey(key) {
+function isSensitiveLogKey(key: string) {
   return (
     /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token)([-_]|$)/i.test(String(key)) ||
     /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken)/i.test(String(key))
   );
 }
 
-function capLogEnvelope(envelope, maxBytes) {
+function capLogEnvelope(envelope: LooseRecord, maxBytes: number) {
   let capped = envelope;
   if (Buffer.byteLength(JSON.stringify(capped), "utf8") <= maxBytes) {
     return { ...capped, truncated: false };
@@ -2750,7 +2838,7 @@ function capLogEnvelope(envelope, maxBytes) {
   return capped;
 }
 
-function createLogIndexTables(sqlite) {
+function createLogIndexTables(sqlite: { engine?: string; exec: any; prepare?: (sql: any) => { all(...params: any[]): Record<string, SQLOutputValue>[]; get(...params: any[]): Record<string, SQLOutputValue> | undefined; run(...params: any[]): StatementResultingChanges; columns(): StatementColumnMetadata[]; }; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; findAuthUserByProviderEmail?: (provider: any, email: any) => Record<string, SQLOutputValue> | null; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }) {
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_log_events (" +
       "id TEXT PRIMARY KEY, " +
@@ -2769,7 +2857,7 @@ function createLogIndexTables(sqlite) {
   );
 }
 
-function insertLogIndexEvent(sqlite, event) {
+function insertLogIndexEvent(sqlite: { engine?: string; exec?: (sql: any) => void; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; findAuthUserByProviderEmail?: (provider: any, email: any) => Record<string, SQLOutputValue> | null; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }, event: { timestamp: any; category: any; event: any; level: any; message: any; capsule: { name: any; id: any; }; release: { id: any; }; request: { id: any; }; correlation: { id: any; }; }) {
   sqlite
     .prepare(
       "INSERT INTO sporades_log_events " +
@@ -2792,7 +2880,7 @@ function insertLogIndexEvent(sqlite, event) {
     );
 }
 
-function pruneLogIndex(sqlite, limit) {
+function pruneLogIndex(sqlite: { engine?: string; exec?: (sql: any) => void; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; findAuthUserByProviderEmail?: (provider: any, email: any) => Record<string, SQLOutputValue> | null; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }, limit: any) {
   sqlite
     .prepare(
       "DELETE FROM sporades_log_events WHERE id IN (" +
@@ -2802,20 +2890,20 @@ function pruneLogIndex(sqlite, limit) {
     .run(limit);
 }
 
-function readRecentLogEvents(sqlite, limit = 200) {
+function readRecentLogEvents(sqlite: { engine?: string; exec?: (sql: any) => void; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; findAuthUserByProviderEmail?: (provider: any, email: any) => Record<string, SQLOutputValue> | null; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }, limit = 200) {
   const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
   return sqlite
     .prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?")
     .all(safeLimit)
     .reverse()
-    .map((row) => JSON.parse(row.payload));
+    .map((row: { payload: string; }) => JSON.parse(row.payload));
 }
 
-function readJsonlLogEvents(logPath, limit = 200) {
+function readJsonlLogEvents(logPath: PathOrFileDescriptor, limit = 200) {
   let raw = "";
   try {
     raw = readFileSync(logPath, "utf8");
-  } catch (error) {
+  } catch (error: any) {
     if (error?.code !== "ENOENT") {
       throw error;
     }
@@ -2828,7 +2916,7 @@ function readJsonlLogEvents(logPath, limit = 200) {
     .map((line) => JSON.parse(line));
 }
 
-function schemaFromCapsuleDefinition(definition) {
+function schemaFromCapsuleDefinition(definition: any) {
   const schema = definition?.schema ?? {};
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
     throw commandError(
@@ -2842,7 +2930,7 @@ function schemaFromCapsuleDefinition(definition) {
   };
 }
 
-function schemaTableFromCapsuleTable(name, table) {
+function schemaTableFromCapsuleTable(name: string, table: any) {
   if (!table || table.kind !== "table" || !table.fields || typeof table.fields !== "object" || Array.isArray(table.fields)) {
     throw commandError(
       `Invalid Capsule table: ${name}`,
@@ -2857,12 +2945,12 @@ function schemaTableFromCapsuleTable(name, table) {
   };
 }
 
-function normalizeTableAcl(tableName, aclRules) {
+function normalizeTableAcl(tableName: any, aclRules: LooseRecord | undefined) {
   const supportedOperations = new Set(["read", "write", "insert", "update", "delete"]);
   if (aclRules === undefined) {
     return {
       allowByDefault: true,
-      resolve(operation) {
+      resolve(operation: any) {
         return resolveEffectiveAclRule(this, operation);
       },
     };
@@ -2874,7 +2962,7 @@ function normalizeTableAcl(tableName, aclRules) {
     );
   }
 
-  const normalized = {
+  const normalized: LooseRecord = {
     allowByDefault: true,
   };
   for (const [operation, rule] of Object.entries(aclRules)) {
@@ -2892,13 +2980,13 @@ function normalizeTableAcl(tableName, aclRules) {
     }
     normalized[operation] = rule;
   }
-  normalized.resolve = function resolve(operation) {
+  normalized.resolve = function resolve(operation: any) {
     return resolveEffectiveAclRule(this, operation);
   };
   return normalized;
 }
 
-function resolveEffectiveAclRule(aclRules, operation) {
+function resolveEffectiveAclRule(aclRules: { [x: string]: any; allowByDefault?: boolean; resolve?: (operation: any) => any; write?: any; }, operation: string) {
   if (!aclRules || typeof aclRules !== "object") {
     return undefined;
   }
@@ -2908,7 +2996,7 @@ function resolveEffectiveAclRule(aclRules, operation) {
   return aclRules[operation];
 }
 
-function schemaFieldFromCapsuleField(name, field) {
+function schemaFieldFromCapsuleField(name: string, field: any) {
   if (!field || typeof field !== "object" || typeof field.kind !== "string") {
     throw commandError(
       `Invalid Capsule field: ${name}`,
@@ -2944,7 +3032,7 @@ function schemaFieldFromCapsuleField(name, field) {
   };
 }
 
-function sqliteTypeForFieldKind(kind) {
+function sqliteTypeForFieldKind(kind: string) {
   if (kind === "Boolean") {
     return "INTEGER";
   }
@@ -2954,7 +3042,7 @@ function sqliteTypeForFieldKind(kind) {
   return "TEXT";
 }
 
-function migrateAppSchema(sqlite, schema) {
+function migrateAppSchema(sqlite: { engine?: string; exec?: (sql: any) => void; prepare?: (sql: any) => { all(...params: any[]): Record<string, SQLOutputValue>[]; get(...params: any[]): Record<string, SQLOutputValue> | undefined; run(...params: any[]): StatementResultingChanges; columns(): StatementColumnMetadata[]; }; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata: any; writeSchemaMetadata: any; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; findAuthUserByProviderEmail?: (provider: any, email: any) => Record<string, SQLOutputValue> | null; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable: any; migrateExistingAppTable: any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }, schema: { tables: any[]; }) {
   const nextSchema = normalizeSchema(schema);
   const nextSchemaJson = JSON.stringify(nextSchema);
   const nextSchemaHash = hashSchema(nextSchemaJson);
@@ -2978,9 +3066,9 @@ function migrateAppSchema(sqlite, schema) {
     }
   }
 
-  const existingTables = new Map((existingSchema?.tables ?? []).map((table) => [table.name, table]));
+  const existingTables = new Map((existingSchema?.tables ?? []).map((table: { name: any; }) => [table.name, table]));
   return chainMaybePromise([
-    ...schema.tables.map((table) => () => {
+    ...schema.tables.map((table: { name: unknown; }) => () => {
       const existingTable = existingTables.get(table.name);
       return schemaChanged && existingTable ? sqlite.migrateExistingAppTable(existingTable, table) : sqlite.createAppTable(table);
     }),
@@ -2993,7 +3081,7 @@ function migrateAppSchema(sqlite, schema) {
   ]);
 }
 
-async function migrateLibsqlAppSchema(sqlite, schema) {
+async function migrateLibsqlAppSchema(sqlite: { engine?: string; exec?: ((sql: any) => Promise<undefined>) | ((sql: any) => Promise<undefined>); prepare?: ((sql: any) => { all(...params: any[]): Promise<any>; get(...params: any[]): Promise<any>; run(...params: any[]): Promise<{ changes: number; lastInsertRowid: bigint | undefined; }>; columns(): Promise<any>; }) | ((sql: any) => { all(...params: any[]): Promise<any>; get(...params: any[]): Promise<any>; run(...params: any[]): Promise<{ changes: number; lastInsertRowid: undefined; }>; columns(): Promise<{ name: any; }[]>; }); writeSystemMetadata?: ((key: any, value: any) => StatementResultingChanges) | ((keyOrMetadata: any, maybeValue: any) => Promise<void | { changes: number; lastInsertRowid: undefined; }>); writeSchemaMetadata: any; ensureAuthStorage?: ((authConfig?: null) => Promise<void>) | ((authConfig?: null) => Promise<void>); ensureLogStorage?: (() => Promise<void>) | (() => Promise<void>); ensureFileStorage?: (() => Promise<void>) | (() => Promise<void>); insertLogIndexEvent?: ((event: any) => Promise<void>) | ((event: any) => Promise<void>); pruneLogIndex?: ((limit: any) => Promise<void>) | ((limit: any) => Promise<void>); readRecentLogEvents?: ((limit?: number) => Promise<any>) | ((limit?: number) => Promise<any>); migrateAppSchema?: ((schema: any) => Promise<void>) | ((schema: any) => Promise<void>); createAppTable: any; migrateExistingAppTable: any; listInspectableTables?: (() => Promise<any>) | (() => Promise<any>); dumpInspectableDatabase?: (() => Promise<{ name: any; columns: any; rows: any; }[]>) | (() => Promise<{ name: any; columns: any; rows: any; }[]>); runReadOnlyInspectionQuery?: ((sql: any) => Promise<{ ok: boolean; data: { columns: any; rows: any; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }>) | ((sql: any) => Promise<{ ok: boolean; data: { columns: any[]; rows: any; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }>); checkHealth?: (() => Promise<{ ok: boolean; }>) | (() => Promise<{ ok: boolean; }>); withTransaction?: ((fn: any) => Promise<any>) | ((fn: any) => Promise<any>); close?: (() => Promise<void>) | (() => Promise<void>); ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; readSchemaMetadata: any; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; findAuthUserByProviderEmail?: (provider: any, email: any) => Record<string, SQLOutputValue> | null; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: ((state: any) => Record<string, SQLOutputValue> | null) | ((state: any) => Promise<any>); emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; referenceExists?: (field: any, value: any) => boolean; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; }, schema: { tables: any; }) {
   const nextSchema = normalizeSchema(schema);
   const nextSchemaJson = JSON.stringify(nextSchema);
   const nextSchemaHash = hashSchema(nextSchemaJson);
@@ -3017,7 +3105,7 @@ async function migrateLibsqlAppSchema(sqlite, schema) {
     }
   }
 
-  const existingTables = new Map((existingSchema?.tables ?? []).map((table) => [table.name, table]));
+  const existingTables = new Map((existingSchema?.tables ?? []).map((table: { name: any; }) => [table.name, table]));
   for (const table of schema.tables) {
     const existingTable = existingTables.get(table.name);
     if (schemaChanged && existingTable) {
@@ -3034,12 +3122,12 @@ async function migrateLibsqlAppSchema(sqlite, schema) {
   });
 }
 
-function normalizeSchema(schema) {
+function normalizeSchema(schema: { tables: any[]; }) {
   return {
     tables: schema.tables
-      .map((table) => ({
+      .map((table: { name: any; fields: any[]; }) => ({
         name: table.name,
-        fields: table.fields.map((field) => ({
+        fields: table.fields.map((field: { name: any; kind: any; sqliteType: any; targetTable: any; defaultValue: any; }) => ({
           name: field.name,
           kind: field.kind,
           sqliteType: field.sqliteType,
@@ -3047,16 +3135,16 @@ function normalizeSchema(schema) {
           defaultValue: field.defaultValue,
         })),
       }))
-      .sort((left, right) => left.name.localeCompare(right.name)),
+      .sort((left: { name: string; }, right: { name: any; }) => left.name.localeCompare(right.name)),
   };
 }
 
-function hashSchema(schemaJson) {
+function hashSchema(schemaJson: BinaryLike) {
   return createHash("sha256").update(schemaJson).digest("hex");
 }
 
-function assertValidReferenceTargets(schema) {
-  const tableNames = new Set(schema.tables.map((table) => table.name));
+function assertValidReferenceTargets(schema: LooseRecord) {
+  const tableNames = new Set(schema.tables.map((table: { name: any; }) => table.name));
   for (const table of schema.tables) {
     for (const field of table.fields) {
       if (field.kind === "Reference" && !tableNames.has(field.targetTable)) {
@@ -3069,8 +3157,8 @@ function assertValidReferenceTargets(schema) {
   }
 }
 
-function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
-  const nextTables = new Map(nextSchema.tables.map((table) => [table.name, table]));
+function assertAdditiveSchemaMigration(existingSchema: LooseRecord, nextSchema: LooseRecord) {
+  const nextTables = new Map<any, any>(nextSchema.tables.map((table: { name: any; }) => [table.name, table]));
 
   for (const existingTable of existingSchema.tables ?? []) {
     const nextTable = nextTables.get(existingTable.name);
@@ -3081,7 +3169,7 @@ function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
       );
     }
 
-    const nextFields = new Map(nextTable.fields.map((field) => [field.name, field]));
+    const nextFields = new Map(nextTable.fields.map((field: { name: any; }) => [field.name, field]));
     for (const existingField of existingTable.fields ?? []) {
       const nextField = nextFields.get(existingField.name);
       if (!nextField || JSON.stringify(existingField) !== JSON.stringify(nextField)) {
@@ -3094,14 +3182,14 @@ function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
   }
 }
 
-function migrateExistingAppTable(sqlite, existingTable, nextTable) {
+function migrateExistingAppTable(sqlite: LooseRecord, existingTable: any, nextTable: LooseRecord) {
   const tempTableName = `__sporades_migrating_${nextTable.name}`;
-  const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
+  const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field: { name: any; }) => field.name)];
   return chainMaybePromise([
     ...addedFieldsForTable(existingTable, nextTable)
-      .filter((field) => field.kind === "Reference" && field.defaultValue !== undefined && field.defaultValue !== null)
-      .map((field) => () =>
-        thenIfPromise(sqlite.referenceExists(field, field.defaultValue), (exists) => {
+      .filter((field: { kind: string; defaultValue: null | undefined; }) => field.kind === "Reference" && field.defaultValue !== undefined && field.defaultValue !== null)
+      .map((field: { defaultValue: any; }) => () =>
+        thenIfPromise(sqlite.referenceExists(field, field.defaultValue), (exists: any) => {
           if (!exists) {
             throw invalidReferenceError(field);
           }
@@ -3120,7 +3208,7 @@ function migrateExistingAppTable(sqlite, existingTable, nextTable) {
   ]);
 }
 
-async function migrateExistingLibsqlAppTable(sqlite, existingTable, nextTable) {
+async function migrateExistingLibsqlAppTable(sqlite: LooseRecord, existingTable: any, nextTable: LooseRecord) {
   for (const field of addedFieldsForTable(existingTable, nextTable)) {
     if (
       field.kind === "Reference" &&
@@ -3133,8 +3221,8 @@ async function migrateExistingLibsqlAppTable(sqlite, existingTable, nextTable) {
   }
 
   const tempTableName = `__sporades_migrating_${nextTable.name}`;
-  const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
-  await sqlite.withTransaction(async (transaction) => {
+  const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field: { name: any; }) => field.name)];
+  await sqlite.withTransaction(async (transaction: { exec: (arg0: string) => any; createAppTable: (arg0: any, arg1: string) => any; }) => {
     await transaction.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`);
     await transaction.createAppTable(nextTable, tempTableName);
     await transaction.exec(
@@ -3147,23 +3235,23 @@ async function migrateExistingLibsqlAppTable(sqlite, existingTable, nextTable) {
   });
 }
 
-function columnSelectExpressionForMigration(existingTable, nextTable, columnName) {
+function columnSelectExpressionForMigration(existingTable: LooseRecord, nextTable: LooseRecord, columnName: string) {
   if (["id", "createdAt", "updatedAt"].includes(columnName)) {
     return quoteIdentifier(columnName);
   }
-  if ((existingTable.fields ?? []).some((field) => field.name === columnName)) {
+  if ((existingTable.fields ?? []).some((field: { name: any; }) => field.name === columnName)) {
     return quoteIdentifier(columnName);
   }
-  const field = nextTable.fields.find((candidate) => candidate.name === columnName);
+  const field = nextTable.fields.find((candidate: { name: any; }) => candidate.name === columnName);
   return field?.defaultValue === undefined ? "NULL" : toSqlLiteral(field.defaultValue, field);
 }
 
-function addedFieldsForTable(existingTable, nextTable) {
-  const existingFields = new Set((existingTable.fields ?? []).map((field) => field.name));
-  return (nextTable.fields ?? []).filter((field) => !existingFields.has(field.name));
+function addedFieldsForTable(existingTable: LooseRecord, nextTable: LooseRecord) {
+  const existingFields = new Set((existingTable.fields ?? []).map((field: { name: any; }) => field.name));
+  return (nextTable.fields ?? []).filter((field: { name: unknown; }) => !existingFields.has(field.name));
 }
 
-function createAppTable(sqlite, table, tableName = table.name) {
+function createAppTable(sqlite: LooseRecord, table: LooseRecord, tableName = table.name) {
   return sqlite.exec(
     `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` +
       appTableColumnDefinitions(table).join(", ") +
@@ -3171,31 +3259,31 @@ function createAppTable(sqlite, table, tableName = table.name) {
   );
 }
 
-function appTableColumnDefinitions(table) {
+function appTableColumnDefinitions(table: LooseRecord) {
   return [
     "id TEXT PRIMARY KEY",
     "createdAt TEXT NOT NULL",
     "updatedAt TEXT NOT NULL",
-    ...table.fields.map((field) => appFieldColumnDefinition(field)),
+    ...table.fields.map((field: any) => appFieldColumnDefinition(field)),
   ];
 }
 
-function appFieldColumnDefinition(field) {
+function appFieldColumnDefinition(field: LooseRecord) {
   const defaultSql = fieldColumnDefaultSql(field);
   const notNullSql = field.defaultValue !== undefined && !fieldDefaultIsSqlNull(field) ? " NOT NULL" : "";
   return `${quoteIdentifier(field.name)} ${field.sqliteType}${notNullSql}${defaultSql}`;
 }
 
-function fieldDefaultIsSqlNull(field) {
+function fieldDefaultIsSqlNull(field: LooseRecord) {
   return field.defaultValue === null && field.kind !== "Json";
 }
 
-function fieldColumnDefaultSql(field) {
+function fieldColumnDefaultSql(field: LooseRecord) {
   return field.defaultValue === undefined ? "" : ` DEFAULT ${toSqlLiteral(field.defaultValue, field)}`;
 }
 
-function commandError(message, hint, code = null) {
-  const error = new Error(message);
+function commandError(message: string | undefined, hint: string, code: string | null = null) {
+  const error: HelperError = new Error(message);
   error.hint = hint;
   if (code) {
     error.code = code;
@@ -3203,7 +3291,7 @@ function commandError(message, hint, code = null) {
   return error;
 }
 
-function extractSchema(serverSource) {
+function extractSchema(serverSource: string) {
   const tables = [];
   const tablePattern = /([A-Za-z_][A-Za-z0-9_]*)\s*:\s*table\s*\(/g;
   let match;
@@ -3225,7 +3313,7 @@ function extractSchema(serverSource) {
   return { tables };
 }
 
-function findMatchingParen(source, openIndex) {
+function findMatchingParen(source: string, openIndex: number) {
   let depth = 0;
   let quote = null;
   let escaped = false;
@@ -3266,7 +3354,7 @@ function findMatchingParen(source, openIndex) {
   return -1;
 }
 
-function extractEndpoints(serverSource) {
+function extractEndpoints(serverSource: string) {
   const endpoints = [];
   const endpointPattern = /([A-Za-z_][A-Za-z0-9_]*)\s*:\s*endpoint\s*\(/g;
   let match;
@@ -3298,7 +3386,7 @@ function extractEndpoints(serverSource) {
   return endpoints;
 }
 
-function extractQueryHandlers(serverSource) {
+function extractQueryHandlers(serverSource: any) {
   const queriesSource = extractObjectPropertySource(serverSource, "queries");
   if (!queriesSource) {
     return [];
@@ -3336,13 +3424,13 @@ function extractQueryHandlers(serverSource) {
   return handlers;
 }
 
-function extractQueryHandlersFromCapsule(capsuleDefinition) {
+function extractQueryHandlersFromCapsule(capsuleDefinition: any) {
   if (!capsuleDefinition?.queries || typeof capsuleDefinition.queries !== "object") {
     return null;
   }
 
-  const handlers = [];
-  for (const [name, queryDefinition] of Object.entries(capsuleDefinition.queries)) {
+  const handlers: any[] = [];
+  for (const [name, queryDefinition] of Object.entries(capsuleDefinition.queries) as [string, any][]) {
     if (queryDefinition?.kind !== "query" || typeof queryDefinition.handler !== "function") {
       continue;
     }
@@ -3354,7 +3442,7 @@ function extractQueryHandlersFromCapsule(capsuleDefinition) {
   return handlers;
 }
 
-function extractMutationHandlers(serverSource, options = {}) {
+function extractMutationHandlers(serverSource: any, options: LooseRecord = {}) {
   const mutationsSource = extractObjectPropertySource(serverSource, "mutations");
   if (!mutationsSource) {
     return [];
@@ -3395,16 +3483,16 @@ function extractMutationHandlers(serverSource, options = {}) {
   return handlers;
 }
 
-function handlersFromCapsuleDefinition(definitions, kind) {
+function handlersFromCapsuleDefinition(definitions: any, kind: string) {
   return Object.entries(definitions ?? {})
-    .filter(([, definition]) => definition?.kind === kind && typeof definition.handler === "function")
-    .map(([name, definition]) => ({
+    .filter(([, definition]: [string, any]) => definition?.kind === kind && typeof definition.handler === "function")
+    .map(([name, definition]: [string, any]) => ({
       name,
       handler: definition.handler,
     }));
 }
 
-function mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition) {
+function mutationHandlersFromCapsuleDefinition(serverSource: any, capsuleDefinition: any) {
   const sourceHandlers = new Map(
     extractMutationHandlers(serverSource, { includeGeneratedNames: true }).map((handler) => [handler.name, handler]),
   );
@@ -3413,7 +3501,7 @@ function mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition) 
   );
 }
 
-function shouldUseBundledMutationHandler(name, sourceHandler) {
+function shouldUseBundledMutationHandler(name: string, sourceHandler: { name: any; handlerSource: any; } | undefined) {
   if (!name.startsWith("add") && !name.startsWith("update")) {
     return true;
   }
@@ -3423,19 +3511,19 @@ function shouldUseBundledMutationHandler(name, sourceHandler) {
   return !isGeneratedScaffoldMutationHandler(sourceHandler.handlerSource);
 }
 
-function isInlineHandlerSource(handlerSource) {
+function isInlineHandlerSource(handlerSource: string) {
   const source = handlerSource.trim();
   return source.startsWith("(") || source.startsWith("function") || source.startsWith("async ") || source.includes("=>");
 }
 
-function isGeneratedScaffoldMutationHandler(handlerSource) {
+function isGeneratedScaffoldMutationHandler(handlerSource: string) {
   const normalized = handlerSource.replace(/\s+/g, "");
   return /^\(ctx,([A-Za-z_$][A-Za-z0-9_$]*)(?::[^,)]+)?\)=>\{ctx\.db\.[A-Za-z_$][A-Za-z0-9_$]*\.insert\(\{\1,ownerId:ctx\.auth\.userId\}\);\}$/.test(
     normalized,
   );
 }
 
-function extractMessageHandlers(serverSource) {
+function extractMessageHandlers(serverSource: any) {
   const messagesSource = extractObjectPropertySource(serverSource, "messages");
   if (!messagesSource) {
     return [];
@@ -3473,7 +3561,7 @@ function extractMessageHandlers(serverSource) {
   return handlers;
 }
 
-function extractContextMiddleware(serverSource) {
+function extractContextMiddleware(serverSource: any) {
   const middlewareSource = extractObjectPropertySource(serverSource, "middleware");
   if (!middlewareSource) {
     return [];
@@ -3481,7 +3569,7 @@ function extractContextMiddleware(serverSource) {
   return extractHookList(`middleware: ${middlewareSource}`, "middleware");
 }
 
-function extractMutationHooks(serverSource) {
+function extractMutationHooks(serverSource: any) {
   const hooksSource = extractObjectPropertySource(serverSource, "hooks");
   if (!hooksSource) {
     return {
@@ -3496,7 +3584,7 @@ function extractMutationHooks(serverSource) {
   };
 }
 
-function extractHookList(hooksSource, propertyName) {
+function extractHookList(hooksSource: string, propertyName: string) {
   const valueSource = extractObjectPropertySource(hooksSource, propertyName);
   if (!valueSource) {
     return [];
@@ -3512,7 +3600,7 @@ function extractHookList(hooksSource, propertyName) {
   return [trimmed.replace(/,\s*$/, "")];
 }
 
-function extractObjectPropertySource(source, propertyName) {
+function extractObjectPropertySource(source: string, propertyName: string) {
   const pattern = new RegExp(`\\b${propertyName}\\s*:`, "g");
   const match = pattern.exec(source);
   if (!match) {
@@ -3575,7 +3663,7 @@ function extractObjectPropertySource(source, propertyName) {
   return source.slice(index);
 }
 
-function findMatchingDelimiter(source, openIndex, openChar, closeChar) {
+function findMatchingDelimiter(source: string, openIndex: number, openChar: string, closeChar: string) {
   let depth = 0;
   let quote = null;
   let escaped = false;
@@ -3614,7 +3702,7 @@ function findMatchingDelimiter(source, openIndex, openChar, closeChar) {
   return -1;
 }
 
-function splitTopLevelList(source) {
+function splitTopLevelList(source: string): string[] {
   const items = [];
   let start = 0;
   let depth = 0;
@@ -3659,7 +3747,7 @@ function splitTopLevelList(source) {
   return items;
 }
 
-function extractFields(tableSource) {
+function extractFields(tableSource: any) {
   return splitTopLevelList(tableSource)
     .map((entry) => {
       const property = entry.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*:\s*/);
@@ -3675,7 +3763,7 @@ function extractFields(tableSource) {
         return null;
       }
 
-      const builderSource = referenceMatch?.[0] ?? scalarMatch[0];
+      const builderSource = referenceMatch?.[0] ?? scalarMatch?.[0] ?? "";
       return {
         name: property[1],
         kind,
@@ -3687,7 +3775,7 @@ function extractFields(tableSource) {
     .filter(Boolean);
 }
 
-function extractFieldDefaultSource(fieldSource, builderEndIndex) {
+function extractFieldDefaultSource(fieldSource: string, builderEndIndex: any) {
   const rest = fieldSource.slice(builderEndIndex).trim();
   if (!rest.startsWith(".default")) {
     return undefined;
@@ -3704,10 +3792,10 @@ function extractFieldDefaultSource(fieldSource, builderEndIndex) {
   return rest.slice(openIndex + 1, closeIndex).trim();
 }
 
-export async function routeEndpoint(database, request, response) {
-  const requestUrl = new URL(request.url, "http://127.0.0.1");
+export async function routeEndpoint(database: { endpoints: any[]; }, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }) {
+  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
   const endpoint = database.endpoints.find(
-    (candidate) => candidate.method === request.method && candidate.path === requestUrl.pathname,
+    (candidate: { method: any; path: string; }) => candidate.method === request.method && candidate.path === requestUrl.pathname,
   );
   if (!endpoint) {
     return false;
@@ -3715,14 +3803,14 @@ export async function routeEndpoint(database, request, response) {
 
   try {
     writeEndpointResult(response, await runEndpoint(database, endpoint, requestUrl, request));
-  } catch (error) {
+  } catch (error: any) {
     writeEndpointError(response, error);
   }
   return true;
 }
 
-export async function handleFileHttpRoute(database, request, response, websocketHub = null) {
-  const requestUrl = new URL(request.url, "http://127.0.0.1");
+export async function handleFileHttpRoute(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }, websocketHub: any = null) {
+  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
   const uploadMatch = requestUrl.pathname.match(/^\/__sporades\/uploads\/([^/]+)$/);
   if (uploadMatch && request.method === "PUT") {
     const result = await completePendingFileUpload(database, uploadMatch[1], request, websocketHub);
@@ -3733,7 +3821,7 @@ export async function handleFileHttpRoute(database, request, response, websocket
   const privateMatch = requestUrl.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
   if (privateMatch && request.method === "GET") {
     const token = request.headers["x-sporades-session-token"];
-    const session = await resolveAnonymousSession(database, token);
+    const session = await resolveAnonymousSession(database, Array.isArray(token) ? token[0] : (token ?? null));
     const row = await fileRowForOwner(database, privateMatch[1], session.auth.userId);
     if (!row || row.version !== requestUrl.searchParams.get("v")) {
       writeNotFound(response);
@@ -3764,7 +3852,7 @@ export async function handleFileHttpRoute(database, request, response, websocket
   return false;
 }
 
-export async function routeRuntimeHealth(database, request, response) {
+export async function routeRuntimeHealth(database: any, request: { url: string | URL; method: string; headers: { [x: string]: any; }; }, response: any) {
   const requestUrl = new URL(request.url, "http://127.0.0.1");
   if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/health/runtime") {
     return false;
@@ -3781,7 +3869,7 @@ export async function routeRuntimeHealth(database, request, response) {
   return true;
 }
 
-async function createRuntimeHealthResult(database) {
+async function createRuntimeHealthResult(database: any) {
   const checks = {
     sqlite: await checkRuntimeSqlite(database),
     fileStorage: await checkRuntimeFileStorage(database),
@@ -3802,15 +3890,15 @@ async function createRuntimeHealthResult(database) {
   };
 }
 
-export async function checkRuntimeSqlite(database) {
+export async function checkRuntimeSqlite(database: LooseRecord) {
   return await (database.adapter ?? database.sqlite).checkHealth();
 }
 
-export async function checkRuntimeFileStorage(database) {
+export async function checkRuntimeFileStorage(database: LooseRecord) {
   return await database.fileStorage.checkHealth();
 }
 
-function createFileStorageTables(sqlite) {
+function createFileStorageTables(sqlite: { engine?: string; exec: any; prepare?: (sql: any) => { all(...params: any[]): Record<string, SQLOutputValue>[]; get(...params: any[]): Record<string, SQLOutputValue> | undefined; run(...params: any[]): StatementResultingChanges; columns(): StatementColumnMetadata[]; }; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; findAuthUserByProviderEmail?: (provider: any, email: any) => Record<string, SQLOutputValue> | null; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }) {
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
       "id TEXT PRIMARY KEY, " +
@@ -3839,7 +3927,7 @@ function createFileStorageTables(sqlite) {
   );
   try {
     sqlite.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT");
-  } catch (error) {
+  } catch (error: any) {
     if (!isDuplicateColumnError(error)) throw error;
   }
   sqlite.exec(filePathBackfillSql());
@@ -3878,7 +3966,7 @@ function createFileStorageTables(sqlite) {
   );
 }
 
-async function readRequestBytes(request, maxBytes) {
+async function readRequestBytes(request: any, maxBytes: number) {
   const chunks = [];
   let total = 0;
   for await (const chunk of request) {
@@ -3894,17 +3982,17 @@ async function readRequestBytes(request, maxBytes) {
   return Buffer.concat(chunks);
 }
 
-function writeJsonHttpResponse(response, status, result) {
+function writeJsonHttpResponse(response: any, status: number, result: any) {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(`${JSON.stringify(result)}\n`);
 }
 
-function writeNotFound(response) {
+function writeNotFound(response: { writeHead: (arg0: number, arg1: { "content-type": string; }) => void; end: (arg0: string) => void; }) {
   response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
   response.end("Not found");
 }
 
-async function sendFileHttpResponse(database, response, row) {
+async function sendFileHttpResponse(database: LooseRecord, response: any, row: LooseRecord) {
   try {
     const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
     response.writeHead(200, {
@@ -3917,11 +4005,11 @@ async function sendFileHttpResponse(database, response, row) {
   }
 }
 
-function contentTypeForFile(type) {
+function contentTypeForFile(type: any) {
   return type || "application/octet-stream";
 }
 
-export async function createPendingFileUpload(database, auth, message) {
+export async function createPendingFileUpload(database: LooseRecord, auth: LooseRecord, message: LooseRecord) {
   const input = message.file ?? {};
   const size = Number(input.size ?? 0);
   if (!Number.isFinite(size) || size < 0) {
@@ -3944,7 +4032,7 @@ export async function createPendingFileUpload(database, auth, message) {
     const now = new Date().toISOString();
     const replacing = message.replace === true;
     const replaceReference = message.fileReference ?? message.fileId;
-    const resolvedReplacement = replacing ? await resolveLiveFileReference(database, auth.userId, replaceReference) : { ok: true, row: null };
+    const resolvedReplacement: any = replacing ? await resolveLiveFileReference(database, auth.userId, replaceReference) : { ok: true, row: null };
     if (!resolvedReplacement.ok) {
       return resolvedReplacement;
     }
@@ -3961,13 +4049,13 @@ export async function createPendingFileUpload(database, auth, message) {
         replacing && existingByReference && (input.path === undefined || input.path === null)
           ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path }
           : await resolveFileWriteTarget(database, auth.userId, input, now);
-    } catch (error) {
+    } catch (error: any) {
       return {
         ok: false,
         error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path."),
       };
     }
-    return await database.sqlite.withTransaction(async (sqlite) => {
+    return await database.sqlite.withTransaction(async (sqlite: { selectPendingFileUploadByPath: (arg0: any) => any; deleteFileUploadsForPath: (arg0: any) => any; insertFileUpload: (arg0: { id: `${string}-${string}-${string}-${string}-${string}`; fileId: any; ownerId: any; bucketId: any; bucketName: any; path: any; name: any; type: string; version: `${string}-${string}-${string}-${string}-${string}`; expectedSize: number; createdAt: string; }) => any; }) => {
       const transactionDatabase = { ...database, sqlite, adapter: sqlite };
       const existingByPath = target.path ? await singleActiveFileRowByPath(transactionDatabase, target.path) : null;
       if (existingByPath?.ambiguous) {
@@ -4020,7 +4108,7 @@ export async function createPendingFileUpload(database, auth, message) {
             headers: {},
             file: fileMetadataFromUpload(current),
           },
-          error: null,
+          error: null as any,
         };
       }
 
@@ -4046,7 +4134,7 @@ export async function createPendingFileUpload(database, auth, message) {
   });
 }
 
-export async function completePendingFileUpload(database, uploadId, request, websocketHub = null) {
+export async function completePendingFileUpload(database: LooseRecord, uploadId: string, request: any, websocketHub: any = null) {
   const upload = await database.sqlite.selectFileUpload(uploadId);
   if (!upload) {
     return {
@@ -4091,8 +4179,8 @@ export async function completePendingFileUpload(database, uploadId, request, web
       type: "file.upload.complete",
       file,
     });
-    return { ok: true, data: { file }, error: null };
-  } catch (error) {
+    return { ok: true, data: { file }, error: null as any };
+  } catch (error: any) {
     if (wroteFileVersion) {
       await removeFileVersionBestEffort(database, upload.fileId, upload.version);
     }
@@ -4115,8 +4203,8 @@ export async function completePendingFileUpload(database, uploadId, request, web
   }
 }
 
-export async function getPrivateFileUrl(database, auth, fileReference) {
-  const resolved = await resolveLiveFileReference(database, auth.userId, fileReference);
+export async function getPrivateFileUrl(database: any, auth: LooseRecord, fileReference: any) {
+  const resolved: any = await resolveLiveFileReference(database, auth.userId, fileReference);
   if (!resolved.ok) {
     return resolved;
   }
@@ -4133,12 +4221,12 @@ export async function getPrivateFileUrl(database, auth, fileReference) {
       url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
       file: fileMetadataFromRow(row),
     },
-    error: null,
+    error: null as any,
   };
 }
 
-export async function createPublicFileUrl(database, auth, fileReference, options = {}) {
-  const resolved = await resolveLiveFileReference(database, auth.userId, fileReference);
+export async function createPublicFileUrl(database: LooseRecord, auth: LooseRecord, fileReference: any, options: LooseRecord = {}) {
+  const resolved: any = await resolveLiveFileReference(database, auth.userId, fileReference);
   if (!resolved.ok) {
     return resolved;
   }
@@ -4174,11 +4262,11 @@ export async function createPublicFileUrl(database, auth, fileReference, options
         revokedAt: null,
       },
     },
-    error: null,
+    error: null as any,
   };
 }
 
-async function revokePublicFileUrl(database, auth, publicUrlId) {
+async function revokePublicFileUrl(database: LooseRecord, auth: LooseRecord, publicUrlId: any) {
   const now = new Date().toISOString();
   const result = await database.sqlite.revokePublicFileUrl(publicUrlId, auth.userId, now);
   if (result.changes === 0) {
@@ -4190,12 +4278,12 @@ async function revokePublicFileUrl(database, auth, publicUrlId) {
   return {
     ok: true,
     data: { publicUrl: { id: publicUrlId, revokedAt: now } },
-    error: null,
+    error: null as any,
   };
 }
 
-export async function deletePrivateFile(database, auth, fileReference) {
-  const resolved = await resolveLiveFileReference(database, auth.userId, fileReference);
+export async function deletePrivateFile(database: LooseRecord, auth: LooseRecord, fileReference: any) {
+  const resolved: any = await resolveLiveFileReference(database, auth.userId, fileReference);
   if (!resolved.ok) {
     return resolved;
   }
@@ -4219,7 +4307,7 @@ export async function deletePrivateFile(database, auth, fileReference) {
   };
 }
 
-function validatePublicUrlExpiry(options) {
+function validatePublicUrlExpiry(options: LooseRecord) {
   const choices = [options.ttlSeconds !== undefined, options.expires !== undefined, options.noExpiry === true].filter(Boolean);
   if (choices.length !== 1) {
     return {
@@ -4253,16 +4341,16 @@ function validatePublicUrlExpiry(options) {
   return { ok: true, expiresAt: expiresAt.toISOString() };
 }
 
-async function fileRowForOwner(database, fileId, ownerId) {
+async function fileRowForOwner(database: LooseRecord, fileId: string, ownerId: any) {
   const reference = String(fileId ?? "");
   if (isAbsoluteFilePath(reference)) {
-    const resolved = await resolveLiveFileReference(database, ownerId, reference);
+    const resolved: any = await resolveLiveFileReference(database, ownerId, reference);
     return resolved.ok ? resolved.row : null;
   }
   return await database.sqlite.fileRowForOwner(reference, ownerId);
 }
 
-function fileMetadataFromRow(row) {
+function fileMetadataFromRow(row: LooseRecord) {
   return {
     id: row.id,
     bucket: row.bucketName,
@@ -4274,7 +4362,7 @@ function fileMetadataFromRow(row) {
   };
 }
 
-function fileMetadataFromUpload(upload) {
+function fileMetadataFromUpload(upload: LooseRecord) {
   return {
     id: upload.fileId,
     bucket: upload.bucketName,
@@ -4286,12 +4374,12 @@ function fileMetadataFromUpload(upload) {
   };
 }
 
-async function withFileUploadPathLock(path, fn) {
-  const fileUploadPathLocks = (globalThis.__sporadesFileUploadPathLocks ??= new Map());
+async function withFileUploadPathLock(path: string, fn: () => any) {
+  const fileUploadPathLocks = ((globalThis as any).__sporadesFileUploadPathLocks ??= new Map());
   const key = String(path);
   const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
-  let release;
-  const current = new Promise((resolve) => {
+  let release: (() => void) | undefined;
+  const current = new Promise<void>((resolve) => {
     release = resolve;
   });
   const next = previous.then(() => current, () => current);
@@ -4300,14 +4388,14 @@ async function withFileUploadPathLock(path, fn) {
     await previous.catch(() => {});
     return await fn();
   } finally {
-    release();
+    release?.();
     if (fileUploadPathLocks.get(key) === next) {
       fileUploadPathLocks.delete(key);
     }
   }
 }
 
-async function resolveFileWriteTarget(database, ownerId, input, now) {
+async function resolveFileWriteTarget(database: LooseRecord, ownerId: any, input: LooseRecord, now: string) {
   const explicitPath = input.path === undefined || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
   const path = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
   const firstSegment = path.split("/").filter(Boolean)[0] ?? "default";
@@ -4316,14 +4404,14 @@ async function resolveFileWriteTarget(database, ownerId, input, now) {
   return { bucket, path };
 }
 
-async function ensureFileBucket(database, ownerId, name, now) {
+async function ensureFileBucket(database: LooseRecord, ownerId: any, name: string, now: any) {
   const existing = await database.sqlite.findFileBucket(ownerId, name);
   if (existing) return existing;
   const bucket = { id: randomUUID(), ownerId, name, createdAt: now };
   try {
     await database.sqlite.createFileBucket(bucket);
     return bucket;
-  } catch (error) {
+  } catch (error: any) {
     if (!isUniqueConstraintError(error)) throw error;
     const raced = await database.sqlite.findFileBucket(ownerId, name);
     if (raced) return raced;
@@ -4331,7 +4419,7 @@ async function ensureFileBucket(database, ownerId, name, now) {
   }
 }
 
-function normalizeAbsoluteFilePath(value) {
+function normalizeAbsoluteFilePath(value: string) {
   const raw = String(value ?? "").trim();
   if (!raw.startsWith("/")) {
     throw structuredFileException("Invalid File path.", "Pass an absolute Capsule-scoped File path that starts with '/'.");
@@ -4343,18 +4431,18 @@ function normalizeAbsoluteFilePath(value) {
   return `/${segments.join("/")}`;
 }
 
-function normalizeFileName(name, filePath) {
+function normalizeFileName(name: any, filePath: string | null) {
   const candidate = String(name ?? "").trim();
   if (candidate) return candidate;
   const pathName = filePath?.split("/").filter(Boolean).at(-1);
   return pathName || "upload";
 }
 
-function isAbsoluteFilePath(value) {
+function isAbsoluteFilePath(value: string) {
   return typeof value === "string" && value.startsWith("/");
 }
 
-async function resolveLiveFileReference(database, ownerId, reference) {
+async function resolveLiveFileReference(database: LooseRecord, ownerId: any, reference: string) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
     let path;
@@ -4372,21 +4460,21 @@ async function resolveLiveFileReference(database, ownerId, reference) {
   return { ok: true, row: await database.sqlite.fileRowForOwner(value, ownerId) };
 }
 
-function singleLiveFileRowByPath(database, path) {
-  return thenIfPromise(database.sqlite.selectLiveFileByPath(path), (rows) => {
+function singleLiveFileRowByPath(database: LooseRecord, path: string) {
+  return thenIfPromise(database.sqlite.selectLiveFileByPath(path), (rows: any[]) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
 }
 
-function singleActiveFileRowByPath(database, path) {
-  return thenIfPromise(database.sqlite.selectActiveFileByPath(path), (rows) => {
+function singleActiveFileRowByPath(database: LooseRecord, path: any) {
+  return thenIfPromise(database.sqlite.selectActiveFileByPath(path), (rows: any[]) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
 }
 
-function ambiguousFileReferenceError(reference) {
+function ambiguousFileReferenceError(reference: string) {
   return {
     ok: false,
     error: createStructuredFileError(
@@ -4396,18 +4484,18 @@ function ambiguousFileReferenceError(reference) {
   };
 }
 
-function structuredFileException(message, hint) {
-  const error = new Error(message);
+function structuredFileException(message: string | undefined, hint: string) {
+  const error: HelperError = new Error(message);
   error.hint = hint;
   return error;
 }
 
-function isDuplicateColumnError(error) {
+function isDuplicateColumnError(error: any) {
   const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
   return /duplicate column|already exists/i.test(text);
 }
 
-function isUniqueConstraintError(error) {
+function isUniqueConstraintError(error: any) {
   const text = [error?.message, error?.stdout, error?.stderr, error].map((value) => String(value ?? "")).join("\n");
   return /unique constraint|duplicate key|constraint failed/i.test(text);
 }
@@ -4438,7 +4526,7 @@ function activeFilePathDedupeSql() {
   );
 }
 
-function ensureFileUploadTargetColumns(sqlite) {
+function ensureFileUploadTargetColumns(sqlite: LooseRecord) {
   const statements = [
     "ALTER TABLE sporades_file_uploads ADD COLUMN bucketId TEXT",
     "ALTER TABLE sporades_file_uploads ADD COLUMN bucketName TEXT",
@@ -4469,37 +4557,37 @@ function ensureFileUploadTargetColumns(sqlite) {
   return chain;
 }
 
-function runSchemaExecIgnoringDuplicateColumn(sqlite, sql) {
+function runSchemaExecIgnoringDuplicateColumn(sqlite: LooseRecord, sql: string) {
   try {
     const result = sqlite.exec(sql);
     if (isPromiseLike(result)) {
-      return result.catch((error) => {
+      return result.catch((error: any) => {
         if (!isDuplicateColumnError(error)) throw error;
       });
     }
     return result;
-  } catch (error) {
+  } catch (error: any) {
     if (!isDuplicateColumnError(error)) throw error;
     return undefined;
   }
 }
 
-function chainSchemaOperation(previous, operation) {
+function chainSchemaOperation(previous: any, operation: () => any) {
   if (isPromiseLike(previous)) {
     return previous.then(operation);
   }
   return operation();
 }
 
-function createStructuredFileError(message, hint) {
+function createStructuredFileError(message: string, hint: string) {
   return { message, hint };
 }
 
-async function removeFileVersionBestEffort(database, fileId, version) {
+async function removeFileVersionBestEffort(database: LooseRecord, fileId: any, version: any) {
   await database.fileStorage.deleteFileVersion({ fileId, version }).catch(() => {});
 }
 
-async function runEndpoint(database, endpoint, requestUrl, request) {
+async function runEndpoint(database: any, endpoint: { handlerSource: any; }, requestUrl: URL, request: any) {
   const createHandler = new Function(`return (${endpoint.handlerSource});`);
   const handler = createHandler();
   const context = await applyContextMiddleware(
@@ -4510,7 +4598,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
   return handler(context);
 }
 
-async function createEndpointContext(database, requestUrl, request) {
+async function createEndpointContext(database: LooseRecord, requestUrl: URL, request: any) {
   const headers = Object.fromEntries(
     Object.entries(request.headers).map(([name, value]) => [
       name.toLowerCase(),
@@ -4519,7 +4607,7 @@ async function createEndpointContext(database, requestUrl, request) {
   );
   const query = Object.fromEntries(requestUrl.searchParams.entries());
   const session = await resolveAnonymousSession(database, readEndpointSessionToken(headers, query));
-  const context = {
+  const context: LooseRecord = {
     auth: session.auth,
     env: database.serverEnv,
     log: createEndpointLogger(database, {
@@ -4541,7 +4629,7 @@ async function createEndpointContext(database, requestUrl, request) {
   return context;
 }
 
-function createContextHolder(context) {
+function createContextHolder(context: LooseRecord) {
   const holder = { current: context };
   Object.defineProperty(context, "__sporadesContextHolder", {
     value: holder,
@@ -4551,7 +4639,7 @@ function createContextHolder(context) {
   return holder;
 }
 
-function createTableAclContext(context, database) {
+function createTableAclContext(context: any, database: any) {
   const { db, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
   return {
     ...aclContext,
@@ -4559,8 +4647,8 @@ function createTableAclContext(context, database) {
   };
 }
 
-async function applyContextMiddleware(database, baseContext, kind) {
-  let context = {
+async function applyContextMiddleware(database: LooseRecord, baseContext: LooseRecord, kind: string) {
+  let context: LooseRecord = {
     ...baseContext,
     kind,
   };
@@ -4591,39 +4679,39 @@ async function applyContextMiddleware(database, baseContext, kind) {
   return context;
 }
 
-function runContextMiddleware(middlewareSource, context) {
+function runContextMiddleware(middlewareSource: any, context: any) {
   const createMiddleware = new Function(`return (${middlewareSource});`);
   const middleware = createMiddleware();
   return middleware(context);
 }
 
-function readEndpointSessionToken(headers, query) {
+function readEndpointSessionToken(headers: { [x: string]: any; }, query: { [x: string]: any; sessionToken?: any; }) {
   return headers["x-sporades-session-token"] ?? query.sessionToken;
 }
 
-function createEndpointDatabaseApi(database, contextGetter = null) {
+function createEndpointDatabaseApi(database: LooseRecord, contextGetter: any = null) {
   return Object.fromEntries(
-    database.schema.tables.map((table) => [table.name, createEndpointTableApi(database, table, {}, contextGetter)]),
+    database.schema.tables.map((table: { name: any; }) => [table.name, createEndpointTableApi(database, table, {}, contextGetter)]),
   );
 }
 
-function createEndpointTableApi(database, table, query = {}, contextGetter = null) {
+function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query: LooseRecord = {}, contextGetter: any = null) {
   return {
-    insert(values) {
+    insert(values: LooseRecord) {
       const now = new Date().toISOString();
-      const row = {
+      const row: LooseRecord = {
         id: randomUUID(),
         createdAt: now,
         updatedAt: now,
       };
-      const fieldValues = table.fields.map((field) =>
+      const fieldValues = table.fields.map((field: { name: PropertyKey; defaultValue: any; }) =>
         fieldValueForWrite(
           database,
           field,
-          Object.hasOwn(values, field.name) && values[field.name] !== undefined ? values[field.name] : field.defaultValue,
+          Object.hasOwn(values, String(field.name)) && values[String(field.name)] !== undefined ? values[String(field.name)] : field.defaultValue,
         ),
       );
-      const finish = (resolvedValues) => {
+      const finish = (resolvedValues: { [x: string]: any; }) => {
         for (const [index, field] of table.fields.entries()) {
           row[field.name] = resolvedValues[index];
         }
@@ -4641,33 +4729,33 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       }
       return operation;
     },
-    update(id, values) {
-      const finishExisting = (existing) => {
+    update(id: any, values: LooseRecord) {
+      const finishExisting = (existing: any) => {
         if (!existing) {
           return null;
         }
         const previous = deserializeRow(table, existing);
-        const fieldsToUpdate = table.fields.filter((field) => Object.hasOwn(values, field.name));
+        const fieldsToUpdate = table.fields.filter((field: { name: PropertyKey; }) => Object.hasOwn(values, field.name));
         if (fieldsToUpdate.length === 0) {
           return runTableWriteWithAcl(database, table, "update", previous, previous, contextGetter, () => previous);
         }
 
         const now = new Date().toISOString();
-        const serializedValues = { updatedAt: now };
-        const fieldValues = fieldsToUpdate.map((field) => fieldValueForWrite(database, field, values[field.name]));
-        const finishValues = (resolvedValues) => {
+        const serializedValues: LooseRecord = { updatedAt: now };
+        const fieldValues = fieldsToUpdate.map((field: { name: string | number; }) => fieldValueForWrite(database, field, values[field.name]));
+        const finishValues = (resolvedValues: { [x: string]: any; }) => {
           for (const [index, field] of fieldsToUpdate.entries()) {
             serializedValues[field.name] = resolvedValues[index];
           }
           const next = {
             ...previous,
             updatedAt: now,
-            ...Object.fromEntries(fieldsToUpdate.map((field) => [field.name, deserializeFieldValue(field, serializedValues[field.name])])),
+            ...Object.fromEntries(fieldsToUpdate.map((field: { name: string | number; }) => [field.name, deserializeFieldValue(field, serializedValues[field.name])])),
           };
           return runTableWriteWithAcl(database, table, "update", previous, next, contextGetter, () => {
             const result = database.sqlite.updateAppRow(table, id, serializedValues);
             database.rowCache.clear();
-            return thenIfPromise(result, (writeResult) => {
+            return thenIfPromise(result, (writeResult: { changes: number; }) => {
               if (writeResult.changes === 0) {
                 return null;
               }
@@ -4684,8 +4772,8 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       }
       return operation;
     },
-    delete(id) {
-      const finish = (existing) => {
+    delete(id: any) {
+      const finish = (existing: any) => {
         if (!existing) {
           return false;
         }
@@ -4693,7 +4781,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
         return runTableWriteWithAcl(database, table, "delete", previous, null, contextGetter, () => {
           const result = database.sqlite.deleteAppRow(table, id);
           database.rowCache.clear();
-          return thenIfPromise(result, (writeResult) => writeResult.changes > 0);
+          return thenIfPromise(result, (writeResult: { changes: number; }) => writeResult.changes > 0);
         });
       };
       const operation = thenIfPromise(database.sqlite.selectAppRowById(table, id), finish);
@@ -4702,13 +4790,13 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       }
       return operation;
     },
-    where(fieldName, value) {
+    where(fieldName: any, value: any) {
       return createEndpointTableApi(database, table, { ...query, where: { fieldName, value } }, contextGetter);
     },
-    orderBy(fieldName, direction = "asc") {
+    orderBy(fieldName: any, direction = "asc") {
       return createEndpointTableApi(database, table, { ...query, orderBy: { fieldName, direction } }, contextGetter);
     },
-    limit(count) {
+    limit(count: any) {
       return createEndpointTableApi(database, table, { ...query, limit: count }, contextGetter);
     },
     get() {
@@ -4717,7 +4805,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
           ? {
               fieldName: query.where.fieldName,
               value: serializeFieldValue(
-                table.fields.find((field) => field.name === query.where.fieldName),
+                table.fields.find((field: { name: any; }) => field.name === query.where.fieldName),
                 query.where.value,
               ),
             }
@@ -4725,14 +4813,14 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
         orderBy: query.orderBy,
         limit: 1,
       });
-      return thenIfPromise(selected, (rows) => {
+      return thenIfPromise(selected, (rows: null[]) => {
         const row = rows[0] ?? null;
         if (!row) {
           return null;
         }
         const deserialized = deserializeRow(table, row);
         const allowed = applyReadAcl(database, table, deserialized, contextGetter?.());
-        return thenIfPromise(allowed, (result) => (result ? deserialized : null));
+        return thenIfPromise(allowed, (result: any) => (result ? deserialized : null));
       });
     },
     all() {
@@ -4742,7 +4830,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
           ? {
               fieldName: query.where.fieldName,
               value: serializeFieldValue(
-                table.fields.find((field) => field.name === query.where.fieldName),
+                table.fields.find((field: { name: any; }) => field.name === query.where.fieldName),
                 query.where.value,
               ),
             }
@@ -4750,15 +4838,15 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
         orderBy: query.orderBy,
         limit,
       });
-      return thenIfPromise(selected, (selectedRows) => {
-        const rows = selectedRows.map((row) => deserializeRow(table, row));
+      return thenIfPromise(selected, (selectedRows: any[]) => {
+        const rows = selectedRows.map((row: any) => deserializeRow(table, row));
         return filterRowsByReadAcl(database, table, rows, contextGetter?.());
       });
     },
   };
 }
 
-function runTableWriteWithAcl(database, table, operation, previous, next, contextGetter, write) {
+function runTableWriteWithAcl(database: any, table: LooseRecord, operation: string, previous: any, next: any, contextGetter: any, write: () => any) {
   const rule = table.acl?.resolve?.(operation);
   if (!rule) {
     return write();
@@ -4801,15 +4889,15 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
   return pending;
 }
 
-function isPromiseLike(value) {
+function isPromiseLike(value: any) {
   return value && typeof value === "object" && typeof value.then === "function";
 }
 
-function thenIfPromise(value, onResolved) {
+function thenIfPromise(value: any, onResolved: (value: any) => any) {
   return isPromiseLike(value) ? value.then(onResolved) : onResolved(value);
 }
 
-function chainMaybePromise(steps) {
+function chainMaybePromise(steps: any[]) {
   let pending = null;
   for (const step of steps) {
     if (pending) {
@@ -4824,7 +4912,7 @@ function chainMaybePromise(steps) {
   return pending ?? undefined;
 }
 
-function applyReadAcl(database, table, row, context) {
+function applyReadAcl(database: any, table: LooseRecord, row: any, context: any) {
   const rule = table.acl?.resolve?.("read");
   if (!rule) {
     return true;
@@ -4851,17 +4939,17 @@ function applyReadAcl(database, table, row, context) {
   return Promise.resolve(result).then((allowed) => (allowed && !aclRuleTouchedAsyncHelperRead(aclContext) ? true : deny()));
 }
 
-function filterRowsByReadAcl(database, table, rows, context) {
-  const decisions = rows.map((row) => applyReadAcl(database, table, row, context));
+function filterRowsByReadAcl(database: any, table: any, rows: any[], context: any) {
+  const decisions = rows.map((row: any) => applyReadAcl(database, table, row, context));
   if (decisions.some(isPromiseLike)) {
-    return Promise.all(decisions).then((resolved) => rows.filter((_, index) => resolved[index]));
+    return Promise.all(decisions).then((resolved: any[]) => rows.filter((_: any, index: number) => resolved[index]));
   }
-  return rows.filter((_, index) => decisions[index]);
+  return rows.filter((_: any, index: number) => decisions[index]);
 }
 
 const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 
-function createAclHelpers(database) {
+function createAclHelpers(database: any) {
   const state = { readCount: 0, maxReads: 32, touchedAsyncRead: false };
   const helpers = {
     db: createAclDbHelpers(database, state),
@@ -4874,11 +4962,11 @@ function createAclHelpers(database) {
   return Object.freeze(helpers);
 }
 
-function aclRuleTouchedAsyncHelperRead(aclContext) {
+function aclRuleTouchedAsyncHelperRead(aclContext: any) {
   return aclContext?.acl?.[ACL_HELPER_STATE]?.touchedAsyncRead === true;
 }
 
-function markAsyncAclHelperRead(state, result) {
+function markAsyncAclHelperRead(state: LooseRecord, result: any) {
   if (isPromiseLike(result)) {
     state.touchedAsyncRead = true;
     Promise.resolve(result).catch(() => {});
@@ -4887,9 +4975,9 @@ function markAsyncAclHelperRead(state, result) {
   return false;
 }
 
-function createAclDbHelpers(database, state) {
+function createAclDbHelpers(database: LooseRecord, state: LooseRecord) {
   return Object.freeze({
-    get(tableName, id) {
+    get(tableName: any, id: any) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
       const selected = database.sqlite.selectAppRowById(table, id);
@@ -4898,7 +4986,7 @@ function createAclDbHelpers(database, state) {
       }
       return selected ? deserializeRow(table, selected) : null;
     },
-    exists(tableName, id) {
+    exists(tableName: any, id: any) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
       const selected = database.sqlite.selectAppRowById(table, id);
@@ -4910,9 +4998,9 @@ function createAclDbHelpers(database, state) {
   });
 }
 
-function createAclStorageHelpers(database, state) {
+function createAclStorageHelpers(database: any, state: LooseRecord) {
   return Object.freeze({
-    get(resourceName, reference) {
+    get(resourceName: any, reference: any) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
@@ -4921,7 +5009,7 @@ function createAclStorageHelpers(database, state) {
       }
       return null;
     },
-    exists(resourceName, reference) {
+    exists(resourceName: any, reference: any) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
@@ -4932,7 +5020,7 @@ function createAclStorageHelpers(database, state) {
   });
 }
 
-function resolveAclStorageFileReference(database, state, reference) {
+function resolveAclStorageFileReference(database: LooseRecord, state: any, reference: any) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
     let path;
@@ -4958,23 +5046,23 @@ function resolveAclStorageFileReference(database, state, reference) {
   return selected;
 }
 
-function assertAclHelperReadAllowed(state) {
+function assertAclHelperReadAllowed(state: LooseRecord) {
   state.readCount += 1;
   if (state.readCount > state.maxReads) {
     throw commandError("ACL helper read limit exceeded.", "Keep ACL policies bounded; each rule may perform at most 32 helper reads.");
   }
 }
 
-function resolveAclAppTable(database, tableName) {
+function resolveAclAppTable(database: LooseRecord, tableName: any) {
   const normalized = String(tableName ?? "");
-  const table = database.schema.tables.find((candidate) => candidate.name === normalized);
+  const table = database.schema.tables.find((candidate: { name: string; }) => candidate.name === normalized);
   if (!table) {
     throw commandError("Unknown ACL database resource.", "ACL database helpers can inspect Capsule app tables by stable table name only.");
   }
   return table;
 }
 
-function resolveAclStorageResource(resourceName) {
+function resolveAclStorageResource(resourceName: any) {
   const normalized = String(resourceName ?? "");
   if (normalized === "files") {
     return normalized;
@@ -4982,7 +5070,7 @@ function resolveAclStorageResource(resourceName) {
   throw commandError("Unknown ACL storage resource.", "ACL storage helpers can inspect stable storage metadata resources such as files only.");
 }
 
-function aclStorageMetadataFromFileRow(row) {
+function aclStorageMetadataFromFileRow(row: LooseRecord) {
   const metadata = fileMetadataFromRow(row);
   return {
     ...metadata,
@@ -4996,7 +5084,7 @@ function aclStorageMetadataFromFileRow(row) {
   };
 }
 
-function emitAclDeniedLog(database, details) {
+function emitAclDeniedLog(database: LooseRecord, details: LooseRecord) {
   database.log?.emit?.({
     category: "platform",
     event: "acl.denied",
@@ -5006,7 +5094,7 @@ function emitAclDeniedLog(database, details) {
   });
 }
 
-function createAclDenialLogData({ context, table, operation, row = null, previous = null, next = null }) {
+function createAclDenialLogData({ context, table, operation, row = null, previous = null, next = null }: LooseRecord) {
   return {
     resource: {
       kind: "table",
@@ -5027,14 +5115,14 @@ function createAclDenialLogData({ context, table, operation, row = null, previou
   };
 }
 
-function aclRuleDeclaredOperation(table, operation) {
+function aclRuleDeclaredOperation(table: LooseRecord, operation: string) {
   if (operation !== "read" && table.acl?.[operation] === undefined && table.acl?.write) {
     return "write";
   }
   return operation;
 }
 
-function aclRowLogSnapshot(input) {
+function aclRowLogSnapshot(input: any) {
   if (input && Object.hasOwn(input, "previous") && Object.hasOwn(input, "next")) {
     const previous = input.previous ?? null;
     const next = input.next ?? null;
@@ -5054,13 +5142,13 @@ function aclRowLogSnapshot(input) {
   };
 }
 
-function aclVisibleFieldNames(row) {
+function aclVisibleFieldNames(row: any) {
   return Object.keys(row ?? {}).filter(
     (fieldName) => !["id", "createdAt", "updatedAt"].includes(fieldName) && !isSensitiveLogKey(fieldName),
   );
 }
 
-function createAclDeniedError(logData = null) {
+function createAclDeniedError(logData: any = null) {
   const error = commandError("Denied.", "The current user is not allowed to perform this operation.", "DENIED");
   if (logData) {
     error.sporadesAclDenialLogData = logData;
@@ -5068,9 +5156,9 @@ function createAclDeniedError(logData = null) {
   return error;
 }
 
-function fieldValueForWrite(database, field, value) {
+function fieldValueForWrite(database: any, field: LooseRecord, value: any) {
   if (field.kind === "Reference" && value !== undefined && value !== null) {
-    return thenIfPromise(referenceExists(database, field, value), (exists) => {
+    return thenIfPromise(referenceExists(database, field, value), (exists: any) => {
       if (!exists) {
         throw invalidReferenceError(field);
       }
@@ -5080,15 +5168,15 @@ function fieldValueForWrite(database, field, value) {
   return serializeFieldValue(field, value);
 }
 
-function invalidReferenceError(field) {
+function invalidReferenceError(field: LooseRecord) {
   return commandError(`Invalid reference for field: ${field.name}`, `Pass the id of an existing ${field.targetTable} row.`);
 }
 
-function referenceExists(database, field, value) {
+function referenceExists(database: LooseRecord, field: any, value: any) {
   return database.sqlite.referenceExists(field, value);
 }
 
-function serializeFieldValue(field, value) {
+function serializeFieldValue(field: LooseRecord, value: any) {
   if (value === undefined) {
     return null;
   }
@@ -5114,7 +5202,7 @@ function serializeFieldValue(field, value) {
   return String(value ?? "");
 }
 
-function deserializeFieldValue(field, value) {
+function deserializeFieldValue(field: LooseRecord, value: any) {
   if (field.kind === "Boolean") {
     return value === null ? null : Boolean(value);
   }
@@ -5127,7 +5215,7 @@ function deserializeFieldValue(field, value) {
   return value;
 }
 
-function normalizeDateValue(value, fieldName) {
+function normalizeDateValue(value: string | number | Date, fieldName: string) {
   if (value instanceof Date) {
     if (Number.isNaN(value.getTime())) {
       throw dateValueError(fieldName);
@@ -5144,22 +5232,22 @@ function normalizeDateValue(value, fieldName) {
   return parsed.toISOString();
 }
 
-function dateValueError(fieldName) {
+function dateValueError(fieldName: any) {
   return commandError(
     `Invalid date value for field: ${fieldName}`,
     "Pass an ISO 8601 date string or JavaScript Date value.",
   );
 }
 
-function assertJsonCompatible(value) {
+function assertJsonCompatible(value: any) {
   try {
     const serialized = JSON.stringify(value);
     if (serialized === undefined) {
       throw invalidJsonFieldValueError();
     }
     JSON.parse(serialized);
-  } catch (error) {
-    if (error?.hint) {
+  } catch (error: any) {
+    if ((error as any)?.hint) {
       throw error;
     }
     throw invalidJsonFieldValueError();
@@ -5173,7 +5261,7 @@ function invalidJsonFieldValueError() {
   );
 }
 
-function deserializeRow(table, row) {
+function deserializeRow(table: LooseRecord, row: LooseRecord) {
   const output = { ...row };
   for (const field of table.fields) {
     if (field.kind === "Boolean") {
@@ -5188,7 +5276,7 @@ function deserializeRow(table, row) {
   return output;
 }
 
-async function readEndpointBody(request, headers) {
+async function readEndpointBody(request: any, headers: { [x: string]: any; }) {
   const chunks = [];
   for await (const chunk of request) {
     chunks.push(chunk);
@@ -5203,7 +5291,7 @@ async function readEndpointBody(request, headers) {
   return raw;
 }
 
-function createEndpointLogger(database, context = {}) {
+function createEndpointLogger(database: any, context = {}) {
   return createRuntimeLogger(database, {
     category: "app",
     event: "ctx.log",
@@ -5211,7 +5299,7 @@ function createEndpointLogger(database, context = {}) {
   });
 }
 
-function writeEndpointResult(response, result) {
+function writeEndpointResult(response: any, result: any) {
   if (result && typeof result === "object" && !Buffer.isBuffer(result) && "body" in result) {
     const status = result.status ?? 200;
     if (!Number.isInteger(status) || status < 100 || status > 599) {
@@ -5247,12 +5335,12 @@ function writeEndpointResult(response, result) {
   response.end(String(result ?? ""));
 }
 
-function writeEndpointError(response, error) {
+function writeEndpointError(response: any, error: any) {
   response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
   response.end(
     `${JSON.stringify({
       ok: false,
-      data: null,
+      data: null as any,
       error: {
         ...(error?.code ? { code: error.code } : {}),
         message: error?.hint
@@ -5271,12 +5359,12 @@ function writeEndpointError(response, error) {
 }
 
 function endpointResponseError() {
-  const error = new Error("Invalid endpoint response.");
+  const error: HelperError = new Error("Invalid endpoint response.");
   error.sporadesEndpointResponse = true;
   return error;
 }
 
-function parseFieldDefault(kind, rawDefault) {
+function parseFieldDefault(kind: string, rawDefault: string | undefined) {
   if (rawDefault === undefined) {
     return undefined;
   }
@@ -5300,7 +5388,7 @@ function parseFieldDefault(kind, rawDefault) {
   return defaultValue;
 }
 
-function parseJsonFieldDefault(rawDefault) {
+function parseJsonFieldDefault(rawDefault: any) {
   try {
     const createDefault = new Function(`return (${rawDefault});`);
     const value = createDefault();
@@ -5314,7 +5402,7 @@ function parseJsonFieldDefault(rawDefault) {
   }
 }
 
-function parseDateFieldDefault(rawDefault) {
+function parseDateFieldDefault(rawDefault: any) {
   try {
     const createDefault = new Function(`return (${rawDefault});`);
     return normalizeDateValue(createDefault(), "default");
@@ -5326,7 +5414,7 @@ function parseDateFieldDefault(rawDefault) {
   }
 }
 
-function toSqlLiteral(value, field = null) {
+function toSqlLiteral(value: any, field: any = null) {
   if (field?.kind === "Json") {
     assertJsonCompatible(value);
     return `'${JSON.stringify(value).replaceAll("'", "''")}'`;
@@ -5346,19 +5434,19 @@ function toSqlLiteral(value, field = null) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 
-export async function listDatabaseTables(database) {
+export async function listDatabaseTables(database: { adapter: any; sqlite: any; }) {
   return await (database.adapter ?? database.sqlite).listInspectableTables();
 }
 
-export async function dumpDatabase(database) {
+export async function dumpDatabase(database: { adapter: any; sqlite: any; }) {
   return await (database.adapter ?? database.sqlite).dumpInspectableDatabase();
 }
 
-export async function runReadOnlyQuery(database, sql) {
+export async function runReadOnlyQuery(database: { adapter: any; sqlite: any; }, sql: any) {
   return await (database.adapter ?? database.sqlite).runReadOnlyInspectionQuery(sql);
 }
 
-function targetsInternalLogIndexTable(sql) {
+function targetsInternalLogIndexTable(sql: any) {
   const text = String(sql);
   const targetKeywords = /\b(?:from|join|update|into|table)\b/gi;
   let match;
@@ -5371,7 +5459,7 @@ function targetsInternalLogIndexTable(sql) {
   return false;
 }
 
-function readSqlTableReference(sql, startIndex) {
+function readSqlTableReference(sql: string, startIndex: number) {
   let index = skipSqlTrivia(sql, startIndex);
   while (sql[index] === "(") {
     index += 1;
@@ -5394,7 +5482,7 @@ function readSqlTableReference(sql, startIndex) {
   return parts;
 }
 
-function skipSqlTrivia(sql, startIndex) {
+function skipSqlTrivia(sql: string, startIndex: any) {
   let index = startIndex;
   let advanced = true;
   while (advanced) {
@@ -5418,7 +5506,7 @@ function skipSqlTrivia(sql, startIndex) {
   return index;
 }
 
-function readSqlIdentifier(sql, index) {
+function readSqlIdentifier(sql: string, index: number) {
   const quote = sql[index];
   const closingQuote = quote === "[" ? "]" : quote;
   if (quote === '"' || quote === "'" || quote === "`" || quote === "[") {
@@ -5443,7 +5531,7 @@ function readSqlIdentifier(sql, index) {
   return match ? { value: match[0], nextIndex: index + match[0].length } : null;
 }
 
-function isInternalLogIndexMetadataRow(row, sql = "") {
+function isInternalLogIndexMetadataRow(row: Record<string, SQLOutputValue>, sql = "") {
   const queriesSqliteSchema = /\bsqlite_(?:schema|master)\b/i.test(String(sql));
   return (
     ["name", "tbl_name", "table", "tableName"].some((key) => row?.[key] === "sporades_log_events") ||
@@ -5456,12 +5544,12 @@ function isInternalLogIndexMetadataRow(row, sql = "") {
   );
 }
 
-export async function simulateLocalIdentitySession(database, options = {}) {
+export async function simulateLocalIdentitySession(database: LooseRecord, options: LooseRecord = {}) {
   const provider = String(options.provider ?? "").trim().toLowerCase();
   if (!["email", "google"].includes(provider)) {
     return {
       ok: false,
-      data: null,
+      data: null as any,
       error: {
         message: `Unsupported simulated auth provider: ${provider || ""}`.trim(),
         hint: "Use `sporades auth as email` for local identity simulation. Google simulation is reserved for provider-shaped browser tests.",
@@ -5473,7 +5561,7 @@ export async function simulateLocalIdentitySession(database, options = {}) {
   if (!email) {
     return {
       ok: false,
-      data: null,
+      data: null as any,
       error: {
         message: "Simulated identity requires an email address.",
         hint: "Pass `--email <address>` to `sporades auth as email`.",
@@ -5526,7 +5614,7 @@ export async function simulateLocalIdentitySession(database, options = {}) {
   };
 }
 
-function normalizeSimulatedEmail(value) {
+function normalizeSimulatedEmail(value: any) {
   const email = normalizeSimulatedText(value)?.toLowerCase();
   if (!email || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
     return null;
@@ -5534,7 +5622,7 @@ function normalizeSimulatedEmail(value) {
   return email;
 }
 
-function normalizeSimulatedText(value) {
+function normalizeSimulatedText(value: null | undefined) {
   if (value === null || value === undefined) {
     return null;
   }
@@ -5542,12 +5630,12 @@ function normalizeSimulatedText(value) {
   return text ? text : null;
 }
 
-export function createWebSocketHub(getDatabase) {
-  const clients = new Set();
+export function createWebSocketHub(getDatabase: () => any) {
+  const clients = new Set<any>();
   let nextClientId = 1;
 
   return {
-    async accept(request, socket) {
+    async accept(request: IncomingMessage, socket: Duplex) {
       const key = request.headers["sec-websocket-key"];
       if (!key) {
         socket.destroy();
@@ -5565,7 +5653,7 @@ export function createWebSocketHub(getDatabase) {
         ].join("\r\n"),
       );
 
-      const requestUrl = new URL(request.url, "http://127.0.0.1");
+      const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
       const sessionToken = requestUrl.searchParams.get("sessionToken");
       const origin = requestOrigin(request);
       const database = getDatabase();
@@ -5583,10 +5671,10 @@ export function createWebSocketHub(getDatabase) {
         lastSeenAt: now,
       };
       clients.add(client);
-      socket.on("data", (chunk) => {
+      socket.on("data", (chunk: Uint8Array<ArrayBufferLike>) => {
         client.lastSeenAt = new Date().toISOString();
         client.buffer = Buffer.concat([client.buffer, chunk]);
-        drainWebSocketFrames(client, (message) => enqueueClientMessage(client, message));
+        drainWebSocketFrames(client, (message: any) => enqueueClientMessage(client, message));
       });
       socket.on("close", () => clients.delete(client));
       socket.on("error", () => clients.delete(client));
@@ -5605,7 +5693,7 @@ export function createWebSocketHub(getDatabase) {
         auth: summarizeAuthForClientList(client.session.auth),
       }));
     },
-    notifyFileEvent(userId, event) {
+    notifyFileEvent(userId: any, event: any) {
       for (const client of clients) {
         if (client.session.auth.userId !== userId) {
           continue;
@@ -5618,7 +5706,7 @@ export function createWebSocketHub(getDatabase) {
         });
       }
     },
-    deliverAuthSession(target, sessionData) {
+    deliverAuthSession(target: any, sessionData: { localStorage: { value: any; }; auth: any; }) {
       const recipients = authSessionRecipients(target);
       for (const client of recipients) {
         client.session = {
@@ -5643,7 +5731,7 @@ export function createWebSocketHub(getDatabase) {
     },
   };
 
-  function authSessionRecipients(target) {
+  function authSessionRecipients(target: string) {
     if (target === "all") {
       return [...clients];
     }
@@ -5653,7 +5741,7 @@ export function createWebSocketHub(getDatabase) {
     return [...clients].filter((client) => client.id === target);
   }
 
-  function requestOrigin(request) {
+  function requestOrigin(request: RuntimeRequestLike) {
     const forwardedProto = firstForwardedHeader(request.headers["x-forwarded-proto"]);
     const forwardedHost = firstForwardedHeader(request.headers["x-forwarded-host"]);
     const protocol = forwardedProto === "https" || forwardedProto === "http" ? forwardedProto : request.socket?.encrypted ? "https" : "http";
@@ -5661,7 +5749,7 @@ export function createWebSocketHub(getDatabase) {
     return `${protocol}://${host}`;
   }
 
-  function firstForwardedHeader(value) {
+  function firstForwardedHeader(value: any) {
     const raw = Array.isArray(value) ? value[0] : value;
     return String(raw ?? "")
       .split(",")[0]
@@ -5669,7 +5757,7 @@ export function createWebSocketHub(getDatabase) {
       .toLowerCase();
   }
 
-  function summarizeAuthForClientList(auth) {
+  function summarizeAuthForClientList(auth: LooseRecord) {
     return {
       userId: auth.userId,
       displayName: auth.displayName,
@@ -5681,15 +5769,15 @@ export function createWebSocketHub(getDatabase) {
     };
   }
 
-  function enqueueClientMessage(client, rawMessage) {
+  function enqueueClientMessage(client: LooseRecord, rawMessage: any) {
     client.messageQueue = client.messageQueue
       .then(() => handleClientMessage(client, rawMessage))
-      .catch((error) => {
+      .catch((error: any) => {
         sendUnhandledMessageError(client, rawMessage, error);
       });
   }
 
-  function sendUnhandledMessageError(client, rawMessage, error) {
+  function sendUnhandledMessageError(client: LooseRecord, rawMessage: string, error: any) {
     let id = null;
     try {
       id = JSON.parse(rawMessage)?.id ?? null;
@@ -5706,7 +5794,7 @@ export function createWebSocketHub(getDatabase) {
     });
   }
 
-  async function handleClientMessage(client, rawMessage) {
+  async function handleClientMessage(client: LooseRecord, rawMessage: string) {
     let message;
     try {
       message = JSON.parse(rawMessage);
@@ -5741,7 +5829,7 @@ export function createWebSocketHub(getDatabase) {
     }
 
     if (message.type === "auth.signUp") {
-      const result = await signUpWithEmail(database, client.session, message.provider, message.credentials ?? {});
+      const result: any = await signUpWithEmail(database, client.session, message.provider, message.credentials ?? {});
       if (result.ok) {
         client.session = {
           token: result.sessionToken,
@@ -5760,7 +5848,7 @@ export function createWebSocketHub(getDatabase) {
     if (message.type === "auth.signIn" || message.type === "auth.signInWithGoogle") {
       const provider = message.type === "auth.signInWithGoogle" ? "google" : message.provider;
       if (provider === "email") {
-        const result = await signInWithEmail(database, client.session, message.credentials ?? {});
+        const result: any = await signInWithEmail(database, client.session, message.credentials ?? {});
         if (result.ok) {
           client.session = {
             token: result.sessionToken,
@@ -5862,7 +5950,7 @@ export function createWebSocketHub(getDatabase) {
     }
 
     if (message.type === "file.url") {
-      const result = await getPrivateFileUrl(database, client.session.auth, message.fileReference ?? message.fileId);
+      const result: any = await getPrivateFileUrl(database, client.session.auth, message.fileReference ?? message.fileId);
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "file.url.result" : "error",
@@ -5873,7 +5961,7 @@ export function createWebSocketHub(getDatabase) {
     }
 
     if (message.type === "file.publicUrl.create") {
-      const result = await createPublicFileUrl(database, client.session.auth, message.fileReference ?? message.fileId, message.options ?? {});
+      const result: any = await createPublicFileUrl(database, client.session.auth, message.fileReference ?? message.fileId, message.options ?? {});
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "file.publicUrl.result" : "error",
@@ -5895,7 +5983,7 @@ export function createWebSocketHub(getDatabase) {
     }
 
     if (message.type === "file.delete") {
-      const result = await deletePrivateFile(database, client.session.auth, message.fileReference ?? message.fileId);
+      const result: any = await deletePrivateFile(database, client.session.auth, message.fileReference ?? message.fileId);
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "file.delete.result" : "error",
@@ -5915,9 +6003,9 @@ export function createWebSocketHub(getDatabase) {
     });
   }
 
-  async function sendQueryResult(client, subscription) {
+  async function sendQueryResult(client: LooseRecord, subscription: LooseRecord) {
     const database = getDatabase();
-    const result = await runQuery(database, client.session.auth, subscription.name);
+    const result: any = await runQuery(database, client.session.auth, subscription.name);
     const data =
       subscription.style === "direct"
         ? (result.data ?? result.rows)
@@ -5931,7 +6019,7 @@ export function createWebSocketHub(getDatabase) {
     });
   }
 
-  async function sendAuthResult(client, id) {
+  async function sendAuthResult(client: LooseRecord, id: any) {
     const database = getDatabase();
     client.session = await resolveAnonymousSession(database, client.session.token);
     sendJson(client, {
@@ -5946,7 +6034,7 @@ export function createWebSocketHub(getDatabase) {
     });
   }
 
-  async function signOutSession(database, client) {
+  async function signOutSession(database: LooseRecord, client: LooseRecord) {
     try {
       await database.sqlite.deleteAuthSession(client.session.token);
       client.session = await resolveAnonymousSession(database, null);
@@ -5962,7 +6050,7 @@ export function createWebSocketHub(getDatabase) {
     }
   }
 
-  function sendAppMessage(senderAuth, appMessage) {
+  function sendAppMessage(senderAuth: LooseRecord, appMessage: LooseRecord) {
     const scope = appMessage.scope ?? { scope: "user", userId: senderAuth.userId };
     const recipients = clientsForAppMessageScope(scope, senderAuth);
     for (const recipient of recipients) {
@@ -5975,7 +6063,7 @@ export function createWebSocketHub(getDatabase) {
     return recipients.length;
   }
 
-  function clientsForAppMessageScope(scope, senderAuth) {
+  function clientsForAppMessageScope(scope: any, senderAuth: LooseRecord) {
     if (scope === "all" || scope?.scope === "all") {
       return [...clients];
     }
@@ -5988,8 +6076,8 @@ export function createWebSocketHub(getDatabase) {
   }
 }
 
-export async function routeSporadesAuth(database, request, response) {
-  const requestUrl = new URL(request.url, "http://127.0.0.1");
+export async function routeSporadesAuth(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }) {
+  const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
   if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/auth/google/callback") {
     return false;
   }
@@ -6012,16 +6100,16 @@ export async function routeSporadesAuth(database, request, response) {
     const session = await resolveAnonymousSession(database, stateRow.sessionToken);
     const result = await linkGoogleAccount(database, session, profile);
     if (!result.ok) {
-      throw commandError(result.error.message, result.error.hint);
+      throw commandError(result.error?.message, result.error?.hint ?? "Retry Google sign-in from the app.");
     }
     writeRedirect(response, stateRow.returnTo);
-  } catch (error) {
+  } catch (error: any) {
     writeEndpointError(response, error);
   }
   return true;
 }
 
-async function beginGoogleSignIn(database, session, options) {
+async function beginGoogleSignIn(database: LooseRecord, session: LooseRecord, options: LooseRecord) {
   if (!database.authConfig.providers.google.enabled || !database.authConfig.google.configured) {
     return {
       ok: false,
@@ -6052,7 +6140,7 @@ async function beginGoogleSignIn(database, session, options) {
   };
 }
 
-function normalizeReturnTo(returnTo, origin) {
+function normalizeReturnTo(returnTo: string | URL, origin: string | URL | undefined) {
   if (!returnTo) {
     return origin;
   }
@@ -6067,7 +6155,7 @@ function normalizeReturnTo(returnTo, origin) {
   }
 }
 
-async function exchangeGoogleCode(database, code, redirectUri) {
+async function exchangeGoogleCode(database: LooseRecord, code: string, redirectUri: any) {
   const google = database.authConfig.google;
   const tokenUrl = process.env.SPORADES_GOOGLE_TOKEN_URL ?? "https://oauth2.googleapis.com/token";
   const clientId = database.serverEnv[google.clientIdEnv];
@@ -6097,7 +6185,7 @@ async function exchangeGoogleCode(database, code, redirectUri) {
   return fetchGoogleProfile(token.access_token);
 }
 
-async function readGoogleOAuthError(response) {
+async function readGoogleOAuthError(response: Response) {
   const fallback = {
     message: "",
     hint: "Check the Google OAuth client configuration and retry sign-in.",
@@ -6127,7 +6215,7 @@ async function readGoogleOAuthError(response) {
   }
 }
 
-function oauthErrorHint(code, description) {
+function oauthErrorHint(code: string, description: string) {
   const detail = `${code} ${description}`.toLowerCase();
   if (detail.includes("redirect_uri_mismatch") || detail.includes("redirect_uri")) {
     return "Make sure Google Console has the exact authorized redirect URI shown in the browser callback URL, including scheme, host, and port.";
@@ -6141,7 +6229,7 @@ function oauthErrorHint(code, description) {
   return "Check the Google OAuth client configuration and retry sign-in.";
 }
 
-async function fetchGoogleProfile(accessToken) {
+async function fetchGoogleProfile(accessToken: any) {
   const userInfoUrl = process.env.SPORADES_GOOGLE_USERINFO_URL ?? "https://www.googleapis.com/oauth2/v3/userinfo";
   const profileResponse = await fetch(userInfoUrl, {
     headers: { authorization: `Bearer ${accessToken}` },
@@ -6149,7 +6237,7 @@ async function fetchGoogleProfile(accessToken) {
   if (!profileResponse.ok) {
     throw commandError("Google profile lookup failed.", "Retry Google sign-in with an email-bearing account.");
   }
-  const profile = await profileResponse.json();
+  const profile = await profileResponse.json() as LooseRecord;
   return {
     email: profile.email,
     displayName: profile.name ?? profile.email,
@@ -6157,7 +6245,7 @@ async function fetchGoogleProfile(accessToken) {
   };
 }
 
-async function linkGoogleAccount(database, session, profile) {
+async function linkGoogleAccount(database: LooseRecord, session: LooseRecord, profile: LooseRecord) {
   if (!profile.email) {
     return {
       ok: false,
@@ -6190,12 +6278,12 @@ async function linkGoogleAccount(database, session, profile) {
   return { ok: true, auth };
 }
 
-function writeRedirect(response, location) {
+function writeRedirect(response: { writeHead: (arg0: number, arg1: { location: any; }) => void; end: () => void; }, location: any) {
   response.writeHead(302, { location });
   response.end();
 }
 
-export async function signUpWithEmail(database, session, provider, credentials) {
+export async function signUpWithEmail(database: LooseRecord, session: LooseRecord, provider: string, credentials: any) {
   if (provider !== "email") {
     return {
       ok: false,
@@ -6209,7 +6297,7 @@ export async function signUpWithEmail(database, session, provider, credentials) 
     return { ok: false, error: emailAuthDisabledError() };
   }
 
-  const normalized = normalizeEmailCredentials(credentials);
+  const normalized: any = normalizeEmailCredentials(credentials);
   if (!normalized.ok) {
     return normalized;
   }
@@ -6230,7 +6318,7 @@ export async function signUpWithEmail(database, session, provider, credentials) 
     userId: session.auth.userId,
     displayName,
     email: normalized.email,
-    picture: null,
+    picture: null as any,
     isAuthenticated: true,
     isGuest: false,
     provider: "email",
@@ -6254,12 +6342,12 @@ export async function signUpWithEmail(database, session, provider, credentials) 
   return { ok: true, sessionToken: await rotateSession(database, session, auth.userId), auth };
 }
 
-async function signInWithEmail(database, session, credentials) {
+async function signInWithEmail(database: LooseRecord, session: any, credentials: any) {
   if (!database.authConfig.providers.email.enabled) {
     return { ok: false, error: emailAuthDisabledError() };
   }
 
-  const normalized = normalizeEmailCredentials(credentials);
+  const normalized: any = normalizeEmailCredentials(credentials);
   if (!normalized.ok) {
     return normalized;
   }
@@ -6287,7 +6375,7 @@ async function signInWithEmail(database, session, credentials) {
   return { ok: true, sessionToken: await rotateSession(database, session, auth.userId), auth };
 }
 
-function normalizeEmailCredentials(credentials) {
+function normalizeEmailCredentials(credentials: { email: any; password: any; name: null; }) {
   const email = String(credentials.email ?? "").trim().toLowerCase();
   const password = String(credentials.password ?? "");
   const name = credentials.name == null ? "" : String(credentials.name).trim();
@@ -6312,13 +6400,13 @@ function normalizeEmailCredentials(credentials) {
   return { ok: true, email, password, name };
 }
 
-function hashEmailPassword(password) {
+function hashEmailPassword(password: BinaryLike) {
   const salt = randomBytes(16).toString("base64url");
   const hash = scryptSync(password, salt, 64).toString("base64url");
   return { hash, salt };
 }
 
-function verifyEmailPassword(password, salt, expectedHash) {
+function verifyEmailPassword(password: BinaryLike, salt: BinaryLike, expectedHash: WithImplicitCoercion<string>) {
   const actual = scryptSync(password, salt, 64);
   const expected = Buffer.from(expectedHash, "base64url");
   return actual.length === expected.length && timingSafeEqual(actual, expected);
@@ -6331,7 +6419,7 @@ function emailAuthDisabledError() {
   };
 }
 
-function createAnonymousAuthTables(sqlite, authConfig = null) {
+function createAnonymousAuthTables(sqlite: LooseRecord, authConfig: LooseRecord | null = null) {
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
       "id TEXT PRIMARY KEY, " +
@@ -6375,9 +6463,9 @@ function createAnonymousAuthTables(sqlite, authConfig = null) {
   );
 }
 
-function ensureSessionLifecycleColumns(sqlite) {
+function ensureSessionLifecycleColumns(sqlite: LooseRecord) {
   const columns = sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
-  const hasExpiresAt = columns.some((column) => column.name === "expiresAt");
+  const hasExpiresAt = columns.some((column: { name: string; }) => column.name === "expiresAt");
   if (!hasExpiresAt) {
     sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN expiresAt TEXT");
     sqlite
@@ -6386,9 +6474,9 @@ function ensureSessionLifecycleColumns(sqlite) {
   }
 }
 
-async function ensureLibsqlSessionLifecycleColumns(sqlite) {
+async function ensureLibsqlSessionLifecycleColumns(sqlite: { engine?: string; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => Promise<void>; ensureLogStorage?: () => Promise<void>; insertLogIndexEvent?: (event: any) => Promise<void>; pruneLogIndex?: (limit: any) => Promise<void>; readRecentLogEvents?: (limit?: number) => Promise<any>; ensureFileStorage?: () => Promise<void>; ensureAuthStorage?: (authConfig?: null) => Promise<void>; consumeOAuthState?: (state: any) => Promise<any>; migrateAppSchema?: (schema: any) => Promise<void>; migrateExistingAppTable?: (existingTable: any, nextTable: any) => Promise<void>; listInspectableTables?: () => Promise<any>; dumpInspectableDatabase?: () => Promise<{ name: any; columns: any; rows: any; }[]>; runReadOnlyInspectionQuery?: (sql: any) => Promise<{ ok: boolean; data: { columns: any; rows: any; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }>; checkHealth?: () => Promise<{ ok: boolean; }>; withTransaction?: (fn: any) => Promise<any>; close?: () => Promise<void>; exec: any; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; findAuthUserByProviderEmail?: (provider: any, email: any) => Record<string, SQLOutputValue> | null; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; createAppTable?: (table: any, tableName?: any) => any; referenceExists?: (field: any, value: any) => boolean; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; }) {
   const columns = await sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
-  const hasExpiresAt = columns.some((column) => column.name === "expiresAt");
+  const hasExpiresAt = columns.some((column: { name: string; }) => column.name === "expiresAt");
   if (!hasExpiresAt) {
     await sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN expiresAt TEXT");
     await sqlite
@@ -6397,7 +6485,7 @@ async function ensureLibsqlSessionLifecycleColumns(sqlite) {
   }
 }
 
-function splitSqlStatements(sql) {
+function splitSqlStatements(sql: any) {
   const statements = [];
   let start = 0;
   let quote = null;
@@ -6475,7 +6563,7 @@ function sessionExpiresAt(from = new Date().toISOString()) {
   return new Date(Date.parse(from) + sessionLifetimeMs).toISOString();
 }
 
-function isExpiredSession(row) {
+function isExpiredSession(row: { expiresAt: string; }) {
   return Date.parse(row.expiresAt) <= Date.now();
 }
 
@@ -6483,21 +6571,21 @@ function createSessionToken() {
   return randomBytes(32).toString("base64url");
 }
 
-async function refreshSession(database, token) {
+async function refreshSession(database: LooseRecord, token: any) {
   const now = new Date().toISOString();
   const expiresAt = sessionExpiresAt(now);
   await database.sqlite.refreshAuthSession(token, expiresAt);
   return expiresAt;
 }
 
-async function rotateSession(database, session, userId) {
+async function rotateSession(database: LooseRecord, session: LooseRecord, userId: any) {
   const now = new Date().toISOString();
   const token = createSessionToken();
   await database.sqlite.rotateAuthSession(session.token, { token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
   return token;
 }
 
-export async function resolveAnonymousSession(database, sessionToken) {
+export async function resolveAnonymousSession(database: LooseRecord, sessionToken: string | null) {
   if (sessionToken) {
     const existing = await database.sqlite.readAuthSessionWithUser(sessionToken);
     if (existing) {
@@ -6537,7 +6625,7 @@ export async function resolveAnonymousSession(database, sessionToken) {
   };
 }
 
-function sessionFromRow(row) {
+function sessionFromRow(row: { token: any; userId: any; displayName: any; email: any; picture: any; isAuthenticated: any; isGuest: any; provider: any; }) {
   return {
     token: row.token,
     auth: {
@@ -6552,13 +6640,13 @@ function sessionFromRow(row) {
   };
 }
 
-function createWebSocketAccept(key) {
+function createWebSocketAccept(key: any) {
   return createHash("sha1")
     .update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`)
     .digest("base64");
 }
 
-function drainWebSocketFrames(client, onMessage) {
+function drainWebSocketFrames(client: LooseRecord, onMessage: (message: any) => void) {
   while (client.buffer.length >= 2) {
     const firstByte = client.buffer[0];
     const secondByte = client.buffer[1];
@@ -6601,7 +6689,7 @@ function drainWebSocketFrames(client, onMessage) {
   }
 }
 
-function closeWebSocketClient(client) {
+function closeWebSocketClient(client: LooseRecord) {
   if (client.closing || client.socket.destroyed) {
     return;
   }
@@ -6615,7 +6703,7 @@ function closeWebSocketClient(client) {
   }
 }
 
-function sendJson(client, message) {
+function sendJson(client: LooseRecord, message: LooseRecord) {
   const payload = Buffer.from(JSON.stringify(message));
   let header;
   if (payload.length < 126) {
@@ -6634,13 +6722,13 @@ function sendJson(client, message) {
   client.socket.write(Buffer.concat([header, payload]));
 }
 
-export async function runQuery(database, auth, queryName) {
+export async function runQuery(database: LooseRecord, auth: any, queryName: string): Promise<any> {
   let context;
   try {
     context = await applyContextMiddleware(database, createMutationContext(database, auth), "query");
-  } catch (error) {
+  } catch (error: any) {
     return {
-      rows: null,
+      rows: null as any,
       error: {
         message: error.message,
         hint: error.hint ?? "Check the Capsule context middleware and retry the query.",
@@ -6670,13 +6758,13 @@ export async function runQuery(database, auth, queryName) {
 
   const cacheKey = `${table.name}:${context.auth.userId}`;
   if (!database.rowCache.has(cacheKey)) {
-    const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
-    const ownerScoped = table.fields.some((field) => field.name === "ownerId");
+    const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field: { name: any; }) => field.name)];
+    const ownerScoped = table.fields.some((field: { name: string; }) => field.name === "ownerId");
     const rows = (await database.sqlite.selectAppRows(table, {
         columns,
         ownerId: ownerScoped ? context.auth.userId : undefined,
         orderBy: { fieldName: "createdAt", direction: "desc" },
-      })).map((row) => rowToApiValue(row, table));
+      })).map((row: any) => rowToApiValue(row, table));
     database.rowCache.set(cacheKey, rows);
   }
 
@@ -6684,8 +6772,8 @@ export async function runQuery(database, auth, queryName) {
   return { rows, error: null };
 }
 
-async function runCustomQuery(database, context, queryName) {
-  const handler = database.queries.find((candidate) => candidate.name === queryName);
+async function runCustomQuery(database: LooseRecord, context: any, queryName: any) {
+  const handler = database.queries.find((candidate: { name: any; }) => candidate.name === queryName);
   if (!handler) {
     return null;
   }
@@ -6697,10 +6785,10 @@ async function runCustomQuery(database, context, queryName) {
         : new Function(`return (${handler.handlerSource});`)();
     const data = await queryHandler(context);
     assertJsonCompatible(data);
-    return { data, error: null };
-  } catch (error) {
+    return { data, error: null as any };
+  } catch (error: any) {
     return {
-      data: null,
+      data: null as any,
       error: {
         message: error?.message || "Query handler failed.",
         hint: error?.hint ?? "Check the Capsule query handler and retry the query.",
@@ -6709,11 +6797,11 @@ async function runCustomQuery(database, context, queryName) {
   }
 }
 
-export async function runMutation(database, auth, mutationName, args) {
+export async function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any) {
   let context;
   let result;
   try {
-    return await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
+    return await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = transactionAdapter
         ? { ...database, adapter: transactionAdapter, sqlite: transactionAdapter }
         : database;
@@ -6740,7 +6828,7 @@ export async function runMutation(database, auth, mutationName, args) {
 
       return result;
     });
-  } catch (error) {
+  } catch (error: any) {
     database.rowCache.clear();
     if (error?.sporadesAclDenialLogData) {
       emitAclDeniedLog(database, { data: error.sporadesAclDenialLogData });
@@ -6749,8 +6837,8 @@ export async function runMutation(database, auth, mutationName, args) {
   }
 }
 
-async function runCustomMutation(database, context, mutationName, args) {
-  const handler = database.mutations.find((candidate) => candidate.name === mutationName);
+async function runCustomMutation(database: LooseRecord, context: any, mutationName: any, args: any): Promise<any> {
+  const handler = database.mutations.find((candidate: { name: any; }) => candidate.name === mutationName);
   if (!handler) {
     return null;
   }
@@ -6769,13 +6857,13 @@ async function runCustomMutation(database, context, mutationName, args) {
   if (result !== undefined) {
     assertJsonCompatible(result);
   }
-  return { ok: true, data: result ?? null, error: null };
+  return { ok: true, data: result ?? null, error: null as any };
 }
 
-async function runAppMessage(database, auth, messageName, data, options = {}) {
+async function runAppMessage(database: LooseRecord, auth: any, messageName: any, data: any, options: LooseRecord = {}) {
   if (!messageName) {
     return {
-      data: null,
+      data: null as any,
       error: {
         message: "Missing app message type.",
         hint: "Pass an unprefixed message name declared by the Capsule.",
@@ -6785,9 +6873,9 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
 
   try {
     validateAppMessageType(messageName);
-  } catch (error) {
+  } catch (error: any) {
     return {
-      data: null,
+      data: null as any,
       error: {
         message: error.message,
         hint: error.hint,
@@ -6795,7 +6883,7 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
     };
   }
 
-  const handler = database.messages.find((candidate) => candidate.name === messageName);
+  const handler = database.messages.find((candidate: { name: any; }) => candidate.name === messageName);
   if (!handler) {
     return {
       data: null,
@@ -6820,8 +6908,8 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
     if (result !== undefined) {
       assertJsonCompatible(result);
     }
-    return { data: result ?? null, error: null };
-  } catch (error) {
+    return { data: result ?? null, error: null as any };
+  } catch (error: any) {
     return {
       data: null,
       error: {
@@ -6832,7 +6920,7 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
   }
 }
 
-function validateAppMessageType(type) {
+function validateAppMessageType(type: any) {
   const value = String(type ?? "");
   const reservedPrefixes = ["app.", "auth.", "query.", "mutation.", "file.", "files.", "runtime.", "upload."];
   const reservedExact = new Set(["error", "refresh"]);
@@ -6850,15 +6938,15 @@ function validateAppMessageType(type) {
   }
 }
 
-function isAllAppMessageScope(scope) {
+function isAllAppMessageScope(scope: any) {
   return scope === "all" || scope?.scope === "all";
 }
 
-function createMessageContext(database, auth, sendAppMessage) {
+function createMessageContext(database: LooseRecord, auth: any, sendAppMessage: any) {
   return {
     ...createMutationContext(database, auth),
     messages: {
-      send(appMessage) {
+      send(appMessage: { type: any; scope: any; data: undefined; }) {
         validateAppMessageType(appMessage?.type);
         if (isAllAppMessageScope(appMessage?.scope)) {
           throw commandError(
@@ -6875,14 +6963,14 @@ function createMessageContext(database, auth, sendAppMessage) {
   };
 }
 
-async function runMutationHook(hookSource, event) {
+async function runMutationHook(hookSource: any, event: { name: any; args: any; ctx: any; result?: { ok: boolean; error: { message: any; hint: any; }; } | { ok: boolean; error: null; }; }) {
   const createHook = new Function(`return (${hookSource});`);
   const hook = createHook();
   return await hook(event);
 }
 
-function createMutationContext(database, auth) {
-  const context = {
+function createMutationContext(database: LooseRecord, auth: any) {
+  const context: LooseRecord = {
     auth,
     env: database.serverEnv,
     log: createEndpointLogger(database),
@@ -6893,14 +6981,14 @@ function createMutationContext(database, auth) {
   return context;
 }
 
-async function drainPendingAclWrites(context) {
+async function drainPendingAclWrites(context: LooseRecord) {
   while (context?.__pendingAclWrites?.length > 0) {
     const pending = context.__pendingAclWrites.splice(0);
     await Promise.all(pending);
   }
 }
 
-function createHookErrorResult(error) {
+function createHookErrorResult(error: any) {
   return {
     ok: false,
     error: {
@@ -6911,7 +6999,7 @@ function createHookErrorResult(error) {
   };
 }
 
-async function runInsertMutation(database, context, mutationName, args) {
+async function runInsertMutation(database: LooseRecord, context: LooseRecord, mutationName: any, args: any[]) {
   const table = resolveTableForAddMutation(database.schema, mutationName);
   if (!table) {
     return {
@@ -6924,7 +7012,7 @@ async function runInsertMutation(database, context, mutationName, args) {
   }
 
   const now = new Date().toISOString();
-  const values = {
+  const values: LooseRecord = {
     id: randomUUID(),
     createdAt: now,
     updatedAt: now,
@@ -6939,7 +7027,7 @@ async function runInsertMutation(database, context, mutationName, args) {
         values[field.name] = String(args[0] ?? "");
         continue;
       }
-      const positionalIndex = table.fields.filter((candidate) => candidate.name !== "ownerId").indexOf(field);
+      const positionalIndex = table.fields.filter((candidate: { name: string; }) => candidate.name !== "ownerId").indexOf(field);
       if (args[positionalIndex] !== undefined) {
         values[field.name] = await fieldValueForWrite(database, field, args[positionalIndex]);
         continue;
@@ -6950,10 +7038,10 @@ async function runInsertMutation(database, context, mutationName, args) {
         values[field.name] = null;
       }
     }
-  } catch (error) {
+  } catch (error: any) {
     return { ok: false, error: { message: error.message, hint: error.hint } };
   }
-  const missingField = table.fields.find((field) => values[field.name] === undefined);
+  const missingField = table.fields.find((field: { name: string | number; }) => values[field.name] === undefined);
   if (missingField) {
     return {
       ok: false,
@@ -6971,7 +7059,7 @@ async function runInsertMutation(database, context, mutationName, args) {
   return { ok: true, error: null };
 }
 
-async function runUpdateMutation(database, context, mutationName, args) {
+async function runUpdateMutation(database: LooseRecord, context: LooseRecord, mutationName: any, args: any[]) {
   const resolved = resolveTableForUpdateMutation(database.schema, mutationName);
   if (!resolved) {
     return {
@@ -7004,7 +7092,7 @@ async function runUpdateMutation(database, context, mutationName, args) {
   }
 
   const now = new Date().toISOString();
-  const ownerScoped = resolved.table.fields.some((field) => field.name === "ownerId");
+  const ownerScoped = resolved.table.fields.some((field: { name: string; }) => field.name === "ownerId");
   const previousRow =
     (await database.sqlite.selectAppRows(resolved.table, {
       ownerId: ownerScoped ? context.auth.userId : undefined,
@@ -7014,7 +7102,7 @@ async function runUpdateMutation(database, context, mutationName, args) {
   let nextValue;
   try {
     nextValue = await fieldValueForWrite(database, resolved.field, value);
-  } catch (error) {
+  } catch (error: any) {
     return { ok: false, error: { message: error.message, hint: error.hint } };
   }
 
@@ -7044,8 +7132,8 @@ async function runUpdateMutation(database, context, mutationName, args) {
   return { ok: true, error: null };
 }
 
-function formatMutationResult(message, mutationName, result) {
-  const formatted = {
+function formatMutationResult(message: LooseRecord, mutationName: any, result: LooseRecord) {
+  const formatted: LooseRecord = {
     id: message.id,
     type: "mutation.result",
     data: result.data ?? null,
@@ -7059,12 +7147,12 @@ function formatMutationResult(message, mutationName, result) {
   return formatted;
 }
 
-function authStatus(config, serverEnv) {
+function authStatus(config: LooseRecord, serverEnv: LooseRecord) {
   const authConfig = config.auth ?? { mode: "anonymous" };
   const normalized = normalizeAuthConfig(authConfig);
   const clientIdEnv = normalized.providers.google.clientIdEnv;
   const clientSecretEnv = normalized.providers.google.clientSecretEnv;
-  const providers = {
+  const providers: LooseRecord = {
     anonymous: {
       enabled: normalized.providers.anonymous.enabled,
     },
@@ -7091,7 +7179,7 @@ function authStatus(config, serverEnv) {
   };
 }
 
-function normalizeAuthConfig(authConfig) {
+function normalizeAuthConfig(authConfig: LooseRecord) {
   const providerConfig = authConfig.providers ?? {};
   for (const provider of Object.keys(providerConfig)) {
     if (!["anonymous", "google", "email"].includes(provider)) {
@@ -7128,7 +7216,7 @@ function normalizeAuthConfig(authConfig) {
   };
 }
 
-function readProviderConfig(config) {
+function readProviderConfig(config: any) {
   if (config === true) {
     return { enabled: true };
   }
@@ -7142,9 +7230,9 @@ function readProviderConfig(config) {
   };
 }
 
-function authProvidersForClient(authConfig) {
-  const providers = {};
-  for (const [name, provider] of Object.entries(authConfig.providers)) {
+function authProvidersForClient(authConfig: LooseRecord) {
+  const providers: LooseRecord = {};
+  for (const [name, provider] of Object.entries(authConfig.providers) as [string, any][]) {
     if (name === "google") {
       providers.google = {
         enabled: provider.enabled,
@@ -7159,37 +7247,37 @@ function authProvidersForClient(authConfig) {
   return providers;
 }
 
-function resolveTableForQuery(schema, queryName) {
-  return schema.tables.find((table) => table.name === queryName) ?? null;
+function resolveTableForQuery(schema: { tables: any[]; }, queryName: any) {
+  return schema.tables.find((table: { name: any; }) => table.name === queryName) ?? null;
 }
 
-function resolveTableForAddMutation(schema, mutationName) {
+function resolveTableForAddMutation(schema: { tables: any[]; }, mutationName: string) {
   if (!mutationName.startsWith("add") || mutationName.length <= 3) {
     return null;
   }
   const tableName = tableNameForSingular(mutationName.slice(3));
-  return schema.tables.find((table) => table.name === tableName) ?? null;
+  return schema.tables.find((table: { name: string; }) => table.name === tableName) ?? null;
 }
 
-function resolveTableForUpdateMutation(schema, mutationName) {
+function resolveTableForUpdateMutation(schema: { tables: any[]; }, mutationName: string) {
   const match = mutationName.match(/^update([A-Z][A-Za-z0-9]*?)([A-Z][A-Za-z0-9]*)$/);
   if (!match) {
     return null;
   }
-  const table = schema.tables.find((candidate) => candidate.name === tableNameForSingular(match[1]));
+  const table = schema.tables.find((candidate: { name: string; }) => candidate.name === tableNameForSingular(match[1]));
   if (!table) {
     return null;
   }
   const fieldName = `${match[2][0].toLowerCase()}${match[2].slice(1)}`;
-  const field = table.fields.find((candidate) => candidate.name === fieldName);
+  const field = table.fields.find((candidate: { name: string; }) => candidate.name === fieldName);
   return field ? { table, field } : null;
 }
 
-function tableNameForSingular(singular) {
+function tableNameForSingular(singular: string) {
   return `${singular[0].toLowerCase()}${singular.slice(1)}s`;
 }
 
-function rowToApiValue(row, table) {
+function rowToApiValue(row: any, table: { fields: any; }) {
   const value = { ...row };
   for (const field of table.fields) {
     if (field.kind === "Boolean") {
@@ -7204,13 +7292,13 @@ function rowToApiValue(row, table) {
   return value;
 }
 
-function toSqlNumber(value, fieldName) {
+function toSqlNumber(value: unknown, fieldName: any) {
   if (typeof value !== "number" || !Number.isFinite(value)) {
     throw commandError(`Invalid number for field: ${fieldName}`, "Pass a finite JavaScript number for Number() fields.");
   }
   return value;
 }
 
-function quoteIdentifier(identifier) {
-  return `"${identifier.replaceAll('"', '""')}"`;
+function quoteIdentifier(identifier: any) {
+  return `"${String(identifier).replaceAll('"', '""')}"`;
 }

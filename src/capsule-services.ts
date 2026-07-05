@@ -1,7 +1,93 @@
-// @ts-nocheck
 import { randomBytes } from "node:crypto";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+
+type JsonRecord = Record<string, unknown>;
+type HelperError = Error & { hint?: string };
+type DatabaseEngine = "libsql" | "postgres";
+type StorageEngine = "minio";
+type CapsuleServiceKind = "database" | "storage";
+type CapsuleServiceCredentials = {
+  databaseUser: string;
+  databasePassword: string;
+  storageAccessKey: string;
+  storageSecretKey: string;
+};
+type CapsuleServiceOptions = {
+  credentials?: Partial<CapsuleServiceCredentials>;
+  publishPorts?: boolean;
+};
+type DatabaseServiceDeclaration = {
+  kind: "database";
+  engine: DatabaseEngine;
+};
+type StorageServiceDeclaration = {
+  kind: "storage";
+  engine: StorageEngine;
+};
+type CapsuleServicesDeclaration = JsonRecord & {
+  database?: DatabaseServiceDeclaration;
+  storage?: StorageServiceDeclaration;
+};
+type CapsuleProjectConfig = JsonRecord & {
+  name?: unknown;
+  services?: CapsuleServicesDeclaration;
+};
+type CapsuleServiceBase = {
+  kind: CapsuleServiceKind;
+  name: string;
+  engine: string;
+  image: string;
+  stateDir: string;
+  targetPort: number;
+  volumeTarget: string;
+  environment: Record<string, string>;
+  healthcheck: string[];
+  command: string | null;
+  labels: Record<string, string>;
+};
+type CapsuleDatabaseService = CapsuleServiceBase & {
+  kind: "database";
+  engine: DatabaseEngine;
+  user: string;
+  password: string;
+  databaseName: string;
+};
+type CapsuleStorageService = CapsuleServiceBase & {
+  kind: "storage";
+  engine: StorageEngine;
+  accessKey: string;
+  secretKey: string;
+  bucket: string;
+  region: string;
+  namespace: string;
+};
+type CapsuleService = CapsuleDatabaseService | CapsuleStorageService;
+type CapsuleServices = {
+  database?: CapsuleDatabaseService;
+  storage?: CapsuleStorageService;
+};
+type CapsuleServicesComposeModel = {
+  projectSlug: string;
+  composeProjectName: string;
+  publishPorts: boolean;
+  credentials: CapsuleServiceCredentials;
+  services: CapsuleServices;
+  networks: { services: string };
+  labels: Record<string, string>;
+};
+type DatabaseEngineModel = {
+  engine: DatabaseEngine;
+  image: string;
+  targetPort: number;
+  volumeTarget: string;
+  environment: Record<string, string>;
+  healthcheck: string[];
+};
+type WrittenCapsuleServicesCompose = CapsuleServicesComposeModel & {
+  path: string;
+  relativePath: string;
+};
 
 const SUPPORTED_SERVICE_KEYS = new Set(["database", "storage"]);
 const SUPPORTED_DATABASE_ENGINES = new Set(["libsql", "postgres"]);
@@ -19,11 +105,11 @@ export const CAPSULE_SERVICES_COMPOSE_FILE = path.join(".sporades", "compose", "
 export const CAPSULE_SERVICES_STATE_DIR = path.join(".sporades", "services");
 export const CAPSULE_SERVICES_CREDENTIALS_FILE = path.join(".sporades", "services", "credentials.json");
 
-export function validateCapsuleServicesConfig(services) {
+export function validateCapsuleServicesConfig(services: unknown): CapsuleServicesDeclaration | null {
   if (services === undefined) {
     return null;
   }
-  if (!services || typeof services !== "object" || Array.isArray(services)) {
+  if (!isRecord(services)) {
     throw commandError("Invalid Capsule services declaration.", "Set `services` in sporades.json to an object.");
   }
 
@@ -46,7 +132,11 @@ export function validateCapsuleServicesConfig(services) {
   return services;
 }
 
-export async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
+export async function writeCapsuleServicesCompose(
+  projectDir: string,
+  config: CapsuleProjectConfig,
+  options: CapsuleServiceOptions = {},
+): Promise<WrittenCapsuleServicesCompose | null> {
   const composePath = path.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   if (!hasDeclaredCapsuleServices(config)) {
     await rm(composePath, { force: true });
@@ -70,12 +160,12 @@ export async function writeCapsuleServicesCompose(projectDir, config, options = 
   };
 }
 
-async function loadOrCreateCapsuleServiceCredentials(projectDir) {
+async function loadOrCreateCapsuleServiceCredentials(projectDir: string): Promise<CapsuleServiceCredentials> {
   const credentialsPath = path.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
-  let existing = {};
+  let existing: JsonRecord = {};
   try {
     const parsed = JSON.parse(await readFile(credentialsPath, "utf8"));
-    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+    if (isRecord(parsed)) {
       existing = parsed;
     }
   } catch {
@@ -106,7 +196,11 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
   return credentials;
 }
 
-export function capsuleServicesComposeModel(config, projectDir = process.cwd(), options = {}) {
+export function capsuleServicesComposeModel(
+  config: CapsuleProjectConfig,
+  projectDir = process.cwd(),
+  options: CapsuleServiceOptions = {},
+): CapsuleServicesComposeModel {
   const credentials = options.credentials ?? {};
   const databaseUser = credentials.databaseUser ?? POSTGRES_USER;
   const databasePassword = credentials.databasePassword ?? "";
@@ -114,13 +208,18 @@ export function capsuleServicesComposeModel(config, projectDir = process.cwd(), 
   const storageSecretKey = credentials.storageSecretKey ?? "";
   const projectSlug = slugify(config.name ?? "capsule");
   const networkName = `sporades-${projectSlug}-services`;
-  const services = {};
+  const services: CapsuleServices = {};
   const database = config.services?.database;
   const storage = config.services?.storage;
+  const labels = {
+    "com.sporades.managed": "true",
+    "com.sporades.runtime-state": "true",
+    "com.sporades.project": projectSlug,
+  };
 
   if (database) {
     const engine = database.engine ?? "libsql";
-    const engineModel =
+    const engineModel: DatabaseEngineModel =
       engine === "postgres"
         ? {
             engine,
@@ -153,6 +252,7 @@ export function capsuleServicesComposeModel(config, projectDir = process.cwd(), 
       environment: engineModel.environment,
       healthcheck: engineModel.healthcheck,
       command: null,
+      labels: serviceLabels(labels, "database", engineModel.engine),
       user: databaseUser,
       password: databasePassword,
       databaseName: POSTGRES_DATABASE,
@@ -174,6 +274,7 @@ export function capsuleServicesComposeModel(config, projectDir = process.cwd(), 
       },
       healthcheck: ["CMD", "curl", "-fsS", "http://127.0.0.1:9000/minio/health/ready"],
       command: 'server /data --console-address ":9001"',
+      labels: serviceLabels(labels, "storage", "minio"),
       accessKey: storageAccessKey,
       secretKey: storageSecretKey,
       bucket: MINIO_BUCKET,
@@ -196,24 +297,13 @@ export function capsuleServicesComposeModel(config, projectDir = process.cwd(), 
     networks: {
       services: networkName,
     },
-    labels: {
-      "com.sporades.managed": "true",
-      "com.sporades.runtime-state": "true",
-      "com.sporades.project": projectSlug,
-    },
+    labels,
   };
-  for (const service of Object.values(model.services)) {
-    service.labels = {
-      ...model.labels,
-      "com.sporades.capsule-service.kind": service.kind,
-      "com.sporades.capsule-service.engine": service.engine,
-    };
-  }
   return model;
 }
 
-function validateDatabaseServiceConfig(database) {
-  if (!database || typeof database !== "object" || Array.isArray(database)) {
+function validateDatabaseServiceConfig(database: unknown): asserts database is DatabaseServiceDeclaration {
+  if (!isRecord(database)) {
     throw commandError(
       "Invalid database Capsule service declaration.",
       "Set `services.database` to `{ \"kind\": \"database\", \"engine\": \"libsql\" }` or `{ \"kind\": \"database\", \"engine\": \"postgres\" }`.",
@@ -225,7 +315,7 @@ function validateDatabaseServiceConfig(database) {
       "Use `services.database.kind` of `database`.",
     );
   }
-  if (!SUPPORTED_DATABASE_ENGINES.has(database.engine)) {
+  if (typeof database.engine !== "string" || !SUPPORTED_DATABASE_ENGINES.has(database.engine)) {
     throw commandError(
       `Unsupported database Capsule service engine: ${database.engine ?? "missing"}`,
       "Use `services.database.engine` of `libsql` or `postgres`.",
@@ -233,8 +323,8 @@ function validateDatabaseServiceConfig(database) {
   }
 }
 
-function validateStorageServiceConfig(storage) {
-  if (!storage || typeof storage !== "object" || Array.isArray(storage)) {
+function validateStorageServiceConfig(storage: unknown): asserts storage is StorageServiceDeclaration {
+  if (!isRecord(storage)) {
     throw commandError(
       "Invalid storage Capsule service declaration.",
       "Set `services.storage` to `{ \"kind\": \"storage\", \"engine\": \"minio\" }`.",
@@ -246,7 +336,7 @@ function validateStorageServiceConfig(storage) {
       "Use `services.storage.kind` of `storage`.",
     );
   }
-  if (!SUPPORTED_STORAGE_ENGINES.has(storage.engine)) {
+  if (typeof storage.engine !== "string" || !SUPPORTED_STORAGE_ENGINES.has(storage.engine)) {
     throw commandError(
       `Unsupported storage Capsule service engine: ${storage.engine ?? "missing"}`,
       "Use `services.storage.engine` of `minio`.",
@@ -254,7 +344,7 @@ function validateStorageServiceConfig(storage) {
   }
 }
 
-function renderCapsuleServicesCompose(model) {
+function renderCapsuleServicesCompose(model: CapsuleServicesComposeModel): string {
   const services = Object.values(model.services)
     .map((service) => renderServiceCompose(service, model))
     .join("\n");
@@ -274,7 +364,7 @@ ${renderLabels(model.labels, 6)}
 `;
 }
 
-function renderServiceCompose(service, model) {
+function renderServiceCompose(service: CapsuleService, model: CapsuleServicesComposeModel): string {
   // Ports are published (loopback-only) solely for local dev sessions, where the
   // Capsule runs as a host process. Container sessions reach services by name on
   // the project network; publishing a port would also open it to containers on
@@ -297,7 +387,7 @@ ${ports}    volumes:
 `;
 }
 
-function renderHealthcheck(healthcheck, indent) {
+function renderHealthcheck(healthcheck: string[] | null, indent: number): string {
   if (!healthcheck) {
     return "";
   }
@@ -312,7 +402,7 @@ ${padding}  start_interval: 1s
 `;
 }
 
-function renderCommand(command, indent) {
+function renderCommand(command: string | null, indent: number): string {
   if (!command) {
     return "";
   }
@@ -320,7 +410,7 @@ function renderCommand(command, indent) {
   return `${padding}command: ${JSON.stringify(command)}\n`;
 }
 
-function renderEnvironment(environment, indent) {
+function renderEnvironment(environment: Record<string, string>, indent: number): string {
   const entries = Object.entries(environment ?? {});
   if (entries.length === 0) {
     return "";
@@ -329,14 +419,14 @@ function renderEnvironment(environment, indent) {
   return `${padding}environment:\n${entries.map(([key, value]) => `${padding}  ${key}: ${JSON.stringify(value)}`).join("\n")}\n`;
 }
 
-function renderLabels(labels, indent) {
+function renderLabels(labels: Record<string, string>, indent: number): string {
   const padding = " ".repeat(indent);
   return Object.entries(labels)
     .map(([key, value]) => `${padding}${key}: ${JSON.stringify(value)}`)
     .join("\n");
 }
 
-function slugify(value) {
+function slugify(value: unknown): string {
   const slug = String(value)
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
@@ -344,12 +434,24 @@ function slugify(value) {
   return slug || "capsule";
 }
 
-function hasDeclaredCapsuleServices(config) {
+function hasDeclaredCapsuleServices(config: CapsuleProjectConfig): boolean {
   return Boolean(config.services?.database || config.services?.storage);
 }
 
-function commandError(message, hint) {
-  const error = new Error(message);
+function serviceLabels(labels: Record<string, string>, kind: CapsuleServiceKind, engine: string): Record<string, string> {
+  return {
+    ...labels,
+    "com.sporades.capsule-service.kind": kind,
+    "com.sporades.capsule-service.engine": engine,
+  };
+}
+
+function isRecord(value: unknown): value is JsonRecord {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function commandError(message: string, hint: string): HelperError {
+  const error: HelperError = new Error(message);
   error.hint = hint;
   return error;
 }

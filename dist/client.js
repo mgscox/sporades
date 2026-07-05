@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 const runtime = await import(`data:text/javascript,${encodeURIComponent(createClientRuntimeSource())}`);
 export const auth = runtime.auth;

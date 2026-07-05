@@ -1,8 +1,7 @@
-// @ts-nocheck
-export function scaffoldFiles(options) {
+export function scaffoldFiles(options: { sporadesDependency?: any; template?: any; framework?: any; name?: any; }) {
   const templateOptions = resolveTemplateOptions(options.template);
   const framework = options.framework ?? templateOptions.framework;
-  const renderOptions = { ...options, framework };
+  const renderOptions = { ...options, name: options.name, framework };
   const packageName = options.name;
   const sporadesDependency = options.sporadesDependency ?? "sporades";
   const frameworkDependencies =
@@ -84,7 +83,7 @@ export function scaffoldFiles(options) {
   };
 }
 
-function resolveTemplateOptions(template) {
+function resolveTemplateOptions(template: any) {
   switch (template) {
     case "todo":
       return {
@@ -127,7 +126,7 @@ function resolveTemplateOptions(template) {
   }
 }
 
-function blankTemplateFiles(options) {
+function blankTemplateFiles(options: { name: any; framework: any; }) {
   return {
     "README.md": `# ${options.name}\n\nA blank Sporades capsule.\n`,
     "server/index.ts": `import { capsule } from "sporades/server";
@@ -145,7 +144,7 @@ export default capsule({
   };
 }
 
-function todoTemplateFiles(options) {
+function todoTemplateFiles(options: { name: any; framework: any; }) {
   return {
     "README.md": `# ${options.name}\n\nA Sporades todo capsule.\n`,
     "server/index.ts": `import { Boolean, capsule, mutation, query, String, table } from "sporades/server";
@@ -189,7 +188,7 @@ export default capsule({
   };
 }
 
-function guestbookTemplateFiles(options) {
+function guestbookTemplateFiles(options: { name: any; framework: any; }) {
   return {
     "README.md": `# ${options.name}
 
@@ -254,7 +253,7 @@ export default capsule({
   };
 }
 
-function photoLibraryTemplateFiles(options) {
+function photoLibraryTemplateFiles(options: { name: any; framework: any; }) {
   return {
     "README.md": `# ${options.name}
 
@@ -369,7 +368,7 @@ export default capsule({
   };
 }
 
-function blankClientTemplate(framework) {
+function blankClientTemplate(framework: string) {
   if (framework === "preact") {
     return `import { render } from "preact";
 
@@ -401,7 +400,7 @@ createRoot(document.getElementById("app")!).render(<App />);
 `;
 }
 
-function todoClientTemplate(framework) {
+function todoClientTemplate(framework: string) {
   if (framework === "preact") {
     return `import { render } from "preact";
 import { useState, useEffect } from "preact/hooks";
@@ -493,7 +492,7 @@ createRoot(document.getElementById("app")!).render(<App />);
 `;
 }
 
-function guestbookClientTemplate(framework) {
+function guestbookClientTemplate(framework: string) {
   if (framework === "preact") {
     return `import { render } from "preact";
 import { useState, useEffect } from "preact/hooks";
@@ -763,7 +762,7 @@ const styles = \`
 `;
 }
 
-function photoLibraryClientTemplate(framework) {
+function photoLibraryClientTemplate(framework: string) {
   if (framework === "preact") {
     return `import { render } from "preact";
 import { useState, useEffect } from "preact/hooks";
@@ -1175,7 +1174,7 @@ const styles = \`
 `;
 }
 
-function agentsTemplate(template) {
+function agentsTemplate(template: any) {
   return `# Sporades App Instructions
 
 This directory is for a Sporades app. Sporades is a CLI-first tool for building and running full-stack web apps.
@@ -1216,14 +1215,13 @@ sporades db dump
 `;
 }
 
-function escapeHtml(value) {
-  return value.replace(/[&<>"']/g, (char) => {
-    return {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;",
-    }[char];
-  });
+function escapeHtml(value: string) {
+  const replacements: Record<string, string> = {
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  };
+  return value.replace(/[&<>"']/g, (char) => replacements[char] ?? char);
 }

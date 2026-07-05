@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv } from "./sealed-server-env.js";
@@ -115,10 +114,14 @@ async function bundleServerCapsuleModule(options) {
             },
             plugins: [sporadesServerPlugin()],
         });
-        return result.outputFiles[0].text;
+        const output = result.outputFiles?.[0];
+        if (!output) {
+            throw commandError("Server bundle failed: esbuild returned no output.", "Fix server/index.ts and save again.");
+        }
+        return output.text;
     }
     catch (error) {
-        const message = error.errors?.[0]?.text ?? error.message;
+        const message = bundleErrorMessage(error);
         throw commandError(`Server bundle failed: ${message}`, "Fix server/index.ts and save again.");
     }
 }
@@ -131,7 +134,7 @@ export async function readServerEnvFile(envPath) {
         return { exists: true, raw };
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorDetails(error).code === "ENOENT") {
             return { exists: false, raw: "" };
         }
         throw error;
@@ -201,19 +204,19 @@ export function authStatus(config, serverEnv) {
     };
 }
 function normalizeAuthConfig(authConfig) {
-    const providerConfig = authConfig.providers ?? {};
+    const providerConfig = isRecord(authConfig.providers) ? authConfig.providers : {};
     for (const provider of Object.keys(providerConfig)) {
         if (!SUPPORTED_AUTH_PROVIDERS.has(provider)) {
             throw commandError(`Unsupported auth provider: ${provider}`, "Use supported auth providers: anonymous, google, email.");
         }
     }
     const googleConfig = readProviderConfig(providerConfig.google);
-    const legacyGoogle = authConfig.google ?? {};
+    const legacyGoogle = readProviderConfig(authConfig.google);
     const googleEnabled = googleConfig.enabled || authConfig.mode === "google";
     const emailConfig = readProviderConfig(providerConfig.email);
     const anonymousConfig = readProviderConfig(providerConfig.anonymous);
     const anonymousEnabled = providerConfig.anonymous === undefined ? true : anonymousConfig.enabled;
-    const mode = authConfig.mode ?? (googleEnabled ? "google" : "anonymous");
+    const mode = typeof authConfig.mode === "string" ? authConfig.mode : googleEnabled ? "google" : "anonymous";
     return {
         mode,
         providers: {
@@ -222,8 +225,8 @@ function normalizeAuthConfig(authConfig) {
             },
             google: {
                 enabled: googleEnabled,
-                clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv ?? null,
-                clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv ?? null,
+                clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv,
+                clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv,
             },
             email: {
                 enabled: emailConfig.enabled,
@@ -233,15 +236,18 @@ function normalizeAuthConfig(authConfig) {
 }
 function readProviderConfig(config) {
     if (config === true) {
-        return { enabled: true };
+        return { enabled: true, clientIdEnv: null, clientSecretEnv: null };
     }
     if (config === false || config === undefined || config === null) {
-        return { enabled: false };
+        return { enabled: false, clientIdEnv: null, clientSecretEnv: null };
+    }
+    if (!isRecord(config)) {
+        return { enabled: false, clientIdEnv: null, clientSecretEnv: null };
     }
     return {
         enabled: config.enabled !== false,
-        clientIdEnv: config.clientIdEnv ?? null,
-        clientSecretEnv: config.clientSecretEnv ?? null,
+        clientIdEnv: typeof config.clientIdEnv === "string" ? config.clientIdEnv : null,
+        clientSecretEnv: typeof config.clientSecretEnv === "string" ? config.clientSecretEnv : null,
     };
 }
 function validateAuthConfig(config, serverEnv) {
@@ -258,18 +264,17 @@ async function readRequiredFile(filePath, message, hint) {
         return await readFile(filePath, "utf8");
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorDetails(error).code === "ENOENT") {
             throw commandError(message, hint);
         }
         throw error;
     }
 }
 function readFrameworkBundleConfig(framework) {
-    const frameworkBundleConfig = FRAMEWORK_BUNDLE_CONFIG[framework];
-    if (!frameworkBundleConfig) {
+    if (typeof framework !== "string" || !(framework in FRAMEWORK_BUNDLE_CONFIG)) {
         throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact.");
     }
-    return frameworkBundleConfig;
+    return FRAMEWORK_BUNDLE_CONFIG[framework];
 }
 async function bundleClientSource(clientSource, options) {
     const { build } = await import("esbuild");
@@ -291,17 +296,21 @@ async function bundleClientSource(clientSource, options) {
             },
             plugins: [sporadesClientPlugin()],
         });
+        const output = result.outputFiles?.[0];
+        if (!output) {
+            throw commandError("Client bundle failed: esbuild returned no output.", "Fix client/index.tsx and save again.");
+        }
         return [
             "// Sporades client bundle",
             `// JSX import source: ${options.frameworkBundleConfig.jsxImportSource}`,
             `// JSX runtime import: ${options.frameworkBundleConfig.jsxRuntimeImport}`,
             'console.log("Sporades client bundle loaded");',
             "",
-            result.outputFiles[0].text,
+            output.text,
         ].join("\n");
     }
     catch (error) {
-        const message = error.errors?.[0]?.text ?? error.message;
+        const message = bundleErrorMessage(error);
         throw commandError(`Client bundle failed: ${message}`, "Fix client/index.tsx and save again.");
     }
 }
@@ -334,6 +343,23 @@ function sporadesServerPlugin() {
             }));
         },
     };
+}
+function isRecord(value) {
+    return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+function errorDetails(error) {
+    if (error === null || error === undefined) {
+        return {};
+    }
+    return typeof error === "object" ? error : { message: String(error) };
+}
+function bundleErrorMessage(error) {
+    const details = errorDetails(error);
+    const firstError = Array.isArray(details.errors) ? details.errors[0] : null;
+    if (isRecord(firstError) && typeof firstError.text === "string") {
+        return firstError.text;
+    }
+    return typeof details.message === "string" ? details.message : "unknown error";
 }
 function commandError(message, hint) {
     const error = new Error(message);

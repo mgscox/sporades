@@ -1,4 +1,3 @@
-// @ts-nocheck
 export const SPORADES_BASE_IMAGE = {
   name: "sporades-base",
   image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
@@ -18,7 +17,7 @@ export function baseImageRuntimeUser() {
   return `${SPORADES_BASE_IMAGE.runtimeUid}:${SPORADES_BASE_IMAGE.runtimeGid}`;
 }
 
-export function normaliseBaseImageUpdatePolicy(value) {
+export function normaliseBaseImageUpdatePolicy(value: string | {mode: string}) {
   const mode =
     typeof value === "string"
       ? value

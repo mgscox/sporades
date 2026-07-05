@@ -1,4 +1,3 @@
-// @ts-nocheck
 import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
@@ -282,9 +281,9 @@ export async function readJsonRequest(request) {
 export function prepareHttpSecurity(database, request, response) {
     const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
     const originalWriteHead = response.writeHead.bind(response);
-    response.writeHead = (statusCode, statusMessageOrHeaders, maybeHeaders) => {
+    response.writeHead = ((statusCode, statusMessageOrHeaders, maybeHeaders) => {
         const statusMessage = typeof statusMessageOrHeaders === "string" ? statusMessageOrHeaders : undefined;
-        const inputHeaders = statusMessage ? maybeHeaders : statusMessageOrHeaders;
+        const inputHeaders = statusMessage ? maybeHeaders : typeof statusMessageOrHeaders === "string" ? {} : statusMessageOrHeaders;
         const headers = {
             ...sanitizeResponseHeaders(inputHeaders ?? {}),
             "x-content-type-options": "nosniff",
@@ -296,7 +295,7 @@ export function prepareHttpSecurity(database, request, response) {
         };
         const origin = request.headers.origin;
         if (requestOriginAllowed(policy, request)) {
-            headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : origin;
+            headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(origin);
             if (!policy.cors.publicDev) {
                 headers.vary = appendVaryHeader(headers.vary, "Origin");
             }
@@ -305,16 +304,15 @@ export function prepareHttpSecurity(database, request, response) {
             return originalWriteHead(statusCode, statusMessage, headers);
         }
         return originalWriteHead(statusCode, headers);
-    };
+    });
     if (request.method === "OPTIONS" && request.headers.origin && request.headers["access-control-request-method"]) {
         const headers = {
             "content-length": "0",
         };
         if (requestOriginAllowed(policy, request)) {
-            headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : request.headers.origin;
+            headers["access-control-allow-origin"] = policy.cors.publicDev ? "*" : String(request.headers.origin);
             headers["access-control-allow-methods"] = "GET,POST,PUT,DELETE,OPTIONS";
-            headers["access-control-allow-headers"] =
-                request.headers["access-control-request-headers"] ?? "content-type,x-sporades-session-token";
+            headers["access-control-allow-headers"] = String(request.headers["access-control-request-headers"] ?? "content-type,x-sporades-session-token");
             headers["access-control-max-age"] = "600";
             if (!policy.cors.publicDev) {
                 headers.vary = "Origin";
@@ -412,7 +410,7 @@ function appendVaryHeader(existing, value) {
     const parts = String(existing)
         .split(",")
         .map((part) => part.trim().toLowerCase());
-    return parts.includes(value.toLowerCase()) ? existing : `${existing}, ${value}`;
+    return parts.includes(value.toLowerCase()) ? String(existing) : `${existing}, ${value}`;
 }
 function sanitizeResponseHeaders(headers) {
     const entries = headers instanceof Map ? headers.entries() : Object.entries(headers ?? {});
@@ -433,9 +431,9 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
     const endpoints = extractEndpoints(serverSource);
     const queries = extractQueryHandlersFromCapsule(capsuleDefinition) ?? extractQueryHandlers(serverSource);
-    const mutations = capsuleDefinition
+    const mutations = (capsuleDefinition
         ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition)
-        : extractMutationHandlers(serverSource);
+        : extractMutationHandlers(serverSource));
     const messages = extractMessageHandlers(serverSource);
     const contextMiddleware = extractContextMiddleware(serverSource);
     const mutationHooks = extractMutationHooks(serverSource);
@@ -498,12 +496,12 @@ export async function createRuntimeFileStorageAdapter({ config = {}, databasePat
     const path = await import("node:path");
     if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
         return createS3CompatibleFileStorageAdapter({
-            endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT,
-            bucket: serviceEnv.SPORADES_SERVICE_STORAGE_BUCKET,
+            endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT ?? "",
+            bucket: serviceEnv.SPORADES_SERVICE_STORAGE_BUCKET ?? "sporades",
             region: serviceEnv.SPORADES_SERVICE_STORAGE_REGION ?? "us-east-1",
-            accessKey: serviceEnv.SPORADES_SERVICE_STORAGE_ACCESS_KEY,
-            secretKey: serviceEnv.SPORADES_SERVICE_STORAGE_SECRET_KEY,
-            namespace: serviceEnv.SPORADES_SERVICE_STORAGE_NAMESPACE,
+            accessKey: serviceEnv.SPORADES_SERVICE_STORAGE_ACCESS_KEY ?? "",
+            secretKey: serviceEnv.SPORADES_SERVICE_STORAGE_SECRET_KEY ?? "",
+            namespace: serviceEnv.SPORADES_SERVICE_STORAGE_NAMESPACE ?? "capsule",
         });
     }
     return createLocalFileStorageAdapter({
@@ -555,7 +553,7 @@ function localFileStoragePath(storagePath, fileId) {
 function localFileVersionPath(storagePath, fileId, version) {
     return `${localFileStoragePath(storagePath, fileId)}/${version}`;
 }
-export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region, accessKey, secretKey, namespace }) {
+export function createS3CompatibleFileStorageAdapter({ endpoint, bucket, region, accessKey, secretKey, namespace, }) {
     if (typeof endpoint !== "string" || endpoint.length === 0) {
         throw new Error("S3-compatible file storage requires an endpoint.");
     }
@@ -717,7 +715,7 @@ function s3SignedHeaders(headers) {
         .map(([name, value]) => [name.toLowerCase(), String(value).trim()])
         .sort(([left], [right]) => left.localeCompare(right)));
 }
-function s3Signature({ method, pathname, query, headers, payloadHash, accessKey, secretKey, region, date, amzDate }) {
+function s3Signature({ method, pathname, query, headers, payloadHash, accessKey, secretKey, region, date, amzDate, }) {
     const signedHeaders = Object.keys(headers).join(";");
     const canonicalHeaders = Object.entries(headers)
         .map(([name, value]) => `${name}:${value}\n`)
@@ -767,7 +765,7 @@ function s3ObjectNotFoundError() {
 export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     const { DatabaseSync } = await import("node:sqlite");
     const path = await import("node:path");
-    mkdirSync(path.dirname(databasePath), { recursive: true });
+    mkdirSync(path.dirname(String(databasePath)), { recursive: true });
     const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
     const adapter = {
         engine: "sqlite",
@@ -1061,7 +1059,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
                         },
                     };
                 }
-                const statement = this.prepare(sql);
+                const statement = this.prepare(String(sql ?? ""));
                 const columns = statement.columns().map((column) => column.name);
                 const rows = statement.all().filter((row) => !isInternalLogIndexMetadataRow(row, sql));
                 return {
@@ -1150,7 +1148,7 @@ export async function createPostgresDatabaseAdapter(options) {
             if (typeof keyOrMetadata === "object" && keyOrMetadata !== null) {
                 return await this.writeSchemaMetadata(keyOrMetadata);
             }
-            return await this.prepare("INSERT INTO sporades (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value").run(keyOrMetadata, maybeValue);
+            return await this.prepare("INSERT INTO sporades (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value").run(keyOrMetadata ?? "", maybeValue);
         },
         async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
             await this.writeSystemMetadata("schemaVersion", schemaVersion);
@@ -1315,7 +1313,7 @@ export async function createPostgresDatabaseAdapter(options) {
                         },
                     };
                 }
-                const result = await query(sql);
+                const result = await query(String(sql ?? ""));
                 return {
                     ok: true,
                     data: {
@@ -1527,7 +1525,8 @@ function postgresUrlOptions(url) {
     };
 }
 function postgresPasswordMessage(body) {
-    return Buffer.concat([Buffer.from("p"), postgresInt32(body.length + 4), body]);
+    const bodyBuffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
+    return Buffer.concat([Buffer.from("p"), postgresInt32(bodyBuffer.length + 4), bodyBuffer]);
 }
 function createPostgresScramSession(crypto, password) {
     const clientNonce = crypto.randomBytes(18).toString("base64");
@@ -2057,7 +2056,7 @@ export async function createLibsqlDatabaseAdapter(options) {
                         },
                     };
                 }
-                const statement = this.prepare(sql);
+                const statement = this.prepare(String(sql ?? ""));
                 const columns = (await statement.columns()).map((column) => column.name);
                 const rows = (await statement.all()).filter((row) => !isInternalLogIndexMetadataRow(row, sql));
                 return { ok: true, data: { columns, rows }, error: null };
@@ -2375,7 +2374,7 @@ function logDataContainsServerEnvValue(value, serverEnv) {
         return false;
     }
     const serialized = JSON.stringify(value, (_key, nestedValue) => typeof nestedValue === "bigint" ? String(nestedValue) : nestedValue);
-    return values.some((secret) => serialized.includes(secret));
+    return values.some((secret) => serialized.includes(String(secret)));
 }
 function isSensitiveLogKey(key) {
     return (/(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token)([-_]|$)/i.test(String(key)) ||
@@ -3169,7 +3168,7 @@ function extractFields(tableSource) {
         if (!kind) {
             return null;
         }
-        const builderSource = referenceMatch?.[0] ?? scalarMatch[0];
+        const builderSource = referenceMatch?.[0] ?? scalarMatch?.[0] ?? "";
         return {
             name: property[1],
             kind,
@@ -3196,7 +3195,7 @@ function extractFieldDefaultSource(fieldSource, builderEndIndex) {
     return rest.slice(openIndex + 1, closeIndex).trim();
 }
 export async function routeEndpoint(database, request, response) {
-    const requestUrl = new URL(request.url, "http://127.0.0.1");
+    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
     const endpoint = database.endpoints.find((candidate) => candidate.method === request.method && candidate.path === requestUrl.pathname);
     if (!endpoint) {
         return false;
@@ -3210,7 +3209,7 @@ export async function routeEndpoint(database, request, response) {
     return true;
 }
 export async function handleFileHttpRoute(database, request, response, websocketHub = null) {
-    const requestUrl = new URL(request.url, "http://127.0.0.1");
+    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
     const uploadMatch = requestUrl.pathname.match(/^\/__sporades\/uploads\/([^/]+)$/);
     if (uploadMatch && request.method === "PUT") {
         const result = await completePendingFileUpload(database, uploadMatch[1], request, websocketHub);
@@ -3220,7 +3219,7 @@ export async function handleFileHttpRoute(database, request, response, websocket
     const privateMatch = requestUrl.pathname.match(/^\/__sporades\/files\/private\/([^/]+)$/);
     if (privateMatch && request.method === "GET") {
         const token = request.headers["x-sporades-session-token"];
-        const session = await resolveAnonymousSession(database, token);
+        const session = await resolveAnonymousSession(database, Array.isArray(token) ? token[0] : (token ?? null));
         const row = await fileRowForOwner(database, privateMatch[1], session.auth.userId);
         if (!row || row.version !== requestUrl.searchParams.get("v")) {
             writeNotFound(response);
@@ -3739,7 +3738,7 @@ async function withFileUploadPathLock(path, fn) {
         return await fn();
     }
     finally {
-        release();
+        release?.();
         if (fileUploadPathLocks.get(key) === next) {
             fileUploadPathLocks.delete(key);
         }
@@ -4022,7 +4021,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
                 createdAt: now,
                 updatedAt: now,
             };
-            const fieldValues = table.fields.map((field) => fieldValueForWrite(database, field, Object.hasOwn(values, field.name) && values[field.name] !== undefined ? values[field.name] : field.defaultValue));
+            const fieldValues = table.fields.map((field) => fieldValueForWrite(database, field, Object.hasOwn(values, String(field.name)) && values[String(field.name)] !== undefined ? values[String(field.name)] : field.defaultValue));
             const finish = (resolvedValues) => {
                 for (const [index, field] of table.fields.entries()) {
                     row[field.name] = resolvedValues[index];
@@ -4876,7 +4875,7 @@ export function createWebSocketHub(getDatabase) {
                 "",
                 "",
             ].join("\r\n"));
-            const requestUrl = new URL(request.url, "http://127.0.0.1");
+            const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
             const sessionToken = requestUrl.searchParams.get("sessionToken");
             const origin = requestOrigin(request);
             const database = getDatabase();
@@ -5276,7 +5275,7 @@ export function createWebSocketHub(getDatabase) {
     }
 }
 export async function routeSporadesAuth(database, request, response) {
-    const requestUrl = new URL(request.url, "http://127.0.0.1");
+    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
     if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/auth/google/callback") {
         return false;
     }
@@ -5296,7 +5295,7 @@ export async function routeSporadesAuth(database, request, response) {
         const session = await resolveAnonymousSession(database, stateRow.sessionToken);
         const result = await linkGoogleAccount(database, session, profile);
         if (!result.ok) {
-            throw commandError(result.error.message, result.error.hint);
+            throw commandError(result.error?.message, result.error?.hint ?? "Retry Google sign-in from the app.");
         }
         writeRedirect(response, stateRow.returnTo);
     }
@@ -6393,6 +6392,6 @@ function toSqlNumber(value, fieldName) {
     return value;
 }
 function quoteIdentifier(identifier) {
-    return `"${identifier.replaceAll('"', '""')}"`;
+    return `"${String(identifier).replaceAll('"', '""')}"`;
 }
 //# sourceMappingURL=server-runtime-source.js.map

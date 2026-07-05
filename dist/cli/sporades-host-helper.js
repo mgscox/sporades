@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { spawnSync } from "node:child_process";
 import { constants as fsConstants, statSync } from "node:fs";
 import { access, chmod, chown, lstat, mkdir, readdir, readFile, readlink, rename, rm, statfs, symlink, writeFile } from "node:fs/promises";
@@ -8,6 +7,12 @@ import { freemem, loadavg, totalmem } from "node:os";
 import path from "node:path";
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageMetadata, baseImageRuntimeUser, normaliseBaseImageUpdatePolicy, } from "../base-image.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
+function errorDetails(error) {
+    if (error === null || error === undefined) {
+        return {};
+    }
+    return typeof error === "object" ? error : { message: String(error) };
+}
 const HOST_HELPER_CONFIG_FILE = "sporades-host-helper.json";
 const DEFAULT_HOSTED_CAPSULE_DOCKER_IMAGE = SPORADES_BASE_IMAGE.image;
 const DEFAULT_HOSTED_CAPSULE_DOCKER_NETWORK = "sporades-hosted-capsules";
@@ -112,7 +117,7 @@ async function loadHostHelperConfig(request) {
         contents = await readFile(configPath, "utf8");
     }
     catch (error) {
-        if (error.code === "ENOENT" && !process.env.SPORADES_HOST_HELPER_CONFIG) {
+        if (errorDetails(error).code === "ENOENT" && !process.env.SPORADES_HOST_HELPER_CONFIG) {
             return;
         }
         throw helperError("Failed to read Host helper config.", `Check that ${configPath} exists and is readable by the Host helper.`);
@@ -412,7 +417,8 @@ async function installRelease(request) {
     }
     catch (error) {
         await rm(tempReleaseDirectory, { recursive: true, force: true });
-        if (error?.code === "EEXIST" || error?.code === "ENOTEMPTY") {
+        const details = errorDetails(error);
+        if (details.code === "EEXIST" || details.code === "ENOTEMPTY") {
             throw helperError("Hosted Capsule release already exists.", "Push again to generate a fresh immutable release ID.");
         }
         throw error;
@@ -462,8 +468,8 @@ async function installRelease(request) {
             ok: false,
             data,
             error: {
-                message: restartError?.message ?? "Hosted Capsule restart failed.",
-                hint: restartError?.hint ??
+                message: errorDetails(restartError).message ?? "Hosted Capsule restart failed.",
+                hint: errorDetails(restartError).hint ??
                     `Check Docker logs for ${normaliseLifecycle(request).container.name}; the route has been returned to the Hosted Capsule unavailable response.`,
             },
         });
@@ -566,18 +572,19 @@ async function maybeFallbackToPreviousRelease(request, failedReleaseId, previous
                 applied: false,
                 reason: "fallback-restart-failed",
                 release: { id: releaseId },
-                error: restartError ? { message: restartError.message, hint: restartError.hint ?? null } : null,
+                error: restartError ? { message: errorDetails(restartError).message, hint: errorDetails(restartError).hint ?? null } : null,
             };
         }
         await recordReleaseVerificationFallback(request, failedReleaseId, releaseId, reason);
         return { applied: true, release: { id: releaseId }, lifecycle };
     }
     catch (error) {
+        const details = errorDetails(error);
         return {
             applied: false,
             reason: "fallback-failed",
             release: { id: releaseId },
-            error: { message: error.message, hint: error.hint ?? null },
+            error: { message: details.message, hint: details.hint ?? null },
         };
     }
 }
@@ -719,7 +726,7 @@ async function startCapsule(request, options = {}) {
         await writeRunningRoute(lifecycle, runningRoute);
     }
     catch (error) {
-        await recordReleaseFailure(request, releaseId, error?.message ?? "Failed to apply Hosted Capsule route.");
+        await recordReleaseFailure(request, releaseId, errorDetails(error).message ?? "Failed to apply Hosted Capsule route.");
         throw error;
     }
     await recordReleaseStarted(request, releaseId);
@@ -780,7 +787,7 @@ async function evaluateCapsuleHealth(request, options = {}) {
         record = await readRegistryRecordForCapsule(request, "health");
     }
     catch (error) {
-        if (error.message === "Hosted Capsule is not registered.") {
+        if (errorDetails(error).message === "Hosted Capsule is not registered.") {
             return unregisteredHealthFailure(request, health);
         }
         throw error;
@@ -1036,8 +1043,8 @@ async function rollbackRelease(request) {
         ok: false,
         data,
         error: {
-            message: restartError?.message ?? "Hosted Capsule rollback start failed.",
-            hint: restartError?.hint ??
+            message: errorDetails(restartError).message ?? "Hosted Capsule rollback start failed.",
+            hint: errorDetails(restartError).hint ??
                 `Previous current release was ${previousCurrentRelease?.id ?? "none"}. Check Docker logs for ${normaliseLifecycle(request).container.name}; the route has been returned to the Hosted Capsule unavailable response.`,
         },
     });
@@ -1072,8 +1079,12 @@ async function logsHost(request) {
     validateHostLogsRequest(request);
     const logs = normaliseHostLogs(request);
     if (logs.source === "stdout" || logs.source === "stderr") {
+        const container = logs.container;
+        if (!container) {
+            throw helperError("Hosted Capsule log target is missing.", "Pass a Hosted Capsule subname when reading stdout or stderr logs.");
+        }
         const entries = readDockerStreamLogs(logs);
-        writeEnvelope({ ok: true, data: { lineCount: logs.lines, source: logs.source, container: logs.container.name, entries }, error: null });
+        writeEnvelope({ ok: true, data: { lineCount: logs.lines, source: logs.source, container: container.name, entries }, error: null });
         return;
     }
     const fileEntries = await readManagedCaddyAccessLog(logs);
@@ -1498,7 +1509,7 @@ function countHostedCapsules(records, dockerStates) {
         unavailable: records.length - running,
     };
 }
-function readCapsuleLifecycle(request, registryRecord, containerName, running) {
+function readCapsuleLifecycle(_request, registryRecord, containerName, running) {
     const inspected = inspectContainerLifecycle(containerName);
     return {
         registered: true,
@@ -1537,7 +1548,7 @@ async function readCapsuleRegistryRecords(request) {
         entries = await readdir(registryDirectory, { withFileTypes: true });
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorDetails(error).code === "ENOENT") {
             return [];
         }
         throw error;
@@ -1871,7 +1882,7 @@ async function cleanupUnreferencedHostSealedEnvKeys(dataDirectory, referencedFin
         entries = await readdir(paths.keys);
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorDetails(error).code === "ENOENT") {
             return {
                 deletedKeyFingerprints: [],
                 retainedKeyFingerprints: [...referencedFingerprints].sort(),
@@ -1947,7 +1958,7 @@ async function inspectHostSealedEnvKey(record, remoteRoot) {
         };
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorDetails(error).code === "ENOENT") {
             return { ...base, publicKeyAvailable: false, status: hostSealedEnvKeyStatus(false, privateKeyReadable) };
         }
         throw error;
@@ -2249,7 +2260,7 @@ async function writeManagedCaddyfile(caddyfile, importLine) {
         existing = await readFile(caddyfile, "utf8");
     }
     catch (error) {
-        if (error?.code !== "ENOENT") {
+        if (errorDetails(error).code !== "ENOENT") {
             throw error;
         }
     }
@@ -2464,7 +2475,8 @@ async function currentReleaseId(currentLink, request) {
         target = await readlink(currentLink);
     }
     catch (error) {
-        if (error?.code === "ENOENT" || error?.code === "EINVAL") {
+        const details = errorDetails(error);
+        if (details.code === "ENOENT" || details.code === "EINVAL") {
             throw helperError("No Hosted Capsule release has been pushed.", `Run \`sporades host push --host ${request.host.alias} --subname ${request.capsule.subname}\` before starting the Hosted Capsule.`);
         }
         throw error;
@@ -2618,7 +2630,7 @@ async function prepareWritableDataPath(targetPath) {
         stats = await lstat(targetPath);
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorDetails(error).code === "ENOENT") {
             return;
         }
         throw error;
@@ -2652,7 +2664,7 @@ async function prepareRuntimeDataOwnership(targetPath, stats) {
         await chown(targetPath, uid, gid);
     }
     catch (error) {
-        if (process.env.SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK === "1" && ["EPERM", "EINVAL"].includes(error?.code)) {
+        if (process.env.SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK === "1" && ["EPERM", "EINVAL"].includes(errorDetails(error).code)) {
             return;
         }
         throw runtimeDataOwnershipError(targetPath, uid, gid);
@@ -2686,7 +2698,7 @@ async function recordFailedStartAndUnavailableRoute(request, lifecycle, releaseI
         await writeUnavailableRoute(lifecycle);
     }
     catch (error) {
-        await recordReleaseFailure(request, releaseId, error?.message ?? "Failed to apply Hosted Capsule route.");
+        await recordReleaseFailure(request, releaseId, errorDetails(error).message ?? "Failed to apply Hosted Capsule route.");
         throw error;
     }
     await recordReleaseFailure(request, releaseId, failureMessage);
@@ -2999,7 +3011,7 @@ async function readRegistryRecordForCapsule(request, purpose) {
         return JSON.parse(await readFile(registryRecordPath, "utf8"));
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorDetails(error).code === "ENOENT") {
             throw helperError("Hosted Capsule is not registered.", missingCapsuleHint(request, purpose));
         }
         if (error instanceof SyntaxError) {
@@ -3013,7 +3025,7 @@ async function readOptionalRegistryRecordForCapsule(request) {
         return await readRegistryRecordForCapsule(request, "delete");
     }
     catch (error) {
-        if (error.message === "Hosted Capsule is not registered.") {
+        if (errorDetails(error).message === "Hosted Capsule is not registered.") {
             return null;
         }
         throw error;
@@ -3059,7 +3071,7 @@ async function withRegistryLock(request, fn) {
             break;
         }
         catch (error) {
-            if (error?.code !== "EEXIST") {
+            if (errorDetails(error).code !== "EEXIST") {
                 throw error;
             }
             if (Date.now() - startedAt >= timeoutMs) {

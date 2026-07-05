@@ -26,7 +26,7 @@ import {
   unsealServerEnv,
   writeSealedServerEnv,
 } from "../sealed-server-env.js";
-import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
+import { DockerRestartPolcy, restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
 import {
   createSqliteDatabaseAdapter,
   createPostgresConnection,
@@ -2651,7 +2651,7 @@ async function startContainerSession(options: LooseRecord) {
       "--name",
       containerName,
       "--restart",
-      restartPolicyForMode("container").dockerRestart,
+      (restartPolicyForMode("container") as DockerRestartPolcy).dockerRestart,
       "--read-only",
       "--tmpfs",
       "/tmp:rw,nosuid,nodev,noexec",

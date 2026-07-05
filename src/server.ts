@@ -1,12 +1,11 @@
-// @ts-nocheck
-export function capsule(definition) {
+export function capsule(definition: any) {
   return {
     kind: "capsule",
     ...definition,
   };
 }
 
-export function endpoint(options, handler) {
+export function endpoint(options: any, handler: any) {
   return {
     kind: "endpoint",
     options,
@@ -14,36 +13,36 @@ export function endpoint(options, handler) {
   };
 }
 
-export function query(handler) {
+export function query(handler: any) {
   return {
     kind: "query",
     handler,
   };
 }
 
-export function mutation(handler) {
+export function mutation(handler: any) {
   return {
     kind: "mutation",
     handler,
   };
 }
 
-export function message(handler) {
+export function message(handler: any) {
   return {
     kind: "message",
     handler,
   };
 }
 
-export function table(fields) {
+export function table(fields: any) {
   return tableDefinition(fields);
 }
 
-function tableDefinition(fields, aclRules) {
+function tableDefinition(fields: any, aclRules?: any) {
   return {
     kind: "table",
     fields,
-    acl(rules) {
+    acl(rules: any) {
       return tableDefinition(fields, rules);
     },
     ...(aclRules === undefined ? {} : { aclRules }),
@@ -70,11 +69,11 @@ export function Json() {
   return field("Json");
 }
 
-export function Reference(targetTable) {
+export function Reference(targetTable: any) {
   return {
     kind: "Reference",
     targetTable,
-    default(defaultValue) {
+    default(defaultValue: any) {
       return {
         kind: "Reference",
         targetTable,
@@ -84,10 +83,10 @@ export function Reference(targetTable) {
   };
 }
 
-function field(kind) {
+function field(kind: any) {
   return {
     kind,
-    default(defaultValue) {
+    default(defaultValue: any) {
       return {
         kind,
         defaultValue,

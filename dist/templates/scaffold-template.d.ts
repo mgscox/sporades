@@ -1,4 +1,9 @@
-export declare function scaffoldFiles(options: any): {
+export declare function scaffoldFiles(options: {
+    sporadesDependency?: any;
+    template?: any;
+    framework?: any;
+    name?: any;
+}): {
     "README.md": string;
     "server/index.ts": string;
     "client/index.tsx": string;

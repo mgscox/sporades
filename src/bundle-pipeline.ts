@@ -1,11 +1,44 @@
-// @ts-nocheck
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { PathLike } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
+import type { Plugin } from "esbuild";
 
 import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv } from "./sealed-server-env.js";
 import { serverRuntimeModuleSource } from "./server.js";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 import { createServerBundleSource } from "./templates/server-bundle-template.js";
+
+type JsonRecord = Record<string, unknown>;
+type ServerEnv = Record<string, string>;
+type HelperError = Error & { hint?: string };
+type ServerEnvFile = { exists: boolean; raw: string };
+type ProjectConfig = JsonRecord & {
+  auth?: AuthConfig;
+  client?: { framework?: unknown };
+};
+type AuthConfig = JsonRecord & {
+  mode?: unknown;
+  providers?: unknown;
+  google?: unknown;
+};
+type NormalizedProviderConfig = {
+  enabled: boolean;
+  clientIdEnv: string | null;
+  clientSecretEnv: string | null;
+};
+type NormalizedAuthConfig = {
+  mode: string;
+  providers: {
+    anonymous: { enabled: boolean };
+    google: NormalizedProviderConfig;
+    email: { enabled: boolean };
+  };
+};
+type FrameworkBundleConfig = {
+  jsxImportSource: string;
+  jsxRuntimeImport: string;
+};
 
 const FRAMEWORK_BUNDLE_CONFIG = {
   react: {
@@ -16,10 +49,10 @@ const FRAMEWORK_BUNDLE_CONFIG = {
     jsxImportSource: "preact",
     jsxRuntimeImport: "preact/jsx-runtime",
   },
-};
+} satisfies Record<string, FrameworkBundleConfig>;
 const SUPPORTED_AUTH_PROVIDERS = new Set(["anonymous", "google", "email"]);
 
-export async function createBundle(projectDir, config) {
+export async function createBundle(projectDir: string, config: ProjectConfig) {
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
   const buildDir = path.join(projectDir, ".sporades", "build");
   await mkdir(buildDir, { recursive: true });
@@ -102,7 +135,7 @@ export async function createBundle(projectDir, config) {
   };
 }
 
-async function readRequiredSealedPrivateKey(paths) {
+async function readRequiredSealedPrivateKey(paths: { root: string; envelope: string; privateKey: string; publicKey: string; hosts: string; }) {
   const keyPair = await readKeyPair(paths);
   if (!keyPair) {
     throw commandError(
@@ -113,7 +146,7 @@ async function readRequiredSealedPrivateKey(paths) {
   return keyPair;
 }
 
-async function bundleServerCapsuleModule(options) {
+async function bundleServerCapsuleModule(options: { serverSource: string; serverSourcePath: string }) {
   const { build } = await import("esbuild");
 
   try {
@@ -133,14 +166,18 @@ async function bundleServerCapsuleModule(options) {
       plugins: [sporadesServerPlugin()],
     });
 
-    return result.outputFiles[0].text;
+    const output = result.outputFiles?.[0];
+    if (!output) {
+      throw commandError("Server bundle failed: esbuild returned no output.", "Fix server/index.ts and save again.");
+    }
+    return output.text;
   } catch (error) {
-    const message = error.errors?.[0]?.text ?? error.message;
+    const message = bundleErrorMessage(error);
     throw commandError(`Server bundle failed: ${message}`, "Fix server/index.ts and save again.");
   }
 }
 
-export async function readServerEnvFile(envPath) {
+export async function readServerEnvFile(envPath: PathLike | FileHandle): Promise<ServerEnvFile> {
   try {
     const raw = await readFile(envPath, "utf8");
     if (Buffer.byteLength(raw, "utf8") > 64 * 1024) {
@@ -148,15 +185,15 @@ export async function readServerEnvFile(envPath) {
     }
     return { exists: true, raw };
   } catch (error) {
-    if (error?.code === "ENOENT") {
+    if (errorDetails(error).code === "ENOENT") {
       return { exists: false, raw: "" };
     }
     throw error;
   }
 }
 
-export function parseServerEnv(envFile) {
-  const values = {};
+export function parseServerEnv(envFile: ServerEnvFile): ServerEnv {
+  const values: ServerEnv = {};
   for (const [index, line] of envFile.raw.split(/\r?\n/).entries()) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) {
@@ -181,7 +218,7 @@ export function parseServerEnv(envFile) {
   return values;
 }
 
-function parseEnvValue(value) {
+function parseEnvValue(value: string) {
   if (
     (value.startsWith('"') && value.endsWith('"')) ||
     (value.startsWith("'") && value.endsWith("'"))
@@ -191,12 +228,16 @@ function parseEnvValue(value) {
   return value;
 }
 
-export function authStatus(config, serverEnv) {
+export function authStatus(config: ProjectConfig, serverEnv: ServerEnv) {
   const authConfig = config.auth ?? { mode: "anonymous" };
   const normalized = normalizeAuthConfig(authConfig);
   const clientIdEnv = normalized.providers.google.clientIdEnv;
   const clientSecretEnv = normalized.providers.google.clientSecretEnv;
-  const providers = {
+  const providers: {
+    anonymous: { enabled: boolean };
+    google: { enabled: boolean; configured: boolean; clientIdEnv: string | null; clientSecretEnv: string | null };
+    email?: { enabled: boolean };
+  } = {
     anonymous: {
       enabled: normalized.providers.anonymous.enabled,
     },
@@ -223,8 +264,8 @@ export function authStatus(config, serverEnv) {
   };
 }
 
-function normalizeAuthConfig(authConfig) {
-  const providerConfig = authConfig.providers ?? {};
+function normalizeAuthConfig(authConfig: AuthConfig): NormalizedAuthConfig {
+  const providerConfig = isRecord(authConfig.providers) ? authConfig.providers : {};
   for (const provider of Object.keys(providerConfig)) {
     if (!SUPPORTED_AUTH_PROVIDERS.has(provider)) {
       throw commandError(
@@ -235,12 +276,12 @@ function normalizeAuthConfig(authConfig) {
   }
 
   const googleConfig = readProviderConfig(providerConfig.google);
-  const legacyGoogle = authConfig.google ?? {};
+  const legacyGoogle = readProviderConfig(authConfig.google);
   const googleEnabled = googleConfig.enabled || authConfig.mode === "google";
   const emailConfig = readProviderConfig(providerConfig.email);
   const anonymousConfig = readProviderConfig(providerConfig.anonymous);
   const anonymousEnabled = providerConfig.anonymous === undefined ? true : anonymousConfig.enabled;
-  const mode = authConfig.mode ?? (googleEnabled ? "google" : "anonymous");
+  const mode = typeof authConfig.mode === "string" ? authConfig.mode : googleEnabled ? "google" : "anonymous";
 
   return {
     mode,
@@ -250,8 +291,8 @@ function normalizeAuthConfig(authConfig) {
       },
       google: {
         enabled: googleEnabled,
-        clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv ?? null,
-        clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv ?? null,
+        clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv,
+        clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv,
       },
       email: {
         enabled: emailConfig.enabled,
@@ -260,21 +301,24 @@ function normalizeAuthConfig(authConfig) {
   };
 }
 
-function readProviderConfig(config) {
+function readProviderConfig(config: unknown): NormalizedProviderConfig {
   if (config === true) {
-    return { enabled: true };
+    return { enabled: true, clientIdEnv: null, clientSecretEnv: null };
   }
   if (config === false || config === undefined || config === null) {
-    return { enabled: false };
+    return { enabled: false, clientIdEnv: null, clientSecretEnv: null };
+  }
+  if (!isRecord(config)) {
+    return { enabled: false, clientIdEnv: null, clientSecretEnv: null };
   }
   return {
     enabled: config.enabled !== false,
-    clientIdEnv: config.clientIdEnv ?? null,
-    clientSecretEnv: config.clientSecretEnv ?? null,
+    clientIdEnv: typeof config.clientIdEnv === "string" ? config.clientIdEnv : null,
+    clientSecretEnv: typeof config.clientSecretEnv === "string" ? config.clientSecretEnv : null,
   };
 }
 
-function validateAuthConfig(config, serverEnv) {
+function validateAuthConfig(config: ProjectConfig, serverEnv: ServerEnv) {
   const status = authStatus(config, serverEnv);
   if (!status.providers.google.enabled) {
     return;
@@ -287,26 +331,25 @@ function validateAuthConfig(config, serverEnv) {
   }
 }
 
-async function readRequiredFile(filePath, message, hint) {
+async function readRequiredFile(filePath: PathLike | FileHandle, message: string, hint: string) {
   try {
     return await readFile(filePath, "utf8");
   } catch (error) {
-    if (error?.code === "ENOENT") {
+    if (errorDetails(error).code === "ENOENT") {
       throw commandError(message, hint);
     }
     throw error;
   }
 }
 
-function readFrameworkBundleConfig(framework) {
-  const frameworkBundleConfig = FRAMEWORK_BUNDLE_CONFIG[framework];
-  if (!frameworkBundleConfig) {
+function readFrameworkBundleConfig(framework: unknown): FrameworkBundleConfig {
+  if (typeof framework !== "string" || !(framework in FRAMEWORK_BUNDLE_CONFIG)) {
     throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact.");
   }
-  return frameworkBundleConfig;
+  return FRAMEWORK_BUNDLE_CONFIG[framework as keyof typeof FRAMEWORK_BUNDLE_CONFIG];
 }
 
-async function bundleClientSource(clientSource, options) {
+async function bundleClientSource(clientSource: string, options: { clientSourcePath: string; frameworkBundleConfig: FrameworkBundleConfig }) {
   const { build } = await import("esbuild");
 
   try {
@@ -328,21 +371,26 @@ async function bundleClientSource(clientSource, options) {
       plugins: [sporadesClientPlugin()],
     });
 
+    const output = result.outputFiles?.[0];
+    if (!output) {
+      throw commandError("Client bundle failed: esbuild returned no output.", "Fix client/index.tsx and save again.");
+    }
+
     return [
       "// Sporades client bundle",
       `// JSX import source: ${options.frameworkBundleConfig.jsxImportSource}`,
       `// JSX runtime import: ${options.frameworkBundleConfig.jsxRuntimeImport}`,
       'console.log("Sporades client bundle loaded");',
       "",
-      result.outputFiles[0].text,
+      output.text,
     ].join("\n");
   } catch (error) {
-    const message = error.errors?.[0]?.text ?? error.message;
+    const message = bundleErrorMessage(error);
     throw commandError(`Client bundle failed: ${message}`, "Fix client/index.tsx and save again.");
   }
 }
 
-function sporadesClientPlugin() {
+function sporadesClientPlugin(): Plugin {
   return {
     name: "sporades-client",
     setup(build) {
@@ -358,7 +406,7 @@ function sporadesClientPlugin() {
   };
 }
 
-function sporadesServerPlugin() {
+function sporadesServerPlugin(): Plugin {
   return {
     name: "sporades-server",
     setup(build) {
@@ -374,8 +422,28 @@ function sporadesServerPlugin() {
   };
 }
 
-function commandError(message, hint) {
-  const error = new Error(message);
+function isRecord(value: unknown): value is JsonRecord {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function errorDetails(error: unknown): JsonRecord {
+  if (error === null || error === undefined) {
+    return {};
+  }
+  return typeof error === "object" ? (error as JsonRecord) : { message: String(error) };
+}
+
+function bundleErrorMessage(error: unknown): string {
+  const details = errorDetails(error);
+  const firstError = Array.isArray(details.errors) ? details.errors[0] : null;
+  if (isRecord(firstError) && typeof firstError.text === "string") {
+    return firstError.text;
+  }
+  return typeof details.message === "string" ? details.message : "unknown error";
+}
+
+function commandError(message: string, hint: string): HelperError {
+  const error: HelperError = new Error(message);
   error.hint = hint;
   return error;
 }
