@@ -1,11 +1,19 @@
 {
   "name": "sporades",
-  "version": "0.0.0",
-  "private": true,
+  "version": "0.1.0",
+  "description": "CLI-first platform for building, running, and hosting full-stack Sporades Capsules.",
+  "license": "MIT",
   "type": "module",
   "bin": {
     "sporades": "./bin/sporades.js"
   },
+  "files": [
+    "bin/",
+    "dist/",
+    "src/types/",
+    "Dockerfile.base",
+    "README.md"
+  ],
   "exports": {
     "./server": {
       "types": "./src/types/server.d.ts",
@@ -20,7 +28,8 @@
     "build": "tsc --project tsconfig.json && node ./scripts/build-bin.mjs",
     "typecheck": "tsc --project tsconfig.json --noEmit",
     "pretest": "npm run build && node ./scripts/check-generated-bin.mjs",
-    "test": "node --test --test-concurrency=1"
+    "test": "node --test --test-concurrency=1",
+    "prepublishOnly": "npm test"
   },
   "engines": {
     "node": ">=22"

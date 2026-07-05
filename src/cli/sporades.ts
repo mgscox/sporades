@@ -1147,7 +1147,7 @@ async function createProject(options: LooseRecord) {
 
   const files = scaffoldFiles({
     ...options,
-    sporadesDependency: `file:${CLI_ROOT}`,
+    sporadesDependency: defaultSporadesDependency(),
   });
   await Promise.all(
     Object.entries(files).map(async ([relativePath, contents]) => {
@@ -1163,6 +1163,19 @@ async function createProject(options: LooseRecord) {
   if (options.git) {
     run("git", ["init"], options.projectDir, "Git initialization failed.", "Run `git init` inside the scaffold.");
   }
+}
+
+function defaultSporadesDependency() {
+  const packageJsonPath = path.join(CLI_ROOT, "package.json");
+  try {
+    const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
+    if (typeof packageJson.version === "string" && packageJson.version.trim()) {
+      return `^${packageJson.version}`;
+    }
+  } catch {
+    // Fall back to the package name when running from an unusual install layout.
+  }
+  return "sporades";
 }
 
 async function manageLocalLifecycle(surface: string, options: LooseRecord) {

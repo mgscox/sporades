@@ -149,7 +149,7 @@ test("sporades create writes a runnable React blank scaffold by default", async 
     assert.equal(packageJson.dependencies["react-dom"], "^19.0.0");
     assert.equal(packageJson.devDependencies["@types/react"], "^19.0.0");
     assert.equal(packageJson.devDependencies["@types/react-dom"], "^19.0.0");
-    assert.equal(packageJson.devDependencies.sporades, `file:${repoRoot}`);
+    assert.equal(packageJson.devDependencies.sporades, "^0.1.0");
   });
 });
 
@@ -520,7 +520,7 @@ test("sporades create writes a runnable Preact todo scaffold", async () => {
     assert.equal(packageJson.dependencies["react-dom"], undefined);
     assert.equal(packageJson.devDependencies["@types/react"], undefined);
     assert.equal(packageJson.devDependencies["@types/react-dom"], undefined);
-    assert.equal(packageJson.devDependencies.sporades, `file:${repoRoot}`);
+    assert.equal(packageJson.devDependencies.sporades, "^0.1.0");
   });
 });
 
