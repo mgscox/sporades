@@ -117,7 +117,7 @@ export type FilesApi = {
   revokePublicUrl(publicUrlId: string): Promise<PublicFileUrl>;
 };
 
-export type QueryState<Data = any> = {
+export type QueryState<Data = unknown> = {
   data: Data | null;
   error: SporadesError | null;
   loading: boolean;
@@ -126,7 +126,7 @@ export type QueryState<Data = any> = {
 export type MutationState<Result = unknown> = {
   error: SporadesError | null;
   loading: boolean;
-  run(...args: any[]): Promise<SporadesResult<Result>>;
+  run(...args: unknown[]): Promise<SporadesResult<Result>>;
 };
 
 export type UseAuthState = {
@@ -146,7 +146,7 @@ export type HookPrimitives = {
 };
 
 export type SporadesHooks = {
-  useQuery<Data = any>(name: string): QueryState<Data>;
+  useQuery<Data = unknown>(name: string): QueryState<Data>;
   useMutation<Result = unknown>(name: string): MutationState<Result>;
   useAuth(): UseAuthState;
 };

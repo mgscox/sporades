@@ -1,70 +1,58 @@
-export declare function capsule(definition: any): any;
-export declare function endpoint(options: any, handler: any): {
-    kind: string;
-    options: any;
-    handler: any;
+export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Reference";
+export type UnknownRecord = Record<string, unknown>;
+export type Handler<Args extends unknown[] = unknown[], Result = unknown> = (...args: Args) => Result | Promise<Result>;
+export type CapsuleDefinition = UnknownRecord & {
+    name: string;
 };
-export declare function query(handler: any): {
-    kind: string;
-    handler: any;
+export type Capsule<Definition extends CapsuleDefinition = CapsuleDefinition> = Definition & {
+    kind: "capsule";
 };
-export declare function mutation(handler: any): {
-    kind: string;
-    handler: any;
+export type EndpointOptions = {
+    method: string;
+    path: string;
 };
-export declare function message(handler: any): {
-    kind: string;
-    handler: any;
+export type EndpointDefinition<HandlerType extends Handler = Handler> = {
+    kind: "endpoint";
+    options: EndpointOptions;
+    handler: HandlerType;
 };
-export declare function table(fields: any): {
-    aclRules?: any;
-    kind: string;
-    fields: any;
-    acl(rules: any): /*elided*/ any;
+export type HandlerDefinition<Kind extends "query" | "mutation" | "message", HandlerType extends Handler = Handler> = {
+    kind: Kind;
+    handler: HandlerType;
 };
-export declare function String(): {
-    kind: any;
-    default(defaultValue: any): {
-        kind: any;
-        defaultValue: any;
+export type FieldDefinition<Value = unknown> = {
+    kind: FieldKind;
+    defaultValue?: Value;
+};
+export type FieldBuilder<Value = unknown> = {
+    kind: FieldKind;
+    default(defaultValue: Value): FieldDefinition<Value>;
+};
+export type ReferenceFieldBuilder = {
+    kind: "Reference";
+    targetTable: string;
+    default(defaultValue: string | null): FieldDefinition<string | null> & {
+        kind: "Reference";
+        targetTable: string;
     };
 };
-export declare function Boolean(): {
-    kind: any;
-    default(defaultValue: any): {
-        kind: any;
-        defaultValue: any;
-    };
+export type TableDefinition<Fields extends UnknownRecord = UnknownRecord> = {
+    kind: "table";
+    fields: Fields;
+    aclRules?: unknown;
+    acl(rules: unknown): TableDefinition<Fields>;
 };
-export declare function Number(): {
-    kind: any;
-    default(defaultValue: any): {
-        kind: any;
-        defaultValue: any;
-    };
-};
-export declare function Date(): {
-    kind: any;
-    default(defaultValue: any): {
-        kind: any;
-        defaultValue: any;
-    };
-};
-export declare function Json(): {
-    kind: any;
-    default(defaultValue: any): {
-        kind: any;
-        defaultValue: any;
-    };
-};
-export declare function Reference(targetTable: any): {
-    kind: string;
-    targetTable: any;
-    default(defaultValue: any): {
-        kind: string;
-        targetTable: any;
-        defaultValue: any;
-    };
-};
+export declare function capsule<const Definition extends CapsuleDefinition>(definition: Definition): Capsule<Definition>;
+export declare function endpoint<const HandlerType extends Handler>(options: EndpointOptions, handler: HandlerType): EndpointDefinition<HandlerType>;
+export declare function query<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"query", HandlerType>;
+export declare function mutation<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"mutation", HandlerType>;
+export declare function message<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"message", HandlerType>;
+export declare function table<const Fields extends UnknownRecord>(fields: Fields): TableDefinition<Fields>;
+export declare function String(): FieldBuilder<unknown>;
+export declare function Boolean(): FieldBuilder<unknown>;
+export declare function Number(): FieldBuilder<unknown>;
+export declare function Date(): FieldBuilder<unknown>;
+export declare function Json(): FieldBuilder<unknown>;
+export declare function Reference(targetTable: string): ReferenceFieldBuilder;
 export declare function serverRuntimeModuleSource(): string;
 //# sourceMappingURL=server.d.ts.map

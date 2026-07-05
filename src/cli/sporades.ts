@@ -55,6 +55,11 @@ import { PathLike } from "fs";
 import { FileHandle } from "fs/promises";
 import { SpawnSyncReturns } from "child_process";
 import { ServerResponse, IncomingMessage } from "http";
+import type {
+  HostHelperEnvelope,
+  HostHelperRelease,
+  HostLifecycleOptions,
+} from "./host-helper-contract.js";
 
 type LooseRecord = Record<string, any>;
 type CommandError = Error & { hint?: string; diagnostics?: unknown };
@@ -3315,7 +3320,7 @@ function createRemoteBinding(hostAlias: any, profile: LooseRecord, subname: any)
   };
 }
 
-function invokeRemoteHostHelper(options: LooseRecord) {
+function invokeRemoteHostHelper(options: LooseRecord): HostHelperEnvelope<LooseRecord> {
   const helperPath = remoteHostHelperPath(options.profile);
   const request: LooseRecord = {
     action: options.action,
@@ -3576,7 +3581,7 @@ function uploadHostReleaseArchive(options: LooseRecord) {
   }
 }
 
-function createHostReleaseRequest(options: LooseRecord) {
+function createHostReleaseRequest(options: LooseRecord): HostHelperRelease {
   const registration = createHostRegistrationRequest(options.alias, options.profile, options.subname);
   const releaseDirectory = posixJoin(registration.directories.releases, options.releaseId);
   const files = ["server.mjs", "client.js", "index.html", "sporades.json"];
@@ -3614,7 +3619,12 @@ function createHostReleaseRequest(options: LooseRecord) {
   };
 }
 
-function createHostLifecycleRequest(alias: any, profile: LooseRecord, subname: any, options: LooseRecord = {}) {
+function createHostLifecycleRequest(
+  alias: any,
+  profile: LooseRecord,
+  subname: any,
+  options: LooseRecord = {},
+): HostLifecycleOptions {
   const registration = createHostRegistrationRequest(alias, profile, subname);
   const currentLink = posixJoin(registration.directories.capsule, "current");
   const containerName = createHostedContainerName(profile.domain, subname);

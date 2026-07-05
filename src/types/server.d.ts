@@ -187,9 +187,13 @@ export type QueryHandler<Schema extends SchemaDefinition = SchemaDefinition, Res
   ctx: CapsuleContext<Schema>,
 ) => MaybePromise<Result>;
 
-export type MutationHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
+export type MutationHandler<
+  Schema extends SchemaDefinition = SchemaDefinition,
+  Args extends unknown[] = string[],
+  Result = unknown,
+> = (
   ctx: CapsuleContext<Schema>,
-  ...args: any[]
+  ...args: Args
 ) => MaybePromise<Result>;
 
 export type EndpointHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
@@ -198,7 +202,7 @@ export type EndpointHandler<Schema extends SchemaDefinition = SchemaDefinition, 
 
 export type MessageHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
   ctx: CapsuleContext<Schema>,
-  data: any,
+  data: unknown,
 ) => MaybePromise<Result>;
 
 export type ContextKind = "query" | "mutation" | "endpoint" | "message";
@@ -206,7 +210,7 @@ export type ContextKind = "query" | "mutation" | "endpoint" | "message";
 export type MiddlewareContext<Schema extends SchemaDefinition = SchemaDefinition> = CapsuleContext<Schema> &
   Partial<Pick<EndpointContext<Schema>, "request">> & {
     kind: ContextKind;
-    [key: string]: any;
+    [key: string]: unknown;
   };
 
 export type ContextMiddleware<Schema extends SchemaDefinition = SchemaDefinition> = (
@@ -221,7 +225,7 @@ export type MutationResult<Result = unknown> = {
 
 export type MutationHookEvent<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = {
   name: string;
-  args: any[];
+  args: unknown[];
   ctx: MiddlewareContext<Schema>;
   result?: MutationResult<Result>;
 };
@@ -265,7 +269,7 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   name: string;
   schema?: Schema;
   queries?: Record<string, QueryDefinition<QueryHandler<Schema>>>;
-  mutations?: Record<string, MutationDefinition<MutationHandler<Schema>>>;
+  mutations?: Record<string, MutationDefinition>;
   endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema>>>;
   messages?: Record<string, MessageDefinition<MessageHandler<Schema>>>;
   middleware?: ContextMiddleware<Schema>[];
@@ -282,7 +286,9 @@ export function capsule<const Schema extends SchemaDefinition, const Definition 
 
 export function endpoint<Handler extends EndpointHandler>(options: EndpointOptions, handler: Handler): EndpointDefinition<Handler>;
 export function query<Handler extends QueryHandler>(handler: Handler): QueryDefinition<Handler>;
-export function mutation<Handler extends MutationHandler>(handler: Handler): MutationDefinition<Handler>;
+export function mutation<const Args extends unknown[] = string[], Result = unknown>(
+  handler: (ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>,
+): MutationDefinition<(ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>>;
 export function message<Handler extends MessageHandler>(handler: Handler): MessageDefinition<Handler>;
 export function table<const Fields extends Record<string, AnyFieldDefinition>>(fields: Fields): TableDefinition<Fields>;
 

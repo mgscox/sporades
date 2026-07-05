@@ -194,7 +194,7 @@ function readConfigString(value, key, configPath) {
     return value;
 }
 function readConfigPositiveInteger(value, key, configPath) {
-    if (!Number.isInteger(value) || value < 1) {
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
         throw helperError("Host helper config is invalid.", `Set ${key} to a positive whole number in ${configPath}.`);
     }
     return value;
@@ -394,6 +394,9 @@ async function installRelease(request) {
     const previousCurrentRelease = previousRecord.currentRelease?.id ? { id: previousRecord.currentRelease.id } : null;
     validateReleaseArchive(request);
     const paths = canonicalReleasePaths(request);
+    if (!paths.release) {
+        throw helperError("Invalid release install request.", "Update the Sporades CLI and retry `sporades host push`.");
+    }
     validateSealedServerEnvPrivateKeyPath(release, paths);
     await mkdir(paths.releases, { recursive: true });
     await mkdir(paths.data, { recursive: true });
@@ -726,7 +729,7 @@ async function startCapsule(request, options = {}) {
         await writeRunningRoute(lifecycle, runningRoute);
     }
     catch (error) {
-        await recordReleaseFailure(request, releaseId, errorDetails(error).message ?? "Failed to apply Hosted Capsule route.");
+        await recordReleaseFailure(request, releaseId, String(errorDetails(error).message ?? "Failed to apply Hosted Capsule route."));
         throw error;
     }
     await recordReleaseStarted(request, releaseId);
@@ -995,7 +998,10 @@ async function rollbackRelease(request) {
     if (releases.length === 0) {
         throw helperError("Hosted Capsule has no release history.", `Push a release before running \`sporades host rollback ${request.capsule.subname} <release-id> --host ${request.host.alias}\`.`);
     }
-    const releaseId = request.rollback.releaseId;
+    const releaseId = request.rollback?.releaseId;
+    if (!releaseId) {
+        throw helperError("Invalid Hosted Capsule rollback request.", "Update the Sporades CLI and retry `sporades host rollback`.");
+    }
     const selectedRelease = releases.find((release) => release.id === releaseId);
     if (!selectedRelease) {
         throw helperError("Hosted Capsule release is not recorded.", `Run \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\` and choose a recorded release ID.`);
@@ -1219,23 +1225,26 @@ function canonicalReleasePaths(request) {
     };
 }
 function canonicalRollbackPaths(request, releaseId) {
-    const paths = canonicalReleasePaths({ ...request, release: { id: releaseId } });
+    const paths = canonicalReleasePaths({ ...request, release: { id: releaseId, remoteArchive: "", files: [] } });
     return {
         ...paths,
         release: path.join(paths.releases, releaseId),
     };
 }
 function normaliseLifecycle(request, registryRecord = null) {
-    const provided = request.lifecycle ?? {};
+    const provided = (request.lifecycle ?? {});
     const paths = canonicalReleasePaths(request);
     const subname = request.capsule.subname;
     const domain = request.host.domain;
-    const hostedUrl = provided.hostedUrl ?? request.release?.hostedUrl ?? `${request.host.scheme ?? "https"}://${subname}.${domain}`;
-    const remoteCapsuleId = provided.remoteCapsuleId ?? `${domain}/${subname}`;
+    const hostedUrl = typeof provided.hostedUrl === "string"
+        ? provided.hostedUrl
+        : (request.release?.hostedUrl ?? `${request.host.scheme ?? "https"}://${subname}.${domain}`);
+    const remoteCapsuleId = typeof provided.remoteCapsuleId === "string" ? provided.remoteCapsuleId : `${domain}/${subname}`;
     const containerName = provided.container?.name ?? createHostedContainerName(domain, subname);
     const routeFile = provided.routes?.running?.routeFile ?? path.join(request.host.remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
-    const currentLink = provided.currentLink ?? paths.currentLink;
-    const accessLog = provided.routes?.accessLog ?? provided.accessLog ?? defaultCapsuleHttpLogPath(request.host.remoteRoot, domain, subname);
+    const currentLink = typeof provided.currentLink === "string" ? provided.currentLink : paths.currentLink;
+    const routeAccessLog = provided.routes;
+    const accessLog = routeAccessLog?.accessLog ?? provided.accessLog ?? defaultCapsuleHttpLogPath(request.host.remoteRoot, domain, subname);
     const sealedServerEnvPrivateKey = releaseSealedServerEnvPrivateKeyMount(registryRecord, paths);
     const authoritativeBaseImage = request.release?.baseImage ?? registryRecord?.baseImage ?? null;
     const updatePolicyMode = normaliseBaseImageUpdatePolicy(authoritativeBaseImage?.updatePolicy ?? provided.container?.baseImage?.updatePolicy);
@@ -1357,7 +1366,7 @@ function withRouteAccessLog(route, accessLog) {
     };
 }
 function normaliseStats(request) {
-    const provided = request.stats ?? {};
+    const provided = (request.stats ?? {});
     const subname = request.capsule.subname;
     const domain = request.host.domain;
     const hostedUrl = provided.hostedUrl ?? `${request.host.scheme ?? "https"}://${subname}.${domain}`;
@@ -1371,7 +1380,7 @@ function normaliseStats(request) {
     };
 }
 function normaliseHealth(request, record = null) {
-    const provided = request.health ?? {};
+    const provided = (request.health ?? {});
     const subname = request.capsule.subname;
     const domain = request.host.domain;
     const hostedUrl = record?.hostedUrl ?? `${request.host.scheme ?? "https"}://${subname}.${domain}`;
@@ -1689,12 +1698,16 @@ function normaliseRecordBaseImage(record, docker = null) {
     };
 }
 function normaliseProvidedBaseImage(value) {
-    const mode = normaliseBaseImageUpdatePolicy(value?.updatePolicy?.mode);
+    const provided = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+    const updatePolicy = provided.updatePolicy && typeof provided.updatePolicy === "object" && "mode" in provided.updatePolicy
+        ? provided.updatePolicy.mode
+        : provided.updatePolicy;
+    const mode = normaliseBaseImageUpdatePolicy((updatePolicy ?? "pinned"));
     return {
         ...baseImageMetadata(mode),
-        image: value?.image ?? SPORADES_BASE_IMAGE.image,
-        name: value?.name ?? SPORADES_BASE_IMAGE.name,
-        version: value?.version ?? SPORADES_BASE_IMAGE.version,
+        image: provided.image ?? SPORADES_BASE_IMAGE.image,
+        name: provided.name ?? SPORADES_BASE_IMAGE.name,
+        version: provided.version ?? SPORADES_BASE_IMAGE.version,
     };
 }
 function normaliseRegistration(request) {
@@ -2243,6 +2256,7 @@ async function installCaddyBootstrapConfig(request, bootstrap) {
 function renderHostHealthRoute(domain, tls) {
     const route = {
         hostname: `host.${domain}`,
+        routeFile: "",
         tls,
     };
     return renderRoute(route, [
@@ -2664,7 +2678,8 @@ async function prepareRuntimeDataOwnership(targetPath, stats) {
         await chown(targetPath, uid, gid);
     }
     catch (error) {
-        if (process.env.SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK === "1" && ["EPERM", "EINVAL"].includes(errorDetails(error).code)) {
+        if (process.env.SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK === "1" &&
+            ["EPERM", "EINVAL"].includes(String(errorDetails(error).code ?? ""))) {
             return;
         }
         throw runtimeDataOwnershipError(targetPath, uid, gid);
@@ -2698,7 +2713,7 @@ async function recordFailedStartAndUnavailableRoute(request, lifecycle, releaseI
         await writeUnavailableRoute(lifecycle);
     }
     catch (error) {
-        await recordReleaseFailure(request, releaseId, errorDetails(error).message ?? "Failed to apply Hosted Capsule route.");
+        await recordReleaseFailure(request, releaseId, String(errorDetails(error).message ?? "Failed to apply Hosted Capsule route."));
         throw error;
     }
     await recordReleaseFailure(request, releaseId, failureMessage);
@@ -2931,7 +2946,8 @@ function normaliseReleaseHistory(record) {
     });
 }
 function normaliseReleaseEntry(release, currentReleaseId) {
-    const state = ["uploaded", "started", "verified", "failed"].includes(release.state) ? release.state : "uploaded";
+    const releaseState = typeof release.state === "string" ? release.state : "uploaded";
+    const state = ["uploaded", "started", "verified", "failed"].includes(releaseState) ? releaseState : "uploaded";
     return {
         id: release.id,
         createdAt: typeof release.createdAt === "string" ? release.createdAt : null,
@@ -2997,9 +3013,10 @@ function normaliseReleaseFailure(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
         return null;
     }
+    const failure = value;
     return {
-        failedAt: typeof value.failedAt === "string" ? value.failedAt : null,
-        message: typeof value.message === "string" ? value.message : "Hosted Capsule release failed.",
+        failedAt: typeof failure.failedAt === "string" ? failure.failedAt : null,
+        message: typeof failure.message === "string" ? failure.message : "Hosted Capsule release failed.",
     };
 }
 function compareReleasesNewestFirst(left, right) {
@@ -3374,7 +3391,8 @@ function validateRollbackRequest(request) {
     if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
         throw helperError("Invalid Hosted Capsule rollback request.", "Update the Sporades CLI and retry `sporades host rollback`.");
     }
-    if (!/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(request.rollback.releaseId)) {
+    const releaseId = request.rollback?.releaseId;
+    if (!releaseId || !/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(releaseId)) {
         throw helperError("Invalid Hosted Capsule release ID.", `Choose a recorded release ID from \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\`.`);
     }
 }
@@ -3524,8 +3542,12 @@ function validateInstallRequest(request) {
     if (claimedFiles.length !== sortedExpectedFiles.length || claimedFiles.some((file, index) => file !== sortedExpectedFiles[index])) {
         throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
     }
-    const expectedReleaseDirectory = path.join(release.directories.releases, release.id);
-    if (path.resolve(release.directories.release) !== path.resolve(expectedReleaseDirectory)) {
+    const directories = release.directories;
+    if (!directories?.releases || !directories.release) {
+        throw helperError("Invalid Hosted Capsule release directory.", "Update the Sporades CLI and retry `sporades host push`.");
+    }
+    const expectedReleaseDirectory = path.join(directories.releases, release.id);
+    if (path.resolve(directories.release) !== path.resolve(expectedReleaseDirectory)) {
         throw helperError("Invalid Hosted Capsule release directory.", "Update the Sporades CLI and retry `sporades host push`.");
     }
 }

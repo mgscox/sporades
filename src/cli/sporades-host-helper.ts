@@ -14,8 +14,39 @@ import {
 } from "../base-image.js";
 import type { DockerRestartPolcy } from "../runtime-restart-policy.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
+import type {
+  CommandResult,
+  DockerPsContainerRaw,
+  DockerStatsRaw,
+  HostHelperCapsuleTarget,
+  HostHelperEnvelope,
+  HostHelperErrorBody,
+  HostHelperRelease,
+  HostHelperRequest as HostHelperContractRequest,
+  HostBootstrapOptions,
+  HostLogsOptions,
+  HostedCapsuleBaseImage,
+  HostedCapsuleLifecycle,
+  HostedCapsuleRegistryRecord,
+  HostedCapsuleReleaseEntry,
+  HostedCapsuleRoute,
+  JsonObject,
+  JsonValue,
+} from "./host-helper-contract.js";
 
-type LooseRecord = Record<string, any>;
+type LooseRecord = JsonObject;
+type HostHelperRequest = HostHelperContractRequest & {
+  capsule: HostHelperCapsuleTarget;
+  release: HostHelperRelease;
+};
+type ReleasePaths = {
+  capsule: string;
+  releases: string;
+  release: string | null;
+  data: string;
+  logs: string;
+  currentLink: string;
+};
 type HelperError = Error & { hint?: string; diagnostics?: unknown };
 
 function errorDetails(error: unknown): LooseRecord {
@@ -56,7 +87,7 @@ main().catch((error: HelperError) => {
 });
 
 async function main() {
-  const request = JSON.parse(await readStdin());
+  const request = JSON.parse(await readStdin()) as HostHelperRequest;
   await loadHostHelperConfig(request);
   if (request.action === "capsule.register") {
     await registerCapsule(request);
@@ -126,7 +157,7 @@ async function main() {
   throw helperError("Unsupported Host helper action.", "Update the Host helper or use a supported Sporades host command.");
 }
 
-async function loadHostHelperConfig(request: any) {
+async function loadHostHelperConfig(request: HostHelperRequest) {
   resetHostHelperConfig();
   const configPath = hostHelperConfigPath(request);
   if (!configPath) {
@@ -167,7 +198,7 @@ function resetHostHelperConfig() {
   MAX_HOST_LOG_LINES = DEFAULT_MAX_HOST_LOG_LINES;
 }
 
-function hostHelperConfigPath(request: any) {
+function hostHelperConfigPath(request: HostHelperRequest) {
   if (process.env.SPORADES_HOST_HELPER_CONFIG) {
     return process.env.SPORADES_HOST_HELPER_CONFIG;
   }
@@ -177,7 +208,7 @@ function hostHelperConfigPath(request: any) {
   return path.join(request.host.remoteRoot, HOST_HELPER_CONFIG_FILE);
 }
 
-function applyHostHelperConfig(config: any, configPath: any) {
+function applyHostHelperConfig(config: unknown, configPath: string) {
   assertPlainObject(config, "Host helper config", configPath);
   assertKnownKeys(config, ["hostedCapsule", "logs"], "Host helper config", configPath);
 
@@ -212,7 +243,7 @@ function applyHostHelperConfig(config: any, configPath: any) {
   }
 }
 
-function assertPlainObject(value: any, label: any, configPath: any) {
+function assertPlainObject(value: unknown, label: string, configPath: string): asserts value is LooseRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw helperError(
       "Host helper config is invalid.",
@@ -221,7 +252,7 @@ function assertPlainObject(value: any, label: any, configPath: any) {
   }
 }
 
-function assertKnownKeys(value: any, knownKeys: any, label: any, configPath: any) {
+function assertKnownKeys(value: LooseRecord, knownKeys: readonly string[], label: string, configPath: string) {
   for (const key of Object.keys(value)) {
     if (!knownKeys.includes(key)) {
       throw helperError(
@@ -232,7 +263,7 @@ function assertKnownKeys(value: any, knownKeys: any, label: any, configPath: any
   }
 }
 
-function readConfigString(value: any, key: any, configPath: any) {
+function readConfigString(value: unknown, key: string, configPath: string) {
   if (typeof value !== "string" || value.trim().length === 0) {
     throw helperError(
       "Host helper config is invalid.",
@@ -242,8 +273,8 @@ function readConfigString(value: any, key: any, configPath: any) {
   return value;
 }
 
-function readConfigPositiveInteger(value: any, key: any, configPath: any) {
-  if (!Number.isInteger(value) || value < 1) {
+function readConfigPositiveInteger(value: unknown, key: string, configPath: string) {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
     throw helperError(
       "Host helper config is invalid.",
       `Set ${key} to a positive whole number in ${configPath}.`,
@@ -252,7 +283,7 @@ function readConfigPositiveInteger(value: any, key: any, configPath: any) {
   return value;
 }
 
-async function bootstrapHost(request: any) {
+async function bootstrapHost(request: HostHelperRequest) {
   validateBootstrapRequest(request);
   const bootstrap = normaliseBootstrap(request);
   await ensureBootstrapDirectories(bootstrap);
@@ -279,7 +310,7 @@ async function bootstrapHost(request: any) {
   });
 }
 
-async function registerCapsule(request: any) {
+async function registerCapsule(request: HostHelperRequest) {
   validateRegisterRequest(request);
   const registration = normaliseRegistration(request);
   await ensureHostedDomainBootstrapped(request, registration);
@@ -295,7 +326,7 @@ async function registerCapsule(request: any) {
         await mkdir(path.dirname(registration.registryRecord), { recursive: true });
         await mkdir(registration.directories.releases, { recursive: true });
         await mkdir(registration.directories.data, { recursive: true });
-        await writeUnavailableRoute(registration.lifecycle);
+        await writeUnavailableRoute(registration.lifecycle as unknown as HostedCapsuleLifecycle);
         sealedServerEnv = await ensureHostSealedEnvKeyPair(registration, existing);
         await writeRegistryRecordAtomic(registration.registryRecord, reactivateRegistrationRecord(existing, sealedServerEnv));
         reactivated = true;
@@ -311,7 +342,7 @@ async function registerCapsule(request: any) {
     await mkdir(registration.directories.releases, { recursive: true });
     await mkdir(registration.directories.data, { recursive: true });
     await mkdir(registration.directories.logs, { recursive: true });
-    await writeUnavailableRoute(registration.lifecycle);
+    await writeUnavailableRoute(registration.lifecycle as unknown as HostedCapsuleLifecycle);
     sealedServerEnv = await ensureHostSealedEnvKeyPair(registration);
     await writeRegistryRecordAtomic(registration.registryRecord, createRegistrationRecord(registration, sealedServerEnv));
   });
@@ -337,7 +368,7 @@ async function registerCapsule(request: any) {
   });
 }
 
-async function rotateCapsuleSealedEnvKey(request: any) {
+async function rotateCapsuleSealedEnvKey(request: HostHelperRequest) {
   validateSealedEnvRotationRequest(request);
   await mkdir(path.dirname(registryLockPath(request)), { recursive: true });
 
@@ -387,7 +418,7 @@ async function rotateCapsuleSealedEnvKey(request: any) {
   writeEnvelope({ ok: true, data, error: null });
 }
 
-async function unregisterCapsule(request: any) {
+async function unregisterCapsule(request: HostHelperRequest) {
   validateUnregisterRequest(request);
   const unregister = normaliseUnregister(request);
   await mkdir(path.dirname(registryLockPath(request)), { recursive: true });
@@ -403,7 +434,7 @@ async function unregisterCapsule(request: any) {
     }
 
     stopAndRemoveContainer(unregister.container.name);
-    const route = await removeManagedRoute(unregister.lifecycle, unregister.route.routeFile);
+    const route = await removeManagedRoute(unregister.lifecycle as HostedCapsuleLifecycle, unregister.route.routeFile);
     const now = new Date();
     const deleteAfter = new Date(now.getTime() + 90 * 24 * 60 * 60 * 1000).toISOString();
     const nextRecord = {
@@ -417,7 +448,7 @@ async function unregisterCapsule(request: any) {
     try {
       await writeRegistryRecordAtomic(unregister.registryRecord, nextRecord);
     } catch (error) {
-      await restoreRemovedRoute(unregister.lifecycle, route);
+      await restoreRemovedRoute(unregister.lifecycle as HostedCapsuleLifecycle, route);
       throw error;
     }
     await finalizeRemovedRoute(route);
@@ -427,7 +458,7 @@ async function unregisterCapsule(request: any) {
   writeEnvelope({ ok: true, data, error: null });
 }
 
-async function deleteCapsule(request: any) {
+async function deleteCapsule(request: HostHelperRequest) {
   validateDeleteRequest(request);
   const deletion = normaliseDeletion(request);
   await mkdir(path.dirname(registryLockPath(request)), { recursive: true });
@@ -446,7 +477,7 @@ async function deleteCapsule(request: any) {
 
     const route = await removePathIfPresent(deletion.route.routeFile);
     if (route.removed) {
-      reloadCaddy(deletion.lifecycle);
+      reloadCaddy(deletion.lifecycle as HostedCapsuleLifecycle);
     }
     const capsuleDirectory = await removePathIfPresent(deletion.directories.capsule, { recursive: true });
     const registryRecord = await removePathIfPresent(deletion.registryRecord);
@@ -461,20 +492,23 @@ async function deleteCapsule(request: any) {
   writeEnvelope({ ok: true, data, error: null });
 }
 
-function deletionRequiresUnregisterError(request: any) {
+function deletionRequiresUnregisterError(request: HostHelperRequest) {
   return helperError(
     "Hosted Capsule must be unregistered before deletion.",
     `Run \`sporades host unregister ${request.capsule.subname} --host ${request.host.alias}\` before deleting Hosted Capsule storage.`,
   );
 }
 
-async function installRelease(request: any) {
+async function installRelease(request: HostHelperRequest) {
   const release = request.release;
   validateInstallRequest(request);
   const previousRecord = await verifyRegisteredCapsule(request);
   const previousCurrentRelease = previousRecord.currentRelease?.id ? { id: previousRecord.currentRelease.id } : null;
   validateReleaseArchive(request);
-  const paths: LooseRecord = canonicalReleasePaths(request);
+  const paths = canonicalReleasePaths(request);
+  if (!paths.release) {
+    throw helperError("Invalid release install request.", "Update the Sporades CLI and retry `sporades host push`.");
+  }
   validateSealedServerEnvPrivateKeyPath(release, paths);
   await mkdir(paths.releases, { recursive: true });
   await mkdir(paths.data, { recursive: true });
@@ -570,11 +604,11 @@ async function installRelease(request: any) {
   writeEnvelope({ ok: true, data, error: null });
 }
 
-function isVerificationRequested(request: any) {
+function isVerificationRequested(request: HostHelperRequest) {
   return request.verification?.enabled === true;
 }
 
-async function verifyInstalledRelease(request: any, release: any, installData: any, previousCurrentRelease: any, restartResult: any, restartError: any) {
+async function verifyInstalledRelease(request: HostHelperRequest, release: HostHelperRelease, installData: any, previousCurrentRelease: any, restartResult: any, restartError: any) {
   const currentAttemptedRelease = { id: release.id };
   const baseData = {
     ...installData,
@@ -641,7 +675,7 @@ async function verifyInstalledRelease(request: any, release: any, installData: a
   };
 }
 
-function readVerificationHealthTimeoutMs(request: any) {
+function readVerificationHealthTimeoutMs(request: HostHelperRequest) {
   const value = Number(request.verification?.healthTimeoutMs ?? 10_000);
   if (!Number.isFinite(value) || value < 1) {
     return 10_000;
@@ -649,7 +683,7 @@ function readVerificationHealthTimeoutMs(request: any) {
   return Math.min(value, 60_000);
 }
 
-async function routeVerifiedFailureToUnavailable(request: any, releaseId: any, message: any) {
+async function routeVerifiedFailureToUnavailable(request: HostHelperRequest, releaseId: string, message: string) {
   const lifecycle = normaliseLifecycle(request);
   stopAndRemoveContainer(lifecycle.container.name);
   try {
@@ -659,7 +693,7 @@ async function routeVerifiedFailureToUnavailable(request: any, releaseId: any, m
   }
 }
 
-async function maybeFallbackToPreviousRelease(request: any, failedReleaseId: any, previousCurrentRelease: any, reason: any) {
+async function maybeFallbackToPreviousRelease(request: HostHelperRequest, failedReleaseId: string, previousCurrentRelease: any, reason: string) {
   if (request.verification?.fallbackToPreviousRelease !== true || !previousCurrentRelease?.id) {
     return {
       applied: false,
@@ -701,14 +735,14 @@ async function maybeFallbackToPreviousRelease(request: any, failedReleaseId: any
   }
 }
 
-async function switchCurrentReleaseLink(currentLink: any, releaseDirectory: any) {
+async function switchCurrentReleaseLink(currentLink: string, releaseDirectory: string) {
   const tempCurrentLink = `${currentLink}.tmp-${process.pid}`;
   await rm(tempCurrentLink, { force: true });
   await symlink(releaseDirectory, tempCurrentLink);
   await rename(tempCurrentLink, currentLink);
 }
 
-async function restoreFailedReleaseAfterFallbackRestartFailure(request: any, failedReleaseId: any, fallbackReleaseId: any, reason: any, restartError: any) {
+async function restoreFailedReleaseAfterFallbackRestartFailure(request: HostHelperRequest, failedReleaseId: string, fallbackReleaseId: string, reason: string, restartError: any) {
   const failedPaths = canonicalRollbackPaths(request, failedReleaseId);
   try {
     await switchCurrentReleaseLink(failedPaths.currentLink, failedPaths.release);
@@ -729,7 +763,7 @@ async function restoreFailedReleaseAfterFallbackRestartFailure(request: any, fai
   }
 }
 
-function verificationFailureResult(request: any, releaseId: any, data: any, message: any) {
+function verificationFailureResult(request: HostHelperRequest, releaseId: string, data: any, message: string) {
   const rollbackGuidance = releaseVerificationRollbackGuidance(request, data.previousCurrentRelease);
   return {
     ok: false,
@@ -751,7 +785,7 @@ function verificationFailureResult(request: any, releaseId: any, data: any, mess
   };
 }
 
-function releaseVerificationRollbackGuidance(request: any, previousCurrentRelease: any) {
+function releaseVerificationRollbackGuidance(request: HostHelperRequest, previousCurrentRelease: any) {
   if (!previousCurrentRelease?.id) {
     return null;
   }
@@ -781,7 +815,7 @@ function verificationHealthSummary(result: any) {
   };
 }
 
-async function startCapsule(request: any, options: LooseRecord = {}) {
+async function startCapsule(request: HostHelperRequest, options: LooseRecord = {}) {
   validateLifecycleRequest(request);
   const registryRecord = await verifyRegisteredCapsule(request, "lifecycle");
   const paths = canonicalReleasePaths(request);
@@ -851,7 +885,7 @@ async function startCapsule(request: any, options: LooseRecord = {}) {
   try {
     await writeRunningRoute(lifecycle, runningRoute);
   } catch (error) {
-    await recordReleaseFailure(request, releaseId, errorDetails(error).message ?? "Failed to apply Hosted Capsule route.");
+    await recordReleaseFailure(request, releaseId, String(errorDetails(error).message ?? "Failed to apply Hosted Capsule route."));
     throw error;
   }
   await recordReleaseStarted(request, releaseId);
@@ -880,7 +914,7 @@ async function startCapsule(request: any, options: LooseRecord = {}) {
   return data;
 }
 
-async function installSealedServerEnvPrivateKey(release: any) {
+async function installSealedServerEnvPrivateKey(release: HostHelperRelease) {
   const privateKey = release.sealedServerEnv?.privateKey;
   const privateKeyPath = release.sealedServerEnv?.privateKeyPath;
   if (!release.sealedServerEnvIncluded || !privateKey || !privateKeyPath) {
@@ -890,7 +924,7 @@ async function installSealedServerEnvPrivateKey(release: any) {
   await writeFile(privateKeyPath, privateKey, { mode: 0o600 });
 }
 
-function validateSealedServerEnvPrivateKeyPath(release: any, paths: any) {
+function validateSealedServerEnvPrivateKeyPath(release: HostHelperRelease, paths: ReleasePaths) {
   if (!release.sealedServerEnvIncluded) {
     return;
   }
@@ -907,11 +941,11 @@ function validateSealedServerEnvPrivateKeyPath(release: any, paths: any) {
   }
 }
 
-async function healthCapsule(request: any) {
+async function healthCapsule(request: HostHelperRequest) {
   writeEnvelope(await evaluateCapsuleHealth(request));
 }
 
-async function evaluateCapsuleHealth(request: any, options: LooseRecord = {}) {
+async function evaluateCapsuleHealth(request: HostHelperRequest, options: { timeoutMs?: number } = {}) {
   validateHealthRequest(request);
   let health = normaliseHealth(request);
   let record;
@@ -1065,7 +1099,7 @@ async function evaluateCapsuleHealth(request: any, options: LooseRecord = {}) {
   };
 }
 
-async function routeRuntimeExhaustionToUnavailable(request: any, record: any, health: any) {
+async function routeRuntimeExhaustionToUnavailable(request: HostHelperRequest, record: any, health: any) {
   const inspected = inspectContainerLifecycle(health.container.name);
   const policy = restartPolicyForMode("hosted");
   if (!Number.isFinite(inspected.restartCount) || inspected.restartCount < policy.maxAttempts) {
@@ -1087,7 +1121,7 @@ async function routeRuntimeExhaustionToUnavailable(request: any, record: any, he
   }
 }
 
-async function stopCapsule(request: any, options: LooseRecord = {}) {
+async function stopCapsule(request: HostHelperRequest, options: LooseRecord = {}) {
   validateLifecycleRequest(request);
   await verifyRegisteredCapsule(request, "lifecycle");
   const lifecycle = normaliseLifecycle(request);
@@ -1106,7 +1140,7 @@ async function stopCapsule(request: any, options: LooseRecord = {}) {
   return data;
 }
 
-async function restartCapsule(request: any, options: LooseRecord = {}) {
+async function restartCapsule(request: HostHelperRequest, options: LooseRecord = {}) {
   validateLifecycleRequest(request);
   const lifecycle = normaliseLifecycle(request);
   stopAndRemoveContainer(lifecycle.container.name);
@@ -1131,7 +1165,7 @@ async function restartCapsule(request: any, options: LooseRecord = {}) {
   return data;
 }
 
-async function statsCapsule(request: any) {
+async function statsCapsule(request: HostHelperRequest) {
   validateStatsRequest(request);
   const registryRecord = await verifyRegisteredCapsule(request, "stats");
   const stats = normaliseStats(request);
@@ -1185,12 +1219,12 @@ async function statsCapsule(request: any) {
   writeEnvelope({ ok: true, data, error: null });
 }
 
-async function listReleases(request: any) {
+async function listReleases(request: HostHelperRequest) {
   validateReleaseListRequest(request);
   const record = await readRegistryRecordForCapsule(request, "releases");
   assertRegistryRecordMatchesRequest(request, record);
   const releases = normaliseReleaseHistory(record)
-    .map((release: any) => markCurrentReleaseEntry(release, record.currentRelease?.id ?? null))
+    .map((release: HostHelperRelease) => markCurrentReleaseEntry(release, record.currentRelease?.id ?? null))
     .sort(compareReleasesNewestFirst);
 
   writeEnvelope({
@@ -1209,7 +1243,7 @@ async function listReleases(request: any) {
   });
 }
 
-async function rollbackRelease(request: any) {
+async function rollbackRelease(request: HostHelperRequest) {
   validateRollbackRequest(request);
   const record = await readRegistryRecordForCapsule(request, "rollback");
   assertRegistryRecordMatchesRequest(request, record);
@@ -1228,8 +1262,11 @@ async function rollbackRelease(request: any) {
     );
   }
 
-  const releaseId = request.rollback.releaseId;
-  const selectedRelease = releases.find((release: any) => release.id === releaseId);
+  const releaseId = request.rollback?.releaseId;
+  if (!releaseId) {
+    throw helperError("Invalid Hosted Capsule rollback request.", "Update the Sporades CLI and retry `sporades host rollback`.");
+  }
+  const selectedRelease = releases.find((release: HostHelperRelease) => release.id === releaseId);
   if (!selectedRelease) {
     throw helperError(
       "Hosted Capsule release is not recorded.",
@@ -1289,7 +1326,7 @@ async function rollbackRelease(request: any) {
   });
 }
 
-async function statsHost(request: any) {
+async function statsHost(request: HostHelperRequest) {
   validateHostStatsRequest(request);
   const records = await readCapsuleRegistryRecords(request);
   const dockerAvailable = checkDockerAvailable();
@@ -1317,7 +1354,7 @@ async function statsHost(request: any) {
   writeEnvelope({ ok: true, data, error: null });
 }
 
-async function logsHost(request: any) {
+async function logsHost(request: HostHelperRequest) {
   validateHostLogsRequest(request);
   const logs = normaliseHostLogs(request);
   if (logs.source === "stdout" || logs.source === "stderr") {
@@ -1349,7 +1386,7 @@ async function logsHost(request: any) {
   throw unavailableCaddyLogsError(request);
 }
 
-async function listCapsules(request: any) {
+async function listCapsules(request: HostHelperRequest) {
   validateListRequest(request);
   const records = await readCapsuleRegistryRecords(request);
   const capsules = [];
@@ -1394,7 +1431,13 @@ async function listCapsules(request: any) {
   });
 }
 
-function createUnregisterResult(request: any, unregister: any, record: any, idempotent: any, route: any = null) {
+function createUnregisterResult(
+  request: HostHelperRequest,
+  unregister: any,
+  record: any,
+  idempotent: any,
+  route: HostedCapsuleRoute | null = null,
+) {
   return {
     unregistered: true,
     idempotent,
@@ -1416,7 +1459,7 @@ function createUnregisterResult(request: any, unregister: any, record: any, idem
   };
 }
 
-function createDeleteResult(request: any, deletion: any, removals: any) {
+function createDeleteResult(request: HostHelperRequest, deletion: any, removals: any) {
   const capsuleRemoved = removals.capsuleDirectory.removed;
   return {
     deleted: true,
@@ -1457,7 +1500,7 @@ function createDeleteResult(request: any, deletion: any, removals: any) {
   };
 }
 
-function canonicalReleasePaths(request: any) {
+function canonicalReleasePaths(request: HostHelperRequest): ReleasePaths {
   const capsule = path.join(
     request.host.remoteRoot,
     "hosts",
@@ -1476,25 +1519,29 @@ function canonicalReleasePaths(request: any) {
   };
 }
 
-function canonicalRollbackPaths(request: any, releaseId: any) {
-  const paths = canonicalReleasePaths({ ...request, release: { id: releaseId } });
+function canonicalRollbackPaths(request: HostHelperRequest, releaseId: string) {
+  const paths = canonicalReleasePaths({ ...request, release: { id: releaseId, remoteArchive: "", files: [] } });
   return {
     ...paths,
     release: path.join(paths.releases, releaseId),
   };
 }
 
-function normaliseLifecycle(request: any, registryRecord: any = null) {
-  const provided = request.lifecycle ?? {};
+function normaliseLifecycle(request: HostHelperRequest, registryRecord: any = null): HostedCapsuleLifecycle {
+  const provided = (request.lifecycle ?? {}) as HostedCapsuleLifecycle;
   const paths = canonicalReleasePaths(request);
   const subname = request.capsule.subname;
   const domain = request.host.domain;
-  const hostedUrl = provided.hostedUrl ?? request.release?.hostedUrl ?? `${request.host.scheme ?? "https"}://${subname}.${domain}`;
-  const remoteCapsuleId = provided.remoteCapsuleId ?? `${domain}/${subname}`;
+  const hostedUrl =
+    typeof provided.hostedUrl === "string"
+      ? provided.hostedUrl
+      : (request.release?.hostedUrl ?? `${request.host.scheme ?? "https"}://${subname}.${domain}`);
+  const remoteCapsuleId = typeof provided.remoteCapsuleId === "string" ? provided.remoteCapsuleId : `${domain}/${subname}`;
   const containerName = provided.container?.name ?? createHostedContainerName(domain, subname);
   const routeFile = provided.routes?.running?.routeFile ?? path.join(request.host.remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
-  const currentLink = provided.currentLink ?? paths.currentLink;
-  const accessLog = provided.routes?.accessLog ?? provided.accessLog ?? defaultCapsuleHttpLogPath(request.host.remoteRoot, domain, subname);
+  const currentLink = typeof provided.currentLink === "string" ? provided.currentLink : paths.currentLink;
+  const routeAccessLog = provided.routes as (LooseRecord & { accessLog?: string }) | undefined;
+  const accessLog = routeAccessLog?.accessLog ?? provided.accessLog ?? defaultCapsuleHttpLogPath(request.host.remoteRoot, domain, subname);
   const sealedServerEnvPrivateKey = releaseSealedServerEnvPrivateKeyMount(registryRecord, paths);
   const authoritativeBaseImage = request.release?.baseImage ?? registryRecord?.baseImage ?? null;
   const updatePolicyMode = normaliseBaseImageUpdatePolicy(
@@ -1569,7 +1616,7 @@ function normaliseLifecycle(request: any, registryRecord: any = null) {
     },
     routes: {
       running: withRouteAccessLog(
-        provided.routes?.running ?? {
+        (provided.routes?.running as HostedCapsuleRoute | undefined) ?? {
           hostname: `${subname}.${domain}`,
           target: "container",
           containerName,
@@ -1579,7 +1626,7 @@ function normaliseLifecycle(request: any, registryRecord: any = null) {
         accessLog,
       ),
       unavailable: withRouteAccessLog(
-        provided.routes?.unavailable ?? {
+        (provided.routes?.unavailable as HostedCapsuleRoute | undefined) ?? {
           hostname: `${subname}.${domain}`,
           target: "hosted-capsule-unavailable",
           statusCode: 503,
@@ -1619,7 +1666,7 @@ function authoritativeSealedServerEnvPrivateKeyMount(fileMounts: any, sealedServ
   return next;
 }
 
-function withRouteAccessLog(route: any, accessLog: any) {
+function withRouteAccessLog(route: HostedCapsuleRoute, accessLog: any) {
   if (route.log === null) {
     return route;
   }
@@ -1629,8 +1676,12 @@ function withRouteAccessLog(route: any, accessLog: any) {
   };
 }
 
-function normaliseStats(request: any) {
-  const provided = request.stats ?? {};
+function normaliseStats(request: HostHelperRequest) {
+  const provided = (request.stats ?? {}) as {
+    hostedUrl?: string;
+    remoteCapsuleId?: string;
+    container?: { name?: string };
+  };
   const subname = request.capsule.subname;
   const domain = request.host.domain;
   const hostedUrl = provided.hostedUrl ?? `${request.host.scheme ?? "https"}://${subname}.${domain}`;
@@ -1644,8 +1695,8 @@ function normaliseStats(request: any) {
   };
 }
 
-function normaliseHealth(request: any, record: any = null) {
-  const provided = request.health ?? {};
+function normaliseHealth(request: HostHelperRequest, record: any = null) {
+  const provided = (request.health ?? {}) as { container?: { name?: string } };
   const subname = request.capsule.subname;
   const domain = request.host.domain;
   const hostedUrl = record?.hostedUrl ?? `${request.host.scheme ?? "https"}://${subname}.${domain}`;
@@ -1660,7 +1711,7 @@ function normaliseHealth(request: any, record: any = null) {
   };
 }
 
-async function ensureRuntimeProbeCredential(request: any): Promise<any> {
+async function ensureRuntimeProbeCredential(request: HostHelperRequest): Promise<any> {
   let probe = null;
   await mutateRegistryRecord(request, (record: any) => {
     probe = readRuntimeProbeCredential(record) ?? {
@@ -1698,7 +1749,7 @@ function normaliseRuntimeHealthBody(body: any) {
   return { valid, ready: ready === true, checks: safe.checks, safe };
 }
 
-function healthFailure(request: any, health: any, failure: any, message: any, hint: any, extra: any = {}) {
+function healthFailure(request: HostHelperRequest, health: any, failure: any, message: string, hint: any, extra: any = {}) {
   return {
     ok: false,
     data: {
@@ -1717,7 +1768,7 @@ function healthFailure(request: any, health: any, failure: any, message: any, hi
   };
 }
 
-function unregisteredHealthFailure(request: any, health: any) {
+function unregisteredHealthFailure(request: HostHelperRequest, health: any) {
   return healthFailure(
     request,
     health,
@@ -1727,12 +1778,12 @@ function unregisteredHealthFailure(request: any, health: any) {
   );
 }
 
-function publicRouteData(route: any) {
+function publicRouteData(route: HostedCapsuleRoute) {
   const { runtimeProbe, ...safeRoute } = route;
   return safeRoute;
 }
 
-async function readHostDiskStats(targetPath: any) {
+async function readHostDiskStats(targetPath: string) {
   let stats;
   try {
     stats = await statfs(targetPath);
@@ -1804,7 +1855,7 @@ function countHostedCapsules(records: any, dockerStates: any) {
   };
 }
 
-function readCapsuleLifecycle(_request: any, registryRecord: any, containerName: any, running: any) {
+function readCapsuleLifecycle(_request: HostHelperRequest, registryRecord: any, containerName: string, running: any) {
   const inspected = inspectContainerLifecycle(containerName);
   return {
     registered: true,
@@ -1818,7 +1869,7 @@ function readCapsuleLifecycle(_request: any, registryRecord: any, containerName:
   };
 }
 
-function inspectContainerLifecycle(containerName: any) {
+function inspectContainerLifecycle(containerName: string) {
   const result = runDocker(["inspect", "--format", "{{json .}}", containerName]);
   if (!result.ok) {
     return { startedAt: null, uptimeSeconds: null, restartCount: null };
@@ -1837,7 +1888,7 @@ function inspectContainerLifecycle(containerName: any) {
   };
 }
 
-async function readCapsuleRegistryRecords(request: any) {
+async function readCapsuleRegistryRecords(request: HostHelperRequest) {
   const registryDirectory = path.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", "capsules");
   let entries;
   try {
@@ -1874,7 +1925,7 @@ async function readCapsuleRegistryRecords(request: any) {
   return records;
 }
 
-function lookupCapsuleDockerState(request: any, record: any) {
+function lookupCapsuleDockerState(request: HostHelperRequest, record: any) {
   const subname = record.subname;
   const containerName = createHostedContainerName(request.host.domain, subname);
   const result = runDocker([
@@ -1899,11 +1950,11 @@ function lookupCapsuleDockerState(request: any, record: any) {
   return match ? normaliseDockerPsContainer(match, containerName) : null;
 }
 
-function hostRegistryRetryCommand(request: any) {
+function hostRegistryRetryCommand(request: HostHelperRequest) {
   return request.action === "host.stats" ? `sporades host stats --host ${request.host.alias}` : `sporades host list --host ${request.host.alias}`;
 }
 
-function parseDockerPsJsonLines(output: any) {
+function parseDockerPsJsonLines(output: string) {
   return String(output ?? "")
     .split("\n")
     .map((line: any) => line.trim())
@@ -1918,7 +1969,7 @@ function parseDockerPsJsonLines(output: any) {
     .filter(Boolean);
 }
 
-function dockerPsContainerMatches(container: any, containerName: any, remoteCapsuleId: any, subname: any) {
+function dockerPsContainerMatches(container: any, containerName: string, remoteCapsuleId: any, subname: any) {
   const names = String(container.Names ?? container.Name ?? "");
   const labels = parseDockerLabels(container.Labels);
   return (
@@ -1928,7 +1979,7 @@ function dockerPsContainerMatches(container: any, containerName: any, remoteCaps
   );
 }
 
-function parseDockerLabels(value: any) {
+function parseDockerLabels(value: unknown) {
   if (value && typeof value === "object" && !Array.isArray(value)) {
     return Object.fromEntries(Object.entries(value).map(([key, labelValue]) => [key, String(labelValue)]));
   }
@@ -1997,17 +2048,23 @@ function normaliseRecordBaseImage(record: any, docker: any = null) {
   };
 }
 
-function normaliseProvidedBaseImage(value: any) {
-  const mode = normaliseBaseImageUpdatePolicy(value?.updatePolicy?.mode);
+function normaliseProvidedBaseImage(value: unknown) {
+  const provided: HostedCapsuleBaseImage =
+    value && typeof value === "object" && !Array.isArray(value) ? (value as HostedCapsuleBaseImage) : {};
+  const updatePolicy =
+    provided.updatePolicy && typeof provided.updatePolicy === "object" && "mode" in provided.updatePolicy
+      ? (provided.updatePolicy as { mode?: unknown }).mode
+      : provided.updatePolicy;
+  const mode = normaliseBaseImageUpdatePolicy((updatePolicy ?? "pinned") as string | { mode: string });
   return {
     ...baseImageMetadata(mode),
-    image: value?.image ?? SPORADES_BASE_IMAGE.image,
-    name: value?.name ?? SPORADES_BASE_IMAGE.name,
-    version: value?.version ?? SPORADES_BASE_IMAGE.version,
+    image: provided.image ?? SPORADES_BASE_IMAGE.image,
+    name: provided.name ?? SPORADES_BASE_IMAGE.name,
+    version: provided.version ?? SPORADES_BASE_IMAGE.version,
   };
 }
 
-function normaliseRegistration(request: any) {
+function normaliseRegistration(request: HostHelperRequest) {
   const subname = request.capsule.subname;
   const domain = request.host.domain;
   const remoteRoot = request.host.remoteRoot;
@@ -2048,7 +2105,7 @@ function normaliseRegistration(request: any) {
   };
 }
 
-function normaliseUnregister(request: any) {
+function normaliseUnregister(request: HostHelperRequest) {
   const provided = request.unregister ?? {};
   const subname = request.capsule.subname;
   const domain = request.host.domain;
@@ -2085,7 +2142,7 @@ function normaliseUnregister(request: any) {
   };
 }
 
-function normaliseDeletion(request: any) {
+function normaliseDeletion(request: HostHelperRequest) {
   const subname = request.capsule.subname;
   const domain = request.host.domain;
   const remoteRoot = request.host.remoteRoot;
@@ -2112,7 +2169,7 @@ function normaliseDeletion(request: any) {
   };
 }
 
-function normaliseRegistrationTls(request: any) {
+function normaliseRegistrationTls(request: HostHelperRequest) {
   const remoteRoot = request.host.remoteRoot;
   const domain = request.host.domain;
   const tlsMode = request.registration?.bootstrap?.tls?.mode ?? request.bootstrap?.tls?.mode ?? "automatic";
@@ -2125,7 +2182,7 @@ function normaliseRegistrationTls(request: any) {
   };
 }
 
-async function ensureHostedDomainBootstrapped(request: any, registration: any) {
+async function ensureHostedDomainBootstrapped(request: HostHelperRequest, registration: any) {
   const caddyfile = path.join(request.host.remoteRoot, "caddy", "Caddyfile");
   const domainInclude = path.join(request.host.remoteRoot, "caddy", "hosts", `${request.host.domain}.caddy`);
   const bootstrapped = (await pathExists(caddyfile)) && (await pathExists(domainInclude));
@@ -2178,7 +2235,7 @@ async function ensureHostSealedEnvKeyPair(registration: any, existingRecord: any
   return generateHostSealedEnvKeyPair(registration.directories.data);
 }
 
-async function generateHostSealedEnvKeyPair(dataDirectory: any) {
+async function generateHostSealedEnvKeyPair(dataDirectory: string) {
   const { publicKey, privateKey } = generateKeyPairSync("rsa", {
     modulusLength: 2048,
     publicKeyEncoding: { type: "spki", format: "pem" },
@@ -2201,7 +2258,7 @@ async function generateHostSealedEnvKeyPair(dataDirectory: any) {
   };
 }
 
-async function cleanupUnreferencedHostSealedEnvKeys(dataDirectory: any, referencedFingerprints: any) {
+async function cleanupUnreferencedHostSealedEnvKeys(dataDirectory: string, referencedFingerprints: any) {
   const paths = hostSealedEnvKeyPaths(dataDirectory, "placeholder");
   let entries;
   try {
@@ -2335,7 +2392,7 @@ function currentReleaseSealedServerEnvFingerprint(record: any) {
   return typeof fingerprint === "string" ? fingerprint : null;
 }
 
-function hostSealedEnvKeyPaths(dataDirectory: any, fingerprint: any) {
+function hostSealedEnvKeyPaths(dataDirectory: string, fingerprint: string) {
   const root = path.join(dataDirectory, "sealed-server-env");
   const keys = path.join(root, "keys");
   return {
@@ -2346,7 +2403,7 @@ function hostSealedEnvKeyPaths(dataDirectory: any, fingerprint: any) {
   };
 }
 
-function fingerprintPublicKey(publicKey: any) {
+function fingerprintPublicKey(publicKey: string) {
   return createHash("sha256").update(publicKey).digest("hex").slice(0, 16);
 }
 
@@ -2361,8 +2418,8 @@ function reactivateRegistrationRecord(record: any, sealedServerEnv: any = null) 
   };
 }
 
-function normaliseHostLogs(request: any) {
-  const provided = request.logs ?? {};
+function normaliseHostLogs(request: HostHelperRequest) {
+  const provided: HostLogsOptions = request.logs ?? {};
   const lines = provided.lines ?? DEFAULT_HOST_LOG_LINES;
   const explicitFile = Boolean(provided.file ?? provided.path ?? provided.accessLog?.file);
   const source = provided.source === "caddy-combined" ? "http" : (provided.source ?? "http");
@@ -2410,8 +2467,8 @@ function percentage(numerator: any, denominator: any) {
   return Math.round((numerator / denominator) * 10000) / 100;
 }
 
-function normaliseBootstrap(request: any) {
-  const provided = request.bootstrap ?? {};
+function normaliseBootstrap(request: HostHelperRequest) {
+  const provided: HostBootstrapOptions = request.bootstrap ?? {};
   const remoteRoot = request.host.remoteRoot;
   const domain = request.host.domain;
   const caddyDirectory = path.join(remoteRoot, "caddy");
@@ -2479,7 +2536,7 @@ async function ensureBootstrapDirectories(bootstrap: any) {
   }
 }
 
-async function provisionCaddyAccessLog(request: any, bootstrap: any) {
+async function provisionCaddyAccessLog(request: HostHelperRequest, bootstrap: any) {
   const logFile = bootstrap.caddy.accessLog;
   const logDirectory = path.dirname(logFile);
   const caddyUser = resolveCaddyServiceUser();
@@ -2510,7 +2567,7 @@ async function provisionCaddyAccessLog(request: any, bootstrap: any) {
   };
 }
 
-async function provisionRouteLogFile(route: any) {
+async function provisionRouteLogFile(route: HostedCapsuleRoute) {
   const logFile = route.log?.file;
   if (!logFile) {
     return;
@@ -2543,7 +2600,7 @@ function resolveCaddyServiceUser() {
   return { name: "caddy", uid: user.stdout.trim(), gid: group.stdout.trim() };
 }
 
-async function validateBootstrapTls(request: any, bootstrap: any) {
+async function validateBootstrapTls(request: HostHelperRequest, bootstrap: any) {
   if (bootstrap.tls.mode === "automatic") {
     return;
   }
@@ -2565,7 +2622,7 @@ async function validateBootstrapTls(request: any, bootstrap: any) {
   }
 }
 
-function ensureDockerNetwork(networkName: any) {
+function ensureDockerNetwork(networkName: string) {
   const inspect = spawnSync("docker", ["network", "inspect", networkName], { encoding: "utf8" });
   if (inspect.error) {
     throw helperError(
@@ -2587,7 +2644,7 @@ function ensureDockerNetwork(networkName: any) {
   return { name: networkName, created: true };
 }
 
-async function installCaddyBootstrapConfig(request: any, bootstrap: any) {
+async function installCaddyBootstrapConfig(request: HostHelperRequest, bootstrap: any) {
   const caddyfile = bootstrap.caddy.caddyfile;
   const managedInclude = bootstrap.caddy.managedInclude;
   const domainInclude = bootstrap.caddy.domainInclude;
@@ -2615,9 +2672,10 @@ async function installCaddyBootstrapConfig(request: any, bootstrap: any) {
   };
 }
 
-function renderHostHealthRoute(domain: any, tls: any) {
+function renderHostHealthRoute(domain: string, tls: any) {
   const route = {
     hostname: `host.${domain}`,
+    routeFile: "",
     tls,
   };
   return renderRoute(
@@ -2630,7 +2688,7 @@ function renderHostHealthRoute(domain: any, tls: any) {
   );
 }
 
-async function writeManagedCaddyfile(caddyfile: any, importLine: any) {
+async function writeManagedCaddyfile(caddyfile: string, importLine: string) {
   const begin = "# BEGIN Sporades hosted domains";
   const end = "# END Sporades hosted domains";
   const block = `${begin}\n${importLine}\n${end}\n`;
@@ -2654,7 +2712,7 @@ async function writeManagedCaddyfile(caddyfile: any, importLine: any) {
   await writeFile(caddyfile, next);
 }
 
-function validateCaddyBootstrap(caddyfile: any) {
+function validateCaddyBootstrap(caddyfile: string) {
   const result = spawnSync("caddy", ["validate", "--config", caddyfile, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw helperError(
@@ -2664,7 +2722,7 @@ function validateCaddyBootstrap(caddyfile: any) {
   }
 }
 
-function reloadCaddyBootstrap(caddyfile: any) {
+function reloadCaddyBootstrap(caddyfile: string) {
   const result = spawnSync("caddy", ["reload", "--config", caddyfile, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw helperError(
@@ -2674,22 +2732,22 @@ function reloadCaddyBootstrap(caddyfile: any) {
   }
 }
 
-function parsePair(value: any, parser: any) {
+function parsePair(value: unknown, parser: any) {
   const [left, right] = String(value ?? "").split("/").map((part: any) => part.trim());
   return [parser(left), parser(right)];
 }
 
-function parseDockerPercent(value: any) {
+function parseDockerPercent(value: unknown) {
   const parsed = Number.parseFloat(String(value ?? "").replace("%", "").trim());
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function parseDockerInteger(value: any) {
+function parseDockerInteger(value: unknown) {
   const parsed = Number.parseInt(String(value ?? "").trim(), 10);
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function parseDockerByteSize(value: any) {
+function parseDockerByteSize(value: unknown) {
   const match = String(value ?? "").trim().match(/^([\d.]+)\s*([KMGTPE]?i?B|B)$/i);
   if (!match) {
     return null;
@@ -2720,7 +2778,7 @@ function parseDockerByteSize(value: any) {
   return Math.round(amount * multipliers[unit]);
 }
 
-async function dockerRunArgs(lifecycle: any, releaseId: any) {
+async function dockerRunArgs(lifecycle: HostedCapsuleLifecycle, releaseId: string) {
   const args = [
     "run",
     "--detach",
@@ -2792,7 +2850,7 @@ async function dockerRunArgs(lifecycle: any, releaseId: any) {
   return args;
 }
 
-function missingHostSealedServerEnvPrivateKeyError(lifecycle: any, mount: any) {
+function missingHostSealedServerEnvPrivateKeyError(lifecycle: HostedCapsuleLifecycle, mount: any) {
   const fingerprint = mount.fingerprint ?? null;
   const expected = fingerprint ? ` Expected sealed-env key fingerprint: ${fingerprint}.` : "";
   return helperError(
@@ -2814,12 +2872,12 @@ function missingHostSealedServerEnvPrivateKeyError(lifecycle: any, mount: any) {
   );
 }
 
-function stopAndRemoveContainer(containerName: any) {
+function stopAndRemoveContainer(containerName: string) {
   runDocker(["stop", containerName], { ignoreFailure: true });
   runDocker(["rm", containerName], { ignoreFailure: true });
 }
 
-function ensureHostedBaseImage(lifecycle: any) {
+function ensureHostedBaseImage(lifecycle: HostedCapsuleLifecycle) {
   const image = lifecycle.container.image;
   const inspect = runDocker(["image", "inspect", image], { ignoreFailure: true });
   if (inspect.ok) {
@@ -2860,11 +2918,11 @@ function runDocker(args: any, options: LooseRecord = {}) {
   };
 }
 
-function checkContainerRunning(containerName: any) {
+function checkContainerRunning(containerName: string) {
   return inspectContainerRunning(containerName).running;
 }
 
-function inspectContainerRunning(containerName: any) {
+function inspectContainerRunning(containerName: string) {
   const result = runDocker(["inspect", "-f", "{{.State.Running}}", containerName]);
   if (!result.ok) {
     return { ok: false, running: false };
@@ -2873,7 +2931,7 @@ function inspectContainerRunning(containerName: any) {
   return { ok: true, running: value === "true" };
 }
 
-function inspectLoopbackPublishedPort(containerName: any, containerPort: any) {
+function inspectLoopbackPublishedPort(containerName: string, containerPort: any) {
   const result = runDocker([
     "inspect",
     "-f",
@@ -2894,7 +2952,7 @@ function inspectLoopbackPublishedPort(containerName: any, containerPort: any) {
   };
 }
 
-async function currentReleaseId(currentLink: any, request: any) {
+async function currentReleaseId(currentLink: string, request: HostHelperRequest) {
   let target;
   try {
     target = await readlink(currentLink);
@@ -2911,7 +2969,7 @@ async function currentReleaseId(currentLink: any, request: any) {
   return path.basename(target);
 }
 
-function loopbackRunningRoute(route: any, publishedPort: any) {
+function loopbackRunningRoute(route: HostedCapsuleRoute, publishedPort: any) {
   return {
     ...route,
     target: "loopback",
@@ -2920,7 +2978,7 @@ function loopbackRunningRoute(route: any, publishedPort: any) {
   };
 }
 
-async function writeRunningRoute(lifecycle: any, route: any = lifecycle.routes.running) {
+async function writeRunningRoute(lifecycle: HostedCapsuleLifecycle, route: HostedCapsuleRoute = lifecycle.routes.running) {
   await provisionRouteLogFile(route);
   const proxyLine = `reverse_proxy ${route.upstream ?? `${route.containerName}:${route.port ?? 4000}`}`;
   await applyManagedRoute(
@@ -2930,7 +2988,7 @@ async function writeRunningRoute(lifecycle: any, route: any = lifecycle.routes.r
   );
 }
 
-function renderRunningRouteHandler(route: any, proxyLine: any) {
+function renderRunningRouteHandler(route: HostedCapsuleRoute, proxyLine: string) {
   const probe = route.runtimeProbe;
   if (!probe?.token || probe.header !== RUNTIME_PROBE_HEADER) {
     return proxyLine;
@@ -2949,7 +3007,7 @@ function renderRunningRouteHandler(route: any, proxyLine: any) {
   ].join("\n  ");
 }
 
-async function writeUnavailableRoute(lifecycle: any) {
+async function writeUnavailableRoute(lifecycle: HostedCapsuleLifecycle) {
   const route = lifecycle.routes.unavailable;
   await provisionRouteLogFile(route);
   await applyManagedRoute(
@@ -2959,7 +3017,7 @@ async function writeUnavailableRoute(lifecycle: any) {
   );
 }
 
-function renderUnavailableRouteHandler(route: any) {
+function renderUnavailableRouteHandler(route: HostedCapsuleRoute) {
   return [
     `@sporadesRuntimeHealth path ${CAPSULE_RUNTIME_HEALTH_PATH}`,
     "respond @sporadesRuntimeHealth 404",
@@ -2967,7 +3025,7 @@ function renderUnavailableRouteHandler(route: any) {
   ].join("\n  ");
 }
 
-function renderRoute(route: any, handlerLine: any) {
+function renderRoute(route: HostedCapsuleRoute, handlerLine: string) {
   const tlsLine = renderRouteTlsLine(route.tls);
   const logBlock = renderRouteLogBlock(route.log);
   return `${route.hostname} {\n${tlsLine}${logBlock}  ${handlerLine}\n}\n`;
@@ -2987,7 +3045,7 @@ function renderRouteLogBlock(log: any) {
   return `  log {\n    output file ${log.file} {\n      roll_size 10MiB\n      roll_keep 5\n      roll_keep_for 720h\n    }\n  }\n`;
 }
 
-async function applyManagedRoute(lifecycle: any, routeFile: any, contents: any) {
+async function applyManagedRoute(lifecycle: HostedCapsuleLifecycle, routeFile: string, contents: any) {
   await mkdir(path.dirname(routeFile), { recursive: true });
   const tempRouteFile = `${routeFile}.tmp`;
   const previousRouteFile = `${routeFile}.previous-${process.pid}`;
@@ -3028,7 +3086,7 @@ async function applyManagedRoute(lifecycle: any, routeFile: any, contents: any) 
   await rm(previousRouteFile, { force: true });
 }
 
-async function removeManagedRoute(lifecycle: any, routeFile: any) {
+async function removeManagedRoute(lifecycle: HostedCapsuleLifecycle, routeFile: string) {
   const previousRouteFile = `${routeFile}.previous-${process.pid}`;
   await rm(previousRouteFile, { force: true });
   const hadRoute = await pathExists(routeFile);
@@ -3058,13 +3116,13 @@ async function removeManagedRoute(lifecycle: any, routeFile: any) {
   return { routeFile, removed: true, previousRouteFile };
 }
 
-async function finalizeRemovedRoute(route: any) {
+async function finalizeRemovedRoute(route: HostedCapsuleRoute) {
   if (route?.previousRouteFile) {
     await rm(route.previousRouteFile, { force: true });
   }
 }
 
-async function restoreRemovedRoute(lifecycle: any, route: any) {
+async function restoreRemovedRoute(lifecycle: HostedCapsuleLifecycle, route: HostedCapsuleRoute) {
   if (!route?.previousRouteFile) {
     return;
   }
@@ -3073,7 +3131,7 @@ async function restoreRemovedRoute(lifecycle: any, route: any) {
   reloadCaddy(lifecycle);
 }
 
-async function removePathIfPresent(targetPath: any, options: LooseRecord = {}) {
+async function removePathIfPresent(targetPath: string, options: LooseRecord = {}) {
   const existed = await pathExists(targetPath);
   if (!existed) {
     return { path: targetPath, removed: false };
@@ -3082,7 +3140,7 @@ async function removePathIfPresent(targetPath: any, options: LooseRecord = {}) {
   return { path: targetPath, removed: true };
 }
 
-async function prepareWritableDataPath(targetPath: any) {
+async function prepareWritableDataPath(targetPath: string) {
   let stats;
   try {
     stats = await lstat(targetPath);
@@ -3116,7 +3174,7 @@ async function prepareWritableDataPath(targetPath: any) {
   }
 }
 
-async function prepareRuntimeDataOwnership(targetPath: any, stats: any) {
+async function prepareRuntimeDataOwnership(targetPath: string, stats: any) {
   const uid = SPORADES_BASE_IMAGE.runtimeUid;
   const gid = SPORADES_BASE_IMAGE.runtimeGid;
   if (process.env.SPORADES_TEST_FORCE_RUNTIME_DATA_CHOWN_FAILURE === "1") {
@@ -3128,21 +3186,24 @@ async function prepareRuntimeDataOwnership(targetPath: any, stats: any) {
   try {
     await chown(targetPath, uid, gid);
   } catch (error) {
-    if (process.env.SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK === "1" && ["EPERM", "EINVAL"].includes(errorDetails(error).code)) {
+    if (
+      process.env.SPORADES_TEST_ALLOW_RUNTIME_DATA_OWNER_FALLBACK === "1" &&
+      ["EPERM", "EINVAL"].includes(String(errorDetails(error).code ?? ""))
+    ) {
       return;
     }
     throw runtimeDataOwnershipError(targetPath, uid, gid);
   }
 }
 
-function runtimeDataOwnershipError(targetPath: any, uid: any, gid: any) {
+function runtimeDataOwnershipError(targetPath: string, uid: any, gid: any) {
   return helperError(
     "Unable to prepare Hosted Capsule data ownership for the non-root runtime user.",
     `Run the Host helper as a user that can chown Capsule data to ${uid}:${gid}, or repair ownership with \`sudo chown -R ${uid}:${gid} ${targetPath}\` and retry.`,
   );
 }
 
-function validateCaddyRoute(routeFile: any) {
+function validateCaddyRoute(routeFile: string) {
   const result = spawnSync("caddy", ["validate", "--config", routeFile, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw helperError(
@@ -3152,7 +3213,7 @@ function validateCaddyRoute(routeFile: any) {
   }
 }
 
-function reloadCaddy(lifecycle: any) {
+function reloadCaddy(lifecycle: HostedCapsuleLifecycle) {
   const configPath = path.join(lifecycle.remoteRoot, "caddy", "Caddyfile");
   const result = spawnSync("caddy", ["reload", "--config", configPath, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
@@ -3163,7 +3224,7 @@ function reloadCaddy(lifecycle: any) {
   }
 }
 
-async function updateRegistryStatus(request: any, status: any) {
+async function updateRegistryStatus(request: HostHelperRequest, status: any) {
   await mutateRegistryRecord(request, (record: any) => {
     record.status = status;
     record.updatedAt = new Date().toISOString();
@@ -3171,17 +3232,17 @@ async function updateRegistryStatus(request: any, status: any) {
   });
 }
 
-async function recordFailedStartAndUnavailableRoute(request: any, lifecycle: any, releaseId: any, failureMessage: any) {
+async function recordFailedStartAndUnavailableRoute(request: HostHelperRequest, lifecycle: HostedCapsuleLifecycle, releaseId: string, failureMessage: any) {
   try {
     await writeUnavailableRoute(lifecycle);
   } catch (error) {
-    await recordReleaseFailure(request, releaseId, errorDetails(error).message ?? "Failed to apply Hosted Capsule route.");
+    await recordReleaseFailure(request, releaseId, String(errorDetails(error).message ?? "Failed to apply Hosted Capsule route."));
     throw error;
   }
   await recordReleaseFailure(request, releaseId, failureMessage);
 }
 
-async function recordReleaseUploaded(request: any, release: any) {
+async function recordReleaseUploaded(request: HostHelperRequest, release: HostHelperRelease) {
   await mutateRegistryRecord(request, (record: any) => {
     const now = new Date().toISOString();
     record.currentRelease = { ...(record.currentRelease ?? {}), id: release.id };
@@ -3211,7 +3272,7 @@ async function recordReleaseUploaded(request: any, release: any) {
   });
 }
 
-async function recordReleaseStartAttempt(request: any, releaseId: any) {
+async function recordReleaseStartAttempt(request: HostHelperRequest, releaseId: string) {
   await mutateRegistryRecord(request, (record: any) => {
     const now = new Date().toISOString();
     record.updatedAt = now;
@@ -3227,7 +3288,7 @@ async function recordReleaseStartAttempt(request: any, releaseId: any) {
   });
 }
 
-async function recordReleaseStarted(request: any, releaseId: any) {
+async function recordReleaseStarted(request: HostHelperRequest, releaseId: string) {
   await mutateRegistryRecord(request, (record: any) => {
     const now = new Date().toISOString();
     record.currentRelease = { ...(record.currentRelease ?? {}), id: releaseId };
@@ -3246,7 +3307,7 @@ async function recordReleaseStarted(request: any, releaseId: any) {
   });
 }
 
-async function recordReleaseVerified(request: any, releaseId: any) {
+async function recordReleaseVerified(request: HostHelperRequest, releaseId: string) {
   await mutateRegistryRecord(request, (record: any) => {
     const now = new Date().toISOString();
     record.currentRelease = { ...(record.currentRelease ?? {}), id: releaseId };
@@ -3266,7 +3327,7 @@ async function recordReleaseVerified(request: any, releaseId: any) {
   });
 }
 
-async function recordReleaseVerificationFailed(request: any, releaseId: any, message: any) {
+async function recordReleaseVerificationFailed(request: HostHelperRequest, releaseId: string, message: string) {
   await mutateRegistryRecord(request, (record: any) => {
     const now = new Date().toISOString();
     record.status = "failed";
@@ -3291,7 +3352,7 @@ async function recordReleaseVerificationFailed(request: any, releaseId: any, mes
   });
 }
 
-async function recordReleaseVerificationFallback(request: any, failedReleaseId: any, fallbackReleaseId: any, message: any) {
+async function recordReleaseVerificationFallback(request: HostHelperRequest, failedReleaseId: string, fallbackReleaseId: string, message: string) {
   await mutateRegistryRecord(request, (record: any) => {
     const now = new Date().toISOString();
     record.currentRelease = { ...(record.currentRelease ?? {}), id: fallbackReleaseId };
@@ -3322,7 +3383,7 @@ async function recordReleaseVerificationFallback(request: any, failedReleaseId: 
   });
 }
 
-async function recordReleaseVerificationFallbackFailed(request: any, failedReleaseId: any, fallbackReleaseId: any, fallbackMessage: any, verificationMessage: any) {
+async function recordReleaseVerificationFallbackFailed(request: HostHelperRequest, failedReleaseId: string, fallbackReleaseId: string, fallbackMessage: any, verificationMessage: any) {
   await mutateRegistryRecord(request, (record: any) => {
     const now = new Date().toISOString();
     record.currentRelease = { ...(record.currentRelease ?? {}), id: failedReleaseId };
@@ -3347,14 +3408,14 @@ async function recordReleaseVerificationFallbackFailed(request: any, failedRelea
         message: verificationMessage,
       },
     }));
-    record.releases = normaliseReleaseHistory(record).map((release: any) =>
+    record.releases = normaliseReleaseHistory(record).map((release: HostHelperRelease) =>
       release.id === fallbackReleaseId ? { ...release, current: false } : release,
     );
     return record;
   });
 }
 
-async function recordReleaseFailure(request: any, releaseId: any, message: any) {
+async function recordReleaseFailure(request: HostHelperRequest, releaseId: string, message: string) {
   await mutateRegistryRecord(request, (record: any) => {
     const now = new Date().toISOString();
     record.status = "failed";
@@ -3375,7 +3436,7 @@ async function recordReleaseFailure(request: any, releaseId: any, message: any) 
   });
 }
 
-async function recordReleaseRollbackSelected(request: any, releaseId: any) {
+async function recordReleaseRollbackSelected(request: HostHelperRequest, releaseId: string) {
   await mutateRegistryRecord(request, (record: any) => {
     const now = new Date().toISOString();
     record.currentRelease = { ...(record.currentRelease ?? {}), id: releaseId };
@@ -3393,26 +3454,26 @@ async function recordReleaseRollbackSelected(request: any, releaseId: any) {
   });
 }
 
-function upsertReleaseEntry(record: any, releaseId: any, mutateEntry: any) {
+function upsertReleaseEntry(record: any, releaseId: string, mutateEntry: any) {
   const releases = normaliseReleaseHistory(record);
-  const existing = releases.find((release: any) => release.id === releaseId) ?? createLegacyReleaseEntry(releaseId, record);
+  const existing = releases.find((release: HostHelperRelease) => release.id === releaseId) ?? createLegacyReleaseEntry(releaseId, record);
   const next = mutateEntry(existing);
-  const withoutRelease = releases.filter((release: any) => release.id !== releaseId);
-  return [...withoutRelease, next].map((release: any) => markCurrentReleaseEntry(release, releaseId));
+  const withoutRelease = releases.filter((release: HostHelperRelease) => release.id !== releaseId);
+  return [...withoutRelease, next].map((release: HostHelperRelease) => markCurrentReleaseEntry(release, releaseId));
 }
 
 function normaliseReleaseHistory(record: any) {
   const currentReleaseId = record?.currentRelease?.id ?? null;
   const releases = Array.isArray(record?.releases)
     ? record.releases
-        .filter((release: any) => release && typeof release === "object" && typeof release.id === "string" && release.id.length > 0)
-        .map((release: any) => normaliseReleaseEntry(release, currentReleaseId))
+        .filter((release: HostHelperRelease) => release && typeof release === "object" && typeof release.id === "string" && release.id.length > 0)
+        .map((release: HostHelperRelease) => normaliseReleaseEntry(release, currentReleaseId))
     : [];
   if (releases.length === 0 && currentReleaseId) {
     releases.push(createLegacyReleaseEntry(currentReleaseId, record));
   }
   const seen = new Set();
-  return releases.filter((release: any) => {
+  return releases.filter((release: HostHelperRelease) => {
     if (seen.has(release.id)) {
       return false;
     }
@@ -3421,8 +3482,9 @@ function normaliseReleaseHistory(record: any) {
   });
 }
 
-function normaliseReleaseEntry(release: any, currentReleaseId: any) {
-  const state = ["uploaded", "started", "verified", "failed"].includes(release.state) ? release.state : "uploaded";
+function normaliseReleaseEntry(release: HostHelperRelease, currentReleaseId: string | null) {
+  const releaseState = typeof release.state === "string" ? release.state : "uploaded";
+  const state = ["uploaded", "started", "verified", "failed"].includes(releaseState) ? releaseState : "uploaded";
   return {
     id: release.id,
     createdAt: typeof release.createdAt === "string" ? release.createdAt : null,
@@ -3438,7 +3500,7 @@ function normaliseReleaseEntry(release: any, currentReleaseId: any) {
   };
 }
 
-function createLegacyReleaseEntry(releaseId: any, record: any): LooseRecord {
+function createLegacyReleaseEntry(releaseId: string, record: any): LooseRecord {
   return {
     id: releaseId,
     createdAt: typeof record?.currentRelease?.createdAt === "string" ? record.currentRelease.createdAt : null,
@@ -3453,7 +3515,7 @@ function createLegacyReleaseEntry(releaseId: any, record: any): LooseRecord {
   };
 }
 
-function markCurrentReleaseEntry(release: any, currentReleaseId: any) {
+function markCurrentReleaseEntry(release: HostHelperRelease, currentReleaseId: any) {
   return {
     ...release,
     current: release.id === currentReleaseId,
@@ -3485,20 +3547,21 @@ function releaseSealedServerEnvPrivateKeyMount(registryRecord: any, paths: any) 
   };
 }
 
-function normaliseReleaseEventList(value: any) {
+function normaliseReleaseEventList(value: unknown) {
   if (!Array.isArray(value)) {
     return [];
   }
   return value.filter((event: any) => event && typeof event === "object" && !Array.isArray(event));
 }
 
-function normaliseReleaseFailure(value: any) {
+function normaliseReleaseFailure(value: unknown) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
+  const failure = value as { failedAt?: unknown; message?: unknown };
   return {
-    failedAt: typeof value.failedAt === "string" ? value.failedAt : null,
-    message: typeof value.message === "string" ? value.message : "Hosted Capsule release failed.",
+    failedAt: typeof failure.failedAt === "string" ? failure.failedAt : null,
+    message: typeof failure.message === "string" ? failure.message : "Hosted Capsule release failed.",
   };
 }
 
@@ -3506,7 +3569,7 @@ function compareReleasesNewestFirst(left: any, right: any) {
   return String(right.createdAt ?? right.id).localeCompare(String(left.createdAt ?? left.id)) || right.id.localeCompare(left.id);
 }
 
-async function readRegistryRecordForCapsule(request: any, purpose: any) {
+async function readRegistryRecordForCapsule(request: HostHelperRequest, purpose: any) {
   const registryRecordPath = registryPath(request);
   try {
     return JSON.parse(await readFile(registryRecordPath, "utf8"));
@@ -3527,7 +3590,7 @@ async function readRegistryRecordForCapsule(request: any, purpose: any) {
   }
 }
 
-async function readOptionalRegistryRecordForCapsule(request: any) {
+async function readOptionalRegistryRecordForCapsule(request: HostHelperRequest) {
   try {
     return await readRegistryRecordForCapsule(request, "delete");
   } catch (error) {
@@ -3538,7 +3601,7 @@ async function readOptionalRegistryRecordForCapsule(request: any) {
   }
 }
 
-function assertRegistryRecordMatchesRequest(request: any, record: any) {
+function assertRegistryRecordMatchesRequest(request: HostHelperRequest, record: any) {
   const expectedRemoteCapsuleId = `${request.host.domain}/${request.capsule.subname}`;
   const matches =
     record?.subname === request.capsule.subname &&
@@ -3552,7 +3615,7 @@ function assertRegistryRecordMatchesRequest(request: any, record: any) {
   }
 }
 
-async function mutateRegistryRecord(request: any, mutate: any) {
+async function mutateRegistryRecord(request: HostHelperRequest, mutate: any) {
   return withRegistryLock(request, async () => {
     const registryRecordPath = registryPath(request);
     const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
@@ -3577,7 +3640,7 @@ async function writeRegistryRecordAtomic(registryRecordPath: any, record: any) {
   }
 }
 
-async function withRegistryLock(request: any, fn: any) {
+async function withRegistryLock(request: HostHelperRequest, fn: any) {
   const lockDir = registryLockPath(request);
   const timeoutMs = Number(process.env.SPORADES_REGISTRY_LOCK_TIMEOUT_MS ?? "5000");
   const startedAt = Date.now();
@@ -3606,7 +3669,7 @@ async function withRegistryLock(request: any, fn: any) {
   }
 }
 
-function registryPath(request: any) {
+function registryPath(request: HostHelperRequest) {
   return path.join(
     request.host.remoteRoot,
     "hosts",
@@ -3617,11 +3680,11 @@ function registryPath(request: any) {
   );
 }
 
-function registryLockPath(request: any) {
+function registryLockPath(request: HostHelperRequest) {
   return path.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", ".lock");
 }
 
-function capsuleData(request: any, lifecycle: any) {
+function capsuleData(request: HostHelperRequest, lifecycle: HostedCapsuleLifecycle) {
   return {
     subname: request.capsule.subname,
     domain: request.host.domain,
@@ -3710,7 +3773,7 @@ function lastLogEntries(contents: any, lines: any) {
     .slice(-lines);
 }
 
-function unavailableCaddyLogsError(request: any) {
+function unavailableCaddyLogsError(request: HostHelperRequest) {
   return helperError(
     "Host server Caddy combined logs are unavailable.",
     `Run \`sporades host bootstrap --host ${request.host.alias}\` and check Caddy on the Host server.`,
@@ -3724,16 +3787,16 @@ function unavailableCapsuleHttpLogsError(logs: any) {
   );
 }
 
-function trimForHint(value: any) {
+function trimForHint(value: unknown) {
   const trimmed = String(value ?? "").trim();
   return trimmed || "no stderr output";
 }
 
-function escapeRegExp(value: any) {
+function escapeRegExp(value: unknown) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function createHostedContainerName(domain: any, subname: any) {
+function createHostedContainerName(domain: string, subname: any) {
   return `sporades-${domain.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase()}-${subname}`;
 }
 
@@ -3741,11 +3804,11 @@ function defaultCaddyAccessLogPath(remoteRoot: any) {
   return path.join(remoteRoot, "caddy", "logs", "access.log");
 }
 
-function defaultCapsuleHttpLogPath(remoteRoot: any, domain: any, subname: any) {
+function defaultCapsuleHttpLogPath(remoteRoot: any, domain: string, subname: any) {
   return path.join(remoteRoot, "hosts", domain, "capsules", subname, "logs", "http.log");
 }
 
-function validateReleaseArchive(request: any) {
+function validateReleaseArchive(request: HostHelperRequest) {
   const release = request.release;
   const entries = listArchiveEntries(release.remoteArchive);
   const expectedFiles = expectedReleaseFiles(release);
@@ -3813,7 +3876,7 @@ function listArchiveEntries(archivePath: any) {
   }));
 }
 
-function expectedReleaseFiles(release: any) {
+function expectedReleaseFiles(release: HostHelperRelease) {
   const files = ["server.mjs", "client.js", "index.html", "sporades.json"];
   if (release.serverEnvIncluded) {
     files.push(".env.sporades.server");
@@ -3824,7 +3887,7 @@ function expectedReleaseFiles(release: any) {
   return files;
 }
 
-async function assertRollbackReleaseFiles(request: any, releaseDirectory: any) {
+async function assertRollbackReleaseFiles(request: HostHelperRequest, releaseDirectory: string) {
   const requiredFiles = ["server.mjs", "client.js", "index.html", "sporades.json"];
   for (const file of requiredFiles) {
     if (!(await pathReadable(path.join(releaseDirectory, file)))) {
@@ -3863,7 +3926,7 @@ function isSafeArchiveEntryName(name: any) {
   return name.split("/").every((segment: any) => segment && segment !== "." && segment !== "..");
 }
 
-async function verifyRegisteredCapsule(request: any, purpose: any = "push") {
+async function verifyRegisteredCapsule(request: HostHelperRequest, purpose: any = "push") {
   const record = await readRegistryRecordForCapsule(request, purpose);
   assertRegistryRecordMatchesRequest(request, record);
   if (record.status === "unregistered") {
@@ -3875,7 +3938,7 @@ async function verifyRegisteredCapsule(request: any, purpose: any = "push") {
   return record;
 }
 
-function missingCapsuleHint(request: any, purpose: any) {
+function missingCapsuleHint(request: HostHelperRequest, purpose: any) {
   if (purpose === "push") {
     return `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before pushing a release.`;
   }
@@ -3888,78 +3951,78 @@ function missingCapsuleHint(request: any, purpose: any) {
   return `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before managing the Hosted Capsule lifecycle.`;
 }
 
-function validateLifecycleRequest(request: any) {
+function validateLifecycleRequest(request: HostHelperRequest) {
   const requiredStrings = [
     request.host?.domain,
     request.host?.alias,
     request.host?.remoteRoot,
     request.capsule?.subname,
   ];
-  if (requiredStrings.some((value: any) => typeof value !== "string" || value.length === 0)) {
+  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule lifecycle request.", "Update the Sporades CLI and retry the host lifecycle command.");
   }
 }
 
-function validateSealedEnvRotationRequest(request: any) {
+function validateSealedEnvRotationRequest(request: HostHelperRequest) {
   const requiredStrings = [
     request.host?.domain,
     request.host?.alias,
     request.host?.remoteRoot,
     request.capsule?.subname,
   ];
-  if (requiredStrings.some((value: any) => typeof value !== "string" || value.length === 0)) {
+  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule sealed-env key rotation request.", "Update the Sporades CLI and retry `sporades host rotate-key`.");
   }
 }
 
-function validateStatsRequest(request: any) {
+function validateStatsRequest(request: HostHelperRequest) {
   const requiredStrings = [
     request.host?.domain,
     request.host?.alias,
     request.host?.remoteRoot,
     request.capsule?.subname,
   ];
-  if (requiredStrings.some((value: any) => typeof value !== "string" || value.length === 0)) {
+  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule stats request.", "Update the Sporades CLI and retry the host stats command.");
   }
 }
 
-function validateReleaseListRequest(request: any) {
+function validateReleaseListRequest(request: HostHelperRequest) {
   const requiredStrings = [
     request.host?.domain,
     request.host?.alias,
     request.host?.remoteRoot,
     request.capsule?.subname,
   ];
-  if (requiredStrings.some((value: any) => typeof value !== "string" || value.length === 0)) {
+  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule releases request.", "Update the Sporades CLI and retry `sporades host releases`.");
   }
 }
 
-function validateHealthRequest(request: any) {
+function validateHealthRequest(request: HostHelperRequest) {
   const requiredStrings = [
     request.host?.domain,
     request.host?.alias,
     request.host?.remoteRoot,
     request.capsule?.subname,
   ];
-  if (requiredStrings.some((value: any) => typeof value !== "string" || value.length === 0)) {
+  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule health request.", "Update the Sporades CLI and retry the host health command.");
   }
 }
 
-function validateHostStatsRequest(request: any) {
+function validateHostStatsRequest(request: HostHelperRequest) {
   const requiredStrings = [
     request.host?.domain,
     request.host?.alias,
     request.host?.remoteRoot,
   ];
-  if (requiredStrings.some((value: any) => typeof value !== "string" || value.length === 0)) {
+  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Host stats request.", "Update the Sporades CLI and retry `sporades host stats`.");
   }
 }
 
-function validateRollbackRequest(request: any) {
+function validateRollbackRequest(request: HostHelperRequest) {
   const requiredStrings = [
     request.host?.domain,
     request.host?.alias,
@@ -3967,10 +4030,11 @@ function validateRollbackRequest(request: any) {
     request.capsule?.subname,
     request.rollback?.releaseId,
   ];
-  if (requiredStrings.some((value: any) => typeof value !== "string" || value.length === 0)) {
+  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule rollback request.", "Update the Sporades CLI and retry `sporades host rollback`.");
   }
-  if (!/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(request.rollback.releaseId)) {
+  const releaseId = request.rollback?.releaseId;
+  if (!releaseId || !/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(releaseId)) {
     throw helperError(
       "Invalid Hosted Capsule release ID.",
       `Choose a recorded release ID from \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\`.`,
@@ -3978,13 +4042,13 @@ function validateRollbackRequest(request: any) {
   }
 }
 
-function validateHostLogsRequest(request: any) {
+function validateHostLogsRequest(request: HostHelperRequest) {
   const requiredStrings = [
     request.host?.alias,
     request.host?.domain,
     request.host?.remoteRoot,
   ];
-  if (requiredStrings.some((value: any) => typeof value !== "string" || value.length === 0)) {
+  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Host logs request.", "Update the Sporades CLI and retry `sporades host logs`.");
   }
   const source = request.logs?.source ?? "caddy-combined";
@@ -4009,18 +4073,18 @@ function validateHostLogsRequest(request: any) {
   }
 }
 
-function validateListRequest(request: any) {
+function validateListRequest(request: HostHelperRequest) {
   const requiredStrings = [
     request.host?.domain,
     request.host?.alias,
     request.host?.remoteRoot,
   ];
-  if (requiredStrings.some((value: any) => typeof value !== "string" || value.length === 0)) {
+  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule list request.", "Update the Sporades CLI and retry `sporades host list`.");
   }
 }
 
-function validateListRegistryRecord(request: any, record: any, recordPath: any) {
+function validateListRegistryRecord(request: HostHelperRequest, record: any, recordPath: any) {
   const expectedSubname = path.basename(recordPath, ".json");
   const expectedRemoteCapsuleId = `${request.host.domain}/${record?.subname ?? expectedSubname}`;
   const valid =
@@ -4038,13 +4102,13 @@ function validateListRegistryRecord(request: any, record: any, recordPath: any) 
   }
 }
 
-function validateBootstrapRequest(request: any) {
+function validateBootstrapRequest(request: HostHelperRequest) {
   const requiredStrings = [
     request.host?.domain,
     request.host?.alias,
     request.host?.remoteRoot,
   ];
-  if (requiredStrings.some((value: any) => typeof value !== "string" || value.length === 0)) {
+  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Host bootstrap request.", "Update the Sporades CLI and retry `sporades host bootstrap`.");
   }
   const tlsMode = request.bootstrap?.tls?.mode ?? "automatic";
@@ -4056,14 +4120,14 @@ function validateBootstrapRequest(request: any) {
   }
 }
 
-function validateRegisterRequest(request: any) {
+function validateRegisterRequest(request: HostHelperRequest) {
   const requiredStrings = [
     request.host?.domain,
     request.host?.alias,
     request.host?.remoteRoot,
     request.capsule?.subname,
   ];
-  if (requiredStrings.some((value: any) => typeof value !== "string" || value.length === 0)) {
+  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule registration request.", "Update the Sporades CLI and retry `sporades host register`.");
   }
   const registration = request.registration ?? {};
@@ -4086,14 +4150,14 @@ function validateRegisterRequest(request: any) {
   }
 }
 
-function validateUnregisterRequest(request: any) {
+function validateUnregisterRequest(request: HostHelperRequest) {
   const requiredStrings = [
     request.host?.domain,
     request.host?.alias,
     request.host?.remoteRoot,
     request.capsule?.subname,
   ];
-  if (requiredStrings.some((value: any) => typeof value !== "string" || value.length === 0)) {
+  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule unregister request.", "Update the Sporades CLI and retry `sporades host unregister`.");
   }
   const unregister = request.unregister ?? {};
@@ -4109,14 +4173,14 @@ function validateUnregisterRequest(request: any) {
   }
 }
 
-function validateDeleteRequest(request: any) {
+function validateDeleteRequest(request: HostHelperRequest) {
   const requiredStrings = [
     request.host?.domain,
     request.host?.alias,
     request.host?.remoteRoot,
     request.capsule?.subname,
   ];
-  if (requiredStrings.some((value: any) => typeof value !== "string" || value.length === 0)) {
+  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid Hosted Capsule delete request.", "Update the Sporades CLI and retry `sporades host delete`.");
   }
   const deletion = request.delete ?? {};
@@ -4132,7 +4196,7 @@ function validateDeleteRequest(request: any) {
   }
 }
 
-function validateInstallRequest(request: any) {
+function validateInstallRequest(request: HostHelperRequest) {
   const release = request.release;
   const requiredStrings = [
     request.host?.domain,
@@ -4147,7 +4211,7 @@ function validateInstallRequest(request: any) {
     release?.directories?.data,
     release?.currentLink,
   ];
-  if (requiredStrings.some((value: any) => typeof value !== "string" || value.length === 0)) {
+  if (requiredStrings.some((value: unknown) => typeof value !== "string" || value.length === 0)) {
     throw helperError("Invalid release install request.", "Update the Sporades CLI and retry `sporades host push`.");
   }
   if (!/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(release.id)) {
@@ -4162,8 +4226,12 @@ function validateInstallRequest(request: any) {
   if (claimedFiles.length !== sortedExpectedFiles.length || claimedFiles.some((file: any, index: any) => file !== sortedExpectedFiles[index])) {
     throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
   }
-  const expectedReleaseDirectory = path.join(release.directories.releases, release.id);
-  if (path.resolve(release.directories.release) !== path.resolve(expectedReleaseDirectory)) {
+  const directories = release.directories;
+  if (!directories?.releases || !directories.release) {
+    throw helperError("Invalid Hosted Capsule release directory.", "Update the Sporades CLI and retry `sporades host push`.");
+  }
+  const expectedReleaseDirectory = path.join(directories.releases, release.id);
+  if (path.resolve(directories.release) !== path.resolve(expectedReleaseDirectory)) {
     throw helperError("Invalid Hosted Capsule release directory.", "Update the Sporades CLI and retry `sporades host push`.");
   }
 }
@@ -4191,11 +4259,11 @@ function readStdin(): Promise<string> {
   });
 }
 
-function delay(ms: any) {
+function delay(ms: number) {
   return new Promise((resolve: any) => setTimeout(resolve, ms));
 }
 
-function helperError(message: any, hint: any, diagnostics: any = null): HelperError {
+function helperError(message: string, hint: any, diagnostics: any = null): HelperError {
   const error: HelperError = new Error(message);
   error.hint = hint;
   if (diagnostics) {

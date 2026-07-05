@@ -9,25 +9,25 @@ import { serverRuntimeModuleSource } from "./server.js";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 import { createServerBundleSource } from "./templates/server-bundle-template.js";
 
-type JsonRecord = Record<string, unknown>;
-type ServerEnv = Record<string, string>;
+export type JsonRecord = Record<string, unknown>;
+export type ServerEnv = Record<string, string>;
 type HelperError = Error & { hint?: string };
-type ServerEnvFile = { exists: boolean; raw: string };
-type ProjectConfig = JsonRecord & {
+export type ServerEnvFile = { exists: boolean; raw: string };
+export type ProjectConfig = JsonRecord & {
   auth?: AuthConfig;
   client?: { framework?: unknown };
 };
-type AuthConfig = JsonRecord & {
+export type AuthConfig = JsonRecord & {
   mode?: unknown;
   providers?: unknown;
   google?: unknown;
 };
-type NormalizedProviderConfig = {
+export type NormalizedProviderConfig = {
   enabled: boolean;
   clientIdEnv: string | null;
   clientSecretEnv: string | null;
 };
-type NormalizedAuthConfig = {
+export type NormalizedAuthConfig = {
   mode: string;
   providers: {
     anonymous: { enabled: boolean };
@@ -35,7 +35,7 @@ type NormalizedAuthConfig = {
     email: { enabled: boolean };
   };
 };
-type FrameworkBundleConfig = {
+export type FrameworkBundleConfig = {
   jsxImportSource: string;
   jsxRuntimeImport: string;
 };

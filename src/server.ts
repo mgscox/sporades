@@ -1,11 +1,65 @@
-export function capsule(definition: any) {
+export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Reference";
+export type UnknownRecord = Record<string, unknown>;
+export type Handler<Args extends unknown[] = unknown[], Result = unknown> = (...args: Args) => Result | Promise<Result>;
+
+export type CapsuleDefinition = UnknownRecord & {
+  name: string;
+};
+
+export type Capsule<Definition extends CapsuleDefinition = CapsuleDefinition> = Definition & {
+  kind: "capsule";
+};
+
+export type EndpointOptions = {
+  method: string;
+  path: string;
+};
+
+export type EndpointDefinition<HandlerType extends Handler = Handler> = {
+  kind: "endpoint";
+  options: EndpointOptions;
+  handler: HandlerType;
+};
+
+export type HandlerDefinition<Kind extends "query" | "mutation" | "message", HandlerType extends Handler = Handler> = {
+  kind: Kind;
+  handler: HandlerType;
+};
+
+export type FieldDefinition<Value = unknown> = {
+  kind: FieldKind;
+  defaultValue?: Value;
+};
+
+export type FieldBuilder<Value = unknown> = {
+  kind: FieldKind;
+  default(defaultValue: Value): FieldDefinition<Value>;
+};
+
+export type ReferenceFieldBuilder = {
+  kind: "Reference";
+  targetTable: string;
+  default(defaultValue: string | null): FieldDefinition<string | null> & { kind: "Reference"; targetTable: string };
+};
+
+export type TableDefinition<Fields extends UnknownRecord = UnknownRecord> = {
+  kind: "table";
+  fields: Fields;
+  aclRules?: unknown;
+  acl(rules: unknown): TableDefinition<Fields>;
+};
+
+export function capsule<const Definition extends CapsuleDefinition>(definition: Definition): Capsule<Definition> {
   return {
     kind: "capsule",
     ...definition,
   };
 }
 
-export function endpoint(options: any, handler: any) {
+export function endpoint<const HandlerType extends Handler>(
+  options: EndpointOptions,
+  handler: HandlerType,
+): EndpointDefinition<HandlerType> {
   return {
     kind: "endpoint",
     options,
@@ -13,36 +67,40 @@ export function endpoint(options: any, handler: any) {
   };
 }
 
-export function query(handler: any) {
+export function query<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"query", HandlerType> {
   return {
     kind: "query",
     handler,
   };
 }
 
-export function mutation(handler: any) {
+export function mutation<const HandlerType extends Handler>(
+  handler: HandlerType,
+): HandlerDefinition<"mutation", HandlerType> {
   return {
     kind: "mutation",
     handler,
   };
 }
 
-export function message(handler: any) {
+export function message<const HandlerType extends Handler>(
+  handler: HandlerType,
+): HandlerDefinition<"message", HandlerType> {
   return {
     kind: "message",
     handler,
   };
 }
 
-export function table(fields: any) {
+export function table<const Fields extends UnknownRecord>(fields: Fields): TableDefinition<Fields> {
   return tableDefinition(fields);
 }
 
-function tableDefinition(fields: any, aclRules?: any) {
+function tableDefinition<const Fields extends UnknownRecord>(fields: Fields, aclRules?: unknown): TableDefinition<Fields> {
   return {
     kind: "table",
     fields,
-    acl(rules: any) {
+    acl(rules: unknown) {
       return tableDefinition(fields, rules);
     },
     ...(aclRules === undefined ? {} : { aclRules }),
@@ -69,11 +127,11 @@ export function Json() {
   return field("Json");
 }
 
-export function Reference(targetTable: any) {
+export function Reference(targetTable: string): ReferenceFieldBuilder {
   return {
     kind: "Reference",
     targetTable,
-    default(defaultValue: any) {
+    default(defaultValue: string | null) {
       return {
         kind: "Reference",
         targetTable,
@@ -83,10 +141,10 @@ export function Reference(targetTable: any) {
   };
 }
 
-function field(kind: any) {
+function field<Value = unknown>(kind: FieldKind): FieldBuilder<Value> {
   return {
     kind,
-    default(defaultValue: any) {
+    default(defaultValue: Value) {
       return {
         kind,
         defaultValue,

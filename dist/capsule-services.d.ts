@@ -1,34 +1,34 @@
-type JsonRecord = Record<string, unknown>;
-type DatabaseEngine = "libsql" | "postgres";
-type StorageEngine = "minio";
-type CapsuleServiceKind = "database" | "storage";
-type CapsuleServiceCredentials = {
+export type JsonRecord = Record<string, unknown>;
+export type DatabaseEngine = "libsql" | "postgres";
+export type StorageEngine = "minio";
+export type CapsuleServiceKind = "database" | "storage";
+export type CapsuleServiceCredentials = {
     databaseUser: string;
     databasePassword: string;
     storageAccessKey: string;
     storageSecretKey: string;
 };
-type CapsuleServiceOptions = {
+export type CapsuleServiceOptions = {
     credentials?: Partial<CapsuleServiceCredentials>;
     publishPorts?: boolean;
 };
-type DatabaseServiceDeclaration = {
+export type DatabaseServiceDeclaration = {
     kind: "database";
     engine: DatabaseEngine;
 };
-type StorageServiceDeclaration = {
+export type StorageServiceDeclaration = {
     kind: "storage";
     engine: StorageEngine;
 };
-type CapsuleServicesDeclaration = JsonRecord & {
+export type CapsuleServicesDeclaration = JsonRecord & {
     database?: DatabaseServiceDeclaration;
     storage?: StorageServiceDeclaration;
 };
-type CapsuleProjectConfig = JsonRecord & {
+export type CapsuleProjectConfig = JsonRecord & {
     name?: unknown;
     services?: CapsuleServicesDeclaration;
 };
-type CapsuleServiceBase = {
+export type CapsuleServiceBase = {
     kind: CapsuleServiceKind;
     name: string;
     engine: string;
@@ -41,14 +41,14 @@ type CapsuleServiceBase = {
     command: string | null;
     labels: Record<string, string>;
 };
-type CapsuleDatabaseService = CapsuleServiceBase & {
+export type CapsuleDatabaseService = CapsuleServiceBase & {
     kind: "database";
     engine: DatabaseEngine;
     user: string;
     password: string;
     databaseName: string;
 };
-type CapsuleStorageService = CapsuleServiceBase & {
+export type CapsuleStorageService = CapsuleServiceBase & {
     kind: "storage";
     engine: StorageEngine;
     accessKey: string;
@@ -57,11 +57,12 @@ type CapsuleStorageService = CapsuleServiceBase & {
     region: string;
     namespace: string;
 };
-type CapsuleServices = {
+export type CapsuleService = CapsuleDatabaseService | CapsuleStorageService;
+export type CapsuleServices = {
     database?: CapsuleDatabaseService;
     storage?: CapsuleStorageService;
 };
-type CapsuleServicesComposeModel = {
+export type CapsuleServicesComposeModel = {
     projectSlug: string;
     composeProjectName: string;
     publishPorts: boolean;
@@ -72,7 +73,15 @@ type CapsuleServicesComposeModel = {
     };
     labels: Record<string, string>;
 };
-type WrittenCapsuleServicesCompose = CapsuleServicesComposeModel & {
+export type DatabaseEngineModel = {
+    engine: DatabaseEngine;
+    image: string;
+    targetPort: number;
+    volumeTarget: string;
+    environment: Record<string, string>;
+    healthcheck: string[];
+};
+export type WrittenCapsuleServicesCompose = CapsuleServicesComposeModel & {
     path: string;
     relativePath: string;
 };
@@ -82,5 +91,4 @@ export declare const CAPSULE_SERVICES_CREDENTIALS_FILE: string;
 export declare function validateCapsuleServicesConfig(services: unknown): CapsuleServicesDeclaration | null;
 export declare function writeCapsuleServicesCompose(projectDir: string, config: CapsuleProjectConfig, options?: CapsuleServiceOptions): Promise<WrittenCapsuleServicesCompose | null>;
 export declare function capsuleServicesComposeModel(config: CapsuleProjectConfig, projectDir?: string, options?: CapsuleServiceOptions): CapsuleServicesComposeModel;
-export {};
 //# sourceMappingURL=capsule-services.d.ts.map
