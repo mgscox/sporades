@@ -8,6 +8,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -660,6 +661,167 @@ test("container server bundle reads injected service env and selects the libSQL 
           socket.close();
         }
       } finally {
+        await stopChild(child);
+      }
+    });
+  });
+});
+
+test("container server bundle uses injected MinIO storage env for file lifecycle routes", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "file-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "file-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.services = { storage: { kind: "storage", engine: "minio" } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    await withFakeS3CompatibleService(async ({ endpoint, port: serviceReadyPort, requests, objects }) => {
+      const docker = await installFakeDocker(dir, "container-with-minio-bundle", {
+        composePortOutput: `127.0.0.1:${serviceReadyPort}`,
+      });
+
+      const deployResult = await runCli(["deploy", "--json"], {
+        cwd: projectDir,
+        env: docker.env,
+      });
+      assert.equal(deployResult.code, 0, deployResult.stderr || deployResult.stdout);
+
+      const runCall = firstDockerRunCall(await docker.calls());
+      assert.equal(runCall.args[runCall.args.indexOf("--network") + 1], "sporades-file-island-services");
+      assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_ENDPOINT=http://sporades-file-island-storage:9000"), runCall.args.join(" "));
+      assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_NAMESPACE=file-island"), runCall.args.join(" "));
+
+      const port = await getAvailablePort();
+      const serverBundlePath = path.join(projectDir, ".sporades", "build", "server.mjs");
+      const child = spawn(process.execPath, [serverBundlePath], {
+        cwd: projectDir,
+        env: {
+          ...process.env,
+          PORT: String(port),
+          SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data", "data.db"),
+          SPORADES_SERVICE_STORAGE_ENGINE: "minio",
+          SPORADES_SERVICE_STORAGE_ENDPOINT: endpoint,
+          SPORADES_SERVICE_STORAGE_ACCESS_KEY: "sporades",
+          SPORADES_SERVICE_STORAGE_SECRET_KEY: "sporades-minio-local-secret",
+          SPORADES_SERVICE_STORAGE_BUCKET: "sporades-files",
+          SPORADES_SERVICE_STORAGE_REGION: "us-east-1",
+          SPORADES_SERVICE_STORAGE_NAMESPACE: "file-island",
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+
+      let socket;
+      try {
+        const baseUrl = `http://127.0.0.1:${port}`;
+        await waitForHttp(`${baseUrl}/`, child);
+        const health = await fetch(`${baseUrl}/__sporades/health/runtime`, {
+          headers: { "x-sporades-host-probe": "test" },
+        });
+        assert.equal(health.status, 200, await health.text());
+
+        socket = await openSocket(baseUrl);
+        async function sendAndWait(payload) {
+          socket.send(JSON.stringify(payload));
+          return await waitForSocketMessage(socket, (message) => message.id === payload.id);
+        }
+
+        const auth = await sendAndWait({ id: "auth", type: "auth.get" });
+        const uploadUrl = await sendAndWait({
+          id: "upload-url",
+          type: "file.uploadUrl",
+          file: { name: "proof.txt", type: "text/plain", size: 9, path: "/proof/container/minio.txt" },
+        });
+        assert.equal(uploadUrl.error, null, uploadUrl.error?.message);
+        const uploadResponse = await fetch(new URL(uploadUrl.data.uploadUrl, baseUrl), {
+          method: uploadUrl.data.method,
+          body: "minio-one",
+        });
+        if (uploadResponse.status !== 200) {
+          assert.fail(await uploadResponse.text());
+        }
+        const uploaded = await uploadResponse.json();
+        assert.equal(uploaded.ok, true, uploaded.error?.message);
+        assert.equal(uploaded.data.file.path, "/proof/container/minio.txt");
+        const firstObjectKey = `capsules/file-island/files/${uploaded.data.file.id}/${uploaded.data.file.version}`;
+        assert.equal(objects.get(firstObjectKey).toString("utf8"), "minio-one");
+
+        const privateUrl = await sendAndWait({
+          id: "private-url",
+          type: "file.url",
+          fileReference: "/proof/container/minio.txt",
+        });
+        assert.equal(privateUrl.error, null);
+        const privateRead = await fetch(new URL(privateUrl.data.url, baseUrl), {
+          headers: { "x-sporades-session-token": auth.data.sessionToken },
+        });
+        assert.equal(privateRead.status, 200);
+        assert.equal(await privateRead.text(), "minio-one");
+
+        const publicUrl = await sendAndWait({
+          id: "public-url",
+          type: "file.publicUrl.create",
+          fileId: uploaded.data.file.id,
+          options: { noExpiry: true },
+        });
+        assert.equal(publicUrl.error, null);
+        const publicRead = await fetch(new URL(publicUrl.data.publicUrl.url, baseUrl));
+        assert.equal(publicRead.status, 200);
+        assert.equal(await publicRead.text(), "minio-one");
+
+        const replaceUrl = await sendAndWait({
+          id: "replace-url",
+          type: "file.uploadUrl",
+          replace: true,
+          fileReference: "/proof/container/minio.txt",
+          file: { name: "proof-v2.txt", type: "text/plain", size: 9 },
+        });
+        assert.equal(replaceUrl.error, null, replaceUrl.error?.message);
+        const replaceResponse = await fetch(new URL(replaceUrl.data.uploadUrl, baseUrl), {
+          method: replaceUrl.data.method,
+          body: "minio-two",
+        });
+        if (replaceResponse.status !== 200) {
+          assert.fail(await replaceResponse.text());
+        }
+        const replaced = await replaceResponse.json();
+        assert.equal(replaced.data.file.id, uploaded.data.file.id);
+        assert.notEqual(replaced.data.file.version, uploaded.data.file.version);
+        assert.equal(objects.has(firstObjectKey), false);
+        const replacementObjectKey = `capsules/file-island/files/${replaced.data.file.id}/${replaced.data.file.version}`;
+        assert.equal(objects.get(replacementObjectKey).toString("utf8"), "minio-two");
+
+        const stalePrivateRead = await fetch(new URL(privateUrl.data.url, baseUrl), {
+          headers: { "x-sporades-session-token": auth.data.sessionToken },
+        });
+        assert.equal(stalePrivateRead.status, 404);
+        const stalePublicRead = await fetch(new URL(publicUrl.data.publicUrl.url, baseUrl));
+        assert.equal(stalePublicRead.status, 404);
+
+        const deleteResult = await sendAndWait({
+          id: "delete",
+          type: "file.delete",
+          fileReference: "/proof/container/minio.txt",
+        });
+        assert.equal(deleteResult.error, null);
+        assert.equal(objects.has(replacementObjectKey), false);
+        const missingAfterDelete = await fetch(new URL(`/__sporades/files/public/${publicUrl.data.publicUrl.id}?v=${replaced.data.file.version}`, baseUrl));
+        assert.equal(missingAfterDelete.status, 404);
+
+        assert(
+          requests.some((request) => request.method === "PUT" && request.url === `/sporades-files/${firstObjectKey}`),
+          JSON.stringify(requests.map((request) => [request.method, request.url])),
+        );
+        const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
+        assert.doesNotMatch(clientBundle, /SPORADES_SERVICE_STORAGE_/);
+        assert.doesNotMatch(clientBundle, /sporades-minio-local-secret/);
+      } finally {
+        socket?.close();
         await stopChild(child);
       }
     });
