@@ -164,9 +164,8 @@ URL, transfers the bytes internally, and resolves with Sporades-owned metadata:
 file ID, absolute File path, original filename, MIME type, size, bucket, and
 version. Pass `path: "/images/avatar.png"` to choose an absolute Capsule-scoped
 File path; omitted paths use the browser file name in the Default File bucket,
-falling back into the logical `/default/<generated-id>` namespace when Sporades
-must generate a name. Arrays are accepted as a convenience and are uploaded
-sequentially.
+falling back to the logical `/default/upload` File path when no file name
+exists. Arrays are accepted as a convenience and are uploaded sequentially.
 
 Uploaded bytes are private by default. Ownership and privacy are runtime file
 metadata and ACL behavior; the Default File bucket is only a namespace fallback,

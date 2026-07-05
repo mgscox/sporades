@@ -40,7 +40,7 @@ and whether the work belongs in one release or separate tracks.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | SQLite vector extension support | candidate | Load `sqlite-vector`, add `Blob()`, define vector column initialization, quantization/preload behavior, and nearest-neighbor query ergonomics. |
-| S3-compatible storage plugin | candidate | Allow uploaded bytes to live in S3-compatible object storage while preserving the existing `files` SDK and File metadata model. |
+| Managed AWS S3 storage adapter expansion | candidate | Local MinIO-backed S3-compatible file byte storage is implemented for Dev sessions and local Container sessions. Future managed AWS S3 or external S3-compatible provider work should extend the existing internal Storage adapter/config model beyond local MinIO while preserving the `files` SDK, File metadata model, Sporades HTTP read routes, and app/client APIs. |
 
 ## Ops And Automation
 

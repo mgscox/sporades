@@ -904,8 +904,8 @@ The returned file metadata includes fields such as `id`, `name`, `type`, `size`,
 `path`, and `version`. `path` is the absolute Capsule-scoped File path, not a
 runtime URL, filesystem path, object key, or Object bucket location. Passing
 `path: "/photos/profile.jpg"` chooses that absolute File path. Omitting `path`
-uses the uploaded file name in the Default File bucket, falling back into the
-logical `/default/<generated-id>` namespace when Sporades must generate a name.
+uses the uploaded file name in the Default File bucket, falling back to the
+logical `/default/upload` File path when no file name exists.
 Uploaded bytes are private by default. Ownership and privacy come from runtime
 File metadata and ACL behavior, not from the Default File bucket itself.
 

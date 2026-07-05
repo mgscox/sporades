@@ -248,12 +248,15 @@ test("canonical docs describe deferred Hosted Capsule service orchestration cont
 });
 
 test("docs describe MinIO storage services and File reference boundaries", async () => {
-  const [prd, userGuide, architecture, runtimeLayout, readme] = await Promise.all([
+  const [prd, userGuide, architecture, runtimeLayout, readme, uploadAdr, fileReferenceAdr, roadmap] = await Promise.all([
     readProjectFile("docs/PRD.md"),
     readProjectFile("docs/user-guide.md"),
     readProjectFile("docs/architecture.md"),
     readProjectFile("docs/runtime-layout.md"),
     readProjectFile("README.md"),
+    readProjectFile("docs/adr/0013-high-level-upload-call.md"),
+    readProjectFile("docs/adr/0024-file-operations-accept-file-references.md"),
+    readProjectFile("docs/ROADMAP.md"),
   ]);
 
   for (const contents of [prd, userGuide]) {
@@ -267,6 +270,8 @@ test("docs describe MinIO storage services and File reference boundaries", async
   assert.match(userGuide, /path: "\/photos\/profile\.jpg"/);
   assert.match(userGuide, /const defaultBucketFile = await files\.upload\(selectedFile\)/);
   assert.match(userGuide, /Omitting `path`\s+uses the uploaded file name in the Default File bucket/i);
+  assert.match(userGuide, /logical `\/default\/upload` File path when no file name exists/i);
+  assert.match(userGuide, /Ownership and privacy come from runtime\s+File metadata and ACL behavior, not from the Default File bucket itself/i);
   assert.match(userGuide, /File reference: either\s+the stable File ID or the absolute File path/i);
   assert.match(userGuide, /not a\s+runtime URL, filesystem path, object key, or Object bucket location/i);
   assert.match(userGuide, /not presigned MinIO, S3, or\s+filesystem URLs/i);
@@ -295,9 +300,23 @@ test("docs describe MinIO storage services and File reference boundaries", async
 
   assert.match(readme, /services\.storage\.engine: "minio"/);
   assert.match(readme, /not\s+filesystem paths or presigned MinIO\/S3 URLs/i);
-  assert.match(readme, /logical `\/default\/<generated-id>` namespace/i);
+  assert.match(readme, /logical `\/default\/upload` File path when no file name\s+exists/i);
   assert.match(readme, /Default File bucket is only a namespace fallback,\s+not a user bucket or policy boundary/i);
   assert.doesNotMatch(readme, /user in that user's `default` bucket/i);
+  assert.doesNotMatch(readme, /\/default\/<generated-id>/i);
+
+  assert.match(uploadAdr, /Status: Superseded in part by ADR-0024/i);
+  assert.match(uploadAdr, /Default File bucket is only a\s+logical namespace fallback/i);
+  assert.match(uploadAdr, /not a user bucket or policy\s+boundary/i);
+  assert.match(uploadAdr, /files\.url\(fileReference\)/);
+  assert.doesNotMatch(uploadAdr, /user-scoped `default` bucket/i);
+  assert.match(fileReferenceAdr, /replaces the old user-scoped `default` bucket semantics/i);
+
+  assert.match(roadmap, /Managed AWS S3 storage adapter expansion/i);
+  assert.match(roadmap, /Local MinIO-backed S3-compatible file byte storage is implemented/i);
+  assert.match(roadmap, /extend the existing internal Storage adapter\/config model beyond local MinIO/i);
+  assert.doesNotMatch(roadmap, /S3-compatible storage plugin/i);
+  assert.doesNotMatch(roadmap, /Allow uploaded bytes to live in S3-compatible object storage/i);
 });
 
 test("docs describe Host-generated Sealed Server env custody and lost-key recovery", async () => {
