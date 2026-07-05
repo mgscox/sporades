@@ -91,17 +91,16 @@ const app = capsule({
       ownerId: String(),
     }).acl({
       read: async ({ row, ctx }) => {
-        const file = await ctx.acl.storage.get("files", "/avatars/profile.png");
-        const hasFile = await ctx.acl.storage.exists("files", file?.id ?? "/avatars/profile.png");
-        const userExists = await ctx.acl.db.exists("users", row?.authorId ?? "missing");
+        const file = ctx.acl.storage.get("files", "/avatars/profile.png");
+        const hasFile = ctx.acl.storage.exists("files", file?.id ?? "/avatars/profile.png");
+        const userExists = ctx.acl.db.exists("users", row?.authorId ?? "missing");
         if (file) {
           file.bucket.toUpperCase();
           // @ts-expect-error ACL file metadata exposes logical bucket names, not internal bucket row IDs.
           file.bucketId;
         }
-        // @ts-expect-error ACL helper results must be awaited before boolean policy expressions.
-        const unsafe = ctx.acl.storage.exists("files", "/avatars/profile.png") && row?.ownerId === ctx.auth.userId;
-        unsafe;
+        // @ts-expect-error ACL helper reads are synchronous at the policy boundary, not Promise-returning.
+        ctx.acl.storage.exists("files", "/avatars/profile.png").then(() => true);
         return row?.ownerId === ctx.auth.userId && userExists && hasFile === (file !== null) && file !== null && file.path.startsWith("/");
       },
       write: async ({ next, previous, ctx }) => {

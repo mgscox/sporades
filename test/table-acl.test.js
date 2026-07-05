@@ -685,8 +685,8 @@ test("ACL db helpers can inspect app tables by stable table name", async () => {
           title: String(),
           projectId: String(),
         }).acl({
-          read: async ({ row, ctx }) => {
-            const project = await ctx.acl.db.get("projects", row.projectId);
+          read: ({ row, ctx }) => {
+            const project = ctx.acl.db.get("projects", row.projectId);
             return project?.ownerId === ctx.auth.userId;
           },
         }),
@@ -764,6 +764,50 @@ test("ACL helpers expose async db exists checks and do not recursively evaluate 
   });
 });
 
+test("ACL db helpers fail closed when adapter reads are async", async () => {
+  await withTempDir(async (dir) => {
+    const observed = [];
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        projects: table({
+          name: String(),
+          ownerId: String(),
+        }),
+        notes: table({
+          title: String(),
+          projectId: String(),
+        }).acl({
+          read: ({ row, ctx }) => {
+            const project = ctx.acl.db.get("projects", row.projectId);
+            const exists = ctx.acl.db.exists("projects", row.projectId);
+            observed.push({ project, exists });
+            return true;
+          },
+        }),
+      },
+      queries: {
+        notes: query((ctx) => ctx.db.notes.all()),
+      },
+    });
+
+    try {
+      const db = createEndpointDatabaseApi(database);
+      const project = db.projects.insert({ name: "Hidden", ownerId: "u1" });
+      db.notes.insert({ title: "Denied by async db helper", projectId: project.id });
+      database.sqlite.selectAppRowById = async () => ({ id: project.id, name: "Hidden", ownerId: "u1" });
+
+      const result = await runQuery(database, auth("u1"), "notes");
+
+      assert.equal(result.error, null);
+      assert.deepEqual(result.data, []);
+      assert.deepEqual(observed, [{ project: null, exists: false }]);
+      assert.equal(observed.some((entry) => isPromiseLike(entry.project) || isPromiseLike(entry.exists)), false);
+    } finally {
+      database.close();
+    }
+  });
+});
+
 test("ACL storage helpers expose live files by File ID and absolute File path", async () => {
   await withTempDir(async (dir) => {
     const seenFiles = new Map();
@@ -774,9 +818,9 @@ test("ACL storage helpers expose live files by File ID and absolute File path", 
           title: String(),
           fileRef: String(),
         }).acl({
-          read: async ({ row, ctx }) => {
-            const file = await ctx.acl.storage.get("files", row.fileRef);
-            const exists = await ctx.acl.storage.exists("files", row.fileRef);
+          read: ({ row, ctx }) => {
+            const file = ctx.acl.storage.get("files", row.fileRef);
+            const exists = ctx.acl.storage.exists("files", row.fileRef);
             seenFiles.set(row.title, file);
             seenExists.set(row.title, exists);
             return (
@@ -921,6 +965,8 @@ test("ACL storage helpers expose live files by File ID and absolute File path", 
         deletedAt: null,
       });
       assert.equal(seenExists.get("Allowed by ID"), true);
+      assert.equal(isPromiseLike(seenFiles.get("Allowed by ID")), false);
+      assert.equal(isPromiseLike(seenExists.get("Allowed by ID")), false);
       assert.equal(seenExists.get("Deleted by ID"), false);
       assert.equal(seenFiles.get("Deleted by ID"), null);
       assert.equal(seenFiles.get("Deleted by path"), null);
@@ -952,7 +998,7 @@ test("ACL storage helpers expose live files by File ID and absolute File path", 
   });
 });
 
-test("ACL helpers can await and then default sync adapter reads", async () => {
+test("ACL helpers return plain values from default sync adapter reads", async () => {
   await withTempDir(async (dir) => {
     const seen = [];
     const database = await openCapsuleDatabase(dir, {
@@ -966,20 +1012,16 @@ test("ACL helpers can await and then default sync adapter reads", async () => {
           projectId: String(),
           fileRef: String(),
         }).acl({
-          read: async ({ row, ctx }) => {
-            const project = await ctx.acl.db.get("projects", row.projectId);
-            const projectExists = await ctx.acl.db.exists("projects", row.projectId);
-            const file = await ctx.acl.storage.get("files", row.fileRef);
-            const fileExists = await ctx.acl.storage.exists("files", row.fileRef);
-            const projectViaThen = await ctx.acl.db.get("projects", row.projectId).then((value) => value);
-            const fileExistsViaThen = await ctx.acl.storage.exists("files", row.fileRef).then((value) => value);
-            seen.push({ project, projectExists, file, fileExists, projectViaThen, fileExistsViaThen });
+          read: ({ row, ctx }) => {
+            const project = ctx.acl.db.get("projects", row.projectId);
+            const projectExists = ctx.acl.db.exists("projects", row.projectId);
+            const file = ctx.acl.storage.get("files", row.fileRef);
+            const fileExists = ctx.acl.storage.exists("files", row.fileRef);
+            seen.push({ project, projectExists, file, fileExists });
             return (
               projectExists &&
               fileExists &&
-              fileExistsViaThen &&
               project?.ownerId === ctx.auth.userId &&
-              projectViaThen?.ownerId === ctx.auth.userId &&
               file?.ownerId === ctx.auth.userId
             );
           },
@@ -1018,8 +1060,11 @@ test("ACL helpers can await and then default sync adapter reads", async () => {
       );
       assert.equal(seen[0].projectExists, true);
       assert.equal(seen[0].fileExists, true);
-      assert.equal(seen[0].fileExistsViaThen, true);
-      assert.equal(seen[0].projectViaThen.id, project.id);
+      assert.equal(isPromiseLike(seen[0].project), false);
+      assert.equal(isPromiseLike(seen[0].projectExists), false);
+      assert.equal(isPromiseLike(seen[0].file), false);
+      assert.equal(isPromiseLike(seen[0].fileExists), false);
+      assert.equal(seen[0].project.id, project.id);
       assert.equal(seen[0].file.id, "file-1");
     } finally {
       database.close();
@@ -1027,7 +1072,7 @@ test("ACL helpers can await and then default sync adapter reads", async () => {
   });
 });
 
-test("ACL storage helpers fail closed when sync rules touch unawaited file lookups", async () => {
+test("ACL storage helpers return plain false for missing default sync file lookups", async () => {
   await withTempDir(async (dir) => {
     const observedExists = [];
     const database = await openCapsuleDatabase(dir, {
@@ -1057,31 +1102,40 @@ test("ACL storage helpers fail closed when sync rules touch unawaited file looku
 
       assert.equal(result.error, null);
       assert.deepEqual(result.data, []);
-      assert.equal(observedExists.some(isPromiseLike), true);
+      assert.deepEqual(observedExists, [false]);
+      assert.equal(observedExists.some(isPromiseLike), false);
     } finally {
       database.close();
     }
   });
 });
 
-test("ACL storage helpers support direct return from ACL rules", async () => {
+test("ACL storage helpers fail closed when adapter reads are async in read rules", async () => {
   await withTempDir(async (dir) => {
+    const observed = [];
     const database = await openCapsuleDatabase(dir, {
       schema: {
         attachments: table({
           title: String(),
           fileRef: String(),
+          ownerId: String(),
         }).acl({
-          read: ({ row, ctx }) => ctx.acl.storage.exists("files", row.fileRef),
+          read: async ({ row, ctx }) => {
+            await Promise.resolve();
+            const file = ctx.acl.storage.get("files", row.fileRef);
+            const exists = ctx.acl.storage.exists("files", row.fileRef);
+            observed.push({ file, exists });
+            return true;
+          },
         }),
       },
       queries: {
-        attachments: query((ctx) => ctx.db.attachments.orderBy("title").all()),
+        attachments: query((ctx) => ctx.db.attachments.all()),
       },
     });
 
     try {
-      database.sqlite.insertFileRow({
+      database.sqlite.selectFileById = async () => ({
         id: "file-1",
         ownerId: "u1",
         bucketId: "bucket-1",
@@ -1094,147 +1148,25 @@ test("ACL storage helpers support direct return from ACL rules", async () => {
         status: "uploaded",
         createdAt: "2026-07-04T10:00:00.000Z",
         updatedAt: "2026-07-04T10:00:00.000Z",
+        deletedAt: null,
       });
 
       const db = createEndpointDatabaseApi(database);
-      db.attachments.insert({ title: "Existing", fileRef: "file-1" });
-      db.attachments.insert({ title: "Missing", fileRef: "missing-file" });
-
-      const result = await runQuery(database, auth("u1"), "attachments");
-
-      assert.equal(result.error, null);
-      assert.deepEqual(
-        result.data.map((row) => row.title),
-        ["Existing"],
-      );
-    } finally {
-      database.close();
-    }
-  });
-});
-
-test("ACL storage helpers fail closed for detached read helper then chains", async () => {
-  await withTempDir(async (dir) => {
-    const observed = [];
-    const database = await openCapsuleDatabase(dir, {
-      schema: {
-        attachments: table({
-          title: String(),
-          fileRef: String(),
-        }).acl({
-          read: ({ row, ctx }) => {
-            ctx.acl.storage.exists("files", row.fileRef).then((exists) => {
-              observed.push(exists);
-            });
-            return true;
-          },
-        }),
-      },
-      queries: {
-        attachments: query((ctx) => ctx.db.attachments.all()),
-      },
-    });
-
-    try {
-      const db = createEndpointDatabaseApi(database);
-      db.attachments.insert({ title: "Missing detached read", fileRef: "missing-file" });
+      db.attachments.insert({ title: "Async file", fileRef: "file-1", ownerId: "u1" });
 
       const result = await runQuery(database, auth("u1"), "attachments");
 
       assert.equal(result.error, null);
       assert.deepEqual(result.data, []);
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      assert.deepEqual(observed, [false]);
+      assert.deepEqual(observed, [{ file: null, exists: false }]);
+      assert.equal(observed.some((entry) => isPromiseLike(entry.file) || isPromiseLike(entry.exists)), false);
     } finally {
       database.close();
     }
   });
 });
 
-test("ACL storage helpers fail closed for detached write helper then chains", async () => {
-  await withTempDir(async (dir) => {
-    const observed = [];
-    const database = await openCapsuleDatabase(dir, {
-      schema: {
-        attachments: table({
-          title: String(),
-          fileRef: String(),
-          ownerId: String(),
-        }).acl({
-          insert: ({ next, ctx }) => {
-            ctx.acl.storage.exists("files", next.fileRef).then((exists) => {
-              observed.push(exists);
-            });
-            return true;
-          },
-        }),
-      },
-      mutations: {
-        addAttachment: mutation((ctx, title, fileRef) =>
-          ctx.db.attachments.insert({ title, fileRef, ownerId: ctx.auth.userId }),
-        ),
-      },
-      queries: {
-        attachments: query((ctx) => ctx.db.attachments.all()),
-      },
-    });
-
-    try {
-      const denied = await runMutation(database, auth("u1"), "addAttachment", ["Missing detached write", "missing-file"]);
-      const rows = await runQuery(database, auth("u1"), "attachments");
-
-      assert.equal(denied.ok, false);
-      assert.equal(denied.error.code, "DENIED");
-      assert.deepEqual(rows.data, []);
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      assert.deepEqual(observed, [false]);
-    } finally {
-      database.close();
-    }
-  });
-});
-
-test("ACL storage helpers fail closed when async read rules forget to await async file lookups", async () => {
-  await withTempDir(async (dir) => {
-    const observedExists = [];
-    const database = await openCapsuleDatabase(dir, {
-      schema: {
-        attachments: table({
-          title: String(),
-          fileRef: String(),
-          ownerId: String(),
-        }).acl({
-          read: async ({ row, ctx }) => {
-            await Promise.resolve();
-            const exists = ctx.acl.storage.exists("files", row.fileRef);
-            observedExists.push(exists);
-            return exists && row.ownerId === ctx.auth.userId;
-          },
-        }),
-      },
-      queries: {
-        attachments: query((ctx) => ctx.db.attachments.all()),
-      },
-    });
-
-    try {
-      database.sqlite.selectFileById = async () => null;
-
-      const db = createEndpointDatabaseApi(database);
-      db.attachments.insert({ title: "Missing async file", fileRef: "missing-file", ownerId: "u1" });
-
-      const result = await runQuery(database, auth("u1"), "attachments");
-
-      assert.equal(result.error, null);
-      assert.deepEqual(result.data, []);
-      assert.equal(observedExists.some(isPromiseLike), true);
-    } finally {
-      database.close();
-    }
-  });
-});
-
-test("ACL storage helpers fail closed when async write rules forget to await async file lookups", async () => {
+test("ACL storage helpers fail closed when adapter reads are async in write rules", async () => {
   await withTempDir(async (dir) => {
     const observedExists = [];
     const database = await openCapsuleDatabase(dir, {
@@ -1263,23 +1195,39 @@ test("ACL storage helpers fail closed when async write rules forget to await asy
     });
 
     try {
-      database.sqlite.selectFileById = async () => null;
+      database.sqlite.selectFileById = async () => ({
+        id: "file-1",
+        ownerId: "u1",
+        bucketId: "bucket-1",
+        bucketName: "default",
+        path: "/teams/u1/reports/report.txt",
+        name: "report.txt",
+        type: "text/plain",
+        size: 12,
+        version: "version-1",
+        status: "uploaded",
+        createdAt: "2026-07-04T10:00:00.000Z",
+        updatedAt: "2026-07-04T10:00:00.000Z",
+        deletedAt: null,
+      });
 
-      const denied = await runMutation(database, auth("u1"), "addAttachment", ["Missing async file", "missing-file"]);
+      const denied = await runMutation(database, auth("u1"), "addAttachment", ["Async file", "file-1"]);
       const rows = await runQuery(database, auth("u1"), "attachments");
 
       assert.equal(denied.ok, false);
       assert.equal(denied.error.code, "DENIED");
       assert.deepEqual(rows.data, []);
-      assert.equal(observedExists.some(isPromiseLike), true);
+      assert.deepEqual(observedExists, [false]);
+      assert.equal(observedExists.some(isPromiseLike), false);
     } finally {
       database.close();
     }
   });
 });
 
-test("ACL storage helpers allow correctly awaited async file lookups", async () => {
+test("ACL storage helpers allow sync file lookups in async ACL rules", async () => {
   await withTempDir(async (dir) => {
+    const observed = [];
     const database = await openCapsuleDatabase(dir, {
       schema: {
         attachments: table({
@@ -1290,6 +1238,7 @@ test("ACL storage helpers allow correctly awaited async file lookups", async () 
           read: async ({ row, ctx }) => {
             const file = await ctx.acl.storage.get("files", row.fileRef);
             const exists = await ctx.acl.storage.exists("files", row.fileRef);
+            observed.push({ file, exists });
             return exists && file?.ownerId === ctx.auth.userId;
           },
           insert: async ({ next, ctx }) => {
@@ -1323,8 +1272,6 @@ test("ACL storage helpers allow correctly awaited async file lookups", async () 
         createdAt: "2026-07-04T10:00:00.000Z",
         updatedAt: "2026-07-04T10:00:00.000Z",
       });
-      const selectFileById = database.sqlite.selectFileById.bind(database.sqlite);
-      database.sqlite.selectFileById = async (fileId) => selectFileById(fileId);
 
       const inserted = await runMutation(database, auth("u1"), "addAttachment", ["Report", "file-1"]);
       const rows = await runQuery(database, auth("u1"), "attachments");
@@ -1335,6 +1282,10 @@ test("ACL storage helpers allow correctly awaited async file lookups", async () 
         rows.data.map((row) => row.title),
         ["Report"],
       );
+      assert.equal(observed[0].exists, true);
+      assert.equal(observed[0].file.id, "file-1");
+      assert.equal(isPromiseLike(observed[0].file), false);
+      assert.equal(isPromiseLike(observed[0].exists), false);
     } finally {
       database.close();
     }

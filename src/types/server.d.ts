@@ -52,13 +52,13 @@ export type AclStorageFileMetadata = {
 };
 
 export type AclDatabaseHelpers = {
-  get(tableName: string, id: string): Promise<Record<string, unknown> | null>;
-  exists(tableName: string, id: string): Promise<boolean>;
+  get(tableName: string, id: string): Record<string, unknown> | null;
+  exists(tableName: string, id: string): boolean;
 };
 
 export type AclStorageHelpers = {
-  get(resourceName: "files", reference: string): Promise<AclStorageFileMetadata | null>;
-  exists(resourceName: "files", reference: string): Promise<boolean>;
+  get(resourceName: "files", reference: string): AclStorageFileMetadata | null;
+  exists(resourceName: "files", reference: string): boolean;
 };
 
 export type AclHelpers = {
