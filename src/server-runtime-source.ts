@@ -611,11 +611,11 @@ export function createLocalFileStorageAdapter({ storagePath }: { storagePath: st
         await rm(probeFile, { force: true });
         return { ok: true };
       } catch {
-        await rm(probeFile, { force: true }).catch(() => {});
+        await rm(probeFile, { force: true }).catch(() => { });
         return { ok: false };
       }
     },
-    close() {},
+    close() { },
   };
 }
 
@@ -725,7 +725,7 @@ export function createS3CompatibleFileStorageAdapter({
         return { ok: false, adapter: "s3-compatible" };
       }
     },
-    close() {},
+    close() { },
   };
 }
 
@@ -969,8 +969,8 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     insertFileRow(row: { id: any; ownerId: any; bucketId: any; bucketName: any; path: any; name: any; type: any; size: any; version: any; status: any; createdAt: any; updatedAt: any; }) {
       return this.prepare(
         "INSERT INTO sporades_files " +
-          "(id, ownerId, bucketId, bucketName, path, name, type, size, version, status, createdAt, updatedAt, deletedAt) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        "(id, ownerId, bucketId, bucketName, path, name, type, size, version, status, createdAt, updatedAt, deletedAt) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
       ).run(
         row.id,
         row.ownerId,
@@ -994,8 +994,8 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     insertFileUpload(row: { id: any; fileId: any; ownerId: any; bucketId: any; bucketName: any; path: any; name: any; type: any; version: any; expectedSize: any; createdAt: any; }) {
       return this.prepare(
         "INSERT INTO sporades_file_uploads " +
-          "(id, fileId, ownerId, bucketId, bucketName, path, name, type, version, expectedSize, createdAt) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "(id, fileId, ownerId, bucketId, bucketName, path, name, type, version, expectedSize, createdAt) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(
         row.id,
         row.fileId,
@@ -1088,9 +1088,9 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       return (
         this.prepare(
           "SELECT p.id AS publicUrlId, p.fileId, p.version AS publicVersion, p.expiresAt, p.revokedAt, " +
-            "f.id, f.ownerId, f.bucketId, f.bucketName, f.path, f.name, f.type, f.size, f.version, f.status, f.createdAt, f.updatedAt, f.deletedAt " +
-            "FROM sporades_file_public_urls p JOIN sporades_files f ON f.id = p.fileId " +
-            "WHERE p.id = ?",
+          "f.id, f.ownerId, f.bucketId, f.bucketName, f.path, f.name, f.type, f.size, f.version, f.status, f.createdAt, f.updatedAt, f.deletedAt " +
+          "FROM sporades_file_public_urls p JOIN sporades_files f ON f.id = p.fileId " +
+          "WHERE p.id = ?",
         ).get(publicUrlId) ?? null
       );
     },
@@ -1133,8 +1133,8 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     insertAuthUser(row: { id: any; createdAt: any; displayName: any; email: any; picture: any; isAuthenticated: any; isGuest: any; provider: any; }) {
       return this.prepare(
         "INSERT INTO sporades_auth_users " +
-          "(id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "(id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider);
     },
     updateAuthUserProfile(row: { displayName: any; picture: any; isAuthenticated: any; isGuest: any; id: any; }) {
@@ -1174,9 +1174,9 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       return (
         this.prepare(
           "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, u.provider " +
-            "FROM sporades_auth_sessions s " +
-            "JOIN sporades_auth_users u ON u.id = s.userId " +
-            "WHERE s.token = ?",
+          "FROM sporades_auth_sessions s " +
+          "JOIN sporades_auth_users u ON u.id = s.userId " +
+          "WHERE s.token = ?",
         ).get(token) ?? null
       );
     },
@@ -1204,9 +1204,9 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       return (
         this.prepare(
           "SELECT c.email, c.userId, c.passwordHash, c.passwordSalt, u.displayName, u.picture, u.isAuthenticated, u.isGuest, u.provider " +
-            "FROM sporades_auth_email_credentials c " +
-            "JOIN sporades_auth_users u ON u.id = c.userId " +
-            "WHERE c.email = ?",
+          "FROM sporades_auth_email_credentials c " +
+          "JOIN sporades_auth_users u ON u.id = c.userId " +
+          "WHERE c.email = ?",
         ).get(email) ?? null
       );
     },
@@ -1253,7 +1253,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       }
       return this.prepare(
         `UPDATE ${quoteIdentifier(table.name)} SET ${columns.map((column) => `${quoteIdentifier(column)} = ?`).join(", ")} WHERE id = ?` +
-          (options.ownerId === undefined ? "" : " AND ownerId = ?"),
+        (options.ownerId === undefined ? "" : " AND ownerId = ?"),
       ).run(
         ...columns.map((column) => values[column]),
         String(id),
@@ -1277,9 +1277,8 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       }
       const whereSql = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(" AND ")}` : "";
       const orderSql = query.orderBy
-        ? ` ORDER BY ${quoteIdentifier(query.orderBy.fieldName)} ${
-            String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"
-          }`
+        ? ` ORDER BY ${quoteIdentifier(query.orderBy.fieldName)} ${String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"
+        }`
         : "";
       const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
       const limitSql = limit === null ? "" : " LIMIT ?";
@@ -1427,89 +1426,89 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     async ensureAuthStorage(authConfig: any = null) {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
-          "id TEXT PRIMARY KEY, " +
-          "createdAt TEXT NOT NULL, " +
-          "displayName TEXT NOT NULL, " +
-          "email TEXT, " +
-          "picture TEXT, " +
-          "isAuthenticated INTEGER NOT NULL, " +
-          "isGuest INTEGER NOT NULL, " +
-          "provider TEXT NOT NULL" +
-          ")",
+        "id TEXT PRIMARY KEY, " +
+        "createdAt TEXT NOT NULL, " +
+        "displayName TEXT NOT NULL, " +
+        "email TEXT, " +
+        "picture TEXT, " +
+        "isAuthenticated INTEGER NOT NULL, " +
+        "isGuest INTEGER NOT NULL, " +
+        "provider TEXT NOT NULL" +
+        ")",
       );
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
-          "token TEXT PRIMARY KEY, " +
-          "userId TEXT NOT NULL, " +
-          "createdAt TEXT NOT NULL, " +
-          "expiresAt TEXT NOT NULL" +
-          ")",
+        "token TEXT PRIMARY KEY, " +
+        "userId TEXT NOT NULL, " +
+        "createdAt TEXT NOT NULL, " +
+        "expiresAt TEXT NOT NULL" +
+        ")",
       );
       if (authConfig?.providers?.email?.enabled) {
         await this.exec(
           "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
-            "email TEXT PRIMARY KEY, " +
-            "userId TEXT NOT NULL, " +
-            "passwordHash TEXT NOT NULL, " +
-            "passwordSalt TEXT NOT NULL, " +
-            "createdAt TEXT NOT NULL" +
-            ")",
+          "email TEXT PRIMARY KEY, " +
+          "userId TEXT NOT NULL, " +
+          "passwordHash TEXT NOT NULL, " +
+          "passwordSalt TEXT NOT NULL, " +
+          "createdAt TEXT NOT NULL" +
+          ")",
         );
       }
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
-          "state TEXT PRIMARY KEY, " +
-          "sessionToken TEXT NOT NULL, " +
-          "returnTo TEXT NOT NULL, " +
-          "redirectUri TEXT NOT NULL, " +
-          "createdAt TEXT NOT NULL" +
-          ")",
+        "state TEXT PRIMARY KEY, " +
+        "sessionToken TEXT NOT NULL, " +
+        "returnTo TEXT NOT NULL, " +
+        "redirectUri TEXT NOT NULL, " +
+        "createdAt TEXT NOT NULL" +
+        ")",
       );
     },
     async ensureLogStorage() {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_log_events (" +
-          "id TEXT PRIMARY KEY, " +
-          "timestamp TEXT NOT NULL, " +
-          "category TEXT NOT NULL, " +
-          "event TEXT NOT NULL, " +
-          "level TEXT NOT NULL, " +
-          "message TEXT NOT NULL, " +
-          "capsuleName TEXT, " +
-          "capsuleId TEXT, " +
-          "releaseId TEXT, " +
-          "requestId TEXT, " +
-          "correlationId TEXT, " +
-          "payload TEXT NOT NULL" +
+        "id TEXT PRIMARY KEY, " +
+        "timestamp TEXT NOT NULL, " +
+        "category TEXT NOT NULL, " +
+        "event TEXT NOT NULL, " +
+        "level TEXT NOT NULL, " +
+        "message TEXT NOT NULL, " +
+        "capsuleName TEXT, " +
+        "capsuleId TEXT, " +
+        "releaseId TEXT, " +
+        "requestId TEXT, " +
+        "correlationId TEXT, " +
+        "payload TEXT NOT NULL" +
         ")",
       );
     },
     async ensureFileStorage() {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
-          "id TEXT PRIMARY KEY, " +
-          "ownerId TEXT NOT NULL, " +
-          "name TEXT NOT NULL, " +
-          "createdAt TEXT NOT NULL, " +
-          "UNIQUE(ownerId, name)" +
-          ")",
+        "id TEXT PRIMARY KEY, " +
+        "ownerId TEXT NOT NULL, " +
+        "name TEXT NOT NULL, " +
+        "createdAt TEXT NOT NULL, " +
+        "UNIQUE(ownerId, name)" +
+        ")",
       );
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_files (" +
-          "id TEXT PRIMARY KEY, " +
-          "ownerId TEXT NOT NULL, " +
-          "bucketId TEXT NOT NULL, " +
-          "bucketName TEXT NOT NULL, " +
-          "path TEXT NOT NULL, " +
-          "name TEXT NOT NULL, " +
-          "type TEXT NOT NULL, " +
-          "size INTEGER NOT NULL, " +
-          "version TEXT NOT NULL, " +
-          "status TEXT NOT NULL, " +
-          "createdAt TEXT NOT NULL, " +
-          "updatedAt TEXT NOT NULL, " +
-          "deletedAt TEXT" +
-          ")",
+        "id TEXT PRIMARY KEY, " +
+        "ownerId TEXT NOT NULL, " +
+        "bucketId TEXT NOT NULL, " +
+        "bucketName TEXT NOT NULL, " +
+        "path TEXT NOT NULL, " +
+        "name TEXT NOT NULL, " +
+        "type TEXT NOT NULL, " +
+        "size INTEGER NOT NULL, " +
+        "version TEXT NOT NULL, " +
+        "status TEXT NOT NULL, " +
+        "createdAt TEXT NOT NULL, " +
+        "updatedAt TEXT NOT NULL, " +
+        "deletedAt TEXT" +
+        ")",
       );
       await this.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT").catch((error: any) => {
         if (!isDuplicateColumnError(error)) throw error;
@@ -1519,41 +1518,41 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
       await this.exec("CREATE INDEX IF NOT EXISTS sporades_files_path_live ON sporades_files (path, deletedAt, status)");
       await this.exec(
         "CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_path_active_unique " +
-          "ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')",
+        "ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')",
       );
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
-          "id TEXT PRIMARY KEY, " +
-          "fileId TEXT NOT NULL, " +
-          "ownerId TEXT NOT NULL, " +
-          "bucketId TEXT NOT NULL, " +
-          "bucketName TEXT NOT NULL, " +
-          "path TEXT NOT NULL, " +
-          "name TEXT NOT NULL, " +
-          "type TEXT NOT NULL, " +
-          "version TEXT NOT NULL, " +
-          "expectedSize INTEGER NOT NULL, " +
-          "createdAt TEXT NOT NULL" +
-          ")",
+        "id TEXT PRIMARY KEY, " +
+        "fileId TEXT NOT NULL, " +
+        "ownerId TEXT NOT NULL, " +
+        "bucketId TEXT NOT NULL, " +
+        "bucketName TEXT NOT NULL, " +
+        "path TEXT NOT NULL, " +
+        "name TEXT NOT NULL, " +
+        "type TEXT NOT NULL, " +
+        "version TEXT NOT NULL, " +
+        "expectedSize INTEGER NOT NULL, " +
+        "createdAt TEXT NOT NULL" +
+        ")",
       );
       await ensureFileUploadTargetColumns(this);
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (" +
-          "id TEXT PRIMARY KEY, " +
-          "fileId TEXT NOT NULL, " +
-          "ownerId TEXT NOT NULL, " +
-          "version TEXT NOT NULL, " +
-          "expiresAt TEXT, " +
-          "createdAt TEXT NOT NULL, " +
-          "revokedAt TEXT" +
-          ")",
+        "id TEXT PRIMARY KEY, " +
+        "fileId TEXT NOT NULL, " +
+        "ownerId TEXT NOT NULL, " +
+        "version TEXT NOT NULL, " +
+        "expiresAt TEXT, " +
+        "createdAt TEXT NOT NULL, " +
+        "revokedAt TEXT" +
+        ")",
       );
     },
     async insertLogIndexEvent(event: { timestamp: any; category: any; event: any; level: any; message: any; capsule: { name: any; id: any; }; release: { id: any; }; request: { id: any; }; correlation: { id: any; }; }) {
       await this.prepare(
         "INSERT INTO sporades_log_events " +
-          "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(
         randomUUID(),
         event.timestamp,
@@ -1572,8 +1571,8 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     async pruneLogIndex(limit: any) {
       await this.prepare(
         "DELETE FROM sporades_log_events WHERE id IN (" +
-          "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, id DESC OFFSET ?" +
-          ")",
+        "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, id DESC OFFSET ?" +
+        ")",
       ).run(limit);
     },
     async readRecentLogEvents(limit = 200) {
@@ -1587,8 +1586,8 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     async createAppTable(table: { name: any; }, tableName = table.name) {
       await this.exec(
         `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` +
-          postgresAppTableColumnDefinitions(table).join(", ") +
-          ")",
+        postgresAppTableColumnDefinitions(table).join(", ") +
+        ")",
       );
     },
     async migrateExistingAppTable(existingTable: any, nextTable: any) {
@@ -1663,7 +1662,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
       } catch (error) {
         try {
           await this.exec("ROLLBACK");
-        } catch {}
+        } catch { }
         throw error;
       }
     },
@@ -1779,11 +1778,11 @@ export async function createPostgresConnection(url: any) {
         () => executePostgresQuery(sql),
         () => executePostgresQuery(sql),
       );
-      queryQueue = pending.catch(() => {});
+      queryQueue = pending.catch(() => { });
       return pending;
     },
     async close() {
-      await queryQueue.catch(() => {});
+      await queryQueue.catch(() => { });
       if (closed) {
         return;
       }
@@ -2267,26 +2266,26 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     async ensureLogStorage() {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_log_events (" +
-          "id TEXT PRIMARY KEY, " +
-          "timestamp TEXT NOT NULL, " +
-          "category TEXT NOT NULL, " +
-          "event TEXT NOT NULL, " +
-          "level TEXT NOT NULL, " +
-          "message TEXT NOT NULL, " +
-          "capsuleName TEXT, " +
-          "capsuleId TEXT, " +
-          "releaseId TEXT, " +
-          "requestId TEXT, " +
-          "correlationId TEXT, " +
-          "payload TEXT NOT NULL" +
-          ")",
+        "id TEXT PRIMARY KEY, " +
+        "timestamp TEXT NOT NULL, " +
+        "category TEXT NOT NULL, " +
+        "event TEXT NOT NULL, " +
+        "level TEXT NOT NULL, " +
+        "message TEXT NOT NULL, " +
+        "capsuleName TEXT, " +
+        "capsuleId TEXT, " +
+        "releaseId TEXT, " +
+        "requestId TEXT, " +
+        "correlationId TEXT, " +
+        "payload TEXT NOT NULL" +
+        ")",
       );
     },
     async insertLogIndexEvent(event: { timestamp: any; category: any; event: any; level: any; message: any; capsule: { name: any; id: any; }; release: { id: any; }; request: { id: any; }; correlation: { id: any; }; }) {
       await this.prepare(
         "INSERT INTO sporades_log_events " +
-          "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
       ).run(
         randomUUID(),
         event.timestamp,
@@ -2305,8 +2304,8 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     async pruneLogIndex(limit: any) {
       await this.prepare(
         "DELETE FROM sporades_log_events WHERE id IN (" +
-          "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?" +
-          ")",
+        "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?" +
+        ")",
       ).run(limit);
     },
     async readRecentLogEvents(limit = 200) {
@@ -2317,29 +2316,29 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     async ensureFileStorage() {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
-          "id TEXT PRIMARY KEY, " +
-          "ownerId TEXT NOT NULL, " +
-          "name TEXT NOT NULL, " +
-          "createdAt TEXT NOT NULL, " +
-          "UNIQUE(ownerId, name)" +
-          ")",
+        "id TEXT PRIMARY KEY, " +
+        "ownerId TEXT NOT NULL, " +
+        "name TEXT NOT NULL, " +
+        "createdAt TEXT NOT NULL, " +
+        "UNIQUE(ownerId, name)" +
+        ")",
       );
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_files (" +
-          "id TEXT PRIMARY KEY, " +
-          "ownerId TEXT NOT NULL, " +
-          "bucketId TEXT NOT NULL, " +
-          "bucketName TEXT NOT NULL, " +
-          "path TEXT NOT NULL, " +
-          "name TEXT NOT NULL, " +
-          "type TEXT NOT NULL, " +
-          "size INTEGER NOT NULL, " +
-          "version TEXT NOT NULL, " +
-          "status TEXT NOT NULL, " +
-          "createdAt TEXT NOT NULL, " +
-          "updatedAt TEXT NOT NULL, " +
-          "deletedAt TEXT" +
-          ")",
+        "id TEXT PRIMARY KEY, " +
+        "ownerId TEXT NOT NULL, " +
+        "bucketId TEXT NOT NULL, " +
+        "bucketName TEXT NOT NULL, " +
+        "path TEXT NOT NULL, " +
+        "name TEXT NOT NULL, " +
+        "type TEXT NOT NULL, " +
+        "size INTEGER NOT NULL, " +
+        "version TEXT NOT NULL, " +
+        "status TEXT NOT NULL, " +
+        "createdAt TEXT NOT NULL, " +
+        "updatedAt TEXT NOT NULL, " +
+        "deletedAt TEXT" +
+        ")",
       );
       await this.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT").catch((error: any) => {
         if (!isDuplicateColumnError(error)) throw error;
@@ -2349,77 +2348,77 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
       await this.exec("CREATE INDEX IF NOT EXISTS sporades_files_path_live ON sporades_files (path, deletedAt, status)");
       await this.exec(
         "CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_path_active_unique " +
-          "ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')",
+        "ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')",
       );
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
-          "id TEXT PRIMARY KEY, " +
-          "fileId TEXT NOT NULL, " +
-          "ownerId TEXT NOT NULL, " +
-          "bucketId TEXT NOT NULL, " +
-          "bucketName TEXT NOT NULL, " +
-          "path TEXT NOT NULL, " +
-          "name TEXT NOT NULL, " +
-          "type TEXT NOT NULL, " +
-          "version TEXT NOT NULL, " +
-          "expectedSize INTEGER NOT NULL, " +
-          "createdAt TEXT NOT NULL" +
-          ")",
+        "id TEXT PRIMARY KEY, " +
+        "fileId TEXT NOT NULL, " +
+        "ownerId TEXT NOT NULL, " +
+        "bucketId TEXT NOT NULL, " +
+        "bucketName TEXT NOT NULL, " +
+        "path TEXT NOT NULL, " +
+        "name TEXT NOT NULL, " +
+        "type TEXT NOT NULL, " +
+        "version TEXT NOT NULL, " +
+        "expectedSize INTEGER NOT NULL, " +
+        "createdAt TEXT NOT NULL" +
+        ")",
       );
       await ensureFileUploadTargetColumns(this);
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (" +
-          "id TEXT PRIMARY KEY, " +
-          "fileId TEXT NOT NULL, " +
-          "ownerId TEXT NOT NULL, " +
-          "version TEXT NOT NULL, " +
-          "expiresAt TEXT, " +
-          "createdAt TEXT NOT NULL, " +
-          "revokedAt TEXT" +
-          ")",
+        "id TEXT PRIMARY KEY, " +
+        "fileId TEXT NOT NULL, " +
+        "ownerId TEXT NOT NULL, " +
+        "version TEXT NOT NULL, " +
+        "expiresAt TEXT, " +
+        "createdAt TEXT NOT NULL, " +
+        "revokedAt TEXT" +
+        ")",
       );
     },
     async ensureAuthStorage(authConfig: any = null) {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
-          "id TEXT PRIMARY KEY, " +
-          "createdAt TEXT NOT NULL, " +
-          "displayName TEXT NOT NULL, " +
-          "email TEXT, " +
-          "picture TEXT, " +
-          "isAuthenticated INTEGER NOT NULL, " +
-          "isGuest INTEGER NOT NULL, " +
-          "provider TEXT NOT NULL" +
-          ")",
+        "id TEXT PRIMARY KEY, " +
+        "createdAt TEXT NOT NULL, " +
+        "displayName TEXT NOT NULL, " +
+        "email TEXT, " +
+        "picture TEXT, " +
+        "isAuthenticated INTEGER NOT NULL, " +
+        "isGuest INTEGER NOT NULL, " +
+        "provider TEXT NOT NULL" +
+        ")",
       );
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
-          "token TEXT PRIMARY KEY, " +
-          "userId TEXT NOT NULL, " +
-          "createdAt TEXT NOT NULL, " +
-          "expiresAt TEXT NOT NULL" +
-          ")",
+        "token TEXT PRIMARY KEY, " +
+        "userId TEXT NOT NULL, " +
+        "createdAt TEXT NOT NULL, " +
+        "expiresAt TEXT NOT NULL" +
+        ")",
       );
       await ensureLibsqlSessionLifecycleColumns(this);
       if (authConfig?.providers?.email?.enabled) {
         await this.exec(
           "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
-            "email TEXT PRIMARY KEY, " +
-            "userId TEXT NOT NULL, " +
-            "passwordHash TEXT NOT NULL, " +
-            "passwordSalt TEXT NOT NULL, " +
-            "createdAt TEXT NOT NULL" +
-            ")",
+          "email TEXT PRIMARY KEY, " +
+          "userId TEXT NOT NULL, " +
+          "passwordHash TEXT NOT NULL, " +
+          "passwordSalt TEXT NOT NULL, " +
+          "createdAt TEXT NOT NULL" +
+          ")",
         );
       }
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
-          "state TEXT PRIMARY KEY, " +
-          "sessionToken TEXT NOT NULL, " +
-          "returnTo TEXT NOT NULL, " +
-          "redirectUri TEXT NOT NULL, " +
-          "createdAt TEXT NOT NULL" +
-          ")",
+        "state TEXT PRIMARY KEY, " +
+        "sessionToken TEXT NOT NULL, " +
+        "returnTo TEXT NOT NULL, " +
+        "redirectUri TEXT NOT NULL, " +
+        "createdAt TEXT NOT NULL" +
+        ")",
       );
     },
     async consumeOAuthState(state: any) {
@@ -2500,7 +2499,7 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
       } catch (error) {
         try {
           await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true });
-        } catch {}
+        } catch { }
         throw error;
       } finally {
         activeTransactions.delete(transaction);
@@ -2508,9 +2507,9 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     },
     async close() {
       closed = true;
-  for (const transaction of activeTransactions as Set<any>) {
+      for (const transaction of activeTransactions as Set<any>) {
         if (transaction.baton) {
-          await libsqlPipeline({ endpoint, authToken, transaction, requests: [], close: true }).catch(() => {});
+          await libsqlPipeline({ endpoint, authToken, transaction, requests: [], close: true }).catch(() => { });
         }
       }
       activeTransactions.clear();
@@ -2744,10 +2743,10 @@ function createLogEnvelope(input: { config: LooseRecord; timestamp: any; categor
     release: input.release ?? config.release ?? null,
     request: input.request
       ? {
-          id: input.request.id ?? randomUUID(),
-          method: input.request.method ?? null,
-          path: input.request.path ?? null,
-        }
+        id: input.request.id ?? randomUUID(),
+        method: input.request.method ?? null,
+        path: input.request.path ?? null,
+      }
       : null,
     correlation: input.correlation ?? null,
     data: sanitizeLogData(input.data ?? null, input.serverEnv ?? {}),
@@ -2838,19 +2837,19 @@ function capLogEnvelope(envelope: LooseRecord, maxBytes: number) {
 function createLogIndexTables(sqlite: { engine?: string; exec: any; prepare?: (sql: any) => { all(...params: any[]): Record<string, SQLOutputValue>[]; get(...params: any[]): Record<string, SQLOutputValue> | undefined; run(...params: any[]): StatementResultingChanges; columns(): StatementColumnMetadata[]; }; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; findAuthUserByProviderEmail?: (provider: any, email: any) => Record<string, SQLOutputValue> | null; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }) {
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_log_events (" +
-      "id TEXT PRIMARY KEY, " +
-      "timestamp TEXT NOT NULL, " +
-      "category TEXT NOT NULL, " +
-      "event TEXT NOT NULL, " +
-      "level TEXT NOT NULL, " +
-      "message TEXT NOT NULL, " +
-      "capsuleName TEXT, " +
-      "capsuleId TEXT, " +
-      "releaseId TEXT, " +
-      "requestId TEXT, " +
-      "correlationId TEXT, " +
-      "payload TEXT NOT NULL" +
-      ")",
+    "id TEXT PRIMARY KEY, " +
+    "timestamp TEXT NOT NULL, " +
+    "category TEXT NOT NULL, " +
+    "event TEXT NOT NULL, " +
+    "level TEXT NOT NULL, " +
+    "message TEXT NOT NULL, " +
+    "capsuleName TEXT, " +
+    "capsuleId TEXT, " +
+    "releaseId TEXT, " +
+    "requestId TEXT, " +
+    "correlationId TEXT, " +
+    "payload TEXT NOT NULL" +
+    ")",
   );
 }
 
@@ -2858,8 +2857,8 @@ function insertLogIndexEvent(sqlite: { engine?: string; exec?: (sql: any) => voi
   sqlite
     .prepare(
       "INSERT INTO sporades_log_events " +
-        "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
+      "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .run(
       randomUUID(),
@@ -2881,8 +2880,8 @@ function pruneLogIndex(sqlite: { engine?: string; exec?: (sql: any) => void; pre
   sqlite
     .prepare(
       "DELETE FROM sporades_log_events WHERE id IN (" +
-        "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?" +
-        ")",
+      "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?" +
+      ")",
     )
     .run(limit);
 }
@@ -3196,7 +3195,7 @@ function migrateExistingAppTable(sqlite: LooseRecord, existingTable: any, nextTa
     () => sqlite.createAppTable(nextTable, tempTableName),
     () =>
       sqlite.exec(
-      `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
+        `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
         `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
         `FROM ${quoteIdentifier(nextTable.name)}`,
       ),
@@ -3224,8 +3223,8 @@ async function migrateExistingLibsqlAppTable(sqlite: LooseRecord, existingTable:
     await transaction.createAppTable(nextTable, tempTableName);
     await transaction.exec(
       `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
-        `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
-        `FROM ${quoteIdentifier(nextTable.name)}`,
+      `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
+      `FROM ${quoteIdentifier(nextTable.name)}`,
     );
     await transaction.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`);
     await transaction.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`);
@@ -3251,8 +3250,8 @@ function addedFieldsForTable(existingTable: LooseRecord, nextTable: LooseRecord)
 function createAppTable(sqlite: LooseRecord, table: LooseRecord, tableName = table.name) {
   return sqlite.exec(
     `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` +
-      appTableColumnDefinitions(table).join(", ") +
-      ")",
+    appTableColumnDefinitions(table).join(", ") +
+    ")",
   );
 }
 
@@ -3881,9 +3880,9 @@ async function createRuntimeHealthResult(database: any) {
     error: ready
       ? null
       : {
-          message: "Sporades runtime is not ready.",
-          hint: "Check Hosted Capsule logs and data volume permissions.",
-        },
+        message: "Sporades runtime is not ready.",
+        hint: "Check Hosted Capsule logs and data volume permissions.",
+      },
   };
 }
 
@@ -3898,29 +3897,29 @@ export async function checkRuntimeFileStorage(database: LooseRecord) {
 function createFileStorageTables(sqlite: { engine?: string; exec: any; prepare?: (sql: any) => { all(...params: any[]): Record<string, SQLOutputValue>[]; get(...params: any[]): Record<string, SQLOutputValue> | undefined; run(...params: any[]): StatementResultingChanges; columns(): StatementColumnMetadata[]; }; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; findAuthUserByProviderEmail?: (provider: any, email: any) => Record<string, SQLOutputValue> | null; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }) {
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
-      "id TEXT PRIMARY KEY, " +
-      "ownerId TEXT NOT NULL, " +
-      "name TEXT NOT NULL, " +
-      "createdAt TEXT NOT NULL, " +
-      "UNIQUE(ownerId, name)" +
-      ")",
+    "id TEXT PRIMARY KEY, " +
+    "ownerId TEXT NOT NULL, " +
+    "name TEXT NOT NULL, " +
+    "createdAt TEXT NOT NULL, " +
+    "UNIQUE(ownerId, name)" +
+    ")",
   );
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_files (" +
-      "id TEXT PRIMARY KEY, " +
-      "ownerId TEXT NOT NULL, " +
-      "bucketId TEXT NOT NULL, " +
-      "bucketName TEXT NOT NULL, " +
-      "path TEXT NOT NULL, " +
-      "name TEXT NOT NULL, " +
-      "type TEXT NOT NULL, " +
-      "size INTEGER NOT NULL, " +
-      "version TEXT NOT NULL, " +
-      "status TEXT NOT NULL, " +
-      "createdAt TEXT NOT NULL, " +
-      "updatedAt TEXT NOT NULL, " +
-      "deletedAt TEXT" +
-      ")",
+    "id TEXT PRIMARY KEY, " +
+    "ownerId TEXT NOT NULL, " +
+    "bucketId TEXT NOT NULL, " +
+    "bucketName TEXT NOT NULL, " +
+    "path TEXT NOT NULL, " +
+    "name TEXT NOT NULL, " +
+    "type TEXT NOT NULL, " +
+    "size INTEGER NOT NULL, " +
+    "version TEXT NOT NULL, " +
+    "status TEXT NOT NULL, " +
+    "createdAt TEXT NOT NULL, " +
+    "updatedAt TEXT NOT NULL, " +
+    "deletedAt TEXT" +
+    ")",
   );
   try {
     sqlite.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT");
@@ -3932,34 +3931,34 @@ function createFileStorageTables(sqlite: { engine?: string; exec: any; prepare?:
   sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_files_path_live ON sporades_files (path, deletedAt, status)");
   sqlite.exec(
     "CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_path_active_unique " +
-      "ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')",
+    "ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')",
   );
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
-      "id TEXT PRIMARY KEY, " +
-      "fileId TEXT NOT NULL, " +
-      "ownerId TEXT NOT NULL, " +
-      "bucketId TEXT NOT NULL, " +
-      "bucketName TEXT NOT NULL, " +
-      "path TEXT NOT NULL, " +
-      "name TEXT NOT NULL, " +
-      "type TEXT NOT NULL, " +
-      "version TEXT NOT NULL, " +
-      "expectedSize INTEGER NOT NULL, " +
-      "createdAt TEXT NOT NULL" +
-      ")",
+    "id TEXT PRIMARY KEY, " +
+    "fileId TEXT NOT NULL, " +
+    "ownerId TEXT NOT NULL, " +
+    "bucketId TEXT NOT NULL, " +
+    "bucketName TEXT NOT NULL, " +
+    "path TEXT NOT NULL, " +
+    "name TEXT NOT NULL, " +
+    "type TEXT NOT NULL, " +
+    "version TEXT NOT NULL, " +
+    "expectedSize INTEGER NOT NULL, " +
+    "createdAt TEXT NOT NULL" +
+    ")",
   );
   ensureFileUploadTargetColumns(sqlite);
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (" +
-      "id TEXT PRIMARY KEY, " +
-      "fileId TEXT NOT NULL, " +
-      "ownerId TEXT NOT NULL, " +
-      "version TEXT NOT NULL, " +
-      "expiresAt TEXT, " +
-      "createdAt TEXT NOT NULL, " +
-      "revokedAt TEXT" +
-      ")",
+    "id TEXT PRIMARY KEY, " +
+    "fileId TEXT NOT NULL, " +
+    "ownerId TEXT NOT NULL, " +
+    "version TEXT NOT NULL, " +
+    "expiresAt TEXT, " +
+    "createdAt TEXT NOT NULL, " +
+    "revokedAt TEXT" +
+    ")",
   );
 }
 
@@ -4184,9 +4183,9 @@ export async function completePendingFileUpload(database: LooseRecord, uploadId:
     const structuredError = isUniqueConstraintError(error)
       ? createStructuredFileError("Upload URL was superseded.", "Request a fresh upload URL before retrying this file upload.")
       : {
-          message: error.message,
-          hint: error.hint ?? "Request a fresh upload URL and retry.",
-        };
+        message: error.message,
+        hint: error.hint ?? "Request a fresh upload URL and retry.",
+      };
     websocketHub?.notifyFileEvent?.(upload.ownerId, {
       type: "file.upload.failed",
       fileId: upload.fileId,
@@ -4382,7 +4381,7 @@ async function withFileUploadPathLock(path: string, fn: () => any) {
   const next = previous.then(() => current, () => current);
   fileUploadPathLocks.set(key, next);
   try {
-    await previous.catch(() => {});
+    await previous.catch(() => { });
     return await fn();
   } finally {
     release?.();
@@ -4531,15 +4530,15 @@ function ensureFileUploadTargetColumns(sqlite: LooseRecord) {
     "ALTER TABLE sporades_file_uploads ADD COLUMN name TEXT",
     "ALTER TABLE sporades_file_uploads ADD COLUMN type TEXT",
     "UPDATE sporades_file_uploads SET " +
-      "bucketId = COALESCE(bucketId, (SELECT bucketId FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
-      "bucketName = COALESCE(bucketName, (SELECT bucketName FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
-      "path = COALESCE(path, (SELECT path FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
-      "name = COALESCE(name, (SELECT name FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
-      "type = COALESCE(type, (SELECT type FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)) " +
-      "WHERE path IS NULL OR path = ''",
+    "bucketId = COALESCE(bucketId, (SELECT bucketId FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
+    "bucketName = COALESCE(bucketName, (SELECT bucketName FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
+    "path = COALESCE(path, (SELECT path FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
+    "name = COALESCE(name, (SELECT name FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
+    "type = COALESCE(type, (SELECT type FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)) " +
+    "WHERE path IS NULL OR path = ''",
     "DELETE FROM sporades_file_uploads WHERE id NOT IN (" +
-      "SELECT MAX(id) FROM sporades_file_uploads GROUP BY path" +
-      ")",
+    "SELECT MAX(id) FROM sporades_file_uploads GROUP BY path" +
+    ")",
     "CREATE INDEX IF NOT EXISTS sporades_file_uploads_path ON sporades_file_uploads (path)",
     "CREATE UNIQUE INDEX IF NOT EXISTS sporades_file_uploads_path_unique ON sporades_file_uploads (path)",
   ];
@@ -4581,7 +4580,7 @@ function createStructuredFileError(message: string, hint: string) {
 }
 
 async function removeFileVersionBestEffort(database: LooseRecord, fileId: any, version: any) {
-  await database.fileStorage.deleteFileVersion({ fileId, version }).catch(() => {});
+  await database.fileStorage.deleteFileVersion({ fileId, version }).catch(() => { });
 }
 
 async function runEndpoint(database: any, endpoint: { handlerSource: any; }, requestUrl: URL, request: any) {
@@ -4800,12 +4799,12 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
       const selected = database.sqlite.selectAppRows(table, {
         where: query.where
           ? {
-              fieldName: query.where.fieldName,
-              value: serializeFieldValue(
-                table.fields.find((field: { name: any; }) => field.name === query.where.fieldName),
-                query.where.value,
-              ),
-            }
+            fieldName: query.where.fieldName,
+            value: serializeFieldValue(
+              table.fields.find((field: { name: any; }) => field.name === query.where.fieldName),
+              query.where.value,
+            ),
+          }
           : null,
         orderBy: query.orderBy,
         limit: 1,
@@ -4825,12 +4824,12 @@ function createEndpointTableApi(database: LooseRecord, table: LooseRecord, query
       const selected = database.sqlite.selectAppRows(table, {
         where: query.where
           ? {
-              fieldName: query.where.fieldName,
-              value: serializeFieldValue(
-                table.fields.find((field: { name: any; }) => field.name === query.where.fieldName),
-                query.where.value,
-              ),
-            }
+            fieldName: query.where.fieldName,
+            value: serializeFieldValue(
+              table.fields.find((field: { name: any; }) => field.name === query.where.fieldName),
+              query.where.value,
+            ),
+          }
           : null,
         orderBy: query.orderBy,
         limit,
@@ -4966,7 +4965,7 @@ function aclRuleTouchedAsyncHelperRead(aclContext: any) {
 function markAsyncAclHelperRead(state: LooseRecord, result: any) {
   if (isPromiseLike(result)) {
     state.touchedAsyncRead = true;
-    Promise.resolve(result).catch(() => {});
+    Promise.resolve(result).catch(() => { });
     return true;
   }
   return false;
@@ -5349,7 +5348,7 @@ function writeEndpointError(response: any, error: any) {
           ? "Return { status, headers, body } with a numeric status, plain object headers, and a serializable body."
           : error?.hint
             ? error.hint
-          : "Check the endpoint handler and retry the request.",
+            : "Check the endpoint handler and retry the request.",
       },
     })}\n`,
   );
@@ -6419,44 +6418,44 @@ function emailAuthDisabledError() {
 function createAnonymousAuthTables(sqlite: LooseRecord, authConfig: LooseRecord | null = null) {
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
-      "id TEXT PRIMARY KEY, " +
-      "createdAt TEXT NOT NULL, " +
-      "displayName TEXT NOT NULL, " +
-      "email TEXT, " +
-      "picture TEXT, " +
-      "isAuthenticated INTEGER NOT NULL, " +
-      "isGuest INTEGER NOT NULL, " +
-      "provider TEXT NOT NULL" +
-      ")",
+    "id TEXT PRIMARY KEY, " +
+    "createdAt TEXT NOT NULL, " +
+    "displayName TEXT NOT NULL, " +
+    "email TEXT, " +
+    "picture TEXT, " +
+    "isAuthenticated INTEGER NOT NULL, " +
+    "isGuest INTEGER NOT NULL, " +
+    "provider TEXT NOT NULL" +
+    ")",
   );
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
-      "token TEXT PRIMARY KEY, " +
-      "userId TEXT NOT NULL, " +
-      "createdAt TEXT NOT NULL, " +
-      "expiresAt TEXT NOT NULL" +
-      ")",
+    "token TEXT PRIMARY KEY, " +
+    "userId TEXT NOT NULL, " +
+    "createdAt TEXT NOT NULL, " +
+    "expiresAt TEXT NOT NULL" +
+    ")",
   );
   ensureSessionLifecycleColumns(sqlite);
   if (authConfig?.providers?.email?.enabled) {
     sqlite.exec(
       "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
-        "email TEXT PRIMARY KEY, " +
-        "userId TEXT NOT NULL, " +
-        "passwordHash TEXT NOT NULL, " +
-        "passwordSalt TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL" +
-        ")",
+      "email TEXT PRIMARY KEY, " +
+      "userId TEXT NOT NULL, " +
+      "passwordHash TEXT NOT NULL, " +
+      "passwordSalt TEXT NOT NULL, " +
+      "createdAt TEXT NOT NULL" +
+      ")",
     );
   }
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
-      "state TEXT PRIMARY KEY, " +
-      "sessionToken TEXT NOT NULL, " +
-      "returnTo TEXT NOT NULL, " +
-      "redirectUri TEXT NOT NULL, " +
-      "createdAt TEXT NOT NULL" +
-      ")",
+    "state TEXT PRIMARY KEY, " +
+    "sessionToken TEXT NOT NULL, " +
+    "returnTo TEXT NOT NULL, " +
+    "redirectUri TEXT NOT NULL, " +
+    "createdAt TEXT NOT NULL" +
+    ")",
   );
 }
 
@@ -6758,10 +6757,10 @@ export async function runQuery(database: LooseRecord, auth: any, queryName: stri
     const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field: { name: any; }) => field.name)];
     const ownerScoped = table.fields.some((field: { name: string; }) => field.name === "ownerId");
     const rows = (await database.sqlite.selectAppRows(table, {
-        columns,
-        ownerId: ownerScoped ? context.auth.userId : undefined,
-        orderBy: { fieldName: "createdAt", direction: "desc" },
-      })).map((row: any) => rowToApiValue(row, table));
+      columns,
+      ownerId: ownerScoped ? context.auth.userId : undefined,
+      orderBy: { fieldName: "createdAt", direction: "desc" },
+    })).map((row: any) => rowToApiValue(row, table));
     database.rowCache.set(cacheKey, rows);
   }
 

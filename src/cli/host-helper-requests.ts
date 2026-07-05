@@ -73,7 +73,7 @@ export type HostRegistrationOptions = JsonObject & {
   subname?: string;
   domain?: string;
   remoteCapsuleId?: string;
-  route?: { log?: { file?: string }; [key: string]: unknown };
+  route?: { log?: { file?: string };[key: string]: unknown };
   baseImage?: HostedCapsuleBaseImage;
   bootstrap?: HostBootstrapOptions;
 };
@@ -180,12 +180,12 @@ export type HostHelperErrorBody = JsonObject & {
 
 export type HostHelperEnvelope<Data = JsonValue> =
   | {
-      ok: true;
-      data: Data;
-      error: null;
-    }
+    ok: true;
+    data: Data;
+    error: null;
+  }
   | {
-      ok: false;
-      data: Data | null;
-      error: HostHelperErrorBody;
-    };
+    ok: false;
+    data: Data | null;
+    error: HostHelperErrorBody;
+  };

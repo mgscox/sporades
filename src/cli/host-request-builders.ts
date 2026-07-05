@@ -28,9 +28,9 @@ export function createHostReleaseRequest(options: LooseRecord): HostHelperReleas
     sealedServerEnvIncluded: Boolean(options.sealedServerEnv),
     sealedServerEnv: options.sealedServerEnv
       ? {
-          publicKeyFingerprint: options.sealedServerEnv.publicKeyFingerprint,
-          publicKeyPath: options.sealedServerEnv.publicKeyPath,
-        }
+        publicKeyFingerprint: options.sealedServerEnv.publicKeyFingerprint,
+        publicKeyPath: options.sealedServerEnv.publicKeyPath,
+      }
       : null,
     baseImage: baseImageMetadata(options.updatePolicyMode),
     files,

@@ -59,6 +59,8 @@ import {
   createHostStatsRequest,
   createHostUnregisterRequest,
 } from "./host-request-builders.js";
+import { renderCliHelp } from "./cli-help.js";
+import { createGithubAutodeployWorkflow } from "./github-autodeploy-workflow.js";
 import { WithImplicitCoercion } from "buffer";
 import { PathLike } from "fs";
 import { FileHandle } from "fs/promises";
@@ -226,243 +228,7 @@ async function main() {
 }
 
 function printHelp(cmd?: string) {
-  switch (cmd) {
-    case "create": {
-      process.stdout.write(`Usage: sporades create <name> [options]
-
-Scaffold a new Capsule.
-
-Options:
-  --framework <name>  Client framework: react or preact
-  --template <name>   Template: blank, todo, guestbook, or photo-library
-  --no-install        Skip npm install
-  --no-git            Skip git initialization
-  --json              Write JSON output
-  --help, -h          Show this help
-`);
-      return;
-    }
-
-    case "dev": {
-      process.stdout.write(`Usage: sporades dev [status|stop|reset] [options]
-
-Start and manage a local Dev session.
-
-Commands:
-  dev                 Start a Dev session
-  dev status          Print Dev session status
-  dev stop            Stop the running Dev session
-  dev reset           Stop the Dev session and remove local Dev state
-
-Options:
-  --port <number>     Dev session port when starting
-  --public            Allow non-localhost access when starting
-  --json              Write JSON output
-  --help, -h          Show this help
-`);
-      return;
-    }
-
-    case "auth": {
-      process.stdout.write(`Usage: sporades auth <command> [options]
-
-Manage local auth configuration and identity simulation.
-
-Commands:
-  status              Print auth provider status
-  clients             List connected Dev session clients
-  set google          Configure Google OAuth credentials
-  as email            Simulate a local email identity
-
-Options:
-  --client-id <id>        Google OAuth client ID
-  --client-secret <secret> Google OAuth client secret
-  --client-json <path>    Read Google OAuth credentials JSON
-  --email <address>       Simulated email identity
-  --display-name <name>   Simulated display name
-  --picture <url>         Simulated profile picture URL
-  --port <number>         Target Dev session port
-  --client <target>       Delivery target: current, all, or a client ID
-  --json                  Write JSON output
-  --help, -h              Show this help
-`);
-      return;
-    }
-
-    case "security": {
-      process.stdout.write(`Usage: sporades security [options]
-
-Inspect effective Capsule security policy.
-
-Options:
-  --session <name>    Session: dev, public-dev, container, or hosted
-  --json              Write JSON output
-  --help, -h          Show this help
-`);
-      return;
-    }
-
-    case "env": {
-      process.stdout.write(`Usage: sporades env <command> [options]
-
-Manage Sealed Server env.
-
-Commands:
-  init                Create local Sealed Server env key material
-  import              Import Server env values from a file
-  status              Print Sealed Server env status
-  export              Export Sealed Server env for a Host profile
-  reencrypt           Re-encrypt local Sealed Server env material
-
-Options:
-  --file <path>       Input file for import or export
-  --host <alias>      Host profile alias
-  --subname <name>    Hosted Capsule subname
-  --output <path>     Export output path
-  --sealed            Treat input as an already sealed export
-  --json              Write JSON output
-  --help, -h          Show this help
-`);
-      return;
-    }
-
-    case "deploy": {
-      process.stdout.write(`Usage: sporades deploy [status|stop|restart|remove|reset] [options]
-
-Start and manage a local Container session.
-
-Commands:
-  deploy              Start a local Container session
-  deploy status       Print Container session status
-  deploy stop         Stop the running Container session
-  deploy restart      Restart the running Container session
-  deploy remove       Remove the Container session
-  deploy reset        Remove the Container session and local container state
-
-Options:
-  --port <number>     Published local port when starting
-  --force             Replace stale or conflicting container state when starting
-  --json              Write JSON output
-  --help, -h          Show this help
-`);
-      return;
-    }
-
-    case "host": {
-      process.stdout.write(`Usage: sporades host <command> [options]
-
-Manage Host profiles and Hosted Capsules.
-
-Profile commands:
-  add <alias>         Add a Host profile
-  use <alias>         Set the default Host profile
-  current             Print the selected Host profile
-  bootstrap           Provision the remote Host server
-  health [subname]    Check Host server or Hosted Capsule health
-
-Capsule commands:
-  bind <subname>      Bind this project to a Hosted Capsule
-  register <subname>  Register a Hosted Capsule
-  push                Push and install a Hosted Capsule release
-  start <subname>     Start a Hosted Capsule
-  stop <subname>      Stop a Hosted Capsule
-  restart <subname>   Restart a Hosted Capsule
-  stats [subname]     Print Host server or Hosted Capsule stats
-  logs [source]       Print Hosted Capsule logs
-  releases <subname>  List Hosted Capsule releases
-  rollback <subname> <release-id>
-                      Roll back to a previous release
-  rotate-key <subname>
-                      Rotate Hosted Capsule Sealed Server env keys
-  unregister <subname>
-                      Unregister a Hosted Capsule
-  delete <subname>    Delete Hosted Capsule storage
-
-Other commands:
-  list                List Hosted Capsules
-  github workflow write
-                      Write a GitHub Actions deploy workflow
-  invoke <action>     Invoke a low-level remote Host helper action
-
-Options:
-  --host <alias>      Host profile alias
-  --server <target>   SSH target for host add
-  --domain <domain>   Hosted domain for host add
-  --remote-root <path>
-                      Remote root path for host add
-  --tls <mode>        TLS mode: automatic or cloudflare-origin
-  --subname <name>    Hosted Capsule subname
-  --lines <n>, -n <n> Log line count
-  --restart           Restart after host push
-  --verify            Verify release health after host push
-  --fallback-to-previous-release
-                      Roll back when verified push fails
-  --branch <name>     GitHub workflow branch
-  --file <path>       GitHub workflow output path
-  --dry-run           Print workflow without writing it
-  --force             Overwrite workflow output when writing it
-  --json              Write JSON output
-  --help, -h          Show this help
-`);
-      return;
-    }
-
-    case "logs": {
-      process.stdout.write(`Usage: sporades logs [tail] [options]
-
-Print Dev session logs.
-
-Commands:
-  logs                Print recent Dev session logs
-  logs tail           Follow Dev session logs
-
-Options:
-  --port <number>     Target Dev session or local Container port
-  --json              Write JSON output
-  --help, -h          Show this help
-`);
-      return;
-    }
-
-    case "db": {
-      process.stdout.write(`Usage: sporades db <command> [options]
-
-Inspect the Dev session database.
-
-Commands:
-  list                List database tables
-  dump                Dump database contents
-  query <sql>         Run a read-only SQL query
-
-Options:
-  --port <number>     Target Dev session or local Container port
-  --json              Write JSON output
-  --help, -h          Show this help
-`);
-      return;
-    }
-
-    default: {
-      process.stdout.write(`Usage: sporades <command> [options]
-    
-    Commands:
-      create <name>  Scaffold a new Capsule
-      dev            Start a local Dev session
-      auth           Manage local auth configuration and simulation
-      security       Inspect effective Capsule security policy
-      env            Manage Sealed Server env
-      deploy         Start a local Container session
-      host           Manage Host profiles and Hosted Capsules
-      logs           Print Dev session logs
-      db             Inspect the Dev session database
-    
-    Options:
-      --help, -h     Show help for command
-      --json         Write JSON output when supported by the command
-    `);
-      return;
-    }
-  }
+  process.stdout.write(renderCliHelp(cmd));
 }
 
 function parseCreateArgs(args: string[]): LooseRecord {
@@ -755,7 +521,7 @@ function parseAuthArgs(args: string[]): LooseRecord {
 
     default:
       break;
-    }
+  }
 
   throw commandError(
     "Unknown auth command.",
@@ -935,139 +701,139 @@ function parseHostArgs(args: string[]): LooseRecord {
 
   switch (subcommand) {
     case "add": {
-    const [alias, ...extra] = positional;
-    if (!alias) {
-      throw commandError(
-        "Missing Host profile alias.",
-        "Use `sporades host add <alias> --server <ssh-target> --domain <hosted-domain>`.",
-      );
-    }
-    if (extra.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host add <alias> --server <ssh-target> --domain <hosted-domain>`.");
-    }
-    validateHostAlias(alias);
-    if (!server) {
-      throw commandError("Missing Host server.", "Pass `--server <ssh-target>`.");
-    }
-    if (!domain) {
-      throw commandError("Missing Hosted domain.", "Pass `--domain <hosted-domain>`.");
-    }
-    validateHostedDomain(domain);
-    validateHostRemoteRoot(remoteRoot);
-    validateHostTlsMode(tlsMode);
-    return { subcommand, alias, server, domain, remoteRoot, tlsMode, json, projectDir: process.cwd() };
+      const [alias, ...extra] = positional;
+      if (!alias) {
+        throw commandError(
+          "Missing Host profile alias.",
+          "Use `sporades host add <alias> --server <ssh-target> --domain <hosted-domain>`.",
+        );
+      }
+      if (extra.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host add <alias> --server <ssh-target> --domain <hosted-domain>`.");
+      }
+      validateHostAlias(alias);
+      if (!server) {
+        throw commandError("Missing Host server.", "Pass `--server <ssh-target>`.");
+      }
+      if (!domain) {
+        throw commandError("Missing Hosted domain.", "Pass `--domain <hosted-domain>`.");
+      }
+      validateHostedDomain(domain);
+      validateHostRemoteRoot(remoteRoot);
+      validateHostTlsMode(tlsMode);
+      return { subcommand, alias, server, domain, remoteRoot, tlsMode, json, projectDir: process.cwd() };
     }
 
     case "use": {
-    const [alias, ...extra] = positional;
-    if (!alias) {
-      throw commandError("Missing Host profile alias.", "Use `sporades host use <alias>`.");
-    }
-    if (extra.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host use <alias>`.");
-    }
-    validateHostAlias(alias);
-    return { subcommand, alias, json, projectDir: process.cwd() };
+      const [alias, ...extra] = positional;
+      if (!alias) {
+        throw commandError("Missing Host profile alias.", "Use `sporades host use <alias>`.");
+      }
+      if (extra.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host use <alias>`.");
+      }
+      validateHostAlias(alias);
+      return { subcommand, alias, json, projectDir: process.cwd() };
     }
 
     case "current":
-    if (positional.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host current --host <alias> --json`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    return { subcommand, hostAlias, json, projectDir: process.cwd() };
+      if (positional.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host current --host <alias> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      return { subcommand, hostAlias, json, projectDir: process.cwd() };
 
     case "health": {
-    const [positionalSubname, ...extra] = positional;
-    if (extra.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host health [subname] --host <alias> --json`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    if (positionalSubname) {
-      validateCapsuleSubname(positionalSubname);
-    }
-    return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
+      const [positionalSubname, ...extra] = positional;
+      if (extra.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host health [subname] --host <alias> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      if (positionalSubname) {
+        validateCapsuleSubname(positionalSubname);
+      }
+      return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
     }
 
     case "bind": {
-    const [positionalSubname, ...extra] = positional;
-    if (!positionalSubname) {
-      throw commandError("Missing Capsule subname.", "Use `sporades host bind <subname> --host <alias>`.");
-    }
-    if (extra.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host bind <subname> --host <alias>`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateCapsuleSubname(positionalSubname);
-    return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
+      const [positionalSubname, ...extra] = positional;
+      if (!positionalSubname) {
+        throw commandError("Missing Capsule subname.", "Use `sporades host bind <subname> --host <alias>`.");
+      }
+      if (extra.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host bind <subname> --host <alias>`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateCapsuleSubname(positionalSubname);
+      return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
     }
 
     case "register": {
-    const [positionalSubname, ...extra] = positional;
-    if (!positionalSubname) {
-      throw commandError("Missing Capsule subname.", "Use `sporades host register <subname> --host <alias>`.");
-    }
-    if (extra.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host register <subname> --host <alias>`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateCapsuleSubname(positionalSubname);
-    return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
+      const [positionalSubname, ...extra] = positional;
+      if (!positionalSubname) {
+        throw commandError("Missing Capsule subname.", "Use `sporades host register <subname> --host <alias>`.");
+      }
+      if (extra.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host register <subname> --host <alias>`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateCapsuleSubname(positionalSubname);
+      return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
     }
 
     case "rotate-key": {
-    const [positionalSubname, ...extra] = positional;
-    if (!positionalSubname) {
-      throw commandError("Missing Capsule subname.", "Use `sporades host rotate-key <subname> --host <alias>`.");
-    }
-    if (extra.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host rotate-key <subname> --host <alias>`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateCapsuleSubname(positionalSubname);
-    return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
+      const [positionalSubname, ...extra] = positional;
+      if (!positionalSubname) {
+        throw commandError("Missing Capsule subname.", "Use `sporades host rotate-key <subname> --host <alias>`.");
+      }
+      if (extra.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host rotate-key <subname> --host <alias>`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateCapsuleSubname(positionalSubname);
+      return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
     }
 
     case "bootstrap":
-    if (positional.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host bootstrap --host <alias> --json`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    return { subcommand, hostAlias, json, projectDir: process.cwd() };
+      if (positional.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host bootstrap --host <alias> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      return { subcommand, hostAlias, json, projectDir: process.cwd() };
 
     case "list":
-    if (positional.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host list --host <alias> --json`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    return { subcommand, hostAlias, json, projectDir: process.cwd() };
+      if (positional.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host list --host <alias> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      return { subcommand, hostAlias, json, projectDir: process.cwd() };
 
     case "stats": {
-    const [positionalSubname, ...extra] = positional;
-    if (extra.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host stats [subname] --host <alias>`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    if (positionalSubname) {
-      validateCapsuleSubname(positionalSubname);
-    }
-    return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
+      const [positionalSubname, ...extra] = positional;
+      if (extra.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host stats [subname] --host <alias>`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      if (positionalSubname) {
+        validateCapsuleSubname(positionalSubname);
+      }
+      return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
     }
 
     case "start":
@@ -1075,130 +841,130 @@ function parseHostArgs(args: string[]): LooseRecord {
     case "restart":
     case "unregister":
     case "delete": {
-    const [positionalSubname, ...extra] = positional;
-    if (!positionalSubname) {
-      throw commandError("Missing Capsule subname.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
-    }
-    if (extra.length > 0) {
-      throw commandError("Too many positional arguments.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateCapsuleSubname(positionalSubname);
-    return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
+      const [positionalSubname, ...extra] = positional;
+      if (!positionalSubname) {
+        throw commandError("Missing Capsule subname.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
+      }
+      if (extra.length > 0) {
+        throw commandError("Too many positional arguments.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateCapsuleSubname(positionalSubname);
+      return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
     }
 
     case "releases": {
-    const [positionalSubname, ...extra] = positional;
-    if (!positionalSubname) {
-      throw commandError("Missing Capsule subname.", "Use `sporades host releases <subname> --host <alias>`.");
-    }
-    if (extra.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host releases <subname> --host <alias>`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateCapsuleSubname(positionalSubname);
-    return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
+      const [positionalSubname, ...extra] = positional;
+      if (!positionalSubname) {
+        throw commandError("Missing Capsule subname.", "Use `sporades host releases <subname> --host <alias>`.");
+      }
+      if (extra.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host releases <subname> --host <alias>`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateCapsuleSubname(positionalSubname);
+      return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
     }
 
     case "rollback": {
-    const [positionalSubname, releaseId, ...extra] = positional;
-    if (!positionalSubname) {
-      throw commandError("Missing Capsule subname.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
-    }
-    if (!releaseId) {
-      throw commandError("Missing Hosted Capsule release ID.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
-    }
-    if (extra.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateCapsuleSubname(positionalSubname);
-    validateHostReleaseId(releaseId);
-    return { subcommand, subname: positionalSubname, releaseId, hostAlias, json, projectDir: process.cwd() };
+      const [positionalSubname, releaseId, ...extra] = positional;
+      if (!positionalSubname) {
+        throw commandError("Missing Capsule subname.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
+      }
+      if (!releaseId) {
+        throw commandError("Missing Hosted Capsule release ID.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
+      }
+      if (extra.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateCapsuleSubname(positionalSubname);
+      validateHostReleaseId(releaseId);
+      return { subcommand, subname: positionalSubname, releaseId, hostAlias, json, projectDir: process.cwd() };
     }
 
     case "push":
-    if (positional.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host push --host <alias> --subname <capsule-subname> --json`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    if (subname) {
-      validateCapsuleSubname(subname);
-    }
-    if (fallbackToPreviousRelease && !verify) {
-      throw commandError(
-        "Release fallback requires verification.",
-        "Use `sporades host push --verify --fallback-to-previous-release`.",
-      );
-    }
-    return { subcommand, hostAlias, subname, restart, verify, fallbackToPreviousRelease, json, projectDir: process.cwd() };
+      if (positional.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host push --host <alias> --subname <capsule-subname> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      if (subname) {
+        validateCapsuleSubname(subname);
+      }
+      if (fallbackToPreviousRelease && !verify) {
+        throw commandError(
+          "Release fallback requires verification.",
+          "Use `sporades host push --verify --fallback-to-previous-release`.",
+        );
+      }
+      return { subcommand, hostAlias, subname, restart, verify, fallbackToPreviousRelease, json, projectDir: process.cwd() };
 
     case "github": {
-    const [area, action, ...extra] = positional;
-    if (area !== "workflow" || action !== "write") {
-      throw commandError(
-        "Unknown GitHub Host command.",
-        "Use `sporades host github workflow write --host <alias> --subname <capsule-subname>`.",
-      );
-    }
-    if (extra.length > 0) {
-      throw commandError(
-        "Too many positional arguments.",
-        "Use `sporades host github workflow write --host <alias> --subname <capsule-subname>`.",
-      );
-    }
-    if (!hostAlias) {
-      throw commandError("Missing Host profile alias.", "Pass `--host <alias>`.");
-    }
-    if (!subname) {
-      throw commandError("Missing Capsule subname.", "Pass `--subname <capsule-subname>`.");
-    }
-    validateHostAlias(hostAlias);
-    validateCapsuleSubname(subname);
-    validateGithubWorkflowBranch(branch);
-    validateGithubWorkflowFile(file);
-    return { subcommand, github: { area, action }, hostAlias, subname, branch, file, dryRun, force, json, projectDir: process.cwd() };
+      const [area, action, ...extra] = positional;
+      if (area !== "workflow" || action !== "write") {
+        throw commandError(
+          "Unknown GitHub Host command.",
+          "Use `sporades host github workflow write --host <alias> --subname <capsule-subname>`.",
+        );
+      }
+      if (extra.length > 0) {
+        throw commandError(
+          "Too many positional arguments.",
+          "Use `sporades host github workflow write --host <alias> --subname <capsule-subname>`.",
+        );
+      }
+      if (!hostAlias) {
+        throw commandError("Missing Host profile alias.", "Pass `--host <alias>`.");
+      }
+      if (!subname) {
+        throw commandError("Missing Capsule subname.", "Pass `--subname <capsule-subname>`.");
+      }
+      validateHostAlias(hostAlias);
+      validateCapsuleSubname(subname);
+      validateGithubWorkflowBranch(branch);
+      validateGithubWorkflowFile(file);
+      return { subcommand, github: { area, action }, hostAlias, subname, branch, file, dryRun, force, json, projectDir: process.cwd() };
     }
 
     case "logs": {
-    const [source = "http", ...extra] = positional;
-    if (extra.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host logs [http|stdout|stderr] --host <alias> --subname <capsule-subname> -n <lines> --json`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateHostLogSource(source);
-    if (subname) {
-      validateCapsuleSubname(subname);
-    }
-    return { subcommand, source, hostAlias, subname, lines, json, projectDir: process.cwd() };
+      const [source = "http", ...extra] = positional;
+      if (extra.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host logs [http|stdout|stderr] --host <alias> --subname <capsule-subname> -n <lines> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateHostLogSource(source);
+      if (subname) {
+        validateCapsuleSubname(subname);
+      }
+      return { subcommand, source, hostAlias, subname, lines, json, projectDir: process.cwd() };
     }
 
     case "invoke": {
-    const [action, ...extra] = positional;
-    if (!action) {
-      throw commandError("Missing remote Host helper action.", "Use `sporades host invoke <action> --host <alias> --json`.");
-    }
-    if (extra.length > 0) {
-      throw commandError("Too many positional arguments.", "Use `sporades host invoke <action> --host <alias> --json`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateRemoteHelperAction(action);
-    if (subname) {
-      validateCapsuleSubname(subname);
-    }
-    return { subcommand, action, subname, hostAlias, json, projectDir: process.cwd() };
+      const [action, ...extra] = positional;
+      if (!action) {
+        throw commandError("Missing remote Host helper action.", "Use `sporades host invoke <action> --host <alias> --json`.");
+      }
+      if (extra.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host invoke <action> --host <alias> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateRemoteHelperAction(action);
+      if (subname) {
+        validateCapsuleSubname(subname);
+      }
+      return { subcommand, action, subname, hostAlias, json, projectDir: process.cwd() };
     }
 
     default:
@@ -2512,16 +2278,16 @@ async function manageHost(options: LooseRecord) {
         release: release.request,
         lifecycle: options.verify
           ? createHostLifecycleRequest(target.alias, target.profile, target.subname, {
-              updatePolicyMode: readBaseImageUpdatePolicy(projectConfig),
-            })
+            updatePolicyMode: readBaseImageUpdatePolicy(projectConfig),
+          })
           : null,
         health: options.verify ? createHostRuntimeHealthRequest(target.profile, target.subname) : null,
         verification: options.verify
           ? {
-              enabled: true,
-              fallbackToPreviousRelease: options.fallbackToPreviousRelease,
-              health: createHostRuntimeHealthRequest(target.profile, target.subname),
-            }
+            enabled: true,
+            fallbackToPreviousRelease: options.fallbackToPreviousRelease,
+            health: createHostRuntimeHealthRequest(target.profile, target.subname),
+          }
           : null,
         projectDir: options.projectDir,
       });
@@ -2883,23 +2649,23 @@ async function startContainerSession(options: LooseRecord) {
 
   const envArgs = bundle.containerMounts.serverEnv
     ? [
-        "--volume",
-        formatMount(bundle.containerMounts.serverEnv),
-        "--env-file",
-        bundle.containerMounts.serverEnv.host,
-      ]
+      "--volume",
+      formatMount(bundle.containerMounts.serverEnv),
+      "--env-file",
+      bundle.containerMounts.serverEnv.host,
+    ]
     : [];
   const sealedEnvArgs = bundle.containerMounts.sealedServerEnv
     ? [
-        "--volume",
-        formatMount(bundle.containerMounts.sealedServerEnv.envelope),
-        "--volume",
-        formatMount(bundle.containerMounts.sealedServerEnv.privateKey),
-        "--env",
-        `SPORADES_SEALED_SERVER_ENV_PATH=${bundle.containerMounts.sealedServerEnv.envelope.container}`,
-        "--env",
-        `SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH=${bundle.containerMounts.sealedServerEnv.privateKey.container}`,
-      ]
+      "--volume",
+      formatMount(bundle.containerMounts.sealedServerEnv.envelope),
+      "--volume",
+      formatMount(bundle.containerMounts.sealedServerEnv.privateKey),
+      "--env",
+      `SPORADES_SEALED_SERVER_ENV_PATH=${bundle.containerMounts.sealedServerEnv.envelope.container}`,
+      "--env",
+      `SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH=${bundle.containerMounts.sealedServerEnv.privateKey.container}`,
+    ]
     : [];
   const bundleMountArgs = bundle.containerMounts.files.flatMap((mount) => ["--volume", formatMount(mount)]);
   const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
@@ -3046,10 +2812,10 @@ async function fetchInspectionDatabase(options: LooseRecord) {
       options.subcommand === "query" ? "/__sporades/debug/db/query" : `/__sporades/debug/db/${options.subcommand}`,
       options.subcommand === "query"
         ? {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ sql: options.sql }),
-          }
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sql: options.sql }),
+        }
         : {},
     )) ?? inspectContainerDatabase(options)
   );
@@ -4138,191 +3904,6 @@ async function writeGithubAutodeployWorkflow(options: LooseRecord) {
   };
 }
 
-function createGithubAutodeployWorkflow({ hostAlias, subname, branch }: LooseRecord) {
-  return `name: Sporades Autodeploy
-
-on:
-  push:
-    branches: [${JSON.stringify(branch)}]
-  pull_request:
-    branches: [${JSON.stringify(branch)}]
-  workflow_dispatch:
-
-permissions:
-  contents: read
-  pull-requests: write
-
-env:
-  SPORADES_HOST_ALIAS: ${hostAlias}
-  SPORADES_HOST_SUBNAME: ${subname}
-  SPORADES_HOST_SERVER: \${{ vars.SPORADES_HOST_SERVER }}
-  SPORADES_HOST_DOMAIN: \${{ vars.SPORADES_HOST_DOMAIN }}
-  SPORADES_HOST_REMOTE_ROOT: \${{ vars.SPORADES_HOST_REMOTE_ROOT }}
-  SPORADES_AUTODEPLOY_SUMMARY: \${{ runner.temp }}/sporades-autodeploy-summary.md
-
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install dependencies
-        run: |
-          if [ -f package-lock.json ]; then
-            npm ci
-          else
-            npm install
-          fi
-
-      - name: Run project tests
-        run: |
-          if node -e "const p = require('./package.json'); process.exit(p.scripts && p.scripts.test ? 0 : 1)"; then
-            npm test
-          else
-            echo "No npm test script declared; skipping project tests."
-          fi
-
-      - name: Configure Host SSH key
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\\n' "\${{ secrets.SPORADES_HOST_SSH_PRIVATE_KEY }}" > ~/.ssh/sporades_host_key
-          chmod 600 ~/.ssh/sporades_host_key
-          cat >> ~/.ssh/config <<'SSH_CONFIG'
-          Host *
-            IdentityFile ~/.ssh/sporades_host_key
-            IdentitiesOnly yes
-            StrictHostKeyChecking accept-new
-          SSH_CONFIG
-
-      - name: Configure Sporades Host profile
-        run: |
-          npx sporades host add "$SPORADES_HOST_ALIAS" \\
-            --server "$SPORADES_HOST_SERVER" \\
-            --domain "$SPORADES_HOST_DOMAIN" \\
-            --remote-root "$SPORADES_HOST_REMOTE_ROOT" \\
-            --json
-
-      - name: Sporades release preflight
-        run: |
-          npx sporades host current --host "$SPORADES_HOST_ALIAS" --json
-          npx sporades host health --host "$SPORADES_HOST_ALIAS" --json
-
-      - name: Push verified Hosted Capsule release
-        id: sporades_deploy
-        shell: bash
-        run: |
-          set +e
-          npx sporades host push --host "$SPORADES_HOST_ALIAS" --subname "$SPORADES_HOST_SUBNAME" --verify --json > "$RUNNER_TEMP/sporades-host-push.json"
-          deploy_exit=$?
-          set -e
-          node <<'NODE'
-          const fs = require("node:fs");
-
-          const outputPath = process.env.RUNNER_TEMP + "/sporades-host-push.json";
-          const raw = fs.existsSync(outputPath) ? fs.readFileSync(outputPath, "utf8") : "";
-          let envelope = null;
-          try {
-            envelope = JSON.parse(raw);
-          } catch {
-            envelope = null;
-          }
-
-          const data = envelope?.data ?? {};
-          const verification = data.verification ?? {};
-          const hostedUrl =
-            data.capsule?.hostedUrl ??
-            data.release?.hostedUrl ??
-            "https://" + process.env.SPORADES_HOST_SUBNAME + "." + process.env.SPORADES_HOST_DOMAIN;
-          const releaseId = data.release?.id ?? data.currentAttemptedRelease?.id ?? "unknown";
-          const verificationState =
-            verification?.state ??
-            (data.verified === true ? "verified" : data.verified === false ? "failed" : envelope?.ok ? "not reported" : "command failed");
-          const resultLabel = verificationState === "failed" ? "Verification failed" : envelope?.ok ? "Successful deploy" : "Command failed";
-          const previousReleaseId = data.previousCurrentRelease?.id ?? data.rollbackGuidance?.previousReleaseId ?? null;
-          const rollbackCommand =
-            data.rollbackGuidance?.command ??
-            (verificationState === "failed" && previousReleaseId
-              ? "sporades host rollback " + process.env.SPORADES_HOST_SUBNAME + " " + previousReleaseId + " --host " + process.env.SPORADES_HOST_ALIAS
-              : null);
-
-          function escapeCell(value) {
-            return String(value ?? "unknown").replace(/\\|/g, "\\\\|").replace(/\\r?\\n/g, " ");
-          }
-
-          function hostedCell(url) {
-            if (/^https?:\\/\\//.test(url)) {
-              return "[" + escapeCell(url) + "](" + url + ")";
-            }
-            return escapeCell(url);
-          }
-
-          const lines = [
-            "## Sporades autodeploy result",
-            "",
-            "| Field | Value |",
-            "| --- | --- |",
-            "| Result | " + escapeCell(resultLabel) + " |",
-            "| Hosted Capsule | " + hostedCell(hostedUrl) + " |",
-            "| Release ID | " + escapeCell(releaseId) + " |",
-            "| Verification | " + escapeCell(verificationState) + " |",
-          ];
-
-          if (!envelope) {
-            lines.push("", "No structured Sporades deploy output was available.");
-          } else if (!envelope.ok && envelope.error?.message) {
-            lines.push("", "Failure: " + envelope.error.message);
-          }
-
-          if (rollbackCommand) {
-            lines.push(
-              "",
-              "### Rollback guidance",
-              "",
-              "Sporades did not roll back automatically. To roll back manually, run:",
-              "",
-              "    " + rollbackCommand,
-            );
-          } else if (verificationState === "failed") {
-            lines.push(
-              "",
-              "### Rollback guidance",
-              "",
-              "No previous release was reported, so no rollback command is available.",
-            );
-          }
-
-          const summary = lines.join("\\n") + "\\n";
-          fs.writeFileSync(process.env.SPORADES_AUTODEPLOY_SUMMARY, summary);
-          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary);
-          NODE
-          exit "$deploy_exit"
-
-      - name: Publish pull request deploy result
-        if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('node:fs');
-            const summaryPath = process.env.SPORADES_AUTODEPLOY_SUMMARY;
-            const body = fs.existsSync(summaryPath)
-              ? fs.readFileSync(summaryPath, 'utf8')
-              : '## Sporades autodeploy result\\n\\nDeploy result summary was unavailable.\\n';
-            await github.rest.pulls.createReview({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: context.payload.pull_request.number,
-              event: 'COMMENT',
-              body
-            });
-`;
-}
-
 function normalisePathForOutput(filePath: string) {
   return filePath.split(path.sep).join("/");
 }
@@ -5114,7 +4695,7 @@ async function probePostgresCapsuleDatabaseService(url: any) {
       await client.query("SELECT 1 AS ok");
       return { ok: true, statusCode: 200 };
     } finally {
-      await client.close().catch(() => {});
+      await client.close().catch(() => { });
     }
   } catch (error) {
     const details = errorDetails(error);

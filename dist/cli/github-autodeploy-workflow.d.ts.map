@@ -1,0 +1,1 @@
+{"version":3,"file":"github-autodeploy-workflow.d.ts","sourceRoot":"","sources":["../../src/cli/github-autodeploy-workflow.ts"],"names":[],"mappings":"AAAA,MAAM,MAAM,+BAA+B,GAAG;IAC5C,SAAS,EAAE,MAAM,CAAC;IAClB,OAAO,EAAE,MAAM,CAAC;IAChB,MAAM,EAAE,MAAM,CAAC;CAChB,CAAC;AAEF,wBAAgB,8BAA8B,CAAC,EAAE,SAAS,EAAE,OAAO,EAAE,MAAM,EAAE,EAAE,+BAA+B,UAuL7G"}

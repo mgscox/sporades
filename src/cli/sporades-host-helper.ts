@@ -3346,8 +3346,8 @@ function normaliseReleaseHistory(record: any) {
   const currentReleaseId = record?.currentRelease?.id ?? null;
   const releases = Array.isArray(record?.releases)
     ? record.releases
-        .filter((release: HostHelperRelease) => release && typeof release === "object" && typeof release.id === "string" && release.id.length > 0)
-        .map((release: HostHelperRelease) => normaliseReleaseEntry(release, currentReleaseId))
+      .filter((release: HostHelperRelease) => release && typeof release === "object" && typeof release.id === "string" && release.id.length > 0)
+      .map((release: HostHelperRelease) => normaliseReleaseEntry(release, currentReleaseId))
     : [];
   if (releases.length === 0 && currentReleaseId) {
     releases.push(createLegacyReleaseEntry(currentReleaseId, record));
