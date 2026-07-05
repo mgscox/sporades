@@ -164,11 +164,13 @@ URL, transfers the bytes internally, and resolves with Sporades-owned metadata:
 file ID, absolute File path, original filename, MIME type, size, bucket, and
 version. Pass `path: "/images/avatar.png"` to choose an absolute Capsule-scoped
 File path; omitted paths use the browser file name in the Default File bucket,
-falling back to `/default/upload` when no name exists. Arrays are accepted as a
-convenience and are uploaded sequentially.
+falling back into the logical `/default/<generated-id>` namespace when Sporades
+must generate a name. Arrays are accepted as a convenience and are uploaded
+sequentially.
 
-Uploaded bytes are private by default and scoped to the current authenticated
-user in that user's `default` bucket. Local filesystem storage is the default:
+Uploaded bytes are private by default. Ownership and privacy are runtime file
+metadata and ACL behavior; the Default File bucket is only a namespace fallback,
+not a user bucket or policy boundary. Local filesystem storage is the default:
 during Dev sessions, bytes live under `.sporades/files/`; Container sessions
 use the mounted `/app/data` volume. Capsules can declare
 `services.storage.engine: "minio"` to use MinIO as local Capsule service

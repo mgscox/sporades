@@ -278,6 +278,11 @@ test("docs describe MinIO storage services and File reference boundaries", async
   assert.match(prd, /Future AWS S3 support should be adapter and configuration wiring/i);
   assert.match(prd, /must not require changes to file runtime\s+call sites, the `files` client SDK, File metadata shape, or app\/client APIs/i);
   assert.match(prd, /Public and private file\s+URLs remain Sporades HTTP routes, not presigned MinIO or S3 URLs/i);
+  assert.match(prd, /Local-only Docker Compose Capsule services for declared database and storage\s+service intent/i);
+  assert.match(prd, /MinIO-backed\s+S3-compatible file byte storage/i);
+  assert.match(prd, /managed\s+external storage backends such as AWS S3/i);
+  assert.doesNotMatch(prd, /declared database service\s+intent, shared by Dev sessions/i);
+  assert.doesNotMatch(prd, /external database support, and object-storage\s+backends/i);
 
   assert.match(runtimeLayout, /\.sporades\/services\/storage\//);
   assert.match(runtimeLayout, /bind mount from `\.sporades\/services\/storage\/` to\s+MinIO's `\/data`/);
@@ -290,6 +295,9 @@ test("docs describe MinIO storage services and File reference boundaries", async
 
   assert.match(readme, /services\.storage\.engine: "minio"/);
   assert.match(readme, /not\s+filesystem paths or presigned MinIO\/S3 URLs/i);
+  assert.match(readme, /logical `\/default\/<generated-id>` namespace/i);
+  assert.match(readme, /Default File bucket is only a namespace fallback,\s+not a user bucket or policy boundary/i);
+  assert.doesNotMatch(readme, /user in that user's `default` bucket/i);
 });
 
 test("docs describe Host-generated Sealed Server env custody and lost-key recovery", async () => {

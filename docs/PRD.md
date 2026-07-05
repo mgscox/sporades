@@ -34,9 +34,10 @@ The repository currently includes:
 - `sporades deploy` for local Docker Container sessions with read-only runtime
   file mounts, read-write persistent data, and single-container replacement on
   redeploy.
-- Local-only Docker Compose Capsule services for declared database service
-  intent, shared by Dev sessions and local Container sessions through
-  Sporades-owned generated Compose runtime state.
+- Local-only Docker Compose Capsule services for declared database and storage
+  service intent, including libSQL/Postgres database services and MinIO-backed
+  S3-compatible file byte storage, shared by Dev sessions and local Container
+  sessions through Sporades-owned generated Compose runtime state.
 - Host server commands for Host profiles, remote bindings, Hosted Capsule
   registration, release push, start, stop, restart, unregister, storage delete,
   list, stats, logs, bootstrap, and low-level helper invocation.
@@ -91,9 +92,12 @@ The following work is intentionally deferred:
   `.scratch/post-v2-platform-hardening-and-ops/issues/08-add-job-queue.md`, and
   `.scratch/post-v2-platform-hardening-and-ops/issues/09-add-job-scheduling.md`.
 - Broader production platform work, multi-node hosting, DNS automation,
-  dashboards, rollback commands, external database support, and object-storage
-  backends. Planning lives under `.scratch/post-v2-platform-hardening-and-ops/`
-  until promoted into a concrete release PRD.
+  dashboards, rollback commands, external database support, and managed
+  external storage backends such as AWS S3. Future AWS S3 support should reuse
+  the internal S3-compatible adapter/config wiring without changing file
+  runtime call sites or app/client APIs. Planning lives under
+  `.scratch/post-v2-platform-hardening-and-ops/` until promoted into a concrete
+  release PRD.
 - Hosted Capsule service orchestration. The first Docker Compose Capsule
   service implementation is local-only; Host-server orchestration for Capsule
   services is deferred until the local lifecycle model has proven the required
