@@ -64,6 +64,31 @@ test("sporades -h prints top-level CLI help", async () => {
   });
 });
 
+test("sporades command --help prints command-specific help", async () => {
+  const cases = [
+    ["create", /^Usage: sporades create <name> \[options\]/, /--template <name>/],
+    ["dev", /^Usage: sporades dev \[status\|stop\|reset\] \[options\]/, /--public/],
+    ["auth", /^Usage: sporades auth <command> \[options\]/, /set google/],
+    ["security", /^Usage: sporades security \[options\]/, /--session <name>/],
+    ["env", /^Usage: sporades env <command> \[options\]/, /reencrypt/],
+    ["deploy", /^Usage: sporades deploy \[status\|stop\|restart\|remove\|reset\] \[options\]/, /--force/],
+    ["host", /^Usage: sporades host <command> \[options\]/, /github workflow write/],
+    ["logs", /^Usage: sporades logs \[tail\] \[options\]/, /logs tail/],
+    ["db", /^Usage: sporades db <command> \[options\]/, /query <sql>/],
+  ];
+
+  await withTempDir(async (dir) => {
+    for (const [command, usage, detail] of cases) {
+      const result = await runCli([command, "--help"], { cwd: dir });
+
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(result.stderr, "");
+      assert.match(result.stdout, usage);
+      assert.match(result.stdout, detail);
+    }
+  });
+});
+
 test("sporades create writes a runnable React blank scaffold by default", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(["create", "blank-island", "--no-install", "--no-git", "--json"], {

@@ -57,13 +57,18 @@ main().catch((error) => {
     }, true);
 });
 async function main() {
-    const [command, ...args] = process.argv.slice(2);
+    const [command = '-h', ...args] = process.argv.slice(2);
+    const isHelp = args.includes('-h') || args.includes('--help');
     switch (command) {
         case "--help":
         case "-h":
             printHelp();
             return;
         case "create": {
+            if (isHelp) {
+                printHelp('create');
+                return;
+            }
             const options = parseCreateArgs(args);
             await createProject(options);
             writeResult({
@@ -74,51 +79,294 @@ async function main() {
             return;
         }
         case "dev":
+            if (isHelp) {
+                printHelp('dev');
+                return;
+            }
             await manageLocalLifecycle("dev", parseDevArgs(args));
             return;
         case "auth":
+            if (isHelp) {
+                printHelp('auth');
+                return;
+            }
             await manageAuth(parseAuthArgs(args));
             return;
         case "security":
+            if (isHelp) {
+                printHelp('security');
+                return;
+            }
             await inspectSecurity(parseSecurityArgs(args));
             return;
         case "env":
+            if (isHelp) {
+                printHelp('env');
+                return;
+            }
             await manageEnv(parseEnvArgs(args));
             return;
         case "deploy":
+            if (isHelp) {
+                printHelp('deploy');
+                return;
+            }
             await manageLocalLifecycle("deploy", parseDeployArgs(args));
             return;
         case "host":
+            if (isHelp) {
+                printHelp('host');
+                return;
+            }
             await manageHost(parseHostArgs(args));
             return;
         case "logs":
+            if (isHelp) {
+                printHelp('logs');
+                return;
+            }
             await printLogs(parseLogsArgs(args));
             return;
         case "db":
+            if (isHelp) {
+                printHelp('db');
+                return;
+            }
             await inspectDatabase(parseDbArgs(args));
             return;
         default:
             throw commandError(`Unknown command: ${command ?? ""}`.trim(), "Use `sporades create <name>`.");
     }
 }
-function printHelp() {
-    process.stdout.write(`Usage: sporades <command> [options]
+function printHelp(cmd) {
+    switch (cmd) {
+        case "create": {
+            process.stdout.write(`Usage: sporades create <name> [options]
 
-Commands:
-  create <name>  Scaffold a new Capsule
-  dev            Start a local Dev session
-  auth           Manage local auth configuration and simulation
-  security       Inspect effective Capsule security policy
-  env            Manage Sealed Server env
-  deploy         Start a local Container session
-  host           Manage Host profiles and Hosted Capsules
-  logs           Print Dev session logs
-  db             Inspect the Dev session database
+Scaffold a new Capsule.
 
 Options:
-  --help, -h     Show this help
-  --json         Write JSON output when supported by the command
+  --framework <name>  Client framework: react or preact
+  --template <name>   Template: blank, todo, guestbook, or photo-library
+  --no-install        Skip npm install
+  --no-git            Skip git initialization
+  --json              Write JSON output
+  --help, -h          Show this help
 `);
+            return;
+        }
+        case "dev": {
+            process.stdout.write(`Usage: sporades dev [status|stop|reset] [options]
+
+Start and manage a local Dev session.
+
+Commands:
+  dev                 Start a Dev session
+  dev status          Print Dev session status
+  dev stop            Stop the running Dev session
+  dev reset           Stop the Dev session and remove local Dev state
+
+Options:
+  --port <number>     Dev session port when starting
+  --public            Allow non-localhost access when starting
+  --json              Write JSON output
+  --help, -h          Show this help
+`);
+            return;
+        }
+        case "auth": {
+            process.stdout.write(`Usage: sporades auth <command> [options]
+
+Manage local auth configuration and identity simulation.
+
+Commands:
+  status              Print auth provider status
+  clients             List connected Dev session clients
+  set google          Configure Google OAuth credentials
+  as email            Simulate a local email identity
+
+Options:
+  --client-id <id>        Google OAuth client ID
+  --client-secret <secret> Google OAuth client secret
+  --client-json <path>    Read Google OAuth credentials JSON
+  --email <address>       Simulated email identity
+  --display-name <name>   Simulated display name
+  --picture <url>         Simulated profile picture URL
+  --port <number>         Target Dev session port
+  --client <target>       Delivery target: current, all, or a client ID
+  --json                  Write JSON output
+  --help, -h              Show this help
+`);
+            return;
+        }
+        case "security": {
+            process.stdout.write(`Usage: sporades security [options]
+
+Inspect effective Capsule security policy.
+
+Options:
+  --session <name>    Session: dev, public-dev, container, or hosted
+  --json              Write JSON output
+  --help, -h          Show this help
+`);
+            return;
+        }
+        case "env": {
+            process.stdout.write(`Usage: sporades env <command> [options]
+
+Manage Sealed Server env.
+
+Commands:
+  init                Create local Sealed Server env key material
+  import              Import Server env values from a file
+  status              Print Sealed Server env status
+  export              Export Sealed Server env for a Host profile
+  reencrypt           Re-encrypt local Sealed Server env material
+
+Options:
+  --file <path>       Input file for import or export
+  --host <alias>      Host profile alias
+  --subname <name>    Hosted Capsule subname
+  --output <path>     Export output path
+  --sealed            Treat input as an already sealed export
+  --json              Write JSON output
+  --help, -h          Show this help
+`);
+            return;
+        }
+        case "deploy": {
+            process.stdout.write(`Usage: sporades deploy [status|stop|restart|remove|reset] [options]
+
+Start and manage a local Container session.
+
+Commands:
+  deploy              Start a local Container session
+  deploy status       Print Container session status
+  deploy stop         Stop the running Container session
+  deploy restart      Restart the running Container session
+  deploy remove       Remove the Container session
+  deploy reset        Remove the Container session and local container state
+
+Options:
+  --port <number>     Published local port when starting
+  --force             Replace stale or conflicting container state when starting
+  --json              Write JSON output
+  --help, -h          Show this help
+`);
+            return;
+        }
+        case "host": {
+            process.stdout.write(`Usage: sporades host <command> [options]
+
+Manage Host profiles and Hosted Capsules.
+
+Profile commands:
+  add <alias>         Add a Host profile
+  use <alias>         Set the default Host profile
+  current             Print the selected Host profile
+  bootstrap           Provision the remote Host server
+  health [subname]    Check Host server or Hosted Capsule health
+
+Capsule commands:
+  bind <subname>      Bind this project to a Hosted Capsule
+  register <subname>  Register a Hosted Capsule
+  push                Push and install a Hosted Capsule release
+  start <subname>     Start a Hosted Capsule
+  stop <subname>      Stop a Hosted Capsule
+  restart <subname>   Restart a Hosted Capsule
+  stats [subname]     Print Host server or Hosted Capsule stats
+  logs [source]       Print Hosted Capsule logs
+  releases <subname>  List Hosted Capsule releases
+  rollback <subname> <release-id>
+                      Roll back to a previous release
+  rotate-key <subname>
+                      Rotate Hosted Capsule Sealed Server env keys
+  unregister <subname>
+                      Unregister a Hosted Capsule
+  delete <subname>    Delete Hosted Capsule storage
+
+Other commands:
+  list                List Hosted Capsules
+  github workflow write
+                      Write a GitHub Actions deploy workflow
+  invoke <action>     Invoke a low-level remote Host helper action
+
+Options:
+  --host <alias>      Host profile alias
+  --server <target>   SSH target for host add
+  --domain <domain>   Hosted domain for host add
+  --remote-root <path>
+                      Remote root path for host add
+  --tls <mode>        TLS mode: automatic or cloudflare-origin
+  --subname <name>    Hosted Capsule subname
+  --lines <n>, -n <n> Log line count
+  --restart           Restart after host push
+  --verify            Verify release health after host push
+  --fallback-to-previous-release
+                      Roll back when verified push fails
+  --branch <name>     GitHub workflow branch
+  --file <path>       GitHub workflow output path
+  --dry-run           Print workflow without writing it
+  --force             Overwrite workflow output when writing it
+  --json              Write JSON output
+  --help, -h          Show this help
+`);
+            return;
+        }
+        case "logs": {
+            process.stdout.write(`Usage: sporades logs [tail] [options]
+
+Print Dev session logs.
+
+Commands:
+  logs                Print recent Dev session logs
+  logs tail           Follow Dev session logs
+
+Options:
+  --port <number>     Target Dev session or local Container port
+  --json              Write JSON output
+  --help, -h          Show this help
+`);
+            return;
+        }
+        case "db": {
+            process.stdout.write(`Usage: sporades db <command> [options]
+
+Inspect the Dev session database.
+
+Commands:
+  list                List database tables
+  dump                Dump database contents
+  query <sql>         Run a read-only SQL query
+
+Options:
+  --port <number>     Target Dev session or local Container port
+  --json              Write JSON output
+  --help, -h          Show this help
+`);
+            return;
+        }
+        default: {
+            process.stdout.write(`Usage: sporades <command> [options]
+    
+    Commands:
+      create <name>  Scaffold a new Capsule
+      dev            Start a local Dev session
+      auth           Manage local auth configuration and simulation
+      security       Inspect effective Capsule security policy
+      env            Manage Sealed Server env
+      deploy         Start a local Container session
+      host           Manage Host profiles and Hosted Capsules
+      logs           Print Dev session logs
+      db             Inspect the Dev session database
+    
+    Options:
+      --help, -h     Show help for command
+      --json         Write JSON output when supported by the command
+    `);
+            return;
+        }
+    }
 }
 function parseCreateArgs(args) {
     let name = null;

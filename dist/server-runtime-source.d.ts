@@ -1,5 +1,5 @@
-import { IncomingMessage, ServerResponse } from "http";
-import { PathLike } from "fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { PathLike } from "node:fs";
 import { SQLOutputValue, StatementResultingChanges, StatementColumnMetadata } from "node:sqlite";
 import { Duplex } from "stream";
 type LooseRecord = Record<string, any>;
