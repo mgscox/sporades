@@ -1,11 +1,8 @@
-import type { IncomingHttpHeaders, OutgoingHttpHeaders } from "http";
-import { IncomingMessage, ServerResponse } from "http";
+import type { IncomingMessage, ServerResponse, IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { WithImplicitCoercion } from "buffer";
-import { BinaryLike, KeyObject } from "crypto";
-import { PathLike } from "fs";
-import { PathOrFileDescriptor } from "fs";
+import { BinaryLike, KeyObject } from "node:crypto";
 import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { PathLike, PathOrFileDescriptor, appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { SQLOutputValue, StatementResultingChanges, StatementColumnMetadata } from "node:sqlite";
 import { Duplex } from "stream";
 
