@@ -168,10 +168,12 @@ falling back to `/default/upload` when no name exists. Arrays are accepted as a
 convenience and are uploaded sequentially.
 
 Uploaded bytes are private by default and scoped to the current authenticated
-user in that user's `default` bucket. During dev sessions, bytes live under
-`.sporades/files/`; metadata, buckets, upload records, and public URL records
-live in the `.sporades/data.db` SQLite database. Container sessions use the
-mounted `/app/data` volume for the same platform-managed storage.
+user in that user's `default` bucket. Local filesystem storage is the default:
+during Dev sessions, bytes live under `.sporades/files/`; Container sessions
+use the mounted `/app/data` volume. Capsules can declare
+`services.storage.engine: "minio"` to use MinIO as local Capsule service
+storage while keeping the same `files` SDK calls. Metadata, buckets, upload
+records, and public URL records live in the database either way.
 
 Private reads go through `files.url(fileReference)` or
 `files.download(fileReference)`, where the File reference is either a File ID or
@@ -181,7 +183,8 @@ Public reads must be created explicitly with exactly one expiry choice:
 ID, creates a new version, and invalidates previously generated private and
 public URLs. Uploading to an existing live File path overwrites that file while
 preserving its File ID; deleting a file frees the path for a later upload with a
-new File ID.
+new File ID. Public and private read URLs are Sporades HTTP routes, not
+filesystem paths or presigned MinIO/S3 URLs.
 
 ## Endpoint handlers
 

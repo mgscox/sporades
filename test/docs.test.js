@@ -247,6 +247,51 @@ test("canonical docs describe deferred Hosted Capsule service orchestration cont
   assert.match(roadmap, /\.scratch\/docker-compose-capsule-services\/PRD\.md/);
 });
 
+test("docs describe MinIO storage services and File reference boundaries", async () => {
+  const [prd, userGuide, architecture, runtimeLayout, readme] = await Promise.all([
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/user-guide.md"),
+    readProjectFile("docs/architecture.md"),
+    readProjectFile("docs/runtime-layout.md"),
+    readProjectFile("README.md"),
+  ]);
+
+  for (const contents of [prd, userGuide]) {
+    assert.match(contents, /"storage":\s*\{\s*"kind": "storage",\s*"engine": "minio"\s*\}/);
+    assert.match(contents, /Local filesystem (?:file )?storage remains the default/i);
+    assert.match(contents, /files\.storagePath` configures only .*local filesystem/i);
+    assert.match(contents, /server-only .*connection env/i);
+    assert.match(contents, /must\s+not appear in client bundles or app\s+authoring APIs/i);
+  }
+
+  assert.match(userGuide, /path: "\/photos\/profile\.jpg"/);
+  assert.match(userGuide, /const defaultBucketFile = await files\.upload\(selectedFile\)/);
+  assert.match(userGuide, /Omitting `path`\s+uses the uploaded file name in the Default File bucket/i);
+  assert.match(userGuide, /File reference: either\s+the stable File ID or the absolute File path/i);
+  assert.match(userGuide, /not a\s+runtime URL, filesystem path, object key, or Object bucket location/i);
+  assert.match(userGuide, /not presigned MinIO, S3, or\s+filesystem URLs/i);
+  assert.match(userGuide, /File version for cache busting/i);
+  assert.match(userGuide, /must not expose filesystem\s+locations, object keys, Object buckets, MinIO connection details, or generated\s+runtime read URLs/i);
+
+  assert.match(prd, /Writing new bytes to an existing\s+live File path overwrites that file, preserves its File ID, and creates a new\s+File version/i);
+  assert.match(prd, /Deleting a\s+file frees its File path; a later write to that path creates a new File ID/i);
+  assert.match(prd, /Future AWS S3 support should be adapter and configuration wiring/i);
+  assert.match(prd, /must not require changes to file runtime\s+call sites, the `files` client SDK, File metadata shape, or app\/client APIs/i);
+  assert.match(prd, /Public and private file\s+URLs remain Sporades HTTP routes, not presigned MinIO or S3 URLs/i);
+
+  assert.match(runtimeLayout, /\.sporades\/services\/storage\//);
+  assert.match(runtimeLayout, /bind mount from `\.sporades\/services\/storage\/` to\s+MinIO's `\/data`/);
+  assert.match(runtimeLayout, /`files\.storagePath`\s+only changes that local adapter byte directory/i);
+
+  assert.match(architecture, /Local filesystem storage is the default adapter/i);
+  assert.match(architecture, /Declaring\s+`services\.storage` with `engine: "minio"`/i);
+  assert.match(architecture, /not presigned MinIO or S3 URLs/i);
+  assert.match(architecture, /Future AWS S3 support\s+should add adapter and configuration wiring only/i);
+
+  assert.match(readme, /services\.storage\.engine: "minio"/);
+  assert.match(readme, /not\s+filesystem paths or presigned MinIO\/S3 URLs/i);
+});
+
 test("docs describe Host-generated Sealed Server env custody and lost-key recovery", async () => {
   const [userGuide, architecture, runtimeLayout] = await Promise.all([
     readProjectFile("docs/user-guide.md"),

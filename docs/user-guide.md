@@ -288,10 +288,19 @@ network. Capsule code still uses the normal `ctx.db` API; app code does not
 need to read the service URL or choose a database client.
 
 Declaring `services.storage` with `engine: "minio"` starts a local MinIO
-service for Dev sessions and local Container sessions, injects server-only
-S3-compatible connection env for the future Storage adapter, and keeps public
-and private file URLs on Sporades-owned HTTP routes. Local filesystem file
-storage remains the default until the MinIO byte-storage adapter is enabled.
+service for Dev sessions and local Container sessions, selects the internal
+S3-compatible Storage adapter, and injects server-only connection env. Capsule
+code still uses the normal `files` SDK; app code does not read MinIO endpoints,
+access keys, Object bucket names, object keys, or storage-client libraries.
+Those details are runtime plumbing and must not appear in client bundles or app
+authoring APIs. Local filesystem storage remains the default when
+`services.storage` is omitted.
+
+`files.storagePath` configures only the default local filesystem storage
+adapter's byte directory. It is not a File path prefix, not a generic storage
+setting, and not used by MinIO-backed storage. File paths are logical,
+Capsule-scoped Sporades paths regardless of which Storage adapter stores the
+bytes.
 
 The first Docker Compose Capsule service implementation is local-only. Dev
 sessions and local Container sessions can start, inspect, stop, and reset
@@ -880,20 +889,24 @@ Use the `files` API from `sporades/client` for browser `File` or `Blob` values:
 ```tsx
 import { files } from "sporades/client";
 
-const file = await files.upload(selectedFile, {
+const explicitPathFile = await files.upload(selectedFile, {
   path: "/photos/profile.jpg",
   onProgress(event) {
     console.log(event.loaded, event.total);
   },
 });
+
+const defaultBucketFile = await files.upload(selectedFile);
 ```
 
 Sporades negotiates and transfers the upload bytes internally.
 The returned file metadata includes fields such as `id`, `name`, `type`, `size`,
 `path`, and `version`. `path` is the absolute Capsule-scoped File path, not a
-runtime URL or backend storage key. Omit `path` to use the uploaded file name in
-the Default File bucket, with `/default/upload` as the fallback when no file name
-exists. Uploaded bytes are private by default and scoped to the current user.
+runtime URL, filesystem path, object key, or Object bucket location. Passing
+`path: "/photos/profile.jpg"` chooses that absolute File path. Omitting `path`
+uses the uploaded file name in the Default File bucket, with `/default/upload`
+as the fallback when no file name exists. Uploaded bytes are private by default
+and scoped to the current user.
 
 If you want to store the file information in a database table,
 you must explicitly do so using a normal mutation:
@@ -950,6 +963,15 @@ await files.upload(replacementFile, { replace: true, fileId: file.id });
 Uploading new bytes to an existing live File path also replaces that file,
 preserves its File ID, and creates a new File version. Deleting the file frees
 the path; a later upload to the same path creates a new File ID.
+
+Private and public file URLs are always Sporades HTTP routes such as
+`/__sporades/files/private/<id>?v=<version>` and
+`/__sporades/files/public/<id>?v=<version>`. They are not presigned MinIO, S3, or
+filesystem URLs. The `v` parameter carries the File version for cache busting
+after replacement. File metadata exposes the logical File path and File ID so
+app tables and ACLs can store stable references; it must not expose filesystem
+locations, object keys, Object buckets, MinIO connection details, or generated
+runtime read URLs as storage locations.
 
 ## Custom HTTP Endpoints
 

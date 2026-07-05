@@ -303,8 +303,24 @@ Implemented file behavior includes:
 - revocation of public file URLs,
 - `404` for missing, deleted, expired, revoked, or unauthorized direct reads.
 
-File bytes live under the runtime data area, not in release archives. The
-runtime may change storage backends later without changing the app-facing SDK.
+File metadata exposes logical File IDs and absolute File paths. A File path is
+a Capsule-scoped Sporades address, not a filesystem path, object key, Object
+bucket, generated runtime read URL, or backend storage location. File
+operations that identify an existing file accept a File reference: either a
+File ID or an absolute File path that resolves to exactly one live file.
+
+Uploads can pass an explicit absolute File path. Uploads that omit `path` use
+the uploaded file name in the Default File bucket, falling back to an
+`upload`-style name when no file name exists. Writing new bytes to an existing
+live File path overwrites that file, preserves its File ID, and creates a new
+File version so private and public read routes cache-bust correctly. Deleting a
+file frees its File path; a later write to that path creates a new File ID.
+
+File bytes live under the runtime data area or a declared storage Capsule
+service, not in release archives. Local filesystem storage remains the default.
+When `services.storage` declares MinIO, the runtime stores bytes through the
+internal S3-compatible Storage adapter while keeping file metadata in the
+Database adapter and keeping app-facing file APIs unchanged.
 
 ## Runtime Modes
 
@@ -425,9 +441,19 @@ adapter for runtime persistence. Embedded SQLite remains the default when no
 service-backed database URL is provided. Service connection details are runtime
 plumbing and must not be exposed through client bundles, inspection JSON, or app
 code. When a local session starts `services.storage` with `engine: "minio"`,
-Sporades injects server-only S3-compatible storage env for the Storage adapter;
-local filesystem file storage remains the default until the adapter is enabled.
-Service-backed storage remains below the stable file authoring APIs.
+Sporades injects server-only S3-compatible connection env and selects the
+internal Storage adapter. MinIO endpoints, credentials, Object bucket names,
+object keys, and generated connection details are runtime plumbing; they must
+not appear in client bundles or app authoring APIs. Public and private file
+URLs remain Sporades HTTP routes, not presigned MinIO or S3 URLs. Local
+filesystem file storage remains the default when no storage service is
+declared, and `files.storagePath` configures only that local filesystem
+adapter's byte directory rather than File path semantics or generic storage
+behavior.
+
+Future AWS S3 support should be adapter and configuration wiring over the same
+internal Storage adapter contract. It must not require changes to file runtime
+call sites, the `files` client SDK, File metadata shape, or app/client APIs.
 
 Sealed Server env lives in ignored Runtime or Host state, is decrypted for Dev
 sessions, local Container sessions, and Hosted Capsules, is exposed to server

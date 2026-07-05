@@ -16,6 +16,9 @@ by Sporades.
     client.js
   data.db
   files/
+  services/
+    database/
+    storage/
   sealed-server-env/
     server-env.sealed.json
     server-env.private.pem
@@ -32,7 +35,12 @@ Common entries:
 - `build/server.mjs`: bundled server runtime and Capsule definition.
 - `build/client.js`: bundled browser client.
 - `data.db`: SQLite database for Dev sessions.
-- `files/`: uploaded file bytes for Dev sessions.
+- `files/`: uploaded file bytes for the default local filesystem Storage
+  adapter in Dev sessions.
+- `services/database/`: persistent data for generated local database Capsule
+  services.
+- `services/storage/`: persistent data for generated local storage Capsule
+  services such as MinIO.
 - `sealed-server-env/`: Sealed Server env envelopes and local key material.
 - `compose/capsule-services.compose.yml`: generated Docker Compose for
   declared Capsule services.
@@ -46,6 +54,11 @@ need them.
 `compose/capsule-services.compose.yml` is generated from `sporades.json`
 `services` declarations. It is marked with Sporades ownership comments and
 Docker labels; users should edit the declaration intent, not this runtime file.
+When `services.storage` declares MinIO, this Compose file contains the MinIO
+service, its private services network, labels, loopback-only published port for
+Dev-session access, and a bind mount from `.sporades/services/storage/` to
+MinIO's `/data`. The MinIO Object bucket, object keys, endpoint, and
+credentials are generated runtime state and are not app-facing File paths.
 
 ## Capsule Runtime Files
 
@@ -103,7 +116,12 @@ Inside the container, the default SQLite path is:
 /app/data/data.db
 ```
 
-File bytes also live under the mounted persistent data area.
+With the default local filesystem Storage adapter, file bytes also live under
+the mounted persistent data area, normally `/app/data/files`. `files.storagePath`
+only changes that local adapter byte directory. With a declared MinIO storage
+service, uploaded bytes live in the MinIO service state under
+`.sporades/services/storage/`, while the Capsule container still uses
+Sporades-owned HTTP routes and server-only service env to read and write them.
 
 Local Container sessions also run with Docker hardening defaults that are
 compatible with the Sporades Base image:

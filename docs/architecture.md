@@ -332,12 +332,17 @@ The app author does not write migrations or SQL for common operations.
 
 ## File Storage Architecture
 
-Files are split between SQLite metadata and filesystem bytes.
+Files are split between database metadata and bytes stored by a runtime-owned
+Storage adapter. Local filesystem storage is the default adapter. Declaring
+`services.storage` with `engine: "minio"` for a Dev session or local Container
+session starts MinIO as a local Capsule service and selects the internal
+S3-compatible Storage adapter.
 
 SQLite stores:
 
 - file IDs,
 - owner IDs,
+- logical absolute File paths,
 - bucket names,
 - original names,
 - MIME types,
@@ -347,11 +352,12 @@ SQLite stores:
 - public URL records,
 - revocation and expiry state.
 
-The filesystem stores the uploaded bytes. Dev sessions use the project Runtime
-directory; Container and Hosted Capsule sessions store bytes under the mounted
-persistent data area. File storage is therefore attached to the Capsule's data
-volume, not to a release archive. Exact paths are listed in
-[runtime-layout.md](./runtime-layout.md).
+The Storage adapter stores the uploaded bytes. Dev sessions use the project
+Runtime directory for local filesystem bytes or generated MinIO state under
+`.sporades/`. Container sessions use mounted persistent data for the Capsule and
+the same generated local service state for MinIO. File storage is therefore
+attached to Capsule runtime state, not to a release archive. Exact paths are
+listed in [runtime-layout.md](./runtime-layout.md).
 
 Client code uses a high-level SDK:
 
@@ -366,14 +372,23 @@ Internally, upload is a two-step flow:
 1. The client asks the WebSocket runtime for an upload URL.
 2. The client transfers bytes with HTTP `PUT` to `/__sporades/uploads/<id>`.
 
-The app does not manage presigned URLs or storage paths. It stores returned file
-metadata in domain tables through normal mutations.
+The app does not manage presigned URLs, filesystem paths, object keys, Object
+buckets, MinIO endpoints, or storage credentials. It stores returned File
+metadata in domain tables through normal mutations. That metadata exposes
+logical File paths and stable File IDs, not backend storage locations or
+generated read URLs.
 
 Private file reads require a valid Sporades session token in the
 `x-sporades-session-token` request header. Private file URLs do not carry
 session tokens. Public file URLs are explicit records with an expiry or
 `noExpiry: true`, and can be revoked. Missing, deleted, expired, revoked, or
 unauthorized direct file reads return `404` to avoid leaking existence.
+Private and public URLs remain Sporades HTTP routes with File version cache
+busting; they are not presigned MinIO or S3 URLs.
+
+The S3-compatible adapter shape is intentionally internal. Future AWS S3 support
+should add adapter and configuration wiring only, without changing file runtime
+call sites, the `files` SDK, or app/client APIs.
 
 ## HTTP Surface
 
@@ -519,8 +534,9 @@ machinery.
 - One container per Capsule keeps lifecycle behavior legible.
 - Bundling all dependencies avoids runtime `npm install`.
 - Caddy route generation avoids custom ingress infrastructure.
-- Filesystem-backed file storage keeps the MVP deployable on an ordinary Linux
-  server while preserving a path to object storage later.
+- Local filesystem storage keeps the default path deployable on an ordinary
+  Linux server, while the internal Storage adapter boundary lets MinIO and
+  future S3-compatible backends stay below the app-facing file APIs.
 - WebSocket-first app data keeps client state reactive without making users
   design an API surface for every screen.
 
