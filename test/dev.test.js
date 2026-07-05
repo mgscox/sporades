@@ -9,6 +9,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -7544,6 +7545,228 @@ test("sporades dev enforces public URL expiry choices, ownership, and replacemen
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
     }
+  });
+});
+
+test("sporades dev preserves file lifecycle parity with MinIO-backed storage", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "file-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "file-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.services = {
+      storage: {
+        kind: "storage",
+        engine: "minio",
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    await withFakeS3CompatibleService(async ({ port, requests, objects }) => {
+      const docker = await installFakeDocker(dir);
+      const child = startCli(["dev", "--json"], {
+        cwd: projectDir,
+        env: { ...docker.env, FAKE_DOCKER_SERVICE_PORT: String(port) },
+      });
+      let ownerSocket;
+      let otherSocket;
+      try {
+        await waitForJsonLine(child);
+        const storageReady = await waitForJsonEvent(
+          child,
+          (event) => event.data?.event === "service" && event.data.service === "storage" && event.data.status === "ready",
+        );
+        assert.equal(storageReady.ok, true);
+        assert.equal(storageReady.data.port, port);
+        const started = await waitForJsonEvent(child, (event) => event.data?.event === "started");
+        assert.equal(started.ok, true);
+
+        async function sendAndWait(socket, payload) {
+          socket.send(JSON.stringify(payload));
+          return await waitForSocketMessage(socket, (message) => message.id === payload.id);
+        }
+
+        async function upload(socket, id, file, body) {
+          const uploadUrl = await sendAndWait(socket, {
+            id: `${id}-upload-url`,
+            type: "file.uploadUrl",
+            file: { ...file, size: Buffer.byteLength(body) },
+          });
+          assert.equal(uploadUrl.error, null, uploadUrl.error?.message);
+          const uploadResponse = await fetch(new URL(uploadUrl.data.uploadUrl, started.data.url), {
+            method: uploadUrl.data.method,
+            body,
+          });
+          assert.equal(uploadResponse.status, 200);
+          const uploaded = await uploadResponse.json();
+          assert.equal(uploaded.ok, true, uploaded.error?.message);
+          return uploaded.data.file;
+        }
+
+        ownerSocket = await openSocket(started.data.url);
+        const ownerAuth = await sendAndWait(ownerSocket, { id: "owner-auth", type: "auth.get" });
+        otherSocket = await openSocket(started.data.url);
+        const otherAuth = await sendAndWait(otherSocket, { id: "other-auth", type: "auth.get" });
+
+        const explicitPath = "/docs/reports/2026/q2/proof.txt";
+        const first = await upload(
+          ownerSocket,
+          "first",
+          { name: "proof.txt", type: "text/plain", path: explicitPath },
+          "minio-one",
+        );
+        assert.equal(first.bucket, "default");
+        assert.equal(first.path, explicitPath);
+        assert.equal(first.name, "proof.txt");
+        assert.equal(first.type, "text/plain");
+        assert.equal(first.size, 9);
+        const firstObjectKey = `capsules/file-island/files/${first.id}/${first.version}`;
+        assert.equal(objects.get(firstObjectKey).toString("utf8"), "minio-one");
+
+        const byId = await sendAndWait(ownerSocket, { id: "private-by-id", type: "file.url", fileId: first.id });
+        assert.equal(byId.error, null);
+        const byPath = await sendAndWait(ownerSocket, { id: "private-by-path", type: "file.url", fileReference: explicitPath });
+        assert.equal(byPath.error, null);
+        assert.equal(byPath.data.file.id, first.id);
+        assert.deepEqual(byPath.data.file, byId.data.file);
+
+        const privateRead = await fetch(new URL(byPath.data.url, started.data.url), {
+          headers: { "x-sporades-session-token": ownerAuth.data.sessionToken },
+        });
+        assert.equal(privateRead.status, 200);
+        assert.equal(privateRead.headers.get("content-type"), "text/plain");
+        assert.equal(await privateRead.text(), "minio-one");
+
+        const unauthorizedLookup = await sendAndWait(otherSocket, {
+          id: "unauthorized-path",
+          type: "file.url",
+          fileReference: explicitPath,
+        });
+        assert.equal(unauthorizedLookup.type, "error");
+        assert.equal(unauthorizedLookup.error.message, "File not found.");
+        const unauthorizedRead = await fetch(new URL(byPath.data.url, started.data.url), {
+          headers: { "x-sporades-session-token": otherAuth.data.sessionToken },
+        });
+        assert.equal(unauthorizedRead.status, 404);
+
+        const publicUrl = await sendAndWait(ownerSocket, {
+          id: "public-url",
+          type: "file.publicUrl.create",
+          fileReference: explicitPath,
+          options: { noExpiry: true },
+        });
+        assert.equal(publicUrl.error, null);
+        assert.equal(publicUrl.data.publicUrl.fileId, first.id);
+        const publicRead = await fetch(new URL(publicUrl.data.publicUrl.url, started.data.url));
+        assert.equal(publicRead.status, 200);
+        assert.equal(await publicRead.text(), "minio-one");
+        const stalePublicUrl = publicUrl.data.publicUrl.url;
+
+        const overwritten = await upload(
+          ownerSocket,
+          "overwrite",
+          { name: "proof-v2.txt", type: "text/plain", path: explicitPath },
+          "minio-two",
+        );
+        assert.equal(overwritten.id, first.id);
+        assert.notEqual(overwritten.version, first.version);
+        assert.equal(overwritten.path, explicitPath);
+        assert.equal(objects.has(firstObjectKey), false);
+        const overwrittenObjectKey = `capsules/file-island/files/${overwritten.id}/${overwritten.version}`;
+        assert.equal(objects.get(overwrittenObjectKey).toString("utf8"), "minio-two");
+
+        const stalePrivateRead = await fetch(new URL(byPath.data.url, started.data.url), {
+          headers: { "x-sporades-session-token": ownerAuth.data.sessionToken },
+        });
+        assert.equal(stalePrivateRead.status, 404);
+        const stalePublicRead = await fetch(new URL(stalePublicUrl, started.data.url));
+        assert.equal(stalePublicRead.status, 404);
+
+        const nextPrivate = await sendAndWait(ownerSocket, { id: "next-private", type: "file.url", fileReference: explicitPath });
+        assert.equal(nextPrivate.error, null);
+        assert.equal(nextPrivate.data.file.version, overwritten.version);
+        const nextRead = await fetch(new URL(nextPrivate.data.url, started.data.url), {
+          headers: { "x-sporades-session-token": ownerAuth.data.sessionToken },
+        });
+        assert.equal(nextRead.status, 200);
+        assert.equal(await nextRead.text(), "minio-two");
+
+        const revokedPublicUrl = await sendAndWait(ownerSocket, {
+          id: "public-url-next",
+          type: "file.publicUrl.create",
+          fileId: overwritten.id,
+          options: { noExpiry: true },
+        });
+        assert.equal(revokedPublicUrl.error, null);
+        const revoke = await sendAndWait(ownerSocket, {
+          id: "revoke-public",
+          type: "file.publicUrl.revoke",
+          publicUrlId: revokedPublicUrl.data.publicUrl.id,
+        });
+        assert.equal(revoke.error, null);
+        const revokedRead = await fetch(new URL(revokedPublicUrl.data.publicUrl.url, started.data.url));
+        assert.equal(revokedRead.status, 404);
+
+        const defaultNamed = await upload(ownerSocket, "default-named", { name: "readme.txt", type: "text/plain" }, "named");
+        assert.equal(defaultNamed.path, "/default/readme.txt");
+
+        const deleted = await sendAndWait(ownerSocket, { id: "delete-by-path", type: "file.delete", fileReference: explicitPath });
+        assert.equal(deleted.error, null);
+        assert.equal(deleted.data.file.id, overwritten.id);
+        assert.equal(objects.has(overwrittenObjectKey), false);
+        const deletedRead = await fetch(new URL(nextPrivate.data.url, started.data.url), {
+          headers: { "x-sporades-session-token": ownerAuth.data.sessionToken },
+        });
+        assert.equal(deletedRead.status, 404);
+
+        const recreated = await upload(
+          ownerSocket,
+          "recreated",
+          { name: "proof.txt", type: "text/plain", path: explicitPath },
+          "minio-new",
+        );
+        assert.notEqual(recreated.id, overwritten.id);
+        assert.equal(recreated.path, explicitPath);
+
+        const expiredPublicUrl = await sendAndWait(ownerSocket, {
+          id: "expired-public",
+          type: "file.publicUrl.create",
+          fileReference: explicitPath,
+          options: { expires: "2020-01-01T00:00:00.000Z" },
+        });
+        assert.equal(expiredPublicUrl.error, null);
+        const expiredRead = await fetch(new URL(expiredPublicUrl.data.publicUrl.url, started.data.url));
+        assert.equal(expiredRead.status, 404);
+
+        const missingDirect = await fetch(new URL(`/__sporades/files/public/missing-public?v=${recreated.version}`, started.data.url));
+        assert.equal(missingDirect.status, 404);
+        assert(
+          requests.some(
+            (request) =>
+              request.method === "PUT" &&
+              request.url === `/sporades-files/capsules/file-island/files/${recreated.id}/${recreated.version}`,
+          ),
+          JSON.stringify(requests.map((request) => [request.method, request.url])),
+        );
+
+        const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
+        const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
+        assert.match(serverBundle, /"SPORADES_SERVICE_STORAGE_ENDPOINT"/);
+        assert.doesNotMatch(clientBundle, /SPORADES_SERVICE_STORAGE_/);
+        assert.doesNotMatch(clientBundle, /sporades-minio-local-secret/);
+      } finally {
+        ownerSocket?.close();
+        otherSocket?.close();
+        child.kill("SIGTERM");
+        await new Promise((resolve) => child.once("exit", resolve));
+      }
+    });
   });
 });
 

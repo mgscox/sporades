@@ -4092,6 +4092,7 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
     };
   }
   let wroteFileVersion = false;
+  const previousFile = await database.sqlite.selectFileById(upload.fileId);
   try {
     websocketHub?.notifyFileEvent?.(upload.ownerId, {
       type: "file.upload.progress",
@@ -4117,6 +4118,9 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
       };
     }
     await database.sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
+    if (previousFile && previousFile.deletedAt == null && previousFile.status === "uploaded" && previousFile.version !== upload.version) {
+      await removeFileVersionBestEffort(database, previousFile.id, previousFile.version);
+    }
     const file = fileMetadataFromRow(await database.sqlite.selectFileById(upload.fileId));
     websocketHub?.notifyFileEvent?.(upload.ownerId, {
       type: "file.upload.complete",
