@@ -6,7 +6,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
@@ -175,8 +175,66 @@ function firstDockerRunCall(calls) {
   return calls.find((call) => call.args[0] === "run");
 }
 
+function dockerRunEnv(runCall, prefix) {
+  const entries = [];
+  for (const arg of runCall.args) {
+    if (!arg.startsWith(prefix)) continue;
+    const separator = arg.indexOf("=");
+    entries.push([arg.slice(0, separator), arg.slice(separator + 1)]);
+  }
+  return Object.fromEntries(entries);
+}
+
 function assertVolume(args, mount) {
   assert(args.includes(mount), `Expected docker args to include volume: ${mount}\n${args.join(" ")}`);
+}
+
+async function writeHttpHostBridge(dir, sourceEndpoint, targetEndpoint) {
+  const bridgePath = path.join(dir, "bridge-container-service-host.mjs");
+  await writeFile(
+    bridgePath,
+    `import http from "node:http";
+import https from "node:https";
+import { syncBuiltinESMExports } from "node:module";
+
+const source = new URL(${JSON.stringify(sourceEndpoint)});
+const target = new URL(${JSON.stringify(targetEndpoint)});
+
+function redirectedOptions(options) {
+  if (!options || typeof options !== "object") {
+    return options;
+  }
+  const optionHost = options.hostname ?? options.host;
+  const optionPort = String(options.port ?? (source.protocol === "https:" ? "443" : "80"));
+  if (optionHost !== source.hostname || optionPort !== source.port) {
+    return options;
+  }
+  return {
+    ...options,
+    hostname: target.hostname,
+    host: target.hostname,
+    port: target.port || (target.protocol === "https:" ? "443" : "80"),
+  };
+}
+
+const originalHttpRequest = http.request.bind(http);
+http.request = function request(options, callback) {
+  return originalHttpRequest(redirectedOptions(options), callback);
+};
+
+const originalHttpsRequest = https.request.bind(https);
+https.request = function request(options, callback) {
+  return originalHttpsRequest(redirectedOptions(options), callback);
+};
+
+syncBuiltinESMExports();
+`,
+  );
+  return pathToFileURL(bridgePath).href;
+}
+
+function nodeOptionsWithImport(importUrl) {
+  return [process.env.NODE_OPTIONS, `--import=${importUrl}`].filter(Boolean).join(" ");
 }
 
 async function installFakeReact(projectDir) {
@@ -694,24 +752,28 @@ test("container server bundle uses injected MinIO storage env for file lifecycle
 
       const runCall = firstDockerRunCall(await docker.calls());
       assert.equal(runCall.args[runCall.args.indexOf("--network") + 1], "sporades-file-island-services");
-      assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_ENDPOINT=http://sporades-file-island-storage:9000"), runCall.args.join(" "));
-      assert(runCall.args.includes("SPORADES_SERVICE_STORAGE_NAMESPACE=file-island"), runCall.args.join(" "));
+      const storageEnv = dockerRunEnv(runCall, "SPORADES_SERVICE_STORAGE_");
+      assert.deepEqual(storageEnv, {
+        SPORADES_SERVICE_STORAGE_ENGINE: "minio",
+        SPORADES_SERVICE_STORAGE_ENDPOINT: "http://sporades-file-island-storage:9000",
+        SPORADES_SERVICE_STORAGE_ACCESS_KEY: "sporades",
+        SPORADES_SERVICE_STORAGE_SECRET_KEY: "sporades-minio-local-secret",
+        SPORADES_SERVICE_STORAGE_BUCKET: "sporades-files",
+        SPORADES_SERVICE_STORAGE_REGION: "us-east-1",
+        SPORADES_SERVICE_STORAGE_NAMESPACE: "file-island",
+      });
 
       const port = await getAvailablePort();
       const serverBundlePath = path.join(projectDir, ".sporades", "build", "server.mjs");
+      const bridgeImport = await writeHttpHostBridge(dir, storageEnv.SPORADES_SERVICE_STORAGE_ENDPOINT, endpoint);
       const child = spawn(process.execPath, [serverBundlePath], {
         cwd: projectDir,
         env: {
           ...process.env,
+          NODE_OPTIONS: nodeOptionsWithImport(bridgeImport),
           PORT: String(port),
           SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data", "data.db"),
-          SPORADES_SERVICE_STORAGE_ENGINE: "minio",
-          SPORADES_SERVICE_STORAGE_ENDPOINT: endpoint,
-          SPORADES_SERVICE_STORAGE_ACCESS_KEY: "sporades",
-          SPORADES_SERVICE_STORAGE_SECRET_KEY: "sporades-minio-local-secret",
-          SPORADES_SERVICE_STORAGE_BUCKET: "sporades-files",
-          SPORADES_SERVICE_STORAGE_REGION: "us-east-1",
-          SPORADES_SERVICE_STORAGE_NAMESPACE: "file-island",
+          ...storageEnv,
         },
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -813,10 +875,9 @@ test("container server bundle uses injected MinIO storage env for file lifecycle
         const missingAfterDelete = await fetch(new URL(`/__sporades/files/public/${publicUrl.data.publicUrl.id}?v=${replaced.data.file.version}`, baseUrl));
         assert.equal(missingAfterDelete.status, 404);
 
-        assert(
-          requests.some((request) => request.method === "PUT" && request.url === `/sporades-files/${firstObjectKey}`),
-          JSON.stringify(requests.map((request) => [request.method, request.url])),
-        );
+        const firstWriteRequest = requests.find((request) => request.method === "PUT" && request.url === `/sporades-files/${firstObjectKey}`);
+        assert(firstWriteRequest, JSON.stringify(requests.map((request) => [request.method, request.url])));
+        assert.equal(firstWriteRequest.headers.host, "sporades-file-island-storage:9000");
         const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
         assert.doesNotMatch(clientBundle, /SPORADES_SERVICE_STORAGE_/);
         assert.doesNotMatch(clientBundle, /sporades-minio-local-secret/);
