@@ -4703,13 +4703,13 @@ function runTableWriteWithAcl(database, table, operation, previous, next, contex
     next,
   });
   if (!isPromiseLike(result)) {
-    if (!result || aclSyncRuleTouchedAsyncHelper(aclContext)) {
+    if (!result || aclRuleHasUnobservedAsyncHelper(aclContext)) {
       deny();
     }
     return write();
   }
   const pending = Promise.resolve(result).then((allowed) => {
-    if (!allowed) {
+    if (!allowed || aclRuleHasUnobservedAsyncHelper(aclContext)) {
       deny();
     }
     return write();
@@ -4763,9 +4763,9 @@ function applyReadAcl(database, table, row, context) {
     return false;
   };
   if (!isPromiseLike(result)) {
-    return result && !aclSyncRuleTouchedAsyncHelper(aclContext) ? true : deny();
+    return result && !aclRuleHasUnobservedAsyncHelper(aclContext) ? true : deny();
   }
-  return Promise.resolve(result).then((allowed) => (allowed ? true : deny()));
+  return Promise.resolve(result).then((allowed) => (allowed && !aclRuleHasUnobservedAsyncHelper(aclContext) ? true : deny()));
 }
 
 function filterRowsByReadAcl(database, table, rows, context) {
@@ -4779,7 +4779,7 @@ function filterRowsByReadAcl(database, table, rows, context) {
 const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 
 function createAclHelpers(database) {
-  const state = { readCount: 0, maxReads: 32, asyncReadCount: 0 };
+  const state = { readCount: 0, maxReads: 32, asyncHelperReads: [] };
   const helpers = {
     db: createAclDbHelpers(database, state),
     storage: createAclStorageHelpers(database, state),
@@ -4791,15 +4791,35 @@ function createAclHelpers(database) {
   return Object.freeze(helpers);
 }
 
-function aclSyncRuleTouchedAsyncHelper(aclContext) {
-  return (aclContext?.acl?.[ACL_HELPER_STATE]?.asyncReadCount ?? 0) > 0;
+function aclRuleHasUnobservedAsyncHelper(aclContext) {
+  return (aclContext?.acl?.[ACL_HELPER_STATE]?.asyncHelperReads ?? []).some((helperRead) => !helperRead.observed);
 }
 
-function trackAclHelperResult(state, result) {
-  if (isPromiseLike(result)) {
-    state.asyncReadCount += 1;
+function trackAclHelperReturn(state, result) {
+  if (!isPromiseLike(result)) {
+    return result;
   }
-  return result;
+  const helperRead = { observed: false };
+  state.asyncHelperReads.push(helperRead);
+  const promise = Promise.resolve(result);
+  const observe = () => {
+    helperRead.observed = true;
+  };
+  return {
+    then(onFulfilled, onRejected) {
+      observe();
+      return promise.then(onFulfilled, onRejected);
+    },
+    catch(onRejected) {
+      observe();
+      return promise.catch(onRejected);
+    },
+    finally(onFinally) {
+      observe();
+      return promise.finally(onFinally);
+    },
+    [Symbol.toStringTag]: "Promise",
+  };
 }
 
 function createAclDbHelpers(database, state) {
@@ -4807,16 +4827,16 @@ function createAclDbHelpers(database, state) {
     get(tableName, id) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
-      const selected = trackAclHelperResult(state, database.sqlite.selectAppRowById(table, id));
-      return thenIfPromise(selected, (row) => {
+      const selected = database.sqlite.selectAppRowById(table, id);
+      return trackAclHelperReturn(state, thenIfPromise(selected, (row) => {
         return row ? deserializeRow(table, row) : null;
-      });
+      }));
     },
     exists(tableName, id) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
-      const selected = trackAclHelperResult(state, database.sqlite.selectAppRowById(table, id));
-      return thenIfPromise(selected, (row) => Boolean(row));
+      const selected = database.sqlite.selectAppRowById(table, id);
+      return trackAclHelperReturn(state, thenIfPromise(selected, (row) => Boolean(row)));
     },
   });
 }
@@ -4827,9 +4847,9 @@ function createAclStorageHelpers(database, state) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        return thenIfPromise(resolveAclStorageFileReference(database, state, reference), (row) => {
+        return trackAclHelperReturn(state, thenIfPromise(resolveAclStorageFileReference(database, reference), (row) => {
           return row ? aclStorageMetadataFromFileRow(row) : null;
-        });
+        }));
       }
       return null;
     },
@@ -4837,14 +4857,14 @@ function createAclStorageHelpers(database, state) {
       assertAclHelperReadAllowed(state);
       const resource = resolveAclStorageResource(resourceName);
       if (resource === "files") {
-        return thenIfPromise(resolveAclStorageFileReference(database, state, reference), (row) => Boolean(row));
+        return trackAclHelperReturn(state, thenIfPromise(resolveAclStorageFileReference(database, reference), (row) => Boolean(row)));
       }
       return false;
     },
   });
 }
 
-function resolveAclStorageFileReference(database, state, reference) {
+function resolveAclStorageFileReference(database, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
     let path;
@@ -4853,13 +4873,13 @@ function resolveAclStorageFileReference(database, state, reference) {
     } catch {
       return null;
     }
-    const selected = trackAclHelperResult(state, database.sqlite.selectLiveFileByPath(path));
+    const selected = database.sqlite.selectLiveFileByPath(path);
     return thenIfPromise(selected, (rows) => {
       const resolved = rows.length > 1 ? { ambiguous: true } : (rows[0] ?? null);
       return resolved?.ambiguous ? null : resolved;
     });
   }
-  const selected = trackAclHelperResult(state, database.sqlite.selectFileById(value));
+  const selected = database.sqlite.selectFileById(value);
   return thenIfPromise(selected, (row) => {
     if (!row || row.deletedAt !== null || row.status !== "uploaded") {
       return null;
