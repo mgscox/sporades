@@ -20,7 +20,7 @@ export declare function readKeyPair(paths: any): Promise<{
     publicKey: string;
     privateKey: string;
     publicKeyFingerprint: string;
-}>;
+} | null>;
 export declare function sealServerEnv(values: any, publicKey: any, metadata?: {}): {
     version: number;
     keyAlgorithm: string;
@@ -33,7 +33,7 @@ export declare function sealServerEnv(values: any, publicKey: any, metadata?: {}
 export declare function unsealServerEnv(envelope: any, privateKey: any): {};
 export declare function readSealedServerEnv(paths: any): Promise<any>;
 export declare function writeSealedServerEnv(paths: any, envelope: any): Promise<void>;
-export declare function envelopeSummary(envelope: any, paths?: any): {
+export declare function envelopeSummary(envelope: any, paths?: null): {
     configured: boolean;
     keyCount: number;
     publicKeyFingerprint: any;

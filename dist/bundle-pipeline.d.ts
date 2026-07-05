@@ -28,7 +28,7 @@ export declare function createBundle(projectDir: any, config: any): Promise<{
             host: string;
             container: string;
             mode: string;
-        };
+        } | null;
         sealedServerEnv: {
             envelope: {
                 host: string;
@@ -40,7 +40,7 @@ export declare function createBundle(projectDir: any, config: any): Promise<{
                 container: string;
                 mode: string;
             };
-        };
+        } | null;
     };
 }>;
 export declare function readServerEnvFile(envPath: any): Promise<{

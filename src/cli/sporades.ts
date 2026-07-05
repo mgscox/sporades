@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, statSync, watch } from "node:fs";
@@ -51,6 +50,34 @@ import {
   validateCapsuleServicesConfig,
   writeCapsuleServicesCompose,
 } from "../capsule-services.js";
+import { WithImplicitCoercion } from "buffer";
+import { PathLike } from "fs";
+import { FileHandle } from "fs/promises";
+import { SpawnSyncReturns } from "child_process";
+import { ServerResponse, IncomingMessage } from "http";
+
+type LooseRecord = Record<string, any>;
+type CommandError = Error & { hint?: string; diagnostics?: unknown };
+type HostProfile = LooseRecord;
+type CapsuleService = LooseRecord;
+type CapsuleServicesModel = LooseRecord & {
+  networks: { services: string };
+  path: string;
+  projectSlug: string;
+  relativePath: string;
+  services: Record<string, CapsuleService>;
+};
+type ServiceEnv = Record<string, string>;
+type CapsuleServiceConnection = { host: string; port: number; url?: string };
+type StartCapsuleServicesOptions = {
+  connection?: string;
+  emit?: (data: LooseRecord, error?: unknown) => void;
+  wait?: boolean;
+};
+
+function errorDetails(error: unknown): LooseRecord {
+  return error && typeof error === "object" ? (error as LooseRecord) : { message: String(error) };
+}
 
 const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
 const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library"]);
@@ -175,7 +202,7 @@ Options:
 `);
 }
 
-function parseCreateArgs(args) {
+function parseCreateArgs(args: string[]): LooseRecord {
   let name = null;
   let framework = null;
   let template = "blank";
@@ -239,7 +266,7 @@ function parseCreateArgs(args) {
   };
 }
 
-function parseDevArgs(args) {
+function parseDevArgs(args: string[]): LooseRecord {
   const lifecycleCommands = new Set(["status", "stop", "reset"]);
   const subcommand = lifecycleCommands.has(args[0]) ? args[0] : "start";
   const rest = subcommand === "start" ? args : args.slice(1);
@@ -288,7 +315,7 @@ function parseDevArgs(args) {
   };
 }
 
-function parseDeployArgs(args) {
+function parseDeployArgs(args: string[]): LooseRecord {
   const lifecycleCommands = new Set(["status", "stop", "restart", "remove", "reset"]);
   const subcommand = lifecycleCommands.has(args[0]) ? args[0] : "start";
   const rest = subcommand === "start" ? args : args.slice(1);
@@ -332,7 +359,7 @@ function parseDeployArgs(args) {
   };
 }
 
-function parseSecurityArgs(args) {
+function parseSecurityArgs(args: string[]): LooseRecord {
   let session = "dev";
   let json = false;
 
@@ -370,7 +397,7 @@ function parseSecurityArgs(args) {
   };
 }
 
-function parseAuthArgs(args) {
+function parseAuthArgs(args: string[]): LooseRecord {
   const [subcommand] = args;
   const provider = subcommand === "set" ? args[1] : null;
   const simulatedProvider = subcommand === "as" ? args[1] : null;
@@ -473,7 +500,7 @@ function parseAuthArgs(args) {
   );
 }
 
-function parseEnvArgs(args) {
+function parseEnvArgs(args: string[]): LooseRecord {
   const [subcommand, ...rest] = args;
   let json = false;
   let file = null;
@@ -547,7 +574,7 @@ function parseEnvArgs(args) {
   }
 }
 
-function parseHostArgs(args) {
+function parseHostArgs(args: string[]): LooseRecord {
   const [subcommand, ...rest] = args;
   let json = false;
   let hostAlias = null;
@@ -919,7 +946,7 @@ function parseHostArgs(args) {
   }
 }
 
-function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
+function readProviderClientCredentials(provider: string, clientJsonPath: string, projectDir: string) {
   if (provider !== "google") {
     throw commandError(
       `Unsupported auth provider credentials file: ${provider}`,
@@ -961,7 +988,7 @@ function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
   };
 }
 
-function parseLogsArgs(args) {
+function parseLogsArgs(args: string[]): LooseRecord {
   let json = false;
   let port = null;
   let subcommand = "recent";
@@ -995,7 +1022,7 @@ function parseLogsArgs(args) {
   };
 }
 
-function parseDbArgs(args) {
+function parseDbArgs(args: string[]): LooseRecord {
   const [subcommand, ...rest] = args;
   let json = false;
   let port = null;
@@ -1040,7 +1067,7 @@ function parseDbArgs(args) {
   }
 }
 
-function readPort(value) {
+function readPort(value: string) {
   const port = Number.parseInt(value, 10);
   if (Number.isNaN(port) || port <= 0) {
     throw commandError("Invalid port.", "Pass --port <number>.");
@@ -1048,7 +1075,7 @@ function readPort(value) {
   return port;
 }
 
-function readHostLogLineCount(value) {
+function readHostLogLineCount(value: string) {
   if (!/^\d+$/.test(value)) {
     throw commandError(
       "Invalid Host log line count.",
@@ -1065,7 +1092,7 @@ function readHostLogLineCount(value) {
   return lines;
 }
 
-function validateHostLogSource(source) {
+function validateHostLogSource(source: string) {
   if (!HOST_LOG_SOURCES.has(source)) {
     throw commandError(
       "Invalid Host log source.",
@@ -1074,7 +1101,7 @@ function validateHostLogSource(source) {
   }
 }
 
-function readFlagValue(args, index, flag) {
+function readFlagValue(args: string[], index: number, flag: string) {
   const value = args[index];
   if (!value || value.startsWith("--")) {
     throw commandError(`Missing value for ${flag}.`, `Pass ${flag} <value>.`);
@@ -1082,11 +1109,11 @@ function readFlagValue(args, index, flag) {
   return value;
 }
 
-function isValidAuthClientTarget(value) {
+function isValidAuthClientTarget(value: string) {
   return value === "current" || value === "all" || /^client-[a-z0-9]+$/.test(value);
 }
 
-async function createProject(options) {
+async function createProject(options: LooseRecord) {
   await mkdir(options.projectDir, { recursive: false });
 
   const files = scaffoldFiles({
@@ -1109,7 +1136,7 @@ async function createProject(options) {
   }
 }
 
-async function manageLocalLifecycle(surface, options) {
+async function manageLocalLifecycle(surface: string, options: LooseRecord) {
   switch (options.subcommand) {
     case "status":
       await printLocalCapsuleServiceStatus(options);
@@ -1166,7 +1193,7 @@ async function manageLocalLifecycle(surface, options) {
   }
 }
 
-async function startDevSession(options) {
+async function startDevSession(options: LooseRecord) {
   let config = await readProjectConfig(options.projectDir);
   const session = options.publicDev ? "public-dev" : "dev";
   let security = resolveEffectiveSecurityPolicy(config, session);
@@ -1182,7 +1209,7 @@ async function startDevSession(options) {
 
   const sessionFilePath = path.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path.join(options.projectDir, ".sporades", "data.db");
-  const runtime = await createDevRuntime({
+  const runtime: any = await createDevRuntime({
     databasePath,
     serverSource: bundle.serverRuntime.source,
     serverEnv: bundle.serverRuntime.env,
@@ -1200,7 +1227,7 @@ async function startDevSession(options) {
 
   const server = createServer(async (request, response) => {
     try {
-      const requestUrl = new URL(request.url, "http://127.0.0.1");
+      const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
 
       if (prepareHttpSecurity(runtime.database, request, response)) {
         return;
@@ -1261,8 +1288,8 @@ async function startDevSession(options) {
 
         case "POST:/__sporades/debug/auth/as": {
           const body = await readJsonRequest(request);
-          const result = await simulateLocalIdentitySession(runtime.database, body);
-          if (result.ok && body.client) {
+          const result: LooseRecord = await simulateLocalIdentitySession(runtime.database, body);
+          if (result.ok && body.client && result.data) {
             result.data.delivery = websocketHub.deliverAuthSession(body.client, result.data);
           }
           writeJsonResponse(response, result.ok ? 200 : 400, result);
@@ -1280,7 +1307,7 @@ async function startDevSession(options) {
 
       if (
         (await routeSporadesAuth(runtime.database, request, response))
-        || (await handleFileHttpRoute(runtime.database, request, response, websocketHub))
+        || (await handleFileHttpRoute(runtime.database, request, response, websocketHub as any))
         || (await routeEndpoint(runtime.database, request, response))
       ) {
         return;
@@ -1303,12 +1330,13 @@ async function startDevSession(options) {
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
       response.end("Not found");
     } catch (error) {
+      const details = errorDetails(error);
       response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-      response.end(error.message);
+      response.end(details.message ?? String(error));
     }
   });
   server.on("upgrade", (request, socket) => {
-    const requestUrl = new URL(request.url, "http://127.0.0.1");
+    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
     if (requestUrl.pathname !== "/__sporades/ws") {
       socket.destroy();
       return;
@@ -1316,9 +1344,9 @@ async function startDevSession(options) {
     websocketHub.accept(request, socket);
   });
 
-  await new Promise((resolve, reject) => {
+  await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
-    server.listen(port, "127.0.0.1", resolve);
+    server.listen(port, "127.0.0.1", () => resolve());
   });
 
   const address = server.address();
@@ -1338,7 +1366,7 @@ async function startDevSession(options) {
   );
   let fatalRestartAttempts = 0;
   let fatalRestartInFlight = false;
-  const restartAfterFatal = async (fatalEvent, error) => {
+  const restartAfterFatal = async (fatalEvent: string, error: Error) => {
     if (fatalRestartInFlight) {
       return;
     }
@@ -1418,12 +1446,13 @@ async function startDevSession(options) {
         fatal: errorData,
       });
     } catch (restartError) {
+      const details = errorDetails(restartError);
       runtime.database.log.emit({
         category: "platform",
         event: "runtime.restart.failed",
         level: "error",
         message: "Dev runtime restart failed",
-        data: { ...errorData, restartError: restartError.message },
+        data: { ...errorData, restartError: details.message },
       });
       emitDevEvent(
         options,
@@ -1436,24 +1465,24 @@ async function startDevSession(options) {
           fatal: errorData,
         },
         {
-          message: restartError.message,
-          hint: restartError.hint ?? "Fix the fatal runtime error and save again.",
+          message: details.message,
+          hint: details.hint ?? "Fix the fatal runtime error and save again.",
         },
       );
     } finally {
       fatalRestartInFlight = false;
     }
   };
-  const onUnhandledRejection = (reason) => {
+  const onUnhandledRejection = (reason: any) => {
     restartAfterFatal("unhandledRejection", reason instanceof Error ? reason : new Error(String(reason)));
   };
-  const onUncaughtException = (error) => {
+  const onUncaughtException = (error: any) => {
     restartAfterFatal("uncaughtException", error);
   };
   process.on("unhandledRejection", onUnhandledRejection);
   process.on("uncaughtException", onUncaughtException);
 
-  const watchers = watchDevInputs(options.projectDir, async (change) => {
+  const watchers = watchDevInputs(options.projectDir, async (change: { affectsServerRuntime: boolean; configChanged: any; }) => {
     try {
       const nextConfig = await readProjectConfig(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
@@ -1488,12 +1517,13 @@ async function startDevSession(options) {
         security,
       });
     } catch (error) {
+      const details = errorDetails(error);
       runtime.database.log.emit({
         category: "platform",
         event: "dev.rebuild.failed",
         level: "error",
         message: "Dev rebuild failed",
-        data: { message: error.message },
+        data: { message: details.message },
       });
       emitDevEvent(
         options,
@@ -1504,8 +1534,8 @@ async function startDevSession(options) {
           port: actualPort,
         },
         {
-          message: error.message,
-          hint: error.hint ?? "Fix the build error and save again.",
+          message: details.message,
+          hint: details.hint ?? "Fix the build error and save again.",
         },
       );
     }
@@ -1529,8 +1559,8 @@ async function startDevSession(options) {
   process.on("SIGINT", shutdown);
 }
 
-async function createDevRuntime(options) {
-  let database = await openDevDatabase(
+async function createDevRuntime(options: LooseRecord): Promise<any> {
+  let database: any = await openDevDatabase(
     options.databasePath,
     options.serverSource,
     options.serverEnv,
@@ -1543,8 +1573,8 @@ async function createDevRuntime(options) {
     get database() {
       return database;
     },
-    async restart(serverSource, serverEnv, serviceEnv, capsuleModuleSource, config) {
-      const nextDatabase = await openDevDatabase(
+    async restart(serverSource: any, serverEnv: {}, serviceEnv: any, capsuleModuleSource: any, config: {}) {
+      const nextDatabase: any = await openDevDatabase(
         options.databasePath,
         serverSource,
         serverEnv,
@@ -1561,13 +1591,13 @@ async function createDevRuntime(options) {
   };
 }
 
-async function importCapsuleDefinition(moduleSource) {
+async function importCapsuleDefinition(moduleSource: WithImplicitCoercion<string>) {
   const encodedModule = Buffer.from(moduleSource, "utf8").toString("base64");
   const module = await import(`data:text/javascript;base64,${encodedModule}`);
   return module.default ?? null;
 }
 
-function watchDevInputs(projectDir, onChange) {
+function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<void>; (arg0: any): any; }) {
   const watchedPaths = [
     { path: path.join(projectDir, "server"), affectsServerRuntime: true },
     { path: path.join(projectDir, "client"), affectsServerRuntime: false },
@@ -1576,17 +1606,19 @@ function watchDevInputs(projectDir, onChange) {
     { path: path.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true },
   ];
   const watchers = [];
-  let debounceTimer = null;
-  let pendingChange = null;
+  let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let pendingChange: { affectsServerRuntime: boolean; configChanged?: boolean } | null = null;
   let rebuildInFlight = false;
-  let lastHandledSignature = null;
+  let lastHandledSignature: string | null = null;
 
-  const schedule = (change) => {
+  const schedule = (change: { path: string; affectsServerRuntime: boolean; configChanged?: undefined; } | { path: string; affectsServerRuntime: boolean; configChanged: boolean; }) => {
     pendingChange = {
       affectsServerRuntime: Boolean(pendingChange?.affectsServerRuntime || change.affectsServerRuntime),
       configChanged: Boolean(pendingChange?.configChanged || change.configChanged),
     };
-    clearTimeout(debounceTimer);
+    if (debounceTimer) {
+      clearTimeout(debounceTimer);
+    }
     debounceTimer = setTimeout(runPendingChange, DEV_REBUILD_DEBOUNCE_MS);
   };
 
@@ -1608,7 +1640,9 @@ function watchDevInputs(projectDir, onChange) {
     } finally {
       rebuildInFlight = false;
       if (pendingChange) {
-        clearTimeout(debounceTimer);
+        if (debounceTimer) {
+          clearTimeout(debounceTimer);
+        }
         debounceTimer = setTimeout(runPendingChange, DEV_REBUILD_DEBOUNCE_MS);
       }
     }
@@ -1618,7 +1652,7 @@ function watchDevInputs(projectDir, onChange) {
     try {
       watchers.push(watch(watchedPath.path, { recursive: true }, () => schedule(watchedPath)));
     } catch (error) {
-      if (error?.code !== "ENOENT") {
+      if (errorDetails(error).code !== "ENOENT") {
         throw error;
       }
     }
@@ -1627,17 +1661,17 @@ function watchDevInputs(projectDir, onChange) {
   return watchers;
 }
 
-function configChangeAffectsServerRuntime(currentConfig, nextConfig) {
+function configChangeAffectsServerRuntime(currentConfig: any, nextConfig: any) {
   return JSON.stringify(serverRuntimeConfig(currentConfig)) !== JSON.stringify(serverRuntimeConfig(nextConfig));
 }
 
-function serverRuntimeConfig(config) {
+function serverRuntimeConfig(config: LooseRecord = {}) {
   const { client: _client, ...serverConfig } = config ?? {};
   return serverConfig;
 }
 
-function readDevInputSignature(watchedPaths) {
-  const entries = [];
+function readDevInputSignature(watchedPaths: LooseRecord[]) {
+  const entries: any[] = [];
 
   for (const watchedPath of watchedPaths) {
     collectPathSignature(watchedPath.path, entries);
@@ -1646,12 +1680,12 @@ function readDevInputSignature(watchedPaths) {
   return entries.sort().join("\n");
 }
 
-function collectPathSignature(filePath, entries) {
+function collectPathSignature(filePath: string, entries: any[]) {
   let stats;
   try {
     stats = statSync(filePath);
   } catch (error) {
-    if (error?.code === "ENOENT") {
+    if (errorDetails(error).code === "ENOENT") {
       entries.push(`${filePath}:missing`);
       return;
     }
@@ -1673,7 +1707,7 @@ function collectPathSignature(filePath, entries) {
   entries.push(`${filePath}:file:${stats.size}:${stats.mtimeMs}`);
 }
 
-function emitDevEvent(options, data, error = null) {
+function emitDevEvent(options: LooseRecord, data: LooseRecord, error: any = null) {
   if (options.json) {
     writeResult({
       ok: error === null,
@@ -1720,7 +1754,7 @@ function emitDevEvent(options, data, error = null) {
   process.stdout.write(`Sporades dev rebuild failed: ${error.message}\n`);
 }
 
-async function manageAuth(options) {
+async function manageAuth(options: LooseRecord) {
   switch (options.subcommand) {
     case "status": {
       const config = await readProjectConfig(options.projectDir);
@@ -1816,7 +1850,7 @@ async function manageAuth(options) {
   }
 }
 
-async function inspectSecurity(options) {
+async function inspectSecurity(options: LooseRecord) {
   const config = await readProjectConfig(options.projectDir);
   const security = resolveEffectiveSecurityPolicy(config, options.session);
 
@@ -1837,8 +1871,8 @@ async function inspectSecurity(options) {
   process.stdout.write(`CSP: ${security.csp.mode}\n`);
 }
 
-async function manageEnv(options) {
-  const paths = sealedServerEnvPaths(options.projectDir);
+async function manageEnv(options: LooseRecord) {
+  const paths: any = sealedServerEnvPaths(options.projectDir);
 
   switch (options.subcommand) {
     case "init": {
@@ -1959,12 +1993,12 @@ async function manageEnv(options) {
   }
 }
 
-async function readPortableSealedServerEnvEnvelope(filePath) {
+async function readPortableSealedServerEnvEnvelope(filePath: PathLike | FileHandle) {
   let envelope;
   try {
     envelope = JSON.parse(await readFile(filePath, "utf8"));
   } catch (error) {
-    if (error?.code === "ENOENT") {
+    if (errorDetails(error).code === "ENOENT") {
       throw commandError(
         "Sealed Server env export file was not found.",
         "Pass `--file <path>` pointing at a `sporades env export` JSON file.",
@@ -1998,7 +2032,7 @@ async function readPortableSealedServerEnvEnvelope(filePath) {
   return envelope;
 }
 
-async function writeEnvResult(options, data) {
+async function writeEnvResult(options: LooseRecord, data: LooseRecord) {
   if (options.json) {
     writeResult({ ok: true, data, error: null });
     return;
@@ -2006,7 +2040,7 @@ async function writeEnvResult(options, data) {
   process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
 }
 
-async function ensureHostProfileEnvKey(config, alias) {
+async function ensureHostProfileEnvKey(config: LooseRecord, alias: string | number) {
   const current = config.profiles[alias].sealedServerEnv;
   if (current?.publicKey && current?.privateKey) {
     return current;
@@ -2025,7 +2059,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   return hostKey;
 }
 
-async function manageHost(options) {
+async function manageHost(options: LooseRecord) {
   switch (options.subcommand) {
     case "add": {
       const config = await readHostConfig();
@@ -2545,7 +2579,7 @@ async function manageHost(options) {
   }
 }
 
-async function startContainerSession(options) {
+async function startContainerSession(options: LooseRecord) {
   const config = await readProjectConfig(options.projectDir);
   const port = options.port ?? config.deploy?.port ?? 4000;
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
@@ -2676,7 +2710,7 @@ async function startContainerSession(options) {
   }
 }
 
-async function inspectDatabase(options) {
+async function inspectDatabase(options: LooseRecord) {
   if (options.subcommand === "query" && !isReadOnlySql(options.sql)) {
     throw commandError(
       "Only read-only SQL is allowed.",
@@ -2715,7 +2749,7 @@ async function inspectDatabase(options) {
   }
 }
 
-async function printLogs(options) {
+async function printLogs(options: LooseRecord) {
   const result =
     (await tryFetchInspectionJson(
       options,
@@ -2742,7 +2776,7 @@ async function printLogs(options) {
   }
 }
 
-async function fetchInspectionDatabase(options) {
+async function fetchInspectionDatabase(options: LooseRecord) {
   return (
     (await tryFetchInspectionJson(
       options,
@@ -2758,7 +2792,7 @@ async function fetchInspectionDatabase(options) {
   );
 }
 
-async function readDevSession(projectDir) {
+async function readDevSession(projectDir: string) {
   const sessionPath = path.join(projectDir, DEV_SESSION_FILE);
   const raw = await readRequiredFile(
     sessionPath,
@@ -2775,18 +2809,18 @@ async function readDevSession(projectDir) {
   }
 }
 
-async function readOptionalDevSession(projectDir) {
+async function readOptionalDevSession(projectDir: any) {
   try {
     return await readDevSession(projectDir);
   } catch (error) {
-    if (error?.message === "No running Sporades dev session found.") {
+    if (errorDetails(error).message === "No running Sporades dev session found.") {
       return null;
     }
     throw error;
   }
 }
 
-async function tryFetchInspectionJson(options, pathname, fetchOptions = {}) {
+async function tryFetchInspectionJson(options: LooseRecord, pathname: string | URL, fetchOptions: LooseRecord = {}) {
   const session = options.port ? { url: `http://localhost:${options.port}` } : await readOptionalDevSession(options.projectDir);
   if (!session) {
     return null;
@@ -2802,7 +2836,7 @@ async function tryFetchInspectionJson(options, pathname, fetchOptions = {}) {
   }
 }
 
-function readContainerLogs(options) {
+function readContainerLogs(options: LooseRecord) {
   const container = resolveLocalContainerTarget(options);
   const result = spawnSync("docker", ["logs", "--tail", "200", container.containerId], {
     cwd: options.projectDir,
@@ -2811,7 +2845,7 @@ function readContainerLogs(options) {
   if (result.status !== 0) {
     return {
       ok: false,
-      data: null,
+      data: null as any,
       error: {
         message: "Container session logs are unavailable.",
         hint: "Check Docker is running and the bound container still exists, then retry `sporades logs`.",
@@ -2831,7 +2865,7 @@ function readContainerLogs(options) {
   };
 }
 
-function parseDockerLogLine(line) {
+function parseDockerLogLine(line: string) {
   try {
     const entry = JSON.parse(line);
     if (entry && typeof entry === "object" && entry.schema === "sporades.log.v1") {
@@ -2843,7 +2877,7 @@ function parseDockerLogLine(line) {
   return null;
 }
 
-async function inspectContainerDatabase(options) {
+async function inspectContainerDatabase(options: LooseRecord) {
   const databasePath = resolveLocalContainerDatabasePath(options);
   const sqlite = await createSqliteDatabaseAdapter(databasePath, { readOnly: true });
   try {
@@ -2866,14 +2900,14 @@ async function inspectContainerDatabase(options) {
   }
 }
 
-function resolveLocalContainerDatabasePath(options) {
+function resolveLocalContainerDatabasePath(options: LooseRecord) {
   const container = resolveLocalContainerTarget(options);
-  const mount = container.mounts.find((entry) => entry.Destination === "/app/data");
+  const mount = container.mounts.find((entry: { Destination: string; }) => entry.Destination === "/app/data");
   const dataDir = mount?.Source ?? path.join(options.projectDir, ".sporades", "data");
   return path.join(dataDir, "data.db");
 }
 
-function resolveLocalContainerTarget(options) {
+function resolveLocalContainerTarget(options: LooseRecord) {
   if (options.port) {
     const result = spawnSync("docker", ["ps", "--filter", `publish=${options.port}`, "--format", "{{.ID}}"], {
       cwd: options.projectDir,
@@ -2890,7 +2924,7 @@ function resolveLocalContainerTarget(options) {
   try {
     binding = JSON.parse(readFileSync(bindingPath, "utf8"));
   } catch (error) {
-    if (error?.code !== "ENOENT") {
+    if (errorDetails(error).code !== "ENOENT") {
       throw error;
     }
   }
@@ -2903,7 +2937,7 @@ function resolveLocalContainerTarget(options) {
   return { containerId: binding.containerId, mounts: inspectDockerMounts(options.projectDir, binding.containerId) };
 }
 
-function inspectDockerMounts(cwd, containerId) {
+function inspectDockerMounts(cwd: any, containerId: string) {
   const result = spawnSync("docker", ["inspect", "--format", "{{json .Mounts}}", containerId], {
     cwd,
     encoding: "utf8",
@@ -2918,19 +2952,7 @@ function inspectDockerMounts(cwd, containerId) {
   }
 }
 
-async function fetchDevSessionJson(session, pathname, fetchOptions = {}) {
-  try {
-    const response = await fetch(new URL(pathname, session.url), fetchOptions);
-    return await response.json();
-  } catch {
-    throw commandError(
-      "Unable to reach the running Sporades dev session.",
-      "Check that `sporades dev` is still running in this project, then retry the command.",
-    );
-  }
-}
-
-async function fetchLocalIdentitySimulation(session, body) {
+async function fetchLocalIdentitySimulation(session: LooseRecord, body: LooseRecord) {
   let response;
   try {
     response = await fetch(new URL("/__sporades/debug/auth/as", session.url), {
@@ -2964,7 +2986,7 @@ async function fetchLocalIdentitySimulation(session, body) {
   };
 }
 
-async function fetchAuthClients(session) {
+async function fetchAuthClients(session: LooseRecord) {
   let response;
   try {
     response = await fetch(new URL("/__sporades/debug/auth/clients", session.url));
@@ -2994,7 +3016,7 @@ async function fetchAuthClients(session) {
   };
 }
 
-async function upsertServerEnvValues(envPath, values) {
+async function upsertServerEnvValues(envPath: PathLike | FileHandle, values: { [s: string]: unknown; } | ArrayLike<unknown>) {
   const existing = await readServerEnvFile(envPath);
   const lines = existing.raw ? existing.raw.split(/\r?\n/) : [];
   const pending = new Map(Object.entries(values));
@@ -3020,11 +3042,11 @@ async function upsertServerEnvValues(envPath, values) {
   parseServerEnv(await readServerEnvFile(envPath));
 }
 
-function isReadOnlySql(sql) {
+function isReadOnlySql(sql: string) {
   return /^\s*(select|with|pragma)\b/i.test(sql);
 }
 
-async function readProjectConfig(projectDir) {
+async function readProjectConfig(projectDir: string) {
   const configPath = path.join(projectDir, "sporades.json");
   const raw = await readRequiredFile(
     configPath,
@@ -3042,18 +3064,18 @@ async function readProjectConfig(projectDir) {
   return config;
 }
 
-async function readOptionalProjectSecurity(projectDir, session) {
+async function readOptionalProjectSecurity(projectDir: any, session: string) {
   try {
     return resolveEffectiveSecurityPolicy(await readProjectConfig(projectDir), session);
   } catch (error) {
-    if (error?.message === "Missing project configuration: sporades.json") {
+    if (errorDetails(error).message === "Missing project configuration: sporades.json") {
       return null;
     }
     throw error;
   }
 }
 
-function validateSecurityConfig(security) {
+function validateSecurityConfig(security: LooseRecord) {
   if (security === undefined) {
     return;
   }
@@ -3065,7 +3087,7 @@ function validateSecurityConfig(security) {
     if (!cors || typeof cors !== "object" || Array.isArray(cors)) {
       throw commandError("Invalid CORS policy.", "Set `security.cors` to an object with `allowedOrigins`.");
     }
-    if (cors.allowedOrigins !== undefined && (!Array.isArray(cors.allowedOrigins) || !cors.allowedOrigins.every((origin) => typeof origin === "string"))) {
+    if (cors.allowedOrigins !== undefined && (!Array.isArray(cors.allowedOrigins) || !cors.allowedOrigins.every((origin: any) => typeof origin === "string"))) {
       throw commandError("Invalid CORS allowed origins.", "Set `security.cors.allowedOrigins` to an array of origin strings.");
     }
   }
@@ -3080,7 +3102,7 @@ function validateSecurityConfig(security) {
   }
 }
 
-function resolveEffectiveSecurityPolicy(config, session) {
+function resolveEffectiveSecurityPolicy(config: LooseRecord, session: string) {
   const security = config.security ?? {};
   const cors = security.cors ?? {};
   const csp = security.csp ?? {};
@@ -3117,33 +3139,33 @@ function resolveEffectiveSecurityPolicy(config, session) {
   };
 }
 
-function withRuntimeSecuritySession(config, session) {
+function withRuntimeSecuritySession(config: any, session: string) {
   return {
     ...config,
     __sporadesSession: session,
   };
 }
 
-function readBaseImageUpdatePolicy(config) {
+function readBaseImageUpdatePolicy(config: LooseRecord) {
   return normaliseBaseImageUpdatePolicy(config?.baseImage?.updatePolicy ?? config?.deploy?.baseImageUpdatePolicy);
 }
 
-async function readRequiredFile(filePath, message, hint) {
+async function readRequiredFile(filePath: PathLike | FileHandle, message: string, hint: string) {
   try {
     return await readFile(filePath, "utf8");
   } catch (error) {
-    if (error?.code === "ENOENT") {
+    if (errorDetails(error).code === "ENOENT") {
       throw commandError(message, hint);
     }
     throw error;
   }
 }
 
-async function readContainerBinding(bindingPath) {
+async function readContainerBinding(bindingPath: PathLike | FileHandle) {
   try {
     return JSON.parse(await readFile(bindingPath, "utf8"));
   } catch (error) {
-    if (error?.code === "ENOENT") {
+    if (errorDetails(error).code === "ENOENT") {
       return null;
     }
     if (error instanceof SyntaxError) {
@@ -3156,11 +3178,11 @@ async function readContainerBinding(bindingPath) {
   }
 }
 
-async function readRemoteBinding(projectDir) {
+async function readRemoteBinding(projectDir: string) {
   try {
     return JSON.parse(await readFile(path.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
   } catch (error) {
-    if (error?.code === "ENOENT") {
+    if (errorDetails(error).code === "ENOENT") {
       return null;
     }
     if (error instanceof SyntaxError) {
@@ -3173,7 +3195,7 @@ async function readRemoteBinding(projectDir) {
   }
 }
 
-async function resolveHostPushTarget(config, options) {
+async function resolveHostPushTarget(config: LooseRecord, options: LooseRecord) {
   const localBinding = await readRemoteBinding(options.projectDir);
   const resolved = resolveHostProfile(config, options.hostAlias ?? localBinding?.hostAlias ?? null);
   const subname = options.subname ?? localBinding?.subname;
@@ -3193,7 +3215,7 @@ async function readHostConfig() {
     const parsed = JSON.parse(await readFile(hostConfigPath(), "utf8"));
     return normaliseHostConfig(parsed);
   } catch (error) {
-    if (error?.code === "ENOENT") {
+    if (errorDetails(error).code === "ENOENT") {
       return { profiles: {}, currentHostAlias: null };
     }
     if (error instanceof SyntaxError) {
@@ -3206,7 +3228,7 @@ async function readHostConfig() {
   }
 }
 
-async function writeHostConfig(config) {
+async function writeHostConfig(config: LooseRecord) {
   const filePath = hostConfigPath();
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, `${JSON.stringify(normaliseHostConfig(config), null, 2)}\n`);
@@ -3219,19 +3241,19 @@ function hostConfigPath() {
   return path.join(configDir, "hosts.json");
 }
 
-function normaliseHostConfig(value) {
+function normaliseHostConfig(value: LooseRecord = {}) {
   return {
     profiles: normaliseHostProfiles(value?.profiles),
     currentHostAlias: typeof value?.currentHostAlias === "string" ? value.currentHostAlias : null,
   };
 }
 
-function normaliseHostProfiles(value) {
+function normaliseHostProfiles(value: Record<string, LooseRecord>) {
   if (!value || typeof value !== "object") {
     return {};
   }
   return Object.fromEntries(
-    Object.entries(value).map(([alias, profile]) => [
+    Object.entries(value as Record<string, HostProfile>).map(([alias, profile]) => [
       alias,
       {
         ...profile,
@@ -3241,12 +3263,12 @@ function normaliseHostProfiles(value) {
   );
 }
 
-function normaliseHostTls(value) {
+function normaliseHostTls(value: LooseRecord = {}) {
   const mode = typeof value?.mode === "string" && HOST_TLS_MODES.has(value.mode) ? value.mode : DEFAULT_HOST_TLS_MODE;
   return { mode };
 }
 
-function resolveHostProfile(config, explicitAlias) {
+function resolveHostProfile(config: LooseRecord, explicitAlias: any) {
   const alias = explicitAlias ?? config.currentHostAlias;
   if (!alias) {
     throw commandError(
@@ -3257,7 +3279,7 @@ function resolveHostProfile(config, explicitAlias) {
   return { alias, profile: requireHostProfile(config, alias) };
 }
 
-function requireHostProfile(config, alias) {
+function requireHostProfile(config: LooseRecord, alias: string | number) {
   const profile = config.profiles[alias];
   if (!profile) {
     throw commandError(
@@ -3268,7 +3290,7 @@ function requireHostProfile(config, alias) {
   return profile;
 }
 
-function publicHostProfile(profile) {
+function publicHostProfile(profile: LooseRecord) {
   if (!profile?.sealedServerEnv) {
     return profile;
   }
@@ -3282,7 +3304,7 @@ function publicHostProfile(profile) {
   };
 }
 
-function createRemoteBinding(hostAlias, profile, subname) {
+function createRemoteBinding(hostAlias: any, profile: LooseRecord, subname: any) {
   return {
     hostAlias,
     domain: profile.domain,
@@ -3293,9 +3315,9 @@ function createRemoteBinding(hostAlias, profile, subname) {
   };
 }
 
-function invokeRemoteHostHelper(options) {
+function invokeRemoteHostHelper(options: LooseRecord) {
   const helperPath = remoteHostHelperPath(options.profile);
-  const request = {
+  const request: LooseRecord = {
     action: options.action,
     host: {
       alias: options.alias,
@@ -3347,7 +3369,7 @@ function invokeRemoteHostHelper(options) {
   return parseRemoteHostHelperResult(result);
 }
 
-async function prepareHostPushSealedServerEnv(options) {
+async function prepareHostPushSealedServerEnv(options: LooseRecord) {
   const paths = sealedServerEnvPaths(options.projectDir);
   const envelope = await readSealedServerEnv(paths);
   if (!envelope) {
@@ -3401,7 +3423,7 @@ async function prepareHostPushSealedServerEnv(options) {
   };
 }
 
-function missingLocalSealedServerEnvSourceError(details = {}) {
+function missingLocalSealedServerEnvSourceError(details: LooseRecord = {}) {
   return commandError(
     "Local Sealed Server env source values are unavailable.",
     "Restore the local Sealed Server env private key, or run `sporades env import --file .env.sporades.server --json` explicitly from source-of-truth values, then retry. Legacy Server env files are imported only by that explicit command.",
@@ -3415,7 +3437,7 @@ function missingLocalSealedServerEnvSourceError(details = {}) {
   );
 }
 
-async function readHostedCapsuleSealedEnvPublicKey(alias, profile, subname, projectDir) {
+async function readHostedCapsuleSealedEnvPublicKey(alias: any, profile: LooseRecord, subname: any, projectDir: any) {
   const result = invokeRemoteHostHelper({
     alias,
     profile,
@@ -3425,7 +3447,7 @@ async function readHostedCapsuleSealedEnvPublicKey(alias, profile, subname, proj
   if (!result.ok) {
     throw commandError(result.error.message, result.error.hint);
   }
-  const capsule = (result.data?.capsules ?? []).find((entry) => entry?.subname === subname && entry?.domain === profile.domain);
+  const capsule = (result.data?.capsules ?? []).find((entry: { subname: any; domain: any; }) => entry?.subname === subname && entry?.domain === profile.domain);
   const sealedServerEnv = capsule?.sealedServerEnv;
   if (!sealedServerEnv?.publicKey || !sealedServerEnv?.publicKeyFingerprint) {
     throw commandError(
@@ -3456,14 +3478,14 @@ async function readHostedCapsuleSealedEnvPublicKey(alias, profile, subname, proj
   };
 }
 
-async function createHostReleaseArchive(options) {
+async function createHostReleaseArchive(options: LooseRecord) {
   const releaseId = createHostReleaseId();
   const hostPushDir = path.join(options.projectDir, ".sporades", "host-push");
   await mkdir(hostPushDir, { recursive: true });
   const localArchive = path.join(hostPushDir, `${releaseId}.tar.gz`);
   const packageDir = path.join(hostPushDir, `${releaseId}-files`);
   const remoteArchive = posixJoin(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
-  const sealedServerEnv = await createHostReleaseSealedServerEnv(options, packageDir);
+  const sealedServerEnv = await createHostReleaseSealedServerEnv(options);
   const releaseRequest = createHostReleaseRequest({
     alias: options.alias,
     profile: options.profile,
@@ -3526,7 +3548,7 @@ async function createHostReleaseArchive(options) {
   };
 }
 
-async function createHostReleaseSealedServerEnv(options, packageDir) {
+async function createHostReleaseSealedServerEnv(options: LooseRecord) {
   if (!options.bundle.containerMounts.sealedServerEnv) {
     return null;
   }
@@ -3541,7 +3563,7 @@ async function createHostReleaseSealedServerEnv(options, packageDir) {
   };
 }
 
-function uploadHostReleaseArchive(options) {
+function uploadHostReleaseArchive(options: LooseRecord) {
   const result = spawnSync("scp", [options.archivePath, `${options.profile.server}:${options.remoteArchive}`], {
     cwd: options.projectDir,
     encoding: "utf8",
@@ -3554,7 +3576,7 @@ function uploadHostReleaseArchive(options) {
   }
 }
 
-function createHostReleaseRequest(options) {
+function createHostReleaseRequest(options: LooseRecord) {
   const registration = createHostRegistrationRequest(options.alias, options.profile, options.subname);
   const releaseDirectory = posixJoin(registration.directories.releases, options.releaseId);
   const files = ["server.mjs", "client.js", "index.html", "sporades.json"];
@@ -3592,7 +3614,7 @@ function createHostReleaseRequest(options) {
   };
 }
 
-function createHostLifecycleRequest(alias, profile, subname, options = {}) {
+function createHostLifecycleRequest(alias: any, profile: LooseRecord, subname: any, options: LooseRecord = {}) {
   const registration = createHostRegistrationRequest(alias, profile, subname);
   const currentLink = posixJoin(registration.directories.capsule, "current");
   const containerName = createHostedContainerName(profile.domain, subname);
@@ -3658,7 +3680,7 @@ function createHostLifecycleRequest(alias, profile, subname, options = {}) {
   };
 }
 
-function createHostStatsRequest(profile, subname) {
+function createHostStatsRequest(profile: LooseRecord, subname: any) {
   return {
     domain: profile.domain,
     subname,
@@ -3670,7 +3692,7 @@ function createHostStatsRequest(profile, subname) {
   };
 }
 
-function createHostRuntimeHealthRequest(profile, subname) {
+function createHostRuntimeHealthRequest(profile: LooseRecord, subname: any) {
   const hostedUrl = `${profile.scheme}://${subname}.${profile.domain}`;
   return {
     domain: profile.domain,
@@ -3684,7 +3706,7 @@ function createHostRuntimeHealthRequest(profile, subname) {
   };
 }
 
-function createHostedContainerName(domain, subname) {
+function createHostedContainerName(domain: string, subname: any) {
   return `sporades-${domain.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase()}-${subname}`;
 }
 
@@ -3693,41 +3715,42 @@ function createHostReleaseId(now = new Date()) {
   return `${timestamp}-${randomBytes(4).toString("hex")}`;
 }
 
-function normaliseHostLogEntries(data) {
+function normaliseHostLogEntries(data: LooseRecord) {
   if (!Array.isArray(data?.entries)) {
     return [];
   }
-  return data.entries.map((entry) => String(entry));
+  return data.entries.map((entry: any) => String(entry));
 }
 
-function formatHostedCapsuleList(data, profile) {
+function formatHostedCapsuleList(data: LooseRecord, profile: LooseRecord) {
   const capsules = normaliseHostedCapsules(data);
   const domain = data?.host?.domain ?? profile.domain;
   if (capsules.length === 0) {
     return `No Hosted Capsules registered for ${domain}.\n`;
   }
 
-  const rows = capsules.map((capsule) => ({
+  const rows = capsules.map((capsule: { subname: any; hostedUrl: any; registry: any; currentRelease: any; docker: any; }) => ({
     subname: capsule.subname,
     hostedUrl: capsule.hostedUrl,
     registry: formatCapsuleRegistryStatus(capsule.registry),
     release: formatCapsuleRelease(capsule.currentRelease),
     docker: formatCapsuleDockerStatus(capsule.docker),
   }));
-  const headers = {
+  const headers: Record<string, string> = {
     subname: "SUBNAME",
     hostedUrl: "URL",
     registry: "REGISTRY",
     release: "RELEASE",
     docker: "DOCKER",
   };
+  const keys = ["subname", "hostedUrl", "registry", "release", "docker"];
   const widths = Object.fromEntries(
-    Object.keys(headers).map((key) => [key, Math.max(headers[key].length, ...rows.map((row) => row[key].length))]),
+    keys.map((key) => [key, Math.max(headers[key].length, ...rows.map((row: LooseRecord) => row[key].length))]),
   );
-  const line = (row) =>
+  const line = (row: LooseRecord) =>
     [row.subname, row.hostedUrl, row.registry, row.release, row.docker]
       .map((value, index) => {
-        const key = ["subname", "hostedUrl", "registry", "release", "docker"][index];
+        const key = keys[index];
         return index === 4 ? value : value.padEnd(widths[key] + 2);
       })
       .join("");
@@ -3735,11 +3758,11 @@ function formatHostedCapsuleList(data, profile) {
   return `${line(headers)}\n${rows.map(line).join("\n")}\n`;
 }
 
-function normaliseHostedCapsules(data) {
+function normaliseHostedCapsules(data: LooseRecord) {
   if (!Array.isArray(data?.capsules)) {
     return [];
   }
-  return data.capsules.map((capsule) => ({
+  return data.capsules.map((capsule: { subname: any; hostedUrl: any; registry: any; currentRelease: any; docker: any; }) => ({
     subname: String(capsule?.subname ?? ""),
     hostedUrl: String(capsule?.hostedUrl ?? ""),
     registry: capsule?.registry ?? null,
@@ -3748,40 +3771,41 @@ function normaliseHostedCapsules(data) {
   }));
 }
 
-function formatCapsuleRegistryStatus(registry) {
+function formatCapsuleRegistryStatus(registry: LooseRecord) {
   return String(registry?.status ?? registry?.state ?? registry?.lifecycleStatus ?? "registered");
 }
 
-function formatCapsuleRelease(release) {
+function formatCapsuleRelease(release: LooseRecord) {
   return String(release?.id ?? release?.releaseId ?? release?.version ?? "none");
 }
 
-function formatHostedCapsuleReleases(data) {
+function formatHostedCapsuleReleases(data: LooseRecord) {
   const releases = Array.isArray(data?.releases) ? data.releases : [];
   const subname = data?.capsule?.subname ?? "Hosted Capsule";
   if (releases.length === 0) {
     return `No releases recorded for ${subname}.\n`;
   }
 
-  const rows = releases.map((release) => ({
+  const rows = releases.map((release: { id: any; state: any; current: any; createdAt: any; }) => ({
     id: String(release.id ?? ""),
     state: String(release.state ?? "uploaded"),
     current: release.current ? "yes" : "no",
     createdAt: String(release.createdAt ?? "unknown"),
   }));
-  const headers = {
+  const headers: Record<string, string> = {
     id: "RELEASE",
     state: "STATE",
     current: "CURRENT",
     createdAt: "CREATED",
   };
+  const keys = ["id", "state", "current", "createdAt"];
   const widths = Object.fromEntries(
-    Object.keys(headers).map((key) => [key, Math.max(headers[key].length, ...rows.map((row) => row[key].length))]),
+    keys.map((key) => [key, Math.max(headers[key].length, ...rows.map((row: LooseRecord) => row[key].length))]),
   );
-  const line = (row) =>
+  const line = (row: LooseRecord) =>
     [row.id, row.state, row.current, row.createdAt]
       .map((value, index) => {
-        const key = ["id", "state", "current", "createdAt"][index];
+        const key = keys[index];
         return index === 3 ? value : value.padEnd(widths[key] + 2);
       })
       .join("");
@@ -3789,7 +3813,7 @@ function formatHostedCapsuleReleases(data) {
   return `${line(headers)}\n${rows.map(line).join("\n")}\n`;
 }
 
-function formatCapsuleDockerStatus(docker) {
+function formatCapsuleDockerStatus(docker: LooseRecord) {
   if (!docker) {
     return "unavailable";
   }
@@ -3804,13 +3828,13 @@ function formatCapsuleDockerStatus(docker) {
   return detail ? `${label} (${detail})` : label;
 }
 
-function createHostHealthUrl(profile) {
+function createHostHealthUrl(profile: LooseRecord) {
   return `${profile.scheme ?? DEFAULT_HOST_SCHEME}://host.${profile.domain}${HOST_HEALTH_PATH}`;
 }
 
-async function checkHostServerHealth(alias, profile) {
+async function checkHostServerHealth(alias: any, profile: any) {
   const healthUrl = createHostHealthUrl(profile);
-  const failureData = (failure, extra = {}) => ({
+  const failureData = (failure: string, extra = {}) => ({
     alias,
     healthUrl,
     failure,
@@ -3824,7 +3848,7 @@ async function checkHostServerHealth(alias, profile) {
       signal: AbortSignal.timeout(10_000),
     });
   } catch (error) {
-    const failure = classifyHostHealthFetchFailure(error);
+    const failure = classifyHostHealthFetchFailure(errorDetails(error));
     if (failure === "unreachable") {
       return {
         ok: false,
@@ -3874,11 +3898,11 @@ async function checkHostServerHealth(alias, profile) {
       healthUrl,
       response: body,
     },
-    error: null,
+    error: null as any,
   };
 }
 
-function classifyHostHealthFetchFailure(error) {
+function classifyHostHealthFetchFailure(error: LooseRecord) {
   const code = error?.cause?.code ?? error?.code;
   if (
     error?.name === "TimeoutError" ||
@@ -3890,7 +3914,7 @@ function classifyHostHealthFetchFailure(error) {
   return "tls-http";
 }
 
-function isExpectedHostHealthResponse(value) {
+function isExpectedHostHealthResponse(value: LooseRecord) {
   return (
     value &&
     typeof value === "object" &&
@@ -3900,7 +3924,7 @@ function isExpectedHostHealthResponse(value) {
   );
 }
 
-function unexpectedHostHealthResponse(alias, healthUrl, statusCode) {
+function unexpectedHostHealthResponse(alias: any, healthUrl: string, statusCode: number) {
   return {
     ok: false,
     data: {
@@ -3916,11 +3940,11 @@ function unexpectedHostHealthResponse(alias, healthUrl, statusCode) {
   };
 }
 
-function remoteHostHelperPath(profile) {
+function remoteHostHelperPath(profile: LooseRecord) {
   return `${profile.remoteRoot}/bin/sporades-host-helper`;
 }
 
-function createHostBootstrapRequest(profile) {
+function createHostBootstrapRequest(profile: LooseRecord) {
   const caddyDirectory = posixJoin(profile.remoteRoot, "caddy");
   const hostsDirectory = posixJoin(profile.remoteRoot, "hosts");
   const domainDirectory = posixJoin(profile.remoteRoot, "hosts", profile.domain);
@@ -3957,7 +3981,7 @@ function createHostBootstrapRequest(profile) {
   };
 }
 
-function createHostRegistrationRequest(alias, profile, subname) {
+function createHostRegistrationRequest(alias: any, profile: LooseRecord, subname: any) {
   const bootstrap = createHostBootstrapRequest(profile);
   const capsuleDirectory = posixJoin(bootstrap.directories.capsules, subname);
   const capsuleLog = posixJoin(capsuleDirectory, "logs", "http.log");
@@ -3989,7 +4013,7 @@ function createHostRegistrationRequest(alias, profile, subname) {
   };
 }
 
-function createHostUnregisterRequest(profile, subname) {
+function createHostUnregisterRequest(profile: LooseRecord, subname: any) {
   const bootstrap = createHostBootstrapRequest(profile);
   const capsuleDirectory = posixJoin(bootstrap.directories.capsules, subname);
   return {
@@ -4016,7 +4040,7 @@ function createHostUnregisterRequest(profile, subname) {
   };
 }
 
-function createHostDeleteRequest(profile, subname) {
+function createHostDeleteRequest(profile: LooseRecord, subname: any) {
   const bootstrap = createHostBootstrapRequest(profile);
   const capsuleDirectory = posixJoin(bootstrap.directories.capsules, subname);
   return {
@@ -4040,7 +4064,7 @@ function createHostDeleteRequest(profile, subname) {
   };
 }
 
-async function writeGithubAutodeployWorkflow(options) {
+async function writeGithubAutodeployWorkflow(options: LooseRecord) {
   const workflow = createGithubAutodeployWorkflow({
     hostAlias: options.hostAlias,
     subname: options.subname,
@@ -4072,7 +4096,7 @@ async function writeGithubAutodeployWorkflow(options) {
         workflow,
         github,
       },
-      error: null,
+      error: null as any,
     };
   }
 
@@ -4085,7 +4109,7 @@ async function writeGithubAutodeployWorkflow(options) {
       );
     }
   } catch (error) {
-    if (error.code !== "ENOENT") {
+    if (errorDetails(error).code !== "ENOENT") {
       throw error;
     }
   }
@@ -4105,7 +4129,7 @@ async function writeGithubAutodeployWorkflow(options) {
   };
 }
 
-function createGithubAutodeployWorkflow({ hostAlias, subname, branch }) {
+function createGithubAutodeployWorkflow({ hostAlias, subname, branch }: LooseRecord) {
   return `name: Sporades Autodeploy
 
 on:
@@ -4290,11 +4314,11 @@ jobs:
 `;
 }
 
-function normalisePathForOutput(filePath) {
+function normalisePathForOutput(filePath: string) {
   return filePath.split(path.sep).join("/");
 }
 
-function posixJoin(...segments) {
+function posixJoin(...segments: string[]) {
   return segments
     .map((segment, index) => {
       const value = String(segment);
@@ -4307,7 +4331,7 @@ function posixJoin(...segments) {
     .join("/");
 }
 
-function parseRemoteHostHelperResult(result) {
+function parseRemoteHostHelperResult(result: SpawnSyncReturns<string>) {
   const parsed = parseSporadesJsonEnvelope(result.stdout);
 
   if (result.error || result.status === 255 || result.signal) {
@@ -4346,7 +4370,7 @@ function parseRemoteHostHelperResult(result) {
   };
 }
 
-function parseSporadesJsonEnvelope(raw) {
+function parseSporadesJsonEnvelope(raw: string) {
   try {
     const value = JSON.parse(raw);
     if (
@@ -4364,7 +4388,7 @@ function parseSporadesJsonEnvelope(raw) {
   return null;
 }
 
-function validateHostAlias(alias) {
+function validateHostAlias(alias: string) {
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(alias)) {
     throw commandError(
       "Invalid Host profile alias.",
@@ -4373,12 +4397,12 @@ function validateHostAlias(alias) {
   }
 }
 
-function validateHostedDomain(domain) {
+function validateHostedDomain(domain: string) {
   const labels = domain.split(".");
   const valid =
     domain.length <= 253 &&
     labels.length >= 2 &&
-    labels.every((label) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label));
+    labels.every((label: string) => /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$/.test(label));
   if (!valid) {
     throw commandError(
       "Invalid Hosted domain.",
@@ -4387,20 +4411,20 @@ function validateHostedDomain(domain) {
   }
 }
 
-function validateHostRemoteRoot(remoteRoot) {
+function validateHostRemoteRoot(remoteRoot: string) {
   const segments = remoteRoot.split("/").filter(Boolean);
   const valid =
     remoteRoot.startsWith("/") &&
     remoteRoot !== "/" &&
     !remoteRoot.includes("\0") &&
     !remoteRoot.includes("\n") &&
-    segments.every((segment) => segment !== "." && segment !== ".." && /^[A-Za-z0-9._-]+$/.test(segment));
+    segments.every((segment: string) => segment !== "." && segment !== ".." && /^[A-Za-z0-9._-]+$/.test(segment));
   if (!valid) {
     throw commandError("Invalid Host remote root.", "Pass an absolute POSIX path such as `/srv/sporades`.");
   }
 }
 
-function validateHostTlsMode(tlsMode) {
+function validateHostTlsMode(tlsMode: string) {
   if (!HOST_TLS_MODES.has(tlsMode)) {
     throw commandError(
       "Invalid Host TLS mode.",
@@ -4409,7 +4433,7 @@ function validateHostTlsMode(tlsMode) {
   }
 }
 
-function validateHostReleaseId(releaseId) {
+function validateHostReleaseId(releaseId: string) {
   if (!/^\d{8}T\d{6}Z-[a-f0-9]{8}$/.test(releaseId)) {
     throw commandError(
       "Invalid Hosted Capsule release ID.",
@@ -4418,7 +4442,7 @@ function validateHostReleaseId(releaseId) {
   }
 }
 
-function validateGithubWorkflowBranch(branch) {
+function validateGithubWorkflowBranch(branch: string) {
   if (
     !branch ||
     branch.length > 255 ||
@@ -4431,13 +4455,13 @@ function validateGithubWorkflowBranch(branch) {
   }
 }
 
-function validateGithubWorkflowFile(filePath) {
+function validateGithubWorkflowFile(filePath: string) {
   if (!filePath || path.isAbsolute(filePath) || filePath.includes("\0")) {
     throw commandError("Invalid GitHub workflow file path.", "Pass a relative path such as `.github/workflows/sporades-autodeploy.yml`.");
   }
 }
 
-function validateCapsuleSubname(subname) {
+function validateCapsuleSubname(subname: string) {
   if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(subname)) {
     throw commandError(
       "Invalid Capsule subname.",
@@ -4452,7 +4476,7 @@ function validateCapsuleSubname(subname) {
   }
 }
 
-function validateRemoteHelperAction(action) {
+function validateRemoteHelperAction(action: string) {
   if (!/^[a-z][a-z0-9.-]*$/.test(action)) {
     throw commandError(
       "Invalid remote Host helper action.",
@@ -4461,14 +4485,14 @@ function validateRemoteHelperAction(action) {
   }
 }
 
-function run(command, args, cwd, message, hint) {
+function run(command: string, args: readonly string[], cwd: any, message: string, hint: string) {
   const result = spawnSync(command, args, { cwd, stdio: "inherit" });
   if (result.status !== 0) {
     throw commandError(message, hint);
   }
 }
 
-function runDocker(args, cwd, message, hint) {
+function runDocker(args: any[] | readonly string[], cwd: any, message: string, hint: string) {
   const result = spawnSync("docker", args, { cwd, encoding: "utf8" });
   if (result.status !== 0) {
     throw commandError(message, hint);
@@ -4476,7 +4500,7 @@ function runDocker(args, cwd, message, hint) {
   return result.stdout.trim();
 }
 
-async function printLocalCapsuleServiceStatus(options) {
+async function printLocalCapsuleServiceStatus(options: LooseRecord) {
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = localCapsuleServicesFromConfig(config, options.projectDir);
   const data = { services: await localCapsuleServicesStatus(capsuleServices, options.projectDir) };
@@ -4485,12 +4509,12 @@ async function printLocalCapsuleServiceStatus(options) {
     writeResult({ ok: true, data, error: null });
     return;
   }
-  for (const [name, service] of Object.entries(data.services)) {
+  for (const [name, service] of Object.entries(data.services) as Array<[string, LooseRecord]>) {
     process.stdout.write(`${name}: ${service.status}${service.health ? ` (${service.health})` : ""}\n`);
   }
 }
 
-function localCapsuleServicesFromConfig(config, projectDir) {
+function localCapsuleServicesFromConfig(config: LooseRecord, projectDir: string) {
   if (!hasDeclaredLocalCapsuleServices(config)) {
     validateCapsuleServicesConfig(config.services);
     return null;
@@ -4503,11 +4527,11 @@ function localCapsuleServicesFromConfig(config, projectDir) {
   };
 }
 
-function hasDeclaredLocalCapsuleServices(config) {
+function hasDeclaredLocalCapsuleServices(config: LooseRecord) {
   return Boolean(config.services?.database || config.services?.storage);
 }
 
-async function requireLocalContainerBinding(options, action) {
+async function requireLocalContainerBinding(options: LooseRecord, action: string) {
   const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
@@ -4519,7 +4543,7 @@ async function requireLocalContainerBinding(options, action) {
   return { binding, bindingPath };
 }
 
-function containerLifecycleSummary(status, binding) {
+function containerLifecycleSummary(status: string, binding: LooseRecord) {
   return {
     status,
     containerId: binding.containerId,
@@ -4527,7 +4551,7 @@ function containerLifecycleSummary(status, binding) {
   };
 }
 
-async function stopLocalContainerSession(options) {
+async function stopLocalContainerSession(options: LooseRecord) {
   const { binding } = await requireLocalContainerBinding(options, "stop");
   runDocker(
     ["stop", binding.containerId],
@@ -4538,7 +4562,7 @@ async function stopLocalContainerSession(options) {
   return containerLifecycleSummary("stopped", binding);
 }
 
-async function restartLocalContainerSession(options) {
+async function restartLocalContainerSession(options: LooseRecord) {
   const { binding } = await requireLocalContainerBinding(options, "restart");
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
@@ -4568,7 +4592,7 @@ async function restartLocalContainerSession(options) {
   }
 }
 
-async function removeLocalContainerSession(options) {
+async function removeLocalContainerSession(options: LooseRecord) {
   const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
@@ -4602,7 +4626,7 @@ async function removeLocalContainerSession(options) {
   return container;
 }
 
-async function stopLocalCapsuleServices(options) {
+async function stopLocalCapsuleServices(options: LooseRecord) {
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const services = {};
@@ -4627,11 +4651,11 @@ async function stopLocalCapsuleServices(options) {
   return services;
 }
 
-async function resetLocalCapsuleServices(options) {
+async function resetLocalCapsuleServices(options: LooseRecord) {
   const config = await readProjectConfig(options.projectDir);
   validateCapsuleServicesConfig(config.services);
   const capsuleServices = hasDeclaredLocalCapsuleServices(config) ? await writeCapsuleServicesCompose(options.projectDir, config) : null;
-  const services = {};
+  const services: Record<string, LooseRecord> = {};
   if (capsuleServices) {
     runDocker(
       ["compose", "-f", capsuleServices.path, "down", "--remove-orphans", "--volumes"],
@@ -4639,7 +4663,11 @@ async function resetLocalCapsuleServices(options) {
       "Failed to reset Capsule services.",
       "Check Docker is running and supports `docker compose down`, then retry the command.",
     );
-    await Promise.all(Object.values(capsuleServices.services).map((service) => rm(service.stateDir, { recursive: true, force: true })));
+    await Promise.all(
+      Object.values(capsuleServices.services as Record<string, CapsuleService>).map((service) =>
+        rm(service.stateDir, { recursive: true, force: true }),
+      ),
+    );
     const removedImages = removeSporadesOwnedCapsuleImages(capsuleServices, options.projectDir);
     Object.assign(services, capsuleServicesJsonSummary(capsuleServices, "reset"));
     for (const service of Object.values(services)) {
@@ -4658,21 +4686,21 @@ async function resetLocalCapsuleServices(options) {
   return services;
 }
 
-async function localCapsuleServicesStatus(capsuleServices, projectDir) {
+async function localCapsuleServicesStatus(capsuleServices: CapsuleServicesModel | null, projectDir: any) {
   if (!capsuleServices) {
     return {};
   }
-  const services = {};
+  const services: Record<string, LooseRecord> = {};
   const networkExists = dockerResourceExists(["network", "inspect", capsuleServices.networks.services], projectDir);
-  for (const [name, service] of Object.entries(capsuleServices.services)) {
-    const diagnostics = [];
-    let runtime = { state: "unknown", health: null };
+  for (const [name, service] of Object.entries(capsuleServices.services) as Array<[string, CapsuleService]>) {
+    const diagnostics: LooseRecord[] = [];
+    let runtime: LooseRecord = { state: "unknown", health: null };
     try {
       runtime = capsuleServiceStatus(capsuleServices, projectDir, service.name);
     } catch (error) {
       diagnostics.push({
         code: "compose-status-unavailable",
-        message: error.message,
+        message: (error as Error).message,
       });
     }
     services[name] = {
@@ -4697,7 +4725,7 @@ async function localCapsuleServicesStatus(capsuleServices, projectDir) {
   return services;
 }
 
-function removeSporadesOwnedCapsuleImages(capsuleServices, projectDir) {
+function removeSporadesOwnedCapsuleImages(capsuleServices: CapsuleServicesModel, projectDir: any) {
   const images = new Set();
   for (const args of [
     [
@@ -4726,7 +4754,7 @@ function removeSporadesOwnedCapsuleImages(capsuleServices, projectDir) {
   return [...images];
 }
 
-function dockerList(args, cwd) {
+function dockerList(args: readonly string[], cwd: any) {
   const result = spawnSync("docker", args, { cwd, encoding: "utf8" });
   if (result.status !== 0) {
     return [];
@@ -4738,28 +4766,32 @@ function dockerList(args, cwd) {
     .filter(Boolean);
 }
 
-function dockerResourceExists(args, cwd) {
+function dockerResourceExists(args: readonly string[], cwd: any) {
   const result = spawnSync("docker", args, { cwd, encoding: "utf8" });
   return result.status === 0;
 }
 
-async function pathExists(targetPath) {
+async function pathExists(targetPath: PathLike) {
   try {
     await lstat(targetPath);
     return true;
   } catch (error) {
-    if (error?.code === "ENOENT") {
+    if (errorDetails(error).code === "ENOENT") {
       return false;
     }
     throw error;
   }
 }
 
-async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
+async function startCapsuleServices(
+  capsuleServices: CapsuleServicesModel | null,
+  projectDir: any,
+  options: StartCapsuleServicesOptions = {},
+) {
   if (!capsuleServices) {
     return options.connection === "container" ? { env: {}, services: null } : {};
   }
-  for (const [name, service] of Object.entries(capsuleServices.services)) {
+  for (const [name, service] of Object.entries(capsuleServices.services) as Array<[string, CapsuleService]>) {
     options.emit?.({
       event: "service",
       service: name,
@@ -4777,8 +4809,9 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
     );
   } catch (error) {
     if (options.connection === "container") {
-      error.diagnostics = {
-        ...(error.diagnostics ?? {}),
+      const details = errorDetails(error);
+      details.diagnostics = {
+        ...(details.diagnostics ?? {}),
         services: capsuleServicesJsonSummary(capsuleServices, "failed"),
       };
     }
@@ -4787,15 +4820,16 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
   if (!options.wait) {
     return {};
   }
-  const connections = {};
+  const connections: Record<string, CapsuleServiceConnection> = {};
   try {
-    for (const [name, service] of Object.entries(capsuleServices.services)) {
-      connections[name] = await waitForCapsuleService(capsuleServices, projectDir, name, service, options.connection);
+    for (const [name, service] of Object.entries(capsuleServices.services) as Array<[string, CapsuleService]>) {
+      connections[name] = await waitForCapsuleService(capsuleServices, projectDir, name, service, options.connection ?? "local");
     }
   } catch (error) {
     if (options.connection === "container") {
-      error.diagnostics = {
-        ...(error.diagnostics ?? {}),
+      const details = errorDetails(error);
+      details.diagnostics = {
+        ...(details.diagnostics ?? {}),
         services: capsuleServicesJsonSummary(capsuleServices, "failed"),
       };
     }
@@ -4822,8 +4856,8 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
   return capsuleServicesLocalEnv(capsuleServices, connections);
 }
 
-function capsuleServicesContainerEnv(capsuleServices) {
-  const env = {};
+function capsuleServicesContainerEnv(capsuleServices: CapsuleServicesModel) {
+  const env: ServiceEnv = {};
   if (capsuleServices.services.database) {
     const service = capsuleServices.services.database;
     env.SPORADES_SERVICE_DATABASE_ENGINE = service.engine;
@@ -4845,17 +4879,25 @@ function capsuleServicesContainerEnv(capsuleServices) {
   return env;
 }
 
-function capsuleServicesLocalEnv(capsuleServices, connections) {
-  const env = {};
+function capsuleServicesLocalEnv(capsuleServices: CapsuleServicesModel, connections: Record<string, CapsuleServiceConnection>) {
+  const env: ServiceEnv = {};
   if (capsuleServices.services.database) {
     const service = capsuleServices.services.database;
+    const connection = connections.database;
+    if (!connection?.url) {
+      throw commandError("Capsule database service connection is unavailable.", "Restart `sporades dev` so the service can publish a local URL.");
+    }
     env.SPORADES_SERVICE_DATABASE_ENGINE = service.engine;
-    env.SPORADES_SERVICE_DATABASE_URL = connections.database.url;
+    env.SPORADES_SERVICE_DATABASE_URL = connection.url;
   }
   if (capsuleServices.services.storage) {
     const service = capsuleServices.services.storage;
+    const connection = connections.storage;
+    if (!connection?.url) {
+      throw commandError("Capsule storage service connection is unavailable.", "Restart `sporades dev` so the service can publish a local URL.");
+    }
     env.SPORADES_SERVICE_STORAGE_ENGINE = service.engine;
-    env.SPORADES_SERVICE_STORAGE_ENDPOINT = connections.storage.url;
+    env.SPORADES_SERVICE_STORAGE_ENDPOINT = connection.url;
     env.SPORADES_SERVICE_STORAGE_ACCESS_KEY = service.accessKey;
     env.SPORADES_SERVICE_STORAGE_SECRET_KEY = service.secretKey;
     env.SPORADES_SERVICE_STORAGE_BUCKET = service.bucket;
@@ -4865,9 +4907,9 @@ function capsuleServicesLocalEnv(capsuleServices, connections) {
   return env;
 }
 
-function capsuleServicesJsonSummary(capsuleServices, status) {
+function capsuleServicesJsonSummary(capsuleServices: CapsuleServicesModel, status: string) {
   return Object.fromEntries(
-    Object.entries(capsuleServices.services).map(([name, service]) => [
+    (Object.entries(capsuleServices.services) as Array<[string, CapsuleService]>).map(([name, service]) => [
       name,
       {
         status,
@@ -4880,7 +4922,7 @@ function capsuleServicesJsonSummary(capsuleServices, status) {
   );
 }
 
-async function waitForCapsuleService(capsuleServices, projectDir, name, service, connection) {
+async function waitForCapsuleService(capsuleServices: CapsuleServicesModel, projectDir: any, name: string, service: LooseRecord, connection: string) {
   if (connection === "container") {
     return await waitForHealthyCapsuleService(capsuleServices, projectDir, name, service);
   }
@@ -4928,7 +4970,7 @@ async function waitForCapsuleService(capsuleServices, projectDir, name, service,
   throw error;
 }
 
-async function waitForHealthyCapsuleService(capsuleServices, projectDir, name, service) {
+async function waitForHealthyCapsuleService(capsuleServices: CapsuleServicesModel, projectDir: any, name: any, service: LooseRecord) {
   const deadline = Date.now() + capsuleServiceReadinessTimeoutMs();
   let lastStatus = null;
   let lastError = null;
@@ -4953,7 +4995,7 @@ async function waitForHealthyCapsuleService(capsuleServices, projectDir, name, s
     service: name,
     engine: service.engine,
     status: lastError ?? lastStatus ?? { state: "unknown", health: null },
-    probe: null,
+    probe: null as any,
   };
   const error = commandError(
     `Capsule ${service.kind} service did not become ready.`,
@@ -4963,7 +5005,7 @@ async function waitForHealthyCapsuleService(capsuleServices, projectDir, name, s
   throw error;
 }
 
-async function waitForCapsuleDatabaseService(capsuleServices, projectDir) {
+async function waitForCapsuleDatabaseService(capsuleServices: CapsuleServicesModel, projectDir: any) {
   const service = capsuleServices.services.database;
   const deadline = Date.now() + capsuleServiceReadinessTimeoutMs();
   let lastStatus = null;
@@ -5006,14 +5048,14 @@ async function waitForCapsuleDatabaseService(capsuleServices, projectDir) {
   throw error;
 }
 
-function localCapsuleDatabaseUrl(service, port) {
+function localCapsuleDatabaseUrl(service: LooseRecord, port: number) {
   if (service.engine === "postgres") {
     return `postgres://${encodeURIComponent(service.user)}:${encodeURIComponent(service.password)}@127.0.0.1:${port}/${service.databaseName}`;
   }
   return `http://127.0.0.1:${port}`;
 }
 
-async function probeCapsuleDatabaseService(capsuleServices, url) {
+async function probeCapsuleDatabaseService(capsuleServices: CapsuleServicesModel, url: string | URL | Request) {
   if (capsuleServices.services.database.engine === "postgres") {
     return await probePostgresCapsuleDatabaseService(url);
   }
@@ -5026,16 +5068,17 @@ async function probeCapsuleDatabaseService(capsuleServices, url) {
       statusCode: response.status,
     };
   } catch (error) {
+    const details = errorDetails(error);
     return {
       ok: false,
-      message: error.name === "AbortError" ? "probe timed out" : error.message,
+      message: details.name === "AbortError" ? "probe timed out" : details.message,
     };
   } finally {
     clearTimeout(timeout);
   }
 }
 
-async function probeCapsuleStorageService(url) {
+async function probeCapsuleStorageService(url: string) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 500);
   try {
@@ -5045,16 +5088,17 @@ async function probeCapsuleStorageService(url) {
       statusCode: response.status,
     };
   } catch (error) {
+    const details = errorDetails(error);
     return {
       ok: false,
-      message: error.name === "AbortError" ? "probe timed out" : error.message,
+      message: details.name === "AbortError" ? "probe timed out" : details.message,
     };
   } finally {
     clearTimeout(timeout);
   }
 }
 
-async function probePostgresCapsuleDatabaseService(url) {
+async function probePostgresCapsuleDatabaseService(url: any) {
   try {
     const client = await createPostgresConnection(url);
     try {
@@ -5064,9 +5108,10 @@ async function probePostgresCapsuleDatabaseService(url) {
       await client.close().catch(() => {});
     }
   } catch (error) {
+    const details = errorDetails(error);
     return {
       ok: false,
-      message: error.message,
+      message: details.message,
     };
   }
 }
@@ -5080,7 +5125,7 @@ function capsuleServiceReadinessTimeoutMs() {
   return Number.isFinite(value) && value > 0 ? value : 30000;
 }
 
-function capsuleServiceStatus(capsuleServices, projectDir, serviceName) {
+function capsuleServiceStatus(capsuleServices: CapsuleServicesModel, projectDir: any, serviceName: any) {
   const output = runDocker(
     ["compose", "-f", capsuleServices.path, "ps", "--format", "json", serviceName],
     projectDir,
@@ -5095,7 +5140,7 @@ function capsuleServiceStatus(capsuleServices, projectDir, serviceName) {
   };
 }
 
-function capsuleServicePort(capsuleServices, projectDir, serviceName, targetPort, serviceKind = "database") {
+function capsuleServicePort(capsuleServices: CapsuleServicesModel, projectDir: any, serviceName: any, targetPort: any, serviceKind = "database") {
   const output = runDocker(
     ["compose", "-f", capsuleServices.path, "port", serviceName, String(targetPort)],
     projectDir,
@@ -5112,7 +5157,7 @@ function capsuleServicePort(capsuleServices, projectDir, serviceName, targetPort
   return Number(match[1]);
 }
 
-function parseComposeJsonOutput(output) {
+function parseComposeJsonOutput(output: string) {
   const trimmed = output.trim();
   if (!trimmed) {
     return null;
@@ -5123,11 +5168,11 @@ function parseComposeJsonOutput(output) {
     return trimmed
       .split("\n")
       .filter(Boolean)
-      .map((line) => JSON.parse(line));
+      .map((line: string) => JSON.parse(line));
   }
 }
 
-function ensureLocalBaseImage(cwd) {
+function ensureLocalBaseImage(cwd: any) {
   const inspect = spawnSync("docker", ["image", "inspect", SPORADES_BASE_IMAGE.image], { cwd, encoding: "utf8" });
   if (inspect.status === 0) {
     return;
@@ -5163,7 +5208,7 @@ function ensureLocalBaseImage(cwd) {
   }
 }
 
-function runDockerCleanup(args, cwd, message, hint, force = false) {
+function runDockerCleanup(args: any[] | readonly string[], cwd: any, message: string, hint: string, force = false) {
   const result = spawnSync("docker", args, { cwd, encoding: "utf8" });
   if (result.status === 0) {
     return result.stdout.trim();
@@ -5174,16 +5219,16 @@ function runDockerCleanup(args, cwd, message, hint, force = false) {
   throw commandError(message, hint);
 }
 
-function formatMount(mount) {
+function formatMount(mount: LooseRecord) {
   return `${mount.host}:${mount.container}${mount.mode ? `:${mount.mode}` : ""}`;
 }
 
-async function prepareRuntimeDataPath(targetPath) {
+async function prepareRuntimeDataPath(targetPath: string) {
   let stats;
   try {
     stats = await lstat(targetPath);
   } catch (error) {
-    if (error?.code === "ENOENT") {
+    if (errorDetails(error).code === "ENOENT") {
       return;
     }
     throw error;
@@ -5213,18 +5258,18 @@ async function prepareRuntimeDataPath(targetPath) {
 function localContainerRuntimeUser() {
   const uid = process.getuid?.();
   const gid = process.getgid?.();
-  if (Number.isInteger(uid) && Number.isInteger(gid) && uid >= 0 && gid >= 0) {
+  if (typeof uid === "number" && typeof gid === "number" && Number.isInteger(uid) && Number.isInteger(gid) && uid >= 0 && gid >= 0) {
     return `${uid}:${gid}`;
   }
   return baseImageRuntimeUser();
 }
 
-function isMissingDockerContainerError(result) {
+function isMissingDockerContainerError(result: SpawnSyncReturns<string>) {
   return /No such container/i.test(`${result.stderr ?? ""}\n${result.stdout ?? ""}`);
 }
 
-function commandError(message, hint, diagnostics = null) {
-  const error = new Error(message);
+function commandError(message: string, hint: string, diagnostics: unknown = null): CommandError {
+  const error: CommandError = new Error(message);
   error.hint = hint;
   if (diagnostics) {
     error.diagnostics = diagnostics;
@@ -5232,35 +5277,12 @@ function commandError(message, hint, diagnostics = null) {
   return error;
 }
 
-function createLogStore() {
-  return {
-    entries: [],
-  };
-}
-
-function createLogger(logStore) {
-  const write = (level, message, data = null) => {
-    logStore.entries.push({
-      level,
-      message: String(message),
-      data,
-      timestamp: new Date().toISOString(),
-    });
-  };
-
-  return {
-    info: (message, data) => write("info", message, data),
-    warn: (message, data) => write("warn", message, data),
-    error: (message, data) => write("error", message, data),
-  };
-}
-
-function writeJsonResponse(response, status, result) {
+function writeJsonResponse(response: ServerResponse<IncomingMessage>, status: number, result: LooseRecord) {
   response.writeHead(status, { "content-type": "application/json; charset=utf-8" });
   response.end(`${JSON.stringify(result)}\n`);
 }
 
-function writeResult(result, failed = false) {
+function writeResult(result: LooseRecord, failed = false) {
   process.stdout.write(`${JSON.stringify(result)}\n`);
   if (failed) {
     process.exitCode = 1;

@@ -3,7 +3,7 @@ export declare function createServerBundleSource({ config, serverEnv, sealedServ
     serverEnv: any;
     sealedServerEnv?: {
         enabled: boolean;
-    };
+    } | undefined;
     serverSource: any;
     serverModuleSource: any;
 }): string;

@@ -23,7 +23,7 @@ export declare function writeCapsuleServicesCompose(projectDir: any, config: any
     };
     path: string;
     relativePath: string;
-}>;
+} | null>;
 export declare function capsuleServicesComposeModel(config: any, projectDir?: string, options?: {}): {
     projectSlug: string;
     composeProjectName: string;

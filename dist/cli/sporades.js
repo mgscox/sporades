@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// @ts-nocheck
 import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, statSync, watch } from "node:fs";
@@ -14,6 +13,9 @@ import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-po
 import { createSqliteDatabaseAdapter, createPostgresConnection, createWebSocketHub, dumpDatabase, handleFileHttpRoute, listDatabaseTables, openDevDatabase, prepareHttpSecurity, readJsonRequest, routeEndpoint, routeSporadesAuth, runReadOnlyQuery, simulateLocalIdentitySession, } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { CAPSULE_SERVICES_COMPOSE_FILE, CAPSULE_SERVICES_STATE_DIR, capsuleServicesComposeModel, validateCapsuleServicesConfig, writeCapsuleServicesCompose, } from "../capsule-services.js";
+function errorDetails(error) {
+    return error && typeof error === "object" ? error : { message: String(error) };
+}
 const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
 const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
@@ -954,7 +956,7 @@ async function startDevSession(options) {
     const websocketHub = createWebSocketHub(() => runtime.database);
     const server = createServer(async (request, response) => {
         try {
-            const requestUrl = new URL(request.url, "http://127.0.0.1");
+            const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
             if (prepareHttpSecurity(runtime.database, request, response)) {
                 return;
             }
@@ -1008,7 +1010,7 @@ async function startDevSession(options) {
                 case "POST:/__sporades/debug/auth/as": {
                     const body = await readJsonRequest(request);
                     const result = await simulateLocalIdentitySession(runtime.database, body);
-                    if (result.ok && body.client) {
+                    if (result.ok && body.client && result.data) {
                         result.data.delivery = websocketHub.deliverAuthSession(body.client, result.data);
                     }
                     writeJsonResponse(response, result.ok ? 200 : 400, result);
@@ -1044,12 +1046,13 @@ async function startDevSession(options) {
             response.end("Not found");
         }
         catch (error) {
+            const details = errorDetails(error);
             response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-            response.end(error.message);
+            response.end(details.message ?? String(error));
         }
     });
     server.on("upgrade", (request, socket) => {
-        const requestUrl = new URL(request.url, "http://127.0.0.1");
+        const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
         if (requestUrl.pathname !== "/__sporades/ws") {
             socket.destroy();
             return;
@@ -1058,7 +1061,7 @@ async function startDevSession(options) {
     });
     await new Promise((resolve, reject) => {
         server.once("error", reject);
-        server.listen(port, "127.0.0.1", resolve);
+        server.listen(port, "127.0.0.1", () => resolve());
     });
     const address = server.address();
     const actualPort = typeof address === "object" && address ? address.port : port;
@@ -1141,12 +1144,13 @@ async function startDevSession(options) {
             });
         }
         catch (restartError) {
+            const details = errorDetails(restartError);
             runtime.database.log.emit({
                 category: "platform",
                 event: "runtime.restart.failed",
                 level: "error",
                 message: "Dev runtime restart failed",
-                data: { ...errorData, restartError: restartError.message },
+                data: { ...errorData, restartError: details.message },
             });
             emitDevEvent(options, {
                 event: "restart",
@@ -1156,8 +1160,8 @@ async function startDevSession(options) {
                 restartPolicy: restartPolicyStatus("dev"),
                 fatal: errorData,
             }, {
-                message: restartError.message,
-                hint: restartError.hint ?? "Fix the fatal runtime error and save again.",
+                message: details.message,
+                hint: details.hint ?? "Fix the fatal runtime error and save again.",
             });
         }
         finally {
@@ -1201,12 +1205,13 @@ async function startDevSession(options) {
             });
         }
         catch (error) {
+            const details = errorDetails(error);
             runtime.database.log.emit({
                 category: "platform",
                 event: "dev.rebuild.failed",
                 level: "error",
                 message: "Dev rebuild failed",
-                data: { message: error.message },
+                data: { message: details.message },
             });
             emitDevEvent(options, {
                 event: "rebuild",
@@ -1214,8 +1219,8 @@ async function startDevSession(options) {
                 url,
                 port: actualPort,
             }, {
-                message: error.message,
-                hint: error.hint ?? "Fix the build error and save again.",
+                message: details.message,
+                hint: details.hint ?? "Fix the build error and save again.",
             });
         }
     });
@@ -1275,7 +1280,9 @@ function watchDevInputs(projectDir, onChange) {
             affectsServerRuntime: Boolean(pendingChange?.affectsServerRuntime || change.affectsServerRuntime),
             configChanged: Boolean(pendingChange?.configChanged || change.configChanged),
         };
-        clearTimeout(debounceTimer);
+        if (debounceTimer) {
+            clearTimeout(debounceTimer);
+        }
         debounceTimer = setTimeout(runPendingChange, DEV_REBUILD_DEBOUNCE_MS);
     };
     const runPendingChange = async () => {
@@ -1296,7 +1303,9 @@ function watchDevInputs(projectDir, onChange) {
         finally {
             rebuildInFlight = false;
             if (pendingChange) {
-                clearTimeout(debounceTimer);
+                if (debounceTimer) {
+                    clearTimeout(debounceTimer);
+                }
                 debounceTimer = setTimeout(runPendingChange, DEV_REBUILD_DEBOUNCE_MS);
             }
         }
@@ -1306,7 +1315,7 @@ function watchDevInputs(projectDir, onChange) {
             watchers.push(watch(watchedPath.path, { recursive: true }, () => schedule(watchedPath)));
         }
         catch (error) {
-            if (error?.code !== "ENOENT") {
+            if (errorDetails(error).code !== "ENOENT") {
                 throw error;
             }
         }
@@ -1316,7 +1325,7 @@ function watchDevInputs(projectDir, onChange) {
 function configChangeAffectsServerRuntime(currentConfig, nextConfig) {
     return JSON.stringify(serverRuntimeConfig(currentConfig)) !== JSON.stringify(serverRuntimeConfig(nextConfig));
 }
-function serverRuntimeConfig(config) {
+function serverRuntimeConfig(config = {}) {
     const { client: _client, ...serverConfig } = config ?? {};
     return serverConfig;
 }
@@ -1333,7 +1342,7 @@ function collectPathSignature(filePath, entries) {
         stats = statSync(filePath);
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorDetails(error).code === "ENOENT") {
             entries.push(`${filePath}:missing`);
             return;
         }
@@ -1611,7 +1620,7 @@ async function readPortableSealedServerEnvEnvelope(filePath) {
         envelope = JSON.parse(await readFile(filePath, "utf8"));
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorDetails(error).code === "ENOENT") {
             throw commandError("Sealed Server env export file was not found.", "Pass `--file <path>` pointing at a `sporades env export` JSON file.");
         }
         throw commandError("Invalid Sealed Server env export file.", "Pass a JSON file created by `sporades env export`.");
@@ -2300,7 +2309,7 @@ async function readOptionalDevSession(projectDir) {
         return await readDevSession(projectDir);
     }
     catch (error) {
-        if (error?.message === "No running Sporades dev session found.") {
+        if (errorDetails(error).message === "No running Sporades dev session found.") {
             return null;
         }
         throw error;
@@ -2405,7 +2414,7 @@ function resolveLocalContainerTarget(options) {
         binding = JSON.parse(readFileSync(bindingPath, "utf8"));
     }
     catch (error) {
-        if (error?.code !== "ENOENT") {
+        if (errorDetails(error).code !== "ENOENT") {
             throw error;
         }
     }
@@ -2427,15 +2436,6 @@ function inspectDockerMounts(cwd, containerId) {
     }
     catch {
         return [];
-    }
-}
-async function fetchDevSessionJson(session, pathname, fetchOptions = {}) {
-    try {
-        const response = await fetch(new URL(pathname, session.url), fetchOptions);
-        return await response.json();
-    }
-    catch {
-        throw commandError("Unable to reach the running Sporades dev session.", "Check that `sporades dev` is still running in this project, then retry the command.");
     }
 }
 async function fetchLocalIdentitySimulation(session, body) {
@@ -2540,7 +2540,7 @@ async function readOptionalProjectSecurity(projectDir, session) {
         return resolveEffectiveSecurityPolicy(await readProjectConfig(projectDir), session);
     }
     catch (error) {
-        if (error?.message === "Missing project configuration: sporades.json") {
+        if (errorDetails(error).message === "Missing project configuration: sporades.json") {
             return null;
         }
         throw error;
@@ -2621,7 +2621,7 @@ async function readRequiredFile(filePath, message, hint) {
         return await readFile(filePath, "utf8");
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorDetails(error).code === "ENOENT") {
             throw commandError(message, hint);
         }
         throw error;
@@ -2632,7 +2632,7 @@ async function readContainerBinding(bindingPath) {
         return JSON.parse(await readFile(bindingPath, "utf8"));
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorDetails(error).code === "ENOENT") {
             return null;
         }
         if (error instanceof SyntaxError) {
@@ -2646,7 +2646,7 @@ async function readRemoteBinding(projectDir) {
         return JSON.parse(await readFile(path.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorDetails(error).code === "ENOENT") {
             return null;
         }
         if (error instanceof SyntaxError) {
@@ -2672,7 +2672,7 @@ async function readHostConfig() {
         return normaliseHostConfig(parsed);
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorDetails(error).code === "ENOENT") {
             return { profiles: {}, currentHostAlias: null };
         }
         if (error instanceof SyntaxError) {
@@ -2691,7 +2691,7 @@ function hostConfigPath() {
         path.join(process.env.XDG_CONFIG_HOME ?? path.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
     return path.join(configDir, "hosts.json");
 }
-function normaliseHostConfig(value) {
+function normaliseHostConfig(value = {}) {
     return {
         profiles: normaliseHostProfiles(value?.profiles),
         currentHostAlias: typeof value?.currentHostAlias === "string" ? value.currentHostAlias : null,
@@ -2709,7 +2709,7 @@ function normaliseHostProfiles(value) {
         },
     ]));
 }
-function normaliseHostTls(value) {
+function normaliseHostTls(value = {}) {
     const mode = typeof value?.mode === "string" && HOST_TLS_MODES.has(value.mode) ? value.mode : DEFAULT_HOST_TLS_MODE;
     return { mode };
 }
@@ -2900,7 +2900,7 @@ async function createHostReleaseArchive(options) {
     const localArchive = path.join(hostPushDir, `${releaseId}.tar.gz`);
     const packageDir = path.join(hostPushDir, `${releaseId}-files`);
     const remoteArchive = posixJoin(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
-    const sealedServerEnv = await createHostReleaseSealedServerEnv(options, packageDir);
+    const sealedServerEnv = await createHostReleaseSealedServerEnv(options);
     const releaseRequest = createHostReleaseRequest({
         alias: options.alias,
         profile: options.profile,
@@ -2956,7 +2956,7 @@ async function createHostReleaseArchive(options) {
         request: releaseRequest,
     };
 }
-async function createHostReleaseSealedServerEnv(options, packageDir) {
+async function createHostReleaseSealedServerEnv(options) {
     if (!options.bundle.containerMounts.sealedServerEnv) {
         return null;
     }
@@ -3138,10 +3138,11 @@ function formatHostedCapsuleList(data, profile) {
         release: "RELEASE",
         docker: "DOCKER",
     };
-    const widths = Object.fromEntries(Object.keys(headers).map((key) => [key, Math.max(headers[key].length, ...rows.map((row) => row[key].length))]));
+    const keys = ["subname", "hostedUrl", "registry", "release", "docker"];
+    const widths = Object.fromEntries(keys.map((key) => [key, Math.max(headers[key].length, ...rows.map((row) => row[key].length))]));
     const line = (row) => [row.subname, row.hostedUrl, row.registry, row.release, row.docker]
         .map((value, index) => {
-        const key = ["subname", "hostedUrl", "registry", "release", "docker"][index];
+        const key = keys[index];
         return index === 4 ? value : value.padEnd(widths[key] + 2);
     })
         .join("");
@@ -3183,10 +3184,11 @@ function formatHostedCapsuleReleases(data) {
         current: "CURRENT",
         createdAt: "CREATED",
     };
-    const widths = Object.fromEntries(Object.keys(headers).map((key) => [key, Math.max(headers[key].length, ...rows.map((row) => row[key].length))]));
+    const keys = ["id", "state", "current", "createdAt"];
+    const widths = Object.fromEntries(keys.map((key) => [key, Math.max(headers[key].length, ...rows.map((row) => row[key].length))]));
     const line = (row) => [row.id, row.state, row.current, row.createdAt]
         .map((value, index) => {
-        const key = ["id", "state", "current", "createdAt"][index];
+        const key = keys[index];
         return index === 3 ? value : value.padEnd(widths[key] + 2);
     })
         .join("");
@@ -3226,7 +3228,7 @@ async function checkHostServerHealth(alias, profile) {
         });
     }
     catch (error) {
-        const failure = classifyHostHealthFetchFailure(error);
+        const failure = classifyHostHealthFetchFailure(errorDetails(error));
         if (failure === "unreachable") {
             return {
                 ok: false,
@@ -3464,7 +3466,7 @@ async function writeGithubAutodeployWorkflow(options) {
         }
     }
     catch (error) {
-        if (error.code !== "ENOENT") {
+        if (errorDetails(error).code !== "ENOENT") {
             throw error;
         }
     }
@@ -4025,7 +4027,7 @@ async function pathExists(targetPath) {
         return true;
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorDetails(error).code === "ENOENT") {
             return false;
         }
         throw error;
@@ -4049,8 +4051,9 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
     }
     catch (error) {
         if (options.connection === "container") {
-            error.diagnostics = {
-                ...(error.diagnostics ?? {}),
+            const details = errorDetails(error);
+            details.diagnostics = {
+                ...(details.diagnostics ?? {}),
                 services: capsuleServicesJsonSummary(capsuleServices, "failed"),
             };
         }
@@ -4062,13 +4065,14 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
     const connections = {};
     try {
         for (const [name, service] of Object.entries(capsuleServices.services)) {
-            connections[name] = await waitForCapsuleService(capsuleServices, projectDir, name, service, options.connection);
+            connections[name] = await waitForCapsuleService(capsuleServices, projectDir, name, service, options.connection ?? "local");
         }
     }
     catch (error) {
         if (options.connection === "container") {
-            error.diagnostics = {
-                ...(error.diagnostics ?? {}),
+            const details = errorDetails(error);
+            details.diagnostics = {
+                ...(details.diagnostics ?? {}),
                 services: capsuleServicesJsonSummary(capsuleServices, "failed"),
             };
         }
@@ -4120,13 +4124,21 @@ function capsuleServicesLocalEnv(capsuleServices, connections) {
     const env = {};
     if (capsuleServices.services.database) {
         const service = capsuleServices.services.database;
+        const connection = connections.database;
+        if (!connection?.url) {
+            throw commandError("Capsule database service connection is unavailable.", "Restart `sporades dev` so the service can publish a local URL.");
+        }
         env.SPORADES_SERVICE_DATABASE_ENGINE = service.engine;
-        env.SPORADES_SERVICE_DATABASE_URL = connections.database.url;
+        env.SPORADES_SERVICE_DATABASE_URL = connection.url;
     }
     if (capsuleServices.services.storage) {
         const service = capsuleServices.services.storage;
+        const connection = connections.storage;
+        if (!connection?.url) {
+            throw commandError("Capsule storage service connection is unavailable.", "Restart `sporades dev` so the service can publish a local URL.");
+        }
         env.SPORADES_SERVICE_STORAGE_ENGINE = service.engine;
-        env.SPORADES_SERVICE_STORAGE_ENDPOINT = connections.storage.url;
+        env.SPORADES_SERVICE_STORAGE_ENDPOINT = connection.url;
         env.SPORADES_SERVICE_STORAGE_ACCESS_KEY = service.accessKey;
         env.SPORADES_SERVICE_STORAGE_SECRET_KEY = service.secretKey;
         env.SPORADES_SERVICE_STORAGE_BUCKET = service.bucket;
@@ -4275,9 +4287,10 @@ async function probeCapsuleDatabaseService(capsuleServices, url) {
         };
     }
     catch (error) {
+        const details = errorDetails(error);
         return {
             ok: false,
-            message: error.name === "AbortError" ? "probe timed out" : error.message,
+            message: details.name === "AbortError" ? "probe timed out" : details.message,
         };
     }
     finally {
@@ -4295,9 +4308,10 @@ async function probeCapsuleStorageService(url) {
         };
     }
     catch (error) {
+        const details = errorDetails(error);
         return {
             ok: false,
-            message: error.name === "AbortError" ? "probe timed out" : error.message,
+            message: details.name === "AbortError" ? "probe timed out" : details.message,
         };
     }
     finally {
@@ -4316,9 +4330,10 @@ async function probePostgresCapsuleDatabaseService(url) {
         }
     }
     catch (error) {
+        const details = errorDetails(error);
         return {
             ok: false,
-            message: error.message,
+            message: details.message,
         };
     }
 }
@@ -4408,7 +4423,7 @@ async function prepareRuntimeDataPath(targetPath) {
         stats = await lstat(targetPath);
     }
     catch (error) {
-        if (error?.code === "ENOENT") {
+        if (errorDetails(error).code === "ENOENT") {
             return;
         }
         throw error;
@@ -4431,7 +4446,7 @@ async function prepareRuntimeDataPath(targetPath) {
 function localContainerRuntimeUser() {
     const uid = process.getuid?.();
     const gid = process.getgid?.();
-    if (Number.isInteger(uid) && Number.isInteger(gid) && uid >= 0 && gid >= 0) {
+    if (typeof uid === "number" && typeof gid === "number" && Number.isInteger(uid) && Number.isInteger(gid) && uid >= 0 && gid >= 0) {
         return `${uid}:${gid}`;
     }
     return baseImageRuntimeUser();
@@ -4446,26 +4461,6 @@ function commandError(message, hint, diagnostics = null) {
         error.diagnostics = diagnostics;
     }
     return error;
-}
-function createLogStore() {
-    return {
-        entries: [],
-    };
-}
-function createLogger(logStore) {
-    const write = (level, message, data = null) => {
-        logStore.entries.push({
-            level,
-            message: String(message),
-            data,
-            timestamp: new Date().toISOString(),
-        });
-    };
-    return {
-        info: (message, data) => write("info", message, data),
-        warn: (message, data) => write("warn", message, data),
-        error: (message, data) => write("error", message, data),
-    };
 }
 function writeJsonResponse(response, status, result) {
     response.writeHead(status, { "content-type": "application/json; charset=utf-8" });

@@ -27,7 +27,7 @@ export declare const FATAL_RUNTIME_RESTART_POLICY: {
 };
 export declare function restartPolicyForMode(mode: any): any;
 export declare function restartPolicyStatus(mode: any, overrides?: {}): {
-    verificationFallbackOnly?: boolean;
+    verificationFallbackOnly?: boolean | undefined;
     exhaustedRouteTarget?: any;
     mode: any;
     maxAttempts: any;
