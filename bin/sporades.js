@@ -9172,54 +9172,47 @@ main().catch((error) => {
 });
 async function main() {
   const [command, ...args] = process.argv.slice(2);
-  if (command === "--help" || command === "-h") {
-    printHelp();
-    return;
-  }
-  if (command === "create") {
-    const options = parseCreateArgs(args);
-    await createProject(options);
-    writeResult({
-      ok: true,
-      data: { path: options.projectDir, template: options.template },
-      error: null
-    });
-    return;
-  }
-  if (command === "dev") {
-    await manageLocalLifecycle("dev", parseDevArgs(args));
-    return;
-  }
-  if (command === "auth") {
-    await manageAuth(parseAuthArgs(args));
-    return;
-  }
-  if (command === "security") {
-    await inspectSecurity(parseSecurityArgs(args));
-    return;
-  }
-  if (command === "env") {
-    await manageEnv(parseEnvArgs(args));
-    return;
-  }
-  if (command === "deploy") {
-    await manageLocalLifecycle("deploy", parseDeployArgs(args));
-    return;
-  }
-  if (command === "host") {
-    await manageHost(parseHostArgs(args));
-    return;
-  }
-  if (command === "logs") {
-    await printLogs(parseLogsArgs(args));
-    return;
-  }
-  if (command === "db") {
-    await inspectDatabase(parseDbArgs(args));
-    return;
-  }
-  {
-    throw commandError4(`Unknown command: ${command ?? ""}`.trim(), "Use `sporades create <name>`.");
+  switch (command) {
+    case "--help":
+    case "-h":
+      printHelp();
+      return;
+    case "create": {
+      const options = parseCreateArgs(args);
+      await createProject(options);
+      writeResult({
+        ok: true,
+        data: { path: options.projectDir, template: options.template },
+        error: null
+      });
+      return;
+    }
+    case "dev":
+      await manageLocalLifecycle("dev", parseDevArgs(args));
+      return;
+    case "auth":
+      await manageAuth(parseAuthArgs(args));
+      return;
+    case "security":
+      await inspectSecurity(parseSecurityArgs(args));
+      return;
+    case "env":
+      await manageEnv(parseEnvArgs(args));
+      return;
+    case "deploy":
+      await manageLocalLifecycle("deploy", parseDeployArgs(args));
+      return;
+    case "host":
+      await manageHost(parseHostArgs(args));
+      return;
+    case "logs":
+      await printLogs(parseLogsArgs(args));
+      return;
+    case "db":
+      await inspectDatabase(parseDbArgs(args));
+      return;
+    default:
+      throw commandError4(`Unknown command: ${command ?? ""}`.trim(), "Use `sporades create <name>`.");
   }
 }
 function printHelp() {
@@ -9250,33 +9243,31 @@ function parseCreateArgs(args) {
   let json = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--framework") {
-      framework = readFlagValue(args, ++index, "--framework");
-      continue;
+    switch (arg) {
+      case "--framework":
+        framework = readFlagValue(args, ++index, "--framework");
+        break;
+      case "--template":
+        template = readFlagValue(args, ++index, "--template");
+        break;
+      case "--no-install":
+        install = false;
+        break;
+      case "--no-git":
+        git = false;
+        break;
+      case "--json":
+        json = true;
+        break;
+      default:
+        if (arg.startsWith("--")) {
+          throw commandError4(`Unknown flag: ${arg}`, "Use `sporades create <name> --help` for supported flags.");
+        }
+        if (name !== null) {
+          throw commandError4("Too many positional arguments.", "Use `sporades create <name>`.");
+        }
+        name = arg;
     }
-    if (arg === "--template") {
-      template = readFlagValue(args, ++index, "--template");
-      continue;
-    }
-    if (arg === "--no-install") {
-      install = false;
-      continue;
-    }
-    if (arg === "--no-git") {
-      git = false;
-      continue;
-    }
-    if (arg === "--json") {
-      json = true;
-      continue;
-    }
-    if (arg.startsWith("--")) {
-      throw commandError4(`Unknown flag: ${arg}`, "Use `sporades create <name> --help` for supported flags.");
-    }
-    if (name !== null) {
-      throw commandError4("Too many positional arguments.", "Use `sporades create <name>`.");
-    }
-    name = arg;
   }
   if (!name) {
     throw commandError4("Missing scaffold name.", "Use `sporades create <name>`.");
@@ -9306,23 +9297,30 @@ function parseDevArgs(args) {
   let publicDev = false;
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
-    if (arg === "--port" && subcommand === "start") {
-      const value = Number.parseInt(readFlagValue(rest, ++index, "--port"), 10);
-      if (Number.isNaN(value) || value < 0) {
-        throw commandError4("Invalid dev port.", "Pass --port <number>.");
+    switch (arg) {
+      case "--port": {
+        if (subcommand !== "start") {
+          throw commandError4(`Unknown flag: ${arg}`, "Use `sporades dev [status|stop|reset] --json`.");
+        }
+        const value = Number.parseInt(readFlagValue(rest, ++index, "--port"), 10);
+        if (Number.isNaN(value) || value < 0) {
+          throw commandError4("Invalid dev port.", "Pass --port <number>.");
+        }
+        port = value;
+        break;
       }
-      port = value;
-      continue;
+      case "--json":
+        json = true;
+        break;
+      case "--public":
+        if (subcommand !== "start") {
+          throw commandError4(`Unknown flag: ${arg}`, "Use `sporades dev [status|stop|reset] --json`.");
+        }
+        publicDev = true;
+        break;
+      default:
+        throw commandError4(`Unknown flag: ${arg}`, "Use `sporades dev [status|stop|reset] --json`.");
     }
-    if (arg === "--json") {
-      json = true;
-      continue;
-    }
-    if (arg === "--public" && subcommand === "start") {
-      publicDev = true;
-      continue;
-    }
-    throw commandError4(`Unknown flag: ${arg}`, "Use `sporades dev [status|stop|reset] --json`.");
   }
   return {
     subcommand,
@@ -9341,19 +9339,25 @@ function parseDeployArgs(args) {
   let force = false;
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
-    if (arg === "--port" && subcommand === "start") {
-      port = readPort(readFlagValue(rest, ++index, "--port"));
-      continue;
+    switch (arg) {
+      case "--port":
+        if (subcommand !== "start") {
+          throw commandError4(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reset] --json`.");
+        }
+        port = readPort(readFlagValue(rest, ++index, "--port"));
+        break;
+      case "--json":
+        json = true;
+        break;
+      case "--force":
+        if (subcommand !== "start") {
+          throw commandError4(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reset] --json`.");
+        }
+        force = true;
+        break;
+      default:
+        throw commandError4(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reset] --json`.");
     }
-    if (arg === "--json") {
-      json = true;
-      continue;
-    }
-    if (arg === "--force" && subcommand === "start") {
-      force = true;
-      continue;
-    }
-    throw commandError4(`Unknown flag: ${arg}`, "Use `sporades deploy [status|stop|restart|remove|reset] --json`.");
   }
   return {
     subcommand,
@@ -9368,18 +9372,19 @@ function parseSecurityArgs(args) {
   let json = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "--session") {
-      session = readFlagValue(args, ++index, "--session");
-      continue;
+    switch (arg) {
+      case "--session":
+        session = readFlagValue(args, ++index, "--session");
+        break;
+      case "--json":
+        json = true;
+        break;
+      default:
+        throw commandError4(
+          `Unknown flag: ${arg}`,
+          "Use `sporades security --session dev|public-dev|container|hosted --json`."
+        );
     }
-    if (arg === "--json") {
-      json = true;
-      continue;
-    }
-    throw commandError4(
-      `Unknown flag: ${arg}`,
-      "Use `sporades security --session dev|public-dev|container|hosted --json`."
-    );
   }
   if (!SECURITY_SESSIONS.has(session)) {
     throw commandError4(
@@ -9409,72 +9414,69 @@ function parseAuthArgs(args) {
   let client = null;
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
-    if (arg === "--json") {
-      json = true;
-      continue;
+    switch (arg) {
+      case "--json":
+        json = true;
+        break;
+      case "--client-id":
+        clientId = readFlagValue(rest, ++index, "--client-id");
+        break;
+      case "--client-secret":
+        clientSecret = readFlagValue(rest, ++index, "--client-secret");
+        break;
+      case "--client-json":
+        clientJson = readFlagValue(rest, ++index, "--client-json");
+        break;
+      case "--email":
+        email = readFlagValue(rest, ++index, "--email");
+        break;
+      case "--display-name":
+        displayName = readFlagValue(rest, ++index, "--display-name");
+        break;
+      case "--picture":
+        picture = readFlagValue(rest, ++index, "--picture");
+        break;
+      case "--port":
+        port = readPort(readFlagValue(rest, ++index, "--port"));
+        break;
+      case "--client":
+        client = readFlagValue(rest, ++index, "--client");
+        if (!isValidAuthClientTarget(client)) {
+          throw commandError4("Invalid auth client target.", "Use `--client current`, `--client all`, or a client id from `sporades auth clients`.");
+        }
+        break;
+      default:
+        throw commandError4(`Unknown flag: ${arg}`, "Use `sporades auth status`, `sporades auth set google`, or `sporades auth as email`.");
     }
-    if (arg === "--client-id") {
-      clientId = readFlagValue(rest, ++index, "--client-id");
-      continue;
-    }
-    if (arg === "--client-secret") {
-      clientSecret = readFlagValue(rest, ++index, "--client-secret");
-      continue;
-    }
-    if (arg === "--client-json") {
-      clientJson = readFlagValue(rest, ++index, "--client-json");
-      continue;
-    }
-    if (arg === "--email") {
-      email = readFlagValue(rest, ++index, "--email");
-      continue;
-    }
-    if (arg === "--display-name") {
-      displayName = readFlagValue(rest, ++index, "--display-name");
-      continue;
-    }
-    if (arg === "--picture") {
-      picture = readFlagValue(rest, ++index, "--picture");
-      continue;
-    }
-    if (arg === "--port") {
-      port = readPort(readFlagValue(rest, ++index, "--port"));
-      continue;
-    }
-    if (arg === "--client") {
-      client = readFlagValue(rest, ++index, "--client");
-      if (!isValidAuthClientTarget(client)) {
-        throw commandError4("Invalid auth client target.", "Use `--client current`, `--client all`, or a client id from `sporades auth clients`.");
+  }
+  switch (subcommand) {
+    case "status":
+      return { subcommand, json, projectDir: process.cwd() };
+    case "clients":
+      return { subcommand, json, port, projectDir: process.cwd() };
+    case "as":
+      if (!simulatedProvider) {
+        throw commandError4("Missing simulated auth provider.", "Use `sporades auth as email --email <address> --json`.");
       }
-      continue;
-    }
-    throw commandError4(`Unknown flag: ${arg}`, "Use `sporades auth status`, `sporades auth set google`, or `sporades auth as email`.");
-  }
-  if (subcommand === "status") {
-    return { subcommand, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "clients") {
-    return { subcommand, json, port, projectDir: process.cwd() };
-  }
-  if (subcommand === "as") {
-    if (!simulatedProvider) {
-      throw commandError4("Missing simulated auth provider.", "Use `sporades auth as email --email <address> --json`.");
-    }
-    return { subcommand, provider: simulatedProvider, email, displayName, picture, port, client, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "set" && provider === "google") {
-    if (clientJson) {
-      const credentials = readProviderClientCredentials(provider, clientJson, process.cwd());
-      clientId ??= credentials.clientId;
-      clientSecret ??= credentials.clientSecret;
-    }
-    if (!clientId || !clientSecret) {
-      throw commandError4(
-        "Missing Google OAuth credentials.",
-        "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`."
-      );
-    }
-    return { subcommand, provider, clientId, clientSecret, json, projectDir: process.cwd() };
+      return { subcommand, provider: simulatedProvider, email, displayName, picture, port, client, json, projectDir: process.cwd() };
+    case "set":
+      if (provider === "google") {
+        if (clientJson) {
+          const credentials = readProviderClientCredentials(provider, clientJson, process.cwd());
+          clientId ??= credentials.clientId;
+          clientSecret ??= credentials.clientSecret;
+        }
+        if (!clientId || !clientSecret) {
+          throw commandError4(
+            "Missing Google OAuth credentials.",
+            "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`."
+          );
+        }
+        return { subcommand, provider, clientId, clientSecret, json, projectDir: process.cwd() };
+      }
+      break;
+    default:
+      break;
   }
   throw commandError4(
     "Unknown auth command.",
@@ -9492,54 +9494,57 @@ function parseEnvArgs(args) {
   const positional = [];
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
-    if (arg === "--json") {
-      json = true;
-      continue;
+    switch (arg) {
+      case "--json":
+        json = true;
+        break;
+      case "--file":
+        file = readFlagValue(rest, ++index, "--file");
+        break;
+      case "--host":
+        hostAlias = readFlagValue(rest, ++index, "--host");
+        break;
+      case "--subname":
+        subname = readFlagValue(rest, ++index, "--subname");
+        break;
+      case "--output":
+        output = readFlagValue(rest, ++index, "--output");
+        break;
+      case "--sealed":
+        sealed = true;
+        break;
+      default:
+        if (arg.startsWith("--")) {
+          throw commandError4(
+            `Unknown flag: ${arg}`,
+            "Use `sporades env init`, `sporades env import`, `sporades env status`, `sporades env export`, or `sporades env reencrypt`."
+          );
+        }
+        positional.push(arg);
     }
-    if (arg === "--file") {
-      file = readFlagValue(rest, ++index, "--file");
-      continue;
-    }
-    if (arg === "--host") {
-      hostAlias = readFlagValue(rest, ++index, "--host");
-      continue;
-    }
-    if (arg === "--subname") {
-      subname = readFlagValue(rest, ++index, "--subname");
-      continue;
-    }
-    if (arg === "--output") {
-      output = readFlagValue(rest, ++index, "--output");
-      continue;
-    }
-    if (arg === "--sealed") {
-      sealed = true;
-      continue;
-    }
-    if (arg.startsWith("--")) {
+  }
+  switch (subcommand) {
+    case "init":
+    case "import":
+    case "status":
+    case "export":
+    case "reencrypt":
+      if (positional.length > 0) {
+        throw commandError4("Too many positional arguments.", `Use \`sporades env ${subcommand} --json\`.`);
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      if (subname) {
+        validateCapsuleSubname(subname);
+      }
+      return { subcommand, file, hostAlias, subname, output, sealed, json, projectDir: process.cwd() };
+    default:
       throw commandError4(
-        `Unknown flag: ${arg}`,
+        `Unknown env command: ${subcommand ?? ""}`.trim(),
         "Use `sporades env init`, `sporades env import`, `sporades env status`, `sporades env export`, or `sporades env reencrypt`."
       );
-    }
-    positional.push(arg);
   }
-  if (["init", "import", "status", "export", "reencrypt"].includes(subcommand)) {
-    if (positional.length > 0) {
-      throw commandError4("Too many positional arguments.", `Use \`sporades env ${subcommand} --json\`.`);
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    if (subname) {
-      validateCapsuleSubname(subname);
-    }
-    return { subcommand, file, hostAlias, subname, output, sealed, json, projectDir: process.cwd() };
-  }
-  throw commandError4(
-    `Unknown env command: ${subcommand ?? ""}`.trim(),
-    "Use `sporades env init`, `sporades env import`, `sporades env status`, `sporades env export`, or `sporades env reencrypt`."
-  );
 }
 function parseHostArgs(args) {
   const [subcommand, ...rest] = args;
@@ -9561,329 +9566,321 @@ function parseHostArgs(args) {
   const positional = [];
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
-    if (arg === "--json") {
-      json = true;
-      continue;
+    switch (arg) {
+      case "--json":
+        json = true;
+        break;
+      case "--host":
+        hostAlias = readFlagValue(rest, ++index, "--host");
+        break;
+      case "--server":
+        server = readFlagValue(rest, ++index, "--server");
+        break;
+      case "--domain":
+        domain = readFlagValue(rest, ++index, "--domain");
+        break;
+      case "--remote-root":
+        remoteRoot = readFlagValue(rest, ++index, "--remote-root");
+        break;
+      case "--tls":
+        tlsMode = readFlagValue(rest, ++index, "--tls");
+        break;
+      case "--subname":
+        subname = readFlagValue(rest, ++index, "--subname");
+        break;
+      case "--lines":
+      case "-n":
+        lines = readHostLogLineCount(readFlagValue(rest, ++index, arg));
+        break;
+      case "--restart":
+        restart = true;
+        break;
+      case "--verify":
+        verify = true;
+        restart = true;
+        break;
+      case "--fallback-to-previous-release":
+        fallbackToPreviousRelease = true;
+        break;
+      case "--branch":
+        branch = readFlagValue(rest, ++index, "--branch");
+        break;
+      case "--file":
+        file = readFlagValue(rest, ++index, "--file");
+        break;
+      case "--dry-run":
+        dryRun = true;
+        break;
+      case "--force":
+        force = true;
+        break;
+      default:
+        if (arg.startsWith("--")) {
+          throw commandError4(
+            `Unknown flag: ${arg}`,
+            "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`."
+          );
+        }
+        positional.push(arg);
     }
-    if (arg === "--host") {
-      hostAlias = readFlagValue(rest, ++index, "--host");
-      continue;
+  }
+  switch (subcommand) {
+    case "add": {
+      const [alias, ...extra] = positional;
+      if (!alias) {
+        throw commandError4(
+          "Missing Host profile alias.",
+          "Use `sporades host add <alias> --server <ssh-target> --domain <hosted-domain>`."
+        );
+      }
+      if (extra.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host add <alias> --server <ssh-target> --domain <hosted-domain>`.");
+      }
+      validateHostAlias(alias);
+      if (!server) {
+        throw commandError4("Missing Host server.", "Pass `--server <ssh-target>`.");
+      }
+      if (!domain) {
+        throw commandError4("Missing Hosted domain.", "Pass `--domain <hosted-domain>`.");
+      }
+      validateHostedDomain(domain);
+      validateHostRemoteRoot(remoteRoot);
+      validateHostTlsMode(tlsMode);
+      return { subcommand, alias, server, domain, remoteRoot, tlsMode, json, projectDir: process.cwd() };
     }
-    if (arg === "--server") {
-      server = readFlagValue(rest, ++index, "--server");
-      continue;
+    case "use": {
+      const [alias, ...extra] = positional;
+      if (!alias) {
+        throw commandError4("Missing Host profile alias.", "Use `sporades host use <alias>`.");
+      }
+      if (extra.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host use <alias>`.");
+      }
+      validateHostAlias(alias);
+      return { subcommand, alias, json, projectDir: process.cwd() };
     }
-    if (arg === "--domain") {
-      domain = readFlagValue(rest, ++index, "--domain");
-      continue;
+    case "current":
+      if (positional.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host current --host <alias> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      return { subcommand, hostAlias, json, projectDir: process.cwd() };
+    case "health": {
+      const [positionalSubname, ...extra] = positional;
+      if (extra.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host health [subname] --host <alias> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      if (positionalSubname) {
+        validateCapsuleSubname(positionalSubname);
+      }
+      return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
     }
-    if (arg === "--remote-root") {
-      remoteRoot = readFlagValue(rest, ++index, "--remote-root");
-      continue;
+    case "bind": {
+      const [positionalSubname, ...extra] = positional;
+      if (!positionalSubname) {
+        throw commandError4("Missing Capsule subname.", "Use `sporades host bind <subname> --host <alias>`.");
+      }
+      if (extra.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host bind <subname> --host <alias>`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateCapsuleSubname(positionalSubname);
+      return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
     }
-    if (arg === "--tls") {
-      tlsMode = readFlagValue(rest, ++index, "--tls");
-      continue;
+    case "register": {
+      const [positionalSubname, ...extra] = positional;
+      if (!positionalSubname) {
+        throw commandError4("Missing Capsule subname.", "Use `sporades host register <subname> --host <alias>`.");
+      }
+      if (extra.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host register <subname> --host <alias>`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateCapsuleSubname(positionalSubname);
+      return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
     }
-    if (arg === "--subname") {
-      subname = readFlagValue(rest, ++index, "--subname");
-      continue;
+    case "rotate-key": {
+      const [positionalSubname, ...extra] = positional;
+      if (!positionalSubname) {
+        throw commandError4("Missing Capsule subname.", "Use `sporades host rotate-key <subname> --host <alias>`.");
+      }
+      if (extra.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host rotate-key <subname> --host <alias>`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateCapsuleSubname(positionalSubname);
+      return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
     }
-    if (arg === "--lines" || arg === "-n") {
-      lines = readHostLogLineCount(readFlagValue(rest, ++index, arg));
-      continue;
+    case "bootstrap":
+      if (positional.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host bootstrap --host <alias> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      return { subcommand, hostAlias, json, projectDir: process.cwd() };
+    case "list":
+      if (positional.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host list --host <alias> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      return { subcommand, hostAlias, json, projectDir: process.cwd() };
+    case "stats": {
+      const [positionalSubname, ...extra] = positional;
+      if (extra.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host stats [subname] --host <alias>`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      if (positionalSubname) {
+        validateCapsuleSubname(positionalSubname);
+      }
+      return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
     }
-    if (arg === "--restart") {
-      restart = true;
-      continue;
+    case "start":
+    case "stop":
+    case "restart":
+    case "unregister":
+    case "delete": {
+      const [positionalSubname, ...extra] = positional;
+      if (!positionalSubname) {
+        throw commandError4("Missing Capsule subname.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
+      }
+      if (extra.length > 0) {
+        throw commandError4("Too many positional arguments.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateCapsuleSubname(positionalSubname);
+      return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
     }
-    if (arg === "--verify") {
-      verify = true;
-      restart = true;
-      continue;
+    case "releases": {
+      const [positionalSubname, ...extra] = positional;
+      if (!positionalSubname) {
+        throw commandError4("Missing Capsule subname.", "Use `sporades host releases <subname> --host <alias>`.");
+      }
+      if (extra.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host releases <subname> --host <alias>`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateCapsuleSubname(positionalSubname);
+      return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
     }
-    if (arg === "--fallback-to-previous-release") {
-      fallbackToPreviousRelease = true;
-      continue;
+    case "rollback": {
+      const [positionalSubname, releaseId, ...extra] = positional;
+      if (!positionalSubname) {
+        throw commandError4("Missing Capsule subname.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
+      }
+      if (!releaseId) {
+        throw commandError4("Missing Hosted Capsule release ID.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
+      }
+      if (extra.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateCapsuleSubname(positionalSubname);
+      validateHostReleaseId(releaseId);
+      return { subcommand, subname: positionalSubname, releaseId, hostAlias, json, projectDir: process.cwd() };
     }
-    if (arg === "--branch") {
-      branch = readFlagValue(rest, ++index, "--branch");
-      continue;
+    case "push":
+      if (positional.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host push --host <alias> --subname <capsule-subname> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      if (subname) {
+        validateCapsuleSubname(subname);
+      }
+      if (fallbackToPreviousRelease && !verify) {
+        throw commandError4(
+          "Release fallback requires verification.",
+          "Use `sporades host push --verify --fallback-to-previous-release`."
+        );
+      }
+      return { subcommand, hostAlias, subname, restart, verify, fallbackToPreviousRelease, json, projectDir: process.cwd() };
+    case "github": {
+      const [area, action, ...extra] = positional;
+      if (area !== "workflow" || action !== "write") {
+        throw commandError4(
+          "Unknown GitHub Host command.",
+          "Use `sporades host github workflow write --host <alias> --subname <capsule-subname>`."
+        );
+      }
+      if (extra.length > 0) {
+        throw commandError4(
+          "Too many positional arguments.",
+          "Use `sporades host github workflow write --host <alias> --subname <capsule-subname>`."
+        );
+      }
+      if (!hostAlias) {
+        throw commandError4("Missing Host profile alias.", "Pass `--host <alias>`.");
+      }
+      if (!subname) {
+        throw commandError4("Missing Capsule subname.", "Pass `--subname <capsule-subname>`.");
+      }
+      validateHostAlias(hostAlias);
+      validateCapsuleSubname(subname);
+      validateGithubWorkflowBranch(branch);
+      validateGithubWorkflowFile(file);
+      return { subcommand, github: { area, action }, hostAlias, subname, branch, file, dryRun, force, json, projectDir: process.cwd() };
     }
-    if (arg === "--file") {
-      file = readFlagValue(rest, ++index, "--file");
-      continue;
+    case "logs": {
+      const [source = "http", ...extra] = positional;
+      if (extra.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host logs [http|stdout|stderr] --host <alias> --subname <capsule-subname> -n <lines> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateHostLogSource(source);
+      if (subname) {
+        validateCapsuleSubname(subname);
+      }
+      return { subcommand, source, hostAlias, subname, lines, json, projectDir: process.cwd() };
     }
-    if (arg === "--dry-run") {
-      dryRun = true;
-      continue;
+    case "invoke": {
+      const [action, ...extra] = positional;
+      if (!action) {
+        throw commandError4("Missing remote Host helper action.", "Use `sporades host invoke <action> --host <alias> --json`.");
+      }
+      if (extra.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host invoke <action> --host <alias> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      validateRemoteHelperAction(action);
+      if (subname) {
+        validateCapsuleSubname(subname);
+      }
+      return { subcommand, action, subname, hostAlias, json, projectDir: process.cwd() };
     }
-    if (arg === "--force") {
-      force = true;
-      continue;
-    }
-    if (arg.startsWith("--")) {
+    default:
       throw commandError4(
-        `Unknown flag: ${arg}`,
+        `Unknown host command: ${subcommand ?? ""}`.trim(),
         "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`."
       );
-    }
-    positional.push(arg);
   }
-  if (subcommand === "add") {
-    const [alias, ...extra] = positional;
-    if (!alias) {
-      throw commandError4(
-        "Missing Host profile alias.",
-        "Use `sporades host add <alias> --server <ssh-target> --domain <hosted-domain>`."
-      );
-    }
-    if (extra.length > 0) {
-      throw commandError4("Too many positional arguments.", "Use `sporades host add <alias> --server <ssh-target> --domain <hosted-domain>`.");
-    }
-    validateHostAlias(alias);
-    if (!server) {
-      throw commandError4("Missing Host server.", "Pass `--server <ssh-target>`.");
-    }
-    if (!domain) {
-      throw commandError4("Missing Hosted domain.", "Pass `--domain <hosted-domain>`.");
-    }
-    validateHostedDomain(domain);
-    validateHostRemoteRoot(remoteRoot);
-    validateHostTlsMode(tlsMode);
-    return { subcommand, alias, server, domain, remoteRoot, tlsMode, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "use") {
-    const [alias, ...extra] = positional;
-    if (!alias) {
-      throw commandError4("Missing Host profile alias.", "Use `sporades host use <alias>`.");
-    }
-    if (extra.length > 0) {
-      throw commandError4("Too many positional arguments.", "Use `sporades host use <alias>`.");
-    }
-    validateHostAlias(alias);
-    return { subcommand, alias, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "current") {
-    if (positional.length > 0) {
-      throw commandError4("Too many positional arguments.", "Use `sporades host current --host <alias> --json`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    return { subcommand, hostAlias, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "health") {
-    const [positionalSubname, ...extra] = positional;
-    if (extra.length > 0) {
-      throw commandError4("Too many positional arguments.", "Use `sporades host health [subname] --host <alias> --json`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    if (positionalSubname) {
-      validateCapsuleSubname(positionalSubname);
-    }
-    return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "bind") {
-    const [positionalSubname, ...extra] = positional;
-    if (!positionalSubname) {
-      throw commandError4("Missing Capsule subname.", "Use `sporades host bind <subname> --host <alias>`.");
-    }
-    if (extra.length > 0) {
-      throw commandError4("Too many positional arguments.", "Use `sporades host bind <subname> --host <alias>`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateCapsuleSubname(positionalSubname);
-    return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "register") {
-    const [positionalSubname, ...extra] = positional;
-    if (!positionalSubname) {
-      throw commandError4("Missing Capsule subname.", "Use `sporades host register <subname> --host <alias>`.");
-    }
-    if (extra.length > 0) {
-      throw commandError4("Too many positional arguments.", "Use `sporades host register <subname> --host <alias>`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateCapsuleSubname(positionalSubname);
-    return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "rotate-key") {
-    const [positionalSubname, ...extra] = positional;
-    if (!positionalSubname) {
-      throw commandError4("Missing Capsule subname.", "Use `sporades host rotate-key <subname> --host <alias>`.");
-    }
-    if (extra.length > 0) {
-      throw commandError4("Too many positional arguments.", "Use `sporades host rotate-key <subname> --host <alias>`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateCapsuleSubname(positionalSubname);
-    return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "bootstrap") {
-    if (positional.length > 0) {
-      throw commandError4("Too many positional arguments.", "Use `sporades host bootstrap --host <alias> --json`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    return { subcommand, hostAlias, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "list") {
-    if (positional.length > 0) {
-      throw commandError4("Too many positional arguments.", "Use `sporades host list --host <alias> --json`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    return { subcommand, hostAlias, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "stats") {
-    const [positionalSubname, ...extra] = positional;
-    if (extra.length > 0) {
-      throw commandError4("Too many positional arguments.", "Use `sporades host stats [subname] --host <alias>`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    if (positionalSubname) {
-      validateCapsuleSubname(positionalSubname);
-    }
-    return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "start" || subcommand === "stop" || subcommand === "restart" || subcommand === "unregister" || subcommand === "delete") {
-    const [positionalSubname, ...extra] = positional;
-    if (!positionalSubname) {
-      throw commandError4("Missing Capsule subname.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
-    }
-    if (extra.length > 0) {
-      throw commandError4("Too many positional arguments.", `Use \`sporades host ${subcommand} <subname> --host <alias>\`.`);
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateCapsuleSubname(positionalSubname);
-    return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "releases") {
-    const [positionalSubname, ...extra] = positional;
-    if (!positionalSubname) {
-      throw commandError4("Missing Capsule subname.", "Use `sporades host releases <subname> --host <alias>`.");
-    }
-    if (extra.length > 0) {
-      throw commandError4("Too many positional arguments.", "Use `sporades host releases <subname> --host <alias>`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateCapsuleSubname(positionalSubname);
-    return { subcommand, subname: positionalSubname, hostAlias, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "rollback") {
-    const [positionalSubname, releaseId, ...extra] = positional;
-    if (!positionalSubname) {
-      throw commandError4("Missing Capsule subname.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
-    }
-    if (!releaseId) {
-      throw commandError4("Missing Hosted Capsule release ID.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
-    }
-    if (extra.length > 0) {
-      throw commandError4("Too many positional arguments.", "Use `sporades host rollback <subname> <release-id> --host <alias>`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateCapsuleSubname(positionalSubname);
-    validateHostReleaseId(releaseId);
-    return { subcommand, subname: positionalSubname, releaseId, hostAlias, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "push") {
-    if (positional.length > 0) {
-      throw commandError4("Too many positional arguments.", "Use `sporades host push --host <alias> --subname <capsule-subname> --json`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    if (subname) {
-      validateCapsuleSubname(subname);
-    }
-    if (fallbackToPreviousRelease && !verify) {
-      throw commandError4(
-        "Release fallback requires verification.",
-        "Use `sporades host push --verify --fallback-to-previous-release`."
-      );
-    }
-    return { subcommand, hostAlias, subname, restart, verify, fallbackToPreviousRelease, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "github") {
-    const [area, action, ...extra] = positional;
-    if (area !== "workflow" || action !== "write") {
-      throw commandError4(
-        "Unknown GitHub Host command.",
-        "Use `sporades host github workflow write --host <alias> --subname <capsule-subname>`."
-      );
-    }
-    if (extra.length > 0) {
-      throw commandError4(
-        "Too many positional arguments.",
-        "Use `sporades host github workflow write --host <alias> --subname <capsule-subname>`."
-      );
-    }
-    if (!hostAlias) {
-      throw commandError4("Missing Host profile alias.", "Pass `--host <alias>`.");
-    }
-    if (!subname) {
-      throw commandError4("Missing Capsule subname.", "Pass `--subname <capsule-subname>`.");
-    }
-    validateHostAlias(hostAlias);
-    validateCapsuleSubname(subname);
-    validateGithubWorkflowBranch(branch);
-    validateGithubWorkflowFile(file);
-    return { subcommand, github: { area, action }, hostAlias, subname, branch, file, dryRun, force, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "logs") {
-    const [source = "http", ...extra] = positional;
-    if (extra.length > 0) {
-      throw commandError4("Too many positional arguments.", "Use `sporades host logs [http|stdout|stderr] --host <alias> --subname <capsule-subname> -n <lines> --json`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateHostLogSource(source);
-    if (subname) {
-      validateCapsuleSubname(subname);
-    }
-    return { subcommand, source, hostAlias, subname, lines, json, projectDir: process.cwd() };
-  }
-  if (subcommand === "invoke") {
-    const [action, ...extra] = positional;
-    if (!action) {
-      throw commandError4("Missing remote Host helper action.", "Use `sporades host invoke <action> --host <alias> --json`.");
-    }
-    if (extra.length > 0) {
-      throw commandError4("Too many positional arguments.", "Use `sporades host invoke <action> --host <alias> --json`.");
-    }
-    if (hostAlias) {
-      validateHostAlias(hostAlias);
-    }
-    validateRemoteHelperAction(action);
-    if (subname) {
-      validateCapsuleSubname(subname);
-    }
-    return { subcommand, action, subname, hostAlias, json, projectDir: process.cwd() };
-  }
-  throw commandError4(
-    `Unknown host command: ${subcommand ?? ""}`.trim(),
-    "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`."
-  );
 }
 function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
   if (provider !== "google") {
@@ -9929,19 +9926,19 @@ function parseLogsArgs(args) {
   let subcommand = "recent";
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (arg === "tail") {
-      subcommand = "tail";
-      continue;
+    switch (arg) {
+      case "tail":
+        subcommand = "tail";
+        break;
+      case "--port":
+        port = readPort(readFlagValue(args, ++index, "--port"));
+        break;
+      case "--json":
+        json = true;
+        break;
+      default:
+        throw commandError4(`Unknown flag: ${arg}`, "Use `sporades logs [tail] --json`.");
     }
-    if (arg === "--port") {
-      port = readPort(readFlagValue(args, ++index, "--port"));
-      continue;
-    }
-    if (arg === "--json") {
-      json = true;
-      continue;
-    }
-    throw commandError4(`Unknown flag: ${arg}`, "Use `sporades logs [tail] --json`.");
   }
   return {
     subcommand,
@@ -9957,32 +9954,35 @@ function parseDbArgs(args) {
   const positional = [];
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
-    if (arg === "--port") {
-      port = readPort(readFlagValue(rest, ++index, "--port"));
-      continue;
+    switch (arg) {
+      case "--port":
+        port = readPort(readFlagValue(rest, ++index, "--port"));
+        break;
+      case "--json":
+        json = true;
+        break;
+      default:
+        positional.push(arg);
     }
-    if (arg === "--json") {
-      json = true;
-      continue;
-    }
-    positional.push(arg);
   }
-  if (subcommand === "list" || subcommand === "dump") {
-    if (positional.length > 0) {
-      throw commandError4("Too many positional arguments.", `Use \`sporades db ${subcommand} --json\`.`);
-    }
-    return { subcommand, json, port, projectDir: process.cwd() };
+  switch (subcommand) {
+    case "list":
+    case "dump":
+      if (positional.length > 0) {
+        throw commandError4("Too many positional arguments.", `Use \`sporades db ${subcommand} --json\`.`);
+      }
+      return { subcommand, json, port, projectDir: process.cwd() };
+    case "query":
+      if (positional.length === 0) {
+        throw commandError4("Missing SQL query.", "Use `sporades db query <sql>`.");
+      }
+      return { subcommand, sql: positional.join(" "), json, port, projectDir: process.cwd() };
+    default:
+      throw commandError4(
+        `Unknown db command: ${subcommand ?? ""}`.trim(),
+        "Use `sporades db list`, `sporades db dump`, or `sporades db query <sql>`."
+      );
   }
-  if (subcommand === "query") {
-    if (positional.length === 0) {
-      throw commandError4("Missing SQL query.", "Use `sporades db query <sql>`.");
-    }
-    return { subcommand, sql: positional.join(" "), json, port, projectDir: process.cwd() };
-  }
-  throw commandError4(
-    `Unknown db command: ${subcommand ?? ""}`.trim(),
-    "Use `sporades db list`, `sporades db dump`, or `sporades db query <sql>`."
-  );
 }
 function readPort(value) {
   const port = Number.parseInt(value, 10);
@@ -10046,56 +10046,55 @@ async function createProject(options) {
   }
 }
 async function manageLocalLifecycle(surface, options) {
-  if (options.subcommand === "status") {
-    await printLocalCapsuleServiceStatus(options);
-    return;
-  }
-  if (options.subcommand === "stop") {
-    if (surface === "deploy") {
-      const container = await stopLocalContainerSession(options);
-      const services = await stopLocalCapsuleServices({ ...options, silent: true });
+  switch (options.subcommand) {
+    case "status":
+      await printLocalCapsuleServiceStatus(options);
+      return;
+    case "stop":
+      if (surface === "deploy") {
+        const container = await stopLocalContainerSession(options);
+        const services = await stopLocalCapsuleServices({ ...options, silent: true });
+        if (options.json) {
+          writeResult({ ok: true, data: { container, services }, error: null });
+        } else {
+          process.stdout.write("Local Container session stopped.\n");
+        }
+        return;
+      }
+      await stopLocalCapsuleServices(options);
+      return;
+    case "restart":
+      if (surface !== "deploy") {
+        throw commandError4("Unsupported lifecycle command: restart", "Use `sporades deploy restart`.");
+      }
+      await restartLocalContainerSession(options);
+      return;
+    case "remove":
+      if (surface !== "deploy") {
+        throw commandError4("Unsupported lifecycle command: remove", "Use `sporades deploy remove`.");
+      }
+      await removeLocalContainerSession(options);
+      return;
+    case "reset": {
+      let container = null;
+      if (surface === "deploy") {
+        container = await removeLocalContainerSession({ ...options, silent: true, missingOk: true, stopServices: false });
+      }
+      const services = await resetLocalCapsuleServices({ ...options, silent: true });
       if (options.json) {
-        writeResult({ ok: true, data: { container, services }, error: null });
+        writeResult({ ok: true, data: { ...container ? { container } : {}, services }, error: null });
       } else {
-        process.stdout.write("Local Container session stopped.\n");
+        process.stdout.write(surface === "deploy" ? "Local Container session and Capsule service state reset.\n" : "Capsule service state reset.\n");
       }
       return;
     }
-    await stopLocalCapsuleServices(options);
-    return;
+    default:
+      if (surface === "dev") {
+        await startDevSession(options);
+        return;
+      }
+      await startContainerSession(options);
   }
-  if (options.subcommand === "restart") {
-    if (surface !== "deploy") {
-      throw commandError4("Unsupported lifecycle command: restart", "Use `sporades deploy restart`.");
-    }
-    await restartLocalContainerSession(options);
-    return;
-  }
-  if (options.subcommand === "remove") {
-    if (surface !== "deploy") {
-      throw commandError4("Unsupported lifecycle command: remove", "Use `sporades deploy remove`.");
-    }
-    await removeLocalContainerSession(options);
-    return;
-  }
-  if (options.subcommand === "reset") {
-    let container = null;
-    if (surface === "deploy") {
-      container = await removeLocalContainerSession({ ...options, silent: true, missingOk: true, stopServices: false });
-    }
-    const services = await resetLocalCapsuleServices({ ...options, silent: true });
-    if (options.json) {
-      writeResult({ ok: true, data: { ...container ? { container } : {}, services }, error: null });
-    } else {
-      process.stdout.write(surface === "deploy" ? "Local Container session and Capsule service state reset.\n" : "Capsule service state reset.\n");
-    }
-    return;
-  }
-  if (surface === "dev") {
-    await startDevSession(options);
-    return;
-  }
-  await startContainerSession(options);
 }
 async function startDevSession(options) {
   let config = await readProjectConfig(options.projectDir);
@@ -10133,92 +10132,85 @@ async function startDevSession(options) {
       if (prepareHttpSecurity(runtime.database, request, response)) {
         return;
       }
-      if (request.method === "POST" && requestUrl.pathname === "/__sporades/debug/ctx-log") {
-        runtime.database.log.emit({
-          category: "app",
-          event: "ctx.log",
-          level: "info",
-          message: "ctx.log is available"
-        });
-        writeJsonResponse(response, 200, {
-          ok: true,
-          data: { log: ["info", "warn", "error"] },
-          error: null
-        });
-        return;
-      }
-      if (request.method === "GET" && requestUrl.pathname === "/__sporades/debug/logs") {
-        writeJsonResponse(response, 200, {
-          ok: true,
-          data: { source: "sqlite", entries: await runtime.database.log.recent() },
-          error: null
-        });
-        return;
-      }
-      if (request.method === "GET" && requestUrl.pathname === "/__sporades/debug/logs/tail") {
-        writeJsonResponse(response, 200, {
-          ok: true,
-          data: { source: "jsonl", entries: runtime.database.log.tail() },
-          error: null
-        });
-        return;
-      }
-      if (request.method === "GET" && requestUrl.pathname === "/__sporades/debug/db/list") {
-        writeJsonResponse(response, 200, {
-          ok: true,
-          data: { tables: await listDatabaseTables(runtime.database) },
-          error: null
-        });
-        return;
-      }
-      if (request.method === "GET" && requestUrl.pathname === "/__sporades/debug/db/dump") {
-        writeJsonResponse(response, 200, {
-          ok: true,
-          data: { tables: await dumpDatabase(runtime.database) },
-          error: null
-        });
-        return;
-      }
-      if (request.method === "POST" && requestUrl.pathname === "/__sporades/debug/db/query") {
-        const body = await readJsonRequest(request);
-        writeJsonResponse(response, 200, await runReadOnlyQuery(runtime.database, body.sql));
-        return;
-      }
-      if (request.method === "POST" && requestUrl.pathname === "/__sporades/debug/auth/as") {
-        const body = await readJsonRequest(request);
-        const result = await simulateLocalIdentitySession(runtime.database, body);
-        if (result.ok && body.client) {
-          result.data.delivery = websocketHub.deliverAuthSession(body.client, result.data);
+      switch (`${request.method}:${requestUrl.pathname}`) {
+        case "POST:/__sporades/debug/ctx-log":
+          runtime.database.log.emit({
+            category: "app",
+            event: "ctx.log",
+            level: "info",
+            message: "ctx.log is available"
+          });
+          writeJsonResponse(response, 200, {
+            ok: true,
+            data: { log: ["info", "warn", "error"] },
+            error: null
+          });
+          return;
+        case "GET:/__sporades/debug/logs":
+          writeJsonResponse(response, 200, {
+            ok: true,
+            data: { source: "sqlite", entries: await runtime.database.log.recent() },
+            error: null
+          });
+          return;
+        case "GET:/__sporades/debug/logs/tail":
+          writeJsonResponse(response, 200, {
+            ok: true,
+            data: { source: "jsonl", entries: runtime.database.log.tail() },
+            error: null
+          });
+          return;
+        case "GET:/__sporades/debug/db/list":
+          writeJsonResponse(response, 200, {
+            ok: true,
+            data: { tables: await listDatabaseTables(runtime.database) },
+            error: null
+          });
+          return;
+        case "GET:/__sporades/debug/db/dump":
+          writeJsonResponse(response, 200, {
+            ok: true,
+            data: { tables: await dumpDatabase(runtime.database) },
+            error: null
+          });
+          return;
+        case "POST:/__sporades/debug/db/query": {
+          const body = await readJsonRequest(request);
+          writeJsonResponse(response, 200, await runReadOnlyQuery(runtime.database, body.sql));
+          return;
         }
-        writeJsonResponse(response, result.ok ? 200 : 400, result);
+        case "POST:/__sporades/debug/auth/as": {
+          const body = await readJsonRequest(request);
+          const result = await simulateLocalIdentitySession(runtime.database, body);
+          if (result.ok && body.client) {
+            result.data.delivery = websocketHub.deliverAuthSession(body.client, result.data);
+          }
+          writeJsonResponse(response, result.ok ? 200 : 400, result);
+          return;
+        }
+        case "GET:/__sporades/debug/auth/clients":
+          writeJsonResponse(response, 200, {
+            ok: true,
+            data: { clients: websocketHub.listAuthClients() },
+            error: null
+          });
+          return;
+      }
+      if (await routeSporadesAuth(runtime.database, request, response) || await handleFileHttpRoute(runtime.database, request, response, websocketHub) || await routeEndpoint(runtime.database, request, response)) {
         return;
       }
-      if (request.method === "GET" && requestUrl.pathname === "/__sporades/debug/auth/clients") {
-        writeJsonResponse(response, 200, {
-          ok: true,
-          data: { clients: websocketHub.listAuthClients() },
-          error: null
-        });
-        return;
-      }
-      if (await routeSporadesAuth(runtime.database, request, response)) {
-        return;
-      }
-      if (await handleFileHttpRoute(runtime.database, request, response, websocketHub)) {
-        return;
-      }
-      if (await routeEndpoint(runtime.database, request, response)) {
-        return;
-      }
-      if (request.url === "/" || request.url === "/index.html") {
-        response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-        response.end(await readFile4(bundle.staticFiles.indexHtml, "utf8"));
-        return;
-      }
-      if (request.url === "/client.js") {
-        response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
-        response.end(await readFile4(bundle.staticFiles.clientBundle, "utf8"));
-        return;
+      switch (request.url) {
+        case "/":
+        case "/index.html": {
+          response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+          response.end(await readFile4(bundle.staticFiles.indexHtml, "utf8"));
+          return;
+        }
+        case "/client.js": {
+          response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
+          response.end(await readFile4(bundle.staticFiles.clientBundle, "utf8"));
+          return;
+        }
       }
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
       response.end("Not found");
@@ -10580,102 +10572,106 @@ function emitDevEvent(options, data, error = null) {
     });
     return;
   }
-  if (data.event === "started") {
-    process.stdout.write(`Sporades dev session started at ${data.url}
+  switch (data.event) {
+    case "started":
+      process.stdout.write(`Sporades dev session started at ${data.url}
 `);
-    return;
-  }
-  if (data.event === "service") {
-    return;
-  }
-  if (data.event === "fatal") {
-    process.stdout.write(`Sporades dev runtime fatal event: ${error?.message ?? data.fatal?.message ?? "unknown error"}
+      return;
+    case "service":
+      return;
+    case "fatal":
+      process.stdout.write(`Sporades dev runtime fatal event: ${error?.message ?? data.fatal?.message ?? "unknown error"}
 `);
-    return;
-  }
-  if (data.event === "restart" && data.status === "success") {
-    process.stdout.write(`Sporades dev runtime restarted at ${data.url}
+      return;
+    case "restart":
+      switch (data.status) {
+        case "success":
+          process.stdout.write(`Sporades dev runtime restarted at ${data.url}
 `);
-    return;
-  }
-  if (data.event === "restart" && data.status === "exhausted") {
-    process.stdout.write(`Sporades dev runtime restart attempts exhausted: ${error.message}
+          return;
+        case "exhausted":
+          process.stdout.write(`Sporades dev runtime restart attempts exhausted: ${error.message}
 `);
-    return;
-  }
-  if (data.event === "restart") {
-    process.stdout.write(`Sporades dev runtime restart failed: ${error.message}
+          return;
+        default:
+          process.stdout.write(`Sporades dev runtime restart failed: ${error.message}
 `);
-    return;
-  }
-  if (data.status === "success") {
-    process.stdout.write(`Sporades dev session rebuilt at ${data.url}
+          return;
+      }
+    default:
+      if (data.status === "success") {
+        process.stdout.write(`Sporades dev session rebuilt at ${data.url}
 `);
-    return;
+        return;
+      }
   }
   process.stdout.write(`Sporades dev rebuild failed: ${error.message}
 `);
 }
 async function manageAuth(options) {
-  if (options.subcommand === "status") {
-    const config2 = await readProjectConfig(options.projectDir);
-    const envPath = path4.join(options.projectDir, ".env.sporades.server");
-    const serverEnv = parseServerEnv(await readServerEnvFile(envPath));
-    const status2 = authStatus2(config2, serverEnv);
-    if (options.json) {
-      writeResult({ ok: true, data: status2, error: null });
-    } else {
-      process.stdout.write(`Auth mode: ${status2.mode}
+  switch (options.subcommand) {
+    case "status": {
+      const config2 = await readProjectConfig(options.projectDir);
+      const envPath = path4.join(options.projectDir, ".env.sporades.server");
+      const serverEnv = parseServerEnv(await readServerEnvFile(envPath));
+      const status2 = authStatus2(config2, serverEnv);
+      if (options.json) {
+        writeResult({ ok: true, data: status2, error: null });
+      } else {
+        process.stdout.write(`Auth mode: ${status2.mode}
 `);
-      process.stdout.write(`Google OAuth: ${status2.google.configured ? "configured" : "not configured"}
+        process.stdout.write(`Google OAuth: ${status2.google.configured ? "configured" : "not configured"}
 `);
-    }
-    return;
-  }
-  if (options.subcommand === "as") {
-    const session = options.port ? { url: `http://localhost:${options.port}` } : await readDevSession(options.projectDir);
-    const result = await fetchLocalIdentitySimulation(session, {
-      provider: options.provider,
-      email: options.email,
-      displayName: options.displayName,
-      picture: options.picture,
-      client: options.client
-    });
-    if (options.json) {
-      writeResult(result, !result.ok);
+      }
       return;
     }
-    if (!result.ok) {
-      throw commandError4(result.error.message, result.error.hint);
-    }
-    process.stdout.write(`Simulated ${result.data.auth.provider} identity: ${result.data.auth.email}
+    case "as": {
+      const session = options.port ? { url: `http://localhost:${options.port}` } : await readDevSession(options.projectDir);
+      const result = await fetchLocalIdentitySimulation(session, {
+        provider: options.provider,
+        email: options.email,
+        displayName: options.displayName,
+        picture: options.picture,
+        client: options.client
+      });
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+      if (!result.ok) {
+        throw commandError4(result.error.message, result.error.hint);
+      }
+      process.stdout.write(`Simulated ${result.data.auth.provider} identity: ${result.data.auth.email}
 `);
-    if (result.data.delivery) {
-      const noun = result.data.delivery.clients === 1 ? "client" : "clients";
-      process.stdout.write(
-        `Delivered to ${result.data.delivery.clients} ${noun} for --client ${result.data.delivery.target}
+      if (result.data.delivery) {
+        const noun = result.data.delivery.clients === 1 ? "client" : "clients";
+        process.stdout.write(
+          `Delivered to ${result.data.delivery.clients} ${noun} for --client ${result.data.delivery.target}
 `
-      );
-    }
-    process.stdout.write(`localStorage.${result.data.localStorage.key}=${result.data.localStorage.value}
+        );
+      }
+      process.stdout.write(`localStorage.${result.data.localStorage.key}=${result.data.localStorage.value}
 `);
-    return;
-  }
-  if (options.subcommand === "clients") {
-    const session = options.port ? { url: `http://localhost:${options.port}` } : await readDevSession(options.projectDir);
-    const result = await fetchAuthClients(session);
-    if (options.json) {
-      writeResult(result, !result.ok);
       return;
     }
-    if (!result.ok) {
-      throw commandError4(result.error.message, result.error.hint);
-    }
-    for (const client of result.data.clients) {
-      process.stdout.write(`${client.id}	${client.auth.provider}	${client.auth.email ?? ""}
+    case "clients": {
+      const session = options.port ? { url: `http://localhost:${options.port}` } : await readDevSession(options.projectDir);
+      const result = await fetchAuthClients(session);
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+      if (!result.ok) {
+        throw commandError4(result.error.message, result.error.hint);
+      }
+      for (const client of result.data.clients) {
+        process.stdout.write(`${client.id}	${client.auth.provider}	${client.auth.email ?? ""}
 `);
+      }
+      return;
     }
-    return;
+    default:
+      break;
   }
   const configPath = path4.join(options.projectDir, "sporades.json");
   const config = await readProjectConfig(options.projectDir);
@@ -10726,114 +10722,116 @@ async function inspectSecurity(options) {
 }
 async function manageEnv(options) {
   const paths = sealedServerEnvPaths(options.projectDir);
-  if (options.subcommand === "init") {
-    const keyPair = await ensureSealedServerEnvKeyPair(paths);
-    const existing = await readSealedServerEnv(paths);
-    if (!existing) {
-      await writeSealedServerEnv(paths, sealServerEnv({}, keyPair.publicKey, { source: "init" }));
-    }
-    await writeEnvResult(options, {
-      ...envelopeSummary(await readSealedServerEnv(paths), paths),
-      privateKeyConfigured: true
-    });
-    return;
-  }
-  if (options.subcommand === "import") {
-    const envPath = path4.resolve(options.projectDir, options.file ?? ".env.sporades.server");
-    if (options.sealed) {
-      const envelope2 = await readPortableSealedServerEnvEnvelope(envPath);
-      await writeSealedServerEnv(paths, envelope2);
+  switch (options.subcommand) {
+    case "init": {
+      const keyPair = await ensureSealedServerEnvKeyPair(paths);
+      const existing = await readSealedServerEnv(paths);
+      if (!existing) {
+        await writeSealedServerEnv(paths, sealServerEnv({}, keyPair.publicKey, { source: "init" }));
+      }
       await writeEnvResult(options, {
-        ...envelopeSummary(envelope2, paths),
-        imported: true,
-        sealed: true,
-        source: normalisePathForOutput(path4.relative(options.projectDir, envPath) || envPath)
+        ...envelopeSummary(await readSealedServerEnv(paths), paths),
+        privateKeyConfigured: true
       });
       return;
     }
-    const env = parseServerEnv(await readServerEnvFile(envPath));
-    const keyPair = await ensureSealedServerEnvKeyPair(paths);
-    const envelope = sealServerEnv(env, keyPair.publicKey, {
-      source: normalisePathForOutput(path4.relative(options.projectDir, envPath) || envPath)
-    });
-    await writeSealedServerEnv(paths, envelope);
-    await writeEnvResult(options, {
-      ...envelopeSummary(envelope, paths),
-      imported: true,
-      source: normalisePathForOutput(path4.relative(options.projectDir, envPath) || envPath),
-      privateKeyConfigured: true
-    });
-    return;
-  }
-  if (options.subcommand === "status") {
-    const envelope = await readSealedServerEnv(paths);
-    const keyPair = await readKeyPair(paths);
-    await writeEnvResult(options, {
-      ...envelopeSummary(envelope, paths),
-      privateKeyConfigured: Boolean(keyPair?.privateKey),
-      legacyServerEnvFilePresent: (await readServerEnvFile(path4.join(options.projectDir, ".env.sporades.server"))).exists
-    });
-    return;
-  }
-  if (options.subcommand === "export") {
-    const envelope = await readSealedServerEnv(paths);
-    if (!envelope) {
-      throw commandError4("No Sealed Server env configured.", "Run `sporades env import --file .env.sporades.server` first.");
+    case "import": {
+      const envPath = path4.resolve(options.projectDir, options.file ?? ".env.sporades.server");
+      if (options.sealed) {
+        const envelope2 = await readPortableSealedServerEnvEnvelope(envPath);
+        await writeSealedServerEnv(paths, envelope2);
+        await writeEnvResult(options, {
+          ...envelopeSummary(envelope2, paths),
+          imported: true,
+          sealed: true,
+          source: normalisePathForOutput(path4.relative(options.projectDir, envPath) || envPath)
+        });
+        return;
+      }
+      const env = parseServerEnv(await readServerEnvFile(envPath));
+      const keyPair = await ensureSealedServerEnvKeyPair(paths);
+      const envelope = sealServerEnv(env, keyPair.publicKey, {
+        source: normalisePathForOutput(path4.relative(options.projectDir, envPath) || envPath)
+      });
+      await writeSealedServerEnv(paths, envelope);
+      await writeEnvResult(options, {
+        ...envelopeSummary(envelope, paths),
+        imported: true,
+        source: normalisePathForOutput(path4.relative(options.projectDir, envPath) || envPath),
+        privateKeyConfigured: true
+      });
+      return;
     }
-    const exported = exportedEnvelope(envelope);
-    if (options.output) {
-      const outputPath = path4.resolve(options.projectDir, options.output);
-      await mkdir4(path4.dirname(outputPath), { recursive: true });
-      await writeFile4(outputPath, `${JSON.stringify(exported, null, 2)}
+    case "status": {
+      const envelope = await readSealedServerEnv(paths);
+      const keyPair = await readKeyPair(paths);
+      await writeEnvResult(options, {
+        ...envelopeSummary(envelope, paths),
+        privateKeyConfigured: Boolean(keyPair?.privateKey),
+        legacyServerEnvFilePresent: (await readServerEnvFile(path4.join(options.projectDir, ".env.sporades.server"))).exists
+      });
+      return;
+    }
+    case "export": {
+      const envelope = await readSealedServerEnv(paths);
+      if (!envelope) {
+        throw commandError4("No Sealed Server env configured.", "Run `sporades env import --file .env.sporades.server` first.");
+      }
+      const exported = exportedEnvelope(envelope);
+      if (options.output) {
+        const outputPath = path4.resolve(options.projectDir, options.output);
+        await mkdir4(path4.dirname(outputPath), { recursive: true });
+        await writeFile4(outputPath, `${JSON.stringify(exported, null, 2)}
 `, { mode: 384 });
+      }
+      await writeEnvResult(options, {
+        ...envelopeSummary(envelope, paths),
+        exported: true,
+        outputPath: options.output ? path4.resolve(options.projectDir, options.output) : null,
+        envelope: options.output ? null : exported
+      });
+      return;
     }
-    await writeEnvResult(options, {
-      ...envelopeSummary(envelope, paths),
-      exported: true,
-      outputPath: options.output ? path4.resolve(options.projectDir, options.output) : null,
-      envelope: options.output ? null : exported
-    });
-    return;
-  }
-  if (options.subcommand === "reencrypt") {
-    if (!options.hostAlias) {
-      throw commandError4("Missing Host profile alias.", "Pass `--host <alias>`.");
-    }
-    const envelope = await readSealedServerEnv(paths);
-    const localKeyPair = await readKeyPair(paths);
-    if (!envelope || !localKeyPair) {
-      throw commandError4("No local Sealed Server env configured.", "Run `sporades env import --file .env.sporades.server` first.");
-    }
-    const values = unsealServerEnv(envelope, localKeyPair.privateKey);
-    const hostConfig = await readHostConfig();
-    const profile = requireHostProfile(hostConfig, options.hostAlias);
-    const hostKey = options.subname ? await readHostedCapsuleSealedEnvPublicKey(options.hostAlias, profile, options.subname, options.projectDir) : await ensureHostProfileEnvKey(hostConfig, options.hostAlias);
-    const hostEnvelope = sealServerEnv(values, hostKey.publicKey, {
-      source: options.subname ? "hosted-capsule-reencrypt" : "host-profile-reencrypt",
-      hostAlias: options.hostAlias,
-      hostDomain: profile.domain,
-      ...options.subname ? { subname: options.subname } : {}
-    });
-    const hostEnvelopePath = path4.join(
-      paths.hosts,
-      options.subname ? `${options.hostAlias}.${options.subname}.server-env.sealed.json` : `${options.hostAlias}.server-env.sealed.json`
-    );
-    await mkdir4(path4.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
-    await writeFile4(hostEnvelopePath, `${JSON.stringify(hostEnvelope, null, 2)}
+    case "reencrypt": {
+      if (!options.hostAlias) {
+        throw commandError4("Missing Host profile alias.", "Pass `--host <alias>`.");
+      }
+      const envelope = await readSealedServerEnv(paths);
+      const localKeyPair = await readKeyPair(paths);
+      if (!envelope || !localKeyPair) {
+        throw commandError4("No local Sealed Server env configured.", "Run `sporades env import --file .env.sporades.server` first.");
+      }
+      const values = unsealServerEnv(envelope, localKeyPair.privateKey);
+      const hostConfig = await readHostConfig();
+      const profile = requireHostProfile(hostConfig, options.hostAlias);
+      const hostKey = options.subname ? await readHostedCapsuleSealedEnvPublicKey(options.hostAlias, profile, options.subname, options.projectDir) : await ensureHostProfileEnvKey(hostConfig, options.hostAlias);
+      const hostEnvelope = sealServerEnv(values, hostKey.publicKey, {
+        source: options.subname ? "hosted-capsule-reencrypt" : "host-profile-reencrypt",
+        hostAlias: options.hostAlias,
+        hostDomain: profile.domain,
+        ...options.subname ? { subname: options.subname } : {}
+      });
+      const hostEnvelopePath = path4.join(
+        paths.hosts,
+        options.subname ? `${options.hostAlias}.${options.subname}.server-env.sealed.json` : `${options.hostAlias}.server-env.sealed.json`
+      );
+      await mkdir4(path4.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
+      await writeFile4(hostEnvelopePath, `${JSON.stringify(hostEnvelope, null, 2)}
 `, { mode: 384 });
-    if (!options.subname) {
-      await writeHostConfig(hostConfig);
+      if (!options.subname) {
+        await writeHostConfig(hostConfig);
+      }
+      await writeEnvResult(options, {
+        reencrypted: true,
+        hostAlias: options.hostAlias,
+        hostDomain: profile.domain,
+        ...options.subname ? { subname: options.subname } : {},
+        keyCount: Object.keys(hostEnvelope.entries).length,
+        publicKeyFingerprint: hostEnvelope.publicKeyFingerprint,
+        envelopePath: hostEnvelopePath,
+        privateKeyConfigured: !options.subname
+      });
     }
-    await writeEnvResult(options, {
-      reencrypted: true,
-      hostAlias: options.hostAlias,
-      hostDomain: profile.domain,
-      ...options.subname ? { subname: options.subname } : {},
-      keyCount: Object.keys(hostEnvelope.entries).length,
-      publicKeyFingerprint: hostEnvelope.publicKeyFingerprint,
-      envelopePath: hostEnvelopePath,
-      privateKeyConfigured: !options.subname
-    });
   }
 }
 async function readPortableSealedServerEnvEnvelope(filePath) {
@@ -10893,470 +10891,479 @@ async function ensureHostProfileEnvKey(config, alias) {
   return hostKey;
 }
 async function manageHost(options) {
-  if (options.subcommand === "add") {
-    const config = await readHostConfig();
-    const profile = {
-      server: options.server,
-      domain: options.domain,
-      scheme: DEFAULT_HOST_SCHEME,
-      remoteRoot: options.remoteRoot,
-      tls: { mode: options.tlsMode }
-    };
-    config.profiles[options.alias] = profile;
-    await writeHostConfig(config);
-    if (options.json) {
-      writeResult({ ok: true, data: { alias: options.alias, profile: publicHostProfile(profile) }, error: null });
-    } else {
-      process.stdout.write(`Host profile added: ${options.alias}
+  switch (options.subcommand) {
+    case "add": {
+      const config = await readHostConfig();
+      const profile = {
+        server: options.server,
+        domain: options.domain,
+        scheme: DEFAULT_HOST_SCHEME,
+        remoteRoot: options.remoteRoot,
+        tls: { mode: options.tlsMode }
+      };
+      config.profiles[options.alias] = profile;
+      await writeHostConfig(config);
+      if (options.json) {
+        writeResult({ ok: true, data: { alias: options.alias, profile: publicHostProfile(profile) }, error: null });
+      } else {
+        process.stdout.write(`Host profile added: ${options.alias}
 `);
+      }
+      return;
     }
-    return;
-  }
-  if (options.subcommand === "use") {
-    const config = await readHostConfig();
-    const profile = requireHostProfile(config, options.alias);
-    config.currentHostAlias = options.alias;
-    await writeHostConfig(config);
-    if (options.json) {
-      writeResult({ ok: true, data: { currentHostAlias: options.alias, profile: publicHostProfile(profile) }, error: null });
-    } else {
-      process.stdout.write(`Current Host profile: ${options.alias}
+    case "use": {
+      const config = await readHostConfig();
+      const profile = requireHostProfile(config, options.alias);
+      config.currentHostAlias = options.alias;
+      await writeHostConfig(config);
+      if (options.json) {
+        writeResult({ ok: true, data: { currentHostAlias: options.alias, profile: publicHostProfile(profile) }, error: null });
+      } else {
+        process.stdout.write(`Current Host profile: ${options.alias}
 `);
+      }
+      return;
     }
-    return;
-  }
-  if (options.subcommand === "current") {
-    const config = await readHostConfig();
-    const resolved = resolveHostProfile(config, options.hostAlias);
-    const binding = await readRemoteBinding(options.projectDir);
-    const security = await readOptionalProjectSecurity(options.projectDir, "hosted");
-    if (options.json) {
-      writeResult({
-        ok: true,
-        data: { alias: resolved.alias, profile: publicHostProfile(resolved.profile), binding, security },
-        error: null
-      });
-    } else {
-      process.stdout.write(`${resolved.alias}	${resolved.profile.server}	${resolved.profile.domain}
+    case "current": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const binding = await readRemoteBinding(options.projectDir);
+      const security = await readOptionalProjectSecurity(options.projectDir, "hosted");
+      if (options.json) {
+        writeResult({
+          ok: true,
+          data: { alias: resolved.alias, profile: publicHostProfile(resolved.profile), binding, security },
+          error: null
+        });
+      } else {
+        process.stdout.write(`${resolved.alias}	${resolved.profile.server}	${resolved.profile.domain}
 `);
+      }
+      return;
     }
-    return;
-  }
-  if (options.subcommand === "health") {
-    const config = await readHostConfig();
-    const resolved = resolveHostProfile(config, options.hostAlias);
-    if (options.subname) {
-      const health = createHostRuntimeHealthRequest(resolved.profile, options.subname);
-      const result2 = invokeRemoteHostHelper({
+    case "health": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      if (options.subname) {
+        const health = createHostRuntimeHealthRequest(resolved.profile, options.subname);
+        const result2 = invokeRemoteHostHelper({
+          alias: resolved.alias,
+          profile: resolved.profile,
+          action: "capsule.health",
+          subname: options.subname,
+          health,
+          projectDir: options.projectDir
+        });
+        if (options.json) {
+          writeResult(result2, !result2.ok);
+          return;
+        }
+        if (!result2.ok) {
+          throw commandError4(result2.error.message, result2.error.hint);
+        }
+        process.stdout.write(`Hosted Capsule runtime healthy: ${health.runtimeHealthUrl}
+`);
+        return;
+      }
+      const result = await checkHostServerHealth(resolved.alias, resolved.profile);
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+      if (!result.ok) {
+        throw commandError4(result.error.message, result.error.hint);
+      }
+      process.stdout.write(`Host server healthy: ${result.data.healthUrl}
+`);
+      return;
+    }
+    case "bind": {
+      await readProjectConfig(options.projectDir);
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const binding = createRemoteBinding(resolved.alias, resolved.profile, options.subname);
+      const bindingPath = path4.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir4(path4.dirname(bindingPath), { recursive: true });
+      await writeFile4(bindingPath, `${JSON.stringify(binding, null, 2)}
+`);
+      if (options.json) {
+        writeResult({ ok: true, data: { bindingPath, binding, localOnly: true, authoritative: false }, error: null });
+      } else {
+        process.stdout.write(`Local remote binding written for ${binding.subname}: ${binding.hostedUrl}
+`);
+        process.stdout.write("This does not register or create a Hosted Capsule on the Host server.\n");
+      }
+      return;
+    }
+    case "register": {
+      await readProjectConfig(options.projectDir);
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const binding = createRemoteBinding(resolved.alias, resolved.profile, options.subname);
+      const result = invokeRemoteHostHelper({
         alias: resolved.alias,
         profile: resolved.profile,
-        action: "capsule.health",
+        action: "capsule.register",
         subname: options.subname,
-        health,
+        registration: createHostRegistrationRequest(resolved.alias, resolved.profile, options.subname),
+        projectDir: options.projectDir
+      });
+      if (!result.ok) {
+        if (options.json) {
+          writeResult(result, true);
+          return;
+        }
+        throw commandError4(result.error.message, result.error.hint);
+      }
+      const bindingPath = path4.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir4(path4.dirname(bindingPath), { recursive: true });
+      await writeFile4(bindingPath, `${JSON.stringify(binding, null, 2)}
+`);
+      const data = {
+        ...result.data,
+        bindingPath,
+        binding,
+        localBinding: true,
+        authoritative: result.data?.authoritative ?? true
+      };
+      if (options.json) {
+        writeResult({ ok: true, data, error: null });
+      } else {
+        process.stdout.write(`Hosted Capsule registered: ${binding.hostedUrl}
+`);
+        process.stdout.write(`Local remote binding written for ${binding.subname}.
+`);
+      }
+      return;
+    }
+    case "push": {
+      const config = await readHostConfig();
+      const target = await resolveHostPushTarget(config, options);
+      const projectConfig = await readProjectConfig(options.projectDir);
+      const hostSealedServerEnv = await prepareHostPushSealedServerEnv({
+        projectDir: options.projectDir,
+        alias: target.alias,
+        profile: target.profile,
+        subname: target.subname
+      });
+      const bundle = await createBundle(options.projectDir, projectConfig);
+      const release = await createHostReleaseArchive({
+        projectDir: options.projectDir,
+        alias: target.alias,
+        profile: target.profile,
+        subname: target.subname,
+        binding: target.binding,
+        bundle,
+        restart: options.restart,
+        projectConfig,
+        sealedServerEnv: hostSealedServerEnv
+      });
+      uploadHostReleaseArchive({
+        profile: target.profile,
+        projectDir: options.projectDir,
+        archivePath: release.localArchive,
+        remoteArchive: release.remoteArchive
+      });
+      const result = invokeRemoteHostHelper({
+        alias: target.alias,
+        profile: target.profile,
+        action: "capsule.release.install",
+        subname: target.subname,
+        release: release.request,
+        lifecycle: options.verify ? createHostLifecycleRequest(target.alias, target.profile, target.subname, {
+          updatePolicyMode: readBaseImageUpdatePolicy(projectConfig)
+        }) : null,
+        health: options.verify ? createHostRuntimeHealthRequest(target.profile, target.subname) : null,
+        verification: options.verify ? {
+          enabled: true,
+          fallbackToPreviousRelease: options.fallbackToPreviousRelease,
+          health: createHostRuntimeHealthRequest(target.profile, target.subname)
+        } : null,
         projectDir: options.projectDir
       });
       if (options.json) {
-        writeResult(result2, !result2.ok);
+        writeResult(result, !result.ok);
         return;
       }
-      if (!result2.ok) {
-        throw commandError4(result2.error.message, result2.error.hint);
+      if (!result.ok) {
+        throw commandError4(result.error.message, result.error.hint);
       }
-      process.stdout.write(`Hosted Capsule runtime healthy: ${health.runtimeHealthUrl}
+      process.stdout.write(`Hosted Capsule release pushed: ${target.binding.hostedUrl}
 `);
+      if (!options.restart) {
+        process.stdout.write("The Hosted Capsule was not restarted.\n");
+      }
       return;
     }
-    const result = await checkHostServerHealth(resolved.alias, resolved.profile);
-    if (options.json) {
-      writeResult(result, !result.ok);
-      return;
-    }
-    if (!result.ok) {
-      throw commandError4(result.error.message, result.error.hint);
-    }
-    process.stdout.write(`Host server healthy: ${result.data.healthUrl}
-`);
-    return;
-  }
-  if (options.subcommand === "bind") {
-    await readProjectConfig(options.projectDir);
-    const config = await readHostConfig();
-    const resolved = resolveHostProfile(config, options.hostAlias);
-    const binding = createRemoteBinding(resolved.alias, resolved.profile, options.subname);
-    const bindingPath = path4.join(options.projectDir, REMOTE_BINDING_FILE);
-    await mkdir4(path4.dirname(bindingPath), { recursive: true });
-    await writeFile4(bindingPath, `${JSON.stringify(binding, null, 2)}
-`);
-    if (options.json) {
-      writeResult({ ok: true, data: { bindingPath, binding, localOnly: true, authoritative: false }, error: null });
-    } else {
-      process.stdout.write(`Local remote binding written for ${binding.subname}: ${binding.hostedUrl}
-`);
-      process.stdout.write("This does not register or create a Hosted Capsule on the Host server.\n");
-    }
-    return;
-  }
-  if (options.subcommand === "register") {
-    await readProjectConfig(options.projectDir);
-    const config = await readHostConfig();
-    const resolved = resolveHostProfile(config, options.hostAlias);
-    const binding = createRemoteBinding(resolved.alias, resolved.profile, options.subname);
-    const result = invokeRemoteHostHelper({
-      alias: resolved.alias,
-      profile: resolved.profile,
-      action: "capsule.register",
-      subname: options.subname,
-      registration: createHostRegistrationRequest(resolved.alias, resolved.profile, options.subname),
-      projectDir: options.projectDir
-    });
-    if (!result.ok) {
+    case "rotate-key": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const result = invokeRemoteHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        action: "capsule.sealed-env.rotate-key",
+        subname: options.subname,
+        projectDir: options.projectDir
+      });
       if (options.json) {
-        writeResult(result, true);
+        writeResult(result, !result.ok);
         return;
       }
-      throw commandError4(result.error.message, result.error.hint);
-    }
-    const bindingPath = path4.join(options.projectDir, REMOTE_BINDING_FILE);
-    await mkdir4(path4.dirname(bindingPath), { recursive: true });
-    await writeFile4(bindingPath, `${JSON.stringify(binding, null, 2)}
+      if (!result.ok) {
+        throw commandError4(result.error.message, result.error.hint);
+      }
+      const hostedUrl = result.data?.capsule?.hostedUrl ?? `${resolved.profile.scheme}://${options.subname}.${resolved.profile.domain}`;
+      process.stdout.write(`Hosted Capsule sealed-env key rotated: ${hostedUrl}
 `);
-    const data = {
-      ...result.data,
-      bindingPath,
-      binding,
-      localBinding: true,
-      authoritative: result.data?.authoritative ?? true
-    };
-    if (options.json) {
-      writeResult({ ok: true, data, error: null });
-    } else {
-      process.stdout.write(`Hosted Capsule registered: ${binding.hostedUrl}
-`);
-      process.stdout.write(`Local remote binding written for ${binding.subname}.
-`);
-    }
-    return;
-  }
-  if (options.subcommand === "push") {
-    const config = await readHostConfig();
-    const target = await resolveHostPushTarget(config, options);
-    const projectConfig = await readProjectConfig(options.projectDir);
-    const hostSealedServerEnv = await prepareHostPushSealedServerEnv({
-      projectDir: options.projectDir,
-      alias: target.alias,
-      profile: target.profile,
-      subname: target.subname
-    });
-    const bundle = await createBundle(options.projectDir, projectConfig);
-    const release = await createHostReleaseArchive({
-      projectDir: options.projectDir,
-      alias: target.alias,
-      profile: target.profile,
-      subname: target.subname,
-      binding: target.binding,
-      bundle,
-      restart: options.restart,
-      projectConfig,
-      sealedServerEnv: hostSealedServerEnv
-    });
-    uploadHostReleaseArchive({
-      profile: target.profile,
-      projectDir: options.projectDir,
-      archivePath: release.localArchive,
-      remoteArchive: release.remoteArchive
-    });
-    const result = invokeRemoteHostHelper({
-      alias: target.alias,
-      profile: target.profile,
-      action: "capsule.release.install",
-      subname: target.subname,
-      release: release.request,
-      lifecycle: options.verify ? createHostLifecycleRequest(target.alias, target.profile, target.subname, {
-        updatePolicyMode: readBaseImageUpdatePolicy(projectConfig)
-      }) : null,
-      health: options.verify ? createHostRuntimeHealthRequest(target.profile, target.subname) : null,
-      verification: options.verify ? {
-        enabled: true,
-        fallbackToPreviousRelease: options.fallbackToPreviousRelease,
-        health: createHostRuntimeHealthRequest(target.profile, target.subname)
-      } : null,
-      projectDir: options.projectDir
-    });
-    if (options.json) {
-      writeResult(result, !result.ok);
       return;
     }
-    if (!result.ok) {
-      throw commandError4(result.error.message, result.error.hint);
-    }
-    process.stdout.write(`Hosted Capsule release pushed: ${target.binding.hostedUrl}
+    case "github": {
+      if (options.github?.area !== "workflow" || options.github?.action !== "write") {
+        return;
+      }
+      const result = await writeGithubAutodeployWorkflow(options);
+      if (options.json) {
+        writeResult(result, false);
+        return;
+      }
+      process.stdout.write(`${options.dryRun ? "Generated" : "Wrote"} GitHub Actions workflow: ${result.data.file}
 `);
-    if (!options.restart) {
-      process.stdout.write("The Hosted Capsule was not restarted.\n");
-    }
-    return;
-  }
-  if (options.subcommand === "rotate-key") {
-    const config = await readHostConfig();
-    const resolved = resolveHostProfile(config, options.hostAlias);
-    const result = invokeRemoteHostHelper({
-      alias: resolved.alias,
-      profile: resolved.profile,
-      action: "capsule.sealed-env.rotate-key",
-      subname: options.subname,
-      projectDir: options.projectDir
-    });
-    if (options.json) {
-      writeResult(result, !result.ok);
+      process.stdout.write("Required GitHub secret: SPORADES_HOST_SSH_PRIVATE_KEY\n");
+      process.stdout.write(`Required GitHub variables: ${result.data.github.variables.join(", ")}
+`);
+      if (options.dryRun) {
+        process.stdout.write("\n");
+        process.stdout.write(result.data.workflow);
+      }
       return;
     }
-    if (!result.ok) {
-      throw commandError4(result.error.message, result.error.hint);
-    }
-    const hostedUrl = result.data?.capsule?.hostedUrl ?? `${resolved.profile.scheme}://${options.subname}.${resolved.profile.domain}`;
-    process.stdout.write(`Hosted Capsule sealed-env key rotated: ${hostedUrl}
+    case "start":
+    case "stop":
+    case "restart": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const lifecycle = createHostLifecycleRequest(resolved.alias, resolved.profile, options.subname);
+      const result = invokeRemoteHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        action: `capsule.${options.subcommand}`,
+        subname: options.subname,
+        lifecycle,
+        projectDir: options.projectDir
+      });
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+      if (!result.ok) {
+        throw commandError4(result.error.message, result.error.hint);
+      }
+      process.stdout.write(`Hosted Capsule ${options.subcommand} completed: ${lifecycle.hostedUrl}
 `);
-    return;
-  }
-  if (options.subcommand === "github" && options.github?.area === "workflow" && options.github?.action === "write") {
-    const result = await writeGithubAutodeployWorkflow(options);
-    if (options.json) {
-      writeResult(result, false);
       return;
     }
-    process.stdout.write(`${options.dryRun ? "Generated" : "Wrote"} GitHub Actions workflow: ${result.data.file}
+    case "rollback": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const lifecycle = createHostLifecycleRequest(resolved.alias, resolved.profile, options.subname);
+      const result = invokeRemoteHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        action: "capsule.release.rollback",
+        subname: options.subname,
+        rollback: { releaseId: options.releaseId },
+        lifecycle,
+        projectDir: options.projectDir
+      });
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+      if (!result.ok) {
+        throw commandError4(result.error.message, result.error.hint);
+      }
+      process.stdout.write(`Hosted Capsule rolled back: ${lifecycle.hostedUrl}
 `);
-    process.stdout.write("Required GitHub secret: SPORADES_HOST_SSH_PRIVATE_KEY\n");
-    process.stdout.write(`Required GitHub variables: ${result.data.github.variables.join(", ")}
-`);
-    if (options.dryRun) {
-      process.stdout.write("\n");
-      process.stdout.write(result.data.workflow);
-    }
-    return;
-  }
-  if (options.subcommand === "start" || options.subcommand === "stop" || options.subcommand === "restart") {
-    const config = await readHostConfig();
-    const resolved = resolveHostProfile(config, options.hostAlias);
-    const lifecycle = createHostLifecycleRequest(resolved.alias, resolved.profile, options.subname);
-    const result = invokeRemoteHostHelper({
-      alias: resolved.alias,
-      profile: resolved.profile,
-      action: `capsule.${options.subcommand}`,
-      subname: options.subname,
-      lifecycle,
-      projectDir: options.projectDir
-    });
-    if (options.json) {
-      writeResult(result, !result.ok);
       return;
     }
-    if (!result.ok) {
-      throw commandError4(result.error.message, result.error.hint);
-    }
-    process.stdout.write(`Hosted Capsule ${options.subcommand} completed: ${lifecycle.hostedUrl}
+    case "unregister": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const unregister = createHostUnregisterRequest(resolved.profile, options.subname);
+      const result = invokeRemoteHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        action: "capsule.unregister",
+        subname: options.subname,
+        unregister,
+        projectDir: options.projectDir
+      });
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+      if (!result.ok) {
+        throw commandError4(result.error.message, result.error.hint);
+      }
+      process.stdout.write(`Hosted Capsule unregistered: ${unregister.hostedUrl}
 `);
-    return;
-  }
-  if (options.subcommand === "rollback") {
-    const config = await readHostConfig();
-    const resolved = resolveHostProfile(config, options.hostAlias);
-    const lifecycle = createHostLifecycleRequest(resolved.alias, resolved.profile, options.subname);
-    const result = invokeRemoteHostHelper({
-      alias: resolved.alias,
-      profile: resolved.profile,
-      action: "capsule.release.rollback",
-      subname: options.subname,
-      rollback: { releaseId: options.releaseId },
-      lifecycle,
-      projectDir: options.projectDir
-    });
-    if (options.json) {
-      writeResult(result, !result.ok);
       return;
     }
-    if (!result.ok) {
-      throw commandError4(result.error.message, result.error.hint);
-    }
-    process.stdout.write(`Hosted Capsule rolled back: ${lifecycle.hostedUrl}
+    case "delete": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const deletion = createHostDeleteRequest(resolved.profile, options.subname);
+      const result = invokeRemoteHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        action: "capsule.delete",
+        subname: options.subname,
+        delete: deletion,
+        projectDir: options.projectDir
+      });
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+      if (!result.ok) {
+        throw commandError4(result.error.message, result.error.hint);
+      }
+      process.stdout.write(`Hosted Capsule storage deleted: ${deletion.hostedUrl}
 `);
-    return;
-  }
-  if (options.subcommand === "unregister") {
-    const config = await readHostConfig();
-    const resolved = resolveHostProfile(config, options.hostAlias);
-    const unregister = createHostUnregisterRequest(resolved.profile, options.subname);
-    const result = invokeRemoteHostHelper({
-      alias: resolved.alias,
-      profile: resolved.profile,
-      action: "capsule.unregister",
-      subname: options.subname,
-      unregister,
-      projectDir: options.projectDir
-    });
-    if (options.json) {
-      writeResult(result, !result.ok);
       return;
     }
-    if (!result.ok) {
-      throw commandError4(result.error.message, result.error.hint);
-    }
-    process.stdout.write(`Hosted Capsule unregistered: ${unregister.hostedUrl}
+    case "stats": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const stats = options.subname ? createHostStatsRequest(resolved.profile, options.subname) : null;
+      const result = invokeRemoteHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        action: options.subname ? "capsule.stats" : "host.stats",
+        subname: options.subname,
+        stats,
+        projectDir: options.projectDir
+      });
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+      if (!result.ok) {
+        throw commandError4(result.error.message, result.error.hint);
+      }
+      process.stdout.write(`${JSON.stringify(result.data, null, 2)}
 `);
-    return;
-  }
-  if (options.subcommand === "delete") {
-    const config = await readHostConfig();
-    const resolved = resolveHostProfile(config, options.hostAlias);
-    const deletion = createHostDeleteRequest(resolved.profile, options.subname);
-    const result = invokeRemoteHostHelper({
-      alias: resolved.alias,
-      profile: resolved.profile,
-      action: "capsule.delete",
-      subname: options.subname,
-      delete: deletion,
-      projectDir: options.projectDir
-    });
-    if (options.json) {
-      writeResult(result, !result.ok);
       return;
     }
-    if (!result.ok) {
-      throw commandError4(result.error.message, result.error.hint);
-    }
-    process.stdout.write(`Hosted Capsule storage deleted: ${deletion.hostedUrl}
+    case "invoke": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const result = invokeRemoteHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        action: options.action,
+        subname: options.subname,
+        projectDir: options.projectDir
+      });
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+      if (!result.ok) {
+        throw commandError4(result.error.message, result.error.hint);
+      }
+      process.stdout.write(`${JSON.stringify(result.data, null, 2)}
 `);
-    return;
-  }
-  if (options.subcommand === "stats") {
-    const config = await readHostConfig();
-    const resolved = resolveHostProfile(config, options.hostAlias);
-    const stats = options.subname ? createHostStatsRequest(resolved.profile, options.subname) : null;
-    const result = invokeRemoteHostHelper({
-      alias: resolved.alias,
-      profile: resolved.profile,
-      action: options.subname ? "capsule.stats" : "host.stats",
-      subname: options.subname,
-      stats,
-      projectDir: options.projectDir
-    });
-    if (options.json) {
-      writeResult(result, !result.ok);
       return;
     }
-    if (!result.ok) {
-      throw commandError4(result.error.message, result.error.hint);
-    }
-    process.stdout.write(`${JSON.stringify(result.data, null, 2)}
+    case "bootstrap": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const result = invokeRemoteHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        action: "host.bootstrap",
+        bootstrap: createHostBootstrapRequest(resolved.profile),
+        projectDir: options.projectDir
+      });
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+      if (!result.ok) {
+        throw commandError4(result.error.message, result.error.hint);
+      }
+      process.stdout.write(`Host server bootstrapped for ${resolved.profile.domain}
 `);
-    return;
-  }
-  if (options.subcommand === "invoke") {
-    const config = await readHostConfig();
-    const resolved = resolveHostProfile(config, options.hostAlias);
-    const result = invokeRemoteHostHelper({
-      alias: resolved.alias,
-      profile: resolved.profile,
-      action: options.action,
-      subname: options.subname,
-      projectDir: options.projectDir
-    });
-    if (options.json) {
-      writeResult(result, !result.ok);
       return;
     }
-    if (!result.ok) {
-      throw commandError4(result.error.message, result.error.hint);
+    case "list": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const result = invokeRemoteHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        action: "capsule.list",
+        projectDir: options.projectDir
+      });
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+      if (!result.ok) {
+        throw commandError4(result.error.message, result.error.hint);
+      }
+      process.stdout.write(formatHostedCapsuleList(result.data, resolved.profile));
+      return;
     }
-    process.stdout.write(`${JSON.stringify(result.data, null, 2)}
+    case "releases": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const result = invokeRemoteHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        action: "capsule.release.list",
+        subname: options.subname,
+        projectDir: options.projectDir
+      });
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+      if (!result.ok) {
+        throw commandError4(result.error.message, result.error.hint);
+      }
+      process.stdout.write(formatHostedCapsuleReleases(result.data));
+      return;
+    }
+    case "logs": {
+      const config = await readHostConfig();
+      const source = options.source ?? "http";
+      const target = source === "http" ? { ...resolveHostProfile(config, options.hostAlias), subname: options.subname ?? null } : await resolveHostPushTarget(config, options);
+      const resolved = source === "http" ? target : { alias: target.alias, profile: target.profile };
+      const result = invokeRemoteHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        action: "host.logs",
+        subname: target.subname,
+        logs: {
+          source,
+          ...options.lines === null ? {} : { lines: options.lines }
+        },
+        projectDir: options.projectDir
+      });
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+      if (!result.ok) {
+        throw commandError4(result.error.message, result.error.hint);
+      }
+      for (const entry of normaliseHostLogEntries(result.data)) {
+        process.stdout.write(`${entry}
 `);
-    return;
-  }
-  if (options.subcommand === "bootstrap") {
-    const config = await readHostConfig();
-    const resolved = resolveHostProfile(config, options.hostAlias);
-    const result = invokeRemoteHostHelper({
-      alias: resolved.alias,
-      profile: resolved.profile,
-      action: "host.bootstrap",
-      bootstrap: createHostBootstrapRequest(resolved.profile),
-      projectDir: options.projectDir
-    });
-    if (options.json) {
-      writeResult(result, !result.ok);
+      }
       return;
-    }
-    if (!result.ok) {
-      throw commandError4(result.error.message, result.error.hint);
-    }
-    process.stdout.write(`Host server bootstrapped for ${resolved.profile.domain}
-`);
-  }
-  if (options.subcommand === "list") {
-    const config = await readHostConfig();
-    const resolved = resolveHostProfile(config, options.hostAlias);
-    const result = invokeRemoteHostHelper({
-      alias: resolved.alias,
-      profile: resolved.profile,
-      action: "capsule.list",
-      projectDir: options.projectDir
-    });
-    if (options.json) {
-      writeResult(result, !result.ok);
-      return;
-    }
-    if (!result.ok) {
-      throw commandError4(result.error.message, result.error.hint);
-    }
-    process.stdout.write(formatHostedCapsuleList(result.data, resolved.profile));
-    return;
-  }
-  if (options.subcommand === "releases") {
-    const config = await readHostConfig();
-    const resolved = resolveHostProfile(config, options.hostAlias);
-    const result = invokeRemoteHostHelper({
-      alias: resolved.alias,
-      profile: resolved.profile,
-      action: "capsule.release.list",
-      subname: options.subname,
-      projectDir: options.projectDir
-    });
-    if (options.json) {
-      writeResult(result, !result.ok);
-      return;
-    }
-    if (!result.ok) {
-      throw commandError4(result.error.message, result.error.hint);
-    }
-    process.stdout.write(formatHostedCapsuleReleases(result.data));
-    return;
-  }
-  if (options.subcommand === "logs") {
-    const config = await readHostConfig();
-    const source = options.source ?? "http";
-    const target = source === "http" ? { ...resolveHostProfile(config, options.hostAlias), subname: options.subname ?? null } : await resolveHostPushTarget(config, options);
-    const resolved = source === "http" ? target : { alias: target.alias, profile: target.profile };
-    const result = invokeRemoteHostHelper({
-      alias: resolved.alias,
-      profile: resolved.profile,
-      action: "host.logs",
-      subname: target.subname,
-      logs: {
-        source,
-        ...options.lines === null ? {} : { lines: options.lines }
-      },
-      projectDir: options.projectDir
-    });
-    if (options.json) {
-      writeResult(result, !result.ok);
-      return;
-    }
-    if (!result.ok) {
-      throw commandError4(result.error.message, result.error.hint);
-    }
-    for (const entry of normaliseHostLogEntries(result.data)) {
-      process.stdout.write(`${entry}
-`);
     }
   }
 }
@@ -11497,21 +11504,23 @@ async function inspectDatabase(options) {
   if (!result.ok) {
     throw commandError4(result.error.message, result.error.hint);
   }
-  if (options.subcommand === "list") {
-    for (const table of result.data.tables) {
-      process.stdout.write(`${table}
+  switch (options.subcommand) {
+    case "list":
+      for (const table of result.data.tables) {
+        process.stdout.write(`${table}
 `);
-    }
-    return;
-  }
-  if (options.subcommand === "dump") {
-    process.stdout.write(`${JSON.stringify(result.data.tables, null, 2)}
+      }
+      return;
+    case "dump":
+      process.stdout.write(`${JSON.stringify(result.data.tables, null, 2)}
 `);
-    return;
-  }
-  if (options.subcommand === "query") {
-    process.stdout.write(`${JSON.stringify(result.data.rows, null, 2)}
+      return;
+    case "query":
+      process.stdout.write(`${JSON.stringify(result.data.rows, null, 2)}
 `);
+      return;
+    default:
+      return;
   }
 }
 async function printLogs(options) {
@@ -11631,13 +11640,14 @@ async function inspectContainerDatabase(options) {
     sqlite.exec("PRAGMA busy_timeout = 1000");
     sqlite.exec("PRAGMA query_only = ON");
     const database = { adapter: sqlite, sqlite };
-    if (options.subcommand === "list") {
-      return { ok: true, data: { source: "sqlite-file", tables: await listDatabaseTables(database) }, error: null };
+    switch (options.subcommand) {
+      case "list":
+        return { ok: true, data: { source: "sqlite-file", tables: await listDatabaseTables(database) }, error: null };
+      case "dump":
+        return { ok: true, data: { source: "sqlite-file", tables: await dumpDatabase(database) }, error: null };
+      default:
+        return await runReadOnlyQuery(database, options.sql);
     }
-    if (options.subcommand === "dump") {
-      return { ok: true, data: { source: "sqlite-file", tables: await dumpDatabase(database) }, error: null };
-    }
-    return await runReadOnlyQuery(database, options.sql);
   } finally {
     sqlite.close();
   }
