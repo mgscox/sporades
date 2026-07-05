@@ -1064,6 +1064,136 @@ test("ACL storage helpers fail closed when sync rules touch unawaited file looku
   });
 });
 
+test("ACL storage helpers support direct return from ACL rules", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        attachments: table({
+          title: String(),
+          fileRef: String(),
+        }).acl({
+          read: ({ row, ctx }) => ctx.acl.storage.exists("files", row.fileRef),
+        }),
+      },
+      queries: {
+        attachments: query((ctx) => ctx.db.attachments.orderBy("title").all()),
+      },
+    });
+
+    try {
+      database.sqlite.insertFileRow({
+        id: "file-1",
+        ownerId: "u1",
+        bucketId: "bucket-1",
+        bucketName: "default",
+        path: "/teams/u1/reports/report.txt",
+        name: "report.txt",
+        type: "text/plain",
+        size: 12,
+        version: "version-1",
+        status: "uploaded",
+        createdAt: "2026-07-04T10:00:00.000Z",
+        updatedAt: "2026-07-04T10:00:00.000Z",
+      });
+
+      const db = createEndpointDatabaseApi(database);
+      db.attachments.insert({ title: "Existing", fileRef: "file-1" });
+      db.attachments.insert({ title: "Missing", fileRef: "missing-file" });
+
+      const result = await runQuery(database, auth("u1"), "attachments");
+
+      assert.equal(result.error, null);
+      assert.deepEqual(
+        result.data.map((row) => row.title),
+        ["Existing"],
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("ACL storage helpers fail closed for detached read helper then chains", async () => {
+  await withTempDir(async (dir) => {
+    const observed = [];
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        attachments: table({
+          title: String(),
+          fileRef: String(),
+        }).acl({
+          read: ({ row, ctx }) => {
+            ctx.acl.storage.exists("files", row.fileRef).then((exists) => {
+              observed.push(exists);
+            });
+            return true;
+          },
+        }),
+      },
+      queries: {
+        attachments: query((ctx) => ctx.db.attachments.all()),
+      },
+    });
+
+    try {
+      const db = createEndpointDatabaseApi(database);
+      db.attachments.insert({ title: "Missing detached read", fileRef: "missing-file" });
+
+      const result = await runQuery(database, auth("u1"), "attachments");
+
+      assert.equal(result.error, null);
+      assert.deepEqual(result.data, []);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.deepEqual(observed, [false]);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("ACL storage helpers fail closed for detached write helper then chains", async () => {
+  await withTempDir(async (dir) => {
+    const observed = [];
+    const database = await openCapsuleDatabase(dir, {
+      schema: {
+        attachments: table({
+          title: String(),
+          fileRef: String(),
+          ownerId: String(),
+        }).acl({
+          insert: ({ next, ctx }) => {
+            ctx.acl.storage.exists("files", next.fileRef).then((exists) => {
+              observed.push(exists);
+            });
+            return true;
+          },
+        }),
+      },
+      mutations: {
+        addAttachment: mutation((ctx, title, fileRef) =>
+          ctx.db.attachments.insert({ title, fileRef, ownerId: ctx.auth.userId }),
+        ),
+      },
+      queries: {
+        attachments: query((ctx) => ctx.db.attachments.all()),
+      },
+    });
+
+    try {
+      const denied = await runMutation(database, auth("u1"), "addAttachment", ["Missing detached write", "missing-file"]);
+      const rows = await runQuery(database, auth("u1"), "attachments");
+
+      assert.equal(denied.ok, false);
+      assert.equal(denied.error.code, "DENIED");
+      assert.deepEqual(rows.data, []);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      assert.deepEqual(observed, [false]);
+    } finally {
+      database.close();
+    }
+  });
+});
+
 test("ACL storage helpers fail closed when async read rules forget to await async file lookups", async () => {
   await withTempDir(async (dir) => {
     const observedExists = [];

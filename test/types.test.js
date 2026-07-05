@@ -76,6 +76,11 @@ const app = capsule({
     users: table({
       name: String(),
     }),
+    fileLinks: table({
+      fileRef: String(),
+    }).acl({
+      read: ({ row, ctx }) => ctx.acl.storage.exists("files", row?.fileRef ?? "missing"),
+    }),
     todos: table({
       text: String(),
       done: Boolean().default(false),

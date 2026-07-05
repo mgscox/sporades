@@ -4826,12 +4826,29 @@ function createAclHelpers(database) {
   return Object.freeze(helpers);
 }
 function aclRuleHasUnobservedHelperRead(aclContext) {
-  return (aclContext?.acl?.[ACL_HELPER_STATE]?.helperReads ?? []).some((helperRead) => !helperRead.observed);
+  return (aclContext?.acl?.[ACL_HELPER_STATE]?.helperReads ?? []).some((helperRead) => {
+    return !helperRead.observed || !helperRead.settled;
+  });
 }
 function trackAclHelperReturn(state, result) {
-  const helperRead = { observed: false };
+  const helperRead = { observed: false, settled: false };
   state.helperReads.push(helperRead);
-  const promise = Promise.resolve(result);
+  const promise = new Promise((resolve, reject) => {
+    setTimeout(() => {
+      Promise.resolve(result).then(
+        (value) => {
+          helperRead.settled = true;
+          resolve(value);
+        },
+        (error) => {
+          helperRead.settled = true;
+          reject(error);
+        }
+      );
+    }, 0);
+  });
+  promise.catch(() => {
+  });
   const observe = () => {
     helperRead.observed = true;
   };
