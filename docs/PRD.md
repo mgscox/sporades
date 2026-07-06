@@ -275,8 +275,9 @@ users remain isolated.
 `preferences.updated` is delivered over the existing client transport as a
 same-user convergence signal. The updating client should use the result returned
 from `preferences.update(...)`; other connected clients for the same user can
-consume the notification or call `preferences.get()` to refresh their local UI
-state.
+consume `message.data.changes` for the accepted shallow update object,
+`message.data.preferences` for the full post-merge preference object, or call
+`preferences.get()` to refresh their local UI state.
 
 Additive migrations support:
 

@@ -955,7 +955,8 @@ const next = await preferences.update({
 const unsubscribe = onMessage()
   .filter("preferences.updated")
   .subscribe((message) => {
-    console.log("preferences changed", message.data.preferences);
+    console.log("preferences changes", message.data.changes);
+    console.log("current preferences", message.data.preferences);
   });
 ```
 
@@ -970,19 +971,29 @@ common durable per-user settings instead of creating your own preference table,
 queries, and mutations.
 
 Because Anonymous sessions are real Sporades accounts, preferences written
-before sign-up or provider linking remain attached when that user links email or
-Google auth. Signing out resolves the client to a fresh Anonymous session with
-its own preference object; signing back in restores the linked account's stored
-preferences. Other connected clients for the same user receive a
-`preferences.updated` message after an update, while clients for different
+before sign-up or provider sign-in move to the signed-in identity when the
+current user is still Anonymous. This applies when an Anonymous user signs up
+with email, signs in to an existing email account, or completes Google OAuth.
+If the signed-in account already has preferences, the Anonymous preferences are
+shallow-merged over the stored signed-in preferences so the current browser's
+explicit Anonymous choices win for matching keys.
+
+Sporades only performs this preference move from an Anonymous session. Linking
+additional login methods while already signed in does not copy or merge
+preferences between users. Signing out resolves the client to a fresh Anonymous
+session with its own preference object; signing back in restores the linked
+account's stored preferences. Other connected clients for the same user receive
+a `preferences.updated` message after an update, while clients for different
 users keep their own preference objects. Local identity simulation through
 `sporades auth as ... --client ...` also switches preference reads and writes to
 the delivered simulated user.
 
 The update notification is a convergence signal for other connected clients.
-The client that calls `preferences.update(...)` should use the returned value;
-other clients for the same user can listen for `preferences.updated` and refresh
-their UI from `message.data.preferences` or by calling `preferences.get()`.
+It includes `message.data.changes`, the accepted shallow update object, and
+`message.data.preferences`, the full preference object after the merge. The
+client that calls `preferences.update(...)` should use the returned value; other
+clients for the same user can listen for `preferences.updated` and refresh their
+UI from the notification data or by calling `preferences.get()`.
 App code should still use app tables for domain data such as notes, projects,
 memberships, and records. Preferences are for small durable UI and behavior
 settings.

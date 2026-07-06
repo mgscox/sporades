@@ -341,7 +341,10 @@ test("current-user preference updates notify connected clients for the same user
       assert.deepEqual(await observedUpdate, {
         id: null,
         type: "preferences.updated",
-        data: { preferences: { theme: "solarized" } },
+        data: {
+          preferences: { theme: "solarized" },
+          changes: { theme: "solarized" },
+        },
         error: null,
       });
       await assert.rejects(unexpectedDifferentUserUpdate, /Timed out waiting for WebSocket message/);
@@ -450,6 +453,90 @@ test("current-user preferences follow anonymous email linking and later sign-in"
         id: "after-signin",
         type: "preferences.result",
         data: { preferences: { theme: "amber" } },
+        error: null,
+      });
+    } finally {
+      socket?.close();
+      await stopDevSession(child);
+    }
+  });
+});
+
+test("anonymous preferences move to an existing email account on sign-in", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "preferences-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "preferences-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = {
+      providers: {
+        anonymous: true,
+        email: true,
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+
+      const signUp = await sendAndWait(socket, {
+        id: "signup",
+        type: "auth.signUp",
+        provider: "email",
+        credentials: {
+          email: "mira@example.com",
+          password: "correct horse battery staple",
+          name: "Mira",
+        },
+      });
+      assert.equal(signUp.error, null);
+      const emailUserId = signUp.data.auth.userId;
+
+      assert.deepEqual(await sendAndWait(socket, { id: "email-prefs", type: "preferences.update", patch: { density: "cozy", theme: "light" } }), {
+        id: "email-prefs",
+        type: "preferences.result",
+        data: { preferences: { density: "cozy", theme: "light" } },
+        error: null,
+      });
+
+      assert.equal((await sendAndWait(socket, { id: "signout", type: "auth.signOut" })).error, null);
+      const anonymousAuth = await sendAndWait(socket, { id: "anonymous-auth", type: "auth.get" });
+      assert.equal(anonymousAuth.data.auth.provider, "anonymous");
+      assert.notEqual(anonymousAuth.data.auth.userId, emailUserId);
+
+      assert.deepEqual(await sendAndWait(socket, { id: "anonymous-prefs", type: "preferences.update", patch: { theme: "amber" } }), {
+        id: "anonymous-prefs",
+        type: "preferences.result",
+        data: { preferences: { theme: "amber" } },
+        error: null,
+      });
+
+      const signIn = await sendAndWait(socket, {
+        id: "signin",
+        type: "auth.signIn",
+        provider: "email",
+        credentials: {
+          email: "mira@example.com",
+          password: "correct horse battery staple",
+        },
+      });
+      assert.equal(signIn.error, null);
+      assert.equal(signIn.data.auth.userId, emailUserId);
+
+      assert.deepEqual(await sendAndWait(socket, { id: "after-signin", type: "preferences.get" }), {
+        id: "after-signin",
+        type: "preferences.result",
+        data: { preferences: { density: "cozy", theme: "amber" } },
         error: null,
       });
     } finally {

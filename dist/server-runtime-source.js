@@ -5206,7 +5206,10 @@ export function createWebSocketHub(getDatabase) {
                 error: result.error,
             });
             if (result.ok && result.data) {
-                notifyPreferencesUpdated(client, result.data);
+                notifyPreferencesUpdated(client, {
+                    preferences: result.data.preferences,
+                    changes: result.changes,
+                });
             }
             return;
         }
@@ -5553,8 +5556,9 @@ async function linkGoogleAccount(database, session, profile) {
             },
         };
     }
+    const existingUser = await database.sqlite.findAuthUserByProviderEmail("google", profile.email);
     const auth = {
-        userId: session.auth.userId,
+        userId: existingUser?.id ?? session.auth.userId,
         displayName: profile.displayName ?? profile.email,
         email: profile.email,
         picture: profile.picture ?? null,
@@ -5562,6 +5566,19 @@ async function linkGoogleAccount(database, session, profile) {
         isGuest: false,
         provider: "google",
     };
+    if (session.auth.isGuest && existingUser?.id && existingUser.id !== session.auth.userId) {
+        await database.sqlite.linkAuthUser({
+            id: auth.userId,
+            displayName: auth.displayName,
+            email: auth.email,
+            picture: auth.picture,
+            isAuthenticated: 1,
+            isGuest: 0,
+            provider: "google",
+        });
+        await moveSessionToUser(database, session, auth.userId);
+        return { ok: true, auth };
+    }
     await database.sqlite.linkAuthUser({
         id: auth.userId,
         displayName: auth.displayName,
@@ -5853,8 +5870,40 @@ async function refreshSession(database, token) {
 async function rotateSession(database, session, userId) {
     const now = new Date().toISOString();
     const token = createSessionToken();
+    await migrateAnonymousPreferences(database, session.auth, userId);
     await database.sqlite.rotateAuthSession(session.token, { token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
     return token;
+}
+async function moveSessionToUser(database, session, userId) {
+    const now = new Date().toISOString();
+    await migrateAnonymousPreferences(database, session.auth, userId);
+    await database.sqlite.rotateAuthSession(session.token, {
+        token: session.token,
+        userId,
+        createdAt: now,
+        expiresAt: sessionExpiresAt(now),
+    });
+}
+async function migrateAnonymousPreferences(database, auth, targetUserId) {
+    if (!auth?.isGuest || auth.userId === targetUserId) {
+        return;
+    }
+    await database.sqlite.withTransaction(async (tx) => {
+        const sourceRow = await tx.readUserPreferences(auth.userId);
+        if (!sourceRow) {
+            return;
+        }
+        const targetRow = await tx.readUserPreferences(targetUserId);
+        const source = JSON.parse(sourceRow.value);
+        const target = targetRow ? JSON.parse(targetRow.value) : {};
+        const next = { ...target, ...source };
+        assertJsonCompatible(next);
+        await tx.saveUserPreferences({
+            userId: targetUserId,
+            value: JSON.stringify(next),
+            updatedAt: new Date().toISOString(),
+        });
+    });
 }
 export async function resolveAnonymousSession(database, sessionToken) {
     if (sessionToken) {
@@ -5937,6 +5986,7 @@ async function updateCurrentUserPreferences(database, auth, patch) {
         return {
             ok: true,
             data: { preferences },
+            changes: normalizedPatch,
             error: null,
         };
     }
