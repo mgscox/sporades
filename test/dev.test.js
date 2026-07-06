@@ -2592,6 +2592,7 @@ test("sporades dev restarts server runtime and accepts new WebSocket connections
         "sporades_file_public_urls",
         "sporades_file_uploads",
         "sporades_files",
+        "sporades_user_preferences",
         "todos",
       ]);
     } finally {
@@ -5200,6 +5201,7 @@ test("sporades db list returns tables from the running dev session database", as
             "sporades_file_public_urls",
             "sporades_file_uploads",
             "sporades_files",
+            "sporades_user_preferences",
             "todos",
           ],
         },
@@ -5308,6 +5310,11 @@ test("sporades db dump returns structured table data from the running dev sessio
               rows: [],
             },
             {
+              name: "sporades_user_preferences",
+              columns: ["userId", "value", "updatedAt"],
+              rows: [],
+            },
+            {
               name: "todos",
               columns: ["id", "createdAt", "updatedAt", "text", "done", "ownerId"],
               rows: [],
@@ -5359,6 +5366,7 @@ test("sporades db query runs read-only SQL against the running dev session datab
             { name: "sporades_file_public_urls" },
             { name: "sporades_file_uploads" },
             { name: "sporades_files" },
+            { name: "sporades_user_preferences" },
             { name: "todos" },
           ],
         },

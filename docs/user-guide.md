@@ -961,20 +961,15 @@ Anonymous session identity, rather than to Capsule app tables. Use this SDK for
 common durable per-user settings instead of creating your own preference table,
 queries, and mutations.
 
-Preferences set during an Anonymous session stay with that Sporades user when
-the session links to an email or Google account. Signing out resolves the
-browser to a fresh Anonymous session with its own preference object, and signing
-back in to the linked account reads that account's stored preferences again.
-Local identity simulation through `sporades auth as ... --client ...` also
-switches preference reads and writes to the delivered simulated user.
-
 Because Anonymous sessions are real Sporades accounts, preferences written
 before sign-up or provider linking remain attached when that user links email or
 Google auth. Signing out resolves the client to a fresh Anonymous session with
 its own preference object; signing back in restores the linked account's stored
 preferences. Other connected clients for the same user receive a
 `preferences.updated` message after an update, while clients for different
-users keep their own preference objects.
+users keep their own preference objects. Local identity simulation through
+`sporades auth as ... --client ...` also switches preference reads and writes to
+the delivered simulated user.
 
 ## File Uploads
 
