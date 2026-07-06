@@ -20,14 +20,13 @@ and whether the work belongs in one release or separate tracks.
 
 | Feature | Status | Why it matters | Planning |
 | --- | --- | --- | --- |
-| Built-in authenticated middleware/helper | ready | Small, self-contained server helper for handlers that require a linked/authenticated user, throwing or returning a structured auth error otherwise. Removes repeated manual `ctx.auth` checks and standardizes the denial shape on the existing server auth surface. | `.scratch/built-in-auth-helper/PRD.md` |
-| SQLite vector extension support | ready | Enables embeddings and nearest-neighbor search in the default SQLite runtime without an external vector store. Scoped to loading the SQLite vector extension, a `Blob()` helper, vector column initialization, quantization/preload behavior, and query ergonomics. | `.scratch/sqlite-vector-extension/PRD.md` |
+| User preferences table and SDK | ready | Add a Sporades-owned key-value JSON preferences store for the current authenticated user. Candidate client shape: `sporades.updateUserPrefs({ darkTheme: true, language: "en" })`. Gives Capsules a simple, owned place for durable per-user UI and behavior preferences without each app reinventing the same table. | `.scratch/user-preferences-table-and-sdk/PRD.md` |
+| SSH to Docker | ready | When building for `deploy` or `host`, copy SSH keys from `sporades.json` when provided and open port 22 in the resulting container. This is for compatibility and emergency access paths, not the primary management interface; Portainer or similar container tooling remains the simpler route for normal operation. | `.scratch/ssh-to-docker/PRD.md` |
 
 ## Data And Auth Helpers
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| User preferences table and SDK | candidate | Add a Sporades-owned key-value JSON preferences store for the current authenticated user. Candidate client shape: `sporades.updateUserPrefs({ darkTheme: true, language: "en" })`. |
 | Verify transaction coverage for every DB write | candidate | Audit mutations, auth writes, file metadata writes, system table writes, hosted runtime writes where applicable, and hook behavior. Promote fixes if any write path is outside an intended transaction. |
 | Root server role | candidate | Define a privileged server-side role that can perform API actions without normal user authentication and may inspect runtime-owned non-app resources that normal app ACL helpers cannot see. Needs sharp boundaries so it remains a server/runtime capability, not a browser credential. |
 | Teams for ACL | deferred | Add team membership as a platform concept after Database and storage ACL rules are designed. Creator is team admin; admins can invite, approve requests, promote admins, revoke membership; users can request membership, list pending requests, list teams, and leave teams. |
