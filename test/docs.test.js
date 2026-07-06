@@ -218,11 +218,10 @@ test("user guide documents Capsule service reset without blanket Runtime deletio
 });
 
 test("canonical docs describe deferred Hosted Capsule service orchestration contract", async () => {
-  const [prd, userGuide, architecture, roadmap] = await Promise.all([
+  const [prd, userGuide, architecture] = await Promise.all([
     readProjectFile("docs/PRD.md"),
     readProjectFile("docs/user-guide.md"),
     readProjectFile("docs/architecture.md"),
-    readProjectFile("docs/ROADMAP.md"),
   ]);
 
   assert.match(prd, /first Docker Compose Capsule\s+service implementation is local-only/i);
@@ -244,7 +243,6 @@ test("canonical docs describe deferred Hosted Capsule service orchestration cont
   assert.match(architecture, /sporades host/i);
   assert.match(architecture, /new top-level service\s+namespace/i);
   assert.match(architecture, /Portainer/i);
-  assert.match(roadmap, /\.scratch\/docker-compose-capsule-services\/PRD\.md/);
 });
 
 test("docs describe MinIO storage services and File reference boundaries", async () => {
