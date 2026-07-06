@@ -20,7 +20,6 @@ and whether the work belongs in one release or separate tracks.
 
 | Feature | Status | Why it matters | Planning |
 | --- | --- | --- | --- |
-| SSH to Docker | ready | When building for `deploy` or `host`, copy authorized public SSH keys from `sporades.json` when provided and open a mapped port 22 in the resulting container according to an approved access contract. This is for compatibility and emergency access paths, not the primary management interface; Portainer or similar container tooling remains the simpler route for normal operation. Note, the keys in the JSON file may be the absolute key or a file reference (parse content to determine). It should be possible to query via sporades CLI to determine the SSH port mapped per-capsule | `.scratch/ssh-to-docker/PRD.md` |
 
 ## Recently Implemented
 
@@ -29,6 +28,7 @@ longer belongs in the next-feature queue.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
+| SSH to Docker | implemented | Container SSH access is available for local Container sessions and Hosted Capsules through top-level `ssh.authorizedKeys` entries in `sporades.json`. It remains an opt-in compatibility and emergency access path; normal management stays on `sporades deploy`, `sporades host ...`, logs, stats, and lifecycle commands. Effective SSH state is inspected explicitly with `sporades deploy ssh` and `sporades host ssh`. Planning remains in `.scratch/ssh-to-docker/PRD.md` for traceability. |
 | User preferences table and SDK | implemented | Runtime-owned current-user preferences are available through `sporades/client` as `preferences.get()` and `preferences.update(...)`. Preferences are keyed by Sporades user identity, survive Anonymous session linking, follow sign-in/sign-out and local identity simulation, and notify same-user connected clients with `preferences.updated`. Planning remains in `.scratch/user-preferences-table-and-sdk/PRD.md` for traceability. |
 
 ## Data And Auth Helpers

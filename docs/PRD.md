@@ -40,11 +40,19 @@ The repository currently includes:
   sessions through Sporades-owned generated Compose runtime state.
 - Host server commands for Host profiles, remote bindings, Hosted Capsule
   registration, release push, start, stop, restart, unregister, storage delete,
-  list, stats, logs, bootstrap, and low-level helper invocation.
+  list, stats, logs, SSH inspection, bootstrap, and low-level helper
+  invocation.
 - Hosted Capsules routed through Caddy with domain-scoped registry, storage,
   route files, deterministic Docker containers, loopback-only published ports,
   Docker ownership labels, and a Host-server-owned unavailable response for
   registered Capsules without a running release.
+- Opt-in Container SSH access for local Container sessions and Hosted Capsules
+  through top-level `ssh.authorizedKeys` entries in `sporades.json`. SSH uses
+  the Base image `sporades` user, key-based authentication, Docker-assigned
+  loopback-only ports, generated public authorized-key material, and explicit
+  inspection through `sporades deploy ssh` and `sporades host ssh`. It is an
+  opt-in compatibility and emergency access path, not the primary management
+  interface.
 - Practical Docker hardening defaults for local and hosted Container sessions:
   the thin Sporades-owned Base image runs Node 22, local Container sessions use
   the invoking host UID/GID when available, Hosted Capsules use the Base image
@@ -105,12 +113,6 @@ The following work is intentionally deferred:
   service implementation is local-only; Host-server orchestration for Capsule
   services is deferred until the local lifecycle model has proven the required
   service contract.
-- SSH access into local Container sessions and Hosted Capsules. The planned
-  SSH-to-Docker feature will accept authorized public keys through an explicit
-  `sporades.json` contract, open port 22 only when configured, and report the
-  effective state through structured lifecycle output. It is an opt-in
-  compatibility and emergency access path, not the primary Sporades management
-  interface, and interactive SSH workflows remain out of scope.
 
 ## Product Principles
 
@@ -381,7 +383,11 @@ and local identity simulation.
 - Server env mounted read-only when present,
 - persistent data mounted read-write,
 - the invoking host UID/GID when available, so local Runtime data stays owned by
-  the local user,
+- the local user; SSH-enabled Container sessions run as the Base image
+  `sporades` user `10001:10001`,
+- optional SSH access only when `ssh.authorizedKeys` resolves to public
+  authorized-key material, with effective state inspected through
+  `sporades deploy ssh`,
 - one local container per project, replaced on redeploy.
 
 The canonical mount layout lives in
@@ -391,7 +397,7 @@ The canonical mount layout lives in
 
 A Hosted Capsule runs on a Host server reached over SSH. The Host helper owns
 server-side registry, release installation, Caddy routes, Docker lifecycle,
-logs, stats, and persistent storage.
+logs, stats, explicit SSH inspection, and persistent storage.
 
 Registration reserves a Capsule subname on a Hosted domain and creates
 authoritative server-side state before a release is pushed. Push installs an
@@ -402,6 +408,12 @@ response.
 Host profiles store the SSH target, Hosted domain, scheme, remote root, and TLS
 mode. The Host server registry is authoritative; project-local
 `.sporades/remote-binding.json` is only a convenience pointer.
+
+Hosted Capsule SSH access is opt-in through the same top-level
+`ssh.authorizedKeys` config. The Host helper publishes container port 22 only
+to a Docker-assigned loopback-only port on the Host server, and
+`sporades host ssh` is the explicit inspection surface for the effective user,
+host, port, key count, and fingerprints.
 
 ## CLI Commands
 
@@ -418,10 +430,11 @@ Implemented command families:
 - `sporades create [name]`
 - `sporades dev`
 - `sporades deploy`
+- `sporades deploy ssh`
 - `sporades logs`
 - `sporades db list|dump|query`
 - `sporades auth status|set|clients|as`
-- `sporades host add|use|current|bind|register|push|start|stop|restart|unregister|delete|list|stats|logs|bootstrap|invoke`
+- `sporades host add|use|current|bind|register|push|start|stop|restart|unregister|delete|list|stats|logs|ssh|bootstrap|invoke`
 
 `sporades dev --json` streams JSON Lines for start and rebuild lifecycle events.
 The JSONL log stream used by app `ctx.log` and platform runtime events is a

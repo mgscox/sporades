@@ -232,10 +232,10 @@ Capsules, but it is not trying to be a full production platform (yet). Check the
 
 The current focus is keeping the authoring surface small, the runtime
 inspectable, and the operational path friendly to both developers and agents.
-The next shaped feature is opt-in SSH access for local Container sessions and
-Hosted Capsules, using authorized public keys from `sporades.json` when that
-contract is implemented. Normal management remains the CLI and Host helper
-surfaces; SSH is planned as a compatibility and emergency access path.
+Container SSH access is opt-in for local Container sessions and Hosted
+Capsules through authorized public keys in `sporades.json`. Normal management
+remains the CLI and Host helper surfaces; SSH is a compatibility and emergency
+access path.
 
 ## License
 

@@ -23,6 +23,8 @@ by Sporades.
     server-env.sealed.json
     server-env.private.pem
     server-env.public.pem
+  ssh/
+    authorized_keys
   compose/
     capsule-services.compose.yml
   binding.json
@@ -45,6 +47,10 @@ Common entries:
   credentials (database password, storage secret key). Server-only; not
   app-facing.
 - `sealed-server-env/`: Sealed Server env envelopes and local key material.
+- `ssh/authorized_keys`: generated public authorized-key material for
+  SSH-enabled local Container sessions. Source `file` paths from
+  `sporades.json` are resolved before this file is written and are not copied
+  here.
 - `compose/capsule-services.compose.yml`: generated Docker Compose for
   declared Capsule services.
 - `binding.json`: local Container session binding.
@@ -77,12 +83,19 @@ index.html
 sporades.json
 .sporades/sealed-server-env/server-env.sealed.json
 .env.sporades.server
+.sporades/ssh/authorized_keys
 ```
 
 Sealed Server env is optional but is the long-term default for server-only
 values. `.env.sporades.server` is still supported as a legacy/import-friendly
 source when no sealed envelope exists. Server-only values must not be bundled
 into `client.js`.
+
+`.sporades/ssh/authorized_keys` is optional generated public authorized-key
+material. It is present only when `ssh.authorizedKeys` resolves to at least one
+effective OpenSSH `authorized_keys` line. For Hosted Capsule releases, this
+file contains generated public key policy only; original source `file` paths
+are not copied into release archives.
 
 ## Local Container Mounts
 
@@ -105,13 +118,14 @@ unavailable.
 ```text
 Container
   Base image: ghcr.io/sporades/sporades-base:0.1.0-node22-alpine
-  Runtime user: invoking host UID/GID when available
+  Runtime user: invoking host UID/GID when available, or 10001:10001 when SSH is enabled
   /app/server.mjs              read-only
   /app/client.js               read-only
   /app/index.html              read-only
   /app/sporades.json           read-only
   /app/.sporades/sealed-server-env/server-env.sealed.json  read-only, optional
   /app/.sporades/sealed-server-env/server-env.private.pem   read-only, optional
+  /app/.sporades/ssh/authorized_keys  read-only, optional generated public key material
   /app/.env.sporades.server    read-only, optional
   /app/data/                   read-write
 ```
@@ -121,6 +135,18 @@ Inside the container, the default SQLite path is:
 ```text
 /app/data/data.db
 ```
+
+When SSH is enabled, the Base image startup path copies the generated
+authorized-key input into writable Capsule data as:
+
+```text
+/app/data/ssh/authorized_keys
+```
+
+That file is generated runtime state owned by Sporades. Each SSH-enabled start
+or redeploy regenerates it from validated config-derived public key material.
+Removing all effective `ssh.authorizedKeys` and redeploying disables SSH and
+clears or ignores stale generated key state.
 
 With the default local filesystem Storage adapter, file bytes also live under
 the mounted persistent data area, normally `/app/data/files`. `files.storagePath`
@@ -137,13 +163,14 @@ compatible with the Sporades Base image:
 - all Linux capabilities dropped,
 - `no-new-privileges` security option,
 - invoking host UID/GID when available, falling back to the Base image runtime
-  user `10001:10001`.
+  user `10001:10001`; SSH-enabled Container sessions run as `10001:10001` so
+  the `sporades` SSH login user and process user stay aligned.
 
-Local Container sessions do not currently start an SSH service or publish
-container port 22. The planned SSH-to-Docker feature will make that an explicit
-opt-in path driven by authorized public keys in `sporades.json`; default
-Container sessions will keep the existing port and hardening behavior when no
-keys are configured.
+Local Container sessions start SSH only when `ssh.authorizedKeys` resolves to
+at least one effective public authorized key. In that case, container port 22 is
+published to a Docker-assigned loopback-only host port and inspected with
+`sporades deploy ssh`. Without configured keys, SSH is disabled and port 22 is
+not published.
 
 The Base image is a thin Sporades-owned Node 22 image. It does not bake in
 Capsule app dependencies. Release files are mounted into known read-only paths,
@@ -201,12 +228,15 @@ With `remoteRoot=/srv/sporades` and `domain=example.com`, a Host server uses:
               client.js
               index.html
               sporades.json
+              .sporades/ssh/authorized_keys
               .sporades/sealed-server-env/server-env.sealed.json
               .env.sporades.server
           current -> releases/<release-id>
           data/
             sealed-server-env/
               server-env.private.pem
+            ssh/
+              authorized_keys
 ```
 
 `tls/` is only required for Host profiles that use
@@ -237,10 +267,16 @@ sealed envelopes, release archives, local Host profiles, or CLI output. Host
 inspection reports key fingerprints and availability status without exposing
 private key material.
 
-Hosted Capsules do not currently publish SSH directly into Capsule containers.
-Future SSH-to-Docker support must preserve Caddy HTTP routing and Hosted Capsule
-registry authority while exposing port 22 only through the approved opt-in
-contract.
+When a Hosted Capsule release includes generated public authorized-key material,
+the Host helper starts the container with SSH enabled, publishes container port
+22 to a Docker-assigned loopback-only port on the Host server, and preserves
+Caddy HTTP routing separately. The generated input lives in the immutable
+release as `.sporades/ssh/authorized_keys`; the runtime copy lives under Hosted
+Capsule data as `ssh/authorized_keys` and is regenerated from release material
+when the container starts. Source `file` paths from the CLI machine are not
+copied to the Host server. Operators inspect effective Hosted Capsule SSH state
+with `sporades host ssh`; routine Host list, stats, push, and lifecycle output
+do not expose SSH state unless validation fails.
 
 ## Host Caddy Files
 

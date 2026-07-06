@@ -1001,23 +1001,87 @@ App code should still use app tables for domain data such as notes, projects,
 memberships, and records. Preferences are for small durable UI and behavior
 settings.
 
-## Planned SSH Access For Containers
+## Container SSH Access
 
-Sporades does not currently expose an SSH service inside local Container
-sessions or Hosted Capsules. The planned SSH-to-Docker feature will add an
-explicit, opt-in `sporades.json` contract for authorized public keys when
-running `sporades deploy` or Hosted Capsules through `sporades host ...`.
-
-That planned feature is for compatibility and emergency access paths. It is not
-the primary management interface, and Sporades will not add an interactive SSH
-workflow as the normal way to operate a Capsule. Use the existing CLI surfaces
-for deployment, logs, stats, restarts, Host registration, and recovery; use
+Container SSH access is an explicit, opt-in compatibility and emergency access
+path for local Container sessions and Hosted Capsules. It is not the primary
+Sporades management interface. Keep using the structured CLI surfaces for
+deployment, logs, stats, restarts, Host registration, and recovery; use
 Portainer or similar container tooling when you want a broader container
 management UI.
 
-Until that feature is implemented, no SSH authorized-key config is accepted for
-Capsule containers, and default Container sessions and Hosted Capsules keep
-their existing port and hardening behavior.
+Configure Container SSH access in `sporades.json` with a top-level `ssh` object
+and `authorizedKeys` entries. Each entry is an object with exactly one source:
+`key` for one inline public authorized-key line, or `file` for public
+authorized-key material read by the CLI.
+
+```json
+{
+  "name": "notes",
+  "ssh": {
+    "authorizedKeys": [
+      { "key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample developer@workstation" },
+      { "file": "~/.ssh/id_ed25519.pub" },
+      { "file": "ops/authorized_keys.pub" }
+    ]
+  }
+}
+```
+
+`file` entries resolve on the CLI machine before a local Container session
+starts or a Hosted Capsule release is packaged. Supported file references
+include absolute paths, `~`, and project-relative paths. Absolute paths are
+used as-is, `~` expands to the CLI user's home directory, and project-relative
+paths resolve from the directory containing `sporades.json`. Hosted Capsule
+releases include only generated public authorized-key material. Original file
+paths are not retained: original source paths are not copied into Hosted Capsule releases.
+Those source paths are also omitted from Host registries and container metadata.
+
+Sporades preserves OpenSSH `authorized_keys` semantics. A `key` entry provides
+one authorized-key line. A `file` entry may contain normal authorized-key file
+content, including multiple public-key lines, comments, blank lines, key
+options, and OpenSSH-supported public-key algorithms. Private-key-looking or
+malformed material is rejected before container startup or release packaging
+where possible. Empty effective key sets leave SSH disabled.
+
+When SSH is enabled, sessions log in as the `sporades` user with key-based
+authentication only. Sporades does not provide root login, sudoers access,
+passwords, custom SSH ports, or public SSH port exposure. Release files remain
+read-only; Capsule data remains the writable runtime area. Hosted Capsule SSH
+ports are Docker-assigned and loopback-only on the Host server, separate from
+Caddy HTTP routing.
+
+Use explicit inspection commands for effective SSH state. `sporades deploy ssh`
+inspects the local Container session, and `sporades host ssh` inspects a Hosted
+Capsule through the configured Host server:
+
+```sh
+sporades deploy ssh
+sporades deploy ssh --json
+sporades host ssh team-notes --host personal
+sporades host ssh team-notes --host personal --json
+```
+
+These commands report connection facts such as enabled state, user, host, port,
+target port, key count, fingerprints, running state, and reason codes. Normal
+`sporades deploy`, `sporades host push`, list, stats, and lifecycle output do
+not include SSH state unless validation fails.
+
+Indicative examples, not universal commands:
+
+```sh
+# Local Container session: first inspect the Docker-assigned loopback port.
+sporades deploy ssh --json
+ssh -p <local-port> sporades@127.0.0.1
+
+# Hosted Capsule: first inspect the loopback-only port on the Host server.
+sporades host ssh team-notes --host personal --json
+ssh -N -L <local-port>:127.0.0.1:<host-loopback-port> <host-profile-ssh-target>
+ssh -p <local-port> sporades@127.0.0.1
+```
+
+Client SSH commands vary by OS, key agent, local SSH config, and tunneling
+setup. Treat the examples as shape, not a contract.
 
 ## File Uploads
 

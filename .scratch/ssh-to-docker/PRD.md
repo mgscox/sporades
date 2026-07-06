@@ -1,6 +1,6 @@
 # SSH to Docker
 
-Status: ready-for-agent
+Status: implemented
 
 ## Source Planning
 
@@ -12,6 +12,16 @@ Status: ready-for-agent
 
 When this feature is implemented and documented, `docs/ROADMAP.md` MUST be
 updated to remove the item, per the roadmap Promotion Rule.
+
+## Implementation Status
+
+The Container SSH access contract is implemented and documented for local
+Container sessions and Hosted Capsules. Local and Hosted implementation slices
+landed before the documentation slice; user-facing docs now describe
+top-level `ssh.authorizedKeys`, generated public authorized-key material,
+loopback-only Docker-assigned SSH ports, and the explicit
+`sporades deploy ssh` and `sporades host ssh` inspection surfaces. The roadmap
+has moved SSH to the implemented section.
 
 ## Problem Statement
 

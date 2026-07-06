@@ -208,20 +208,22 @@ test("canonical docs describe Host stats without introducing host status", async
   }
 });
 
-test("docs describe implemented preferences and planned SSH-to-Docker access", async () => {
-  const [roadmap, userGuide, prd, readme, runtimeLayout] = await Promise.all([
+test("docs describe implemented preferences and Container SSH access", async () => {
+  const [roadmap, userGuide, prd, readme, runtimeLayout, sshPrd] = await Promise.all([
     readProjectFile("docs/ROADMAP.md"),
     readProjectFile("docs/user-guide.md"),
     readProjectFile("docs/PRD.md"),
     readProjectFile("README.md"),
     readProjectFile("docs/runtime-layout.md"),
+    readProjectFile(".scratch/ssh-to-docker/PRD.md"),
   ]);
 
   assert.match(roadmap, /Recently Implemented/);
   assert.match(roadmap, /User preferences table and SDK \| implemented/);
   assert.match(roadmap, /preferences\.get\(\)/);
   assert.match(roadmap, /preferences\.updated/);
-  assert.match(roadmap, /SSH to Docker \| ready/);
+  assert.doesNotMatch(roadmap, /SSH to Docker \| ready/);
+  assert.match(roadmap, /SSH to Docker \| implemented/);
   assert.doesNotMatch(
     roadmap,
     /User preferences table and SDK \| ready \| Add a Sporades-owned key-value JSON preferences store/,
@@ -230,18 +232,43 @@ test("docs describe implemented preferences and planned SSH-to-Docker access", a
   assert.match(userGuide, /const next = await preferences\.update/);
   assert.match(userGuide, /filter\("preferences\.updated"\)/);
   assert.match(userGuide, /The update notification is a convergence signal/);
-  assert.match(userGuide, /Planned SSH Access For Containers/);
-  assert.match(userGuide, /does not currently expose an SSH service inside local Container\s+sessions or Hosted Capsules/);
-  assert.match(userGuide, /no SSH authorized-key config is accepted for\s+Capsule containers/);
+  assert.match(userGuide, /Container SSH Access/);
+  assert.match(userGuide, /"ssh":\s*\{\s*"authorizedKeys":\s*\[\s*\{\s*"key": "ssh-ed25519 AAAA/);
+  assert.match(userGuide, /\{\s*"file": "~\/\.ssh\/id_ed25519\.pub"\s*\}/);
+  assert.match(userGuide, /`file` entries resolve on the CLI machine/);
+  assert.match(userGuide, /absolute paths, `~`, and project-relative paths/);
+  assert.match(userGuide, /original\s+source\s+paths\s+are\s+not\s+copied\s+into\s+Hosted\s+Capsule\s+releases/);
+  assert.match(userGuide, /OpenSSH `authorized_keys` semantics/);
+  assert.match(userGuide, /`sporades` user/);
+  assert.match(userGuide, /key-based\s+authentication\s+only/);
+  assert.match(
+    userGuide,
+    /does\s+not\s+provide\s+root\s+login,\s+sudoers\s+access,\s+passwords,\s+custom\s+SSH\s+ports,\s+or\s+public\s+SSH\s+port\s+exposure/,
+  );
+  assert.match(userGuide, /`sporades deploy ssh`/);
+  assert.match(userGuide, /`sporades host ssh`/);
+  assert.match(userGuide, /Indicative examples/);
+  assert.match(userGuide, /ssh -p <local-port> sporades@127\.0\.0\.1/);
+  assert.match(userGuide, /ssh -N -L <local-port>:127\.0\.0\.1:<host-loopback-port> <host-profile-ssh-target>/);
+  assert.doesNotMatch(userGuide, /ssh\.enabled/);
 
-  assert.match(prd, /SSH access into local Container sessions and Hosted Capsules/);
+  assert.match(prd, /Container SSH access for local Container sessions and Hosted Capsules/);
   assert.match(prd, /opt-in\s+compatibility and emergency access path/);
   assert.match(prd, /same-user convergence signal/);
 
   assert.match(readme, /Preferences follow the Sporades user identity/);
-  assert.match(readme, /The next shaped feature is opt-in SSH access/);
-  assert.match(runtimeLayout, /do not currently start an SSH service or publish\s+container port 22/);
-  assert.match(runtimeLayout, /Hosted Capsules do not currently publish SSH directly/);
+  assert.match(readme, /Container SSH access is opt-in/);
+  assert.doesNotMatch(readme, /The next shaped feature is opt-in SSH access/);
+  assert.match(runtimeLayout, /\/app\/data\/ssh\/authorized_keys/);
+  assert.match(runtimeLayout, /\.sporades\/ssh\/authorized_keys/);
+  assert.match(runtimeLayout, /releases\/\s+<release-id>\/[\s\S]*\.sporades\/ssh\/authorized_keys/);
+  assert.match(runtimeLayout, /generated public authorized-key material/);
+  assert.match(runtimeLayout, /[Ss]ource `file` paths[\s\S]*are not copied/);
+  assert.doesNotMatch(runtimeLayout, /do not currently start an SSH service or publish\s+container port 22/);
+  assert.doesNotMatch(runtimeLayout, /Hosted Capsules do not currently publish SSH directly/);
+
+  assert.match(sshPrd, /Status: implemented/i);
+  assert.match(sshPrd, /implemented and documented/i);
 });
 
 test("user guide documents Capsule service reset without blanket Runtime deletion", async () => {

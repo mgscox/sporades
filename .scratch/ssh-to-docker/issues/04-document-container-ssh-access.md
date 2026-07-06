@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Document Container SSH access
 
@@ -15,13 +15,13 @@ management interface.
 
 ## Acceptance criteria
 
-- [ ] `docs/user-guide.md` documents the top-level `ssh.authorizedKeys` shape, including `{ "key": "..." }` and `{ "file": "..." }` entries.
-- [ ] Docs explain that `file` entries resolve on the CLI machine, support absolute paths, `~`, and project-relative paths, and that original source paths are not copied into Hosted Capsule releases.
-- [ ] Docs state that SSH uses the `sporades` user, key-based auth only, no root login, no sudoers access, no passwords, no custom ports, and no public port exposure.
-- [ ] Docs explain `sporades deploy ssh` and `sporades host ssh` as the explicit inspection surfaces for effective SSH state.
-- [ ] Docs include indicative local SSH and Hosted tunnel examples without presenting them as universal commands.
-- [ ] `docs/runtime-layout.md` describes generated SSH runtime state under Capsule data and generated public authorized-key material in Hosted Capsule releases.
-- [ ] The parent PRD and `docs/ROADMAP.md` are updated when the feature is implemented and documented.
+- [x] `docs/user-guide.md` documents the top-level `ssh.authorizedKeys` shape, including `{ "key": "..." }` and `{ "file": "..." }` entries.
+- [x] Docs explain that `file` entries resolve on the CLI machine, support absolute paths, `~`, and project-relative paths, and that original source paths are not copied into Hosted Capsule releases.
+- [x] Docs state that SSH uses the `sporades` user, key-based auth only, no root login, no sudoers access, no passwords, no custom ports, and no public port exposure.
+- [x] Docs explain `sporades deploy ssh` and `sporades host ssh` as the explicit inspection surfaces for effective SSH state.
+- [x] Docs include indicative local SSH and Hosted tunnel examples without presenting them as universal commands.
+- [x] `docs/runtime-layout.md` describes generated SSH runtime state under Capsule data and generated public authorized-key material in Hosted Capsule releases.
+- [x] The parent PRD and `docs/ROADMAP.md` are updated when the feature is implemented and documented.
 
 ## Blocked by
 
