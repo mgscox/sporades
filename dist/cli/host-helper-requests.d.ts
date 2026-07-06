@@ -1,6 +1,6 @@
 import type { JsonObject, JsonValue } from "./host-helper-json.js";
 import type { HostHelperCapsuleTarget, HostHelperHost, HostHelperSealedServerEnv, HostLifecycleOptions, HostedCapsuleBaseImage, HostTlsMode } from "./hosted-capsule-contract.js";
-export type HostHelperAction = "capsule.register" | "capsule.sealed-env.rotate-key" | "capsule.unregister" | "capsule.delete" | "capsule.release.install" | "capsule.release.list" | "capsule.release.rollback" | "capsule.start" | "capsule.stop" | "capsule.restart" | "capsule.stats" | "capsule.health" | "capsule.list" | "host.stats" | "host.logs" | "host.bootstrap";
+export type HostHelperAction = "capsule.register" | "capsule.sealed-env.rotate-key" | "capsule.unregister" | "capsule.delete" | "capsule.release.install" | "capsule.release.list" | "capsule.release.rollback" | "capsule.start" | "capsule.stop" | "capsule.restart" | "capsule.stats" | "capsule.ssh" | "capsule.health" | "capsule.list" | "host.stats" | "host.logs" | "host.bootstrap";
 export type HostHelperVerification = JsonObject & {
     enabled?: boolean;
     fallbackToPreviousRelease?: boolean;
@@ -24,6 +24,12 @@ export type HostHelperRelease = JsonObject & {
     serverEnvIncluded?: boolean;
     sealedServerEnvIncluded?: boolean;
     sealedServerEnv?: HostHelperSealedServerEnv | null;
+    ssh?: {
+        enabled?: boolean;
+        authorizedKeysPath?: string | null;
+        keyCount?: number;
+        fingerprints?: string[];
+    } | null;
 };
 export type HostHelperRequestBase = JsonObject & {
     action: HostHelperAction;
@@ -133,6 +139,10 @@ export type HostStatsRequest = (HostHelperRequestBase & {
     action: "capsule.stats";
     capsule: HostHelperCapsuleTarget;
 });
+export type HostSshRequest = HostHelperRequestBase & {
+    action: "capsule.ssh";
+    capsule: HostHelperCapsuleTarget;
+};
 export type HostHealthRequest = HostHelperRequestBase & {
     action: "capsule.health";
     capsule: HostHelperCapsuleTarget;
@@ -145,7 +155,7 @@ export type HostLogsRequest = HostHelperRequestBase & {
 export type HostCapsuleListRequest = HostHelperRequestBase & {
     action: "capsule.list";
 };
-export type HostHelperRequest = HostBootstrapRequest | HostRegistrationRequest | HostSealedEnvRotationRequest | HostUnregisterRequest | HostDeleteRequest | HostReleaseInstallRequest | HostReleaseListRequest | HostReleaseRollbackRequest | HostLifecycleRequest | HostStatsRequest | HostHealthRequest | HostLogsRequest | HostCapsuleListRequest;
+export type HostHelperRequest = HostBootstrapRequest | HostRegistrationRequest | HostSealedEnvRotationRequest | HostUnregisterRequest | HostDeleteRequest | HostReleaseInstallRequest | HostReleaseListRequest | HostReleaseRollbackRequest | HostLifecycleRequest | HostStatsRequest | HostSshRequest | HostHealthRequest | HostLogsRequest | HostCapsuleListRequest;
 export type HostHelperErrorBody = JsonObject & {
     message: string;
     hint: string;

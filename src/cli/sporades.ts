@@ -836,6 +836,21 @@ function parseHostArgs(args: string[]): LooseRecord {
       return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
     }
 
+    case "ssh": {
+      const [positionalSubname, ...extra] = positional;
+      if (extra.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host ssh [subname] --host <alias> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      const selectedSubname = positionalSubname ?? subname ?? null;
+      if (selectedSubname) {
+        validateCapsuleSubname(selectedSubname);
+      }
+      return { subcommand, subname: selectedSubname, hostAlias, json, projectDir: process.cwd() };
+    }
+
     case "start":
     case "stop":
     case "restart":
@@ -2266,6 +2281,7 @@ async function manageHost(options: LooseRecord) {
       const config = await readHostConfig();
       const target = await resolveHostPushTarget(config, options);
       const projectConfig = await readProjectConfig(options.projectDir);
+      const sshAccess = await resolveHostedCapsuleSshAccess(projectConfig, options.projectDir);
       const hostSealedServerEnv = await prepareHostPushSealedServerEnv({
         projectDir: options.projectDir,
         alias: target.alias,
@@ -2283,6 +2299,7 @@ async function manageHost(options: LooseRecord) {
         restart: options.restart,
         projectConfig,
         sealedServerEnv: hostSealedServerEnv,
+        sshAccess,
       });
       uploadHostReleaseArchive({
         profile: target.profile,
@@ -2311,14 +2328,15 @@ async function manageHost(options: LooseRecord) {
           : null,
         projectDir: options.projectDir,
       });
+      const outputResult = redactHostPushSshState(result);
 
       if (options.json) {
-        writeResult(result, !result.ok);
+        writeResult(outputResult, !outputResult.ok);
         return;
       }
 
-      if (!result.ok) {
-        throw commandError(result.error.message, result.error.hint);
+      if (!outputResult.ok) {
+        throw commandError(outputResult.error.message, outputResult.error.hint);
       }
       process.stdout.write(`Hosted Capsule release pushed: ${target.binding.hostedUrl}\n`);
       if (!options.restart) {
@@ -2498,6 +2516,38 @@ async function manageHost(options: LooseRecord) {
       return;
     }
 
+    case "ssh": {
+      const config = await readHostConfig();
+      const target = await resolveHostPushTarget(config, options);
+      const result = invokeRemoteHostHelper({
+        alias: target.alias,
+        profile: target.profile,
+        action: "capsule.ssh",
+        subname: target.subname,
+        projectDir: options.projectDir,
+      });
+
+      if (options.json) {
+        writeResult(result, !result.ok);
+        return;
+      }
+
+      if (!result.ok) {
+        throw commandError(result.error.message, result.error.hint);
+      }
+      const data = result.data;
+      if (!data.enabled) {
+        process.stdout.write(`Hosted Capsule SSH disabled: ${data.reason ?? "no-authorized-keys"}.\n`);
+      } else if (!data.running) {
+        process.stdout.write(`Hosted Capsule SSH configured, but the Capsule is not running: ${data.reason ?? "capsule-stopped"}.\n`);
+      } else if (!data.port) {
+        process.stdout.write("Hosted Capsule SSH configured, but port 22 is not published on the Host server loopback interface.\n");
+      } else {
+        process.stdout.write(`Hosted Capsule SSH enabled for ${data.user}@${data.host}:${data.port} on the Host server loopback interface (${data.keyCount} authorized key${data.keyCount === 1 ? "" : "s"}).\n`);
+      }
+      return;
+    }
+
     case "invoke": {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
@@ -2626,6 +2676,23 @@ async function manageHost(options: LooseRecord) {
       return;
     }
   }
+}
+
+function redactHostPushSshState(result: HostHelperEnvelope<LooseRecord>) {
+  if (!result.ok || !result.data) {
+    return result;
+  }
+  const data = JSON.parse(JSON.stringify(result.data));
+  if (data.release && typeof data.release === "object") {
+    delete data.release.ssh;
+    if (Array.isArray(data.release.files)) {
+      data.release.files = data.release.files.filter((file: unknown) => file !== ".sporades/ssh/authorized_keys");
+    }
+  }
+  if (data.lifecycle && typeof data.lifecycle === "object") {
+    delete data.lifecycle.ssh;
+  }
+  return { ...result, data };
 }
 
 async function startContainerSession(options: LooseRecord) {
@@ -3883,15 +3950,18 @@ async function createHostReleaseArchive(options: LooseRecord) {
     bundle: options.bundle,
     restart: options.restart,
     sealedServerEnv,
+    sshAccess: options.sshAccess,
     updatePolicyMode: readBaseImageUpdatePolicy(options.projectConfig),
   });
   await rm(packageDir, { recursive: true, force: true });
   await mkdir(path.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
+  await mkdir(path.join(packageDir, ".sporades", "ssh"), { recursive: true });
+  const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
   await Promise.all([
     writeFile(path.join(packageDir, "server.mjs"), await readFile(path.join(options.bundle.buildDir, "server.mjs"), "utf8")),
     writeFile(path.join(packageDir, "client.js"), await readFile(path.join(options.bundle.buildDir, "client.js"), "utf8")),
     writeFile(path.join(packageDir, "index.html"), await readFile(path.join(options.projectDir, "index.html"), "utf8")),
-    writeFile(path.join(packageDir, "sporades.json"), await readFile(path.join(options.projectDir, "sporades.json"), "utf8")),
+    writeFile(path.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}\n`),
   ]);
   if (options.bundle.containerMounts.serverEnv) {
     await writeFile(path.join(packageDir, ".env.sporades.server"), await readFile(options.bundle.containerMounts.serverEnv.host, "utf8"));
@@ -3901,6 +3971,11 @@ async function createHostReleaseArchive(options: LooseRecord) {
       path.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
       `${JSON.stringify(sealedServerEnv.envelope, null, 2)}\n`,
     );
+  }
+  if (options.sshAccess?.enabled) {
+    const authorizedKeysPath = path.join(packageDir, ".sporades", "ssh", "authorized_keys");
+    await writeFile(authorizedKeysPath, `${options.sshAccess.lines.join("\n")}\n`, { mode: 0o600 });
+    await chmod(authorizedKeysPath, 0o600);
   }
   const tarArgs = [
     "-czf",
@@ -3915,6 +3990,9 @@ async function createHostReleaseArchive(options: LooseRecord) {
   }
   if (sealedServerEnv) {
     tarArgs.push(".sporades/sealed-server-env/server-env.sealed.json");
+  }
+  if (options.sshAccess?.enabled) {
+    tarArgs.push(".sporades/ssh/authorized_keys");
   }
   const result = spawnSync("tar", tarArgs, {
     cwd: packageDir,
@@ -3933,6 +4011,27 @@ async function createHostReleaseArchive(options: LooseRecord) {
     remoteArchive,
     request: releaseRequest,
   };
+}
+
+async function resolveHostedCapsuleSshAccess(config: LooseRecord, projectDir: string) {
+  const lines = await resolveAuthorizedKeyLines(config.ssh, projectDir);
+  if (lines.length === 0) {
+    return { enabled: false, keyCount: 0, fingerprints: [], lines: [] };
+  }
+  return {
+    enabled: true,
+    keyCount: lines.length,
+    fingerprints: lines.map(authorizedKeyFingerprint),
+    lines,
+  };
+}
+
+function sanitizeHostedReleaseConfig(config: LooseRecord, sshAccess: LooseRecord) {
+  const releaseConfig = JSON.parse(JSON.stringify(config ?? {}));
+  if (releaseConfig && typeof releaseConfig === "object" && Object.hasOwn(releaseConfig, "ssh")) {
+    delete releaseConfig.ssh;
+  }
+  return releaseConfig;
 }
 
 async function createHostReleaseSealedServerEnv(options: LooseRecord) {

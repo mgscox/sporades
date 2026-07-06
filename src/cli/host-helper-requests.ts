@@ -20,6 +20,7 @@ export type HostHelperAction =
   | "capsule.stop"
   | "capsule.restart"
   | "capsule.stats"
+  | "capsule.ssh"
   | "capsule.health"
   | "capsule.list"
   | "host.stats"
@@ -50,6 +51,12 @@ export type HostHelperRelease = JsonObject & {
   serverEnvIncluded?: boolean;
   sealedServerEnvIncluded?: boolean;
   sealedServerEnv?: HostHelperSealedServerEnv | null;
+  ssh?: {
+    enabled?: boolean;
+    authorizedKeysPath?: string | null;
+    keyCount?: number;
+    fingerprints?: string[];
+  } | null;
 };
 
 export type HostHelperRequestBase = JsonObject & {
@@ -146,6 +153,10 @@ export type HostLifecycleRequest = HostHelperRequestBase & {
 export type HostStatsRequest =
   | (HostHelperRequestBase & { action: "host.stats" })
   | (HostHelperRequestBase & { action: "capsule.stats"; capsule: HostHelperCapsuleTarget });
+export type HostSshRequest = HostHelperRequestBase & {
+  action: "capsule.ssh";
+  capsule: HostHelperCapsuleTarget;
+};
 export type HostHealthRequest = HostHelperRequestBase & {
   action: "capsule.health";
   capsule: HostHelperCapsuleTarget;
@@ -168,6 +179,7 @@ export type HostHelperRequest =
   | HostReleaseRollbackRequest
   | HostLifecycleRequest
   | HostStatsRequest
+  | HostSshRequest
   | HostHealthRequest
   | HostLogsRequest
   | HostCapsuleListRequest;

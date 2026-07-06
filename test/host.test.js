@@ -13,6 +13,7 @@ import { openDevDatabase, routeRuntimeHealth } from "../dist/server-runtime-sour
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
 const hostHelperPath = path.join(repoRoot, "bin", "sporades-host-helper.js");
+const TEST_PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDI9R+ElI6awrzqT1DDZjMa6q7iH+jF5bughycSLBOa/ test@example";
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-host-"));
@@ -682,6 +683,25 @@ async function listArchiveEntries(archivePath, cwd) {
   });
   assert.equal(result.code, 0, result.stderr);
   return result.stdout.trim().split("\n").filter(Boolean).sort();
+}
+
+async function extractArchiveFile(archivePath, entry, cwd) {
+  const result = await new Promise((resolve) => {
+    const child = spawn("tar", ["-xOzf", archivePath, entry], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (code) => {
+      resolve({ code, stdout, stderr });
+    });
+  });
+  assert.equal(result.code, 0, result.stderr);
+  return result.stdout;
 }
 
 function withCacheBust(url) {
@@ -2941,6 +2961,256 @@ process.exit(0);
     assert.equal(request.release.directories.data, "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/data");
     assert.equal(request.release.directories.release, `/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/releases/${output.data.release.id}`);
     assert.equal(request.release.currentLink, "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current");
+  });
+});
+
+test("sporades host push packages generated SSH authorized keys without leaking source file paths", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const sourceKeyPath = path.join(dir, "operator.keys");
+    await writeFile(sourceKeyPath, `# operator keys\n${TEST_PUBLIC_KEY}\n`);
+    const fakeSsh = await installContractFakeSsh(
+      path.join(dir, "fake-ssh"),
+      `const request = JSON.parse(stdin);
+if (request.action !== "capsule.release.install") {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected action.", hint: "Use capsule.release.install." }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    installed: true,
+    restarted: false,
+    release: {
+      id: request.release.id,
+      files: request.release.files,
+      ssh: request.release.ssh || null
+    }
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+    const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
+    const createResult = await runCli(["create", "ssh-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "ssh-island");
+    await installFakeReact(projectDir);
+    await rm(path.join(projectDir, ".env.sporades.server"), { force: true });
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.ssh = { authorizedKeys: [{ file: sourceKeyPath }] };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const env = {
+      ...hostEnv(configDir),
+      ...fakeSsh.env,
+      ...fakeScp.env,
+      PATH: `${fakeSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+    assert.equal(
+      (
+        await runCli(
+          ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+          { cwd: projectDir, env },
+        )
+      ).code,
+      0,
+    );
+    assert.equal((await runCli(["host", "bind", "team-notes", "--host", "personal", "--json"], { cwd: projectDir, env })).code, 0);
+
+    const push = await runCli(["host", "push", "--json"], { cwd: projectDir, env });
+    assert.equal(push.code, 0, `${push.stderr}\n${push.stdout}`);
+    const output = JSON.parse(push.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(Object.hasOwn(output.data.release, "ssh"), false);
+    assert.deepEqual(output.data.release.files, [
+      "server.mjs",
+      "client.js",
+      "index.html",
+      "sporades.json",
+    ]);
+    assert.doesNotMatch(push.stdout, /\.sporades\/ssh\/authorized_keys/);
+    assert.doesNotMatch(push.stdout, /operator\.keys/);
+
+    const [scpCall] = await readJsonl(fakeScp.logPath);
+    const entries = await listArchiveEntries(scpCall.copiedTo, projectDir);
+    assert.deepEqual(entries, [
+      ".sporades/ssh/authorized_keys",
+      "client.js",
+      "index.html",
+      "server.mjs",
+      "sporades.json",
+    ]);
+    assert.equal(await extractArchiveFile(scpCall.copiedTo, ".sporades/ssh/authorized_keys", projectDir), `${TEST_PUBLIC_KEY}\n`);
+    assert.doesNotMatch(await extractArchiveFile(scpCall.copiedTo, "sporades.json", projectDir), /operator\.keys/);
+
+    const [sshCall] = await readJsonl(fakeSsh.logPath);
+    const request = JSON.parse(sshCall.stdin);
+    assert.deepEqual(request.release.files, [
+      "server.mjs",
+      "client.js",
+      "index.html",
+      "sporades.json",
+      ".sporades/ssh/authorized_keys",
+    ]);
+    assert.equal(request.release.ssh.enabled, true);
+    assert.equal(request.release.ssh.keyCount, 1);
+    assert.equal(request.release.ssh.authorizedKeysPath, ".sporades/ssh/authorized_keys");
+    assert.equal(request.release.ssh.fingerprints.length, 1);
+    assert.doesNotMatch(JSON.stringify(request.release.ssh), /operator\.keys/);
+  });
+});
+
+test("sporades host push strips disabled SSH config file paths from the release archive", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const sourceKeyPath = path.join(dir, "comments-only.keys");
+    await writeFile(sourceKeyPath, "# no effective keys today\n\n");
+    const fakeSsh = await installContractFakeSsh(
+      path.join(dir, "fake-ssh"),
+      `const request = JSON.parse(stdin);
+if (request.action !== "capsule.release.install") {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected action.", hint: "Use capsule.release.install." }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    installed: true,
+    restarted: false,
+    release: {
+      id: request.release.id,
+      files: request.release.files,
+      ssh: request.release.ssh || null
+    }
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+    const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
+    const createResult = await runCli(["create", "disabled-ssh-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "disabled-ssh-island");
+    await installFakeReact(projectDir);
+    await rm(path.join(projectDir, ".env.sporades.server"), { force: true });
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.ssh = { authorizedKeys: [{ file: sourceKeyPath }] };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const env = {
+      ...hostEnv(configDir),
+      ...fakeSsh.env,
+      ...fakeScp.env,
+      PATH: `${fakeSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+    assert.equal(
+      (
+        await runCli(
+          ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+          { cwd: projectDir, env },
+        )
+      ).code,
+      0,
+    );
+    assert.equal((await runCli(["host", "bind", "team-notes", "--host", "personal", "--json"], { cwd: projectDir, env })).code, 0);
+
+    const push = await runCli(["host", "push", "--json"], { cwd: projectDir, env });
+    assert.equal(push.code, 0, `${push.stderr}\n${push.stdout}`);
+    assert.doesNotMatch(push.stdout, /comments-only\.keys/);
+    assert.doesNotMatch(push.stdout, /\.sporades\/ssh\/authorized_keys/);
+
+    const [scpCall] = await readJsonl(fakeScp.logPath);
+    const entries = await listArchiveEntries(scpCall.copiedTo, projectDir);
+    assert.deepEqual(entries, [
+      "client.js",
+      "index.html",
+      "server.mjs",
+      "sporades.json",
+    ]);
+    const archiveConfig = await extractArchiveFile(scpCall.copiedTo, "sporades.json", projectDir);
+    assert.doesNotMatch(archiveConfig, /comments-only\.keys/);
+    assert.equal(JSON.parse(archiveConfig).ssh, undefined);
+
+    const [sshCall] = await readJsonl(fakeSsh.logPath);
+    const request = JSON.parse(sshCall.stdin);
+    assert.equal(request.release.ssh, null);
+    assert.deepEqual(request.release.files, [
+      "server.mjs",
+      "client.js",
+      "index.html",
+      "sporades.json",
+    ]);
+  });
+});
+
+test("sporades host push rejects invalid SSH config before uploading a release", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      path.join(dir, "fake-ssh"),
+      `process.stdout.write(JSON.stringify({
+  ok: false,
+  data: null,
+  error: { message: "Unexpected helper call.", hint: "SSH validation should stop first." }
+}) + "\\n");
+process.exit(0);
+`,
+    );
+    const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
+    const createResult = await runCli(["create", "bad-host-ssh", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "bad-host-ssh");
+    await installFakeReact(projectDir);
+    await rm(path.join(projectDir, ".env.sporades.server"), { force: true });
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.ssh = { authorizedKeys: [{ key: "-----BEGIN OPENSSH PRIVATE KEY-----\nnope\n-----END OPENSSH PRIVATE KEY-----" }] };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const env = {
+      ...hostEnv(configDir),
+      ...fakeSsh.env,
+      ...fakeScp.env,
+      PATH: `${fakeSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+    assert.equal(
+      (
+        await runCli(
+          ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+          { cwd: projectDir, env },
+        )
+      ).code,
+      0,
+    );
+    assert.equal((await runCli(["host", "bind", "team-notes", "--host", "personal", "--json"], { cwd: projectDir, env })).code, 0);
+
+    const push = await runCli(["host", "push", "--json"], { cwd: projectDir, env });
+    assert.equal(push.code, 1);
+    const output = JSON.parse(push.stdout);
+    assert.equal(output.ok, false);
+    assert.match(output.error.message, /private key/);
+    assert.match(output.error.hint, /public authorized_keys material only/);
+    await assert.rejects(readFile(fakeScp.logPath, "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(fakeSsh.logPath, "utf8"), { code: "ENOENT" });
   });
 });
 
@@ -7371,6 +7641,88 @@ test("sporades host helper restarts the current release after install when reque
   });
 });
 
+test("sporades host helper starts SSH-enabled Hosted Capsules through the Base startup script", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+    const incomingDir = path.join(remoteRoot, "incoming");
+    const runtimeDir = path.join(dir, "runtime-files");
+    const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
+    await mkdir(incomingDir, { recursive: true });
+    await mkdir(path.join(runtimeDir, ".sporades", "ssh"), { recursive: true });
+    await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
+    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
+    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
+    await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+    await writeFile(path.join(runtimeDir, ".sporades", "ssh", "authorized_keys"), `${TEST_PUBLIC_KEY}\n`);
+    await createTarGz(archivePath, runtimeDir, [
+      "server.mjs",
+      "client.js",
+      "index.html",
+      "sporades.json",
+      ".sporades/ssh/authorized_keys",
+    ]);
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
+    const docker = await installFakeDocker(dir);
+
+    const install = await runHostHelper(
+      {
+        action: "capsule.release.install",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+        release: {
+          id: "20260630T221500Z-feedface",
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          remoteCapsuleId: "capsules.example.dev/team-notes",
+          remoteArchive: archivePath,
+          restart: true,
+          serverEnvIncluded: false,
+          files: ["server.mjs", "client.js", "index.html", "sporades.json", ".sporades/ssh/authorized_keys"],
+          ssh: {
+            enabled: true,
+            authorizedKeysPath: ".sporades/ssh/authorized_keys",
+            keyCount: 1,
+            fingerprints: ["SHA256:test"],
+          },
+          directories: {
+            capsule: capsuleDir,
+            releases: path.join(capsuleDir, "releases"),
+            release: path.join(capsuleDir, "releases", "20260630T221500Z-feedface"),
+            data: path.join(capsuleDir, "data"),
+          },
+          currentLink: path.join(capsuleDir, "current"),
+        },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(install.code, 0, install.stderr);
+    const output = JSON.parse(install.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.lifecycle.started, true);
+    assert.equal(Object.hasOwn(output.data.lifecycle, "ssh"), false);
+
+    const runCall = (await docker.calls()).find((call) => call.args[0] === "run");
+    assert.equal(runCall.args[runCall.args.indexOf("--user") + 1], "10001:10001");
+    assert(runCall.args.includes(`${path.join(capsuleDir, "current", ".sporades", "ssh", "authorized_keys")}:/run/sporades/ssh/authorized_keys:ro`));
+    assert(runCall.args.includes("SPORADES_SSH_AUTHORIZED_KEYS_PATH=/run/sporades/ssh/authorized_keys"));
+    assert(runCall.args.includes("SPORADES_SSH_AUTHORIZED_KEYS_TARGET=/app/data/ssh/authorized_keys"));
+    assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "127.0.0.1::4000");
+    assert.equal(runCall.args[runCall.args.lastIndexOf("--publish") + 1], "127.0.0.1::22");
+    const imageIndex = runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.1.0-node22-alpine");
+    assert.deepEqual(runCall.args.slice(imageIndex), [
+      "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+      "/usr/local/bin/sporades-start",
+    ]);
+
+    const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
+    assert.equal(record.releases[0].source.ssh.enabled, true);
+    assert.equal(record.releases[0].source.ssh.keyCount, 1);
+  });
+});
+
 test("sporades host helper verifies a pushed Hosted Capsule release after restart", async () => {
   await withTempDir(async (dir) => {
     let probeToken = null;
@@ -9086,6 +9438,218 @@ process.exit(0);
       },
       capsule: null,
     });
+  });
+});
+
+test("sporades host ssh uses the local remote binding and reports helper SSH inspection JSON", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `const request = JSON.parse(stdin);
+if (request.action !== "capsule.ssh") {
+  process.stdout.write(JSON.stringify({
+    ok: false,
+    data: null,
+    error: { message: "Unexpected action.", hint: "Use capsule.ssh." }
+  }) + "\\n");
+  process.exit(0);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    capsule: {
+      subname: request.capsule.subname,
+      domain: request.host.domain,
+      hostedUrl: "https://" + request.capsule.subname + "." + request.host.domain,
+      remoteCapsuleId: request.host.domain + "/" + request.capsule.subname
+    },
+    enabled: true,
+    running: true,
+    user: "sporades",
+    host: "127.0.0.1",
+    port: 49162,
+    targetPort: 22,
+    keyCount: 1,
+    fingerprints: ["SHA256:test"],
+    reason: null
+  },
+  error: null
+}) + "\\n");
+process.exit(0);
+`,
+    );
+    const createResult = await runCli(["create", "ssh-bound-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "ssh-bound-island");
+    await installFakeReact(projectDir);
+
+    const env = { ...hostEnv(configDir), ...fakeSsh.env };
+    assert.equal(
+      (
+        await runCli(
+          ["host", "add", "personal", "--server", "root@example.test", "--domain", "capsules.example.dev", "--remote-root", "/opt/sporades", "--json"],
+          { cwd: projectDir, env },
+        )
+      ).code,
+      0,
+    );
+    assert.equal((await runCli(["host", "bind", "team-notes", "--host", "personal", "--json"], { cwd: projectDir, env })).code, 0);
+
+    const ssh = await runCli(["host", "ssh", "--json"], { cwd: projectDir, env });
+    assert.equal(ssh.code, 0, ssh.stderr);
+    const output = JSON.parse(ssh.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.enabled, true);
+    assert.equal(output.data.running, true);
+    assert.equal(output.data.user, "sporades");
+    assert.equal(output.data.host, "127.0.0.1");
+    assert.equal(output.data.port, 49162);
+    assert.equal(output.data.targetPort, 22);
+    assert.equal(output.data.keyCount, 1);
+    assert.deepEqual(output.data.fingerprints, ["SHA256:test"]);
+    assert.equal(output.data.reason, null);
+
+    const [sshCall] = await readJsonl(fakeSsh.logPath);
+    assert.deepEqual(JSON.parse(sshCall.stdin), {
+      action: "capsule.ssh",
+      host: {
+        alias: "personal",
+        domain: "capsules.example.dev",
+        scheme: "https",
+        remoteRoot: "/opt/sporades",
+      },
+      capsule: {
+        subname: "team-notes",
+      },
+    });
+  });
+});
+
+test("sporades host helper inspects effective Hosted Capsule SSH state from Docker", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(
+      registryRecordPath,
+      `${JSON.stringify({
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        status: "running",
+        currentRelease: { id: "20260630T221500Z-feedface" },
+        releases: [{
+          id: "20260630T221500Z-feedface",
+          state: "started",
+          current: true,
+          source: {
+            ssh: {
+              enabled: true,
+              authorizedKeysPath: ".sporades/ssh/authorized_keys",
+              keyCount: 1,
+              fingerprints: ["SHA256:test"]
+            }
+          }
+        }]
+      })}\n`,
+    );
+    const docker = await installFakeDocker(dir, {
+      env: {
+        FAKE_DOCKER_INSPECT_JSON: JSON.stringify({
+          State: { Running: true },
+          Config: { User: "10001:10001" },
+          NetworkSettings: {
+            Ports: {
+              "22/tcp": [
+                { HostIp: "127.0.0.1", HostPort: "49162" },
+              ],
+            },
+          },
+        }),
+      },
+    });
+
+    const result = await runHostHelper(
+      {
+        action: "capsule.ssh",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: true,
+      data: {
+        capsule: {
+          subname: "team-notes",
+          domain: "capsules.example.dev",
+          hostedUrl: "https://team-notes.capsules.example.dev",
+          remoteCapsuleId: "capsules.example.dev/team-notes",
+        },
+        enabled: true,
+        running: true,
+        user: "sporades",
+        host: "127.0.0.1",
+        port: 49162,
+        targetPort: 22,
+        keyCount: 1,
+        fingerprints: ["SHA256:test"],
+        reason: null,
+      },
+      error: null,
+    });
+    assert.deepEqual((await docker.calls()).map((call) => call.args), [
+      ["inspect", "--format", "{{json .}}", "sporades-capsules-example-dev-team-notes"],
+    ]);
+  });
+});
+
+test("sporades host helper reports disabled SSH without inspecting Docker when no keys are configured", async () => {
+  await withTempDir(async (dir) => {
+    const remoteRoot = path.join(dir, "remote-root");
+    const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+    await mkdir(path.dirname(registryRecordPath), { recursive: true });
+    await writeFile(
+      registryRecordPath,
+      `${JSON.stringify({
+        subname: "team-notes",
+        domain: "capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        status: "running",
+        currentRelease: { id: "20260630T221500Z-feedface" },
+        releases: [{
+          id: "20260630T221500Z-feedface",
+          state: "started",
+          current: true,
+          source: {}
+        }]
+      })}\n`,
+    );
+    const docker = await installFakeDocker(dir);
+
+    const result = await runHostHelper(
+      {
+        action: "capsule.ssh",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(result.code, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.enabled, false);
+    assert.equal(output.data.running, false);
+    assert.equal(output.data.reason, "no-authorized-keys");
+    await assert.rejects(readFile(docker.logPath, "utf8"), { code: "ENOENT" });
   });
 });
 

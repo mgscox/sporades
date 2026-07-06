@@ -115,6 +115,7 @@ Capsule commands:
   start <subname>     Start a Hosted Capsule
   stop <subname>      Stop a Hosted Capsule
   restart <subname>   Restart a Hosted Capsule
+  ssh [subname]       Inspect effective Hosted Capsule SSH access
   stats [subname]     Print Host server or Hosted Capsule stats
   logs [source]       Print Hosted Capsule logs
   releases <subname>  List Hosted Capsule releases

@@ -16,6 +16,9 @@ export function createHostReleaseRequest(options: LooseRecord): HostHelperReleas
   if (options.sealedServerEnv) {
     files.push(".sporades/sealed-server-env/server-env.sealed.json");
   }
+  if (options.sshAccess?.enabled) {
+    files.push(".sporades/ssh/authorized_keys");
+  }
   return {
     id: options.releaseId,
     domain: options.profile.domain,
@@ -30,6 +33,14 @@ export function createHostReleaseRequest(options: LooseRecord): HostHelperReleas
       ? {
         publicKeyFingerprint: options.sealedServerEnv.publicKeyFingerprint,
         publicKeyPath: options.sealedServerEnv.publicKeyPath,
+      }
+      : null,
+    ssh: options.sshAccess?.enabled
+      ? {
+        enabled: true,
+        authorizedKeysPath: ".sporades/ssh/authorized_keys",
+        keyCount: options.sshAccess.keyCount,
+        fingerprints: options.sshAccess.fingerprints,
       }
       : null,
     baseImage: baseImageMetadata(options.updatePolicyMode),

@@ -167,6 +167,9 @@ function expectedReleaseFiles(release) {
   if (release.sealedServerEnvIncluded) {
     files.push(".sporades/sealed-server-env/server-env.sealed.json");
   }
+  if (release.ssh?.enabled) {
+    files.push(".sporades/ssh/authorized_keys");
+  }
   return files;
 }
 function isExpectedClaimedReleaseFile(file) {
@@ -176,7 +179,8 @@ function isExpectedClaimedReleaseFile(file) {
     "index.html",
     "sporades.json",
     ".env.sporades.server",
-    ".sporades/sealed-server-env/server-env.sealed.json"
+    ".sporades/sealed-server-env/server-env.sealed.json",
+    ".sporades/ssh/authorized_keys"
   ].includes(file);
 }
 
@@ -729,6 +733,10 @@ async function main() {
   }
   if (request.action === "capsule.stats") {
     await statsCapsule(request);
+    return;
+  }
+  if (request.action === "capsule.ssh") {
+    await inspectCapsuleSsh(request);
     return;
   }
   if (request.action === "capsule.health") {
@@ -1617,6 +1625,70 @@ async function statsCapsule(request) {
   };
   writeEnvelope({ ok: true, data, error: null });
 }
+async function inspectCapsuleSsh(request) {
+  let registryRecord;
+  try {
+    registryRecord = await verifyRegisteredCapsule(request, "ssh");
+  } catch (error) {
+    if (errorDetails(error).message === "Hosted Capsule is not registered.") {
+      writeEnvelope({
+        ok: true,
+        data: hostedCapsuleSshState(request, {
+          enabled: false,
+          running: false,
+          reason: "no-hosted-capsule"
+        }),
+        error: null
+      });
+      return;
+    }
+    throw error;
+  }
+  const ssh = currentReleaseSshIntent(registryRecord);
+  if (ssh.reason) {
+    writeEnvelope({
+      ok: true,
+      data: hostedCapsuleSshState(request, {
+        enabled: false,
+        running: false,
+        reason: ssh.reason
+      }),
+      error: null
+    });
+    return;
+  }
+  const lifecycle = normaliseLifecycle(request, registryRecord);
+  const inspected = inspectDockerContainerJson(lifecycle.container.name);
+  if (!inspected) {
+    writeEnvelope({
+      ok: true,
+      data: hostedCapsuleSshState(request, {
+        enabled: true,
+        running: false,
+        keyCount: ssh.keyCount,
+        fingerprints: ssh.fingerprints,
+        reason: "capsule-stopped"
+      }),
+      error: null
+    });
+    return;
+  }
+  const running = Boolean(inspected.State?.Running);
+  const port = inspectedContainerPort(inspected, 22);
+  writeEnvelope({
+    ok: true,
+    data: hostedCapsuleSshState(request, {
+      enabled: true,
+      running,
+      host: port?.host ?? null,
+      port: port?.port ?? null,
+      keyCount: ssh.keyCount,
+      fingerprints: ssh.fingerprints,
+      reason: running ? port ? null : "port-not-published" : "capsule-stopped"
+    }),
+    error: null
+  });
+}
 async function listReleases(request) {
   validateReleaseListRequest(request);
   const record = await readRegistryRecordForCapsule(request, "releases");
@@ -1906,6 +1978,7 @@ function normaliseLifecycle(request, registryRecord = null) {
   const routeAccessLog = provided.routes;
   const accessLog = routeAccessLog?.accessLog ?? provided.accessLog ?? defaultCapsuleHttpLogPath(request.host.remoteRoot, domain, subname);
   const sealedServerEnvPrivateKey = releaseSealedServerEnvPrivateKeyMount(registryRecord, paths);
+  const sshAuthorizedKeysMount = releaseSshAuthorizedKeysMount(registryRecord, paths);
   const authoritativeBaseImage = request.release?.baseImage ?? registryRecord?.baseImage ?? null;
   const updatePolicyMode = normaliseBaseImageUpdatePolicy(
     authoritativeBaseImage?.updatePolicy ?? provided.container?.baseImage?.updatePolicy
@@ -1935,7 +2008,8 @@ function normaliseLifecycle(request, registryRecord = null) {
         mode: "ro",
         optional: !sealedServerEnvPrivateKey.fingerprint,
         fingerprint: sealedServerEnvPrivateKey.fingerprint
-      }
+      },
+      ...sshAuthorizedKeysMount ? [sshAuthorizedKeysMount] : []
     ],
     data: { host: paths.data, container: "/app/data", mode: "rw" }
   };
@@ -3089,6 +3163,14 @@ async function dockerRunArgs(lifecycle, releaseId) {
     if (mount.container === "/app/.sporades/sealed-server-env/server-env.private.pem") {
       args.push("--env", `SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH=${mount.container}`);
     }
+    if (mount.container === "/run/sporades/ssh/authorized_keys") {
+      args.push(
+        "--env",
+        "SPORADES_SSH_AUTHORIZED_KEYS_PATH=/run/sporades/ssh/authorized_keys",
+        "--env",
+        "SPORADES_SSH_AUTHORIZED_KEYS_TARGET=/app/data/ssh/authorized_keys"
+      );
+    }
   }
   args.push(
     "--volume",
@@ -3103,7 +3185,11 @@ async function dockerRunArgs(lifecycle, releaseId) {
     `SPORADES_RELEASE_ID=${releaseId}`
   );
   args.push("--publish", `127.0.0.1::${lifecycle.routes.running.port ?? 4e3}`);
-  args.push(lifecycle.container.image, "node", "/app/server.mjs");
+  const sshEnabled = lifecycle.mounts.files.some((mount) => mount.container === "/run/sporades/ssh/authorized_keys");
+  if (sshEnabled) {
+    args.push("--publish", "127.0.0.1::22");
+  }
+  args.push(lifecycle.container.image, ...sshEnabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]);
   return args;
 }
 function missingHostSealedServerEnvPrivateKeyError(lifecycle, mount) {
@@ -3177,6 +3263,25 @@ function inspectContainerRunning(containerName) {
   }
   const value = result.stdout.trim();
   return { ok: true, running: value === "true" };
+}
+function inspectDockerContainerJson(containerName) {
+  const result = runDocker(["inspect", "--format", "{{json .}}", containerName], { ignoreFailure: true });
+  if (!result.ok) {
+    return null;
+  }
+  try {
+    return JSON.parse(result.stdout);
+  } catch {
+    return null;
+  }
+}
+function inspectedContainerPort(inspected, targetPort) {
+  const entries = inspected?.NetworkSettings?.Ports?.[`${targetPort}/tcp`];
+  const entry = Array.isArray(entries) ? entries[0] : null;
+  if (!entry || entry.HostIp !== "127.0.0.1" || !/^[1-9][0-9]*$/.test(String(entry.HostPort ?? ""))) {
+    return null;
+  }
+  return { host: "127.0.0.1", port: Number(entry.HostPort), targetPort };
 }
 function inspectLoopbackPublishedPort(containerName, containerPort) {
   const result = runDocker([
@@ -3487,7 +3592,13 @@ async function recordReleaseUploaded(request, release) {
         files: Array.isArray(release.files) ? [...release.files] : [],
         serverEnvIncluded: Boolean(release.serverEnvIncluded),
         sealedServerEnvIncluded: Boolean(release.sealedServerEnvIncluded),
-        sealedServerEnv: release.sealedServerEnv?.publicKeyFingerprint ? { publicKeyFingerprint: release.sealedServerEnv.publicKeyFingerprint } : void 0
+        sealedServerEnv: release.sealedServerEnv?.publicKeyFingerprint ? { publicKeyFingerprint: release.sealedServerEnv.publicKeyFingerprint } : void 0,
+        ssh: release.ssh?.enabled ? {
+          enabled: true,
+          authorizedKeysPath: release.ssh.authorizedKeysPath ?? ".sporades/ssh/authorized_keys",
+          keyCount: release.ssh.keyCount ?? 0,
+          fingerprints: Array.isArray(release.ssh.fingerprints) ? [...release.ssh.fingerprints] : []
+        } : void 0
       }
     }));
     return record;
@@ -3747,6 +3858,58 @@ function releaseSealedServerEnvPrivateKeyMount(registryRecord, paths) {
   return {
     host: path4.join(paths.data, "sealed-server-env", "server-env.private.pem"),
     fingerprint: null
+  };
+}
+function releaseSshAuthorizedKeysMount(registryRecord, paths) {
+  const releaseId = registryRecord?.currentRelease?.id ?? null;
+  const release = normaliseReleaseHistory(registryRecord).find((entry) => entry.id === releaseId);
+  const ssh = release?.source?.ssh;
+  if (!ssh?.enabled || ssh.authorizedKeysPath !== ".sporades/ssh/authorized_keys") {
+    return null;
+  }
+  return {
+    host: path4.join(paths.currentLink, ".sporades", "ssh", "authorized_keys"),
+    container: "/run/sporades/ssh/authorized_keys",
+    mode: "ro",
+    optional: false
+  };
+}
+function currentReleaseSshIntent(registryRecord) {
+  const releaseId = registryRecord?.currentRelease?.id ?? null;
+  if (!releaseId) {
+    return { reason: "no-current-release", keyCount: 0, fingerprints: [] };
+  }
+  const release = normaliseReleaseHistory(registryRecord).find((entry) => entry.id === releaseId);
+  const ssh = release?.source?.ssh;
+  if (!ssh?.enabled) {
+    return { reason: "no-authorized-keys", keyCount: 0, fingerprints: [] };
+  }
+  return {
+    reason: null,
+    keyCount: Number.isInteger(ssh.keyCount) ? ssh.keyCount : 0,
+    fingerprints: Array.isArray(ssh.fingerprints) ? ssh.fingerprints.filter((value) => typeof value === "string") : []
+  };
+}
+function hostedCapsuleSshState(request, overrides) {
+  const subname = request.capsule.subname;
+  const domain = request.host.domain;
+  return {
+    capsule: {
+      subname,
+      domain,
+      hostedUrl: `${request.host.scheme ?? "https"}://${subname}.${domain}`,
+      remoteCapsuleId: `${domain}/${subname}`
+    },
+    enabled: false,
+    running: false,
+    user: SPORADES_BASE_IMAGE.runtimeUser,
+    host: null,
+    port: null,
+    targetPort: 22,
+    keyCount: 0,
+    fingerprints: [],
+    reason: "no-authorized-keys",
+    ...overrides
   };
 }
 function normaliseReleaseEventList(value) {

@@ -6,6 +6,9 @@ export function expectedReleaseFiles(release) {
     if (release.sealedServerEnvIncluded) {
         files.push(".sporades/sealed-server-env/server-env.sealed.json");
     }
+    if (release.ssh?.enabled) {
+        files.push(".sporades/ssh/authorized_keys");
+    }
     return files;
 }
 export function isExpectedClaimedReleaseFile(file) {
@@ -16,6 +19,7 @@ export function isExpectedClaimedReleaseFile(file) {
         "sporades.json",
         ".env.sporades.server",
         ".sporades/sealed-server-env/server-env.sealed.json",
+        ".sporades/ssh/authorized_keys",
     ].includes(file);
 }
 //# sourceMappingURL=host-helper-release-files.js.map
