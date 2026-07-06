@@ -135,12 +135,12 @@ function openSocket(baseUrl, sessionToken = null) {
   });
 }
 
-function waitForSocketMessage(socket, predicate) {
+function waitForSocketMessage(socket, predicate, timeoutMs = TEST_WEBSOCKET_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       cleanup();
       reject(new Error("Timed out waiting for WebSocket message."));
-    }, TEST_WEBSOCKET_TIMEOUT_MS);
+    }, timeoutMs);
 
     function cleanup() {
       clearTimeout(timeout);
@@ -281,6 +281,261 @@ export default capsule({
     } finally {
       socket?.close();
       otherSocket?.close();
+      await stopDevSession(child);
+    }
+  });
+});
+
+test("current-user preference updates notify connected clients for the same user", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "preferences-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "preferences-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let primarySocket;
+    let sameUserSocket;
+    let differentUserSocket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+
+      primarySocket = await openSocket(started.data.url);
+      const authResult = await sendAndWait(primarySocket, { id: "auth", type: "auth.get" });
+      assert.equal(authResult.error, null);
+
+      sameUserSocket = await openSocket(started.data.url, authResult.data.sessionToken);
+      differentUserSocket = await openSocket(started.data.url);
+      assert.deepEqual(await sendAndWait(sameUserSocket, { id: "same-user-initial", type: "preferences.get" }), {
+        id: "same-user-initial",
+        type: "preferences.result",
+        data: { preferences: {} },
+        error: null,
+      });
+
+      const observedUpdate = waitForSocketMessage(
+        sameUserSocket,
+        (message) => message.type === "preferences.updated",
+        1000,
+      );
+      const unexpectedDifferentUserUpdate = waitForSocketMessage(
+        differentUserSocket,
+        (message) => message.type === "preferences.updated",
+        150,
+      );
+      assert.deepEqual(await sendAndWait(primarySocket, { id: "update-theme", type: "preferences.update", patch: { theme: "solarized" } }), {
+        id: "update-theme",
+        type: "preferences.result",
+        data: { preferences: { theme: "solarized" } },
+        error: null,
+      });
+
+      assert.deepEqual(await observedUpdate, {
+        id: null,
+        type: "preferences.updated",
+        data: { preferences: { theme: "solarized" } },
+        error: null,
+      });
+      await assert.rejects(unexpectedDifferentUserUpdate, /Timed out waiting for WebSocket message/);
+      assert.deepEqual(await sendAndWait(differentUserSocket, { id: "different-user-preferences", type: "preferences.get" }), {
+        id: "different-user-preferences",
+        type: "preferences.result",
+        data: { preferences: {} },
+        error: null,
+      });
+    } finally {
+      primarySocket?.close();
+      sameUserSocket?.close();
+      differentUserSocket?.close();
+      await stopDevSession(child);
+    }
+  });
+});
+
+test("current-user preferences follow anonymous email linking and later sign-in", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "preferences-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "preferences-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = {
+      providers: {
+        anonymous: true,
+        email: true,
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+
+      const initialAuth = await sendAndWait(socket, { id: "auth-initial", type: "auth.get" });
+      assert.equal(initialAuth.error, null);
+      assert.equal(initialAuth.data.auth.provider, "anonymous");
+
+      assert.deepEqual(await sendAndWait(socket, { id: "anonymous-prefs", type: "preferences.update", patch: { theme: "amber" } }), {
+        id: "anonymous-prefs",
+        type: "preferences.result",
+        data: { preferences: { theme: "amber" } },
+        error: null,
+      });
+
+      const signUp = await sendAndWait(socket, {
+        id: "signup",
+        type: "auth.signUp",
+        provider: "email",
+        credentials: {
+          email: "mira@example.com",
+          password: "correct horse battery staple",
+          name: "Mira",
+        },
+      });
+      assert.equal(signUp.type, "auth.signUp.result");
+      assert.equal(signUp.error, null);
+      assert.equal(signUp.data.auth.userId, initialAuth.data.auth.userId);
+      assert.equal(signUp.data.auth.provider, "email");
+
+      assert.deepEqual(await sendAndWait(socket, { id: "after-link", type: "preferences.get" }), {
+        id: "after-link",
+        type: "preferences.result",
+        data: { preferences: { theme: "amber" } },
+        error: null,
+      });
+
+      assert.deepEqual(await sendAndWait(socket, { id: "signout", type: "auth.signOut" }), {
+        id: "signout",
+        type: "auth.signOut.result",
+        data: { ok: true },
+        error: null,
+      });
+      assert.deepEqual(await sendAndWait(socket, { id: "after-signout", type: "preferences.get" }), {
+        id: "after-signout",
+        type: "preferences.result",
+        data: { preferences: {} },
+        error: null,
+      });
+
+      const signIn = await sendAndWait(socket, {
+        id: "signin",
+        type: "auth.signIn",
+        provider: "email",
+        credentials: {
+          email: "mira@example.com",
+          password: "correct horse battery staple",
+        },
+      });
+      assert.equal(signIn.type, "auth.signIn.result");
+      assert.equal(signIn.error, null);
+      assert.equal(signIn.data.auth.userId, initialAuth.data.auth.userId);
+
+      assert.deepEqual(await sendAndWait(socket, { id: "after-signin", type: "preferences.get" }), {
+        id: "after-signin",
+        type: "preferences.result",
+        data: { preferences: { theme: "amber" } },
+        error: null,
+      });
+    } finally {
+      socket?.close();
+      await stopDevSession(child);
+    }
+  });
+});
+
+test("current-user preferences follow local identity simulation delivered to a connected client", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "preferences-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "preferences-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = {
+      providers: {
+        anonymous: true,
+        email: true,
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+
+      assert.deepEqual(await sendAndWait(socket, { id: "anonymous-prefs", type: "preferences.update", patch: { theme: "anonymous" } }), {
+        id: "anonymous-prefs",
+        type: "preferences.result",
+        data: { preferences: { theme: "anonymous" } },
+        error: null,
+      });
+
+      const deliveredToCurrent = waitForSocketMessage(socket, (message) => message.type === "auth.session.replace");
+      const simulated = await runCli(
+        [
+          "auth",
+          "as",
+          "email",
+          "--email",
+          "local@example.com",
+          "--display-name",
+          "Local User",
+          "--client",
+          "current",
+          "--json",
+        ],
+        { cwd: projectDir },
+      );
+      assert.equal(simulated.code, 0, simulated.stderr);
+      const body = JSON.parse(simulated.stdout);
+      assert.equal(body.ok, true);
+      assert.deepEqual(body.data.delivery, {
+        target: "current",
+        delivered: true,
+        clients: 1,
+      });
+
+      const delivery = await deliveredToCurrent;
+      assert.equal(delivery.data.auth.provider, "email");
+      assert.equal(delivery.data.auth.email, "local@example.com");
+      assert.deepEqual(await sendAndWait(socket, { id: "simulated-initial", type: "preferences.get" }), {
+        id: "simulated-initial",
+        type: "preferences.result",
+        data: { preferences: {} },
+        error: null,
+      });
+
+      assert.deepEqual(await sendAndWait(socket, { id: "simulated-prefs", type: "preferences.update", patch: { theme: "simulated" } }), {
+        id: "simulated-prefs",
+        type: "preferences.result",
+        data: { preferences: { theme: "simulated" } },
+        error: null,
+      });
+    } finally {
+      socket?.close();
       await stopDevSession(child);
     }
   });

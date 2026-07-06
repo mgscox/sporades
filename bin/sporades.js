@@ -5940,6 +5940,9 @@ function createWebSocketHub(getDatabase) {
         data: result.data,
         error: result.error
       });
+      if (result.ok && result.data) {
+        notifyPreferencesUpdated(client, result.data);
+      }
       return;
     }
     if (message.type === "mutation.run") {
@@ -6098,6 +6101,19 @@ function createWebSocketHub(getDatabase) {
     }
     const userId = scope?.userId ?? senderAuth.userId;
     return [...clients].filter((candidate) => candidate.session.auth.userId === userId);
+  }
+  function notifyPreferencesUpdated(sender, data) {
+    for (const client of clients) {
+      if (client === sender || client.session.auth.userId !== sender.session.auth.userId) {
+        continue;
+      }
+      sendJson(client, {
+        id: null,
+        type: "preferences.updated",
+        data,
+        error: null
+      });
+    }
   }
 }
 async function routeSporadesAuth(database, request, response) {
