@@ -20,6 +20,10 @@ _Avoid_: open dev, unsafe mode, fully accessible dev
 A local Docker container running the bundled app with the base image, mounted bundle files, and a persistent SQLite volume. For production-like testing.
 _Avoid_: deploy (that's the command), deployment (remote connotation)
 
+**Container SSH access**:
+Opt-in SSH access into a local Container session or Hosted Capsule using configured authorized public keys. It is a compatibility and emergency access path, not the primary Sporades management interface.
+_Avoid_: SSH to Docker, interactive management, default shell access
+
 **Capsule service**:
 A runtime companion service provisioned for a Capsule, such as Postgres, Redis, or object storage. Capsule services are owned by the Capsule's execution environment rather than by app code.
 _Avoid_: sidecar, dependency, add-on
