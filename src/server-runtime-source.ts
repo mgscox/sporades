@@ -6000,6 +6000,9 @@ export function createWebSocketHub(getDatabase: () => any) {
         data: result.data,
         error: result.error,
       });
+      if (result.ok && result.data) {
+        notifyPreferencesUpdated(client, result.data);
+      }
       return;
     }
 
@@ -6174,6 +6177,20 @@ export function createWebSocketHub(getDatabase: () => any) {
     }
     const userId = scope?.userId ?? senderAuth.userId;
     return [...clients].filter((candidate) => candidate.session.auth.userId === userId);
+  }
+
+  function notifyPreferencesUpdated(sender: LooseRecord, data: LooseRecord) {
+    for (const client of clients) {
+      if (client === sender || client.session.auth.userId !== sender.session.auth.userId) {
+        continue;
+      }
+      sendJson(client, {
+        id: null,
+        type: "preferences.updated",
+        data,
+        error: null,
+      });
+    }
   }
 }
 

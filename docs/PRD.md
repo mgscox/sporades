@@ -259,6 +259,13 @@ per-user UI and behavior preferences instead of creating app tables for common
 settings. `preferences.update(...)` merges a partial JSON object into the
 stored preference object and returns the next value.
 
+Preferences follow the resolved auth identity. Values written during an
+Anonymous session remain available when that session links email or Google auth;
+sign-out resolves to a fresh Anonymous preference object, and signing back in
+restores the linked account's stored preferences. Connected clients for the same
+user observe preference updates through `preferences.updated`, while different
+users remain isolated.
+
 Additive migrations support:
 
 - creating new app tables,
