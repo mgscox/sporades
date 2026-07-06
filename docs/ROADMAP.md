@@ -20,8 +20,8 @@ and whether the work belongs in one release or separate tracks.
 
 | Feature | Status | Why it matters | Planning |
 | --- | --- | --- | --- |
-| Built-in authenticated middleware/helper | design | Small, self-contained server helper for handlers that require a linked/authenticated user, throwing or returning a structured auth error otherwise. Removes repeated manual `ctx.auth` checks and standardizes the denial shape on the existing server auth surface. | Needs `.scratch/built-in-auth-helper/PRD.md` |
-| SQLite vector extension support | design | Enables embeddings and nearest-neighbor search in the default SQLite runtime without an external vector store. Scoped to loading `sqlite-vector`, a `Blob()` helper, vector column initialization, quantization/preload behavior, and query ergonomics. | Needs `.scratch/sqlite-vector-extension/PRD.md` |
+| Built-in authenticated middleware/helper | ready | Small, self-contained server helper for handlers that require a linked/authenticated user, throwing or returning a structured auth error otherwise. Removes repeated manual `ctx.auth` checks and standardizes the denial shape on the existing server auth surface. | `.scratch/built-in-auth-helper/PRD.md` |
+| SQLite vector extension support | ready | Enables embeddings and nearest-neighbor search in the default SQLite runtime without an external vector store. Scoped to loading the SQLite vector extension, a `Blob()` helper, vector column initialization, quantization/preload behavior, and query ergonomics. | `.scratch/sqlite-vector-extension/PRD.md` |
 
 ## Data And Auth Helpers
 
