@@ -148,6 +148,23 @@ npm install --global sporades
 sporades --help
 ```
 
+Sporades depends on `esbuild` for Capsule bundling. On newer npm versions, you
+may see an `allow-scripts` warning during global install because `esbuild` uses
+a postinstall script to select the native binary for your platform.
+
+If npm blocks that script and bundling later fails, reinstall while explicitly
+allowing the `esbuild` install script:
+
+```sh
+npm install --global sporades --allow-scripts=esbuild
+```
+
+To approve `esbuild` persistently for your user npm config:
+
+```sh
+npm config set allow-scripts=esbuild --location=user
+```
+
 Generated Capsules use the same `sporades` command for local Dev sessions,
 Container sessions, inspection, and Host operations.
 

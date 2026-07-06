@@ -6,3 +6,4 @@ sporades-*-host.env
 node_modules/
 client_secret_*
 dummy/
+*.env*
