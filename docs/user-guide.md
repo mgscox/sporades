@@ -936,6 +936,31 @@ sporades auth as email --email mira@example.com --client client-abc123 --json
 This is local identity simulation. It is useful for tests and development, but
 it is not OAuth and does not validate third-party tokens.
 
+## User Preferences
+
+Use the `preferences` API from `sporades/client` for durable per-user UI and
+behavior settings:
+
+```tsx
+import { preferences } from "sporades/client";
+
+const current = await preferences.get();
+const next = await preferences.update({
+  theme: "dark",
+  density: "compact",
+});
+```
+
+`preferences.get()` returns the current Sporades user's stored preference
+object. New users start with `{}`. `preferences.update(...)` accepts a partial
+JSON object, shallow-merges it into the current object, persists it in
+runtime-owned storage, and returns the next value.
+
+Preferences are keyed to the current Sporades user identity, including the
+Anonymous session identity, rather than to Capsule app tables. Use this SDK for
+common durable per-user settings instead of creating your own preference table,
+queries, and mutations.
+
 ## File Uploads
 
 Use the `files` API from `sporades/client` for browser `File` or `Blob` values:

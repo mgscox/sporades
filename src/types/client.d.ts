@@ -9,6 +9,9 @@ export type SporadesResult<Data = unknown> = {
   error: SporadesError | null;
 };
 
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+export type JsonObject = { [key: string]: JsonValue };
+
 export type AuthState = {
   userId: string;
   displayName: string;
@@ -117,6 +120,15 @@ export type FilesApi = {
   revokePublicUrl(publicUrlId: string): Promise<PublicFileUrl>;
 };
 
+export type PreferencesResult<Preferences extends JsonObject = JsonObject> = {
+  preferences: Preferences;
+};
+
+export type PreferencesApi<Preferences extends JsonObject = JsonObject> = {
+  get(): Promise<SporadesResult<PreferencesResult<Preferences>>>;
+  update<Patch extends Partial<Preferences> & JsonObject>(patch: Patch): Promise<SporadesResult<PreferencesResult<Preferences & Patch>>>;
+};
+
 export type QueryState<Data = unknown> = {
   data: Data | null;
   error: SporadesError | null;
@@ -153,6 +165,7 @@ export type SporadesHooks = {
 
 export const auth: AuthApi;
 export const files: FilesApi;
+export const preferences: PreferencesApi;
 
 export function isAuthenticated(): Promise<boolean>;
 export function sendMessage(type: string, data?: unknown): Promise<SporadesResult>;

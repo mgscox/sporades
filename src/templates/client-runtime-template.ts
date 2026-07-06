@@ -14,6 +14,15 @@ export function onMessage(listener) {
   return connect().onMessage(listener);
 }
 
+export const preferences = {
+  get() {
+    return connect().getPreferences();
+  },
+  update(patch) {
+    return connect().updatePreferences(patch);
+  },
+};
+
 export const auth = {
   signUp(provider, credentials) {
     return connect().signUp(provider, credentials);
@@ -337,6 +346,12 @@ function createConnection() {
     },
     mutate(name, args) {
       return request("mutation.run", { mutation: name, args });
+    },
+    getPreferences() {
+      return request("preferences.get");
+    },
+    updatePreferences(patch) {
+      return request("preferences.update", { patch });
     },
     sendMessage(type, data) {
       return request("app.send", { message: type, data });

@@ -48,13 +48,14 @@ sporades host push --restart
   Docker, Caddy, Node, SQLite, filesystem storage, and SSH.
 - **Agent-operable by default**: structured JSON output, actionable error hints,
   logs, database inspection, and non-interactive commands are first-class.
-- **Comprehensive SDK**: built-in authentication, database, storage
+- **Comprehensive SDK**: built-in authentication, database, user preferences,
+  and storage.
 - **Realtime everything**: configuration free - automatic notifications, even for Postgress and AWS-S3
 
 ## Documentation
 
-- [User guide](docs/user-guide.md): build, run, inspect, deploy, auth, files,
-  endpoints, messages, and common workflows.
+- [User guide](docs/user-guide.md): build, run, inspect, deploy, auth,
+  preferences, files, endpoints, messages, and common workflows.
 - [Architecture](docs/architecture.md): platform model, runtime modes, Host
   server design, and ownership boundaries.
 - [Runtime layout](docs/runtime-layout.md): generated files, mounts, Host
@@ -127,6 +128,8 @@ Sporades currently includes:
   hardened Docker containers.
 - Runtime-owned auth with anonymous sessions, email auth, Google OAuth, and
   local identity simulation for tests and agents.
+- Runtime-owned current-user preferences exposed through `sporades/client`
+  without app preference tables.
 - File uploads with private reads, explicit public URLs, replacement versions,
   and local MinIO-backed storage support.
 - Custom HTTP endpoints and app messages over the Sporades client transport.

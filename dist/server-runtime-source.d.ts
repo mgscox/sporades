@@ -234,6 +234,13 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
     markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges;
     fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null;
     ensureAuthStorage(authConfig?: any): void;
+    ensureUserPreferencesStorage(): Promise<void>;
+    readUserPreferences(userId: any): Record<string, SQLOutputValue> | null;
+    saveUserPreferences(row: {
+        userId: any;
+        value: any;
+        updatedAt: any;
+    }): StatementResultingChanges;
     findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
     insertAuthUser(row: {
         id: any;
@@ -498,6 +505,16 @@ export declare function createPostgresDatabaseAdapter(options: {
     ensureAuthStorage(authConfig?: any): Promise<void>;
     ensureLogStorage(): Promise<void>;
     ensureFileStorage(): Promise<void>;
+    ensureUserPreferencesStorage(): Promise<void>;
+    readUserPreferences(userId: any): Promise<any>;
+    saveUserPreferences(row: {
+        userId: any;
+        value: any;
+        updatedAt: any;
+    }): Promise<{
+        changes: number;
+        lastInsertRowid: any;
+    }>;
     insertLogIndexEvent(event: {
         timestamp: any;
         category: any;
@@ -1044,6 +1061,13 @@ export declare function createLibsqlDatabaseAdapter(options: {
     revokePublicFileUrlsForFile(fileId: any, revokedAt: any): StatementResultingChanges;
     markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges;
     fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null;
+    ensureUserPreferencesStorage(): Promise<void>;
+    readUserPreferences(userId: any): Record<string, SQLOutputValue> | null;
+    saveUserPreferences(row: {
+        userId: any;
+        value: any;
+        updatedAt: any;
+    }): StatementResultingChanges;
     findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
     insertAuthUser(row: {
         id: any;

@@ -68,7 +68,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, endpoint, message, mutation, query, requireAuth, table } from "sporades/server";
-import { auth, createHooks, files, isAuthenticated, onMessage, sendMessage } from "sporades/client";
+import { auth, createHooks, files, isAuthenticated, onMessage, preferences, sendMessage } from "sporades/client";
 
 const app = capsule({
   name: "typed island",
@@ -196,6 +196,10 @@ files.upload(new Blob(["hello"], { type: "text/plain" }));
 files.publicUrl("/docs/hello.txt", { expires: new globalThis.Date() });
 // @ts-expect-error public URL expiry option is named expires, not expiresAt.
 files.publicUrl("/docs/hello.txt", { expiresAt: new globalThis.Date() });
+preferences.get().then((result) => result.data?.preferences.theme);
+preferences.update({ theme: "dark", sidebar: { collapsed: true } }).then((result) => result.data?.preferences.sidebar);
+// @ts-expect-error preferences.update accepts a JSON object patch.
+preferences.update(null);
 isAuthenticated().then((ok) => ok.valueOf());
 sendMessage("typing", { active: true });
 onMessage<{ active: boolean }>()
