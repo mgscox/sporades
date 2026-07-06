@@ -5,6 +5,9 @@ Capsules. It assumes Sporades is already installed locally. If you are preparing
 a Linux Host server for remote Hosted Capsules, read
 [server-installation.md](./server-installation.md) first.
 
+For the documentation split between conceptual guides, generated SDK reference,
+and source comments, see [sdk-documentation.md](./sdk-documentation.md).
+
 **Note:** This guide assumes you have installed `sporades` glovally
 
 Sporades is CLI-first. The normal loop is:

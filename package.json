@@ -26,6 +26,7 @@
   },
   "scripts": {
     "build": "tsc --project tsconfig.json && node ./scripts/build-bin.mjs",
+    "docs:api": "typedoc",
     "typecheck": "tsc --project tsconfig.json --noEmit",
     "pretest": "npm run build && node ./scripts/check-generated-bin.mjs",
     "test": "node --test --test-concurrency=1",
@@ -39,6 +40,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "typedoc": "^0.28.20",
     "typescript": "^5.9.3"
   },
   "allowScripts": {

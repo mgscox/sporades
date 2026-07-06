@@ -1,17 +1,31 @@
+/** Structured error returned by Sporades client SDK operations. */
 export type SporadesError = {
   message: string;
   hint?: string;
   [key: string]: unknown;
 };
 
+/**
+ * Standard result envelope for client SDK calls.
+ *
+ * Check `error` before trusting `data`; failed operations keep transport and
+ * runtime details inside a Sporades-shaped error.
+ */
 export type SporadesResult<Data = unknown> = {
   data: Data | null;
   error: SporadesError | null;
 };
 
+/** JSON-compatible values accepted by current-user preferences. */
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
+/**
+ * Current Sporades auth state in the browser.
+ *
+ * Every visitor receives a real Anonymous session. `isGuest` remains true until
+ * that session is linked to a provider such as email or Google.
+ */
 export type AuthState = {
   userId: string;
   displayName: string;
@@ -27,6 +41,7 @@ export type ProviderState = {
   configured?: boolean;
 };
 
+/** Provider availability reported by the server runtime. */
 export type AuthProviders = Record<string, ProviderState> & {
   anonymous?: ProviderState;
   google?: ProviderState;
@@ -39,6 +54,12 @@ export type EmailCredentials = {
   name?: string;
 };
 
+/**
+ * Browser auth API.
+ *
+ * The SDK stores the Sporades session token in localStorage and sends it over
+ * the same-origin client transport. Provider SDKs are not exposed to app code.
+ */
 export type AuthApi = {
   signUp(provider: "email", credentials: EmailCredentials): Promise<SporadesResult>;
   signUp(provider: string, credentials?: unknown): Promise<SporadesResult>;
@@ -47,20 +68,34 @@ export type AuthApi = {
   signOut(): Promise<SporadesResult<{ ok: boolean }>>;
 };
 
+/** Handle returned by client subscriptions. */
 export type Subscription = {
   unsubscribe(): void;
 };
 
+/**
+ * App-defined message delivered through the Sporades client transport.
+ *
+ * App code uses unprefixed type names. Sporades owns the internal `app.` prefix
+ * and only delivers client-origin messages after server mediation.
+ */
 export type AppMessage<Data = unknown> = {
   type: string;
   data: Data | null;
 };
 
+/** Filterable stream of App messages from the server runtime. */
 export type AppMessageStream<Data = unknown> = {
   filter(predicate: (message: AppMessage<Data>) => boolean): AppMessageStream<Data>;
   subscribe(listener: (message: AppMessage<Data>) => void): Subscription;
 };
 
+/**
+ * Metadata for an uploaded file inside one Capsule.
+ *
+ * `id` is stable across replacement. `version` changes when bytes are replaced,
+ * so generated URLs cannot keep serving stale content.
+ */
 export type FileMetadata = {
   id: string;
   name: string;
@@ -72,6 +107,7 @@ export type FileMetadata = {
   [key: string]: unknown;
 };
 
+/** Server-managed public read URL for a private uploaded file. */
 export type PublicFileUrl = {
   id: string;
   fileId: string;
@@ -81,8 +117,13 @@ export type PublicFileUrl = {
   [key: string]: unknown;
 };
 
+/**
+ * Value that resolves to one live file metadata record, usually a File ID or
+ * an absolute Capsule File path.
+ */
 export type FileReference = string;
 
+/** Upload progress event for a single file upload. */
 export type UploadProgressEvent = {
   type: "progress";
   fileId: string;
@@ -90,11 +131,18 @@ export type UploadProgressEvent = {
   total: number;
 };
 
+/** Upload completion event for a single file upload. */
 export type UploadCompleteEvent = {
   type: "complete";
   file: FileMetadata;
 };
 
+/**
+ * Options for `files.upload()`.
+ *
+ * Use `path` for an absolute Capsule File path. Use `replace` with `fileId` or
+ * `fileReference` when preserving the stable File ID but writing a new version.
+ */
 export type UploadOptions = {
   replace?: boolean;
   fileId?: string;
@@ -104,12 +152,24 @@ export type UploadOptions = {
   onComplete?(event: UploadCompleteEvent): void;
 };
 
+/**
+ * Expiry policy for a generated public file URL.
+ *
+ * Choose exactly one of `expires`, `ttlSeconds`, or `noExpiry` for clear app
+ * intent.
+ */
 export type PublicUrlOptions = {
   expires?: string | Date;
   ttlSeconds?: number;
   noExpiry?: boolean;
 };
 
+/**
+ * Browser file API.
+ *
+ * Uploads hide URL negotiation and byte transfer details. Passing an array is a
+ * convenience that uploads files sequentially and returns metadata in order.
+ */
 export type FilesApi = {
   upload(file: Blob | File, options?: UploadOptions): Promise<FileMetadata>;
   upload(files: Array<Blob | File>, options?: UploadOptions): Promise<FileMetadata[]>;
@@ -120,27 +180,37 @@ export type FilesApi = {
   revokePublicUrl(publicUrlId: string): Promise<PublicFileUrl>;
 };
 
+/** Successful current-user preferences payload. */
 export type PreferencesResult<Preferences extends JsonObject = JsonObject> = {
   preferences: Preferences;
 };
 
+/**
+ * Current-user preferences API.
+ *
+ * Preferences are runtime-owned JSON keyed by the Sporades user identity. They
+ * are not part of Capsule app schema and do not appear on `ctx.db`.
+ */
 export type PreferencesApi<Preferences extends JsonObject = JsonObject> = {
   get(): Promise<SporadesResult<PreferencesResult<Preferences>>>;
   update<Patch extends Partial<Preferences> & JsonObject>(patch: Patch): Promise<SporadesResult<PreferencesResult<Preferences & Patch>>>;
 };
 
+/** Hook state returned by `useQuery()`. */
 export type QueryState<Data = unknown> = {
   data: Data | null;
   error: SporadesError | null;
   loading: boolean;
 };
 
+/** Hook state returned by `useMutation()`. */
 export type MutationState<Result = unknown> = {
   error: SporadesError | null;
   loading: boolean;
   run(...args: unknown[]): Promise<SporadesResult<Result>>;
 };
 
+/** Hook state and auth commands returned by `useAuth()`. */
 export type UseAuthState = {
   auth: AuthState | null;
   providers: AuthProviders;
@@ -152,23 +222,53 @@ export type UseAuthState = {
   signOut: AuthApi["signOut"];
 };
 
+/**
+ * Framework primitives consumed by `createHooks()`.
+ *
+ * Pass `useState` and `useEffect` from the JSX framework used by the Capsule
+ * client, such as React or Preact.
+ */
 export type HookPrimitives = {
   useState<State>(initialState: State | (() => State)): [State, (nextState: State) => void];
   useEffect(effect: () => void | (() => void), deps?: unknown[]): void;
 };
 
+/** Framework-bound Sporades hooks produced by `createHooks()`. */
 export type SporadesHooks = {
   useQuery<Data = unknown>(name: string): QueryState<Data>;
   useMutation<Result = unknown>(name: string): MutationState<Result>;
   useAuth(): UseAuthState;
 };
 
+/** Auth commands for the current browser session. */
 export const auth: AuthApi;
+/** File upload, URL, download, delete, and public URL commands. */
 export const files: FilesApi;
+/** Runtime-owned current-user preferences commands. */
 export const preferences: PreferencesApi;
 
+/** Return whether the current browser session is authenticated. */
 export function isAuthenticated(): Promise<boolean>;
+/**
+ * Send an App message to the server runtime.
+ *
+ * The message must be handled by a declared server `message(...)` handler
+ * before any server-side response or fan-out occurs.
+ */
 export function sendMessage(type: string, data?: unknown): Promise<SporadesResult>;
+/** Create a filterable stream for App messages. */
 export function onMessage<Data = unknown>(): AppMessageStream<Data>;
+/** Subscribe directly to all App messages and receive an unsubscribe handle. */
 export function onMessage<Data = unknown>(listener: (message: AppMessage<Data>) => void): Subscription;
+/**
+ * Bind Sporades query, mutation, and auth hooks to a client framework.
+ *
+ * @example
+ * ```tsx
+ * import { useEffect, useState } from "react";
+ * import { createHooks } from "sporades/client";
+ *
+ * const { useAuth, useMutation, useQuery } = createHooks({ useState, useEffect });
+ * ```
+ */
 export function createHooks(primitives: HookPrimitives): SporadesHooks;

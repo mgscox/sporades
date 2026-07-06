@@ -1,19 +1,43 @@
 export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Reference";
 
+/** JSON-compatible values accepted by Sporades `Json()` fields and preferences APIs. */
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 
 export type MaybePromise<Value> = Value | Promise<Value>;
 
+/**
+ * Builder returned by a Sporades field helper such as `String()` or `Boolean()`.
+ *
+ * Field builders describe app schema. Call `.default(...)` when a field should
+ * be filled automatically during inserts that omit it.
+ *
+ * @example
+ * ```ts
+ * import { Boolean, String, table } from "sporades/server";
+ *
+ * const todos = table({
+ *   text: String(),
+ *   done: Boolean().default(false),
+ * });
+ * ```
+ */
 export type FieldBuilder<Value> = {
   kind: FieldKind;
   default(defaultValue: Value): FieldDefinition<Value>;
 };
 
+/** A field builder after a default value has been attached. */
 export type FieldDefinition<Value> = {
   kind: FieldKind;
   defaultValue?: Value;
 };
 
+/**
+ * Builder for a `Reference()` field.
+ *
+ * References store the row id of another Capsule table. The target table must
+ * exist in the Capsule schema.
+ */
 export type ReferenceFieldBuilder = {
   kind: "Reference";
   targetTable: string;
@@ -34,6 +58,12 @@ export type AnyFieldDefinition =
 
 export type TableAclOperation = "read" | "write" | "insert" | "update" | "delete";
 
+/**
+ * File metadata shape exposed inside table ACL helpers.
+ *
+ * ACLs receive metadata, not uploaded file bytes. Use it to authorize access to
+ * File references without coupling table rules to a storage backend.
+ */
 export type AclStorageFileMetadata = {
   id: string;
   path: string;
@@ -66,12 +96,20 @@ export type AclHelpers = {
   storage: AclStorageHelpers;
 };
 
+/** Runtime context available while evaluating table ACL rules. */
 export type TableAclContext = {
   auth: AuthContext;
   acl: AclHelpers;
   [key: string]: unknown;
 };
 
+/**
+ * Input supplied to a table ACL rule.
+ *
+ * `previous` is populated for updates and deletes. `next` is populated for
+ * inserts and updates. `row` contains the row being checked when the operation
+ * naturally has a single row candidate.
+ */
 export type TableAclRuleInput<Row extends Record<string, unknown> = Record<string, unknown>> = {
   ctx: TableAclContext;
   operation: TableAclOperation;
@@ -85,10 +123,35 @@ export type TableAclRule<Row extends Record<string, unknown> = Record<string, un
   input: TableAclRuleInput<Row>,
 ) => MaybePromise<boolean>;
 
+/**
+ * Per-operation table ACL rules.
+ *
+ * `write` is a convenience rule for all write operations. More specific rules
+ * such as `insert`, `update`, or `delete` can be used when different ownership
+ * checks are needed.
+ */
 export type TableAclRules<Row extends Record<string, unknown> = Record<string, unknown>> = Partial<
   Record<TableAclOperation, TableAclRule<Row>>
 >;
 
+/**
+ * A Capsule table definition.
+ *
+ * Table definitions are declared in `capsule({ schema })`; Sporades adds
+ * managed `id`, `createdAt`, and `updatedAt` fields to every stored row.
+ *
+ * @example
+ * ```ts
+ * const notes = table({
+ *   body: String(),
+ *   ownerId: String(),
+ * }).acl({
+ *   read: ({ row, ctx }) => row?.ownerId === ctx.auth.userId,
+ *   write: ({ next, previous, ctx }) =>
+ *     (next?.ownerId ?? previous?.ownerId) === ctx.auth.userId,
+ * });
+ * ```
+ */
 export type TableDefinition<Fields extends Record<string, AnyFieldDefinition> = Record<string, AnyFieldDefinition>> = {
   kind: "table";
   fields: Fields;
@@ -98,6 +161,7 @@ export type TableDefinition<Fields extends Record<string, AnyFieldDefinition> = 
 
 export type SchemaDefinition = Record<string, TableDefinition>;
 
+/** Sporades-managed fields present on every table row. App code cannot set or update these directly. */
 export type AutoFields = {
   id: string;
   createdAt: string;
@@ -120,6 +184,13 @@ export type InsertValues<Row> = Partial<Omit<Row, keyof AutoFields>>;
 export type UpdateValues<Row> = Partial<Omit<Row, keyof AutoFields>>;
 export type OrderDirection = "asc" | "desc" | "ASC" | "DESC";
 
+/**
+ * Runtime table API exposed as `ctx.db.<tableName>` inside server handlers.
+ *
+ * Query builders are immutable from an app-author point of view: chain
+ * `where`, `orderBy`, and `limit`, then finish with `get()` or `all()`.
+ * Inserts and updates return rows including Sporades-managed auto fields.
+ */
 export type TableApi<Row extends Record<string, unknown> = Record<string, unknown>> = {
   insert(values: InsertValues<Row>): Row;
   update(id: string, values: UpdateValues<Row>): Row | null;
@@ -135,6 +206,13 @@ export type DatabaseFromSchema<Schema extends SchemaDefinition> = {
   [TableName in keyof Schema]: Schema[TableName] extends TableDefinition<infer Fields> ? TableApi<RowFromFields<Fields>> : TableApi;
 };
 
+/**
+ * Current Sporades user identity for a handler invocation.
+ *
+ * Every visitor has a real Anonymous session. `isAuthenticated` means the
+ * request has a valid session; `isGuest` tells you whether that session is still
+ * anonymous rather than linked to email, Google, or another provider.
+ */
 export type AuthContext = {
   userId: string;
   displayName: string;
@@ -146,9 +224,11 @@ export type AuthContext = {
 };
 
 export type RequireAuthOptions = {
+  /** Require a linked account instead of allowing an Anonymous session. */
   linked?: boolean;
 };
 
+/** Logger captured by Sporades inspection surfaces. */
 export type Logger = {
   info(...args: unknown[]): void;
   warn(...args: unknown[]): void;
@@ -163,10 +243,21 @@ export type MessageScope =
       userIds?: string[];
     };
 
+/**
+ * App-message fan-out API available to server code.
+ *
+ * Message type names are app-defined and unprefixed. Sporades reserves and adds
+ * its internal transport prefix. Client-origin messages always enter declared
+ * server message handlers before any fan-out.
+ */
 export type MessageApi = {
   send(message: { type: string; data?: unknown; scope?: MessageScope }): number;
 };
 
+/**
+ * Runtime-owned context passed to queries, mutations, endpoints, messages,
+ * middleware, and hooks.
+ */
 export type CapsuleContext<Schema extends SchemaDefinition = SchemaDefinition> = {
   db: DatabaseFromSchema<Schema>;
   auth: AuthContext;
@@ -175,6 +266,7 @@ export type CapsuleContext<Schema extends SchemaDefinition = SchemaDefinition> =
   messages: MessageApi;
 };
 
+/** Request details available only inside Custom endpoint handlers. */
 export type EndpointRequest = {
   method: string;
   path: string;
@@ -187,10 +279,12 @@ export type EndpointContext<Schema extends SchemaDefinition = SchemaDefinition> 
   request: EndpointRequest;
 };
 
+/** Handler for a named query exposed over the Sporades client transport. */
 export type QueryHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
   ctx: CapsuleContext<Schema>,
 ) => MaybePromise<Result>;
 
+/** Handler for a named mutation exposed over the Sporades client transport. */
 export type MutationHandler<
   Schema extends SchemaDefinition = SchemaDefinition,
   Args extends unknown[] = string[],
@@ -200,10 +294,17 @@ export type MutationHandler<
   ...args: Args
 ) => MaybePromise<Result>;
 
+/**
+ * Handler for a Custom endpoint.
+ *
+ * Use endpoints for integration paths such as webhooks. Queries and mutations
+ * remain the primary Capsule data API.
+ */
 export type EndpointHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
   ctx: EndpointContext<Schema>,
 ) => MaybePromise<Result>;
 
+/** Handler for a client-origin App message. */
 export type MessageHandler<Schema extends SchemaDefinition = SchemaDefinition, Result = unknown> = (
   ctx: CapsuleContext<Schema>,
   data: unknown,
@@ -211,6 +312,7 @@ export type MessageHandler<Schema extends SchemaDefinition = SchemaDefinition, R
 
 export type ContextKind = "query" | "mutation" | "endpoint" | "message";
 
+/** Mutable context shape passed through middleware before the final handler runs. */
 export type MiddlewareContext<Schema extends SchemaDefinition = SchemaDefinition> = CapsuleContext<Schema> &
   Partial<Pick<EndpointContext<Schema>, "request">> & {
     kind: ContextKind;
@@ -221,6 +323,7 @@ export type ContextMiddleware<Schema extends SchemaDefinition = SchemaDefinition
   ctx: MiddlewareContext<Schema>,
 ) => MaybePromise<MiddlewareContext<Schema> | void>;
 
+/** Standard mutation result envelope used by runtime hooks. */
 export type MutationResult<Result = unknown> = {
   ok: boolean;
   data?: Result | null;
@@ -238,6 +341,7 @@ export type MutationHook<Schema extends SchemaDefinition = SchemaDefinition, Res
   event: MutationHookEvent<Schema, Result>,
 ) => MaybePromise<void>;
 
+/** Capsule lifecycle hooks around named mutations. */
 export type CapsuleHooks<Schema extends SchemaDefinition = SchemaDefinition> = {
   beforeMutation?: MutationHook<Schema>[];
   afterMutation?: MutationHook<Schema>[];
@@ -253,6 +357,7 @@ export type MutationDefinition<Handler = MutationHandler> = {
   handler: Handler;
 };
 
+/** HTTP method/path options for a Custom endpoint. */
 export type EndpointOptions = {
   method: string;
   path: string;
@@ -269,6 +374,12 @@ export type MessageDefinition<Handler = MessageHandler> = {
   handler: Handler;
 };
 
+/**
+ * Top-level Capsule definition passed to `capsule()`.
+ *
+ * The Capsule is the deployable unit: schema, server handlers, middleware, and
+ * hooks bundled with the client, config, and runtime data boundary.
+ */
 export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition> = {
   name: string;
   schema?: Schema;
@@ -284,22 +395,47 @@ export type Capsule<Definition extends object = CapsuleDefinition> = Definition 
   kind: "capsule";
 };
 
+/**
+ * Register a Capsule with the Sporades server runtime.
+ *
+ * Call this once from the server entrypoint and export the result as default.
+ * Sporades uses the definition to create tables, run additive schema
+ * migrations, wire auth, register queries/mutations/endpoints/messages, and
+ * start the runtime context.
+ */
 export function capsule<const Schema extends SchemaDefinition, const Definition extends CapsuleDefinition<Schema>>(
   definition: Definition & { schema?: Schema },
 ): Capsule<Definition>;
 
+/**
+ * Require the current request to have a valid Sporades session.
+ *
+ * By default Anonymous sessions are accepted. Pass `{ linked: true }` when the
+ * operation must require email, Google, or another linked provider.
+ */
 export function requireAuth(ctx: { auth: AuthContext }, options?: RequireAuthOptions): AuthContext;
+/** Define a Custom endpoint for HTTP integrations such as webhooks. */
 export function endpoint<Handler extends EndpointHandler>(options: EndpointOptions, handler: Handler): EndpointDefinition<Handler>;
+/** Define a named query for subscribed client reads. */
 export function query<Handler extends QueryHandler>(handler: Handler): QueryDefinition<Handler>;
+/** Define a named mutation for client-initiated writes or commands. */
 export function mutation<const Args extends unknown[] = string[], Result = unknown>(
   handler: (ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>,
 ): MutationDefinition<(ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>>;
+/** Define a server-mediated App message handler. */
 export function message<Handler extends MessageHandler>(handler: Handler): MessageDefinition<Handler>;
+/** Define a Capsule table from field builders. */
 export function table<const Fields extends Record<string, AnyFieldDefinition>>(fields: Fields): TableDefinition<Fields>;
 
+/** Text field stored as SQLite `TEXT` and exposed as a JavaScript string. */
 export function String(): FieldBuilder<string>;
+/** Boolean field stored by Sporades and exposed as `true`/`false`. */
 export function Boolean(): FieldBuilder<boolean>;
+/** Numeric field exposed as a JavaScript number. */
 export function Number(): FieldBuilder<number>;
+/** Date/timestamp field exposed as an ISO string; runtime writes also accept `Date` values. */
 export function Date(): FieldBuilder<string | globalThis.Date | null>;
+/** JSON-compatible structured field. */
 export function Json<Value extends JsonValue = JsonValue>(): FieldBuilder<Value>;
+/** Reference field storing the row id of another table. */
 export function Reference(targetTable: string): ReferenceFieldBuilder;

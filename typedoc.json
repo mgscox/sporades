@@ -1,0 +1,14 @@
+{
+  "$schema": "https://typedoc.org/schema.json",
+  "name": "Sporades SDK API",
+  "entryPoints": [
+    "src/types/server.d.ts",
+    "src/types/client.d.ts"
+  ],
+  "entryPointStrategy": "resolve",
+  "tsconfig": "tsconfig.typedoc.json",
+  "out": "docs/api",
+  "readme": "none",
+  "cleanOutputDir": true,
+  "hideGenerator": true
+}
