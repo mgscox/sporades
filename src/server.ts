@@ -49,6 +49,55 @@ export type TableDefinition<Fields extends UnknownRecord = UnknownRecord> = {
   acl(rules: unknown): TableDefinition<Fields>;
 };
 
+export type AuthContext = {
+  userId: string;
+  displayName: string;
+  email: string | null;
+  picture: string | null;
+  isAuthenticated: boolean;
+  isGuest: boolean;
+  provider: string;
+};
+
+export type RequireAuthOptions = {
+  linked?: boolean;
+};
+
+export type RequireAuthContext = {
+  auth: AuthContext;
+  [key: string]: unknown;
+};
+
+type AuthDenialError = Error & {
+  code?: string;
+  hint?: string;
+  sporadesAuthDenialLogData?: unknown;
+};
+
+export function requireAuth(context: RequireAuthContext, options: RequireAuthOptions = {}): AuthContext {
+  const linked = options?.linked === true;
+  const auth = context?.auth;
+  if (auth?.isAuthenticated === true && (!linked || auth.isGuest !== true)) {
+    return auth;
+  }
+  const error: AuthDenialError = new Error("Unauthenticated.");
+  error.hint = "Sign in and retry the request.";
+  error.code = "UNAUTHENTICATED";
+  error.sporadesAuthDenialLogData = {
+    requirement: linked ? "linked" : "authenticated",
+    handler: {
+      kind: (context as Record<string, unknown>)?.kind ?? null,
+    },
+    actor: {
+      userId: auth?.userId ?? null,
+      provider: auth?.provider ?? null,
+      isAuthenticated: auth?.isAuthenticated ?? null,
+      isGuest: auth?.isGuest ?? null,
+    },
+  };
+  throw error;
+}
+
 export function capsule<const Definition extends CapsuleDefinition>(definition: Definition): Capsule<Definition> {
   return {
     kind: "capsule",
@@ -154,7 +203,31 @@ function field<Value = unknown>(kind: FieldKind): FieldBuilder<Value> {
 }
 
 export function serverRuntimeModuleSource() {
-  return `export function capsule(definition) {
+  return `export function requireAuth(context, options = {}) {
+  const linked = options?.linked === true;
+  const auth = context?.auth;
+  if (auth?.isAuthenticated === true && (!linked || auth.isGuest !== true)) {
+    return auth;
+  }
+  const error = new Error("Unauthenticated.");
+  error.hint = "Sign in and retry the request.";
+  error.code = "UNAUTHENTICATED";
+  error.sporadesAuthDenialLogData = {
+    requirement: linked ? "linked" : "authenticated",
+    handler: {
+      kind: context?.kind ?? null,
+    },
+    actor: {
+      userId: auth?.userId ?? null,
+      provider: auth?.provider ?? null,
+      isAuthenticated: auth?.isAuthenticated ?? null,
+      isGuest: auth?.isGuest ?? null,
+    },
+  };
+  throw error;
+}
+
+export function capsule(definition) {
   return {
     kind: "capsule",
     ...definition,

@@ -145,6 +145,10 @@ export type AuthContext = {
   provider: string;
 };
 
+export type RequireAuthOptions = {
+  linked?: boolean;
+};
+
 export type Logger = {
   info(...args: unknown[]): void;
   warn(...args: unknown[]): void;
@@ -284,6 +288,7 @@ export function capsule<const Schema extends SchemaDefinition, const Definition 
   definition: Definition & { schema?: Schema },
 ): Capsule<Definition>;
 
+export function requireAuth(ctx: { auth: AuthContext }, options?: RequireAuthOptions): AuthContext;
 export function endpoint<Handler extends EndpointHandler>(options: EndpointOptions, handler: Handler): EndpointDefinition<Handler>;
 export function query<Handler extends QueryHandler>(handler: Handler): QueryDefinition<Handler>;
 export function mutation<const Args extends unknown[] = string[], Result = unknown>(

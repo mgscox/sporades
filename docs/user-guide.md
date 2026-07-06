@@ -543,6 +543,60 @@ mutations: {
 Throw normal errors for user-facing failures. When an error has a `hint`
 property, Sporades includes it in structured error output.
 
+### Gate Handlers With requireAuth
+
+`requireAuth` is the canonical way to gate a handler on authentication. Call it
+at the top of any query, mutation, endpoint, or app message handler instead of
+hand-writing `ctx.auth` checks:
+
+```ts
+import { capsule, endpoint, mutation, query, requireAuth } from "sporades/server";
+
+export default capsule({
+  queries: {
+    myProjects: query((ctx) => {
+      const auth = requireAuth(ctx);
+      return ctx.db.projects.where("ownerId", auth.userId).all();
+    }),
+  },
+  mutations: {
+    deleteAccountData: mutation((ctx) => {
+      // Reject guest sessions too: require a linked (non-guest) user.
+      const auth = requireAuth(ctx, { linked: true });
+      ctx.db.projects.where("ownerId", auth.userId).all().forEach((project) => {
+        ctx.db.projects.delete(project.id);
+      });
+    }),
+  },
+  endpoints: {
+    profile: endpoint({ method: "GET", path: "/profile" }, (ctx) => ({
+      status: 200,
+      body: requireAuth(ctx),
+    })),
+  },
+});
+```
+
+On success `requireAuth(ctx)` returns the session's `AuthContext`, so `userId`
+and profile fields are available without re-reading `ctx.auth`. On failure it
+throws a structured auth error that reaches the client through the normal
+handler error pipeline with the stable `UNAUTHENTICATED` code:
+
+```json
+{ "ok": false, "error": { "code": "UNAUTHENTICATED", "message": "Unauthenticated.", "hint": "Sign in and retry the request." } }
+```
+
+Custom endpoints reply with HTTP `401` and the same structured error body.
+Clients can route users to sign-in on the `UNAUTHENTICATED` code alone.
+
+`requireAuth(ctx, { linked: true })` additionally requires a linked, non-guest
+user, so Anonymous-session guests cannot perform account-level actions.
+
+The public denial text stays opaque about server internals. Each denial also
+emits a structured `auth.denied` platform log entry with diagnostic context
+(handler kind, required auth level, and actor auth state) — inspect it with
+`sporades logs --json`.
+
 ### Use Sealed Server Env
 
 A Sealed Server Environment uses public/private keys to encrypt environment
