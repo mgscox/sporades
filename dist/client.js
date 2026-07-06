@@ -2,6 +2,7 @@ import { createClientRuntimeSource } from "./templates/client-runtime-template.j
 const runtime = await import(`data:text/javascript,${encodeURIComponent(createClientRuntimeSource())}`);
 export const auth = runtime.auth;
 export const files = runtime.files;
+export const preferences = runtime.preferences;
 export const createHooks = runtime.createHooks;
 export const isAuthenticated = runtime.isAuthenticated;
 export const onMessage = runtime.onMessage;

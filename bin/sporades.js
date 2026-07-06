@@ -320,6 +320,15 @@ export function onMessage(listener) {
   return connect().onMessage(listener);
 }
 
+export const preferences = {
+  get() {
+    return connect().getPreferences();
+  },
+  update(patch) {
+    return connect().updatePreferences(patch);
+  },
+};
+
 export const auth = {
   signUp(provider, credentials) {
     return connect().signUp(provider, credentials);
@@ -644,6 +653,12 @@ function createConnection() {
     mutate(name, args) {
       return request("mutation.run", { mutation: name, args });
     },
+    getPreferences() {
+      return request("preferences.get");
+    },
+    updatePreferences(patch) {
+      return request("preferences.update", { patch });
+    },
     sendMessage(type, data) {
       return request("app.send", { message: type, data });
     },
@@ -963,6 +978,7 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   removeFileVersionBestEffort,
   contentTypeForFile,
   createAnonymousAuthTables,
+  createUserPreferencesTables,
   ensureSessionLifecycleColumns,
   sessionExpiresAt,
   isExpiredSession,
@@ -971,6 +987,10 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   rotateSession,
   resolveAnonymousSession,
   sessionFromRow,
+  readCurrentUserPreferences,
+  updateCurrentUserPreferences,
+  normalizePreferencesPatch,
+  createPreferencesError,
   authProvidersForClient,
   routeSporadesAuth,
   signUpWithEmail,
@@ -1215,6 +1235,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   });
   await sqlite.ensureSystemTable();
   await sqlite.ensureAuthStorage(database.authConfig);
+  await sqlite.ensureUserPreferencesStorage();
   await sqlite.ensureFileStorage();
   await sqlite.ensureLogStorage();
   assertValidReferenceTargets(schema);
@@ -1741,6 +1762,17 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     ensureAuthStorage(authConfig = null) {
       return createAnonymousAuthTables(this, authConfig);
     },
+    ensureUserPreferencesStorage() {
+      return createUserPreferencesTables(this);
+    },
+    readUserPreferences(userId) {
+      return this.prepare("SELECT userId, value, updatedAt FROM sporades_user_preferences WHERE userId = ?").get(userId) ?? null;
+    },
+    saveUserPreferences(row) {
+      return this.prepare(
+        "INSERT OR REPLACE INTO sporades_user_preferences (userId, value, updatedAt) VALUES (?, ?, ?)"
+      ).run(row.userId, row.value, row.updatedAt);
+    },
     findAuthUserByProviderEmail(provider, email) {
       return this.prepare("SELECT id FROM sporades_auth_users WHERE provider = ? AND email = ?").get(provider, email) ?? null;
     },
@@ -2049,6 +2081,17 @@ async function createPostgresDatabaseAdapter(options) {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (id TEXT PRIMARY KEY, fileId TEXT NOT NULL, ownerId TEXT NOT NULL, version TEXT NOT NULL, expiresAt TEXT, createdAt TEXT NOT NULL, revokedAt TEXT)"
       );
+    },
+    async ensureUserPreferencesStorage() {
+      await createUserPreferencesTables(this);
+    },
+    async readUserPreferences(userId) {
+      return await this.prepare("SELECT userId, value, updatedAt FROM sporades_user_preferences WHERE userId = ?").get(userId) ?? null;
+    },
+    async saveUserPreferences(row) {
+      return await this.prepare(
+        "INSERT INTO sporades_user_preferences (userId, value, updatedAt) VALUES (?, ?, ?) ON CONFLICT (userId) DO UPDATE SET value = EXCLUDED.value, updatedAt = EXCLUDED.updatedAt"
+      ).run(row.userId, row.value, row.updatedAt);
     },
     async insertLogIndexEvent(event) {
       await this.prepare(
@@ -5879,6 +5922,26 @@ function createWebSocketHub(getDatabase) {
       await sendQueryResult(client, client.subscriptions.get(message.id));
       return;
     }
+    if (message.type === "preferences.get") {
+      const result = await readCurrentUserPreferences(database, client.session.auth);
+      sendJson(client, {
+        id: message.id ?? null,
+        type: "preferences.result",
+        data: result.data,
+        error: result.error
+      });
+      return;
+    }
+    if (message.type === "preferences.update") {
+      const result = await updateCurrentUserPreferences(database, client.session.auth, message.patch);
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "preferences.result" : "error",
+        data: result.data,
+        error: result.error
+      });
+      return;
+    }
     if (message.type === "mutation.run") {
       const mutationName = message.mutation ?? message.name;
       const result = await runMutation(database, client.session.auth, mutationName, message.args ?? []);
@@ -6371,6 +6434,11 @@ function createAnonymousAuthTables(sqlite, authConfig = null) {
     "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (state TEXT PRIMARY KEY, sessionToken TEXT NOT NULL, returnTo TEXT NOT NULL, redirectUri TEXT NOT NULL, createdAt TEXT NOT NULL)"
   );
 }
+async function createUserPreferencesTables(sqlite) {
+  await sqlite.exec(
+    "CREATE TABLE IF NOT EXISTS sporades_user_preferences (userId TEXT PRIMARY KEY, value TEXT NOT NULL, updatedAt TEXT NOT NULL)"
+  );
+}
 function ensureSessionLifecycleColumns(sqlite) {
   const columns = sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
   const hasExpiresAt = columns.some((column) => column.name === "expiresAt");
@@ -6530,6 +6598,65 @@ function sessionFromRow(row) {
       provider: row.provider
     }
   };
+}
+async function readCurrentUserPreferences(database, auth) {
+  const row = await database.sqlite.readUserPreferences(auth.userId);
+  return {
+    ok: true,
+    data: {
+      preferences: row ? JSON.parse(row.value) : {}
+    },
+    error: null
+  };
+}
+async function updateCurrentUserPreferences(database, auth, patch) {
+  try {
+    const normalizedPatch = normalizePreferencesPatch(patch);
+    const preferences = await database.sqlite.withTransaction(async (tx) => {
+      const row = await tx.readUserPreferences(auth.userId);
+      const current = row ? JSON.parse(row.value) : {};
+      const next = { ...current, ...normalizedPatch };
+      assertJsonCompatible(next);
+      await tx.saveUserPreferences({
+        userId: auth.userId,
+        value: JSON.stringify(next),
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      return next;
+    });
+    return {
+      ok: true,
+      data: { preferences },
+      error: null
+    };
+  } catch (error) {
+    if (error?.code === "INVALID_PREFERENCES_PATCH") {
+      return { ok: false, data: null, error };
+    }
+    return {
+      ok: false,
+      data: null,
+      error: createPreferencesError(
+        "Preferences update failed.",
+        "Retry the preferences update. If this keeps happening, restart the Sporades session.",
+        "PREFERENCES_UPDATE_FAILED"
+      )
+    };
+  }
+}
+function normalizePreferencesPatch(patch) {
+  if (patch === null || typeof patch !== "object" || Array.isArray(patch)) {
+    throw createPreferencesError(
+      "Preferences updates must be JSON objects.",
+      "Pass a plain JSON object to preferences.update().",
+      "INVALID_PREFERENCES_PATCH"
+    );
+  }
+  assertJsonCompatible(patch);
+  return patch;
+}
+function createPreferencesError(message, hint, code) {
+  return { code, message, hint };
 }
 function createWebSocketAccept(key) {
   return createHash2("sha1").update(`${key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");

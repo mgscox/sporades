@@ -219,6 +219,67 @@ test("client sendMessage sends unprefixed app messages over the transport", asyn
   }
 });
 
+test("client preferences SDK reads and updates current-user preferences over the transport", async () => {
+  let storedPreferences = {};
+  const browser = installBrowserFakes(anonymousAuth, {
+    handlers: {
+      "preferences.get": async (message) => {
+        browser.storage.set("preferencesGetMessage", JSON.stringify(message));
+        return {
+          type: "preferences.result",
+          data: { preferences: storedPreferences },
+          error: null,
+        };
+      },
+      "preferences.update": async (message) => {
+        browser.storage.set("preferencesUpdateMessage", JSON.stringify(message));
+        storedPreferences = { ...storedPreferences, ...message.patch };
+        return {
+          type: "preferences.result",
+          data: { preferences: storedPreferences },
+          error: null,
+        };
+      },
+    },
+  });
+  try {
+    const runtime = await importClientRuntime();
+
+    const initial = await runtime.preferences.get();
+    assert.deepEqual({
+      ...initial,
+      id: "request-id",
+    }, {
+      id: "request-id",
+      type: "preferences.result",
+      data: { preferences: {} },
+      error: null,
+    });
+    assert.deepEqual({ ...JSON.parse(browser.storage.get("preferencesGetMessage")), id: "request-id" }, {
+      id: "request-id",
+      type: "preferences.get",
+    });
+
+    const updated = await runtime.preferences.update({ theme: "dark" });
+    assert.deepEqual({
+      ...updated,
+      id: "request-id",
+    }, {
+      id: "request-id",
+      type: "preferences.result",
+      data: { preferences: { theme: "dark" } },
+      error: null,
+    });
+    assert.deepEqual({ ...JSON.parse(browser.storage.get("preferencesUpdateMessage")), id: "request-id" }, {
+      id: "request-id",
+      type: "preferences.update",
+      patch: { theme: "dark" },
+    });
+  } finally {
+    browser.cleanup();
+  }
+});
+
 test("client onMessage exposes filterable app message subscriptions", async () => {
   const browser = installBrowserFakes(anonymousAuth);
   try {

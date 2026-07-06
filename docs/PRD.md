@@ -72,6 +72,9 @@ The repository currently includes:
   OAuth provider linking, local identity simulation helpers, connected-client
   auth targeting, and provider configuration through `sporades.json` plus
   Server env.
+- Runtime-owned current-user preferences through the `sporades/client`
+  `preferences` SDK, backed by Sporades user identity rather than Capsule app
+  schema.
 - File storage through the `sporades/client` `files` SDK, including uploads,
   private URLs, downloads, delete, replacement with file versions, public URL
   creation, and revocation.
@@ -211,14 +214,18 @@ transport remain the default application path.
 
 ## Client API
 
-`sporades/client` exports a framework-neutral transport layer, auth and file
-APIs, app-message helpers, and a `createHooks` factory:
+`sporades/client` exports a framework-neutral transport layer, auth,
+current-user preferences and file APIs, app-message helpers, and a `createHooks`
+factory:
 
 ```tsx
 import { useEffect, useState } from "react";
-import { auth, createHooks, files, onMessage, sendMessage } from "sporades/client";
+import { auth, createHooks, files, onMessage, preferences, sendMessage } from "sporades/client";
 
 const { useAuth, useMutation, useQuery } = createHooks({ useState, useEffect });
+
+const current = await preferences.get();
+const next = await preferences.update({ theme: "dark" });
 ```
 
 The browser connects to `/__sporades/ws` on the same origin. The transport
@@ -226,6 +233,7 @@ carries:
 
 - query subscriptions and mutation calls,
 - auth state reads, email sign-up/sign-in, provider sign-in, and sign-out,
+- current-user preference reads and partial JSON-object updates,
 - upload URL negotiation and file lifecycle operations,
 - public file URL creation and revocation,
 - App messages,
@@ -244,6 +252,12 @@ uploaded file bytes.
 
 The `sporades` system table stores schema metadata and runtime-owned state.
 App code cannot write it directly.
+
+Current-user preferences are runtime-owned state keyed by the current Sporades
+user identity. Capsule authors should use the `preferences` SDK for durable
+per-user UI and behavior preferences instead of creating app tables for common
+settings. `preferences.update(...)` merges a partial JSON object into the
+stored preference object and returns the next value.
 
 Additive migrations support:
 

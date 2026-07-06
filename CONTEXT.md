@@ -170,9 +170,13 @@ Missing or invalid endpoint tokens resolve to a fresh Anonymous session rather t
 A real authentication method, such as email or Google OAuth, linked to an existing Anonymous session. The user's data follows them because the auth method is linked to the existing account, not a new one.
 _Avoid_: upgrade, migration (those are schema concerns, not auth)
 
+**Current-user preferences**:
+A runtime-owned JSON object keyed by the current Sporades user identity. Client code reads it with `preferences.get()` and shallow-merges partial JSON objects with `preferences.update(...)` from `sporades/client`. It is for durable per-user UI and behavior settings and does not appear in Capsule app schema or `ctx.db`.
+_Avoid_: preferences table, app settings table, localStorage settings
+
 ## Client transport
 
-Sporades is client-framework-agnostic. `sporades/client` exports a transport layer (WebSocket connect, query subscribe, mutation send, auth state) and a `createHooks` factory that takes a framework's primitives (`useState`, `useEffect`) and returns ready-to-use hooks (`useQuery`, `useMutation`, `useAuth`). The user wires one line; the scaffold template handles it by default.
+Sporades is client-framework-agnostic. `sporades/client` exports a transport layer (WebSocket connect, query subscribe, mutation send, auth state, current-user preferences) and a `createHooks` factory that takes a framework's primitives (`useState`, `useEffect`) and returns ready-to-use hooks (`useQuery`, `useMutation`, `useAuth`). The user wires one line; the scaffold template handles it by default.
 
 **createHooks**:
 A factory function exported by `sporades/client`. Accepts `{ useState, useEffect }` from any JSX framework (React, Preact, Solid) and returns Sporades hooks bound to that framework's reactivity model.
