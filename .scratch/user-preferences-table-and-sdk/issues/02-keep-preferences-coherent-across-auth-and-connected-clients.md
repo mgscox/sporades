@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Keep preferences coherent across auth and connected clients
 
@@ -17,12 +17,12 @@ the latest preference object after an update.
 
 ## Acceptance criteria
 
-- [ ] Preferences created during an Anonymous session remain available after the session links to an email or Google account.
-- [ ] Preference reads follow the current resolved auth state after sign-in, sign-out, provider linking, or local identity simulation where supported by the test harness.
-- [ ] Two connected clients for the same user can converge on the updated preference object after one client updates preferences.
-- [ ] Preference updates for one user are not visible to another user's connected client.
-- [ ] Tests cover auth lifecycle behavior through existing auth/session helpers rather than direct table mutation.
-- [ ] Docs explain how preferences interact with Anonymous sessions and linked accounts.
+- [x] Preferences created during an Anonymous session remain available after the session links to an email or Google account.
+- [x] Preference reads follow the current resolved auth state after sign-in, sign-out, provider linking, or local identity simulation where supported by the test harness.
+- [x] Two connected clients for the same user can converge on the updated preference object after one client updates preferences.
+- [x] Preference updates for one user are not visible to another user's connected client.
+- [x] Tests cover auth lifecycle behavior through existing auth/session helpers rather than direct table mutation.
+- [x] Docs explain how preferences interact with Anonymous sessions and linked accounts.
 
 ## Blocked by
 
