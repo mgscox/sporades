@@ -165,6 +165,14 @@ To approve `esbuild` persistently for your user npm config:
 npm config set allow-scripts=esbuild --location=user
 ```
 
+When working in this repository, plain `npm install` uses the project
+`allowScripts` entry in `package.json` to approve the reviewed `esbuild`
+install script. If `esbuild` is upgraded, review and refresh that approval with:
+
+```sh
+npm approve-scripts esbuild
+```
+
 Generated Capsules use the same `sporades` command for local Dev sessions,
 Container sessions, inspection, and Host operations.
 
