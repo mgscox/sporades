@@ -36,6 +36,7 @@ type HelperError = Error & {
   code?: string;
   hint?: string;
   sporadesAclDenialLogData?: any;
+  sporadesAuthDenialLogData?: any;
   sporadesEndpointResponse?: boolean;
 };
 
@@ -180,6 +181,10 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   aclRowLogSnapshot,
   aclVisibleFieldNames,
   createAclDeniedError,
+  requireAuth,
+  createUnauthenticatedError,
+  createAuthDenialLogData,
+  emitAuthDeniedLog,
   fieldValueForWrite,
   invalidReferenceError,
   referenceExists,
@@ -484,6 +489,10 @@ export async function openDevDatabase(
   options: LooseRecord = {},
 ) {
   const path = await import("node:path");
+  // Handler sources extracted from Capsule server code are re-created with
+  // `new Function`, which only sees globals. Install the sporades/server
+  // requireAuth helper there so those handlers resolve the same auth gate.
+  (globalThis as any).requireAuth = requireAuth;
   const sqlite = await createRuntimeDatabaseAdapter(databasePath, options?.serviceEnv ?? serverEnv, config);
   const serviceEnv = options?.serviceEnv ?? serverEnv;
   const fileStorage = await createRuntimeFileStorageAdapter({
@@ -3800,6 +3809,9 @@ export async function routeEndpoint(database: { endpoints: any[]; }, request: In
   try {
     writeEndpointResult(response, await runEndpoint(database, endpoint, requestUrl, request));
   } catch (error: any) {
+    if (error?.sporadesAuthDenialLogData) {
+      emitAuthDeniedLog(database as LooseRecord, { data: error.sporadesAuthDenialLogData });
+    }
     writeEndpointError(response, error);
   }
   return true;
@@ -5152,6 +5164,48 @@ function createAclDeniedError(logData: any = null) {
   return error;
 }
 
+function requireAuth(context: LooseRecord, options: LooseRecord = {}) {
+  const linked = options?.linked === true;
+  const auth = context?.auth;
+  if (auth?.isAuthenticated === true && (!linked || auth.isGuest !== true)) {
+    return auth;
+  }
+  throw createUnauthenticatedError(createAuthDenialLogData(context, linked ? "linked" : "authenticated"));
+}
+
+function createUnauthenticatedError(logData: any = null) {
+  const error = commandError("Unauthenticated.", "Sign in and retry the request.", "UNAUTHENTICATED");
+  if (logData) {
+    error.sporadesAuthDenialLogData = logData;
+  }
+  return error;
+}
+
+function createAuthDenialLogData(context: LooseRecord, requirement: string) {
+  return {
+    requirement,
+    handler: {
+      kind: context?.kind ?? null,
+    },
+    actor: {
+      userId: context?.auth?.userId ?? null,
+      provider: context?.auth?.provider ?? null,
+      isAuthenticated: context?.auth?.isAuthenticated ?? null,
+      isGuest: context?.auth?.isGuest ?? null,
+    },
+  };
+}
+
+function emitAuthDeniedLog(database: LooseRecord, details: LooseRecord) {
+  database.log?.emit?.({
+    category: "platform",
+    event: "auth.denied",
+    level: "warn",
+    message: "requireAuth denied an unauthenticated handler request.",
+    data: details.data ?? null,
+  });
+}
+
 function fieldValueForWrite(database: any, field: LooseRecord, value: any) {
   if (field.kind === "Reference" && value !== undefined && value !== null) {
     return thenIfPromise(referenceExists(database, field, value), (exists: any) => {
@@ -5332,7 +5386,7 @@ function writeEndpointResult(response: any, result: any) {
 }
 
 function writeEndpointError(response: any, error: any) {
-  response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+  response.writeHead(error?.code === "UNAUTHENTICATED" ? 401 : 500, { "content-type": "application/json; charset=utf-8" });
   response.end(
     `${JSON.stringify({
       ok: false,
@@ -6783,9 +6837,13 @@ async function runCustomQuery(database: LooseRecord, context: any, queryName: an
     assertJsonCompatible(data);
     return { data, error: null as any };
   } catch (error: any) {
+    if (error?.sporadesAuthDenialLogData) {
+      emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+    }
     return {
       data: null as any,
       error: {
+        ...(error?.code ? { code: error.code } : {}),
         message: error?.message || "Query handler failed.",
         hint: error?.hint ?? "Check the Capsule query handler and retry the query.",
       },
@@ -6828,6 +6886,9 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
     database.rowCache.clear();
     if (error?.sporadesAclDenialLogData) {
       emitAclDeniedLog(database, { data: error.sporadesAclDenialLogData });
+    }
+    if (error?.sporadesAuthDenialLogData) {
+      emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
     return createHookErrorResult(error);
   }
@@ -6906,9 +6967,13 @@ async function runAppMessage(database: LooseRecord, auth: any, messageName: any,
     }
     return { data: result ?? null, error: null as any };
   } catch (error: any) {
+    if (error?.sporadesAuthDenialLogData) {
+      emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
+    }
     return {
       data: null,
       error: {
+        ...(error?.code ? { code: error.code } : {}),
         message: error?.message || "App message handler failed.",
         hint: error?.hint ?? "Check the Capsule message handler and retry the app message.",
       },

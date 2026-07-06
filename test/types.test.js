@@ -67,7 +67,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     );
     await writeFile(
       path.join(dir, "app.ts"),
-      `import { Boolean, Date, Json, Number, Reference, String, capsule, endpoint, message, mutation, query, table } from "sporades/server";
+      `import { Boolean, Date, Json, Number, Reference, String, capsule, endpoint, message, mutation, query, requireAuth, table } from "sporades/server";
 import { auth, createHooks, files, isAuthenticated, onMessage, sendMessage } from "sporades/client";
 
 const app = capsule({
@@ -132,6 +132,12 @@ const app = capsule({
   mutations: {
     addTodo: mutation(async (ctx, text) => {
       await Promise.resolve();
+      const me = requireAuth(ctx);
+      me.userId.toUpperCase();
+      const linkedUser = requireAuth(ctx, { linked: true });
+      linkedUser.isGuest.valueOf();
+      // @ts-expect-error requireAuth options accept a boolean linked flag only.
+      requireAuth(ctx, { linked: "yes" });
       ctx.log.info("adding", text.trim());
       return ctx.db.todos.insert({
         text: text.trim(),
@@ -147,7 +153,7 @@ const app = capsule({
       await Promise.resolve();
       return {
         path: ctx.request.path,
-        userId: ctx.auth.userId,
+        userId: requireAuth(ctx).userId,
         count: ctx.db.todos.all().length,
       };
     }),
