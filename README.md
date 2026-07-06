@@ -129,7 +129,9 @@ Sporades currently includes:
 - Runtime-owned auth with anonymous sessions, email auth, Google OAuth, and
   local identity simulation for tests and agents.
 - Runtime-owned current-user preferences exposed through `sporades/client`
-  without app preference tables.
+  without app preference tables. Preferences follow the Sporades user identity,
+  survive Anonymous account linking, and notify same-user connected clients when
+  they change.
 - File uploads with private reads, explicit public URLs, replacement versions,
   and local MinIO-backed storage support.
 - Custom HTTP endpoints and app messages over the Sporades client transport.
@@ -230,6 +232,10 @@ Capsules, but it is not trying to be a full production platform (yet). Check the
 
 The current focus is keeping the authoring surface small, the runtime
 inspectable, and the operational path friendly to both developers and agents.
+The next shaped feature is opt-in SSH access for local Container sessions and
+Hosted Capsules, using authorized public keys from `sporades.json` when that
+contract is implemented. Normal management remains the CLI and Host helper
+surfaces; SSH is planned as a compatibility and emergency access path.
 
 ## License
 

@@ -105,6 +105,12 @@ The following work is intentionally deferred:
   service implementation is local-only; Host-server orchestration for Capsule
   services is deferred until the local lifecycle model has proven the required
   service contract.
+- SSH access into local Container sessions and Hosted Capsules. The planned
+  SSH-to-Docker feature will accept authorized public keys through an explicit
+  `sporades.json` contract, open port 22 only when configured, and report the
+  effective state through structured lifecycle output. It is an opt-in
+  compatibility and emergency access path, not the primary Sporades management
+  interface, and interactive SSH workflows remain out of scope.
 
 ## Product Principles
 
@@ -265,6 +271,12 @@ sign-out resolves to a fresh Anonymous preference object, and signing back in
 restores the linked account's stored preferences. Connected clients for the same
 user observe preference updates through `preferences.updated`, while different
 users remain isolated.
+
+`preferences.updated` is delivered over the existing client transport as a
+same-user convergence signal. The updating client should use the result returned
+from `preferences.update(...)`; other connected clients for the same user can
+consume the notification or call `preferences.get()` to refresh their local UI
+state.
 
 Additive migrations support:
 

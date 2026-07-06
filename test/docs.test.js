@@ -208,6 +208,42 @@ test("canonical docs describe Host stats without introducing host status", async
   }
 });
 
+test("docs describe implemented preferences and planned SSH-to-Docker access", async () => {
+  const [roadmap, userGuide, prd, readme, runtimeLayout] = await Promise.all([
+    readProjectFile("docs/ROADMAP.md"),
+    readProjectFile("docs/user-guide.md"),
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("README.md"),
+    readProjectFile("docs/runtime-layout.md"),
+  ]);
+
+  assert.match(roadmap, /Recently Implemented/);
+  assert.match(roadmap, /User preferences table and SDK \| implemented/);
+  assert.match(roadmap, /preferences\.get\(\)/);
+  assert.match(roadmap, /preferences\.updated/);
+  assert.match(roadmap, /SSH to Docker \| ready/);
+  assert.doesNotMatch(
+    roadmap,
+    /User preferences table and SDK \| ready \| Add a Sporades-owned key-value JSON preferences store/,
+  );
+
+  assert.match(userGuide, /const next = await preferences\.update/);
+  assert.match(userGuide, /filter\("preferences\.updated"\)/);
+  assert.match(userGuide, /The update notification is a convergence signal/);
+  assert.match(userGuide, /Planned SSH Access For Containers/);
+  assert.match(userGuide, /does not currently expose an SSH service inside local Container\s+sessions or Hosted Capsules/);
+  assert.match(userGuide, /no SSH authorized-key config is accepted for\s+Capsule containers/);
+
+  assert.match(prd, /SSH access into local Container sessions and Hosted Capsules/);
+  assert.match(prd, /opt-in\s+compatibility and emergency access path/);
+  assert.match(prd, /same-user convergence signal/);
+
+  assert.match(readme, /Preferences follow the Sporades user identity/);
+  assert.match(readme, /The next shaped feature is opt-in SSH access/);
+  assert.match(runtimeLayout, /do not currently start an SSH service or publish\s+container port 22/);
+  assert.match(runtimeLayout, /Hosted Capsules do not currently publish SSH directly/);
+});
+
 test("user guide documents Capsule service reset without blanket Runtime deletion", async () => {
   const userGuide = await readProjectFile("docs/user-guide.md");
 

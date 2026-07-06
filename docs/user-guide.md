@@ -5,6 +5,8 @@ Capsules. It assumes Sporades is already installed locally. If you are preparing
 a Linux Host server for remote Hosted Capsules, read
 [server-installation.md](./server-installation.md) first.
 
+**Note:** This guide assumes you have installed `sporades` glovally
+
 Sporades is CLI-first. The normal loop is:
 
 ```sh
@@ -942,13 +944,19 @@ Use the `preferences` API from `sporades/client` for durable per-user UI and
 behavior settings:
 
 ```tsx
-import { preferences } from "sporades/client";
+import { onMessage, preferences } from "sporades/client";
 
 const current = await preferences.get();
 const next = await preferences.update({
   theme: "dark",
   density: "compact",
 });
+
+const unsubscribe = onMessage()
+  .filter("preferences.updated")
+  .subscribe((message) => {
+    console.log("preferences changed", message.data.preferences);
+  });
 ```
 
 `preferences.get()` returns the current Sporades user's stored preference
@@ -970,6 +978,32 @@ preferences. Other connected clients for the same user receive a
 users keep their own preference objects. Local identity simulation through
 `sporades auth as ... --client ...` also switches preference reads and writes to
 the delivered simulated user.
+
+The update notification is a convergence signal for other connected clients.
+The client that calls `preferences.update(...)` should use the returned value;
+other clients for the same user can listen for `preferences.updated` and refresh
+their UI from `message.data.preferences` or by calling `preferences.get()`.
+App code should still use app tables for domain data such as notes, projects,
+memberships, and records. Preferences are for small durable UI and behavior
+settings.
+
+## Planned SSH Access For Containers
+
+Sporades does not currently expose an SSH service inside local Container
+sessions or Hosted Capsules. The planned SSH-to-Docker feature will add an
+explicit, opt-in `sporades.json` contract for authorized public keys when
+running `sporades deploy` or Hosted Capsules through `sporades host ...`.
+
+That planned feature is for compatibility and emergency access paths. It is not
+the primary management interface, and Sporades will not add an interactive SSH
+workflow as the normal way to operate a Capsule. Use the existing CLI surfaces
+for deployment, logs, stats, restarts, Host registration, and recovery; use
+Portainer or similar container tooling when you want a broader container
+management UI.
+
+Until that feature is implemented, no SSH authorized-key config is accepted for
+Capsule containers, and default Container sessions and Hosted Capsules keep
+their existing port and hardening behavior.
 
 ## File Uploads
 

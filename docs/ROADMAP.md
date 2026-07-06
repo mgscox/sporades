@@ -20,8 +20,16 @@ and whether the work belongs in one release or separate tracks.
 
 | Feature | Status | Why it matters | Planning |
 | --- | --- | --- | --- |
-| User preferences table and SDK | ready | Add a Sporades-owned key-value JSON preferences store for the current authenticated user. Candidate client shape: `sporades.updateUserPrefs({ darkTheme: true, language: "en" })`. Gives Capsules a simple, owned place for durable per-user UI and behavior preferences without each app reinventing the same table. | `.scratch/user-preferences-table-and-sdk/PRD.md` |
-| SSH to Docker | ready | When building for `deploy` or `host`, copy SSH keys from `sporades.json` when provided and open port 22 in the resulting container. This is for compatibility and emergency access paths, not the primary management interface; Portainer or similar container tooling remains the simpler route for normal operation. | `.scratch/ssh-to-docker/PRD.md` |
+| SSH to Docker | ready | When building for `deploy` or `host`, copy authorized public SSH keys from `sporades.json` when provided and open a mapped port 22 in the resulting container according to an approved access contract. This is for compatibility and emergency access paths, not the primary management interface; Portainer or similar container tooling remains the simpler route for normal operation. Note, the keys in the JSON file may be the absolute key or a file reference (parse content to determine). It should be possible to query via sporades CLI to determine the SSH port mapped per-capsule | `.scratch/ssh-to-docker/PRD.md` |
+
+## Recently Implemented
+
+The following recommended feature has been implemented and documented, so it no
+longer belongs in the next-feature queue.
+
+| Feature | Status | Notes |
+| --- | --- | --- |
+| User preferences table and SDK | implemented | Runtime-owned current-user preferences are available through `sporades/client` as `preferences.get()` and `preferences.update(...)`. Preferences are keyed by Sporades user identity, survive Anonymous session linking, follow sign-in/sign-out and local identity simulation, and notify same-user connected clients with `preferences.updated`. Planning remains in `.scratch/user-preferences-table-and-sdk/PRD.md` for traceability. |
 
 ## Data And Auth Helpers
 

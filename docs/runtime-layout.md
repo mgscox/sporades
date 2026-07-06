@@ -139,6 +139,12 @@ compatible with the Sporades Base image:
 - invoking host UID/GID when available, falling back to the Base image runtime
   user `10001:10001`.
 
+Local Container sessions do not currently start an SSH service or publish
+container port 22. The planned SSH-to-Docker feature will make that an explicit
+opt-in path driven by authorized public keys in `sporades.json`; default
+Container sessions will keep the existing port and hardening behavior when no
+keys are configured.
+
 The Base image is a thin Sporades-owned Node 22 image. It does not bake in
 Capsule app dependencies. Release files are mounted into known read-only paths,
 and only `/app/data` plus `/tmp` are writable at runtime. Sporades labels
@@ -230,6 +236,11 @@ Hosted Capsule data state under `sealed-server-env/keys/`, not in exported
 sealed envelopes, release archives, local Host profiles, or CLI output. Host
 inspection reports key fingerprints and availability status without exposing
 private key material.
+
+Hosted Capsules do not currently publish SSH directly into Capsule containers.
+Future SSH-to-Docker support must preserve Caddy HTTP routing and Hosted Capsule
+registry authority while exposing port 22 only through the approved opt-in
+contract.
 
 ## Host Caddy Files
 
