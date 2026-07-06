@@ -42,6 +42,23 @@ export type TableDefinition<Fields extends UnknownRecord = UnknownRecord> = {
     aclRules?: unknown;
     acl(rules: unknown): TableDefinition<Fields>;
 };
+export type AuthContext = {
+    userId: string;
+    displayName: string;
+    email: string | null;
+    picture: string | null;
+    isAuthenticated: boolean;
+    isGuest: boolean;
+    provider: string;
+};
+export type RequireAuthOptions = {
+    linked?: boolean;
+};
+export type RequireAuthContext = {
+    auth: AuthContext;
+    [key: string]: unknown;
+};
+export declare function requireAuth(context: RequireAuthContext, options?: RequireAuthOptions): AuthContext;
 export declare function capsule<const Definition extends CapsuleDefinition>(definition: Definition): Capsule<Definition>;
 export declare function endpoint<const HandlerType extends Handler>(options: EndpointOptions, handler: HandlerType): EndpointDefinition<HandlerType>;
 export declare function query<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"query", HandlerType>;

@@ -1,3 +1,26 @@
+export function requireAuth(context, options = {}) {
+    const linked = options?.linked === true;
+    const auth = context?.auth;
+    if (auth?.isAuthenticated === true && (!linked || auth.isGuest !== true)) {
+        return auth;
+    }
+    const error = new Error("Unauthenticated.");
+    error.hint = "Sign in and retry the request.";
+    error.code = "UNAUTHENTICATED";
+    error.sporadesAuthDenialLogData = {
+        requirement: linked ? "linked" : "authenticated",
+        handler: {
+            kind: context?.kind ?? null,
+        },
+        actor: {
+            userId: auth?.userId ?? null,
+            provider: auth?.provider ?? null,
+            isAuthenticated: auth?.isAuthenticated ?? null,
+            isGuest: auth?.isGuest ?? null,
+        },
+    };
+    throw error;
+}
 export function capsule(definition) {
     return {
         kind: "capsule",
@@ -82,7 +105,31 @@ function field(kind) {
     };
 }
 export function serverRuntimeModuleSource() {
-    return `export function capsule(definition) {
+    return `export function requireAuth(context, options = {}) {
+  const linked = options?.linked === true;
+  const auth = context?.auth;
+  if (auth?.isAuthenticated === true && (!linked || auth.isGuest !== true)) {
+    return auth;
+  }
+  const error = new Error("Unauthenticated.");
+  error.hint = "Sign in and retry the request.";
+  error.code = "UNAUTHENTICATED";
+  error.sporadesAuthDenialLogData = {
+    requirement: linked ? "linked" : "authenticated",
+    handler: {
+      kind: context?.kind ?? null,
+    },
+    actor: {
+      userId: auth?.userId ?? null,
+      provider: auth?.provider ?? null,
+      isAuthenticated: auth?.isAuthenticated ?? null,
+      isGuest: auth?.isGuest ?? null,
+    },
+  };
+  throw error;
+}
+
+export function capsule(definition) {
   return {
     kind: "capsule",
     ...definition,
