@@ -87,7 +87,13 @@ are configurable for larger datasets. Everything stays inside the existing
 
 ## Out of Scope
 
-- Vector support on postgres or libSQL adapters (future adapter work).
+- Vector support on postgres or libSQL adapters. The complementary path for
+  service-backed engines is tracked separately as "Service-backed vector
+  support (pgvector)" in `docs/ROADMAP.md`: enable pgvector on the existing
+  Postgres Capsule service and mirror this feature's vector field kind, value
+  helper, and query ergonomics above the adapter boundary so app code stays
+  engine-agnostic. Design that field kind and helper here to be adapter-neutral
+  so the pgvector path can reuse them rather than re-inventing the surface.
 - Managed embedding generation (calling embedding models is app code).
 - ANN index tuning surfaces beyond the quantization/preload options above.
 - Hosted Capsule rollout considerations beyond what the base image already

@@ -37,6 +37,7 @@ and whether the work belongs in one release or separate tracks.
 | Feature | Status | Notes |
 | --- | --- | --- |
 | Managed AWS S3 storage adapter expansion | candidate | Local MinIO-backed S3-compatible file byte storage is implemented for Dev sessions and local Container sessions. Future managed AWS S3 or external S3-compatible provider work should extend the existing internal Storage adapter/config model beyond local MinIO while preserving the `files` SDK, File metadata model, Sporades HTTP read routes, and app/client APIs. |
+| Service-backed vector support (pgvector) | candidate | Complements SQLite vector extension support for Capsules not on the SQLite Database adapter. Enable the `pgvector` extension on the existing Postgres Capsule service (no new service type) and give the Postgres Database adapter a vector field path mirroring the SQLite one: shared vector field kind, value helper, and nearest-neighbor query ergonomics above the adapter boundary (ADR 0021), engine-specific storage and kNN below it. Turns the SQLite-only "unsupported engine" error into a real second path. A dedicated vector-DB Capsule service (Qdrant/Chroma/Milvus) was considered and deferred in favor of reusing the provisioned Postgres service. |
 
 ## Ops And Automation
 
