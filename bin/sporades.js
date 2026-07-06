@@ -9833,7 +9833,7 @@ Options:
   --json              Write JSON output
   --help, -h          Show this help
 `,
-  deploy: `Usage: sporades deploy [status|stop|restart|remove|reset] [options]
+  deploy: `Usage: sporades deploy [status|stop|restart|remove|reset|ssh] [options]
 
 Start and manage a local Container session.
 
@@ -9842,6 +9842,7 @@ Commands:
   deploy status       Print Container session status
   deploy stop         Stop the running Container session
   deploy restart      Restart the running Container session
+  deploy ssh          Inspect effective Container SSH access
   deploy remove       Remove the Container session
   deploy reset        Remove the Container session and local container state
 
@@ -10389,7 +10390,7 @@ function parseDevArgs(args) {
   };
 }
 function parseDeployArgs(args) {
-  const lifecycleCommands = /* @__PURE__ */ new Set(["status", "stop", "restart", "remove", "reset"]);
+  const lifecycleCommands = /* @__PURE__ */ new Set(["status", "stop", "restart", "remove", "reset", "ssh"]);
   const subcommand = lifecycleCommands.has(args[0]) ? args[0] : "start";
   const rest = subcommand === "start" ? args : args.slice(1);
   let port = null;
@@ -11137,6 +11138,12 @@ async function manageLocalLifecycle(surface, options) {
         throw commandError4("Unsupported lifecycle command: restart", "Use `sporades deploy restart`.");
       }
       await restartLocalContainerSession(options);
+      return;
+    case "ssh":
+      if (surface !== "deploy") {
+        throw commandError4("Unsupported lifecycle command: ssh", "Use `sporades deploy ssh`.");
+      }
+      await inspectLocalContainerSsh(options);
       return;
     case "remove":
       if (surface !== "deploy") {
@@ -12445,12 +12452,13 @@ async function manageHost(options) {
 }
 async function startContainerSession(options) {
   const config = await readProjectConfig(options.projectDir);
+  const sshAccess = await resolveLocalContainerSshAccess(config, options.projectDir);
   const port = options.port ?? config.deploy?.port ?? 4e3;
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const bundle = await createBundle(options.projectDir, config);
   const runtimeDir = path4.join(options.projectDir, ".sporades");
   const dataDir = path4.join(runtimeDir, "data");
-  const runtimeUser = localContainerRuntimeUser();
+  const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
   await mkdir4(dataDir, { recursive: true });
   await prepareRuntimeDataPath(dataDir);
   const containerName = `sporades-${config.name ?? path4.basename(options.projectDir)}`;
@@ -12494,6 +12502,16 @@ async function startContainerSession(options) {
     "--env",
     `SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH=${bundle.containerMounts.sealedServerEnv.privateKey.container}`
   ] : [];
+  const sshArgs = sshAccess.enabled ? [
+    "--volume",
+    `${sshAccess.authorizedKeysPath}:/run/sporades/ssh/authorized_keys:ro`,
+    "--env",
+    "SPORADES_SSH_AUTHORIZED_KEYS_PATH=/run/sporades/ssh/authorized_keys",
+    "--env",
+    "SPORADES_SSH_AUTHORIZED_KEYS_TARGET=/app/data/ssh/authorized_keys",
+    "--publish",
+    "127.0.0.1::22"
+  ] : [];
   const bundleMountArgs = bundle.containerMounts.files.flatMap((mount) => ["--volume", formatMount(mount)]);
   const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
   const capsuleServicesEnvArgs = Object.entries(containerCapsuleServices.env ?? {}).flatMap(([key, value]) => [
@@ -12521,6 +12539,7 @@ async function startContainerSession(options) {
       ...Object.entries(baseImageLabels(updatePolicyMode)).flatMap(([key, value]) => ["--label", `${key}=${value}`]),
       "--publish",
       `${port}:4000`,
+      ...sshArgs,
       ...bundleMountArgs,
       ...envArgs,
       ...sealedEnvArgs,
@@ -12534,8 +12553,7 @@ async function startContainerSession(options) {
       "--env",
       "SPORADES_LOG_STDOUT=1",
       SPORADES_BASE_IMAGE.image,
-      "node",
-      "/app/server.mjs"
+      ...sshAccess.enabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]
     ],
     options.projectDir,
     "Failed to start the container session.",
@@ -12543,7 +12561,17 @@ async function startContainerSession(options) {
   );
   const binding = {
     containerId,
-    containerName
+    containerName,
+    ...sshAccess.enabled ? {
+      ssh: {
+        enabled: true,
+        user: SPORADES_BASE_IMAGE.runtimeUser,
+        runtimeUser,
+        targetPort: 22,
+        keyCount: sshAccess.keyCount,
+        fingerprints: sshAccess.fingerprints
+      }
+    } : {}
   };
   await writeFile4(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
@@ -12564,6 +12592,97 @@ async function startContainerSession(options) {
     process.stdout.write(`Sporades container session started at ${url}
 `);
   }
+}
+async function inspectLocalContainerSsh(options) {
+  const bindingPath = path4.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const binding = await readContainerBinding(bindingPath);
+  if (!binding?.containerId) {
+    const data2 = localContainerSshState({
+      enabled: false,
+      running: false,
+      reason: "no-container-session"
+    });
+    if (options.json) {
+      writeResult({ ok: true, data: data2, error: null });
+    } else {
+      process.stdout.write("Container SSH disabled: no local Container session. Run `sporades deploy`.\n");
+    }
+    return;
+  }
+  const intended = binding.ssh ?? { enabled: false, reason: "no-authorized-keys" };
+  if (!intended.enabled) {
+    const data2 = localContainerSshState({
+      enabled: false,
+      running: false,
+      reason: intended.reason ?? "no-authorized-keys"
+    });
+    if (options.json) {
+      writeResult({ ok: true, data: data2, error: null });
+    } else {
+      process.stdout.write("Container SSH disabled: no authorized keys configured. Add `ssh.authorizedKeys` and run `sporades deploy`.\n");
+    }
+    return;
+  }
+  const inspected = inspectDockerContainer(options.projectDir, binding.containerId);
+  const running = Boolean(inspected?.State?.Running);
+  const port = inspectedSshPort(inspected);
+  const data = localContainerSshState({
+    enabled: true,
+    running,
+    user: intended.user ?? SPORADES_BASE_IMAGE.runtimeUser,
+    runtimeUser: inspected?.Config?.User || intended.runtimeUser || baseImageRuntimeUser(),
+    host: port?.host ?? null,
+    port: port?.port ?? null,
+    targetPort: intended.targetPort ?? 22,
+    keyCount: intended.keyCount ?? 0,
+    fingerprints: intended.fingerprints ?? [],
+    reason: running ? port ? null : "port-not-published" : "container-stopped"
+  });
+  if (options.json) {
+    writeResult({ ok: true, data, error: null });
+  } else if (!data.enabled) {
+    process.stdout.write("Container SSH disabled.\n");
+  } else if (!data.running) {
+    process.stdout.write("Container SSH configured, but the Container session is stopped. Run `sporades deploy restart`.\n");
+  } else if (!data.port) {
+    process.stdout.write("Container SSH configured, but port 22 is not published. Run `sporades deploy`.\n");
+  } else {
+    process.stdout.write(`Container SSH enabled for ${data.user}@${data.host}:${data.port} (${data.keyCount} authorized key${data.keyCount === 1 ? "" : "s"}).
+`);
+  }
+}
+function localContainerSshState(overrides) {
+  return {
+    enabled: false,
+    running: false,
+    user: SPORADES_BASE_IMAGE.runtimeUser,
+    runtimeUser: null,
+    host: null,
+    port: null,
+    targetPort: 22,
+    keyCount: 0,
+    fingerprints: [],
+    reason: "no-authorized-keys",
+    ...overrides
+  };
+}
+function inspectDockerContainer(projectDir, containerId) {
+  const output = runDocker(
+    ["inspect", "--format", "{{json .}}", containerId],
+    projectDir,
+    "Failed to inspect the local Container session.",
+    "Check Docker is running and the bound container still exists. If it was removed manually, run `sporades deploy remove` and deploy again."
+  );
+  return JSON.parse(output);
+}
+function inspectedSshPort(inspected) {
+  const entries = inspected?.NetworkSettings?.Ports?.["22/tcp"];
+  if (!Array.isArray(entries) || entries.length === 0) {
+    return null;
+  }
+  const entry = entries.find((candidate) => candidate?.HostIp === "127.0.0.1") ?? entries[0];
+  const port = Number(entry?.HostPort);
+  return Number.isInteger(port) ? { host: entry.HostIp ?? null, port } : null;
 }
 async function inspectDatabase(options) {
   if (options.subcommand === "query" && !isReadOnlySql(options.sql)) {
@@ -12947,6 +13066,195 @@ function resolveEffectiveSecurityPolicy(config, session) {
       }
     }
   };
+}
+async function resolveLocalContainerSshAccess(config, projectDir) {
+  const lines = await resolveAuthorizedKeyLines(config.ssh, projectDir);
+  if (lines.length === 0) {
+    return { enabled: false, authorizedKeysPath: null, keyCount: 0 };
+  }
+  const sshDir = path4.join(projectDir, ".sporades", "ssh");
+  const authorizedKeysPath = path4.join(sshDir, "authorized_keys");
+  await mkdir4(sshDir, { recursive: true });
+  await writeFile4(authorizedKeysPath, `${lines.join("\n")}
+`, { mode: 384 });
+  await chmod(authorizedKeysPath, 384);
+  return {
+    enabled: true,
+    authorizedKeysPath,
+    keyCount: lines.length,
+    fingerprints: lines.map(authorizedKeyFingerprint)
+  };
+}
+async function resolveAuthorizedKeyLines(ssh, projectDir) {
+  if (ssh === void 0) {
+    return [];
+  }
+  if (!ssh || typeof ssh !== "object" || Array.isArray(ssh)) {
+    throw commandError4("Invalid SSH access configuration.", "Set `ssh` in sporades.json to an object with `authorizedKeys`.");
+  }
+  if (ssh.authorizedKeys === void 0) {
+    return [];
+  }
+  if (!Array.isArray(ssh.authorizedKeys)) {
+    throw commandError4(
+      "Invalid SSH authorized keys configuration.",
+      "Set `ssh.authorizedKeys` to an array of objects with exactly one of `key` or `file`."
+    );
+  }
+  const lines = [];
+  for (let index = 0; index < ssh.authorizedKeys.length; index += 1) {
+    const entry = ssh.authorizedKeys[index];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw commandError4(
+        `Invalid SSH authorized key entry at ssh.authorizedKeys[${index}].`,
+        "Use an object with exactly one of `key` or `file`."
+      );
+    }
+    const hasKey = typeof entry.key === "string";
+    const hasFile = typeof entry.file === "string";
+    if (hasKey === hasFile) {
+      throw commandError4(
+        `Invalid SSH authorized key entry at ssh.authorizedKeys[${index}].`,
+        "Use exactly one of `key` or `file` for each SSH authorized key entry."
+      );
+    }
+    const material = hasKey ? entry.key : await readAuthorizedKeysFile(resolveProjectFileReference(entry.file, projectDir), index);
+    lines.push(...normaliseAuthorizedKeyMaterial(material, `ssh.authorizedKeys[${index}]`));
+  }
+  return lines;
+}
+async function readAuthorizedKeysFile(filePath, index) {
+  try {
+    return await readFile4(filePath, "utf8");
+  } catch {
+    throw commandError4(
+      `Unable to read SSH authorized key file at ssh.authorizedKeys[${index}].`,
+      "Check the `file` path is readable from this machine before running `sporades deploy`."
+    );
+  }
+}
+function resolveProjectFileReference(filePath, projectDir) {
+  if (filePath.startsWith("~/")) {
+    const home = process.env.HOME;
+    if (home) {
+      return path4.join(home, filePath.slice(2));
+    }
+  }
+  if (path4.isAbsolute(filePath)) {
+    return filePath;
+  }
+  return path4.join(projectDir, filePath);
+}
+function normaliseAuthorizedKeyMaterial(material, source) {
+  if (looksLikePrivateKey(material)) {
+    throw commandError4(
+      `SSH authorized key material at ${source} looks like a private key.`,
+      "Provide public authorized_keys material only, such as an `id_ed25519.pub` file."
+    );
+  }
+  return material.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#")).map((line, index) => {
+    validateAuthorizedKeyLine(line, `${source}${material.includes("\n") ? ` line ${index + 1}` : ""}`);
+    return line;
+  });
+}
+function looksLikePrivateKey(material) {
+  return /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(material);
+}
+function validateAuthorizedKeyLine(line, source) {
+  const parts = line.split(/\s+/);
+  const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
+  if (keyTypeIndex < 0 || !parts[keyTypeIndex + 1]) {
+    throw malformedAuthorizedKeyError(source);
+  }
+  const keyType = parts[keyTypeIndex];
+  const blob = decodeAuthorizedKeyBlob(parts[keyTypeIndex + 1]);
+  if (!blob || !isValidOpenSshPublicKeyBlob(keyType, blob)) {
+    throw malformedAuthorizedKeyError(source);
+  }
+}
+function isOpenSshPublicKeyType(value) {
+  return /^(ssh-(rsa|dss|ed25519)(-cert-v01@openssh\.com)?|ecdsa-sha2-nistp(256|384|521)(-cert-v01@openssh\.com)?|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)$/.test(value);
+}
+function malformedAuthorizedKeyError(source) {
+  return commandError4(
+    `Malformed SSH authorized key material at ${source}.`,
+    "Use OpenSSH authorized_keys-compatible public key lines."
+  );
+}
+function decodeAuthorizedKeyBlob(value) {
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value) || value.length % 4 === 1) {
+    return null;
+  }
+  const blob = Buffer.from(value, "base64");
+  if (blob.length === 0) {
+    return null;
+  }
+  const canonical = blob.toString("base64").replace(/=+$/, "");
+  if (canonical !== value.replace(/=+$/, "")) {
+    return null;
+  }
+  return blob;
+}
+function isValidOpenSshPublicKeyBlob(keyType, blob) {
+  const first = readSshString(blob, 0);
+  if (!first || first.value.toString("ascii") !== keyType) {
+    return false;
+  }
+  if (keyType === "ssh-ed25519") {
+    const publicKey = readSshString(blob, first.offset);
+    return Boolean(publicKey && publicKey.value.length === 32 && publicKey.offset === blob.length);
+  }
+  if (keyType === "sk-ssh-ed25519@openssh.com") {
+    const publicKey = readSshString(blob, first.offset);
+    const application = publicKey ? readSshString(blob, publicKey.offset) : null;
+    return Boolean(publicKey && publicKey.value.length === 32 && application && application.value.length > 0 && application.offset === blob.length);
+  }
+  if (keyType.startsWith("ecdsa-sha2-")) {
+    const curve = readSshString(blob, first.offset);
+    const publicKey = curve ? readSshString(blob, curve.offset) : null;
+    return Boolean(curve && curve.value.length > 0 && publicKey && publicKey.value.length > 0 && publicKey.offset === blob.length);
+  }
+  if (keyType === "sk-ecdsa-sha2-nistp256@openssh.com") {
+    const curve = readSshString(blob, first.offset);
+    const publicKey = curve ? readSshString(blob, curve.offset) : null;
+    const application = publicKey ? readSshString(blob, publicKey.offset) : null;
+    return Boolean(curve && curve.value.length > 0 && publicKey && publicKey.value.length > 0 && application && application.value.length > 0 && application.offset === blob.length);
+  }
+  if (keyType === "ssh-rsa") {
+    const exponent = readSshString(blob, first.offset);
+    const modulus = exponent ? readSshString(blob, exponent.offset) : null;
+    return Boolean(exponent && exponent.value.length > 0 && modulus && modulus.value.length > 0 && modulus.offset === blob.length);
+  }
+  if (keyType === "ssh-dss") {
+    let offset = first.offset;
+    for (let index = 0; index < 4; index += 1) {
+      const part = readSshString(blob, offset);
+      if (!part || part.value.length === 0) {
+        return false;
+      }
+      offset = part.offset;
+    }
+    return offset === blob.length;
+  }
+  return keyType.includes("-cert-v01@openssh.com") && first.offset < blob.length;
+}
+function readSshString(blob, offset) {
+  if (offset + 4 > blob.length) {
+    return null;
+  }
+  const length = blob.readUInt32BE(offset);
+  const start = offset + 4;
+  const end = start + length;
+  if (length <= 0 || end > blob.length) {
+    return null;
+  }
+  return { value: blob.subarray(start, end), offset: end };
+}
+function authorizedKeyFingerprint(line) {
+  const parts = line.split(/\s+/);
+  const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
+  const digest = createHash3("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  return `SHA256:${digest}`;
 }
 function withRuntimeSecuritySession(config, session) {
   return {

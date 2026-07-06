@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { Buffer } from "node:buffer";
 import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
@@ -15,6 +16,7 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
 const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
 const BASE_IMAGE_RUNTIME_USER = "10001:10001";
+const TEST_PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDI9R+ElI6awrzqT1DDZjMa6q7iH+jF5bughycSLBOa/ test@example";
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-deploy-"));
@@ -71,6 +73,20 @@ if (call.args[0] === "inspect" && call.args.includes("{{json .Mounts}}")) {
   process.stdout.write(JSON.stringify([
     { Source: process.env.FAKE_DOCKER_DATA_DIR, Destination: "/app/data" }
   ]) + "\\n");
+  process.exit(0);
+}
+if (call.args[0] === "inspect" && call.args.includes("{{json .}}")) {
+  process.stdout.write((process.env.FAKE_DOCKER_INSPECT_JSON || JSON.stringify({
+    State: { Running: true },
+    Config: { User: process.env.FAKE_DOCKER_CONFIG_USER || "10001:10001" },
+    NetworkSettings: {
+      Ports: {
+        "22/tcp": [
+          { HostIp: "127.0.0.1", HostPort: "49162" }
+        ]
+      }
+    }
+  })) + "\\n");
   process.exit(0);
 }
 if (call.args[0] === "logs") {
@@ -150,9 +166,19 @@ if (call.args[0] === "run") {
       FAKE_DOCKER_COMPOSE_PORT_OUTPUT: options.composePortOutput ?? "127.0.0.1:49161",
       FAKE_DOCKER_NETWORK_INSPECT_STATUS: String(options.networkInspectStatus ?? 0),
       FAKE_DOCKER_SPORADES_IMAGES: options.sporadesImages ?? "",
+      FAKE_DOCKER_INSPECT_JSON: options.inspectJson ?? "",
+      FAKE_DOCKER_CONFIG_USER: options.configUser ?? "",
     },
     async calls() {
-      const raw = await readFile(logPath, "utf8");
+      let raw = "";
+      try {
+        raw = await readFile(logPath, "utf8");
+      } catch (error) {
+        if (error.code === "ENOENT") {
+          return [];
+        }
+        throw error;
+      }
       return raw
         .trim()
         .split("\n")
@@ -208,6 +234,26 @@ function dockerRunEnv(runCall, prefix) {
 
 function assertVolume(args, mount) {
   assert(args.includes(mount), `Expected docker args to include volume: ${mount}\n${args.join(" ")}`);
+}
+
+async function updateSporadesConfig(projectDir, updater) {
+  const configPath = path.join(projectDir, "sporades.json");
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  updater(config);
+  await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  return config;
+}
+
+function sshString(value) {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value);
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(bytes.length, 0);
+  return Buffer.concat([length, bytes]);
+}
+
+function openSshPublicKeyLine(keyType, fields, comment = "test@example") {
+  const blob = Buffer.concat([sshString(keyType), ...fields.map((field) => sshString(field))]);
+  return `${keyType} ${blob.toString("base64")} ${comment}`;
 }
 
 async function writeHttpHostBridge(dir, sourceEndpoint, targetEndpoint) {
@@ -632,6 +678,319 @@ test("sporades deploy does not require changing local runtime data ownership", a
     assert.equal(preparedDatabase.uid, process.getuid());
     assert.equal(preparedDatabase.gid, process.getgid());
   });
+});
+
+test("sporades deploy enables configured SSH access for local Container sessions", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "ssh-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "ssh-island"));
+    await installFakeReact(projectDir);
+    await updateSporadesConfig(projectDir, (config) => {
+      config.ssh = {
+        authorizedKeys: [
+          { key: TEST_PUBLIC_KEY },
+        ],
+      };
+    });
+    const docker = await installFakeDocker(dir, "container-ssh");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+    const deployBody = JSON.parse(deployResult.stdout);
+    assert.equal(deployBody.data.containerId, "container-ssh");
+    assert.equal(Object.hasOwn(deployBody.data, "ssh"), false);
+
+    const generatedKeysPath = path.join(projectDir, ".sporades", "ssh", "authorized_keys");
+    assert.equal(await readFile(generatedKeysPath, "utf8"), `${TEST_PUBLIC_KEY}\n`);
+
+    const runCall = firstDockerRunCall(await docker.calls());
+    assert.equal(runCall.args[runCall.args.indexOf("--user") + 1], BASE_IMAGE_RUNTIME_USER);
+    assertVolume(runCall.args, `${generatedKeysPath}:/run/sporades/ssh/authorized_keys:ro`);
+    assert.equal(runCall.args[runCall.args.lastIndexOf("--publish") + 1], "127.0.0.1::22");
+    assert(runCall.args.includes("SPORADES_SSH_AUTHORIZED_KEYS_PATH=/run/sporades/ssh/authorized_keys"));
+    assert(runCall.args.includes("SPORADES_SSH_AUTHORIZED_KEYS_TARGET=/app/data/ssh/authorized_keys"));
+
+    const imageIndex = runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.1.0-node22-alpine");
+    assert(imageIndex > -1);
+    assert.deepEqual(runCall.args.slice(imageIndex), [
+      "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
+      "/usr/local/bin/sporades-start",
+    ]);
+  });
+});
+
+test("sporades deploy rejects invalid SSH keys before replacing the existing Container session", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "invalid-ssh-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "invalid-ssh-island"));
+    await installFakeReact(projectDir);
+    await updateSporadesConfig(projectDir, (config) => {
+      config.ssh = {
+        authorizedKeys: [
+          { key: "not a public key" },
+        ],
+      };
+    });
+    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
+    await writeFile(
+      path.join(projectDir, ".sporades", "binding.json"),
+      `${JSON.stringify({ containerId: "container-existing", containerName: "sporades-invalid-ssh-island" }, null, 2)}\n`,
+    );
+    const docker = await installFakeDocker(dir, "container-new");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+
+    assert.equal(deployResult.code, 1);
+    const body = JSON.parse(deployResult.stdout);
+    assert.equal(body.ok, false);
+    assert.match(body.error.message, /Malformed SSH authorized key material/);
+    assert.match(body.error.hint, /authorized_keys-compatible public key/);
+    const calls = await docker.calls();
+    assert.equal(calls.some((call) => call.args[0] === "stop"), false);
+    assert.equal(calls.some((call) => call.args[0] === "rm"), false);
+    assert.equal(calls.some((call) => call.args[0] === "run"), false);
+  });
+});
+
+test("sporades deploy rejects malformed SSH key blobs before replacing the existing Container session", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "bad-blob-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "bad-blob-island"));
+    await installFakeReact(projectDir);
+    await updateSporadesConfig(projectDir, (config) => {
+      config.ssh = {
+        authorizedKeys: [
+          { key: "ssh-ed25519 @@@" },
+        ],
+      };
+    });
+    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
+    await writeFile(
+      path.join(projectDir, ".sporades", "binding.json"),
+      `${JSON.stringify({ containerId: "container-existing", containerName: "sporades-bad-blob-island" }, null, 2)}\n`,
+    );
+    const docker = await installFakeDocker(dir, "container-new");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+
+    assert.equal(deployResult.code, 1);
+    const body = JSON.parse(deployResult.stdout);
+    assert.equal(body.ok, false);
+    assert.match(body.error.message, /Malformed SSH authorized key material/);
+    assert.match(body.error.hint, /authorized_keys-compatible public key/);
+    const calls = await docker.calls();
+    assert.equal(calls.some((call) => call.args[0] === "stop"), false);
+    assert.equal(calls.some((call) => call.args[0] === "rm"), false);
+    assert.equal(calls.some((call) => call.args[0] === "run"), false);
+  });
+});
+
+test("sporades deploy ssh --json reports effective local Container SSH state", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "inspect-ssh-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "inspect-ssh-island"));
+    await installFakeReact(projectDir);
+    await updateSporadesConfig(projectDir, (config) => {
+      config.ssh = {
+        authorizedKeys: [
+          { key: TEST_PUBLIC_KEY },
+        ],
+      };
+    });
+    const docker = await installFakeDocker(dir, "container-ssh", {
+      inspectJson: JSON.stringify({
+        State: { Running: true },
+        Config: { User: "10001:10001" },
+        NetworkSettings: {
+          Ports: {
+            "22/tcp": [
+              { HostIp: "127.0.0.1", HostPort: "49162" },
+            ],
+          },
+        },
+      }),
+    });
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+
+    const sshResult = await runCli(["deploy", "ssh", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+
+    assert.equal(sshResult.code, 0, sshResult.stderr);
+    const body = JSON.parse(sshResult.stdout);
+    assert.equal(body.ok, true);
+    assert.equal(body.data.enabled, true);
+    assert.equal(body.data.running, true);
+    assert.equal(body.data.user, "sporades");
+    assert.equal(body.data.runtimeUser, "10001:10001");
+    assert.equal(body.data.host, "127.0.0.1");
+    assert.equal(body.data.port, 49162);
+    assert.equal(body.data.targetPort, 22);
+    assert.equal(body.data.keyCount, 1);
+    assert.equal(body.data.fingerprints.length, 1);
+    assert.match(body.data.fingerprints[0], /^SHA256:/);
+    assert.equal(body.data.reason, null);
+  });
+});
+
+test("sporades deploy accepts authorized_keys file entries and treats empty effective SSH keys as disabled", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "file-ssh-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "file-ssh-island"));
+    await installFakeReact(projectDir);
+    await writeFile(path.join(projectDir, "ops.keys"), `# ops\n\n${TEST_PUBLIC_KEY}\n`);
+    await updateSporadesConfig(projectDir, (config) => {
+      config.ssh = {
+        authorizedKeys: [
+          { file: "ops.keys" },
+        ],
+      };
+    });
+    const docker = await installFakeDocker(dir, "container-file-ssh");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+    assert.equal(
+      await readFile(path.join(projectDir, ".sporades", "ssh", "authorized_keys"), "utf8"),
+      `${TEST_PUBLIC_KEY}\n`,
+    );
+
+    await updateSporadesConfig(projectDir, (config) => {
+      config.ssh = {
+        authorizedKeys: [],
+      };
+    });
+    const disabledDocker = await installFakeDocker(dir, "container-disabled-ssh");
+    const disabledResult = await runCli(["deploy", "--force", "--json"], {
+      cwd: projectDir,
+      env: disabledDocker.env,
+    });
+    assert.equal(disabledResult.code, 0, disabledResult.stderr);
+    const runCall = (await disabledDocker.calls()).filter((call) => call.args[0] === "run").at(-1);
+    assert.equal(runCall.args.includes("127.0.0.1::22"), false);
+    assert.equal(runCall.args.includes("SPORADES_SSH_AUTHORIZED_KEYS_PATH=/run/sporades/ssh/authorized_keys"), false);
+  });
+});
+
+test("sporades deploy accepts OpenSSH security-key public key material", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "sk-ssh-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "sk-ssh-island"));
+    await installFakeReact(projectDir);
+    const skPublicKey = openSshPublicKeyLine("sk-ssh-ed25519@openssh.com", [
+      Buffer.alloc(32, 7),
+      "ssh:",
+    ]);
+    await updateSporadesConfig(projectDir, (config) => {
+      config.ssh = {
+        authorizedKeys: [
+          { key: skPublicKey },
+        ],
+      };
+    });
+    const docker = await installFakeDocker(dir, "container-sk-ssh");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+    assert.equal(
+      await readFile(path.join(projectDir, ".sporades", "ssh", "authorized_keys"), "utf8"),
+      `${skPublicKey}\n`,
+    );
+    const runCall = firstDockerRunCall(await docker.calls());
+    assert.equal(runCall.args[runCall.args.indexOf("--user") + 1], BASE_IMAGE_RUNTIME_USER);
+    assert.equal(runCall.args[runCall.args.lastIndexOf("--publish") + 1], "127.0.0.1::22");
+  });
+});
+
+test("sporades deploy rejects private-key-looking SSH material", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "private-key-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "private-key-island"));
+    await installFakeReact(projectDir);
+    await updateSporadesConfig(projectDir, (config) => {
+      config.ssh = {
+        authorizedKeys: [
+          { key: "-----BEGIN OPENSSH PRIVATE KEY-----\nnope\n-----END OPENSSH PRIVATE KEY-----" },
+        ],
+      };
+    });
+
+    const result = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: (await installFakeDocker(dir)).env,
+    });
+
+    assert.equal(result.code, 1);
+    const body = JSON.parse(result.stdout);
+    assert.match(body.error.message, /private key/);
+    assert.match(body.error.hint, /public authorized_keys material only/);
+  });
+});
+
+test("Sporades Base image includes dormant OpenSSH startup capability", async () => {
+  const dockerfile = await readFile(path.join(repoRoot, "Dockerfile.base"), "utf8");
+  assert.match(dockerfile, /apk add --no-cache openssh-server/);
+  assert.match(dockerfile, /\/usr\/local\/bin\/sporades-start/);
+  assert.match(dockerfile, /PasswordAuthentication=no/);
+  assert.match(dockerfile, /PermitRootLogin=no/);
+  assert.match(dockerfile, /AllowUsers=sporades/);
+  assert.match(dockerfile, /AuthorizedKeysFile="\$target"/);
+  assert.match(dockerfile, /HostKey="\$ssh_dir\/ssh_host_ed25519_key"/);
+  assert.match(dockerfile, /PidFile=\/tmp\/sporades-sshd\.pid/);
+  assert.match(dockerfile, /USER 10001:10001/);
+  assert.doesNotMatch(dockerfile, /sudoers|NOPASSWD|PermitRootLogin=yes|PasswordAuthentication=yes/);
 });
 
 test("sporades deploy writes a server bundle that serves the capsule", async () => {

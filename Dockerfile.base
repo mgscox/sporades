@@ -8,9 +8,30 @@ LABEL com.sporades.base-image.name="sporades-base"
 LABEL com.sporades.base-image.version="0.1.0-node22-alpine"
 LABEL com.sporades.base-image.node="22"
 
-RUN addgroup -g 10001 -S sporades \
+RUN apk add --no-cache openssh-server \
+  && addgroup -g 10001 -S sporades \
   && adduser -u 10001 -S sporades -G sporades \
-  && mkdir -p /app /app/data \
+  && mkdir -p /app /app/data /run/sshd \
+  && ssh-keygen -A \
+  && printf '%s\n' \
+    '#!/bin/sh' \
+    'set -eu' \
+    'if [ -n "${SPORADES_SSH_AUTHORIZED_KEYS_PATH:-}" ] && [ -s "${SPORADES_SSH_AUTHORIZED_KEYS_PATH}" ]; then' \
+    '  target="${SPORADES_SSH_AUTHORIZED_KEYS_TARGET:-/app/data/ssh/authorized_keys}"' \
+    '  ssh_dir="$(dirname "$target")"' \
+    '  mkdir -p "$ssh_dir"' \
+    '  cp "${SPORADES_SSH_AUTHORIZED_KEYS_PATH}" "$target"' \
+    '  if [ ! -s "$ssh_dir/ssh_host_ed25519_key" ]; then' \
+    '    ssh-keygen -t ed25519 -f "$ssh_dir/ssh_host_ed25519_key" -N "" >/dev/null' \
+    '  fi' \
+    '  chmod 700 "$ssh_dir"' \
+    '  chmod 600 "$target"' \
+    '  chmod 600 "$ssh_dir/ssh_host_ed25519_key"' \
+    '  /usr/sbin/sshd -f /etc/ssh/sshd_config -o PasswordAuthentication=no -o PermitRootLogin=no -o AllowUsers=sporades -o AuthorizedKeysFile="$target" -o HostKey="$ssh_dir/ssh_host_ed25519_key" -o PidFile=/tmp/sporades-sshd.pid' \
+    'fi' \
+    'exec node /app/server.mjs' \
+    > /usr/local/bin/sporades-start \
+  && chmod 0755 /usr/local/bin/sporades-start \
   && chown -R 10001:10001 /app
 
 WORKDIR /app

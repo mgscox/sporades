@@ -71,7 +71,7 @@ test("sporades command --help prints command-specific help", async () => {
     ["auth", /^Usage: sporades auth <command> \[options\]/, /set google/],
     ["security", /^Usage: sporades security \[options\]/, /--session <name>/],
     ["env", /^Usage: sporades env <command> \[options\]/, /reencrypt/],
-    ["deploy", /^Usage: sporades deploy \[status\|stop\|restart\|remove\|reset\] \[options\]/, /--force/],
+    ["deploy", /^Usage: sporades deploy \[status\|stop\|restart\|remove\|reset\|ssh\] \[options\]/, /deploy ssh/],
     ["host", /^Usage: sporades host <command> \[options\]/, /github workflow write/],
     ["logs", /^Usage: sporades logs \[tail\] \[options\]/, /logs tail/],
     ["db", /^Usage: sporades db <command> \[options\]/, /query <sql>/],

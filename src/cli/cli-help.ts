@@ -78,7 +78,7 @@ Options:
   --json              Write JSON output
   --help, -h          Show this help
 `,
-  deploy: `Usage: sporades deploy [status|stop|restart|remove|reset] [options]
+  deploy: `Usage: sporades deploy [status|stop|restart|remove|reset|ssh] [options]
 
 Start and manage a local Container session.
 
@@ -87,6 +87,7 @@ Commands:
   deploy status       Print Container session status
   deploy stop         Stop the running Container session
   deploy restart      Restart the running Container session
+  deploy ssh          Inspect effective Container SSH access
   deploy remove       Remove the Container session
   deploy reset        Remove the Container session and local container state
 
