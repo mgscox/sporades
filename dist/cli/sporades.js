@@ -330,9 +330,6 @@ function parseDoctorArgs(args) {
     if ((host !== null || subname !== null) && session !== "hosted") {
         throw commandError("Hosted doctor options require the hosted session.", "Use `sporades doctor --session hosted --host <alias> --subname <name>`.", { session, host, subname });
     }
-    if (session === "hosted" && (!host || !subname)) {
-        throw commandError("Hosted doctor checks require a Host profile and Capsule subname.", "Pass `--host <alias> --subname <name>` with `sporades doctor --session hosted`.", { hostProvided: Boolean(host), subnameProvided: Boolean(subname) });
-    }
     return {
         session,
         host,

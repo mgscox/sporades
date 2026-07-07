@@ -488,14 +488,6 @@ function parseDoctorArgs(args: string[]): LooseRecord {
       { session, host, subname },
     );
   }
-  if (session === "hosted" && (!host || !subname)) {
-    throw commandError(
-      "Hosted doctor checks require a Host profile and Capsule subname.",
-      "Pass `--host <alias> --subname <name>` with `sporades doctor --session hosted`.",
-      { hostProvided: Boolean(host), subnameProvided: Boolean(subname) },
-    );
-  }
-
   return {
     session,
     host,

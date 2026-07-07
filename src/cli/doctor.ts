@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
+import { spawn } from "node:child_process";
 
 import { bundleServerCapsuleModule } from "../bundle-pipeline.js";
 import { schemaFromCapsuleDefinition } from "../server-runtime-source.js";
@@ -47,7 +48,9 @@ export async function runDoctorChecks(options: LooseRecord) {
     checks.push(capsuleAuthoringCheck);
   }
 
-  if (options.session) {
+  if (options.session === "hosted") {
+    checks.push(...await hostedCapsuleDoctorChecks(options));
+  } else if (options.session) {
     checks.push(sessionDoctorPlaceholderCheck(options));
   }
 
@@ -181,7 +184,7 @@ async function readRunningPublicDevSession(projectDir: string) {
 }
 
 async function sshAuthorizedKeysCheck(config: LooseRecord, options: LooseRecord) {
-  const command = sshFollowUpCommand(options);
+  const command = await sshFollowUpCommand(options);
   try {
     const lines = await resolveAuthorizedKeyLines(config.ssh, options.projectDir);
     const sshConfigured = Object.hasOwn(config, "ssh");
@@ -226,9 +229,12 @@ async function sshAuthorizedKeysCheck(config: LooseRecord, options: LooseRecord)
   }
 }
 
-function sshFollowUpCommand(options: LooseRecord) {
+async function sshFollowUpCommand(options: LooseRecord) {
   if (options.session === "hosted") {
-    return `sporades host ssh ${options.subname} --host ${options.host}`;
+    const binding = await readDoctorRemoteBinding(options.projectDir);
+    const alias = options.host ?? binding?.hostAlias ?? "<alias>";
+    const subname = options.subname ?? binding?.subname ?? "<subname>";
+    return `sporades host ssh ${subname} --host ${alias}`;
   }
   return "sporades deploy ssh";
 }
@@ -348,6 +354,417 @@ function doctorScope(session: string) {
   return session === "public-dev" ? "dev" : session;
 }
 
+async function hostedCapsuleDoctorChecks(options: LooseRecord) {
+  const target = await resolveHostedDoctorTarget(options);
+  if (!target.ok) {
+    return [target.check];
+  }
+
+  options.host = target.alias;
+  options.subname = target.subname;
+  const commands = hostedCommands(target.alias, target.subname);
+  const checks: LooseRecord[] = [target.check];
+
+  const [hostHealth, list, runtimeHealth, hostStats, capsuleStats, ssh] = await Promise.all([
+    runHostJsonCommand(["host", "health", "--host", target.alias, "--json"], options.projectDir),
+    runHostJsonCommand(["host", "list", "--host", target.alias, "--json"], options.projectDir),
+    runHostJsonCommand(["host", "health", target.subname, "--host", target.alias, "--json"], options.projectDir),
+    runHostJsonCommand(["host", "stats", "--host", target.alias, "--json"], options.projectDir),
+    runHostJsonCommand(["host", "stats", target.subname, "--host", target.alias, "--json"], options.projectDir),
+    runHostJsonCommand(["host", "ssh", target.subname, "--host", target.alias, "--json"], options.projectDir),
+  ]);
+
+  checks.push(hostHealthCheck(hostHealth, commands));
+  const capsule = hostedCapsuleFromList(list, target.subname);
+  checks.push(hostedRegistryCheck(list, capsule, commands));
+  if (!capsule) {
+    return checks;
+  }
+  checks.push(hostedReleaseCheck(capsule, commands));
+  checks.push(hostedRuntimeHealthCheck(runtimeHealth, commands));
+  checks.push(hostedStatsCheck(hostStats, capsuleStats, commands));
+  checks.push(hostedSealedServerEnvCheck(capsule, commands));
+  checks.push(hostedSshStateCheck(ssh, commands));
+  return checks;
+}
+
+async function resolveHostedDoctorTarget(options: LooseRecord) {
+  const binding = await readDoctorRemoteBinding(options.projectDir);
+  const alias = options.host ?? binding?.hostAlias ?? null;
+  const subname = options.subname ?? binding?.subname ?? null;
+  if (!alias || !subname) {
+    return {
+      ok: false,
+      check: {
+        id: "doctor.hosted.target",
+        title: "Hosted Capsule target",
+        scope: "hosted",
+        status: "fail",
+        severity: "error",
+        message: "No Hosted Capsule binding could be resolved for doctor.",
+        hint: "Pass `--host <alias> --subname <name>`, bind this project to a Hosted Capsule, or register one first.",
+        commands: ["sporades host bind <subname> --host <alias>", "sporades host register <subname> --host <alias>"],
+        details: {
+          hostProvided: Boolean(options.host),
+          subnameProvided: Boolean(options.subname),
+          remoteBindingFound: Boolean(binding),
+        },
+      },
+    };
+  }
+
+  const current = await runHostJsonCommand(["host", "current", "--host", alias, "--json"], options.projectDir);
+  if (!current.ok) {
+    const message = current.error?.message ?? "Host profile could not be resolved.";
+    const unknown = message.match(/^Unknown Host profile alias: (.+)$/);
+    return {
+      ok: false,
+      check: {
+        id: "doctor.hosted.target",
+        title: "Hosted Capsule target",
+        scope: "hosted",
+        status: "fail",
+        severity: "error",
+        message,
+        hint: current.error?.hint ?? "Add or select a Host profile, then rerun `sporades doctor --session hosted`.",
+        commands: unknown
+          ? [`sporades host add ${unknown[1]} --server <ssh-target> --domain <hosted-domain>`]
+          : ["sporades host current --json", "sporades host add <alias> --server <ssh-target> --domain <hosted-domain>"],
+        details: { alias, subname },
+      },
+    };
+  }
+
+  const resolvedAlias = current.data?.alias ?? alias;
+  return {
+    ok: true,
+    alias: resolvedAlias,
+    subname,
+    check: {
+      id: "doctor.hosted.target",
+      title: "Hosted Capsule target",
+      scope: "hosted",
+      status: "pass",
+      severity: "info",
+      message: `Hosted Capsule target resolved as ${subname} on Host profile ${resolvedAlias}.`,
+      details: {
+        alias: resolvedAlias,
+        subname,
+        fromRemoteBinding: !options.host || !options.subname,
+        hostedUrl: current.data?.profile?.domain ? `${current.data.profile.scheme ?? "https"}://${subname}.${current.data.profile.domain}` : null,
+      },
+    },
+  };
+}
+
+async function readDoctorRemoteBinding(projectDir: string) {
+  try {
+    const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
+    return binding && typeof binding === "object" && !Array.isArray(binding) ? binding : null;
+  } catch {
+    return null;
+  }
+}
+
+function hostedCommands(alias: string, subname: string) {
+  return {
+    hostHealth: `sporades host health --host ${alias}`,
+    capsuleHealth: `sporades host health ${subname} --host ${alias}`,
+    hostStats: `sporades host stats --host ${alias}`,
+    capsuleStats: `sporades host stats ${subname} --host ${alias}`,
+    hostLogs: `sporades host logs stdout --host ${alias} --subname ${subname}`,
+    hostSsh: `sporades host ssh ${subname} --host ${alias}`,
+    hostList: `sporades host list --host ${alias}`,
+    hostRegister: `sporades host register ${subname} --host ${alias}`,
+    hostPushVerify: `sporades host push --host ${alias} --subname ${subname} --verify`,
+  };
+}
+
+function hostHealthCheck(result: LooseRecord, commands: LooseRecord) {
+  if (result.ok) {
+    return {
+      id: "doctor.hosted.host-health",
+      title: "Host server health",
+      scope: "hosted",
+      status: "pass",
+      severity: "info",
+      message: "Host server health route responded successfully.",
+      commands: [commands.hostHealth],
+      details: { healthUrl: result.data?.healthUrl ?? null, response: result.data?.response ?? null },
+    };
+  }
+  return {
+    id: "doctor.hosted.host-health",
+    title: "Host server health",
+    scope: "hosted",
+    status: "warn",
+    severity: "warning",
+    message: result.error?.message ?? "Host server health could not be verified.",
+    hint: result.error?.hint ?? "Check Host server reachability and retry the health command.",
+    commands: [commands.hostHealth],
+    details: result.data ?? null,
+  };
+}
+
+function hostedCapsuleFromList(result: LooseRecord, subname: string) {
+  const capsules = Array.isArray(result.data?.capsules) ? result.data.capsules : [];
+  return capsules.find((capsule: LooseRecord) => capsule?.subname === subname) ?? null;
+}
+
+function hostedRegistryCheck(result: LooseRecord, capsule: LooseRecord | null, commands: LooseRecord) {
+  if (!result.ok) {
+    return {
+      id: "doctor.hosted.registry",
+      title: "Hosted Capsule registry",
+      scope: "hosted",
+      status: "fail",
+      severity: "error",
+      message: result.error?.message ?? "Hosted Capsule registry state could not be read.",
+      hint: result.error?.hint ?? "Retry Host registry inspection.",
+      commands: [commands.hostList],
+      details: result.data ?? null,
+    };
+  }
+  if (!capsule) {
+    return {
+      id: "doctor.hosted.registry",
+      title: "Hosted Capsule registry",
+      scope: "hosted",
+      status: "fail",
+      severity: "error",
+      message: "Hosted Capsule is not present in the Host server registry.",
+      hint: "Register the Hosted Capsule on the selected Host profile, or choose the correct Host profile and Capsule subname.",
+      commands: [commands.hostList, commands.hostRegister],
+    };
+  }
+  const status = String(capsule.registry?.status ?? "registered");
+  const stopped = status === "stopped" || capsule.docker?.running === false;
+  return {
+    id: "doctor.hosted.registry",
+    title: "Hosted Capsule registry",
+    scope: "hosted",
+    status: stopped ? "warn" : "pass",
+    severity: stopped ? "warning" : "info",
+    message: stopped
+      ? `Hosted Capsule registry or container state is stopped (${status}).`
+      : `Hosted Capsule registry state is ${status}.`,
+    ...(stopped ? { hint: `Inspect logs, then start or push a verified release if needed.` } : {}),
+    commands: stopped ? [commands.hostStats, commands.hostLogs, commands.hostPushVerify] : [commands.hostList],
+    details: {
+      registry: capsule.registry ?? null,
+      docker: capsule.docker ?? null,
+    },
+  };
+}
+
+function hostedReleaseCheck(capsule: LooseRecord, commands: LooseRecord) {
+  const release = capsule.currentRelease;
+  if (!release?.id) {
+    return {
+      id: "doctor.hosted.release",
+      title: "Hosted Capsule current release",
+      scope: "hosted",
+      status: "fail",
+      severity: "error",
+      message: "Hosted Capsule has no current release recorded.",
+      hint: "Push a release with verification so the Host registry records current release metadata.",
+      commands: [commands.hostPushVerify],
+      details: { currentRelease: release ?? null },
+    };
+  }
+  return {
+    id: "doctor.hosted.release",
+    title: "Hosted Capsule current release",
+    scope: "hosted",
+    status: "pass",
+    severity: "info",
+    message: `Current release metadata is available (${release.id}).`,
+    commands: [commands.hostPushVerify],
+    details: {
+      id: release.id,
+      sealedServerEnv: release.sealedServerEnv ?? null,
+      baseImage: release.baseImage ?? capsule.baseImage ?? null,
+    },
+  };
+}
+
+function hostedRuntimeHealthCheck(result: LooseRecord, commands: LooseRecord) {
+  if (result.ok) {
+    return {
+      id: "doctor.hosted.runtime-health",
+      title: "Hosted Capsule health",
+      scope: "hosted",
+      status: "pass",
+      severity: "info",
+      message: "Hosted Capsule runtime health checks passed.",
+      commands: [commands.capsuleHealth],
+      details: {
+        route: result.data?.route ?? null,
+        container: result.data?.container ?? null,
+        runtime: result.data?.runtime ?? null,
+      },
+    };
+  }
+  const failure = String(result.data?.failure ?? "");
+  const routeMismatch = failure.includes("route") || failure.includes("container");
+  const unavailable = failure.includes("unavailable");
+  return {
+    id: "doctor.hosted.runtime-health",
+    title: "Hosted Capsule health",
+    scope: "hosted",
+    status: "warn",
+    severity: "warning",
+    message: routeMismatch
+      ? "Hosted Capsule route and container state appear mismatched."
+      : unavailable
+        ? "Hosted Capsule is returning the Host unavailable response state."
+        : result.error?.message ?? "Hosted Capsule runtime health check failed.",
+    hint: result.error?.hint ?? "Inspect Hosted Capsule logs and retry health.",
+    commands: [commands.capsuleHealth, commands.hostLogs, commands.hostPushVerify],
+    details: result.data ?? null,
+  };
+}
+
+function hostedStatsCheck(hostStats: LooseRecord, capsuleStats: LooseRecord, commands: LooseRecord) {
+  const ok = Boolean(hostStats.ok && capsuleStats.ok);
+  return {
+    id: "doctor.hosted.stats",
+    title: "Hosted Capsule resource stats",
+    scope: "hosted",
+    status: ok ? "pass" : "warn",
+    severity: ok ? "info" : "warning",
+    message: ok
+      ? "Host and Hosted Capsule resource stats are available."
+      : "One or more Host resource stat surfaces are unavailable.",
+    ...(ok ? {} : { hint: capsuleStats.error?.hint ?? hostStats.error?.hint ?? "Check Docker on the Host server and retry stats." }),
+    commands: [commands.hostStats, commands.capsuleStats],
+    details: {
+      hostStatsAvailable: Boolean(hostStats.ok),
+      capsuleStatsAvailable: Boolean(capsuleStats.ok),
+      capsule: capsuleStats.data?.capsule ?? null,
+      lifecycle: capsuleStats.data?.lifecycle ?? null,
+    },
+  };
+}
+
+function hostedSealedServerEnvCheck(capsule: LooseRecord, commands: LooseRecord) {
+  const releaseFingerprint = capsule.currentRelease?.sealedServerEnv?.publicKeyFingerprint ?? null;
+  const currentFingerprint = capsule.sealedServerEnv?.publicKeyFingerprint ?? capsule.registry?.sealedServerEnv?.currentKeyFingerprint ?? null;
+  const inspectedFingerprint = capsule.sealedServerEnv?.publicKeyFingerprint ?? null;
+  const publicKeyAvailable = capsule.sealedServerEnv?.publicKeyAvailable ?? null;
+  const privateKeyAvailable = capsule.sealedServerEnv?.privateKeyAvailable ?? null;
+  const mismatch = Boolean(releaseFingerprint && releaseFingerprint !== currentFingerprint);
+  const missingHostKeyMaterial = Boolean(
+    capsule.sealedServerEnv?.status === "missing-key-material" || publicKeyAvailable === false || privateKeyAvailable === false,
+  );
+  const releaseKeyUnavailable = Boolean(missingHostKeyMaterial && releaseFingerprint && inspectedFingerprint === releaseFingerprint);
+  const currentKeyUnavailable = Boolean(missingHostKeyMaterial && (!releaseKeyUnavailable || !releaseFingerprint));
+  const unavailable = releaseKeyUnavailable || currentKeyUnavailable;
+  return {
+    id: "doctor.hosted.sealed-server-env",
+    title: "Hosted Capsule Sealed Server env fingerprints",
+    scope: "hosted",
+    status: unavailable ? "warn" : "pass",
+    severity: unavailable ? "warning" : "info",
+    message: unavailable
+      ? releaseKeyUnavailable
+        ? `Release metadata references sealed-env key fingerprint ${releaseFingerprint}, but matching Host key material is unavailable.`
+        : releaseFingerprint && currentFingerprint && releaseFingerprint !== currentFingerprint
+          ? `Current Host sealed-env key fingerprint ${currentFingerprint} is unavailable; current release metadata references ${releaseFingerprint}, so doctor cannot infer that release key material is unavailable from this inspection signal.`
+          : `Host sealed-env key fingerprint ${currentFingerprint} is unavailable.`
+      : mismatch
+        ? `Release sealed-env key fingerprint ${releaseFingerprint} differs from the current Host key fingerprint ${currentFingerprint}; this can be a healthy rotated-key state when old release keys are retained.`
+        : releaseFingerprint
+        ? `Release sealed-env key fingerprint ${releaseFingerprint} is available on the Host.`
+        : "Current release metadata does not reference a Sealed Server env key fingerprint.",
+    ...(unavailable ? { hint: "Re-key and re-seal from source values, then push a verified release." } : {}),
+    commands: [commands.hostPushVerify],
+    details: {
+      releasePublicKeyFingerprint: releaseFingerprint,
+      hostPublicKeyFingerprint: currentFingerprint,
+      inspectedHostKeyFingerprint: inspectedFingerprint,
+      publicKeyAvailable,
+      privateKeyAvailable,
+    },
+  };
+}
+
+function hostedSshStateCheck(result: LooseRecord, commands: LooseRecord) {
+  if (!result.ok) {
+    return {
+      id: "doctor.hosted.ssh",
+      title: "Hosted Capsule SSH state",
+      scope: "hosted",
+      status: "warn",
+      severity: "warning",
+      message: result.error?.message ?? "Hosted Capsule SSH state could not be inspected.",
+      hint: result.error?.hint ?? "Retry SSH inspection.",
+      commands: [commands.hostSsh],
+      details: result.data ?? null,
+    };
+  }
+  const data = result.data ?? {};
+  const enabled = Boolean(data.enabled);
+  const ready = enabled && data.running && data.host && data.port;
+  return {
+    id: "doctor.hosted.ssh",
+    title: "Hosted Capsule SSH state",
+    scope: "hosted",
+    status: ready ? "pass" : "warn",
+    severity: ready ? "info" : "warning",
+    message: ready
+      ? "Hosted Capsule SSH inspection reports an effective loopback SSH state."
+      : `Hosted Capsule SSH is unavailable (${data.reason ?? "unknown"}).`,
+    hint: ready
+      ? "Use SSH only as a compatibility and emergency access path; prefer structured Sporades commands for normal inspection."
+      : `Inspect effective SSH state with \`${commands.hostSsh}\`.`,
+    commands: [commands.hostSsh],
+    details: {
+      enabled,
+      running: Boolean(data.running),
+      reason: data.reason ?? null,
+      host: data.host ?? null,
+      port: data.port ?? null,
+      user: data.user ?? null,
+      keyCount: data.keyCount ?? 0,
+      fingerprints: Array.isArray(data.fingerprints) ? data.fingerprints : [],
+    },
+  };
+}
+
+async function runHostJsonCommand(args: string[], projectDir: string) {
+  return new Promise<LooseRecord>((resolve) => {
+    const child = spawn(process.execPath, [process.argv[1], ...args], {
+      cwd: projectDir,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (code) => {
+      try {
+        const parsed = JSON.parse(stdout);
+        resolve(parsed);
+      } catch {
+        resolve({
+          ok: false,
+          data: { code, stderr: stderr.trim() },
+          error: {
+            message: "Host command returned invalid JSON.",
+            hint: "Retry the underlying Host command with `--json`.",
+          },
+        });
+      }
+    });
+  });
+}
+
 function sessionDoctorPlaceholderCheck(options: LooseRecord) {
   const session = options.session;
   const commandBySession: LooseRecord = {
@@ -434,6 +851,15 @@ export function renderDoctorHumanOutput(data: LooseRecord) {
     lines.push("", severity.toUpperCase());
     for (const check of checks) {
       lines.push(`- [${check.status}] ${check.title}: ${check.message}`);
+      if (typeof check.hint === "string" && check.hint.trim()) {
+        lines.push(`  hint: ${check.hint}`);
+      }
+      const commands = Array.isArray(check.commands)
+        ? [...new Set(check.commands.filter((command: unknown) => typeof command === "string" && command.trim()))]
+        : [];
+      if (commands.length > 0) {
+        lines.push(`  next: ${commands.join("; ")}`);
+      }
     }
   }
 
