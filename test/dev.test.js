@@ -2401,6 +2401,64 @@ test("sporades dev keeps existing WebSocket clients connected across client-only
   });
 });
 
+test("sporades dev generated server bundle handles client WebSocket close frames", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
+      assert.match(serverBundle, /function drainWebSocketFrames/);
+      assert.match(serverBundle, /function closeWebSocketClient/);
+      assert.match(serverBundle, /function localFileStoragePath/);
+      assert.match(serverBundle, /function localFileVersionPath/);
+
+      socket = await openSocketWithHeaders(started.data.url);
+      socket.sendJson({
+        id: "upload-url",
+        type: "file.uploadUrl",
+        file: { name: "hello.txt", type: "text/plain", size: 11 },
+      });
+      const uploadUrl = await socket.readJson();
+      assert.equal(uploadUrl.type, "file.uploadUrl.result");
+      assert.equal(uploadUrl.error, null, uploadUrl.error?.message);
+      const uploadResponse = await fetch(new URL(uploadUrl.data.uploadUrl, started.data.url), {
+        method: uploadUrl.data.method,
+        body: "hello world",
+      });
+      assert.equal(uploadResponse.status, 200);
+      const uploaded = await uploadResponse.json();
+      assert.equal(uploaded.ok, true, JSON.stringify(uploaded.error));
+      assert.equal(uploaded.data.file.id, uploadUrl.data.file.id);
+
+      socket.sendCloseFrame();
+      await socket.waitForClose();
+
+      const root = await fetch(started.data.url);
+      assert.equal(root.status, 200);
+      assert.match(await root.text(), /client\.js/);
+    } finally {
+      socket?.destroy();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev streams rebuild failure events and keeps serving the last client bundle", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -8219,11 +8277,20 @@ function openSocketWithHeaders(baseUrl, headers = {}) {
         sendJson(payload) {
           socket.write(encodeClientWebSocketFrame(JSON.stringify(payload)));
         },
+        sendCloseFrame() {
+          socket.write(encodeClientWebSocketCloseFrame());
+        },
         readJson() {
           return readRawWebSocketJson(socket, buffer);
         },
+        waitForClose() {
+          return waitForRawSocketClose(socket);
+        },
         close() {
           socket.end();
+        },
+        destroy() {
+          socket.destroy();
         },
       });
     }
@@ -8260,6 +8327,11 @@ function encodeClientWebSocketFrame(text) {
     encoded[index] = payload[index] ^ mask[index % 4];
   }
   return Buffer.concat([header, mask, encoded]);
+}
+
+function encodeClientWebSocketCloseFrame() {
+  const mask = randomBytes(4);
+  return Buffer.from([0x88, 0x80, ...mask]);
 }
 
 function readRawWebSocketJson(socket, initialBuffer = Buffer.alloc(0)) {
@@ -8302,6 +8374,32 @@ function readRawWebSocketJson(socket, initialBuffer = Buffer.alloc(0)) {
     socket.on("data", onData);
     socket.on("error", onError);
     onData(Buffer.alloc(0));
+  });
+}
+
+function waitForRawSocketClose(socket) {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      reject(new Error("Timed out waiting for raw WebSocket close."));
+    }, TEST_WEBSOCKET_TIMEOUT_MS);
+
+    function cleanup() {
+      clearTimeout(timeout);
+      socket.off("close", onClose);
+      socket.off("error", onError);
+    }
+    function onClose() {
+      cleanup();
+      resolve();
+    }
+    function onError(error) {
+      cleanup();
+      reject(error);
+    }
+
+    socket.on("close", onClose);
+    socket.on("error", onError);
   });
 }
 
