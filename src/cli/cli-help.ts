@@ -63,7 +63,7 @@ Options:
 Run read-only Sporades diagnostics.
 
 Options:
-  --session <name>    Session: dev, container, or hosted
+  --session <name>    Session: dev, public-dev, container, or hosted
   --host <alias>      Host profile alias for Hosted Capsule checks
   --subname <name>    Hosted Capsule subname
   --strict            Exit non-zero on warnings as well as failures
