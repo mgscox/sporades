@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Prove Mutation And Hook Rollback
 
@@ -17,12 +17,12 @@ whole mutation without compensating for partial app-table state.
 
 ## Acceptance criteria
 
-- [ ] A successful mutation still commits app-table writes and hook-visible results.
-- [ ] A failing custom mutation rolls back app-table writes made before the failure.
-- [ ] A failing before or after mutation hook rolls back database writes from the mutation workflow.
-- [ ] Denied or failed ACL write evaluation rolls back app-table and pending ACL writes.
-- [ ] A failed mutation can be retried successfully without cleanup of partial app-table state from the first attempt.
-- [ ] Coverage proves the behavior through the public mutation/runtime path rather than only testing adapter helpers.
+- [x] A successful mutation still commits app-table writes and hook-visible results.
+- [x] A failing custom mutation rolls back app-table writes made before the failure.
+- [x] A failing before or after mutation hook rolls back database writes from the mutation workflow.
+- [x] Denied or failed ACL write evaluation rolls back app-table and pending ACL writes.
+- [x] A failed mutation can be retried successfully without cleanup of partial app-table state from the first attempt.
+- [x] Coverage proves the behavior through the public mutation/runtime path rather than only testing adapter helpers.
 
 ## Blocked by
 

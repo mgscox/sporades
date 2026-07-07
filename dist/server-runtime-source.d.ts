@@ -565,7 +565,7 @@ export declare function createPostgresDatabaseAdapter(options: {
                 defaultValue: any;
             } | null)[];
         }[];
-    }): Promise<void>;
+    }): Promise<any>;
     createAppTable(table: {
         name: any;
     }, tableName?: any): Promise<void>;
@@ -938,7 +938,7 @@ export declare function createLibsqlDatabaseAdapter(options: {
                 defaultValue: any;
             } | null)[];
         }[];
-    }): Promise<void>;
+    }): Promise<any>;
     migrateExistingAppTable(existingTable: any, nextTable: any): Promise<void>;
     listInspectableTables(): Promise<any>;
     dumpInspectableDatabase(): Promise<{
@@ -1222,32 +1222,7 @@ export declare function runReadOnlyQuery(database: {
     adapter: any;
     sqlite: any;
 }, sql: any): Promise<any>;
-export declare function simulateLocalIdentitySession(database: LooseRecord, options?: LooseRecord): Promise<{
-    ok: boolean;
-    data: any;
-    error: {
-        message: string;
-        hint: string;
-    };
-} | {
-    ok: boolean;
-    data: {
-        localStorage: {
-            key: string;
-            value: string;
-        };
-        auth: {
-            userId: any;
-            displayName: string;
-            email: string;
-            picture: string | null;
-            isAuthenticated: boolean;
-            isGuest: boolean;
-            provider: string;
-        };
-    };
-    error: null;
-}>;
+export declare function simulateLocalIdentitySession(database: LooseRecord, options?: LooseRecord): Promise<any>;
 export declare function createWebSocketHub(getDatabase: () => any): {
     accept(request: IncomingMessage, socket: Duplex): Promise<void>;
     disconnectAll(): void;
@@ -1281,6 +1256,7 @@ export declare function routeSporadesAuth(database: LooseRecord, request: Incomi
     req: IncomingMessage;
 }): Promise<boolean>;
 export declare function signUpWithEmail(database: LooseRecord, session: LooseRecord, provider: string, credentials: any): Promise<any>;
+export declare function signInWithEmail(database: LooseRecord, session: any, credentials: any): Promise<any>;
 export declare function resolveAnonymousSession(database: LooseRecord, sessionToken: string | null): Promise<{
     token: any;
     auth: {
@@ -1292,6 +1268,19 @@ export declare function resolveAnonymousSession(database: LooseRecord, sessionTo
         isGuest: boolean;
         provider: any;
     };
+}>;
+export declare function updateCurrentUserPreferences(database: LooseRecord, auth: LooseRecord, patch: any): Promise<{
+    ok: boolean;
+    data: {
+        preferences: any;
+    };
+    changes: any;
+    error: null;
+} | {
+    ok: boolean;
+    data: null;
+    error: any;
+    changes?: undefined;
 }>;
 export declare function runQuery(database: LooseRecord, auth: any, queryName: string): Promise<any>;
 export declare function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any): Promise<any>;

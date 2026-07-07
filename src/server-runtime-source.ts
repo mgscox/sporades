@@ -154,6 +154,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   commandError,
   toSqlLiteral,
   findMatchingParen,
+  createTransactionDatabase,
+  readEndpointRequest,
   createEndpointContext,
   createContextHolder,
   createTableAclContext,
@@ -264,7 +266,12 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   isExpiredSession,
   createSessionToken,
   refreshSession,
+  refreshSessionOnAdapter,
   rotateSession,
+  rotateSessionOnAdapter,
+  moveSessionToUser,
+  moveSessionToUserOnAdapter,
+  migrateAnonymousPreferences,
   resolveAnonymousSession,
   sessionFromRow,
   readCurrentUserPreferences,
@@ -304,6 +311,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   validateAppMessageType,
   isAllAppMessageScope,
   runMutationHook,
+  runMutationHookAndDrainPendingAclWrites,
   createMutationContext,
   drainPendingAclWrites,
   createMessageContext,
@@ -1237,7 +1245,15 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       );
     },
     migrateAppSchema(schema: { tables: { name: any; acl: { allowByDefault: boolean; } | { allowByDefault: boolean; resolve(operation: any): any; }; fields: { name: any; kind: any; sqliteType: string; targetTable: string | undefined; defaultValue: any; }[]; }[]; } | { tables: { name: string; fields: ({ name: any; kind: any; sqliteType: string; targetTable: any; defaultValue: any; } | null)[]; }[]; }) {
-      return migrateAppSchema(this, schema);
+      this.exec("BEGIN");
+      try {
+        const result = migrateAppSchema(this, schema);
+        this.exec("COMMIT");
+        return result;
+      } catch (error) {
+        this.exec("ROLLBACK");
+        throw error;
+      }
     },
     createAppTable(table: { name: any; }, tableName = table.name) {
       return createAppTable(this, table, tableName);
@@ -1619,7 +1635,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
       return rows.reverse().map((row: { payload: string; }) => JSON.parse(row.payload));
     },
     async migrateAppSchema(schema: { tables: { name: any; acl: { allowByDefault: boolean; } | { allowByDefault: boolean; resolve(operation: any): any; }; fields: { name: any; kind: any; sqliteType: string; targetTable: string | undefined; defaultValue: any; }[]; }[]; } | { tables: { name: string; fields: ({ name: any; kind: any; sqliteType: string; targetTable: any; defaultValue: any; } | null)[]; }[]; }) {
-      return await migrateLibsqlAppSchema(this, schema);
+      return await this.withTransaction((transaction) => migrateLibsqlAppSchema(transaction as any, schema));
     },
     async createAppTable(table: { name: any; }, tableName = table.name) {
       await this.exec(
@@ -2465,7 +2481,7 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
       return row;
     },
     async migrateAppSchema(schema: { tables: { name: any; acl: { allowByDefault: boolean; } | { allowByDefault: boolean; resolve(operation: any): any; }; fields: { name: any; kind: any; sqliteType: string; targetTable: string | undefined; defaultValue: any; }[]; }[]; } | { tables: { name: string; fields: ({ name: any; kind: any; sqliteType: string; targetTable: any; defaultValue: any; } | null)[]; }[]; }) {
-      return await migrateLibsqlAppSchema(this, schema);
+      return await this.withTransaction((transaction) => migrateLibsqlAppSchema(transaction as any, schema));
     },
     async migrateExistingAppTable(existingTable: any, nextTable: any) {
       return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
@@ -2710,14 +2726,19 @@ function createRuntimeLogSink(options: { database: any; config: any; serverEnv: 
         serverEnv: options.serverEnv,
       });
       appendFileSync(logPath, `${JSON.stringify(event)}\n`);
-      const inserted = options.database.insertLogIndexEvent(event);
-      const indexed = isPromiseLike(inserted)
-        ? inserted.then(() => options.database.pruneLogIndex(logIndexLimit(options.config)))
-        : options.database.pruneLogIndex(logIndexLimit(options.config));
+      let indexed;
+      try {
+        const inserted = options.database.insertLogIndexEvent(event);
+        indexed = isPromiseLike(inserted)
+          ? inserted.then(() => options.database.pruneLogIndex(logIndexLimit(options.config)))
+          : options.database.pruneLogIndex(logIndexLimit(options.config));
+      } catch {
+        indexed = undefined;
+      }
       if (process.env.SPORADES_LOG_STDOUT === "1") {
         process.stdout.write(`${JSON.stringify(event)}\n`);
       }
-      return isPromiseLike(indexed) ? indexed.then(() => event) : event;
+      return isPromiseLike(indexed) ? indexed.then(() => event, () => event) : event;
     },
     recent(limit = logIndexLimit(options.config)) {
       return options.database.readRecentLogEvents(limit);
@@ -3143,7 +3164,7 @@ async function migrateLibsqlAppSchema(sqlite: { engine?: string; exec?: ((sql: a
   for (const table of schema.tables) {
     const existingTable = existingTables.get(table.name);
     if (schemaChanged && existingTable) {
-      await sqlite.migrateExistingAppTable(existingTable, table);
+      await migrateExistingLibsqlAppTableInTransaction(sqlite, existingTable, table);
     } else {
       await sqlite.createAppTable(table);
     }
@@ -3243,6 +3264,12 @@ function migrateExistingAppTable(sqlite: LooseRecord, existingTable: any, nextTa
 }
 
 async function migrateExistingLibsqlAppTable(sqlite: LooseRecord, existingTable: any, nextTable: LooseRecord) {
+  await sqlite.withTransaction(async (transaction: LooseRecord) => {
+    await migrateExistingLibsqlAppTableInTransaction(transaction, existingTable, nextTable);
+  });
+}
+
+async function migrateExistingLibsqlAppTableInTransaction(sqlite: LooseRecord, existingTable: any, nextTable: LooseRecord) {
   for (const field of addedFieldsForTable(existingTable, nextTable)) {
     if (
       field.kind === "Reference" &&
@@ -3256,17 +3283,15 @@ async function migrateExistingLibsqlAppTable(sqlite: LooseRecord, existingTable:
 
   const tempTableName = `__sporades_migrating_${nextTable.name}`;
   const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field: { name: any; }) => field.name)];
-  await sqlite.withTransaction(async (transaction: { exec: (arg0: string) => any; createAppTable: (arg0: any, arg1: string) => any; }) => {
-    await transaction.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`);
-    await transaction.createAppTable(nextTable, tempTableName);
-    await transaction.exec(
-      `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
-      `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
-      `FROM ${quoteIdentifier(nextTable.name)}`,
-    );
-    await transaction.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`);
-    await transaction.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`);
-  });
+  await sqlite.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`);
+  await sqlite.createAppTable(nextTable, tempTableName);
+  await sqlite.exec(
+    `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
+    `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
+    `FROM ${quoteIdentifier(nextTable.name)}`,
+  );
+  await sqlite.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`);
+  await sqlite.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`);
 }
 
 function columnSelectExpressionForMigration(existingTable: LooseRecord, nextTable: LooseRecord, columnName: string) {
@@ -4080,20 +4105,20 @@ export async function createPendingFileUpload(database: LooseRecord, auth: Loose
         error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
       };
     }
-    let target;
-    try {
-      target =
-        replacing && existingByReference && (input.path === undefined || input.path === null)
-          ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path }
-          : await resolveFileWriteTarget(database, auth.userId, input, now);
-    } catch (error: any) {
-      return {
-        ok: false,
-        error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path."),
-      };
-    }
     return await database.sqlite.withTransaction(async (sqlite: { selectPendingFileUploadByPath: (arg0: any) => any; deleteFileUploadsForPath: (arg0: any) => any; insertFileUpload: (arg0: { id: `${string}-${string}-${string}-${string}-${string}`; fileId: any; ownerId: any; bucketId: any; bucketName: any; path: any; name: any; type: string; version: `${string}-${string}-${string}-${string}-${string}`; expectedSize: number; createdAt: string; }) => any; }) => {
       const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+      let target;
+      try {
+        target =
+          replacing && existingByReference && (input.path === undefined || input.path === null)
+            ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path }
+            : await resolveFileWriteTarget(transactionDatabase, auth.userId, input, now);
+      } catch (error: any) {
+        return {
+          ok: false,
+          error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path."),
+        };
+      }
       const existingByPath = target.path ? await singleActiveFileRowByPath(transactionDatabase, target.path) : null;
       if (existingByPath?.ambiguous) {
         return ambiguousFileReferenceError(target.path);
@@ -4194,10 +4219,16 @@ export async function completePendingFileUpload(database: LooseRecord, uploadId:
     await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
     wroteFileVersion = true;
     const now = new Date().toISOString();
-    const completed = await database.sqlite.completeFileUpload(upload, bytes.length, now);
-    if (completed?.changes === 0) {
+    const completion = await database.sqlite.withTransaction(async (sqlite: LooseRecord) => {
+      const completed = await sqlite.completeFileUpload(upload, bytes.length, now);
+      if (completed?.changes === 0) {
+        return { ok: false, superseded: true };
+      }
+      await sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
+      return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
+    });
+    if (!completion.ok && completion.superseded) {
       await removeFileVersionBestEffort(database, upload.fileId, upload.version);
-      await database.sqlite.deleteFileUpload(uploadId);
       return {
         ok: false,
         data: null,
@@ -4207,11 +4238,10 @@ export async function completePendingFileUpload(database: LooseRecord, uploadId:
         ),
       };
     }
-    await database.sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
     if (previousFile && previousFile.deletedAt == null && previousFile.status === "uploaded" && previousFile.version !== upload.version) {
       await removeFileVersionBestEffort(database, previousFile.id, previousFile.version);
     }
-    const file = fileMetadataFromRow(await database.sqlite.selectFileById(upload.fileId));
+    const file = fileMetadataFromRow(completion.row);
     websocketHub?.notifyFileEvent?.(upload.ownerId, {
       type: "file.upload.complete",
       file,
@@ -4263,44 +4293,47 @@ export async function getPrivateFileUrl(database: any, auth: LooseRecord, fileRe
 }
 
 export async function createPublicFileUrl(database: LooseRecord, auth: LooseRecord, fileReference: any, options: LooseRecord = {}) {
-  const resolved: any = await resolveLiveFileReference(database, auth.userId, fileReference);
-  if (!resolved.ok) {
-    return resolved;
-  }
-  const row = resolved.row;
-  if (!row) {
-    return {
-      ok: false,
-      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
-    };
-  }
   const expiry = validatePublicUrlExpiry(options);
   if (!expiry.ok) {
     return expiry;
   }
-  const id = randomUUID();
-  const now = new Date().toISOString();
-  await database.sqlite.insertPublicFileUrl({
-    id,
-    fileId: row.id,
-    ownerId: auth.userId,
-    version: row.version,
-    expiresAt: expiry.expiresAt,
-    createdAt: now,
-  });
-  return {
-    ok: true,
-    data: {
-      publicUrl: {
-        id,
-        fileId: row.id,
-        url: `/__sporades/files/public/${id}?v=${encodeURIComponent(row.version)}`,
-        expiresAt: expiry.expiresAt,
-        revokedAt: null,
+  return await database.sqlite.withTransaction(async (sqlite: LooseRecord) => {
+    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+    const resolved: any = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
+    if (!resolved.ok) {
+      return resolved;
+    }
+    const row = resolved.row;
+    if (!row) {
+      return {
+        ok: false,
+        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
+      };
+    }
+    const id = randomUUID();
+    const now = new Date().toISOString();
+    await sqlite.insertPublicFileUrl({
+      id,
+      fileId: row.id,
+      ownerId: auth.userId,
+      version: row.version,
+      expiresAt: expiry.expiresAt,
+      createdAt: now,
+    });
+    return {
+      ok: true,
+      data: {
+        publicUrl: {
+          id,
+          fileId: row.id,
+          url: `/__sporades/files/public/${id}?v=${encodeURIComponent(row.version)}`,
+          expiresAt: expiry.expiresAt,
+          revokedAt: null,
+        },
       },
-    },
-    error: null as any,
-  };
+      error: null as any,
+    };
+  });
 }
 
 async function revokePublicFileUrl(database: LooseRecord, auth: LooseRecord, publicUrlId: any) {
@@ -4320,27 +4353,39 @@ async function revokePublicFileUrl(database: LooseRecord, auth: LooseRecord, pub
 }
 
 export async function deletePrivateFile(database: LooseRecord, auth: LooseRecord, fileReference: any) {
-  const resolved: any = await resolveLiveFileReference(database, auth.userId, fileReference);
-  if (!resolved.ok) {
-    return resolved;
-  }
-  const row = resolved.row;
-  if (!row) {
-    return {
-      ok: false,
-      error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
-    };
-  }
   const now = new Date().toISOString();
-  await database.sqlite.deleteFileUploadsForFile(auth.userId, row.id);
-  await database.sqlite.deleteFileUploadsForPath(row.path);
-  await database.sqlite.markFileDeleted(row.id, now);
-  await database.sqlite.revokePublicFileUrlsForFile(row.id, now);
-  await removeFileVersionBestEffort(database, row.id, row.version);
+  const result = await database.sqlite.withTransaction(async (sqlite: LooseRecord) => {
+    const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+    const resolved: any = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
+    if (!resolved.ok) {
+      return resolved;
+    }
+    const row = resolved.row;
+    if (!row) {
+      return {
+        ok: false,
+        error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
+      };
+    }
+    await sqlite.deleteFileUploadsForFile(auth.userId, row.id);
+    await sqlite.deleteFileUploadsForPath(row.path);
+    await sqlite.markFileDeleted(row.id, now);
+    await sqlite.revokePublicFileUrlsForFile(row.id, now);
+    return {
+      ok: true,
+      data: { file: fileMetadataFromRow({ ...row, deletedAt: now }) },
+      error: null,
+      deletedFile: row,
+    };
+  });
+  if (!result.ok) {
+    return result;
+  }
+  await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
   return {
     ok: true,
-    data: { file: fileMetadataFromRow({ ...row, deletedAt: now }) },
-    error: null,
+    data: result.data,
+    error: null as any,
   };
 }
 
@@ -4627,15 +4672,31 @@ async function removeFileVersionBestEffort(database: LooseRecord, fileId: any, v
 async function runEndpoint(database: any, endpoint: { handlerSource: any; }, requestUrl: URL, request: any) {
   const createHandler = new Function(`return (${endpoint.handlerSource});`);
   const handler = createHandler();
-  const context = await applyContextMiddleware(
-    database,
-    await createEndpointContext(database, requestUrl, request),
-    "endpoint",
-  );
-  return handler(context);
+  const endpointRequest = await readEndpointRequest(requestUrl, request);
+  const session = await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
+  return await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter: any) => {
+    const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+    const context = await applyContextMiddleware(
+      transactionDatabase,
+      createEndpointContext(transactionDatabase, endpointRequest, session),
+      "endpoint",
+    );
+    try {
+      return await handler(context);
+    } finally {
+      await drainPendingAclWrites(context);
+      transactionDatabase.rowCache.clear();
+    }
+  });
 }
 
-async function createEndpointContext(database: LooseRecord, requestUrl: URL, request: any) {
+function createTransactionDatabase(database: LooseRecord, transactionAdapter: any) {
+  return transactionAdapter
+    ? { ...database, adapter: transactionAdapter, sqlite: transactionAdapter }
+    : database;
+}
+
+async function readEndpointRequest(requestUrl: URL, request: any) {
   const headers = Object.fromEntries(
     Object.entries(request.headers).map(([name, value]) => [
       name.toLowerCase(),
@@ -4643,22 +4704,31 @@ async function createEndpointContext(database: LooseRecord, requestUrl: URL, req
     ]),
   );
   const query = Object.fromEntries(requestUrl.searchParams.entries());
-  const session = await resolveAnonymousSession(database, readEndpointSessionToken(headers, query));
+  return {
+    method: request.method,
+    path: requestUrl.pathname,
+    headers,
+    query,
+    body: await readEndpointBody(request, headers),
+  };
+}
+
+function createEndpointContext(database: LooseRecord, endpointRequest: LooseRecord, session: LooseRecord) {
   const context: LooseRecord = {
     auth: session.auth,
     env: database.serverEnv,
     log: createEndpointLogger(database, {
       request: {
-        method: request.method,
-        path: requestUrl.pathname,
+        method: endpointRequest.method,
+        path: endpointRequest.path,
       },
     }),
     request: {
-      method: request.method,
-      path: requestUrl.pathname,
-      headers,
-      query,
-      body: await readEndpointBody(request, headers),
+      method: endpointRequest.method,
+      path: endpointRequest.path,
+      headers: endpointRequest.headers,
+      query: endpointRequest.query,
+      body: endpointRequest.body,
     },
   };
   const holder = createContextHolder(context);
@@ -5651,46 +5721,49 @@ export async function simulateLocalIdentitySession(database: LooseRecord, option
   const displayName = normalizeSimulatedText(options.displayName) ?? email;
   const picture = normalizeSimulatedText(options.picture);
   const now = new Date().toISOString();
-  const existing = await database.sqlite.findAuthUserByProviderEmail(provider, email);
-  const userId = existing?.id ?? randomUUID();
   const token = createSessionToken();
 
-  if (existing) {
-    await database.sqlite.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0 });
-  } else {
-    await database.sqlite.insertAuthUser({
-      id: userId,
-      createdAt: now,
+  return await database.sqlite.withTransaction(async (tx: LooseRecord) => {
+    const existing = await tx.findAuthUserByProviderEmail(provider, email);
+    const userId = existing?.id ?? randomUUID();
+
+    if (existing) {
+      await tx.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0 });
+    } else {
+      await tx.insertAuthUser({
+        id: userId,
+        createdAt: now,
+        displayName,
+        email,
+        picture,
+        isAuthenticated: 1,
+        isGuest: 0,
+        provider,
+      });
+    }
+    await tx.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
+
+    const auth = {
+      userId,
       displayName,
       email,
       picture,
-      isAuthenticated: 1,
-      isGuest: 0,
+      isAuthenticated: true,
+      isGuest: false,
       provider,
-    });
-  }
-  await database.sqlite.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
-
-  const auth = {
-    userId,
-    displayName,
-    email,
-    picture,
-    isAuthenticated: true,
-    isGuest: false,
-    provider,
-  };
-  return {
-    ok: true,
-    data: {
-      localStorage: {
-        key: "sporades.sessionToken",
-        value: token,
+    };
+    return {
+      ok: true,
+      data: {
+        localStorage: {
+          key: "sporades.sessionToken",
+          value: token,
+        },
+        auth,
       },
-      auth,
-    },
-    error: null,
-  };
+      error: null,
+    };
+  });
 }
 
 function normalizeSimulatedEmail(value: any) {
@@ -6377,18 +6450,31 @@ async function linkGoogleAccount(database: LooseRecord, session: LooseRecord, pr
     };
   }
 
-  const existingUser = await database.sqlite.findAuthUserByProviderEmail("google", profile.email);
-  const auth = {
-    userId: existingUser?.id ?? session.auth.userId,
-    displayName: profile.displayName ?? profile.email,
-    email: profile.email,
-    picture: profile.picture ?? null,
-    isAuthenticated: true,
-    isGuest: false,
-    provider: "google",
-  };
-  if (session.auth.isGuest && existingUser?.id && existingUser.id !== session.auth.userId) {
-    await database.sqlite.linkAuthUser({
+  return await database.sqlite.withTransaction(async (tx: LooseRecord) => {
+    const existingUser = await tx.findAuthUserByProviderEmail("google", profile.email);
+    const auth = {
+      userId: existingUser?.id ?? session.auth.userId,
+      displayName: profile.displayName ?? profile.email,
+      email: profile.email,
+      picture: profile.picture ?? null,
+      isAuthenticated: true,
+      isGuest: false,
+      provider: "google",
+    };
+    if (session.auth.isGuest && existingUser?.id && existingUser.id !== session.auth.userId) {
+      await tx.linkAuthUser({
+        id: auth.userId,
+        displayName: auth.displayName,
+        email: auth.email,
+        picture: auth.picture,
+        isAuthenticated: 1,
+        isGuest: 0,
+        provider: "google",
+      });
+      await moveSessionToUserOnAdapter(database, tx, session, auth.userId);
+      return { ok: true, auth };
+    }
+    await tx.linkAuthUser({
       id: auth.userId,
       displayName: auth.displayName,
       email: auth.email,
@@ -6397,20 +6483,9 @@ async function linkGoogleAccount(database: LooseRecord, session: LooseRecord, pr
       isGuest: 0,
       provider: "google",
     });
-    await moveSessionToUser(database, session, auth.userId);
+    await refreshSessionOnAdapter(tx, session.token);
     return { ok: true, auth };
-  }
-  await database.sqlite.linkAuthUser({
-    id: auth.userId,
-    displayName: auth.displayName,
-    email: auth.email,
-    picture: auth.picture,
-    isAuthenticated: 1,
-    isGuest: 0,
-    provider: "google",
   });
-  await refreshSession(database, session.token);
-  return { ok: true, auth };
 }
 
 function writeRedirect(response: { writeHead: (arg0: number, arg1: { location: any; }) => void; end: () => void; }, location: any) {
@@ -6458,26 +6533,28 @@ export async function signUpWithEmail(database: LooseRecord, session: LooseRecor
     isGuest: false,
     provider: "email",
   };
-  await database.sqlite.insertEmailCredential({
-    email: normalized.email,
-    userId: auth.userId,
-    passwordHash: password.hash,
-    passwordSalt: password.salt,
-    createdAt: new Date().toISOString(),
+  return await database.sqlite.withTransaction(async (tx: LooseRecord) => {
+    await tx.insertEmailCredential({
+      email: normalized.email,
+      userId: auth.userId,
+      passwordHash: password.hash,
+      passwordSalt: password.salt,
+      createdAt: new Date().toISOString(),
+    });
+    await tx.linkAuthUser({
+      id: auth.userId,
+      displayName: auth.displayName,
+      email: auth.email,
+      picture: auth.picture,
+      isAuthenticated: 1,
+      isGuest: 0,
+      provider: "email",
+    });
+    return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId), auth };
   });
-  await database.sqlite.linkAuthUser({
-    id: auth.userId,
-    displayName: auth.displayName,
-    email: auth.email,
-    picture: auth.picture,
-    isAuthenticated: 1,
-    isGuest: 0,
-    provider: "email",
-  });
-  return { ok: true, sessionToken: await rotateSession(database, session, auth.userId), auth };
 }
 
-async function signInWithEmail(database: LooseRecord, session: any, credentials: any) {
+export async function signInWithEmail(database: LooseRecord, session: any, credentials: any) {
   if (!database.authConfig.providers.email.enabled) {
     return { ok: false, error: emailAuthDisabledError() };
   }
@@ -6507,7 +6584,11 @@ async function signInWithEmail(database: LooseRecord, session: any, credentials:
     isGuest: Boolean(row.isGuest),
     provider: row.provider,
   };
-  return { ok: true, sessionToken: await rotateSession(database, session, auth.userId), auth };
+  return await database.sqlite.withTransaction(async (tx: LooseRecord) => ({
+    ok: true,
+    sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId),
+    auth,
+  }));
 }
 
 function normalizeEmailCredentials(credentials: { email: any; password: any; name: null; }) {
@@ -6717,24 +6798,36 @@ function createSessionToken() {
 }
 
 async function refreshSession(database: LooseRecord, token: any) {
+  return await refreshSessionOnAdapter(database.sqlite, token);
+}
+
+async function refreshSessionOnAdapter(sqlite: LooseRecord, token: any) {
   const now = new Date().toISOString();
   const expiresAt = sessionExpiresAt(now);
-  await database.sqlite.refreshAuthSession(token, expiresAt);
+  await sqlite.refreshAuthSession(token, expiresAt);
   return expiresAt;
 }
 
 async function rotateSession(database: LooseRecord, session: LooseRecord, userId: any) {
+  return await database.sqlite.withTransaction(async (tx: LooseRecord) => rotateSessionOnAdapter(database, tx, session, userId));
+}
+
+async function rotateSessionOnAdapter(database: LooseRecord, sqlite: LooseRecord, session: LooseRecord, userId: any) {
   const now = new Date().toISOString();
   const token = createSessionToken();
-  await migrateAnonymousPreferences(database, session.auth, userId);
-  await database.sqlite.rotateAuthSession(session.token, { token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
+  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
+  await sqlite.rotateAuthSession(session.token, { token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
   return token;
 }
 
 async function moveSessionToUser(database: LooseRecord, session: LooseRecord, userId: any) {
+  return await database.sqlite.withTransaction(async (tx: LooseRecord) => moveSessionToUserOnAdapter(database, tx, session, userId));
+}
+
+async function moveSessionToUserOnAdapter(database: LooseRecord, sqlite: LooseRecord, session: LooseRecord, userId: any) {
   const now = new Date().toISOString();
-  await migrateAnonymousPreferences(database, session.auth, userId);
-  await database.sqlite.rotateAuthSession(session.token, {
+  await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
+  await sqlite.rotateAuthSession(session.token, {
     token: session.token,
     userId,
     createdAt: now,
@@ -6742,11 +6835,11 @@ async function moveSessionToUser(database: LooseRecord, session: LooseRecord, us
   });
 }
 
-async function migrateAnonymousPreferences(database: LooseRecord, auth: LooseRecord, targetUserId: any) {
+async function migrateAnonymousPreferences(database: LooseRecord, auth: LooseRecord, targetUserId: any, sqlite: LooseRecord | null = null) {
   if (!auth?.isGuest || auth.userId === targetUserId) {
     return;
   }
-  await database.sqlite.withTransaction(async (tx: LooseRecord) => {
+  const migrate = async (tx: LooseRecord) => {
     const sourceRow = await tx.readUserPreferences(auth.userId);
     if (!sourceRow) {
       return;
@@ -6761,7 +6854,12 @@ async function migrateAnonymousPreferences(database: LooseRecord, auth: LooseRec
       value: JSON.stringify(next),
       updatedAt: new Date().toISOString(),
     });
-  });
+  };
+  if (sqlite) {
+    await migrate(sqlite);
+    return;
+  }
+  await database.sqlite.withTransaction(migrate);
 }
 
 export async function resolveAnonymousSession(database: LooseRecord, sessionToken: string | null) {
@@ -6779,17 +6877,19 @@ export async function resolveAnonymousSession(database: LooseRecord, sessionToke
   const now = new Date().toISOString();
   const userId = randomUUID();
   const token = createSessionToken();
-  await database.sqlite.insertAuthUser({
-    id: userId,
-    createdAt: now,
-    displayName: "Anonymous",
-    email: null,
-    picture: null,
-    isAuthenticated: 0,
-    isGuest: 1,
-    provider: "anonymous",
+  await database.sqlite.withTransaction(async (tx: LooseRecord) => {
+    await tx.insertAuthUser({
+      id: userId,
+      createdAt: now,
+      displayName: "Anonymous",
+      email: null,
+      picture: null,
+      isAuthenticated: 0,
+      isGuest: 1,
+      provider: "anonymous",
+    });
+    await tx.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
   });
-  await database.sqlite.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
   return {
     token,
     auth: {
@@ -6830,7 +6930,7 @@ async function readCurrentUserPreferences(database: LooseRecord, auth: LooseReco
   };
 }
 
-async function updateCurrentUserPreferences(database: LooseRecord, auth: LooseRecord, patch: any) {
+export async function updateCurrentUserPreferences(database: LooseRecord, auth: LooseRecord, patch: any) {
   try {
     const normalizedPatch = normalizePreferencesPatch(patch);
     const preferences = await database.sqlite.withTransaction(async (tx: LooseRecord) => {
@@ -7055,7 +7155,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
       context = await applyContextMiddleware(transactionDatabase, createMutationContext(transactionDatabase, auth), "mutation");
 
       for (const hookSource of database.mutationHooks.beforeMutation) {
-        await runMutationHook(hookSource, { name: mutationName, args, ctx: context });
+        await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
       }
 
       result = await runCustomMutation(transactionDatabase, context, mutationName, args);
@@ -7068,7 +7168,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
 
       if (result.ok) {
         for (const hookSource of database.mutationHooks.afterMutation) {
-          await runMutationHook(hookSource, { name: mutationName, args, ctx: context, result });
+          await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
         }
         await drainPendingAclWrites(context);
       }
@@ -7148,17 +7248,26 @@ async function runAppMessage(database: LooseRecord, auth: any, messageName: any,
     if (data !== undefined) {
       assertJsonCompatible(data);
     }
-    const context = await applyContextMiddleware(
-      database,
-      createMessageContext(database, auth, options.sendAppMessage),
-      "message",
-    );
     const createHandler = new Function(`return (${handler.handlerSource});`);
-    const result = await createHandler()(context, data);
-    if (result !== undefined) {
-      assertJsonCompatible(result);
-    }
-    return { data: result ?? null, error: null as any };
+    return await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter: any) => {
+      const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+      const context = await applyContextMiddleware(
+        transactionDatabase,
+        createMessageContext(transactionDatabase, auth, options.sendAppMessage),
+        "message",
+      );
+      let result;
+      try {
+        result = await createHandler()(context, data);
+      } finally {
+        await drainPendingAclWrites(context);
+        transactionDatabase.rowCache.clear();
+      }
+      if (result !== undefined) {
+        assertJsonCompatible(result);
+      }
+      return { data: result ?? null, error: null as any };
+    });
   } catch (error: any) {
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
@@ -7223,6 +7332,14 @@ async function runMutationHook(hookSource: any, event: { name: any; args: any; c
   return await hook(event);
 }
 
+async function runMutationHookAndDrainPendingAclWrites(hookSource: any, event: { name: any; args: any; ctx: any; result?: { ok: boolean; error: { message: any; hint: any; }; } | { ok: boolean; error: null; }; }, context: LooseRecord) {
+  try {
+    return await runMutationHook(hookSource, event);
+  } finally {
+    await drainPendingAclWrites(context);
+  }
+}
+
 function createMutationContext(database: LooseRecord, auth: any) {
   const context: LooseRecord = {
     auth,
@@ -7236,9 +7353,18 @@ function createMutationContext(database: LooseRecord, auth: any) {
 }
 
 async function drainPendingAclWrites(context: LooseRecord) {
+  let firstError: any = null;
   while (context?.__pendingAclWrites?.length > 0) {
     const pending = context.__pendingAclWrites.splice(0);
-    await Promise.all(pending);
+    const results = await Promise.allSettled(pending);
+    for (const result of results) {
+      if (result.status === "rejected" && !firstError) {
+        firstError = result.reason;
+      }
+    }
+  }
+  if (firstError) {
+    throw firstError;
   }
 }
 

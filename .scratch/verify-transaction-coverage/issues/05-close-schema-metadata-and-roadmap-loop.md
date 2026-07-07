@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Close Schema Metadata And Roadmap Loop
 
@@ -18,14 +18,27 @@ feature and remains a roadmap enhancement.
 
 ## Acceptance criteria
 
-- [ ] Schema migration paths that perform multi-statement table rewrites or data backfills have transaction coverage and rollback tests.
-- [ ] Schema metadata writes such as `schemaVersion`, `schemaHash`, and stored schema JSON commit with the schema/data changes they describe, not before them.
-- [ ] System/schema metadata writes are classified as transactional or intentionally single-statement.
-- [ ] Log index writes and pruning are classified with their intended failure behavior.
-- [ ] At least one regression test proves Log index write or prune failure degrades inspection without failing or rolling back the app, auth, or file workflow that emitted the log.
-- [ ] The Log index retry queue roadmap candidate is referenced as future enhancement rather than implemented in this feature.
-- [ ] Hosted-runtime database writes are either covered or explicitly declared not applicable because Host server registry writes are JSON-file based.
-- [ ] `docs/ROADMAP.md` is updated when the feature is implemented so this item leaves Recommended Next Features.
+- [x] Schema migration paths that perform multi-statement table rewrites or data backfills have transaction coverage and rollback tests.
+- [x] Schema metadata writes such as `schemaVersion`, `schemaHash`, and stored schema JSON commit with the schema/data changes they describe, not before them.
+- [x] System/schema metadata writes are classified as transactional or intentionally single-statement.
+- [x] Log index writes and pruning are classified with their intended failure behavior.
+- [x] At least one regression test proves Log index write or prune failure degrades inspection without failing or rolling back the app, auth, or file workflow that emitted the log.
+- [x] The Log index retry queue roadmap candidate is referenced as future enhancement rather than implemented in this feature.
+- [x] Hosted-runtime database writes are either covered or explicitly declared not applicable because Host server registry writes are JSON-file based.
+- [x] `docs/ROADMAP.md` is updated when the feature is implemented so this item leaves Recommended Next Features.
+
+## Resolution
+
+Schema migration and schema metadata writes now share one adapter-owned
+transaction, with SQLite rollback coverage proving additive table changes do
+not survive a metadata write failure. Log index insert and prune failures are
+best-effort after the durable JSONL log append, with regression coverage proving
+inspection degrades to JSONL tail output instead of failing the emitted
+workflow. The transaction audit has no remaining `requires-fix` rows, Hosted
+Capsule runtime database writes are covered by the same runtime Database
+adapter boundaries, and Host server registry writes remain non-database JSON
+state protected by Host server locking and atomic replacement. The Log index
+retry queue remains a future roadmap candidate.
 
 ## Blocked by
 

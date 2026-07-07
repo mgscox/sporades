@@ -114,6 +114,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     commandError,
     toSqlLiteral,
     findMatchingParen,
+    createTransactionDatabase,
+    readEndpointRequest,
     createEndpointContext,
     createContextHolder,
     createTableAclContext,
@@ -224,7 +226,12 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     isExpiredSession,
     createSessionToken,
     refreshSession,
+    refreshSessionOnAdapter,
     rotateSession,
+    rotateSessionOnAdapter,
+    moveSessionToUser,
+    moveSessionToUserOnAdapter,
+    migrateAnonymousPreferences,
     resolveAnonymousSession,
     sessionFromRow,
     readCurrentUserPreferences,
@@ -264,6 +271,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     validateAppMessageType,
     isAllAppMessageScope,
     runMutationHook,
+    runMutationHookAndDrainPendingAclWrites,
     createMutationContext,
     drainPendingAclWrites,
     createMessageContext,
@@ -992,7 +1000,16 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
                 "WHERE c.email = ?").get(email) ?? null);
         },
         migrateAppSchema(schema) {
-            return migrateAppSchema(this, schema);
+            this.exec("BEGIN");
+            try {
+                const result = migrateAppSchema(this, schema);
+                this.exec("COMMIT");
+                return result;
+            }
+            catch (error) {
+                this.exec("ROLLBACK");
+                throw error;
+            }
         },
         createAppTable(table, tableName = table.name) {
             return createAppTable(this, table, tableName);
@@ -1310,7 +1327,7 @@ export async function createPostgresDatabaseAdapter(options) {
             return rows.reverse().map((row) => JSON.parse(row.payload));
         },
         async migrateAppSchema(schema) {
-            return await migrateLibsqlAppSchema(this, schema);
+            return await this.withTransaction((transaction) => migrateLibsqlAppSchema(transaction, schema));
         },
         async createAppTable(table, tableName = table.name) {
             await this.exec(`CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` +
@@ -2058,7 +2075,7 @@ export async function createLibsqlDatabaseAdapter(options) {
             return row;
         },
         async migrateAppSchema(schema) {
-            return await migrateLibsqlAppSchema(this, schema);
+            return await this.withTransaction((transaction) => migrateLibsqlAppSchema(transaction, schema));
         },
         async migrateExistingAppTable(existingTable, nextTable) {
             return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
@@ -2293,14 +2310,20 @@ function createRuntimeLogSink(options) {
                 serverEnv: options.serverEnv,
             });
             appendFileSync(logPath, `${JSON.stringify(event)}\n`);
-            const inserted = options.database.insertLogIndexEvent(event);
-            const indexed = isPromiseLike(inserted)
-                ? inserted.then(() => options.database.pruneLogIndex(logIndexLimit(options.config)))
-                : options.database.pruneLogIndex(logIndexLimit(options.config));
+            let indexed;
+            try {
+                const inserted = options.database.insertLogIndexEvent(event);
+                indexed = isPromiseLike(inserted)
+                    ? inserted.then(() => options.database.pruneLogIndex(logIndexLimit(options.config)))
+                    : options.database.pruneLogIndex(logIndexLimit(options.config));
+            }
+            catch {
+                indexed = undefined;
+            }
             if (process.env.SPORADES_LOG_STDOUT === "1") {
                 process.stdout.write(`${JSON.stringify(event)}\n`);
             }
-            return isPromiseLike(indexed) ? indexed.then(() => event) : event;
+            return isPromiseLike(indexed) ? indexed.then(() => event, () => event) : event;
         },
         recent(limit = logIndexLimit(options.config)) {
             return options.database.readRecentLogEvents(limit);
@@ -2641,7 +2664,7 @@ async function migrateLibsqlAppSchema(sqlite, schema) {
     for (const table of schema.tables) {
         const existingTable = existingTables.get(table.name);
         if (schemaChanged && existingTable) {
-            await sqlite.migrateExistingAppTable(existingTable, table);
+            await migrateExistingLibsqlAppTableInTransaction(sqlite, existingTable, table);
         }
         else {
             await sqlite.createAppTable(table);
@@ -2719,6 +2742,11 @@ function migrateExistingAppTable(sqlite, existingTable, nextTable) {
     ]);
 }
 async function migrateExistingLibsqlAppTable(sqlite, existingTable, nextTable) {
+    await sqlite.withTransaction(async (transaction) => {
+        await migrateExistingLibsqlAppTableInTransaction(transaction, existingTable, nextTable);
+    });
+}
+async function migrateExistingLibsqlAppTableInTransaction(sqlite, existingTable, nextTable) {
     for (const field of addedFieldsForTable(existingTable, nextTable)) {
         if (field.kind === "Reference" &&
             field.defaultValue !== undefined &&
@@ -2729,15 +2757,13 @@ async function migrateExistingLibsqlAppTable(sqlite, existingTable, nextTable) {
     }
     const tempTableName = `__sporades_migrating_${nextTable.name}`;
     const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
-    await sqlite.withTransaction(async (transaction) => {
-        await transaction.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`);
-        await transaction.createAppTable(nextTable, tempTableName);
-        await transaction.exec(`INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
-            `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
-            `FROM ${quoteIdentifier(nextTable.name)}`);
-        await transaction.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`);
-        await transaction.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`);
-    });
+    await sqlite.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`);
+    await sqlite.createAppTable(nextTable, tempTableName);
+    await sqlite.exec(`INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
+        `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
+        `FROM ${quoteIdentifier(nextTable.name)}`);
+    await sqlite.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`);
+    await sqlite.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`);
 }
 function columnSelectExpressionForMigration(existingTable, nextTable, columnName) {
     if (["id", "createdAt", "updatedAt"].includes(columnName)) {
@@ -3446,21 +3472,21 @@ export async function createPendingFileUpload(database, auth, message) {
                 error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
             };
         }
-        let target;
-        try {
-            target =
-                replacing && existingByReference && (input.path === undefined || input.path === null)
-                    ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path }
-                    : await resolveFileWriteTarget(database, auth.userId, input, now);
-        }
-        catch (error) {
-            return {
-                ok: false,
-                error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path."),
-            };
-        }
         return await database.sqlite.withTransaction(async (sqlite) => {
             const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+            let target;
+            try {
+                target =
+                    replacing && existingByReference && (input.path === undefined || input.path === null)
+                        ? { bucket: { id: existingByReference.bucketId, name: existingByReference.bucketName }, path: existingByReference.path }
+                        : await resolveFileWriteTarget(transactionDatabase, auth.userId, input, now);
+            }
+            catch (error) {
+                return {
+                    ok: false,
+                    error: createStructuredFileError(error.message, error.hint ?? "Pass a valid absolute File path."),
+                };
+            }
             const existingByPath = target.path ? await singleActiveFileRowByPath(transactionDatabase, target.path) : null;
             if (existingByPath?.ambiguous) {
                 return ambiguousFileReferenceError(target.path);
@@ -3556,21 +3582,26 @@ export async function completePendingFileUpload(database, uploadId, request, web
         await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
         wroteFileVersion = true;
         const now = new Date().toISOString();
-        const completed = await database.sqlite.completeFileUpload(upload, bytes.length, now);
-        if (completed?.changes === 0) {
+        const completion = await database.sqlite.withTransaction(async (sqlite) => {
+            const completed = await sqlite.completeFileUpload(upload, bytes.length, now);
+            if (completed?.changes === 0) {
+                return { ok: false, superseded: true };
+            }
+            await sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
+            return { ok: true, row: await sqlite.selectFileById(upload.fileId) };
+        });
+        if (!completion.ok && completion.superseded) {
             await removeFileVersionBestEffort(database, upload.fileId, upload.version);
-            await database.sqlite.deleteFileUpload(uploadId);
             return {
                 ok: false,
                 data: null,
                 error: createStructuredFileError("Upload URL was superseded.", "Request a fresh upload URL before retrying this file upload."),
             };
         }
-        await database.sqlite.revokePublicFileUrlsForFile(upload.fileId, now);
         if (previousFile && previousFile.deletedAt == null && previousFile.status === "uploaded" && previousFile.version !== upload.version) {
             await removeFileVersionBestEffort(database, previousFile.id, previousFile.version);
         }
-        const file = fileMetadataFromRow(await database.sqlite.selectFileById(upload.fileId));
+        const file = fileMetadataFromRow(completion.row);
         websocketHub?.notifyFileEvent?.(upload.ownerId, {
             type: "file.upload.complete",
             file,
@@ -3621,44 +3652,47 @@ export async function getPrivateFileUrl(database, auth, fileReference) {
     };
 }
 export async function createPublicFileUrl(database, auth, fileReference, options = {}) {
-    const resolved = await resolveLiveFileReference(database, auth.userId, fileReference);
-    if (!resolved.ok) {
-        return resolved;
-    }
-    const row = resolved.row;
-    if (!row) {
-        return {
-            ok: false,
-            error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
-        };
-    }
     const expiry = validatePublicUrlExpiry(options);
     if (!expiry.ok) {
         return expiry;
     }
-    const id = randomUUID();
-    const now = new Date().toISOString();
-    await database.sqlite.insertPublicFileUrl({
-        id,
-        fileId: row.id,
-        ownerId: auth.userId,
-        version: row.version,
-        expiresAt: expiry.expiresAt,
-        createdAt: now,
-    });
-    return {
-        ok: true,
-        data: {
-            publicUrl: {
-                id,
-                fileId: row.id,
-                url: `/__sporades/files/public/${id}?v=${encodeURIComponent(row.version)}`,
-                expiresAt: expiry.expiresAt,
-                revokedAt: null,
+    return await database.sqlite.withTransaction(async (sqlite) => {
+        const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+        const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
+        if (!resolved.ok) {
+            return resolved;
+        }
+        const row = resolved.row;
+        if (!row) {
+            return {
+                ok: false,
+                error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
+            };
+        }
+        const id = randomUUID();
+        const now = new Date().toISOString();
+        await sqlite.insertPublicFileUrl({
+            id,
+            fileId: row.id,
+            ownerId: auth.userId,
+            version: row.version,
+            expiresAt: expiry.expiresAt,
+            createdAt: now,
+        });
+        return {
+            ok: true,
+            data: {
+                publicUrl: {
+                    id,
+                    fileId: row.id,
+                    url: `/__sporades/files/public/${id}?v=${encodeURIComponent(row.version)}`,
+                    expiresAt: expiry.expiresAt,
+                    revokedAt: null,
+                },
             },
-        },
-        error: null,
-    };
+            error: null,
+        };
+    });
 }
 async function revokePublicFileUrl(database, auth, publicUrlId) {
     const now = new Date().toISOString();
@@ -3676,26 +3710,38 @@ async function revokePublicFileUrl(database, auth, publicUrlId) {
     };
 }
 export async function deletePrivateFile(database, auth, fileReference) {
-    const resolved = await resolveLiveFileReference(database, auth.userId, fileReference);
-    if (!resolved.ok) {
-        return resolved;
-    }
-    const row = resolved.row;
-    if (!row) {
-        return {
-            ok: false,
-            error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
-        };
-    }
     const now = new Date().toISOString();
-    await database.sqlite.deleteFileUploadsForFile(auth.userId, row.id);
-    await database.sqlite.deleteFileUploadsForPath(row.path);
-    await database.sqlite.markFileDeleted(row.id, now);
-    await database.sqlite.revokePublicFileUrlsForFile(row.id, now);
-    await removeFileVersionBestEffort(database, row.id, row.version);
+    const result = await database.sqlite.withTransaction(async (sqlite) => {
+        const transactionDatabase = { ...database, sqlite, adapter: sqlite };
+        const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
+        if (!resolved.ok) {
+            return resolved;
+        }
+        const row = resolved.row;
+        if (!row) {
+            return {
+                ok: false,
+                error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user."),
+            };
+        }
+        await sqlite.deleteFileUploadsForFile(auth.userId, row.id);
+        await sqlite.deleteFileUploadsForPath(row.path);
+        await sqlite.markFileDeleted(row.id, now);
+        await sqlite.revokePublicFileUrlsForFile(row.id, now);
+        return {
+            ok: true,
+            data: { file: fileMetadataFromRow({ ...row, deletedAt: now }) },
+            error: null,
+            deletedFile: row,
+        };
+    });
+    if (!result.ok) {
+        return result;
+    }
+    await removeFileVersionBestEffort(database, result.deletedFile.id, result.deletedFile.version);
     return {
         ok: true,
-        data: { file: fileMetadataFromRow({ ...row, deletedAt: now }) },
+        data: result.data,
         error: null,
     };
 }
@@ -3959,31 +4005,55 @@ async function removeFileVersionBestEffort(database, fileId, version) {
 async function runEndpoint(database, endpoint, requestUrl, request) {
     const createHandler = new Function(`return (${endpoint.handlerSource});`);
     const handler = createHandler();
-    const context = await applyContextMiddleware(database, await createEndpointContext(database, requestUrl, request), "endpoint");
-    return handler(context);
+    const endpointRequest = await readEndpointRequest(requestUrl, request);
+    const session = await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
+    return await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
+        const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+        const context = await applyContextMiddleware(transactionDatabase, createEndpointContext(transactionDatabase, endpointRequest, session), "endpoint");
+        try {
+            return await handler(context);
+        }
+        finally {
+            await drainPendingAclWrites(context);
+            transactionDatabase.rowCache.clear();
+        }
+    });
 }
-async function createEndpointContext(database, requestUrl, request) {
+function createTransactionDatabase(database, transactionAdapter) {
+    return transactionAdapter
+        ? { ...database, adapter: transactionAdapter, sqlite: transactionAdapter }
+        : database;
+}
+async function readEndpointRequest(requestUrl, request) {
     const headers = Object.fromEntries(Object.entries(request.headers).map(([name, value]) => [
         name.toLowerCase(),
         Array.isArray(value) ? value.join(", ") : value,
     ]));
     const query = Object.fromEntries(requestUrl.searchParams.entries());
-    const session = await resolveAnonymousSession(database, readEndpointSessionToken(headers, query));
+    return {
+        method: request.method,
+        path: requestUrl.pathname,
+        headers,
+        query,
+        body: await readEndpointBody(request, headers),
+    };
+}
+function createEndpointContext(database, endpointRequest, session) {
     const context = {
         auth: session.auth,
         env: database.serverEnv,
         log: createEndpointLogger(database, {
             request: {
-                method: request.method,
-                path: requestUrl.pathname,
+                method: endpointRequest.method,
+                path: endpointRequest.path,
             },
         }),
         request: {
-            method: request.method,
-            path: requestUrl.pathname,
-            headers,
-            query,
-            body: await readEndpointBody(request, headers),
+            method: endpointRequest.method,
+            path: endpointRequest.path,
+            headers: endpointRequest.headers,
+            query: endpointRequest.query,
+            body: endpointRequest.body,
         },
     };
     const holder = createContextHolder(context);
@@ -4877,45 +4947,47 @@ export async function simulateLocalIdentitySession(database, options = {}) {
     const displayName = normalizeSimulatedText(options.displayName) ?? email;
     const picture = normalizeSimulatedText(options.picture);
     const now = new Date().toISOString();
-    const existing = await database.sqlite.findAuthUserByProviderEmail(provider, email);
-    const userId = existing?.id ?? randomUUID();
     const token = createSessionToken();
-    if (existing) {
-        await database.sqlite.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0 });
-    }
-    else {
-        await database.sqlite.insertAuthUser({
-            id: userId,
-            createdAt: now,
+    return await database.sqlite.withTransaction(async (tx) => {
+        const existing = await tx.findAuthUserByProviderEmail(provider, email);
+        const userId = existing?.id ?? randomUUID();
+        if (existing) {
+            await tx.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0 });
+        }
+        else {
+            await tx.insertAuthUser({
+                id: userId,
+                createdAt: now,
+                displayName,
+                email,
+                picture,
+                isAuthenticated: 1,
+                isGuest: 0,
+                provider,
+            });
+        }
+        await tx.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
+        const auth = {
+            userId,
             displayName,
             email,
             picture,
-            isAuthenticated: 1,
-            isGuest: 0,
+            isAuthenticated: true,
+            isGuest: false,
             provider,
-        });
-    }
-    await database.sqlite.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
-    const auth = {
-        userId,
-        displayName,
-        email,
-        picture,
-        isAuthenticated: true,
-        isGuest: false,
-        provider,
-    };
-    return {
-        ok: true,
-        data: {
-            localStorage: {
-                key: "sporades.sessionToken",
-                value: token,
+        };
+        return {
+            ok: true,
+            data: {
+                localStorage: {
+                    key: "sporades.sessionToken",
+                    value: token,
+                },
+                auth,
             },
-            auth,
-        },
-        error: null,
-    };
+            error: null,
+        };
+    });
 }
 function normalizeSimulatedEmail(value) {
     const email = normalizeSimulatedText(value)?.toLowerCase();
@@ -5556,18 +5628,31 @@ async function linkGoogleAccount(database, session, profile) {
             },
         };
     }
-    const existingUser = await database.sqlite.findAuthUserByProviderEmail("google", profile.email);
-    const auth = {
-        userId: existingUser?.id ?? session.auth.userId,
-        displayName: profile.displayName ?? profile.email,
-        email: profile.email,
-        picture: profile.picture ?? null,
-        isAuthenticated: true,
-        isGuest: false,
-        provider: "google",
-    };
-    if (session.auth.isGuest && existingUser?.id && existingUser.id !== session.auth.userId) {
-        await database.sqlite.linkAuthUser({
+    return await database.sqlite.withTransaction(async (tx) => {
+        const existingUser = await tx.findAuthUserByProviderEmail("google", profile.email);
+        const auth = {
+            userId: existingUser?.id ?? session.auth.userId,
+            displayName: profile.displayName ?? profile.email,
+            email: profile.email,
+            picture: profile.picture ?? null,
+            isAuthenticated: true,
+            isGuest: false,
+            provider: "google",
+        };
+        if (session.auth.isGuest && existingUser?.id && existingUser.id !== session.auth.userId) {
+            await tx.linkAuthUser({
+                id: auth.userId,
+                displayName: auth.displayName,
+                email: auth.email,
+                picture: auth.picture,
+                isAuthenticated: 1,
+                isGuest: 0,
+                provider: "google",
+            });
+            await moveSessionToUserOnAdapter(database, tx, session, auth.userId);
+            return { ok: true, auth };
+        }
+        await tx.linkAuthUser({
             id: auth.userId,
             displayName: auth.displayName,
             email: auth.email,
@@ -5576,20 +5661,9 @@ async function linkGoogleAccount(database, session, profile) {
             isGuest: 0,
             provider: "google",
         });
-        await moveSessionToUser(database, session, auth.userId);
+        await refreshSessionOnAdapter(tx, session.token);
         return { ok: true, auth };
-    }
-    await database.sqlite.linkAuthUser({
-        id: auth.userId,
-        displayName: auth.displayName,
-        email: auth.email,
-        picture: auth.picture,
-        isAuthenticated: 1,
-        isGuest: 0,
-        provider: "google",
     });
-    await refreshSession(database, session.token);
-    return { ok: true, auth };
 }
 function writeRedirect(response, location) {
     response.writeHead(302, { location });
@@ -5632,25 +5706,27 @@ export async function signUpWithEmail(database, session, provider, credentials) 
         isGuest: false,
         provider: "email",
     };
-    await database.sqlite.insertEmailCredential({
-        email: normalized.email,
-        userId: auth.userId,
-        passwordHash: password.hash,
-        passwordSalt: password.salt,
-        createdAt: new Date().toISOString(),
+    return await database.sqlite.withTransaction(async (tx) => {
+        await tx.insertEmailCredential({
+            email: normalized.email,
+            userId: auth.userId,
+            passwordHash: password.hash,
+            passwordSalt: password.salt,
+            createdAt: new Date().toISOString(),
+        });
+        await tx.linkAuthUser({
+            id: auth.userId,
+            displayName: auth.displayName,
+            email: auth.email,
+            picture: auth.picture,
+            isAuthenticated: 1,
+            isGuest: 0,
+            provider: "email",
+        });
+        return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId), auth };
     });
-    await database.sqlite.linkAuthUser({
-        id: auth.userId,
-        displayName: auth.displayName,
-        email: auth.email,
-        picture: auth.picture,
-        isAuthenticated: 1,
-        isGuest: 0,
-        provider: "email",
-    });
-    return { ok: true, sessionToken: await rotateSession(database, session, auth.userId), auth };
 }
-async function signInWithEmail(database, session, credentials) {
+export async function signInWithEmail(database, session, credentials) {
     if (!database.authConfig.providers.email.enabled) {
         return { ok: false, error: emailAuthDisabledError() };
     }
@@ -5677,7 +5753,11 @@ async function signInWithEmail(database, session, credentials) {
         isGuest: Boolean(row.isGuest),
         provider: row.provider,
     };
-    return { ok: true, sessionToken: await rotateSession(database, session, auth.userId), auth };
+    return await database.sqlite.withTransaction(async (tx) => ({
+        ok: true,
+        sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId),
+        auth,
+    }));
 }
 function normalizeEmailCredentials(credentials) {
     const email = String(credentials.email ?? "").trim().toLowerCase();
@@ -5862,33 +5942,42 @@ function createSessionToken() {
     return randomBytes(32).toString("base64url");
 }
 async function refreshSession(database, token) {
+    return await refreshSessionOnAdapter(database.sqlite, token);
+}
+async function refreshSessionOnAdapter(sqlite, token) {
     const now = new Date().toISOString();
     const expiresAt = sessionExpiresAt(now);
-    await database.sqlite.refreshAuthSession(token, expiresAt);
+    await sqlite.refreshAuthSession(token, expiresAt);
     return expiresAt;
 }
 async function rotateSession(database, session, userId) {
+    return await database.sqlite.withTransaction(async (tx) => rotateSessionOnAdapter(database, tx, session, userId));
+}
+async function rotateSessionOnAdapter(database, sqlite, session, userId) {
     const now = new Date().toISOString();
     const token = createSessionToken();
-    await migrateAnonymousPreferences(database, session.auth, userId);
-    await database.sqlite.rotateAuthSession(session.token, { token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
+    await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
+    await sqlite.rotateAuthSession(session.token, { token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
     return token;
 }
 async function moveSessionToUser(database, session, userId) {
+    return await database.sqlite.withTransaction(async (tx) => moveSessionToUserOnAdapter(database, tx, session, userId));
+}
+async function moveSessionToUserOnAdapter(database, sqlite, session, userId) {
     const now = new Date().toISOString();
-    await migrateAnonymousPreferences(database, session.auth, userId);
-    await database.sqlite.rotateAuthSession(session.token, {
+    await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
+    await sqlite.rotateAuthSession(session.token, {
         token: session.token,
         userId,
         createdAt: now,
         expiresAt: sessionExpiresAt(now),
     });
 }
-async function migrateAnonymousPreferences(database, auth, targetUserId) {
+async function migrateAnonymousPreferences(database, auth, targetUserId, sqlite = null) {
     if (!auth?.isGuest || auth.userId === targetUserId) {
         return;
     }
-    await database.sqlite.withTransaction(async (tx) => {
+    const migrate = async (tx) => {
         const sourceRow = await tx.readUserPreferences(auth.userId);
         if (!sourceRow) {
             return;
@@ -5903,7 +5992,12 @@ async function migrateAnonymousPreferences(database, auth, targetUserId) {
             value: JSON.stringify(next),
             updatedAt: new Date().toISOString(),
         });
-    });
+    };
+    if (sqlite) {
+        await migrate(sqlite);
+        return;
+    }
+    await database.sqlite.withTransaction(migrate);
 }
 export async function resolveAnonymousSession(database, sessionToken) {
     if (sessionToken) {
@@ -5920,17 +6014,19 @@ export async function resolveAnonymousSession(database, sessionToken) {
     const now = new Date().toISOString();
     const userId = randomUUID();
     const token = createSessionToken();
-    await database.sqlite.insertAuthUser({
-        id: userId,
-        createdAt: now,
-        displayName: "Anonymous",
-        email: null,
-        picture: null,
-        isAuthenticated: 0,
-        isGuest: 1,
-        provider: "anonymous",
+    await database.sqlite.withTransaction(async (tx) => {
+        await tx.insertAuthUser({
+            id: userId,
+            createdAt: now,
+            displayName: "Anonymous",
+            email: null,
+            picture: null,
+            isAuthenticated: 0,
+            isGuest: 1,
+            provider: "anonymous",
+        });
+        await tx.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
     });
-    await database.sqlite.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
     return {
         token,
         auth: {
@@ -5968,7 +6064,7 @@ async function readCurrentUserPreferences(database, auth) {
         error: null,
     };
 }
-async function updateCurrentUserPreferences(database, auth, patch) {
+export async function updateCurrentUserPreferences(database, auth, patch) {
     try {
         const normalizedPatch = normalizePreferencesPatch(patch);
         const preferences = await database.sqlite.withTransaction(async (tx) => {
@@ -6173,7 +6269,7 @@ export async function runMutation(database, auth, mutationName, args) {
                 : database;
             context = await applyContextMiddleware(transactionDatabase, createMutationContext(transactionDatabase, auth), "mutation");
             for (const hookSource of database.mutationHooks.beforeMutation) {
-                await runMutationHook(hookSource, { name: mutationName, args, ctx: context });
+                await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
             }
             result = await runCustomMutation(transactionDatabase, context, mutationName, args);
             if (!result) {
@@ -6184,7 +6280,7 @@ export async function runMutation(database, auth, mutationName, args) {
             await drainPendingAclWrites(context);
             if (result.ok) {
                 for (const hookSource of database.mutationHooks.afterMutation) {
-                    await runMutationHook(hookSource, { name: mutationName, args, ctx: context, result });
+                    await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context, result }, context);
                 }
                 await drainPendingAclWrites(context);
             }
@@ -6259,13 +6355,23 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
         if (data !== undefined) {
             assertJsonCompatible(data);
         }
-        const context = await applyContextMiddleware(database, createMessageContext(database, auth, options.sendAppMessage), "message");
         const createHandler = new Function(`return (${handler.handlerSource});`);
-        const result = await createHandler()(context, data);
-        if (result !== undefined) {
-            assertJsonCompatible(result);
-        }
-        return { data: result ?? null, error: null };
+        return await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
+            const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+            const context = await applyContextMiddleware(transactionDatabase, createMessageContext(transactionDatabase, auth, options.sendAppMessage), "message");
+            let result;
+            try {
+                result = await createHandler()(context, data);
+            }
+            finally {
+                await drainPendingAclWrites(context);
+                transactionDatabase.rowCache.clear();
+            }
+            if (result !== undefined) {
+                assertJsonCompatible(result);
+            }
+            return { data: result ?? null, error: null };
+        });
     }
     catch (error) {
         if (error?.sporadesAuthDenialLogData) {
@@ -6317,6 +6423,14 @@ async function runMutationHook(hookSource, event) {
     const hook = createHook();
     return await hook(event);
 }
+async function runMutationHookAndDrainPendingAclWrites(hookSource, event, context) {
+    try {
+        return await runMutationHook(hookSource, event);
+    }
+    finally {
+        await drainPendingAclWrites(context);
+    }
+}
 function createMutationContext(database, auth) {
     const context = {
         auth,
@@ -6329,9 +6443,18 @@ function createMutationContext(database, auth) {
     return context;
 }
 async function drainPendingAclWrites(context) {
+    let firstError = null;
     while (context?.__pendingAclWrites?.length > 0) {
         const pending = context.__pendingAclWrites.splice(0);
-        await Promise.all(pending);
+        const results = await Promise.allSettled(pending);
+        for (const result of results) {
+            if (result.status === "rejected" && !firstError) {
+                firstError = result.reason;
+            }
+        }
+    }
+    if (firstError) {
+        throw firstError;
     }
 }
 function createHookErrorResult(error) {

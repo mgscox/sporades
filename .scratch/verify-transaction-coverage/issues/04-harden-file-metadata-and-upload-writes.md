@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Harden File Metadata And Upload Writes
 
@@ -20,14 +20,14 @@ metadata/version as the live state.
 
 ## Acceptance criteria
 
-- [ ] Pending upload creation remains atomic for path lock, stale pending upload cleanup, and pending upload insertion.
-- [ ] Upload completion does not leave inconsistent file metadata when completion, public URL revocation, or supersession handling fails.
-- [ ] Failed upload completion after byte write removes the newly written File version bytes where possible and leaves the previous File metadata/version unchanged.
-- [ ] Public URL creation, public URL revocation, and file deletion have explicit transaction or intentional single-statement classification.
-- [ ] Public file URL creation is atomic across file ownership/live-version validation and URL record creation, either through one transaction or one conditional database statement.
-- [ ] File deletion marks File metadata deleted and revokes Public file URLs as one database outcome; physical byte removal is not required for deletion to be visible.
-- [ ] File-byte side effects that cannot share a database transaction have tested compensating cleanup behavior.
-- [ ] Tests cover at least one failure path where database metadata and file-storage side effects could otherwise diverge.
+- [x] Pending upload creation remains atomic for path lock, stale pending upload cleanup, and pending upload insertion.
+- [x] Upload completion does not leave inconsistent file metadata when completion, public URL revocation, or supersession handling fails.
+- [x] Failed upload completion after byte write removes the newly written File version bytes where possible and leaves the previous File metadata/version unchanged.
+- [x] Public URL creation, public URL revocation, and file deletion have explicit transaction or intentional single-statement classification.
+- [x] Public file URL creation is atomic across file ownership/live-version validation and URL record creation, either through one transaction or one conditional database statement.
+- [x] File deletion marks File metadata deleted and revokes Public file URLs as one database outcome; physical byte removal is not required for deletion to be visible.
+- [x] File-byte side effects that cannot share a database transaction have tested compensating cleanup behavior.
+- [x] Tests cover at least one failure path where database metadata and file-storage side effects could otherwise diverge.
 
 ## Blocked by
 

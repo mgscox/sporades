@@ -23,10 +23,15 @@ import {
   listDatabaseTables,
   openDevDatabase,
   resolveAnonymousSession,
+  routeSporadesAuth,
   runMutation,
   runQuery,
   runReadOnlyQuery,
+  SERVER_RUNTIME_SOURCE_FUNCTIONS,
+  signInWithEmail,
   signUpWithEmail,
+  simulateLocalIdentitySession,
+  updateCurrentUserPreferences,
 } from "../dist/server-runtime-source.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
@@ -39,6 +44,8 @@ async function withTempDir(fn) {
     await rm(dir, { recursive: true, force: true });
   }
 }
+
+const createRuntimeLogSink = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createRuntimeLogSink");
 
 test("SQLite database adapter owns setup, query execution, and close lifecycle", async () => {
   await withTempDir(async (dir) => {
@@ -549,6 +556,151 @@ test("runtime file operations accept absolute File paths and File references", a
   });
 });
 
+test("file upload completion cleans written replacement bytes when metadata completion fails", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      files: { storagePath: path.join(dir, "files") },
+    });
+    const auth = { userId: "user-1", displayName: "Ada", isAuthenticated: false, isGuest: true, provider: "anonymous" };
+    const storedBytes = new Map();
+    const deletedVersions = [];
+    database.fileStorage = {
+      engine: "spy",
+      async writeFileVersion({ fileId, version, bytes }) {
+        storedBytes.set(`${fileId}:${version}`, Buffer.from(bytes).toString("utf8"));
+      },
+      async readFileVersion({ fileId, version }) {
+        const bytes = storedBytes.get(`${fileId}:${version}`);
+        if (!bytes) {
+          const error = new Error("missing spy bytes");
+          error.code = "ENOENT";
+          throw error;
+        }
+        return Buffer.from(bytes);
+      },
+      async deleteFileVersion({ fileId, version }) {
+        deletedVersions.push({ fileId, version });
+        storedBytes.delete(`${fileId}:${version}`);
+      },
+      async checkHealth() {
+        return { ok: true, adapter: "spy" };
+      },
+      close() {},
+    };
+
+    const uploadAndComplete = async (file, body) => {
+      const pending = await createPendingFileUpload(database, auth, { file });
+      assert.equal(pending.ok, true, pending.error?.message);
+      const uploadId = pending.data.uploadUrl.split("/").pop();
+      const completed = await completePendingFileUpload(database, uploadId, Readable.from([Buffer.from(body)]));
+      assert.equal(completed.ok, true, completed.error?.message);
+      return completed.data.file;
+    };
+
+    try {
+      const original = await uploadAndComplete(
+        { name: "avatar.png", type: "image/png", size: 8, path: "/images/avatar.png" },
+        "original",
+      );
+      const originalKey = `${original.id}:${original.version}`;
+      assert.equal(storedBytes.get(originalKey), "original");
+
+      const pendingReplacement = await createPendingFileUpload(database, auth, {
+        file: { name: "avatar.png", type: "image/png", size: 11, path: "/images/avatar.png" },
+      });
+      assert.equal(pendingReplacement.ok, true, pendingReplacement.error?.message);
+      const replacement = pendingReplacement.data.file;
+      const replacementUploadId = pendingReplacement.data.uploadUrl.split("/").pop();
+      const realRevokePublicFileUrlsForFile = database.sqlite.revokePublicFileUrlsForFile.bind(database.sqlite);
+      database.sqlite.revokePublicFileUrlsForFile = async (...args) => {
+        await realRevokePublicFileUrlsForFile(...args);
+        throw new Error("forced public URL revocation failure");
+      };
+
+      const failed = await completePendingFileUpload(database, replacementUploadId, Readable.from([Buffer.from("replacement")]));
+      assert.equal(failed.ok, false);
+      assert.match(failed.error.message, /forced public URL revocation failure/);
+
+      const live = await getPrivateFileUrl(database, auth, "/images/avatar.png");
+      assert.equal(live.ok, true);
+      assert.equal(live.data.file.id, original.id);
+      assert.equal(live.data.file.version, original.version);
+      assert.equal(storedBytes.get(originalKey), "original");
+      assert.equal(storedBytes.has(`${replacement.id}:${replacement.version}`), false);
+      assert.deepEqual(deletedVersions, [{ fileId: replacement.id, version: replacement.version }]);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("pending upload creation rolls back File bucket setup when upload insertion fails", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      files: { storagePath: path.join(dir, "files") },
+    });
+    const auth = { userId: "user-1", displayName: "Ada", isAuthenticated: false, isGuest: true, provider: "anonymous" };
+    const realInsertFileUpload = database.sqlite.insertFileUpload.bind(database.sqlite);
+    database.sqlite.insertFileUpload = async (...args) => {
+      await realInsertFileUpload(...args);
+      throw new Error("forced pending upload insert failure");
+    };
+
+    try {
+      await assert.rejects(
+        createPendingFileUpload(database, auth, {
+          file: { name: "proof.txt", type: "text/plain", size: 5, path: "/media/proof.txt" },
+        }),
+        /forced pending upload insert failure/,
+      );
+      assert.equal(await database.sqlite.findFileBucket(auth.userId, "default"), null);
+      assert.equal(await database.sqlite.selectPendingFileUploadByPath("/media/proof.txt"), null);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("file deletion rolls back metadata deletion when public URL revocation fails", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      files: { storagePath: path.join(dir, "files") },
+    });
+    const auth = { userId: "user-1", displayName: "Ada", isAuthenticated: false, isGuest: true, provider: "anonymous" };
+    const uploadAndComplete = async (file, body) => {
+      const pending = await createPendingFileUpload(database, auth, { file });
+      assert.equal(pending.ok, true, pending.error?.message);
+      const uploadId = pending.data.uploadUrl.split("/").pop();
+      const completed = await completePendingFileUpload(database, uploadId, Readable.from([Buffer.from(body)]));
+      assert.equal(completed.ok, true, completed.error?.message);
+      return completed.data.file;
+    };
+
+    try {
+      const file = await uploadAndComplete(
+        { name: "avatar.png", type: "image/png", size: 8, path: "/images/avatar.png" },
+        "original",
+      );
+      const publicUrl = await createPublicFileUrl(database, auth, file.id, { noExpiry: true });
+      assert.equal(publicUrl.ok, true, publicUrl.error?.message);
+      const realRevokePublicFileUrlsForFile = database.sqlite.revokePublicFileUrlsForFile.bind(database.sqlite);
+      database.sqlite.revokePublicFileUrlsForFile = async (...args) => {
+        await realRevokePublicFileUrlsForFile(...args);
+        throw new Error("forced public URL revocation failure");
+      };
+
+      await assert.rejects(deletePrivateFile(database, auth, file.id), /forced public URL revocation failure/);
+
+      const live = await getPrivateFileUrl(database, auth, file.id);
+      assert.equal(live.ok, true);
+      assert.equal(live.data.file.version, file.version);
+      assert.equal((await database.sqlite.selectPublicFileRow(publicUrl.data.publicUrl.id)).revokedAt, null);
+    } finally {
+      database.close();
+    }
+  });
+});
+
 test("libSQL database adapter owns remote connection, result normalization, and transaction sessions", async () => {
   await withTempDir(async (dir) => {
     await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url, requests }) => {
@@ -714,6 +866,50 @@ test("libSQL app schema migrations await delayed table creation failures before 
         }
       },
     );
+  });
+});
+
+test("SQLite app schema migrations roll back table changes when metadata write fails", async () => {
+  await withTempDir(async (dir) => {
+    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "schema-rollback.db"));
+    try {
+      const notesTable = {
+        name: "notes",
+        fields: [{ name: "text", kind: "String", sqliteType: "TEXT" }],
+      };
+      const migratedNotesTable = {
+        ...notesTable,
+        fields: [...notesTable.fields, { name: "summary", kind: "String", sqliteType: "TEXT", defaultValue: "draft" }],
+      };
+
+      adapter.ensureSystemTable();
+      adapter.migrateAppSchema({ tables: [notesTable] });
+      adapter.insertAppRow(notesTable, {
+        id: "note-1",
+        createdAt: "2026-07-07T10:00:00.000Z",
+        updatedAt: "2026-07-07T10:00:00.000Z",
+        text: "before",
+      });
+
+      const originalWriteSchemaMetadata = adapter.writeSchemaMetadata.bind(adapter);
+      adapter.writeSchemaMetadata = () => {
+        throw new Error("schema metadata write failed");
+      };
+
+      assert.throws(() => adapter.migrateAppSchema({ tables: [migratedNotesTable] }), /schema metadata write failed/);
+
+      adapter.writeSchemaMetadata = originalWriteSchemaMetadata;
+      assert.deepEqual(
+        adapter.prepare("PRAGMA table_info(notes)").all().map((column) => column.name),
+        ["id", "createdAt", "updatedAt", "text"],
+      );
+      assert.equal(adapter.readSchemaMetadata().value.includes("summary"), false);
+      assert.deepEqual(adapter.selectAppRows(notesTable, { columns: ["id", "text"] }).map((row) => ({ ...row })), [
+        { id: "note-1", text: "before" },
+      ]);
+    } finally {
+      adapter.close();
+    }
   });
 });
 
@@ -1291,6 +1487,43 @@ test("SQLite database adapter owns runtime storage for auth, files, logs, and sy
   });
 });
 
+test("Log index failures degrade inspection without failing the emitted workflow", async () => {
+  await withTempDir(async (dir) => {
+    assert.equal(typeof createRuntimeLogSink, "function");
+    const database = {
+      insertLogIndexEvent() {
+        throw new Error("index unavailable");
+      },
+      pruneLogIndex() {
+        throw new Error("prune unavailable");
+      },
+      readRecentLogEvents() {
+        return [];
+      },
+    };
+    const sink = createRuntimeLogSink({
+      database,
+      config: { name: "log-index-island", logs: { maxIndexEntries: 1 } },
+      serverEnv: {},
+      dataDir: dir,
+    });
+
+    const event = sink.emit({
+      category: "app",
+      event: "ctx.log",
+      level: "info",
+      message: "jsonl survives index failure",
+    });
+
+    assert.equal(event.message, "jsonl survives index failure");
+    assert.deepEqual(sink.recent(10), []);
+    assert.deepEqual(
+      sink.tail(10).map((entry) => entry.message),
+      ["jsonl survives index failure"],
+    );
+  });
+});
+
 test("SQLite database adapter owns transactions for successful and failing mutations", async () => {
   await withTempDir(async (dir) => {
     const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
@@ -1531,6 +1764,284 @@ test("runtime database paths await promise-returning adapter operations", async 
   });
 });
 
+test("anonymous session creation rolls back the auth user when session insertion fails", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true } },
+    });
+    const baseAdapter = database.sqlite;
+    database.sqlite = failRuntimeWriteAfter(baseAdapter, "insertAuthSession", new Error("insert session exploded"));
+    database.adapter = database.sqlite;
+    database.close = () => baseAdapter.close();
+
+    try {
+      await assert.rejects(() => resolveAnonymousSession(database, null), /insert session exploded/);
+      assert.equal(
+        baseAdapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_users").get().count,
+        0,
+      );
+      assert.equal(
+        baseAdapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_sessions").get().count,
+        0,
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("email sign-up rolls back credentials and linked auth state when linking fails", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true, email: { enabled: true } } },
+    });
+    const baseAdapter = database.sqlite;
+
+    try {
+      const session = await resolveAnonymousSession(database, null);
+      database.sqlite = failRuntimeWriteAfter(baseAdapter, "linkAuthUser", new Error("link user exploded"));
+      database.adapter = database.sqlite;
+
+      await assert.rejects(
+        () =>
+          signUpWithEmail(database, session, "email", {
+            email: "ada@example.com",
+            password: "correct horse battery staple",
+            name: "Ada",
+          }),
+        /link user exploded/,
+      );
+
+      assert.equal(baseAdapter.emailCredentialExists("ada@example.com"), false);
+      const preservedSession = baseAdapter.readAuthSessionWithUser(session.token);
+      assert.equal(preservedSession.provider, "anonymous");
+      assert.equal(preservedSession.isGuest, 1);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("failed email sign-in rotation keeps the old Anonymous session token valid", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true, email: { enabled: true } } },
+    });
+    const baseAdapter = database.sqlite;
+
+    try {
+      const signUpSession = await resolveAnonymousSession(database, null);
+      const signUp = await signUpWithEmail(database, signUpSession, "email", {
+        email: "ada@example.com",
+        password: "correct horse battery staple",
+        name: "Ada",
+      });
+      assert.equal(signUp.ok, true);
+
+      const anonymousSession = await resolveAnonymousSession(database, null);
+      database.sqlite = failRuntimeWriteAfter(baseAdapter, "rotateAuthSession", new Error("rotate session exploded"));
+      database.adapter = database.sqlite;
+
+      await assert.rejects(
+        () =>
+          signInWithEmail(database, anonymousSession, {
+            email: "ada@example.com",
+            password: "correct horse battery staple",
+          }),
+        /rotate session exploded/,
+      );
+
+      const preservedSession = baseAdapter.readAuthSessionWithUser(anonymousSession.token);
+      assert.equal(preservedSession.provider, "anonymous");
+      assert.equal(preservedSession.userId, anonymousSession.auth.userId);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("OAuth provider linking rolls back auth state when session refresh fails", async () => {
+  await withTempDir(async (dir) => {
+    const originalFetch = globalThis.fetch;
+    const database = await openDevDatabase(
+      path.join(dir, "data.db"),
+      "",
+      { GOOGLE_CLIENT_ID: "client-id", GOOGLE_CLIENT_SECRET: "client-secret" },
+      {
+        auth: {
+          providers: {
+            anonymous: true,
+            google: {
+              enabled: true,
+              clientIdEnv: "GOOGLE_CLIENT_ID",
+              clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+            },
+          },
+        },
+      },
+    );
+    const baseAdapter = database.sqlite;
+
+    try {
+      const session = await resolveAnonymousSession(database, null);
+      await baseAdapter.insertOAuthState({
+        state: "link-state",
+        sessionToken: session.token,
+        returnTo: "http://127.0.0.1/app",
+        redirectUri: "http://127.0.0.1/__sporades/auth/google/callback",
+        createdAt: new Date().toISOString(),
+      });
+      globalThis.fetch = async (url) => {
+        if (String(url).includes("token")) {
+          return new Response(JSON.stringify({ access_token: "access-token" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            email: "ada@example.com",
+            name: "Ada",
+            picture: "https://example.com/ada.png",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      };
+      database.sqlite = failRuntimeWriteAfter(baseAdapter, "refreshAuthSession", new Error("refresh session exploded"));
+      database.adapter = database.sqlite;
+
+      const response = createResponseRecorder();
+      await routeSporadesAuth(
+        database,
+        { method: "GET", url: "/__sporades/auth/google/callback?state=link-state&code=good-code" },
+        response,
+      );
+
+      assert.equal(response.statusCode, 500);
+      const preservedSession = baseAdapter.readAuthSessionWithUser(session.token);
+      assert.equal(preservedSession.provider, "anonymous");
+      assert.equal(preservedSession.isGuest, 1);
+      assert.equal(baseAdapter.findAuthUserByProviderEmail("google", "ada@example.com"), null);
+      assert.equal(baseAdapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get("link-state"), undefined);
+    } finally {
+      globalThis.fetch = originalFetch;
+      database.close();
+    }
+  });
+});
+
+test("local identity simulation rolls back the auth user when session insertion fails", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true, email: { enabled: true } } },
+    });
+    const baseAdapter = database.sqlite;
+    database.sqlite = failRuntimeWriteAfter(baseAdapter, "insertAuthSession", new Error("insert simulated session exploded"));
+    database.adapter = database.sqlite;
+    database.close = () => baseAdapter.close();
+
+    try {
+      await assert.rejects(
+        () =>
+          simulateLocalIdentitySession(database, {
+            provider: "email",
+            email: "local@example.com",
+            displayName: "Local User",
+          }),
+        /insert simulated session exploded/,
+      );
+      assert.equal(baseAdapter.findAuthUserByProviderEmail("email", "local@example.com"), null);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("OAuth callback spends state when downstream code exchange fails", async () => {
+  await withTempDir(async (dir) => {
+    const originalFetch = globalThis.fetch;
+    const database = await openDevDatabase(
+      path.join(dir, "data.db"),
+      "",
+      { GOOGLE_CLIENT_ID: "client-id", GOOGLE_CLIENT_SECRET: "client-secret" },
+      {
+        auth: {
+          providers: {
+            anonymous: true,
+            google: {
+              enabled: true,
+              clientIdEnv: "GOOGLE_CLIENT_ID",
+              clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+            },
+          },
+        },
+      },
+    );
+
+    try {
+      const session = await resolveAnonymousSession(database, null);
+      await database.sqlite.insertOAuthState({
+        state: "oauth-state",
+        sessionToken: session.token,
+        returnTo: "http://127.0.0.1/app",
+        redirectUri: "http://127.0.0.1/__sporades/auth/google/callback",
+        createdAt: new Date().toISOString(),
+      });
+      globalThis.fetch = async () =>
+        new Response(JSON.stringify({ error: "invalid_grant" }), {
+          status: 400,
+          headers: { "content-type": "application/json" },
+        });
+
+      const response = createResponseRecorder();
+      const handled = await routeSporadesAuth(
+        database,
+        { method: "GET", url: "/__sporades/auth/google/callback?state=oauth-state&code=bad-code" },
+        response,
+      );
+
+      assert.equal(handled, true);
+      assert.equal(
+        database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get("oauth-state"),
+        undefined,
+      );
+      assert.equal(response.statusCode, 500);
+    } finally {
+      globalThis.fetch = originalFetch;
+      database.close();
+    }
+  });
+});
+
+test("current-user preference updates roll back failed saves", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true } },
+    });
+    const baseAdapter = database.sqlite;
+
+    try {
+      const session = await resolveAnonymousSession(database, null);
+      assert.deepEqual(await updateCurrentUserPreferences(database, session.auth, { theme: "dark" }), {
+        ok: true,
+        data: { preferences: { theme: "dark" } },
+        changes: { theme: "dark" },
+        error: null,
+      });
+
+      database.sqlite = failRuntimeWriteAfter(baseAdapter, "saveUserPreferences", new Error("save preferences exploded"));
+      database.adapter = database.sqlite;
+      const failed = await updateCurrentUserPreferences(database, session.auth, { density: "compact" });
+      assert.equal(failed.ok, false);
+      assert.equal(failed.error.code, "PREFERENCES_UPDATE_FAILED");
+
+      assert.deepEqual(JSON.parse(baseAdapter.readUserPreferences(session.auth.userId).value), { theme: "dark" });
+    } finally {
+      database.close();
+    }
+  });
+});
+
 function wrapAsyncRuntimeAdapter(adapter) {
   const asyncMethods = new Set([
     "ensureSystemTable",
@@ -1600,4 +2111,49 @@ function wrapAsyncRuntimeAdapter(adapter) {
       return async (...args) => await value.apply(target, args);
     },
   });
+}
+
+function createResponseRecorder() {
+  return {
+    statusCode: null,
+    headers: null,
+    body: "",
+    writeHead(statusCode, headers) {
+      this.statusCode = statusCode;
+      this.headers = headers;
+    },
+    end(chunk = "") {
+      this.body += chunk;
+    },
+  };
+}
+
+function failRuntimeWriteAfter(adapter, methodName, error) {
+  let armed = true;
+  const wrap = (target) =>
+    new Proxy(target, {
+      get(currentTarget, property, receiver) {
+        if (property === "withTransaction") {
+          return async (fn) => {
+            const withTransaction = Reflect.get(currentTarget, property, receiver);
+            return await withTransaction.call(currentTarget, async (transactionAdapter) => {
+              return await fn(wrap(transactionAdapter));
+            });
+          };
+        }
+        const value = Reflect.get(currentTarget, property, receiver);
+        if (property !== methodName || typeof value !== "function") {
+          return value;
+        }
+        return async (...args) => {
+          const result = await value.apply(currentTarget, args);
+          if (armed) {
+            armed = false;
+            throw error;
+          }
+          return result;
+        };
+      },
+    });
+  return wrap(adapter);
 }

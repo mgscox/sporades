@@ -1125,6 +1125,81 @@ export default capsule({
   });
 });
 
+test("sporades dev rolls back multi-write Custom endpoint app-table failures", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "endpoint-rollback-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "endpoint-rollback-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint, String, table } from "sporades/server";
+
+export default capsule({
+  name: "endpoint-rollback-island",
+
+  schema: {
+    notes: table({
+      text: String(),
+      ownerId: String(),
+    }),
+  },
+
+  endpoints: {
+    record: endpoint({ method: "POST", path: "/record" }, (ctx) => {
+      ctx.db.notes.insert({ text: ctx.request.body.text + ":committed", ownerId: ctx.auth.userId });
+      return { status: 200, body: { ok: true } };
+    }),
+    explode: endpoint({ method: "POST", path: "/explode" }, (ctx) => {
+      ctx.db.notes.insert({ text: ctx.request.body.text + ":first", ownerId: ctx.auth.userId });
+      ctx.db.notes.insert({ text: ctx.request.body.text + ":second", ownerId: ctx.auth.userId });
+      throw new Error("Endpoint write failed.");
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      const committedResponse = await fetch(`${started.data.url}/record`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "before" }),
+      });
+      assert.equal(committedResponse.status, 200);
+
+      const failedResponse = await fetch(`${started.data.url}/explode`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ text: "rollback" }),
+      });
+      assert.equal(failedResponse.status, 500);
+
+      const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
+      assert.equal(dumpResult.code, 0, dumpResult.stderr);
+      const tables = JSON.parse(dumpResult.stdout).data.tables;
+      assert.deepEqual(
+        tables.find((table) => table.name === "notes").rows.map((row) => row.text),
+        ["before:committed"],
+      );
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev applies default security headers and local-only CORS", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "secure-dev-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -5992,6 +6067,91 @@ export default capsule({
   });
 });
 
+test("sporades dev rolls back multi-write App message app-table failures", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "message-rollback-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "message-rollback-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, message, String, table } from "sporades/server";
+
+export default capsule({
+  name: "message-rollback-island",
+
+  schema: {
+    notes: table({
+      text: String(),
+      ownerId: String(),
+    }),
+  },
+
+  messages: {
+    record: message((ctx, data) => {
+      ctx.db.notes.insert({ text: data.text + ":committed", ownerId: ctx.auth.userId });
+      return { ok: true };
+    }),
+    explode: message((ctx, data) => {
+      ctx.db.notes.insert({ text: data.text + ":first", ownerId: ctx.auth.userId });
+      ctx.db.notes.insert({ text: data.text + ":second", ownerId: ctx.auth.userId });
+      throw new Error("Message write failed.");
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      socket = await openSocket(started.data.url);
+
+      socket.send(JSON.stringify({ id: "record", type: "app.send", message: "record", data: { text: "before" } }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "record",
+        type: "app.result",
+        message: "record",
+        data: { ok: true },
+        error: null,
+      });
+
+      socket.send(JSON.stringify({ id: "explode", type: "app.send", message: "explode", data: { text: "rollback" } }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "explode",
+        type: "app.result",
+        message: "explode",
+        data: null,
+        error: {
+          message: "Message write failed.",
+          hint: "Check the Capsule message handler and retry the app message.",
+        },
+      });
+
+      const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
+      assert.equal(dumpResult.code, 0, dumpResult.stderr);
+      const tables = JSON.parse(dumpResult.stdout).data.tables;
+      assert.deepEqual(
+        tables.find((table) => table.name === "notes").rows.map((row) => row.text),
+        ["before:committed"],
+      );
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev awaits async app message handlers before sending app results", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "async-message-island", "--no-install", "--no-git", "--json"], {
@@ -6518,6 +6678,217 @@ export default capsule({
         tables.find((table) => table.name === "auditLogs").rows.map((row) => row.text),
         ["hooked:addTodo:allowed:true"],
       );
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev rolls back mutation, hook, and pending ACL writes together", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "rollback-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "rollback-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: "rollback-island",
+
+  schema: {
+    todos: table({
+      text: String(),
+      ownerId: String(),
+    }),
+    auditLogs: table({
+      text: String(),
+      ownerId: String(),
+    }).acl({
+      insert: async ({ next }) => {
+        if (next.text === "deny-fast") {
+          return false;
+        }
+        if (next.text === "allow-slow") {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          return true;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        return next.text !== "denied-pending";
+      },
+    }),
+  },
+
+  queries: {
+    todos: query((ctx) =>
+      ctx.db.todos
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "asc")
+        .all()
+    ),
+    auditLogs: query((ctx) =>
+      ctx.db.auditLogs
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "asc")
+        .all()
+    ),
+  },
+
+  mutations: {
+    addTodo: mutation((ctx, text: string) => {
+      ctx.db.todos.insert({ text, ownerId: ctx.auth.userId });
+    }),
+    addThenFail: mutation((ctx) => {
+      ctx.db.todos.insert({ text: "custom-partial", ownerId: ctx.auth.userId });
+      throw Object.assign(new Error("Custom mutation failed."), {
+        hint: "Retry the whole mutation.",
+      });
+    }),
+  },
+
+  hooks: {
+    beforeMutation: [
+      ({ args, ctx }) => {
+        if (args[0] === "before-fails") {
+          ctx.db.auditLogs.insert({ text: "before-pending", ownerId: ctx.auth.userId });
+          throw Object.assign(new Error("Before hook failed."), {
+            hint: "Fix the before hook and retry.",
+          });
+        }
+      },
+    ],
+    afterMutation: [
+      ({ args, ctx }) => {
+        if (args[0] === "after-fails") {
+          ctx.db.auditLogs.insert({ text: "after-pending", ownerId: ctx.auth.userId });
+          throw Object.assign(new Error("After hook failed."), {
+            hint: "Fix the after hook and retry.",
+          });
+        }
+        if (args[0] === "denied-pending") {
+          ctx.db.auditLogs.insert({ text: "denied-pending", ownerId: ctx.auth.userId });
+          return;
+        }
+        if (args[0] === "mixed-pending") {
+          ctx.db.auditLogs.insert({ text: "deny-fast", ownerId: ctx.auth.userId });
+          ctx.db.auditLogs.insert({ text: "allow-slow", ownerId: ctx.auth.userId });
+          return;
+        }
+        ctx.db.auditLogs.insert({ text: "after:" + args[0], ownerId: ctx.auth.userId });
+      },
+    ],
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+
+      async function runMutationAndRead(id, mutation, args) {
+        const result = waitForSocketMessage(socket, (message) => message.id === id && message.type === "mutation.result");
+        socket.send(JSON.stringify({ id, type: "mutation.run", mutation, args }));
+        return await result;
+      }
+
+      async function dumpedTexts(tableName) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const dumpResult = await runCli(["db", "dump", "--json"], { cwd: projectDir });
+        assert.equal(dumpResult.code, 0, dumpResult.stderr);
+        const tables = JSON.parse(dumpResult.stdout).data.tables;
+        return tables.find((table) => table.name === tableName).rows.map((row) => row.text);
+      }
+
+      assert.deepEqual(await runMutationAndRead("custom-fail", "addThenFail", []), {
+        id: "custom-fail",
+        type: "mutation.result",
+        mutation: "addThenFail",
+        data: null,
+        error: {
+          message: "Custom mutation failed.",
+          hint: "Retry the whole mutation.",
+        },
+      });
+      assert.deepEqual(await dumpedTexts("todos"), []);
+      assert.deepEqual(await dumpedTexts("auditLogs"), []);
+
+      assert.deepEqual(await runMutationAndRead("before-fail", "addTodo", ["before-fails"]), {
+        id: "before-fail",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: null,
+        error: {
+          message: "Before hook failed.",
+          hint: "Fix the before hook and retry.",
+        },
+      });
+      assert.deepEqual(await dumpedTexts("todos"), []);
+      assert.deepEqual(await dumpedTexts("auditLogs"), []);
+
+      assert.deepEqual(await runMutationAndRead("after-fail", "addTodo", ["after-fails"]), {
+        id: "after-fail",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: null,
+        error: {
+          message: "After hook failed.",
+          hint: "Fix the after hook and retry.",
+        },
+      });
+      assert.deepEqual(await dumpedTexts("todos"), []);
+      assert.deepEqual(await dumpedTexts("auditLogs"), []);
+
+      assert.deepEqual(await runMutationAndRead("denied", "addTodo", ["denied-pending"]), {
+        id: "denied",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: null,
+        error: {
+          code: "DENIED",
+          message: "Denied.",
+          hint: "The current user is not allowed to perform this operation.",
+        },
+      });
+      assert.deepEqual(await dumpedTexts("todos"), []);
+      assert.deepEqual(await dumpedTexts("auditLogs"), []);
+
+      assert.deepEqual(await runMutationAndRead("mixed-pending", "addTodo", ["mixed-pending"]), {
+        id: "mixed-pending",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: null,
+        error: {
+          code: "DENIED",
+          message: "Denied.",
+          hint: "The current user is not allowed to perform this operation.",
+        },
+      });
+      assert.deepEqual(await dumpedTexts("todos"), []);
+      assert.deepEqual(await dumpedTexts("auditLogs"), []);
+
+      assert.deepEqual(await runMutationAndRead("retry", "addTodo", ["retry-ok"]), {
+        id: "retry",
+        type: "mutation.result",
+        mutation: "addTodo",
+        data: null,
+        error: null,
+      });
+      assert.deepEqual(await dumpedTexts("todos"), ["retry-ok"]);
+      assert.deepEqual(await dumpedTexts("auditLogs"), ["after:retry-ok"]);
     } finally {
       socket?.close();
       child.kill("SIGTERM");
