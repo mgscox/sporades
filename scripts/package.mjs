@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -219,10 +219,14 @@ export async function packageForNpm(args = process.argv.slice(2)) {
   await run("git", ["commit", "--message", releaseCommitMessage(releaseTag)]);
   const packOutput = await run("npm", ["pack", "--json"], { captureStdout: true });
   const tarball = parsePackedTarball(packOutput);
-  await run("npm", ["publish", tarball]);
-  await run("git", ["tag", "--annotate", releaseTag, "--message", releaseCommitMessage(releaseTag)]);
-  console.log(`Published ${tarball}.`);
-  console.log(`Created release tag ${releaseTag}.`);
+  try {
+    await run("npm", ["publish", tarball]);
+    await run("git", ["tag", "--annotate", releaseTag, "--message", releaseCommitMessage(releaseTag)]);
+    console.log(`Published ${tarball}.`);
+    console.log(`Created release tag ${releaseTag}.`);
+  } finally {
+    await rm(path.join(repoRoot, tarball), { force: true });
+  }
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {
