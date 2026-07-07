@@ -111,4 +111,5 @@ failure mode is already atomic at the database layer.
 - `issues/02-prove-mutation-and-hook-rollback.md`
 - `issues/03-harden-runtime-auth-and-preference-writes.md`
 - `issues/04-harden-file-metadata-and-upload-writes.md`
+- `issues/06-verify-endpoint-and-app-message-db-write-boundaries.md`
 - `issues/05-close-schema-metadata-and-roadmap-loop.md`

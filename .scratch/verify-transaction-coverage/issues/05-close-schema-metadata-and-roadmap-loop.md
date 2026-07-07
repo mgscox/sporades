@@ -33,3 +33,4 @@ feature and remains a roadmap enhancement.
 - .scratch/verify-transaction-coverage/issues/02-prove-mutation-and-hook-rollback.md
 - .scratch/verify-transaction-coverage/issues/03-harden-runtime-auth-and-preference-writes.md
 - .scratch/verify-transaction-coverage/issues/04-harden-file-metadata-and-upload-writes.md
+- .scratch/verify-transaction-coverage/issues/06-verify-endpoint-and-app-message-db-write-boundaries.md
