@@ -1263,7 +1263,7 @@ async function createProject(options: LooseRecord) {
 }
 
 async function runDoctor(options: LooseRecord) {
-  const envelope = createDoctorEnvelope(options, runDoctorChecks(options));
+  const envelope = createDoctorEnvelope(options, await runDoctorChecks(options));
   const failed = doctorShouldExitNonZero(envelope.data.checks, options.strict);
 
   if (options.json) {

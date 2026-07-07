@@ -961,7 +961,7 @@ async function createProject(options) {
     }
 }
 async function runDoctor(options) {
-    const envelope = createDoctorEnvelope(options, runDoctorChecks(options));
+    const envelope = createDoctorEnvelope(options, await runDoctorChecks(options));
     const failed = doctorShouldExitNonZero(envelope.data.checks, options.strict);
     if (options.json) {
         writeResult(envelope, failed);
