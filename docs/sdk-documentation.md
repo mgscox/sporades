@@ -15,7 +15,9 @@ property in the SDK.
 
 ## Generated API Reference
 
-The generated API reference is built from the public TypeScript declaration
+Current Release [SDK documentation](/docs//api/index.html)
+
+For developers, the generated API reference is built from the public TypeScript declaration
 files for `sporades/server` and `sporades/client`:
 
 ```sh
