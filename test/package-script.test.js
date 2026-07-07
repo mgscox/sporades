@@ -2,7 +2,16 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { buildChangeEntries, categorizeChange, generateChanges } from "../skills/generate-changes/scripts/generate-changes.mjs";
-import { bumpVersion, parsePackageArgs, releaseTagForVersion, usage } from "../scripts/package.mjs";
+import {
+  assertCleanWorkingTree,
+  assertReleaseTagAvailable,
+  assertVersionNotPublished,
+  bumpVersion,
+  parsePackageArgs,
+  releaseCommitMessage,
+  releaseTagForVersion,
+  usage,
+} from "../scripts/package.mjs";
 
 test("package script defaults to a minor version bump", () => {
   assert.deepEqual(parsePackageArgs([]), { help: false, releaseType: "minor" });
@@ -25,6 +34,28 @@ test("package script derives release tags from semver versions", () => {
   assert.throws(() => releaseTagForVersion("1.2.3-beta.1"), /non-semver/);
 });
 
+test("package script uses matching release commit and tag messages", () => {
+  assert.equal(releaseCommitMessage("v1.2.3"), "Release v1.2.3");
+});
+
+test("package script rejects dirty working trees", () => {
+  assert.doesNotThrow(() => assertCleanWorkingTree(""));
+  assert.throws(() => assertCleanWorkingTree(" M package.json\n"), /dirty working tree/);
+});
+
+test("package script rejects already published target versions", () => {
+  assert.doesNotThrow(() => assertVersionNotPublished("sporades", "0.2.0", { code: 1, stdout: "", stderr: "E404" }));
+  assert.throws(
+    () => assertVersionNotPublished("sporades", "0.2.0", { code: 0, stdout: "0.2.0\n", stderr: "" }),
+    /already exists on npm/,
+  );
+});
+
+test("package script rejects existing release tags", () => {
+  assert.doesNotThrow(() => assertReleaseTagAvailable("v0.2.0", { code: 1, stdout: "", stderr: "" }));
+  assert.throws(() => assertReleaseTagAvailable("v0.2.0", { code: 0, stdout: "abc123\n", stderr: "" }), /already exists/);
+});
+
 test("package script rejects ambiguous or unknown options", () => {
   assert.throws(() => parsePackageArgs(["--major", "--patch"]), /Choose exactly one/);
   assert.throws(() => parsePackageArgs(["--prerelease"]), /Unknown packaging option/);
@@ -34,6 +65,7 @@ test("package script exposes usage text", () => {
   assert.equal(parsePackageArgs(["--help"]).help, true);
   assert.match(usage(), /Default bump: --minor/);
   assert.match(usage(), /Updates CHANGES\.md/);
+  assert.match(usage(), /Commits release metadata/);
   assert.match(usage(), /annotated vX\.Y\.Z Git tag/);
 });
 

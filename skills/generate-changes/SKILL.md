@@ -37,4 +37,4 @@ Write entries as user-facing summaries, not raw commit dumps. Keep commit hashes
 
 ## Package Flow
 
-The repository `npm run package` command runs this skill's script before bumping the package version and publishing, so `CHANGES.md` reflects source changes since the previous release rather than the release commit itself. After `npm publish` succeeds, the package script creates an annotated `vX.Y.Z` Git tag for the published version. The next `/generate-changes` run uses that tag as its release baseline.
+The repository `npm run package` command runs this skill's script before bumping the package version, committing release metadata, and publishing, so `CHANGES.md` reflects source changes since the previous release rather than the release commit itself. After `npm publish` succeeds, the package script creates an annotated `vX.Y.Z` Git tag for the published version. The next `/generate-changes` run uses that tag as its release baseline.

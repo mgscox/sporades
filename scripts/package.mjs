@@ -45,6 +45,7 @@ export function usage() {
 
 Builds API docs, bumps package semver, creates an npm tarball, and publishes it.
 Updates CHANGES.md from Git history before the version bump.
+Commits release metadata before packaging.
 Creates an annotated vX.Y.Z Git tag after npm publish succeeds.
 Default bump: --minor`;
 }
@@ -94,6 +95,30 @@ function run(command, args, options = {}) {
   });
 }
 
+function runResult(command, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd: repoRoot,
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    child.on("error", reject);
+    child.on("close", (code) => {
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
 function parsePackedTarball(stdout) {
   const trimmed = stdout.trim();
   if (!trimmed) {
@@ -116,6 +141,28 @@ export function releaseTagForVersion(version) {
   return `v${version}`;
 }
 
+export function releaseCommitMessage(tag) {
+  return `Release ${tag}`;
+}
+
+export function assertCleanWorkingTree(status) {
+  if (status.trim()) {
+    throw new Error(`Refusing to package with a dirty working tree:\n${status.trim()}`);
+  }
+}
+
+export function assertVersionNotPublished(packageName, version, result) {
+  if (result.code === 0 && result.stdout.trim()) {
+    throw new Error(`${packageName}@${version} already exists on npm.`);
+  }
+}
+
+export function assertReleaseTagAvailable(tag, result) {
+  if (result.code === 0) {
+    throw new Error(`Git tag ${tag} already exists.`);
+  }
+}
+
 async function updatePackageVersion(releaseType) {
   const packageJsonPath = path.join(repoRoot, "package.json");
   const packageLockPath = path.join(repoRoot, "package-lock.json");
@@ -135,6 +182,10 @@ async function updatePackageVersion(releaseType) {
   return nextVersion;
 }
 
+async function readPackageJson() {
+  return JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
+}
+
 export async function packageForNpm(args = process.argv.slice(2)) {
   const options = parsePackageArgs(args);
   if (options.help) {
@@ -146,17 +197,30 @@ export async function packageForNpm(args = process.argv.slice(2)) {
     throw new Error(`Unsupported release type: ${options.releaseType}`);
   }
 
-  console.log(`Packaging sporades with a ${options.releaseType} version bump...`);
+  const packageJson = await readPackageJson();
+  const nextVersion = bumpVersion(packageJson.version, options.releaseType);
+  const releaseTag = releaseTagForVersion(nextVersion);
+
+  console.log(`Packaging ${packageJson.name}@${nextVersion} with a ${options.releaseType} version bump...`);
+  await run("npm", ["whoami"]);
+  const status = await run("git", ["status", "--porcelain=v1"], { captureStdout: true });
+  assertCleanWorkingTree(status);
+  const published = await runResult("npm", ["view", `${packageJson.name}@${nextVersion}`, "version"]);
+  assertVersionNotPublished(packageJson.name, nextVersion, published);
+  const existingTag = await runResult("git", ["rev-parse", "--verify", "--quiet", `refs/tags/${releaseTag}`]);
+  assertReleaseTagAvailable(releaseTag, existingTag);
+
   await run("npm", ["run", "docs:api"]);
   await generateChanges();
   console.log("Updated CHANGES.md.");
-  const nextVersion = await updatePackageVersion(options.releaseType);
+  await updatePackageVersion(options.releaseType);
   console.log(`Version bumped to ${nextVersion}.`);
+  await run("git", ["add", "--", "package.json", "package-lock.json", "CHANGES.md", "docs/api"]);
+  await run("git", ["commit", "--message", releaseCommitMessage(releaseTag)]);
   const packOutput = await run("npm", ["pack", "--json"], { captureStdout: true });
   const tarball = parsePackedTarball(packOutput);
   await run("npm", ["publish", tarball]);
-  const releaseTag = releaseTagForVersion(nextVersion);
-  await run("git", ["tag", "--annotate", releaseTag, "--message", `Release ${releaseTag}`]);
+  await run("git", ["tag", "--annotate", releaseTag, "--message", releaseCommitMessage(releaseTag)]);
   console.log(`Published ${tarball}.`);
   console.log(`Created release tag ${releaseTag}.`);
 }
