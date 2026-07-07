@@ -1,0 +1,4 @@
+interface:
+  display_name: "Generate Changes"
+  short_description: "Draft CHANGES.md from Git history"
+  default_prompt: "Use $generate-changes to create or update CHANGES.md from the repository's Git history and current working tree."
