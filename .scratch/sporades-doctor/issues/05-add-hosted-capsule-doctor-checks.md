@@ -1,6 +1,6 @@
 # Add Hosted Capsule doctor checks
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -29,4 +29,3 @@ Capsule mismatches from one read-only command.
 
 - .scratch/sporades-doctor/issues/01-define-doctor-command-and-check-envelope.md
 - .scratch/sporades-doctor/issues/02-add-project-config-and-security-posture-checks.md
-
