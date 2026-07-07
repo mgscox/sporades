@@ -20,7 +20,7 @@ and whether the work belongs in one release or separate tracks.
 
 | Feature | Status | Why it matters | Planning |
 | --- | --- | --- | --- |
-| _No current recommendation_ | - | Promote the next ready item here after a PRD or implementation brief is prepared. | - |
+| Verify transaction coverage for every DB write | ready | Audits and hardens transaction coverage for app-table mutations, auth and preference writes, file metadata workflows, schema/system metadata, log index writes, and hosted-runtime database writes where applicable. | `.scratch/verify-transaction-coverage/PRD.md` |
 
 ## Recently Implemented
 
@@ -37,7 +37,6 @@ longer belongs in the next-feature queue.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Verify transaction coverage for every DB write | candidate | Audit mutations, auth writes, file metadata writes, system table writes, hosted runtime writes where applicable, and hook behavior. Promote fixes if any write path is outside an intended transaction. |
 | Root server role | candidate | Define a privileged server-side role that can perform API actions without normal user authentication and may inspect runtime-owned non-app resources that normal app ACL helpers cannot see. Needs sharp boundaries so it remains a server/runtime capability, not a browser credential. |
 | Teams for ACL | deferred | Add team membership as a platform concept after Database and storage ACL rules are designed. Creator is team admin; admins can invite, approve requests, promote admins, revoke membership; users can request membership, list pending requests, list teams, and leave teams. |
 
@@ -57,6 +56,7 @@ Backup/restore is for transient data to support redployment or restore after del
 the mapped docker paths. Can be just 'tar' or similar. Likely dependent on 'Job Scheudling' |
 | Host backup and restore | candidate | Back up and restore Host-server-owned state, including Hosted Capsule registry data, persistent Capsule data, uploaded file bytes, Host-generated sealed env keys, release metadata, and route/proxy state. Needs retention, encryption, restore authorization, and disaster-recovery semantics. |
 | OpenTelemetry hooks | candidate | Add hooks or default instrumentation points for traces, metrics, and logs without requiring app code to import OpenTelemetry directly. |
+| Log index retry queue | candidate | Add a bounded in-memory retry queue for Log index writes or pruning that fail while the JSONL log stream remains the durable append stream. Needs clear caps, flush timing, duplicate handling, shutdown behavior, and inspection of degraded indexing without making Log index availability part of app/auth/file workflow success. |
 | Mail sending | candidate | Add SMTP or third-party mail provider support for server-side mail sending. Likely useful for auth, invites, notifications, and team workflows. |
 | GitHub release auto-update | candidate | For a linked GitHub repository, watch for newly published releases, download the packaged Sporades release artifact, update the Hosted Capsule, and automatically roll back if deployment or verification fails. Assumes a GitHub Action already uses Sporades to build and package the release. |
 | Job queue | candidate | Durable background work with retry/failure visibility. Should stay sqlite-first unless an adapter is explicitly configured. Job and Queue shape to align with minimal BullMQ scope to 

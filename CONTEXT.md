@@ -52,6 +52,10 @@ _Avoid_: deploy metadata, container record
 An SSH-reachable machine that runs the remote Sporades hosting stack: Docker, reverse proxying, the remote registry, and Hosted Capsule containers.
 _Avoid_: host, server, box
 
+**Host server registry**:
+The Host-server-owned state for Hosted Capsule registration, release pointers, route state, and lifecycle metadata. It is remote hosting state rather than Database adapter state; registry writes use Host server safety mechanisms such as locking and atomic replacement instead of DB Transaction boundaries.
+_Avoid_: database registry, app table, deployment database
+
 **Host profile**:
 A local CLI configuration entry that names a Host server plus a Hosted domain, scheme, remote root, and TLS mode. Used so commands can target a configured hosting destination without repeating connection details.
 _Avoid_: host, remote config, environment
@@ -174,9 +178,17 @@ Missing or invalid endpoint tokens resolve to a fresh Anonymous session rather t
 A real authentication method, such as email or Google OAuth, linked to an existing Anonymous session. The user's data follows them because the auth method is linked to the existing account, not a new one.
 _Avoid_: upgrade, migration (those are schema concerns, not auth)
 
+**Auth transaction**:
+The Transaction boundary for one user-visible auth action that touches multiple runtime-owned auth records. Sign-up, sign-in, provider linking, OAuth callback handling, and session rotation should leave auth storage in a known outcome; for example, a failed sign-up must not leave a created user behind, failed session rotation keeps the old Session token valid, and a failed OAuth callback spends its OAuth state so the user restarts the local OAuth flow.
+_Avoid_: partial sign-up, orphaned auth row, best-effort auth update
+
 **Current-user preferences**:
 A runtime-owned JSON object keyed by the current Sporades user identity. Client code reads it with `preferences.get()` and shallow-merges partial JSON objects with `preferences.update(...)` from `sporades/client`. It is for durable per-user UI and behavior settings and does not appear in Capsule app schema or `ctx.db`.
 _Avoid_: preferences table, app settings table, localStorage settings
+
+**Preference transaction**:
+The Transaction boundary for one current-user preference update. The runtime reads the existing preferences, applies and validates the accepted patch, saves the next value, and only reports or broadcasts committed preference state.
+_Avoid_: optimistic preference broadcast, partial preference update, localStorage preference write
 
 ## Client transport
 
@@ -201,6 +213,10 @@ _Avoid_: upload WebSocket message, raw upload notification, transport event
 **File metadata**:
 The app-scoped record returned by an Upload call, including the file's absolute File path, stable File ID, and descriptive properties such as size, MIME type, original name, and version. App code stores references to this metadata in its own tables through normal mutations.
 _Avoid_: file field, attachment row, upload result
+
+**File metadata transaction**:
+The Transaction boundary for file metadata changes during Upload calls, replacement, deletion, and public file URL changes. Uploaded file bytes live in Capsule storage, so byte side effects that cannot share the database transaction must use explicit compensating cleanup when metadata changes fail.
+_Avoid_: file-byte transaction, storage transaction, best-effort upload metadata
 
 **File version**:
 The cache-busting identity of a file's current bytes. Replacing a file preserves the file ID but creates a new version so previously generated URLs cannot keep serving stale content.
@@ -249,7 +265,7 @@ A `sporades` table auto-created in every app's SQLite database. Stores schema ve
 _Avoid_: migration table, metadata table
 
 **Schema migration**:
-The runtime-owned startup path that compares stored schema metadata with the next Capsule schema. Adding tables and fields is supported as an additive migration; removing tables, removing fields, or changing existing field definitions is rejected with a structured error and hint.
+The runtime-owned startup path that compares stored schema metadata with the next Capsule schema. Adding tables and fields is supported as an additive migration; schema changes that rewrite or backfill user data require a Transaction boundary, while removing tables, removing fields, or changing existing field definitions is rejected with a structured error and hint.
 _Avoid_: migration version, database version
 
 **Row cache**:
@@ -263,6 +279,14 @@ _Avoid_: driver (too low-level), ORM, database plugin
 **Sporades DB API**:
 The engine-agnostic database operation model used by Sporades runtime code. Capsule handlers interact with a runtime instance of this API through `ctx.db`; design discussions may refer to the underlying API as `sporades.db`.
 _Avoid_: raw SQL API, database client, ORM
+
+**Transaction boundary**:
+The explicit runtime-owned atomicity boundary for related database writes in a Sporades workflow. Multi-write workflows use the Database adapter transaction primitive; single-statement writes may be intentionally outside an explicit boundary when their database-layer atomicity is sufficient.
+_Avoid_: wrapping every write, implicit transaction, best-effort write grouping
+
+**Mutation transaction**:
+The Transaction boundary owned by mutation execution for one Capsule mutation call. App-table writes from the mutation handler, generated mutation path, mutation hooks, ACL checks, and pending ACL writes share this boundary so the mutation commits or rolls back as one retryable unit.
+_Avoid_: nested app transaction, hook transaction, partial mutation commit
 
 **ACL rule**:
 An authorization policy declared in Capsule definition code and applied invisibly around the Sporades DB API to accept or reject app-table and file-storage operations. Capsule code continues to use normal `ctx.db` and file APIs rather than calling permission checks directly. ACLs answer whether the current actor may see or change a row or file metadata record; file-specific validation and client-facing upload choices are not ACL concerns. ACLs are allow-by-default when no matching rule is specified; a `write` ACL rule may apply to insert, update, and delete operations unless an operation-specific rule overrides it. Write ACL rules evaluate against previous and next row state where relevant.
@@ -312,7 +336,7 @@ An append-friendly sequence of JSON log events emitted by the runtime for app an
 _Avoid_: text logs, dev JSONL events
 
 **Log index**:
-A bounded SQLite-backed index of recent JSON log events used for structured inspection queries. The JSONL log stream remains the durable append stream.
+A bounded SQLite-backed index of recent JSON log events used for structured inspection queries. The JSONL log stream remains the durable append stream, so Log index write failures should degrade inspection rather than roll back app, auth, or file workflows.
 _Avoid_: log database, audit log
 
 ## Scaffold
