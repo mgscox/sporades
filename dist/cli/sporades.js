@@ -15,6 +15,7 @@ import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { CAPSULE_SERVICES_COMPOSE_FILE, CAPSULE_SERVICES_STATE_DIR, capsuleServicesComposeModel, validateCapsuleServicesConfig, writeCapsuleServicesCompose, } from "../capsule-services.js";
 import { createHostBootstrapRequest, createHostDeleteRequest, createHostLifecycleRequest, createHostRegistrationRequest, createHostReleaseRequest, createHostRuntimeHealthRequest, createHostStatsRequest, createHostUnregisterRequest, } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
+import { DOCTOR_SESSIONS, createDoctorEnvelope, doctorShouldExitNonZero, renderDoctorHumanOutput, runDoctorChecks, } from "./doctor.js";
 import { createGithubAutodeployWorkflow } from "./github-autodeploy-workflow.js";
 import { commandError, errorDetails, writeResult } from "./cli-support.js";
 const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
@@ -98,6 +99,13 @@ async function main() {
                 return;
             }
             await inspectSecurity(parseSecurityArgs(args));
+            return;
+        case "doctor":
+            if (isHelp) {
+                printHelp('doctor');
+                return;
+            }
+            await runDoctor(parseDoctorArgs(args));
             return;
         case "env":
             if (isHelp) {
@@ -295,6 +303,52 @@ function parseSecurityArgs(args) {
     }
     return {
         session,
+        json,
+        projectDir: process.cwd(),
+    };
+}
+function parseDoctorArgs(args) {
+    let session = null;
+    let host = null;
+    let subname = null;
+    let strict = false;
+    let json = false;
+    for (let index = 0; index < args.length; index += 1) {
+        const arg = args[index];
+        switch (arg) {
+            case "--session":
+                session = readFlagValue(args, ++index, "--session");
+                break;
+            case "--host":
+                host = readFlagValue(args, ++index, "--host");
+                break;
+            case "--subname":
+                subname = readFlagValue(args, ++index, "--subname");
+                break;
+            case "--strict":
+                strict = true;
+                break;
+            case "--json":
+                json = true;
+                break;
+            default:
+                throw commandError(`Unknown flag: ${arg}`, "Use `sporades doctor --session dev|container|hosted --strict --json`.");
+        }
+    }
+    if (session !== null && !DOCTOR_SESSIONS.has(session)) {
+        throw commandError("Invalid doctor session.", "Use one of: dev, container, hosted.", { session });
+    }
+    if ((host !== null || subname !== null) && session !== "hosted") {
+        throw commandError("Hosted doctor options require the hosted session.", "Use `sporades doctor --session hosted --host <alias> --subname <name>`.", { session, host, subname });
+    }
+    if (session === "hosted" && (!host || !subname)) {
+        throw commandError("Hosted doctor checks require a Host profile and Capsule subname.", "Pass `--host <alias> --subname <name>` with `sporades doctor --session hosted`.", { hostProvided: Boolean(host), subnameProvided: Boolean(subname) });
+    }
+    return {
+        session,
+        host,
+        subname,
+        strict,
         json,
         projectDir: process.cwd(),
     };
@@ -904,6 +958,18 @@ async function createProject(options) {
     }
     if (options.git) {
         run("git", ["init"], options.projectDir, "Git initialization failed.", "Run `git init` inside the scaffold.");
+    }
+}
+async function runDoctor(options) {
+    const envelope = createDoctorEnvelope(options, runDoctorChecks(options));
+    const failed = doctorShouldExitNonZero(envelope.data.checks, options.strict);
+    if (options.json) {
+        writeResult(envelope, failed);
+        return;
+    }
+    process.stdout.write(renderDoctorHumanOutput(envelope.data));
+    if (failed) {
+        process.exitCode = 1;
     }
 }
 function defaultSporadesDependency() {

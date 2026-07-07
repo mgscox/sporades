@@ -58,6 +58,18 @@ Options:
   --json              Write JSON output
   --help, -h          Show this help
 `,
+  doctor: `Usage: sporades doctor [options]
+
+Run read-only Sporades diagnostics.
+
+Options:
+  --session <name>    Session: dev, container, or hosted
+  --host <alias>      Host profile alias for Hosted Capsule checks
+  --subname <name>    Hosted Capsule subname
+  --strict            Exit non-zero on warnings as well as failures
+  --json              Write structured JSON output
+  --help, -h          Show this help
+`,
   env: `Usage: sporades env <command> [options]
 
 Manage Sealed Server env.
@@ -187,6 +199,7 @@ Options:
       dev            Start a local Dev session
       auth           Manage local auth configuration and simulation
       security       Inspect effective Capsule security policy
+      doctor         Run read-only Sporades diagnostics
       env            Manage Sealed Server env
       deploy         Start a local Container session
       host           Manage Host profiles and Hosted Capsules

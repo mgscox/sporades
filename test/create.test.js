@@ -70,6 +70,7 @@ test("sporades command --help prints command-specific help", async () => {
     ["dev", /^Usage: sporades dev \[status\|stop\|reset\] \[options\]/, /--public/],
     ["auth", /^Usage: sporades auth <command> \[options\]/, /set google/],
     ["security", /^Usage: sporades security \[options\]/, /--session <name>/],
+    ["doctor", /^Usage: sporades doctor \[options\]/, /--strict/],
     ["env", /^Usage: sporades env <command> \[options\]/, /reencrypt/],
     ["deploy", /^Usage: sporades deploy \[status\|stop\|restart\|remove\|reset\|ssh\] \[options\]/, /deploy ssh/],
     ["host", /^Usage: sporades host <command> \[options\]/, /github workflow write/],

@@ -9822,6 +9822,18 @@ Options:
   --json              Write JSON output
   --help, -h          Show this help
 `,
+  doctor: `Usage: sporades doctor [options]
+
+Run read-only Sporades diagnostics.
+
+Options:
+  --session <name>    Session: dev, container, or hosted
+  --host <alias>      Host profile alias for Hosted Capsule checks
+  --subname <name>    Hosted Capsule subname
+  --strict            Exit non-zero on warnings as well as failures
+  --json              Write structured JSON output
+  --help, -h          Show this help
+`,
   env: `Usage: sporades env <command> [options]
 
 Manage Sealed Server env.
@@ -9951,6 +9963,7 @@ Options:
       dev            Start a local Dev session
       auth           Manage local auth configuration and simulation
       security       Inspect effective Capsule security policy
+      doctor         Run read-only Sporades diagnostics
       env            Manage Sealed Server env
       deploy         Start a local Container session
       host           Manage Host profiles and Hosted Capsules
@@ -9964,6 +9977,109 @@ Options:
 };
 function renderCliHelp(command) {
   return HELP_TEXT[command] ?? HELP_TEXT.default;
+}
+
+// src/cli/doctor.ts
+var DOCTOR_SESSIONS = /* @__PURE__ */ new Set(["dev", "container", "hosted"]);
+var DOCTOR_STATUSES = ["pass", "warn", "fail", "skip"];
+var DOCTOR_SEVERITIES = ["info", "warning", "error"];
+function runDoctorChecks(options) {
+  const checks = [
+    {
+      id: "doctor.command-surface",
+      title: "Doctor command surface",
+      scope: "project",
+      status: "pass",
+      severity: "info",
+      message: "Doctor command parsed successfully."
+    }
+  ];
+  if (options.session) {
+    checks.push(sessionDoctorPlaceholderCheck(options));
+  }
+  return checks;
+}
+function sessionDoctorPlaceholderCheck(options) {
+  const session = options.session;
+  const commandBySession = {
+    dev: "sporades dev status",
+    container: "sporades deploy status",
+    hosted: `sporades host health ${options.subname} --host ${options.host}`
+  };
+  const titleBySession = {
+    dev: "Dev session diagnostics pending",
+    container: "Container session diagnostics pending",
+    hosted: "Hosted Capsule diagnostics pending"
+  };
+  return {
+    id: `doctor.${session}.checks-pending`,
+    title: titleBySession[session],
+    scope: session,
+    status: "skip",
+    severity: "info",
+    message: `Detailed ${session} checks are reserved for later doctor slices.`,
+    hint: `Use \`${commandBySession[session]}\` for current runtime facts until those checks land.`,
+    commands: [commandBySession[session]],
+    details: { implementedInLaterSlice: true }
+  };
+}
+function createDoctorEnvelope(options, checks) {
+  return {
+    ok: true,
+    data: {
+      command: "doctor",
+      version: 1,
+      strict: options.strict,
+      session: options.session,
+      ...options.host ? { host: options.host } : {},
+      ...options.subname ? { subname: options.subname } : {},
+      summary: summarizeDoctorChecks(checks),
+      checks
+    },
+    error: null
+  };
+}
+function summarizeDoctorChecks(checks) {
+  const summary = {
+    pass: 0,
+    warn: 0,
+    fail: 0,
+    skip: 0,
+    info: 0,
+    warning: 0,
+    error: 0
+  };
+  for (const check of checks) {
+    if (DOCTOR_STATUSES.includes(check.status)) {
+      summary[check.status] += 1;
+    }
+    if (DOCTOR_SEVERITIES.includes(check.severity)) {
+      summary[check.severity] += 1;
+    }
+  }
+  return summary;
+}
+function doctorShouldExitNonZero(checks, strict) {
+  return checks.some((check) => check.status === "fail" || strict && check.status === "warn");
+}
+function renderDoctorHumanOutput(data) {
+  const lines = ["Sporades doctor"];
+  const bySeverity = /* @__PURE__ */ new Map([
+    ["error", data.checks.filter((check) => check.severity === "error")],
+    ["warning", data.checks.filter((check) => check.severity === "warning")],
+    ["info", data.checks.filter((check) => check.severity === "info")]
+  ]);
+  for (const [severity, checks] of bySeverity) {
+    if (checks.length === 0) {
+      continue;
+    }
+    lines.push("", severity.toUpperCase());
+    for (const check of checks) {
+      lines.push(`- [${check.status}] ${check.title}: ${check.message}`);
+    }
+  }
+  lines.push("");
+  return lines.join("\n");
 }
 
 // src/cli/github-autodeploy-workflow.ts
@@ -10261,6 +10377,13 @@ async function main() {
       }
       await inspectSecurity(parseSecurityArgs(args));
       return;
+    case "doctor":
+      if (isHelp) {
+        printHelp("doctor");
+        return;
+      }
+      await runDoctor(parseDoctorArgs(args));
+      return;
     case "env":
       if (isHelp) {
         printHelp("env");
@@ -10463,6 +10586,63 @@ function parseSecurityArgs(args) {
   }
   return {
     session,
+    json,
+    projectDir: process.cwd()
+  };
+}
+function parseDoctorArgs(args) {
+  let session = null;
+  let host = null;
+  let subname = null;
+  let strict = false;
+  let json = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    switch (arg) {
+      case "--session":
+        session = readFlagValue(args, ++index, "--session");
+        break;
+      case "--host":
+        host = readFlagValue(args, ++index, "--host");
+        break;
+      case "--subname":
+        subname = readFlagValue(args, ++index, "--subname");
+        break;
+      case "--strict":
+        strict = true;
+        break;
+      case "--json":
+        json = true;
+        break;
+      default:
+        throw commandError4(
+          `Unknown flag: ${arg}`,
+          "Use `sporades doctor --session dev|container|hosted --strict --json`."
+        );
+    }
+  }
+  if (session !== null && !DOCTOR_SESSIONS.has(session)) {
+    throw commandError4("Invalid doctor session.", "Use one of: dev, container, hosted.", { session });
+  }
+  if ((host !== null || subname !== null) && session !== "hosted") {
+    throw commandError4(
+      "Hosted doctor options require the hosted session.",
+      "Use `sporades doctor --session hosted --host <alias> --subname <name>`.",
+      { session, host, subname }
+    );
+  }
+  if (session === "hosted" && (!host || !subname)) {
+    throw commandError4(
+      "Hosted doctor checks require a Host profile and Capsule subname.",
+      "Pass `--host <alias> --subname <name>` with `sporades doctor --session hosted`.",
+      { hostProvided: Boolean(host), subnameProvided: Boolean(subname) }
+    );
+  }
+  return {
+    session,
+    host,
+    subname,
+    strict,
     json,
     projectDir: process.cwd()
   };
@@ -11126,6 +11306,18 @@ async function createProject(options) {
   }
   if (options.git) {
     run("git", ["init"], options.projectDir, "Git initialization failed.", "Run `git init` inside the scaffold.");
+  }
+}
+async function runDoctor(options) {
+  const envelope = createDoctorEnvelope(options, runDoctorChecks(options));
+  const failed = doctorShouldExitNonZero(envelope.data.checks, options.strict);
+  if (options.json) {
+    writeResult(envelope, failed);
+    return;
+  }
+  process.stdout.write(renderDoctorHumanOutput(envelope.data));
+  if (failed) {
+    process.exitCode = 1;
   }
 }
 function defaultSporadesDependency() {

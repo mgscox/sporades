@@ -1,6 +1,6 @@
 # Define doctor command and check envelope
 
-Status: ready-for-human
+Status: done
 
 ## Parent
 
@@ -28,4 +28,3 @@ the internal check runner contract used by later slices.
 ## Blocked by
 
 None - can start immediately
-
