@@ -20,7 +20,7 @@ and whether the work belongs in one release or separate tracks.
 
 | Feature | Status | Why it matters | Planning |
 | --- | --- | --- | --- |
-| `sporades doctor` | ready | Gives developers and AFK agents one read-only diagnostic command for local and Hosted Capsule configuration, security posture, service state, and runtime hygiene, while pointing back to existing inspection surfaces instead of duplicating lifecycle behavior. | `.scratch/sporades-doctor/PRD.md` |
+| _No current recommendation_ | - | Promote the next ready item here after a PRD or implementation brief is prepared. | - |
 
 ## Recently Implemented
 
@@ -29,6 +29,7 @@ longer belongs in the next-feature queue.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
+| Sporades doctor | implemented | `sporades doctor` is available as a read-only diagnostic coordinator for project configuration, security posture, Capsule authoring, Dev sessions, local Container sessions, Capsule service state, and Hosted Capsules. It reports human or JSON checks with `pass`, `warn`, `fail`, and `skip` statuses, supports `--strict --json` for CI and AFK agents, and points back to focused inspection commands such as `sporades security`, `sporades env`, `sporades deploy ssh`, `sporades host health`, `sporades host stats`, `sporades host logs`, and `sporades host ssh`. Planning remains in `.scratch/sporades-doctor/PRD.md` for traceability. |
 | SSH to Docker | implemented | Container SSH access is available for local Container sessions and Hosted Capsules through top-level `ssh.authorizedKeys` entries in `sporades.json`. It remains an opt-in compatibility and emergency access path; normal management stays on `sporades deploy`, `sporades host ...`, logs, stats, and lifecycle commands. Effective SSH state is inspected explicitly with `sporades deploy ssh` and `sporades host ssh`. Planning remains in `.scratch/ssh-to-docker/PRD.md` for traceability. |
 | User preferences table and SDK | implemented | Runtime-owned current-user preferences are available through `sporades/client` as `preferences.get()` and `preferences.update(...)`. Preferences are keyed by Sporades user identity, survive Anonymous session linking, follow sign-in/sign-out and local identity simulation, and notify same-user connected clients with `preferences.updated`. Planning remains in `.scratch/user-preferences-table-and-sdk/PRD.md` for traceability. |
 

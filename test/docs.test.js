@@ -271,6 +271,49 @@ test("docs describe implemented preferences and Container SSH access", async () 
   assert.match(sshPrd, /implemented and documented/i);
 });
 
+test("docs describe doctor diagnostics as read-only coordination", async () => {
+  const [roadmap, userGuide] = await Promise.all([
+    readProjectFile("docs/ROADMAP.md"),
+    readProjectFile("docs/user-guide.md"),
+  ]);
+
+  assert.match(userGuide, /## Sporades Doctor/);
+  assert.match(userGuide, /sporades doctor --session dev/);
+  assert.match(userGuide, /sporades doctor --session container --json/);
+  assert.match(userGuide, /sporades doctor --session hosted --host personal --subname team-notes --json/);
+  assert.match(userGuide, /sporades doctor --strict --json/);
+  assert.match(userGuide, /read-only/i);
+  assert.match(userGuide, /does not repair/i);
+  assert.match(userGuide, /does not mutate/i);
+
+  for (const command of [
+    "sporades security",
+    "sporades env",
+    "sporades deploy ssh",
+    "sporades host health",
+    "sporades host stats",
+    "sporades host logs",
+    "sporades host ssh",
+  ]) {
+    assert.match(userGuide, new RegExp(command.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+
+  assert.match(userGuide, /pass/);
+  assert.match(userGuide, /warn/);
+  assert.match(userGuide, /fail/);
+  assert.match(userGuide, /skip/);
+  assert.match(userGuide, /CI/);
+  assert.match(userGuide, /AFK agents/);
+  assert.match(userGuide, /private keys/i);
+  assert.match(userGuide, /full Server env values/i);
+  assert.match(userGuide, /full SSH public-key material/i);
+  assert.doesNotMatch(userGuide, /sporades doctor repair/);
+  assert.doesNotMatch(userGuide, /sporades doctor fix/);
+
+  assert.match(roadmap, /Sporades doctor \| implemented/);
+  assert.doesNotMatch(roadmap, /`sporades doctor` \| ready/);
+});
+
 test("user guide documents Capsule service reset without blanket Runtime deletion", async () => {
   const userGuide = await readProjectFile("docs/user-guide.md");
 

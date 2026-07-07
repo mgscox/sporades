@@ -1573,6 +1573,63 @@ sporades deploy reset --json
 Reset only removes Sporades-managed Capsule service state. It does not remove
 shared third-party service images such as database images.
 
+## Sporades Doctor
+
+`sporades doctor` is the read-only diagnostic coordinator for a Capsule project.
+It gathers project configuration, security posture, Capsule authoring, local
+runtime, Capsule service, and Hosted Capsule signals into one report. It does
+not repair state, does not mutate Runtime files, does not start or stop
+containers, and does not replace the focused inspection and lifecycle commands
+that already own those jobs.
+
+In short: doctor is read-only, does not repair state, and does not mutate
+project or runtime state.
+
+Run doctor without flags for project-level checks:
+
+```sh
+sporades doctor
+```
+
+Target a local Dev session, local Container session, or Hosted Capsule when you
+want runtime-specific checks:
+
+```sh
+sporades doctor --session dev
+sporades doctor --session container --json
+sporades doctor --session hosted --host personal --subname team-notes --json
+```
+
+For CI and AFK agents, use strict JSON output:
+
+```sh
+sporades doctor --strict --json
+```
+
+Normal mode exits non-zero for failed checks. `--strict` also exits non-zero for
+warnings, which makes it useful before handoff, release, or automated repair
+loops. JSON output includes the check `id`, `scope`, `status`, `severity`,
+message, optional hint, follow-up commands, and non-secret details.
+
+Check statuses mean:
+
+- `pass`: doctor inspected the surface and found the expected state.
+- `warn`: doctor found drift, missing optional state, or risky configuration.
+- `fail`: doctor found a blocking problem or could not inspect a required
+  surface.
+- `skip`: doctor did not have enough local state to run that check, such as a
+  missing Dev or Container binding.
+
+Doctor coordinates existing inspection surfaces instead of replacing them. Use
+the `next` commands in doctor output to continue with the focused command that
+owns the surface, including `sporades security`, `sporades env`, `sporades
+deploy ssh`, `sporades host health`, `sporades host stats`, `sporades host
+logs`, and `sporades host ssh`.
+
+Doctor output avoids secrets. It may include fingerprints, counts, paths, and
+structured state, but it must not print private keys, full Server env values, or
+full SSH public-key material.
+
 ## Troubleshooting
 
 - `Unknown command`: run `sporades --help`.
