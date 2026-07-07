@@ -20,6 +20,7 @@ and whether the work belongs in one release or separate tracks.
 
 | Feature | Status | Why it matters | Planning |
 | --- | --- | --- | --- |
+| User journey tracker | design | Gives Capsule authors an opt-in way to understand active user state and journey progress without exposing Sporades user identity, enabling online/viewing/typing-style UI, support diagnostics, and lightweight collaboration cues. | Needs PRD. Use the Data And Auth Helpers roadmap note as the source planning artifact. |
 | Verify transaction coverage for every DB write | ready | Audits and hardens transaction coverage for app-table mutations, auth and preference writes, file metadata workflows, schema/system metadata, log index writes, and hosted-runtime database writes where applicable. | `.scratch/verify-transaction-coverage/PRD.md` |
 
 ## Recently Implemented
@@ -37,6 +38,7 @@ longer belongs in the next-feature queue.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
+| User journey tracker | design | Add a runtime-owned tracker, exposed through `sporades/client`, that remains disabled until client code explicitly enables it for the current Sporades user. Once enabled, Sporades creates a unique opaque `sessionId` for that browser/session and uses that identifier, not the user ID, on app-visible journey records. The tracker should store the user's current status plus optional JSON metadata such as route, view, focus state, typing state, or workflow step, with heartbeat/expiry semantics so stale status is cleaned up. The shape can follow [Appwrite Presences](https://appwrite.io/docs/products/auth/presences) as an indicative guide: a status string, metadata object, expiry/cleanup, and realtime change notifications. The Sporades design must stay privacy-first: explicit per-user enablement, no PII by default, clear disable/delete behavior, server-side linkage to auth only where needed for ownership, and app-facing APIs that deal in anonymous session status rather than identity. |
 | Root server role | candidate | Define a privileged server-side role that can perform API actions without normal user authentication and may inspect runtime-owned non-app resources that normal app ACL helpers cannot see. Needs sharp boundaries so it remains a server/runtime capability, not a browser credential. |
 | Teams for ACL | deferred | Add team membership as a platform concept after Database and storage ACL rules are designed. Creator is team admin; admins can invite, approve requests, promote admins, revoke membership; users can request membership, list pending requests, list teams, and leave teams. |
 
