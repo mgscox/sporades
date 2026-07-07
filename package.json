@@ -11,6 +11,7 @@
     "bin/",
     "dist/",
     "src/types/",
+    "CHANGES.md",
     "Dockerfile.base",
     "README.md"
   ],
@@ -27,6 +28,7 @@
   "scripts": {
     "build": "tsc --project tsconfig.json && node ./scripts/build-bin.mjs",
     "docs:api": "typedoc",
+    "package": "node ./scripts/package.mjs",
     "typecheck": "tsc --project tsconfig.json --noEmit",
     "pretest": "npm run build && node ./scripts/check-generated-bin.mjs",
     "test": "node --test --test-concurrency=1",
