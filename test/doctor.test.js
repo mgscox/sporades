@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
+import { createServer } from "node:http";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { doctorShouldExitNonZero } from "../dist/cli/doctor.js";
@@ -136,6 +136,154 @@ async function installFakeReact(projectDir) {
     {
       "client.js": "export function createRoot() { return { render() {} }; }\n",
     },
+  );
+}
+
+async function installFakeDocker(dir, options = {}) {
+  const fakeBinDir = path.join(dir, "fake-bin");
+  const logPath = path.join(dir, "docker-calls.jsonl");
+  const dockerPath = path.join(fakeBinDir, "docker");
+  await mkdir(fakeBinDir, { recursive: true });
+  await writeFile(
+    dockerPath,
+    `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const call = { args: process.argv.slice(2), cwd: process.cwd() };
+appendFileSync(process.env.FAKE_DOCKER_LOG, JSON.stringify(call) + "\\n");
+if (process.env.FAKE_DOCKER_MISSING === "1") {
+  process.stderr.write("docker missing\\n");
+  process.exit(127);
+}
+if (call.args[0] === "version") {
+  process.stdout.write("Docker version 27.0.0\\n");
+  process.exit(0);
+}
+if (call.args[0] === "compose" && call.args[1] === "version") {
+  if (process.env.FAKE_DOCKER_COMPOSE_MISSING === "1") {
+    process.stderr.write("compose missing\\n");
+    process.exit(1);
+  }
+  process.stdout.write("Docker Compose version v2.29.0\\n");
+  process.exit(0);
+}
+if (call.args[0] === "inspect") {
+  if (process.env.FAKE_DOCKER_INSPECT_MISSING === "1") {
+    process.stderr.write("Error response from daemon: No such container\\n");
+    process.exit(1);
+  }
+  process.stdout.write((process.env.FAKE_DOCKER_INSPECT_JSON || JSON.stringify({
+    State: { Running: true },
+    Config: {
+      User: "501:20",
+      Labels: {
+        "com.sporades.base-image.name": "sporades-base",
+        "com.sporades.base-image.version": "0.1.0-node22-alpine",
+        "com.sporades.base-image.update-policy": "host-managed"
+      }
+    },
+    HostConfig: {
+      ReadonlyRootfs: true,
+      RestartPolicy: { Name: "unless-stopped" }
+    },
+    Mounts: [
+      { Source: "/tmp/build/server.mjs", Destination: "/app/server.mjs", Mode: "ro", RW: false },
+      { Source: "/tmp/build/client.js", Destination: "/app/client.js", Mode: "ro", RW: false },
+      { Source: "/tmp/index.html", Destination: "/app/index.html", Mode: "ro", RW: false },
+      { Source: "/tmp/sporades.json", Destination: "/app/sporades.json", Mode: "ro", RW: false },
+      { Source: "/tmp/data", Destination: "/app/data", Mode: "rw", RW: true }
+    ],
+    NetworkSettings: {
+      Ports: {
+        "4000/tcp": [{ HostIp: "127.0.0.1", HostPort: "4000" }],
+        "22/tcp": [{ HostIp: "127.0.0.1", HostPort: "49162" }]
+      },
+      Networks: { "sporades-doctor-island-services": {} }
+    }
+  })) + "\\n");
+  process.exit(0);
+}
+if (call.args[0] === "network" && call.args[1] === "inspect") {
+  process.exit(Number(process.env.FAKE_DOCKER_NETWORK_STATUS || "0"));
+}
+if (call.args[0] === "compose" && call.args.includes("ps")) {
+  process.stdout.write((process.env.FAKE_DOCKER_COMPOSE_PS_OUTPUT || JSON.stringify({ State: "running", Health: "healthy" })) + "\\n");
+  process.exit(0);
+}
+if (call.args[0] === "compose" && call.args.includes("port")) {
+  process.stdout.write(process.env.FAKE_DOCKER_COMPOSE_PORT_OUTPUT || "127.0.0.1:49170\\n");
+  process.exit(0);
+}
+process.stderr.write("unexpected docker call: " + call.args.join(" ") + "\\n");
+process.exit(1);
+`,
+  );
+  await chmod(dockerPath, 0o755);
+
+  return {
+    env: {
+      PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
+      FAKE_DOCKER_LOG: logPath,
+      FAKE_DOCKER_MISSING: options.missing ? "1" : "",
+      FAKE_DOCKER_COMPOSE_MISSING: options.composeMissing ? "1" : "",
+      FAKE_DOCKER_INSPECT_MISSING: options.inspectMissing ? "1" : "",
+      FAKE_DOCKER_NETWORK_STATUS: String(options.networkStatus ?? 0),
+      FAKE_DOCKER_INSPECT_JSON: options.inspectJson ? JSON.stringify(options.inspectJson) : "",
+      FAKE_DOCKER_COMPOSE_PS_OUTPUT: options.composePsOutput ?? "",
+      FAKE_DOCKER_COMPOSE_PORT_OUTPUT: options.composePortOutput ?? "",
+    },
+    async calls() {
+      let raw = "";
+      try {
+        raw = await readFile(logPath, "utf8");
+      } catch (error) {
+        if (error.code === "ENOENT") return [];
+        throw error;
+      }
+      return raw.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+    },
+  };
+}
+
+async function withListeningPort(fn) {
+  const server = createServer((_request, response) => {
+    response.writeHead(200);
+    response.end("ok");
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    return await fn(server.address().port);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+async function writeDevSession(projectDir, overrides = {}) {
+  await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
+  await writeFile(
+    path.join(projectDir, ".sporades", "dev-session.json"),
+    `${JSON.stringify(
+      {
+        url: "http://localhost:4000",
+        port: 4000,
+        pid: 12345,
+        session: "dev",
+        publicDev: false,
+        ...overrides,
+      },
+      null,
+      2,
+    )}\n`,
+  );
+}
+
+async function writeContainerBinding(projectDir, overrides = {}) {
+  await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
+  await writeFile(
+    path.join(projectDir, ".sporades", "binding.json"),
+    `${JSON.stringify({ containerId: "container-doctor", containerName: "sporades-doctor-island", ...overrides }, null, 2)}\n`,
   );
 }
 
@@ -554,8 +702,7 @@ test("sporades doctor human output groups checks by severity", async () => {
     assert.equal(result.code, 0, result.stderr);
     assert.equal(result.stderr, "");
     assert.match(result.stdout, /^Sporades doctor/);
-    assert.match(result.stdout, /\nINFO\n/);
-    assert.match(result.stdout, /- \[skip\] Dev session diagnostics pending:/);
+    assert.match(result.stdout, /- \[skip\] Dev session binding:/);
     assert.match(result.stdout, /\nINFO\n- \[pass\] Doctor command surface:/);
     assert.doesNotMatch(result.stdout, /WARNING/);
     assert.doesNotMatch(result.stdout, /ERROR/);
@@ -628,12 +775,12 @@ test("sporades doctor hosted human output includes exact follow-up commands", as
   });
 });
 
-test("sporades doctor skips placeholder session checks without failing strict mode", async () => {
+test("sporades doctor skips unavailable local runtime checks without failing strict mode", async () => {
   await withTempDir(async (dir) => {
     const projectDir = await createProject(dir);
     const normal = await runCli(["doctor", "--session", "container", "--json"], { cwd: projectDir });
     assert.equal(normal.code, 0, normal.stderr);
-    assert.equal(JSON.parse(normal.stdout).data.summary.skip, 1);
+    assert.equal(JSON.parse(normal.stdout).data.summary.skip, 2);
 
     const strict = await runCli(["doctor", "--session", "container", "--strict", "--json"], { cwd: projectDir });
     assert.equal(strict.code, 0, strict.stderr);
@@ -643,7 +790,7 @@ test("sporades doctor skips placeholder session checks without failing strict mo
     assert.equal(envelope.data.strict, true);
     assert.equal(envelope.data.summary.warn, 0);
     assert.equal(envelope.data.summary.fail, 0);
-    assert.equal(envelope.data.summary.skip, 1);
+    assert.equal(envelope.data.summary.skip, 2);
   });
 });
 
@@ -727,6 +874,48 @@ test("sporades doctor warns for requested or running Public Dev posture", async 
   });
 });
 
+test("sporades doctor reports healthy Dev session binding and port reachability", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createProject(dir, "dev-runtime-island");
+    await withListeningPort(async (port) => {
+      await writeDevSession(projectDir, {
+        url: `http://localhost:${port}`,
+        port,
+        publicDev: false,
+      });
+
+      const result = await runCli(["doctor", "--session", "dev", "--json"], { cwd: projectDir });
+
+      assert.equal(result.code, 0, result.stderr);
+      const envelope = JSON.parse(result.stdout);
+      const binding = findCheck(envelope, "doctor.dev.binding");
+      const reachability = findCheck(envelope, "doctor.dev.port-reachability");
+      assert.equal(binding.status, "pass");
+      assert.equal(reachability.status, "pass");
+      assert.deepEqual(binding.commands, ["sporades dev status"]);
+      assert.equal(reachability.details.port, port);
+      assert.equal(findCheck(envelope, "doctor.public-dev-posture").details.runningPublicDev, false);
+    });
+  });
+});
+
+test("sporades doctor warns on missing and stale Dev session bindings", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createProject(dir, "stale-dev-island");
+
+    const missing = await runCli(["doctor", "--session", "dev", "--json"], { cwd: projectDir });
+    assert.equal(missing.code, 0, missing.stderr);
+    assert.equal(findCheck(JSON.parse(missing.stdout), "doctor.dev.binding").status, "skip");
+
+    await writeDevSession(projectDir, { port: 9, url: "http://localhost:9" });
+    const stale = await runCli(["doctor", "--session", "dev", "--json"], { cwd: projectDir });
+    assert.equal(stale.code, 0, stale.stderr);
+    const reachability = findCheck(JSON.parse(stale.stdout), "doctor.dev.port-reachability");
+    assert.equal(reachability.status, "warn");
+    assert.match(reachability.hint, /sporades dev status/);
+  });
+});
+
 test("sporades doctor warns on permissive Container and Hosted security posture", async () => {
   await withTempDir(async (dir) => {
     const projectDir = await createProject(dir, "permissive-island");
@@ -762,6 +951,167 @@ test("sporades doctor warns on permissive Container and Hosted security posture"
     });
     assert.equal(hosted.code, 1, hosted.stderr);
     assert.equal(findCheck(JSON.parse(hosted.stdout), "doctor.security-policy").status, "warn");
+  });
+});
+
+
+test("sporades doctor reports healthy local Container runtime hardening with fake Docker", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createProject(dir, "container-runtime-island");
+    await writeContainerBinding(projectDir);
+    const docker = await installFakeDocker(dir);
+
+    const result = await runCli(["doctor", "--session", "container", "--json"], { cwd: projectDir, env: docker.env });
+
+    assert.equal(result.code, 0, result.stderr);
+    const envelope = JSON.parse(result.stdout);
+    assert.equal(findCheck(envelope, "doctor.container.binding").status, "pass");
+    assert.equal(findCheck(envelope, "doctor.container.running-state").status, "pass");
+    const policy = findCheck(envelope, "doctor.container.runtime-policy");
+    assert.equal(policy.status, "pass");
+    assert.deepEqual(policy.commands, ["sporades deploy status", "sporades deploy ssh"]);
+    assert.deepEqual(policy.details.baseImageLabels, {
+      name: "sporades-base",
+      version: "0.1.0-node22-alpine",
+      updatePolicy: "host-managed",
+    });
+    assert.equal(policy.details.runtimeUser, "501:20");
+    assert.equal(policy.details.readOnlyReleaseMounts, true);
+    assert.equal(policy.details.writableDataMount, true);
+    assert.equal(policy.details.loopbackOnlyPublishedPorts, true);
+
+    const mutatingDockerCommands = new Set(["run", "start", "stop", "restart", "rm", "pull", "build", "rmi"]);
+    const calls = await docker.calls();
+    assert.equal(calls.some((call) => mutatingDockerCommands.has(call.args[0])), false);
+    assert.equal(calls.some((call) => call.args[0] === "compose" && ["up", "down", "build", "pull"].some((verb) => call.args.includes(verb))), false);
+  });
+});
+
+test("sporades doctor warns when a required release mount is missing", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createProject(dir, "missing-release-mount-island");
+    await writeContainerBinding(projectDir);
+    const docker = await installFakeDocker(dir, {
+      inspectJson: {
+        State: { Running: true },
+        Config: {
+          User: "501:20",
+          Labels: {
+            "com.sporades.base-image.name": "sporades-base",
+            "com.sporades.base-image.version": "0.1.0-node22-alpine",
+            "com.sporades.base-image.update-policy": "host-managed",
+          },
+        },
+        HostConfig: {
+          ReadonlyRootfs: true,
+          RestartPolicy: { Name: "unless-stopped" },
+        },
+        Mounts: [
+          { Source: "/tmp/build/server.mjs", Destination: "/app/server.mjs", Mode: "ro", RW: false },
+          { Source: "/tmp/build/client.js", Destination: "/app/client.js", Mode: "ro", RW: false },
+          { Source: "/tmp/index.html", Destination: "/app/index.html", Mode: "ro", RW: false },
+          { Source: "/tmp/data", Destination: "/app/data", Mode: "rw", RW: true },
+        ],
+        NetworkSettings: {
+          Ports: {
+            "4000/tcp": [{ HostIp: "127.0.0.1", HostPort: "4000" }],
+          },
+        },
+      },
+    });
+
+    const result = await runCli(["doctor", "--session", "container", "--json"], { cwd: projectDir, env: docker.env });
+
+    assert.equal(result.code, 0, result.stderr);
+    const policy = findCheck(JSON.parse(result.stdout), "doctor.container.runtime-policy");
+    assert.equal(policy.status, "warn");
+    assert.equal(policy.details.readOnlyReleaseMounts, false);
+    assert.equal(policy.details.writableDataMount, true);
+  });
+});
+
+test("sporades doctor reports missing binding, stopped container, stale binding, and missing Docker", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createProject(dir, "container-problem-island");
+
+    const missingBinding = await runCli(["doctor", "--session", "container", "--json"], { cwd: projectDir });
+    assert.equal(missingBinding.code, 0, missingBinding.stderr);
+    assert.equal(findCheck(JSON.parse(missingBinding.stdout), "doctor.container.binding").status, "skip");
+
+    await writeContainerBinding(projectDir);
+    const stoppedDocker = await installFakeDocker(path.join(dir, "stopped"), {
+      inspectJson: {
+        State: { Running: false },
+        Config: { User: "501:20", Labels: {} },
+        HostConfig: { ReadonlyRootfs: false, RestartPolicy: { Name: "no" }, Mounts: [] },
+        NetworkSettings: { Ports: {} },
+      },
+    });
+    const stopped = await runCli(["doctor", "--session", "container", "--json"], { cwd: projectDir, env: stoppedDocker.env });
+    assert.equal(stopped.code, 0, stopped.stderr);
+    assert.equal(findCheck(JSON.parse(stopped.stdout), "doctor.container.running-state").status, "warn");
+
+    const staleDocker = await installFakeDocker(path.join(dir, "stale"), { inspectMissing: true });
+    const stale = await runCli(["doctor", "--session", "container", "--json"], { cwd: projectDir, env: staleDocker.env });
+    assert.equal(stale.code, 1, stale.stderr);
+    assert.equal(findCheck(JSON.parse(stale.stdout), "doctor.container.running-state").status, "fail");
+
+    const missingDocker = await installFakeDocker(path.join(dir, "missing-docker"), { missing: true });
+    const missing = await runCli(["doctor", "--session", "container", "--json"], { cwd: projectDir, env: missingDocker.env });
+    assert.equal(missing.code, 1, missing.stderr);
+    const availability = findCheck(JSON.parse(missing.stdout), "doctor.container.docker-availability");
+    assert.equal(availability.status, "fail");
+    assert.match(availability.hint, /Install or start Docker/);
+  });
+});
+
+test("sporades doctor reports Capsule services, drift, unhealthy services, missing Compose, and no declarations", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createProject(dir, "doctor-island");
+    const docker = await installFakeDocker(dir, {
+      composePsOutput: JSON.stringify({ State: "running", Health: "healthy" }),
+      composePortOutput: "127.0.0.1:49170\n",
+    });
+
+    const noServices = await runCli(["doctor", "--session", "dev", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(noServices.code, 0, noServices.stderr);
+    assert.equal(findCheck(JSON.parse(noServices.stdout), "doctor.services.declarations").status, "skip");
+
+    await updateSporadesConfig(projectDir, (config) => {
+      config.services = {
+        database: { kind: "database", engine: "libsql" },
+        storage: { kind: "storage", engine: "minio" },
+      };
+    });
+    await mkdir(path.join(projectDir, ".sporades", "compose"), { recursive: true });
+    await writeFile(path.join(projectDir, ".sporades", "compose", "capsule-services.compose.yml"), "# stale generated state\n");
+    await mkdir(path.join(projectDir, ".sporades", "services", "storage"), { recursive: true });
+
+    const drift = await runCli(["doctor", "--session", "dev", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(drift.code, 0, drift.stderr);
+    const driftEnvelope = JSON.parse(drift.stdout);
+    assert.equal(findCheck(driftEnvelope, "doctor.services.declarations").status, "pass");
+    assert.equal(findCheck(driftEnvelope, "doctor.services.generated-compose").status, "warn");
+    const runtime = findCheck(driftEnvelope, "doctor.services.runtime-state");
+    assert.equal(runtime.status, "warn");
+    assert.equal(runtime.details.services.database.volume.exists, false);
+    assert.equal(runtime.details.services.storage.health, "healthy");
+    assert.deepEqual(runtime.commands, ["sporades deploy status", "sporades deploy restart", "sporades deploy reset"]);
+
+    const unhealthyDocker = await installFakeDocker(path.join(dir, "unhealthy"), {
+      composePsOutput: JSON.stringify({ State: "running", Health: "unhealthy" }),
+    });
+    const unhealthy = await runCli(["doctor", "--session", "dev", "--json"], { cwd: projectDir, env: unhealthyDocker.env });
+    assert.equal(unhealthy.code, 0, unhealthy.stderr);
+    assert.equal(findCheck(JSON.parse(unhealthy.stdout), "doctor.services.runtime-state").status, "warn");
+
+    const missingComposeDocker = await installFakeDocker(path.join(dir, "missing-compose"), { composeMissing: true });
+    const missingCompose = await runCli(["doctor", "--session", "dev", "--json"], {
+      cwd: projectDir,
+      env: missingComposeDocker.env,
+    });
+    assert.equal(missingCompose.code, 0, missingCompose.stderr);
+    assert.equal(findCheck(JSON.parse(missingCompose.stdout), "doctor.services.compose-availability").status, "skip");
   });
 });
 
