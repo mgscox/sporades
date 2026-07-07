@@ -1,6 +1,13 @@
-import { readFile } from "node:fs/promises";
+import { spawnSync } from "node:child_process";
+import { lstat, readFile } from "node:fs/promises";
+import { connect } from "node:net";
 import path from "node:path";
 
+import {
+  CAPSULE_SERVICES_COMPOSE_FILE,
+  CAPSULE_SERVICES_STATE_DIR,
+  capsuleServicesComposeModel,
+} from "../capsule-services.js";
 import { bundleServerCapsuleModule } from "../bundle-pipeline.js";
 import { schemaFromCapsuleDefinition } from "../server-runtime-source.js";
 import type { LooseRecord } from "./cli-support.js";
@@ -48,7 +55,15 @@ export async function runDoctorChecks(options: LooseRecord) {
   }
 
   if (options.session) {
-    checks.push(sessionDoctorPlaceholderCheck(options));
+    if (options.session === "dev" || options.session === "public-dev") {
+      checks.push(...await devSessionChecks(options));
+      checks.push(...await localCapsuleServiceChecks(project.config, options));
+    } else if (options.session === "container") {
+      checks.push(...await localContainerChecks(options));
+      checks.push(...await localCapsuleServiceChecks(project.config, options));
+    } else {
+      checks.push(sessionDoctorPlaceholderCheck(options));
+    }
   }
 
   return checks;
@@ -149,20 +164,26 @@ function securityPolicyHint(warnings: string[]) {
 
 async function publicDevPostureCheck(options: LooseRecord) {
   const runningPublicDev = await readRunningPublicDevSession(options.projectDir);
-  if (options.session !== "public-dev" && !runningPublicDev) {
+  const devSessionRequested = options.session === "dev" || options.session === "public-dev";
+  if (!devSessionRequested && !runningPublicDev) {
     return null;
   }
+  const warn = options.session === "public-dev" || runningPublicDev;
 
   return {
     id: "doctor.public-dev-posture",
     title: "Public Dev posture",
     scope: "dev",
-    status: "warn",
-    severity: "warning",
-    message: options.session === "public-dev"
-      ? "Doctor is targeting Public Dev session posture."
-      : "A running Dev session appears to be public.",
-    hint: "Use Public Dev sessions only for temporary demos, device testing, or tunnels, and return to `sporades dev` when finished.",
+    status: warn ? "warn" : "pass",
+    severity: warn ? "warning" : "info",
+    message: warn
+      ? (options.session === "public-dev"
+        ? "Doctor is targeting Public Dev session posture."
+        : "A running Dev session appears to be public.")
+      : "Dev session posture is local-only; Public Dev is not active.",
+    ...(warn
+      ? { hint: "Use Public Dev sessions only for temporary demos, device testing, or tunnels, and return to `sporades dev` when finished." }
+      : {}),
     commands: ["sporades dev status"],
     details: {
       requestedPublicDev: options.session === "public-dev",
@@ -346,6 +367,530 @@ function capsuleMetadataLoadFailureCheck(error: unknown) {
 
 function doctorScope(session: string) {
   return session === "public-dev" ? "dev" : session;
+}
+
+async function devSessionChecks(options: LooseRecord) {
+  const session = await readOptionalJsonFile(path.join(options.projectDir, ".sporades", "dev-session.json"));
+  if (!session) {
+    return [
+      {
+        id: "doctor.dev.binding",
+        title: "Dev session binding",
+        scope: "dev",
+        status: "skip",
+        severity: "info",
+        message: "No Dev session binding was found in the Runtime directory.",
+        hint: "Run `sporades dev status` to inspect Dev session state, or start one with `sporades dev`.",
+        commands: ["sporades dev status"],
+        details: {
+          bindingPath: path.join(".sporades", "dev-session.json"),
+          exists: false,
+        },
+      },
+      {
+        id: "doctor.dev.port-reachability",
+        title: "Dev session port reachability",
+        scope: "dev",
+        status: "skip",
+        severity: "info",
+        message: "Port reachability was not checked because no Dev session binding was found.",
+        commands: ["sporades dev status"],
+      },
+    ];
+  }
+
+  const port = Number(session.port);
+  const bindingValid = Number.isInteger(port) && port > 0;
+  const reachable = bindingValid ? await isTcpPortReachable("127.0.0.1", port) : false;
+  return [
+    {
+      id: "doctor.dev.binding",
+      title: "Dev session binding",
+      scope: "dev",
+      status: bindingValid ? "pass" : "warn",
+      severity: bindingValid ? "info" : "warning",
+      message: bindingValid
+        ? `Dev session binding points to ${session.url ?? `http://localhost:${port}`}.`
+        : "Dev session binding exists but does not include a valid port.",
+      hint: bindingValid ? "Inspect live Dev state with `sporades dev status`." : "Restart the Dev session with `sporades dev`.",
+      commands: ["sporades dev status"],
+      details: {
+        bindingPath: path.join(".sporades", "dev-session.json"),
+        exists: true,
+        port: bindingValid ? port : null,
+        pid: session.pid ?? null,
+        publicDev: Boolean(session.publicDev),
+      },
+    },
+    {
+      id: "doctor.dev.port-reachability",
+      title: "Dev session port reachability",
+      scope: "dev",
+      status: reachable ? "pass" : "warn",
+      severity: reachable ? "info" : "warning",
+      message: reachable
+        ? `Dev session port ${port} is reachable on loopback.`
+        : `Dev session binding points to port ${bindingValid ? port : "unknown"}, but loopback connection failed.`,
+      hint: reachable
+        ? "Inspect live Dev state with `sporades dev status`."
+        : "Run `sporades dev status`; if the session is stale, restart it with `sporades dev`.",
+      commands: ["sporades dev status"],
+      details: {
+        host: "127.0.0.1",
+        port: bindingValid ? port : null,
+        reachable,
+      },
+    },
+  ];
+}
+
+async function localContainerChecks(options: LooseRecord) {
+  const bindingPath = path.join(options.projectDir, ".sporades", "binding.json");
+  const binding = await readOptionalJsonFile(bindingPath);
+  if (!binding?.containerId) {
+    return [
+      {
+        id: "doctor.container.binding",
+        title: "Container session binding",
+        scope: "container",
+        status: "skip",
+        severity: "info",
+        message: "No local Container binding was found in the Runtime directory.",
+        hint: "Run `sporades deploy status` to inspect local Container session state, or start one with `sporades deploy`.",
+        commands: ["sporades deploy status"],
+        details: {
+          bindingPath: path.join(".sporades", "binding.json"),
+          exists: false,
+        },
+      },
+    ];
+  }
+
+  const checks: LooseRecord[] = [
+    {
+      id: "doctor.container.binding",
+      title: "Container session binding",
+      scope: "container",
+      status: "pass",
+      severity: "info",
+      message: `Container binding points to ${binding.containerName ?? binding.containerId}.`,
+      hint: "Inspect local Container state with `sporades deploy status`.",
+      commands: ["sporades deploy status"],
+      details: {
+        bindingPath: path.join(".sporades", "binding.json"),
+        exists: true,
+        containerId: binding.containerId,
+        containerName: binding.containerName ?? null,
+      },
+    },
+  ];
+  const docker = dockerAvailabilityCheck("container", true);
+  checks.push(docker);
+  if (docker.status === "fail" || docker.status === "skip") {
+    return checks;
+  }
+
+  const inspected = inspectDockerJson(["inspect", "--format", "{{json .}}", binding.containerId], options.projectDir);
+  if (!inspected.ok) {
+    checks.push({
+      id: "doctor.container.running-state",
+      title: "Container running state",
+      scope: "container",
+      status: "fail",
+      severity: "error",
+      message: "The Container binding is stale or Docker could not inspect the bound container.",
+      hint: "Run `sporades deploy status`. If the bound container was removed, use `sporades deploy reset` before deploying again.",
+      commands: ["sporades deploy status", "sporades deploy reset"],
+      details: {
+        containerId: binding.containerId,
+        error: inspected.error,
+      },
+    });
+    return checks;
+  }
+
+  const container = inspected.value;
+  const running = Boolean(container?.State?.Running);
+  checks.push({
+    id: "doctor.container.running-state",
+    title: "Container running state",
+    scope: "container",
+    status: running ? "pass" : "warn",
+    severity: running ? "info" : "warning",
+    message: running ? "The bound local Container is running." : "The bound local Container is not running.",
+    hint: running ? "Inspect local Container state with `sporades deploy status`." : "Restart it with `sporades deploy restart`.",
+    commands: running ? ["sporades deploy status"] : ["sporades deploy status", "sporades deploy restart"],
+    details: {
+      containerId: binding.containerId,
+      running,
+      state: container?.State ?? null,
+    },
+  });
+  checks.push(containerRuntimePolicyCheck(container));
+  return checks;
+}
+
+function containerRuntimePolicyCheck(container: LooseRecord) {
+  const labels = container?.Config?.Labels ?? {};
+  const mounts = containerInspectMounts(container);
+  const ports = container?.NetworkSettings?.Ports ?? {};
+  const baseImageLabels = {
+    name: labels["com.sporades.base-image.name"] ?? null,
+    version: labels["com.sporades.base-image.version"] ?? null,
+    updatePolicy: labels["com.sporades.base-image.update-policy"] ?? null,
+  };
+  const readOnlyReleaseMounts = ["/app/server.mjs", "/app/client.js", "/app/index.html", "/app/sporades.json"].every((target) => {
+    const mount = mounts.find((candidate: LooseRecord) => candidate.Target === target || candidate.Destination === target);
+    return Boolean(mount && mountIsReadOnly(mount));
+  });
+  const dataMount = mounts.find((candidate: LooseRecord) => candidate.Target === "/app/data" || candidate.Destination === "/app/data");
+  const writableDataMount = Boolean(dataMount && !mountIsReadOnly(dataMount));
+  const loopbackOnlyPublishedPorts = Object.values(ports).every((entries) =>
+    !Array.isArray(entries) || entries.length === 0 || entries.every((entry) => entry?.HostIp === "127.0.0.1"),
+  );
+  const ok = Boolean(
+    baseImageLabels.name &&
+    baseImageLabels.version &&
+    baseImageLabels.updatePolicy &&
+    container?.Config?.User &&
+    container?.HostConfig?.ReadonlyRootfs === true &&
+    readOnlyReleaseMounts &&
+    writableDataMount &&
+    container?.HostConfig?.RestartPolicy?.Name &&
+    loopbackOnlyPublishedPorts,
+  );
+  return {
+    id: "doctor.container.runtime-policy",
+    title: "Container runtime policy",
+    scope: "container",
+    status: ok ? "pass" : "warn",
+    severity: ok ? "info" : "warning",
+    message: ok
+      ? "Container runtime hardening and Base image metadata are visible."
+      : "Some Container runtime hardening or Base image metadata is missing from Docker inspection.",
+    hint: ok
+      ? "Inspect Container details with `sporades deploy status` or SSH state with `sporades deploy ssh`."
+      : "Run `sporades deploy status`; if runtime state is stale, use `sporades deploy restart` or `sporades deploy reset`.",
+    commands: ok
+      ? ["sporades deploy status", "sporades deploy ssh"]
+      : ["sporades deploy status", "sporades deploy restart", "sporades deploy reset", "sporades deploy ssh"],
+    details: {
+      baseImageLabels,
+      runtimeUser: container?.Config?.User ?? null,
+      readOnlyRootFilesystem: container?.HostConfig?.ReadonlyRootfs === true,
+      readOnlyReleaseMounts,
+      writableDataMount,
+      restartPolicy: container?.HostConfig?.RestartPolicy?.Name ?? null,
+      loopbackOnlyPublishedPorts,
+      ports,
+    },
+  };
+}
+
+function containerInspectMounts(container: LooseRecord) {
+  if (Array.isArray(container?.Mounts)) {
+    return container.Mounts;
+  }
+  if (Array.isArray(container?.HostConfig?.Mounts)) {
+    return container.HostConfig.Mounts;
+  }
+  return [];
+}
+
+function mountIsReadOnly(mount: LooseRecord) {
+  if (mount.ReadOnly === true || mount.RW === false) {
+    return true;
+  }
+  if (typeof mount.Mode === "string") {
+    return mount.Mode.split(",").includes("ro");
+  }
+  return false;
+}
+
+async function localCapsuleServiceChecks(config: LooseRecord, options: LooseRecord) {
+  const capsuleServices = localCapsuleServicesFromConfig(config, options.projectDir);
+  if (!capsuleServices) {
+    return [
+      {
+        id: "doctor.services.declarations",
+        title: "Capsule service declarations",
+        scope: doctorScope(options.session),
+        status: "skip",
+        severity: "info",
+        message: "No Capsule services are declared in sporades.json.",
+        hint: "Declare services in sporades.json when this Capsule needs local runtime companions.",
+        commands: ["sporades deploy status"],
+        details: {
+          declared: false,
+          services: {},
+        },
+      },
+    ];
+  }
+
+  const checks: LooseRecord[] = [
+    {
+      id: "doctor.services.declarations",
+      title: "Capsule service declarations",
+      scope: doctorScope(options.session),
+      status: "pass",
+      severity: "info",
+      message: `Capsule services are declared: ${Object.keys(capsuleServices.services).join(", ")}.`,
+      commands: ["sporades deploy status"],
+      details: {
+        declared: true,
+        services: Object.fromEntries(
+          Object.entries(capsuleServices.services).map(([name, service]) => [
+            name,
+            {
+              kind: service.kind,
+              engine: service.engine,
+              containerName: service.name,
+              targetPort: service.targetPort,
+            },
+          ]),
+        ),
+      },
+    },
+  ];
+  const docker = dockerAvailabilityCheck(doctorScope(options.session), options.session === "container", "services");
+  checks.push(docker);
+  const compose = docker.status === "pass"
+    ? dockerComposeAvailabilityCheck(doctorScope(options.session), options.session === "container")
+    : docker;
+  if (docker.status === "pass") {
+    checks.push(compose);
+  }
+  checks.push(await generatedComposeCheck(capsuleServices, options.projectDir, doctorScope(options.session)));
+  if (docker.status !== "pass" || compose.status !== "pass") {
+    return checks;
+  }
+  checks.push(await capsuleServicesRuntimeStateCheck(capsuleServices, options.projectDir, doctorScope(options.session)));
+  return checks;
+}
+
+function localCapsuleServicesFromConfig(config: LooseRecord, projectDir: string) {
+  if (!config.services?.database && !config.services?.storage) {
+    return null;
+  }
+  return {
+    path: path.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
+    relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
+    ...capsuleServicesComposeModel(config, projectDir),
+  };
+}
+
+async function generatedComposeCheck(capsuleServices: LooseRecord, projectDir: string, scope: string) {
+  const composePath = path.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
+  let raw = "";
+  try {
+    raw = await readFile(composePath, "utf8");
+  } catch (error) {
+    if (errorDetails(error).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  const missingServices = (Object.values(capsuleServices.services) as LooseRecord[])
+    .filter((service: LooseRecord) => !raw.includes(service.name))
+    .map((service: LooseRecord) => service.name);
+  const exists = raw.length > 0;
+  const ok = exists && missingServices.length === 0;
+  return {
+    id: "doctor.services.generated-compose",
+    title: "Capsule services generated Compose state",
+    scope,
+    status: ok ? "pass" : "warn",
+    severity: ok ? "info" : "warning",
+    message: ok
+      ? "Generated Capsule services Compose file matches declared service names."
+      : exists
+        ? "Generated Capsule services Compose file appears stale for current sporades.json declarations."
+        : "Generated Capsule services Compose file is missing for declared services.",
+    hint: "Run `sporades deploy status`; use `sporades deploy restart` or `sporades deploy reset` if Runtime directory state is stale.",
+    commands: ["sporades deploy status", "sporades deploy restart", "sporades deploy reset"],
+    details: {
+      composeFile: CAPSULE_SERVICES_COMPOSE_FILE,
+      exists,
+      missingServices,
+    },
+  };
+}
+
+async function capsuleServicesRuntimeStateCheck(capsuleServices: LooseRecord, projectDir: string, scope: string) {
+  const services: LooseRecord = {};
+  const diagnostics: LooseRecord[] = [];
+  const networkExists = dockerStatus(["network", "inspect", capsuleServices.networks.services], projectDir) === 0;
+  for (const [name, service] of Object.entries(capsuleServices.services) as Array<[string, LooseRecord]>) {
+    const runtime = inspectComposeService(capsuleServices.path, service.name, projectDir);
+    const port = inspectComposeServicePort(capsuleServices.path, service.name, service.targetPort, projectDir);
+    const volumeExists = await pathExists(service.stateDir);
+    if (runtime.error) {
+      diagnostics.push({ service: name, code: "compose-status-unavailable", message: runtime.error });
+    }
+    if (!volumeExists) {
+      diagnostics.push({ service: name, code: "missing-service-state", message: "Capsule service state directory is missing." });
+    }
+    services[name] = {
+      declared: true,
+      engine: service.engine,
+      status: runtime.state,
+      health: runtime.health,
+      port,
+      network: {
+        name: capsuleServices.networks.services,
+        exists: networkExists,
+      },
+      volume: {
+        type: "bind",
+        path: path.join(CAPSULE_SERVICES_STATE_DIR, name),
+        exists: volumeExists,
+      },
+      containerName: service.name,
+      composeFile: capsuleServices.relativePath,
+    };
+  }
+  const unhealthy = Object.values(services).some((service: LooseRecord) =>
+    service.status && service.status !== "running" || service.health === "unhealthy" || !service.network.exists || !service.volume.exists,
+  );
+  const ok = diagnostics.length === 0 && !unhealthy;
+  return {
+    id: "doctor.services.runtime-state",
+    title: "Capsule services runtime state",
+    scope,
+    status: ok ? "pass" : "warn",
+    severity: ok ? "info" : "warning",
+    message: ok
+      ? "Capsule service containers, ports, networks, and state directories are visible."
+      : "Capsule service runtime state has drift or unhealthy service signals.",
+    hint: "Run `sporades deploy status`; use `sporades deploy restart` for stopped services or `sporades deploy reset` for stale generated state.",
+    commands: ["sporades deploy status", "sporades deploy restart", "sporades deploy reset"],
+    details: {
+      services,
+      diagnostics,
+    },
+  };
+}
+
+function dockerAvailabilityCheck(scope: string, required: boolean, idScope = scope) {
+  const result = spawnSync("docker", ["version", "--format", "{{.Server.Version}}"], { encoding: "utf8" });
+  const ok = result.status === 0;
+  return {
+    id: `doctor.${idScope}.docker-availability`,
+    title: "Docker availability",
+    scope,
+    status: ok ? "pass" : required ? "fail" : "skip",
+    severity: ok ? "info" : required ? "error" : "info",
+    message: ok ? "Docker is available for read-only inspection." : "Docker is unavailable for local runtime inspection.",
+    hint: ok
+      ? "Inspect local runtime state with `sporades deploy status`."
+      : "Install or start Docker, then rerun `sporades doctor` or inspect with `sporades deploy status`.",
+    commands: ["sporades deploy status"],
+    details: {
+      available: ok,
+      exitCode: result.status,
+      stderr: result.stderr?.trim() || null,
+    },
+  };
+}
+
+function dockerComposeAvailabilityCheck(scope: string, required: boolean) {
+  const result = spawnSync("docker", ["compose", "version"], { encoding: "utf8" });
+  const ok = result.status === 0;
+  return {
+    id: "doctor.services.compose-availability",
+    title: "Docker Compose availability",
+    scope,
+    status: ok ? "pass" : required ? "fail" : "skip",
+    severity: ok ? "info" : required ? "error" : "info",
+    message: ok ? "Docker Compose is available for read-only Capsule service inspection." : "Docker Compose is unavailable.",
+    hint: ok
+      ? "Inspect Capsule service state with `sporades deploy status`."
+      : "Install Docker Compose support, then rerun `sporades doctor`; service lifecycle follow-up uses `sporades deploy status`.",
+    commands: ["sporades deploy status"],
+    details: {
+      available: ok,
+      exitCode: result.status,
+      stderr: result.stderr?.trim() || null,
+    },
+  };
+}
+
+function inspectDockerJson(args: string[], cwd: string) {
+  const result = spawnSync("docker", args, { cwd, encoding: "utf8" });
+  if (result.status !== 0) {
+    return { ok: false, error: result.stderr?.trim() || result.stdout?.trim() || `docker ${args.join(" ")} failed` };
+  }
+  try {
+    return { ok: true, value: JSON.parse(result.stdout.trim()) };
+  } catch (error) {
+    return { ok: false, error: errorDetails(error).message ?? "Docker returned invalid JSON." };
+  }
+}
+
+function inspectComposeService(composePath: string, serviceName: string, cwd: string) {
+  const inspected = inspectDockerJson(["compose", "-f", composePath, "ps", "--format", "json", serviceName], cwd);
+  if (!inspected.ok) {
+    return { state: "unknown", health: null, error: inspected.error };
+  }
+  const record = Array.isArray(inspected.value) ? inspected.value[0] : inspected.value;
+  return {
+    state: String(record?.State ?? record?.state ?? "unknown").toLowerCase(),
+    health: record?.Health ? String(record.Health).toLowerCase() : null,
+  };
+}
+
+function inspectComposeServicePort(composePath: string, serviceName: string, targetPort: number, cwd: string) {
+  const result = spawnSync("docker", ["compose", "-f", composePath, "port", serviceName, String(targetPort)], { cwd, encoding: "utf8" });
+  if (result.status !== 0) {
+    return null;
+  }
+  const match = result.stdout.match(/([^:\s]+):(\d+)\s*$/);
+  return match ? { host: match[1], port: Number(match[2]), targetPort } : null;
+}
+
+function dockerStatus(args: string[], cwd: string) {
+  return spawnSync("docker", args, { cwd, encoding: "utf8" }).status;
+}
+
+async function readOptionalJsonFile(filePath: string) {
+  try {
+    return JSON.parse(await readFile(filePath, "utf8"));
+  } catch (error) {
+    if (errorDetails(error).code === "ENOENT") {
+      return null;
+    }
+    if (error instanceof SyntaxError) {
+      throw commandError(`Invalid Runtime metadata: ${path.basename(filePath)}`, `Delete or fix ${path.relative(process.cwd(), filePath)}, then rerun \`sporades doctor\`.`);
+    }
+    throw error;
+  }
+}
+
+async function pathExists(targetPath: string) {
+  try {
+    await lstat(targetPath);
+    return true;
+  } catch (error) {
+    if (errorDetails(error).code === "ENOENT") {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function isTcpPortReachable(host: string, port: number) {
+  return new Promise<boolean>((resolve) => {
+    const socket = connect({ host, port });
+    const done = (reachable: boolean) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolve(reachable);
+    };
+    socket.setTimeout(500);
+    socket.once("connect", () => done(true));
+    socket.once("timeout", () => done(false));
+    socket.once("error", () => done(false));
+  });
 }
 
 function sessionDoctorPlaceholderCheck(options: LooseRecord) {

@@ -1,6 +1,6 @@
 # Add local runtime and Capsule service checks
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -28,4 +28,3 @@ changing lifecycle state, and should point users to the existing `dev`,
 
 - .scratch/sporades-doctor/issues/01-define-doctor-command-and-check-envelope.md
 - .scratch/sporades-doctor/issues/02-add-project-config-and-security-posture-checks.md
-
