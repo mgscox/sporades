@@ -61,11 +61,8 @@ the mapped docker paths. Can be just 'tar' or similar. Likely dependent on 'Job 
 | Log index retry queue | candidate | Add a bounded in-memory retry queue for Log index writes or pruning that fail while the JSONL log stream remains the durable append stream. Needs clear caps, flush timing, duplicate handling, shutdown behavior, and inspection of degraded indexing without making Log index availability part of app/auth/file workflow success. |
 | Mail sending | candidate | Add SMTP or third-party mail provider support for server-side mail sending. Likely useful for auth, invites, notifications, and team workflows. |
 | GitHub release auto-update | candidate | For a linked GitHub repository, watch for newly published releases, download the packaged Sporades release artifact, update the Hosted Capsule, and automatically roll back if deployment or verification fails. Assumes a GitHub Action already uses Sporades to build and package the release. |
-| Job queue | candidate | Durable background work with retry/failure visibility. Should stay sqlite-first unless an adapter is explicitly configured. Job and Queue shape to align with minimal BullMQ scope to 
-support functionality and allow its future implementation via adapter. Suggestion, use
-(supaqueue)[https://github.com/emirce/supaqueue] as a basis (in-memory dependency-free nodejs queue) |
-| Job scheduling | candidate | Cron-like recurring jobs with persistence, missed-run behavior, timezone handling, and duplicate-run protection. Can build on or sit beside the job queue depending on design.
-Dependent upon 'Job Queue' |
+| Job queue | candidate | Durable background work with retry/failure visibility. Should stay sqlite-first unless an adapter is explicitly configured. Job and Queue shape to align with minimal BullMQ scope to  support functionality and allow its future implementation via adapter. Suggestion, use [supaqueue](https://github.com/emirce/supaqueue) as a basis (in-memory dependency-free nodejs queue) - but reimplement to avoid dependency, it is simple enough |
+| Job scheduling | candidate | Cron-like recurring jobs with persistence, missed-run behavior, timezone handling, and duplicate-run protection. Can build on or sit beside the job queue depending on design. [supaqueue](https://github.com/emirce/supaqueue) also supports CRON. Dependent upon 'Job Queue' |
 
 ## Engineering Hygiene
 
