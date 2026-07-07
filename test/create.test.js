@@ -8,6 +8,8 @@ import { spawn } from "node:child_process";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
+const rootPackageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
+const expectedSporadesVersionRange = `^${rootPackageJson.version}`;
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-create-"));
@@ -150,7 +152,7 @@ test("sporades create writes a runnable React blank scaffold by default", async 
     assert.equal(packageJson.dependencies["react-dom"], "^19.0.0");
     assert.equal(packageJson.devDependencies["@types/react"], "^19.0.0");
     assert.equal(packageJson.devDependencies["@types/react-dom"], "^19.0.0");
-    assert.equal(packageJson.devDependencies.sporades, "^0.1.0");
+    assert.equal(packageJson.devDependencies.sporades, expectedSporadesVersionRange);
   });
 });
 
@@ -521,7 +523,7 @@ test("sporades create writes a runnable Preact todo scaffold", async () => {
     assert.equal(packageJson.dependencies["react-dom"], undefined);
     assert.equal(packageJson.devDependencies["@types/react"], undefined);
     assert.equal(packageJson.devDependencies["@types/react-dom"], undefined);
-    assert.equal(packageJson.devDependencies.sporades, "^0.1.0");
+    assert.equal(packageJson.devDependencies.sporades, expectedSporadesVersionRange);
   });
 });
 
