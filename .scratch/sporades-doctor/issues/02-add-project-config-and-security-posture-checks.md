@@ -1,6 +1,6 @@
 # Add project configuration and security posture checks
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -28,4 +28,3 @@ parallel interpretation of `sporades.json`.
 ## Blocked by
 
 - .scratch/sporades-doctor/issues/01-define-doctor-command-and-check-envelope.md
-

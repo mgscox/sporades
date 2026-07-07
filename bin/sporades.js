@@ -3,11 +3,11 @@
 
 // src/cli/sporades.ts
 import { spawnSync } from "node:child_process";
-import { createHash as createHash3, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes4 } from "node:crypto";
+import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes4 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { chmod, lstat, mkdir as mkdir4, readdir, readFile as readFile4, rm as rm2, writeFile as writeFile4 } from "node:fs/promises";
-import path4 from "node:path";
+import { chmod as chmod2, lstat, mkdir as mkdir5, readdir, readFile as readFile6, rm as rm2, writeFile as writeFile5 } from "node:fs/promises";
+import path6 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/bundle-pipeline.ts
@@ -1188,7 +1188,7 @@ function sanitizeResponseHeaders(headers) {
   );
 }
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
-  const path5 = await import("node:path");
+  const path7 = await import("node:path");
   globalThis.requireAuth = requireAuth;
   const sqlite = await createRuntimeDatabaseAdapter(databasePath, options?.serviceEnv ?? serverEnv, config);
   const serviceEnv = options?.serviceEnv ?? serverEnv;
@@ -1231,7 +1231,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     database: sqlite,
     config,
     serverEnv,
-    dataDir: path5.dirname(databasePath)
+    dataDir: path7.dirname(databasePath)
   });
   await sqlite.ensureSystemTable();
   await sqlite.ensureAuthStorage(database.authConfig);
@@ -1257,7 +1257,7 @@ async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config
   return await createSqliteDatabaseAdapter(databasePath);
 }
 async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
-  const path5 = await import("node:path");
+  const path7 = await import("node:path");
   if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
     return createS3CompatibleFileStorageAdapter({
       endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT ?? "",
@@ -1269,7 +1269,7 @@ async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serv
     });
   }
   return createLocalFileStorageAdapter({
-    storagePath: config.files?.storagePath ?? path5.join(path5.dirname(databasePath), "files")
+    storagePath: config.files?.storagePath ?? path7.join(path7.dirname(databasePath), "files")
   });
 }
 function createLocalFileStorageAdapter({ storagePath }) {
@@ -1280,26 +1280,26 @@ function createLocalFileStorageAdapter({ storagePath }) {
     engine: "local",
     storagePath,
     async writeFileVersion({ fileId, version, bytes }) {
-      const { mkdir: mkdir5, writeFile: writeFile5 } = await import("node:fs/promises");
-      await mkdir5(localFileStoragePath(storagePath, fileId), { recursive: true });
-      await writeFile5(localFileVersionPath(storagePath, fileId, version), bytes);
+      const { mkdir: mkdir6, writeFile: writeFile6 } = await import("node:fs/promises");
+      await mkdir6(localFileStoragePath(storagePath, fileId), { recursive: true });
+      await writeFile6(localFileVersionPath(storagePath, fileId, version), bytes);
     },
     async readFileVersion({ fileId, version }) {
-      const { readFile: readFile5 } = await import("node:fs/promises");
-      return await readFile5(localFileVersionPath(storagePath, fileId, version));
+      const { readFile: readFile7 } = await import("node:fs/promises");
+      return await readFile7(localFileVersionPath(storagePath, fileId, version));
     },
     async deleteFileVersion({ fileId, version }) {
       const { rm: rm3 } = await import("node:fs/promises");
       await rm3(localFileVersionPath(storagePath, fileId, version), { force: true });
     },
     async checkHealth() {
-      const { mkdir: mkdir5, rm: rm3, writeFile: writeFile5 } = await import("node:fs/promises");
-      const path5 = await import("node:path");
-      const probeDirectory = path5.join(storagePath, ".sporades-health");
-      const probeFile = path5.join(probeDirectory, `${randomUUID()}.tmp`);
+      const { mkdir: mkdir6, rm: rm3, writeFile: writeFile6 } = await import("node:fs/promises");
+      const path7 = await import("node:path");
+      const probeDirectory = path7.join(storagePath, ".sporades-health");
+      const probeFile = path7.join(probeDirectory, `${randomUUID()}.tmp`);
       try {
-        await mkdir5(probeDirectory, { recursive: true });
-        await writeFile5(probeFile, "");
+        await mkdir6(probeDirectory, { recursive: true });
+        await writeFile6(probeFile, "");
         await rm3(probeFile, { force: true });
         return { ok: true };
       } catch {
@@ -1546,8 +1546,8 @@ function s3ObjectNotFoundError() {
 }
 async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const { DatabaseSync } = await import("node:sqlite");
-  const path5 = await import("node:path");
-  mkdirSync(path5.dirname(String(databasePath)), { recursive: true });
+  const path7 = await import("node:path");
+  mkdirSync(path7.dirname(String(databasePath)), { recursive: true });
   const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
   const adapter = {
     engine: "sqlite",
@@ -1657,18 +1657,18 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     selectFileById(fileId) {
       return this.prepare("SELECT * FROM sporades_files WHERE id = ?").get(fileId) ?? null;
     },
-    selectLiveFileByPath(path6) {
-      return this.prepare("SELECT * FROM sporades_files WHERE path = ? AND deletedAt IS NULL AND status = ?").all(path6, "uploaded");
+    selectLiveFileByPath(path8) {
+      return this.prepare("SELECT * FROM sporades_files WHERE path = ? AND deletedAt IS NULL AND status = ?").all(path8, "uploaded");
     },
-    selectActiveFileByPath(path6) {
+    selectActiveFileByPath(path8) {
       return this.prepare("SELECT * FROM sporades_files WHERE path = ? AND deletedAt IS NULL AND status IN (?, ?)").all(
-        path6,
+        path8,
         "pending",
         "uploaded"
       );
     },
-    selectPendingFileUploadByPath(path6) {
-      return this.prepare("SELECT * FROM sporades_file_uploads WHERE path = ? ORDER BY createdAt DESC, id DESC LIMIT 1").get(path6) ?? null;
+    selectPendingFileUploadByPath(path8) {
+      return this.prepare("SELECT * FROM sporades_file_uploads WHERE path = ? ORDER BY createdAt DESC, id DESC LIMIT 1").get(path8) ?? null;
     },
     selectFileUpload(uploadId) {
       return this.prepare("SELECT * FROM sporades_file_uploads WHERE id = ?").get(uploadId) ?? null;
@@ -1717,8 +1717,8 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         updatedAt
       });
     },
-    deleteFileUploadsForPath(path6) {
-      return this.prepare("DELETE FROM sporades_file_uploads WHERE path = ?").run(path6);
+    deleteFileUploadsForPath(path8) {
+      return this.prepare("DELETE FROM sporades_file_uploads WHERE path = ?").run(path8);
     },
     deleteFileUploadsForFile(ownerId, fileId) {
       return this.prepare("DELETE FROM sporades_file_uploads WHERE ownerId = ? AND fileId = ?").run(ownerId, fileId);
@@ -3054,9 +3054,9 @@ function logRedactedValue() {
   return "[REDACTED]";
 }
 function createRuntimeLogSink(options) {
-  const path5 = requirePathModule();
-  const logPath = options.config.logs?.jsonlPath ?? options.config.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path5.join(options.dataDir, "logs", "events.jsonl");
-  mkdirSync(path5.dirname(logPath), { recursive: true });
+  const path7 = requirePathModule();
+  const logPath = options.config.logs?.jsonlPath ?? options.config.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path7.join(options.dataDir, "logs", "events.jsonl");
+  mkdirSync(path7.dirname(logPath), { recursive: true });
   return {
     path: logPath,
     emit(input) {
@@ -4513,9 +4513,9 @@ function fileMetadataFromUpload(upload) {
     version: upload.version
   };
 }
-async function withFileUploadPathLock(path5, fn) {
+async function withFileUploadPathLock(path7, fn) {
   const fileUploadPathLocks = globalThis.__sporadesFileUploadPathLocks ??= /* @__PURE__ */ new Map();
-  const key = String(path5);
+  const key = String(path7);
   const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
   let release;
   const current = new Promise((resolve) => {
@@ -4536,11 +4536,11 @@ async function withFileUploadPathLock(path5, fn) {
 }
 async function resolveFileWriteTarget(database, ownerId, input, now) {
   const explicitPath = input.path === void 0 || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
-  const path5 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
-  const firstSegment = path5.split("/").filter(Boolean)[0] ?? "default";
+  const path7 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
+  const firstSegment = path7.split("/").filter(Boolean)[0] ?? "default";
   const existingBucket = await database.sqlite.findFileBucket(ownerId, firstSegment);
   const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now);
-  return { bucket, path: path5 };
+  return { bucket, path: path7 };
 }
 async function ensureFileBucket(database, ownerId, name, now) {
   const existing = await database.sqlite.findFileBucket(ownerId, name);
@@ -4579,13 +4579,13 @@ function isAbsoluteFilePath(value) {
 async function resolveLiveFileReference(database, ownerId, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path5;
+    let path7;
     try {
-      path5 = normalizeAbsoluteFilePath(value);
+      path7 = normalizeAbsoluteFilePath(value);
     } catch {
       return { ok: true, row: null };
     }
-    const resolved = await singleLiveFileRowByPath(database, path5);
+    const resolved = await singleLiveFileRowByPath(database, path7);
     if (resolved?.ambiguous) {
       return ambiguousFileReferenceError(value);
     }
@@ -4593,14 +4593,14 @@ async function resolveLiveFileReference(database, ownerId, reference) {
   }
   return { ok: true, row: await database.sqlite.fileRowForOwner(value, ownerId) };
 }
-function singleLiveFileRowByPath(database, path5) {
-  return thenIfPromise(database.sqlite.selectLiveFileByPath(path5), (rows) => {
+function singleLiveFileRowByPath(database, path7) {
+  return thenIfPromise(database.sqlite.selectLiveFileByPath(path7), (rows) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
 }
-function singleActiveFileRowByPath(database, path5) {
-  return thenIfPromise(database.sqlite.selectActiveFileByPath(path5), (rows) => {
+function singleActiveFileRowByPath(database, path7) {
+  return thenIfPromise(database.sqlite.selectActiveFileByPath(path7), (rows) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
@@ -5090,13 +5090,13 @@ function createAclStorageHelpers(database, state) {
 function resolveAclStorageFileReference(database, state, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path5;
+    let path7;
     try {
-      path5 = normalizeAbsoluteFilePath(value);
+      path7 = normalizeAbsoluteFilePath(value);
     } catch {
       return null;
     }
-    const selected2 = database.sqlite.selectLiveFileByPath(path5);
+    const selected2 = database.sqlite.selectLiveFileByPath(path7);
     if (markAsyncAclHelperRead(state, selected2)) {
       return null;
     }
@@ -9827,7 +9827,7 @@ Options:
 Run read-only Sporades diagnostics.
 
 Options:
-  --session <name>    Session: dev, container, or hosted
+  --session <name>    Session: dev, public-dev, container, or hosted
   --host <alias>      Host profile alias for Hosted Capsule checks
   --subname <name>    Hosted Capsule subname
   --strict            Exit non-zero on warnings as well as failures
@@ -9980,10 +9980,381 @@ function renderCliHelp(command) {
 }
 
 // src/cli/doctor.ts
-var DOCTOR_SESSIONS = /* @__PURE__ */ new Set(["dev", "container", "hosted"]);
+import { readFile as readFile5 } from "node:fs/promises";
+import path5 from "node:path";
+
+// src/cli/cli-support.ts
+function errorDetails2(error) {
+  if (error === null || error === void 0) {
+    return {};
+  }
+  return typeof error === "object" ? error : { message: String(error) };
+}
+function commandError4(message, hint, diagnostics = null) {
+  const error = new Error(message);
+  error.hint = hint;
+  if (diagnostics) {
+    error.diagnostics = diagnostics;
+  }
+  return error;
+}
+function writeResult(result, failed = false) {
+  process.stdout.write(`${JSON.stringify(result)}
+`);
+  if (failed) {
+    process.exitCode = 1;
+  }
+}
+
+// src/cli/project-config.ts
+import { createHash as createHash3 } from "node:crypto";
+import { chmod, mkdir as mkdir4, readFile as readFile4, writeFile as writeFile4 } from "node:fs/promises";
+import path4 from "node:path";
+var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
+var DEFAULT_CSP_DIRECTIVES = {
+  "default-src": ["'self'"],
+  "script-src": ["'self'", "'unsafe-inline'"],
+  "style-src": ["'self'", "'unsafe-inline'"],
+  "img-src": ["'self'", "data:", "blob:"],
+  "connect-src": ["'self'", "ws:", "wss:"],
+  "font-src": ["'self'", "data:"],
+  "object-src": ["'none'"],
+  "base-uri": ["'self'"],
+  "frame-ancestors": ["'none'"]
+};
+var SUPPORTED_PROJECT_KEYS = /* @__PURE__ */ new Set([
+  "auth",
+  "baseImage",
+  "capsule",
+  "client",
+  "deploy",
+  "dev",
+  "files",
+  "id",
+  "logging",
+  "logs",
+  "name",
+  "release",
+  "security",
+  "services",
+  "ssh",
+  "template"
+]);
+async function readProjectConfig(projectDir) {
+  const configPath = path4.join(projectDir, "sporades.json");
+  const raw = await readRequiredFile2(
+    configPath,
+    "Missing project configuration: sporades.json",
+    "Run `sporades create` to scaffold a new project."
+  );
+  let config;
+  try {
+    config = JSON.parse(raw);
+  } catch {
+    throw commandError4("Invalid project configuration: sporades.json", "Fix the JSON syntax in sporades.json.");
+  }
+  validateSecurityConfig(config.security);
+  validateCapsuleServicesConfig(config.services);
+  return config;
+}
+async function readOptionalProjectSecurity(projectDir, session) {
+  try {
+    return resolveEffectiveSecurityPolicy(await readProjectConfig(projectDir), session);
+  } catch (error) {
+    if (errorDetails2(error).message === "Missing project configuration: sporades.json") {
+      return null;
+    }
+    throw error;
+  }
+}
+function validateProjectConfigShape(config) {
+  if (!config || typeof config !== "object" || Array.isArray(config)) {
+    throw commandError4("Invalid project configuration: sporades.json", "Set sporades.json to a JSON object.");
+  }
+  const unsupportedKeys = Object.keys(config).filter((key) => !SUPPORTED_PROJECT_KEYS.has(key)).sort();
+  if (unsupportedKeys.length > 0) {
+    throw commandError4(
+      "Unsupported project configuration keys.",
+      "Remove unsupported top-level keys from sporades.json or move Capsule-specific values into Server env or app code.",
+      { unsupportedKeys }
+    );
+  }
+}
+function validateSecurityConfig(security) {
+  if (security === void 0) {
+    return;
+  }
+  if (!security || typeof security !== "object" || Array.isArray(security)) {
+    throw commandError4("Invalid security policy.", "Set `security` in sporades.json to an object.");
+  }
+  const cors = security.cors;
+  if (cors !== void 0) {
+    if (!cors || typeof cors !== "object" || Array.isArray(cors)) {
+      throw commandError4("Invalid CORS policy.", "Set `security.cors` to an object with `allowedOrigins`.");
+    }
+    if (cors.allowedOrigins !== void 0 && (!Array.isArray(cors.allowedOrigins) || !cors.allowedOrigins.every((origin) => typeof origin === "string"))) {
+      throw commandError4("Invalid CORS allowed origins.", "Set `security.cors.allowedOrigins` to an array of origin strings.");
+    }
+  }
+  const csp = security.csp;
+  if (csp !== void 0) {
+    if (!csp || typeof csp !== "object" || Array.isArray(csp)) {
+      throw commandError4("Invalid CSP policy.", "Set `security.csp` to an object with `mode`.");
+    }
+    if (csp.mode !== void 0 && csp.mode !== "report-only" && csp.mode !== "enforce") {
+      throw commandError4("Invalid CSP mode.", "Use `security.csp.mode` of `report-only` or `enforce`.");
+    }
+  }
+}
+function resolveEffectiveSecurityPolicy(config, session) {
+  const security = config.security ?? {};
+  const cors = security.cors ?? {};
+  const csp = security.csp ?? {};
+  const publicDev = session === "public-dev";
+  const dev = session === "dev" || publicDev;
+  const configuredOrigins = [...cors.allowedOrigins ?? []];
+  const devOrigins = dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [];
+  const allowedOrigins = publicDev ? ["*"] : configuredOrigins;
+  return {
+    cors: {
+      sameOrigin: !publicDev,
+      publicDev,
+      allowedOrigins,
+      allowedOriginPatterns: devOrigins,
+      requireExplicitCrossOrigin: !dev && configuredOrigins.length === 0
+    },
+    headers: {
+      contentTypeOptions: "nosniff",
+      referrerPolicy: "no-referrer",
+      frameOptions: "DENY",
+      permissionsPolicy: "camera=(), microphone=(), geolocation=()",
+      crossOriginOpenerPolicy: "same-origin",
+      suppressTechnologyHeaders: true
+    },
+    csp: {
+      mode: csp.mode ?? "report-only",
+      header: (csp.mode ?? "report-only") === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
+      directives: {
+        ...DEFAULT_CSP_DIRECTIVES,
+        ...csp.directives ?? {}
+      }
+    }
+  };
+}
+async function resolveLocalContainerSshAccess(config, projectDir) {
+  const lines = await resolveAuthorizedKeyLines(config.ssh, projectDir);
+  if (lines.length === 0) {
+    return { enabled: false, authorizedKeysPath: null, keyCount: 0 };
+  }
+  const sshDir = path4.join(projectDir, ".sporades", "ssh");
+  const authorizedKeysPath = path4.join(sshDir, "authorized_keys");
+  await mkdir4(sshDir, { recursive: true });
+  await writeFile4(authorizedKeysPath, `${lines.join("\n")}
+`, { mode: 384 });
+  await chmod(authorizedKeysPath, 384);
+  return {
+    enabled: true,
+    authorizedKeysPath,
+    keyCount: lines.length,
+    fingerprints: lines.map(authorizedKeyFingerprint)
+  };
+}
+async function resolveAuthorizedKeyLines(ssh, projectDir) {
+  if (ssh === void 0) {
+    return [];
+  }
+  if (!ssh || typeof ssh !== "object" || Array.isArray(ssh)) {
+    throw commandError4("Invalid SSH access configuration.", "Set `ssh` in sporades.json to an object with `authorizedKeys`.");
+  }
+  if (ssh.authorizedKeys === void 0) {
+    return [];
+  }
+  if (!Array.isArray(ssh.authorizedKeys)) {
+    throw commandError4(
+      "Invalid SSH authorized keys configuration.",
+      "Set `ssh.authorizedKeys` to an array of objects with exactly one of `key` or `file`."
+    );
+  }
+  const lines = [];
+  for (let index = 0; index < ssh.authorizedKeys.length; index += 1) {
+    const entry = ssh.authorizedKeys[index];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw commandError4(
+        `Invalid SSH authorized key entry at ssh.authorizedKeys[${index}].`,
+        "Use an object with exactly one of `key` or `file`."
+      );
+    }
+    const hasKey = typeof entry.key === "string";
+    const hasFile = typeof entry.file === "string";
+    if (hasKey === hasFile) {
+      throw commandError4(
+        `Invalid SSH authorized key entry at ssh.authorizedKeys[${index}].`,
+        "Use exactly one of `key` or `file` for each SSH authorized key entry."
+      );
+    }
+    const material = hasKey ? entry.key : await readAuthorizedKeysFile(resolveProjectFileReference(entry.file, projectDir), index);
+    lines.push(...normaliseAuthorizedKeyMaterial(material, `ssh.authorizedKeys[${index}]`));
+  }
+  return lines;
+}
+function authorizedKeyFingerprint(line) {
+  const parts = line.split(/\s+/);
+  const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
+  const digest = createHash3("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
+  return `SHA256:${digest}`;
+}
+function withRuntimeSecuritySession(config, session) {
+  return {
+    ...config,
+    __sporadesSession: session
+  };
+}
+function readBaseImageUpdatePolicy(config) {
+  return normaliseBaseImageUpdatePolicy(config?.baseImage?.updatePolicy ?? config?.deploy?.baseImageUpdatePolicy);
+}
+async function readRequiredFile2(filePath, message, hint) {
+  try {
+    return await readFile4(filePath, "utf8");
+  } catch (error) {
+    if (errorDetails2(error).code === "ENOENT") {
+      throw commandError4(message, hint);
+    }
+    throw error;
+  }
+}
+async function readAuthorizedKeysFile(filePath, index) {
+  try {
+    return await readFile4(filePath, "utf8");
+  } catch {
+    throw commandError4(
+      `Unable to read SSH authorized key file at ssh.authorizedKeys[${index}].`,
+      "Check the `file` path is readable from this machine before running `sporades deploy`."
+    );
+  }
+}
+function resolveProjectFileReference(filePath, projectDir) {
+  if (filePath.startsWith("~/")) {
+    const home = process.env.HOME;
+    if (home) {
+      return path4.join(home, filePath.slice(2));
+    }
+  }
+  if (path4.isAbsolute(filePath)) {
+    return filePath;
+  }
+  return path4.join(projectDir, filePath);
+}
+function normaliseAuthorizedKeyMaterial(material, source) {
+  if (looksLikePrivateKey(material)) {
+    throw commandError4(
+      `SSH authorized key material at ${source} looks like a private key.`,
+      "Provide public authorized_keys material only, such as an `id_ed25519.pub` file."
+    );
+  }
+  return material.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#")).map((line, index) => {
+    validateAuthorizedKeyLine(line, `${source}${material.includes("\n") ? ` line ${index + 1}` : ""}`);
+    return line;
+  });
+}
+function looksLikePrivateKey(material) {
+  return /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(material);
+}
+function validateAuthorizedKeyLine(line, source) {
+  const parts = line.split(/\s+/);
+  const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
+  if (keyTypeIndex < 0 || !parts[keyTypeIndex + 1]) {
+    throw malformedAuthorizedKeyError(source);
+  }
+  const keyType = parts[keyTypeIndex];
+  const blob = decodeAuthorizedKeyBlob(parts[keyTypeIndex + 1]);
+  if (!blob || !isValidOpenSshPublicKeyBlob(keyType, blob)) {
+    throw malformedAuthorizedKeyError(source);
+  }
+}
+function isOpenSshPublicKeyType(value) {
+  return /^(ssh-(rsa|dss|ed25519)(-cert-v01@openssh\.com)?|ecdsa-sha2-nistp(256|384|521)(-cert-v01@openssh\.com)?|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)$/.test(value);
+}
+function malformedAuthorizedKeyError(source) {
+  return commandError4(
+    `Malformed SSH authorized key material at ${source}.`,
+    "Use OpenSSH authorized_keys-compatible public key lines."
+  );
+}
+function decodeAuthorizedKeyBlob(value) {
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value) || value.length % 4 === 1) {
+    return null;
+  }
+  const blob = Buffer.from(value, "base64");
+  if (blob.length === 0) {
+    return null;
+  }
+  const canonical = blob.toString("base64").replace(/=+$/, "");
+  if (canonical !== value.replace(/=+$/, "")) {
+    return null;
+  }
+  return blob;
+}
+function isValidOpenSshPublicKeyBlob(keyType, blob) {
+  const first = readSshString(blob, 0);
+  if (!first || first.value.toString("ascii") !== keyType) {
+    return false;
+  }
+  if (keyType === "ssh-ed25519") {
+    const publicKey = readSshString(blob, first.offset);
+    return Boolean(publicKey && publicKey.value.length === 32 && publicKey.offset === blob.length);
+  }
+  if (keyType === "sk-ssh-ed25519@openssh.com") {
+    const publicKey = readSshString(blob, first.offset);
+    const application = publicKey ? readSshString(blob, publicKey.offset) : null;
+    return Boolean(publicKey && publicKey.value.length === 32 && application && application.value.length > 0 && application.offset === blob.length);
+  }
+  if (keyType.startsWith("ecdsa-sha2-")) {
+    const curve = readSshString(blob, first.offset);
+    const publicKey = curve ? readSshString(blob, curve.offset) : null;
+    return Boolean(curve && curve.value.length > 0 && publicKey && publicKey.value.length > 0 && publicKey.offset === blob.length);
+  }
+  if (keyType === "sk-ecdsa-sha2-nistp256@openssh.com") {
+    const curve = readSshString(blob, first.offset);
+    const publicKey = curve ? readSshString(blob, curve.offset) : null;
+    const application = publicKey ? readSshString(blob, publicKey.offset) : null;
+    return Boolean(curve && curve.value.length > 0 && publicKey && publicKey.value.length > 0 && application && application.value.length > 0 && application.offset === blob.length);
+  }
+  if (keyType === "ssh-rsa") {
+    const exponent = readSshString(blob, first.offset);
+    const modulus = exponent ? readSshString(blob, exponent.offset) : null;
+    return Boolean(exponent && exponent.value.length > 0 && modulus && modulus.value.length > 0 && modulus.offset === blob.length);
+  }
+  if (keyType === "ssh-dss") {
+    let offset = first.offset;
+    for (let index = 0; index < 4; index += 1) {
+      const part = readSshString(blob, offset);
+      if (!part || part.value.length === 0) {
+        return false;
+      }
+      offset = part.offset;
+    }
+    return offset === blob.length;
+  }
+  return keyType.includes("-cert-v01@openssh.com") && first.offset < blob.length;
+}
+function readSshString(blob, offset) {
+  if (offset + 4 > blob.length) {
+    return null;
+  }
+  const length = blob.readUInt32BE(offset);
+  const start = offset + 4;
+  const end = start + length;
+  if (length <= 0 || end > blob.length) {
+    return null;
+  }
+  return { value: blob.subarray(start, end), offset: end };
+}
+
+// src/cli/doctor.ts
+var DOCTOR_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
 var DOCTOR_STATUSES = ["pass", "warn", "fail", "skip"];
 var DOCTOR_SEVERITIES = ["info", "warning", "error"];
-function runDoctorChecks(options) {
+async function runDoctorChecks(options) {
   const checks = [
     {
       id: "doctor.command-surface",
@@ -9994,20 +10365,190 @@ function runDoctorChecks(options) {
       message: "Doctor command parsed successfully."
     }
   ];
+  const project = await projectConfigCheck(options.projectDir);
+  checks.push(project.check);
+  if (!project.config) {
+    return checks;
+  }
+  checks.push(await securityPolicyCheck(project.config, options));
+  const publicDevCheck = await publicDevPostureCheck(options);
+  if (publicDevCheck) {
+    checks.push(publicDevCheck);
+  }
+  checks.push(await sshAuthorizedKeysCheck(project.config, options));
   if (options.session) {
     checks.push(sessionDoctorPlaceholderCheck(options));
   }
   return checks;
 }
+async function projectConfigCheck(projectDir) {
+  try {
+    const config = await readProjectConfig(projectDir);
+    validateProjectConfigShape(config);
+    return {
+      config,
+      check: {
+        id: "doctor.project-config",
+        title: "Project configuration",
+        scope: "project",
+        status: "pass",
+        severity: "info",
+        message: "sporades.json is valid and uses supported project-level keys."
+      }
+    };
+  } catch (error) {
+    const details = errorDetails2(error);
+    return {
+      config: null,
+      check: {
+        id: "doctor.project-config",
+        title: "Project configuration",
+        scope: "project",
+        status: "fail",
+        severity: "error",
+        message: details.message ?? "Invalid project configuration.",
+        hint: details.hint ?? "Fix sporades.json and rerun `sporades doctor`.",
+        ...details.diagnostics ? { details: details.diagnostics } : {}
+      }
+    };
+  }
+}
+async function securityPolicyCheck(config, options) {
+  const session = options.session ?? "dev";
+  const securitySession = session === "public-dev" ? "public-dev" : session;
+  const security = resolveEffectiveSecurityPolicy(config, securitySession);
+  const warnings = securityPostureWarnings(security, securitySession);
+  const warn = warnings.length > 0;
+  return {
+    id: "doctor.security-policy",
+    title: "Capsule security policy",
+    scope: doctorScope(session),
+    status: warn ? "warn" : "pass",
+    severity: warn ? "warning" : "info",
+    message: warn ? `Effective ${securitySession} security policy has permissive choices: ${warnings.join("; ")}.` : `Effective ${securitySession} security policy resolved successfully.`,
+    ...warn ? {
+      hint: securityPolicyHint(warnings)
+    } : {},
+    details: {
+      session: securitySession,
+      security
+    }
+  };
+}
+function securityPostureWarnings(security, session) {
+  if (session !== "container" && session !== "hosted") {
+    return [];
+  }
+  const warnings = [];
+  if (security.cors.allowedOrigins.includes("*")) {
+    warnings.push("CORS allows every origin");
+  }
+  const permissiveDirectives = Object.entries(security.csp.directives).filter(([, values]) => Array.isArray(values) && values.some((value) => value === "*" || value === "'unsafe-eval'")).map(([name]) => name);
+  if (permissiveDirectives.length > 0) {
+    warnings.push(`CSP directives are broad (${permissiveDirectives.join(", ")})`);
+    if (security.csp.mode !== "enforce") {
+      warnings.push("CSP is report-only while permissive directives are configured");
+    }
+  }
+  return warnings;
+}
+function securityPolicyHint(warnings) {
+  const hints = [];
+  if (warnings.some((warning) => warning.includes("CORS"))) {
+    hints.push("Restrict security.cors.allowedOrigins to trusted origins instead of `*`.");
+  }
+  if (warnings.some((warning) => warning.includes("CSP"))) {
+    hints.push("Tighten security.csp.directives and use security.csp.mode `enforce` when the policy is ready.");
+  }
+  return hints.join(" ");
+}
+async function publicDevPostureCheck(options) {
+  const runningPublicDev = await readRunningPublicDevSession(options.projectDir);
+  if (options.session !== "public-dev" && !runningPublicDev) {
+    return null;
+  }
+  return {
+    id: "doctor.public-dev-posture",
+    title: "Public Dev posture",
+    scope: "dev",
+    status: "warn",
+    severity: "warning",
+    message: options.session === "public-dev" ? "Doctor is targeting Public Dev session posture." : "A running Dev session appears to be public.",
+    hint: "Use Public Dev sessions only for temporary demos, device testing, or tunnels, and return to `sporades dev` when finished.",
+    commands: ["sporades dev status"],
+    details: {
+      requestedPublicDev: options.session === "public-dev",
+      runningPublicDev
+    }
+  };
+}
+async function readRunningPublicDevSession(projectDir) {
+  try {
+    const session = JSON.parse(await readFile5(path5.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+    return Boolean(session.publicDev || session.public || session.security?.cors?.publicDev);
+  } catch {
+    return false;
+  }
+}
+async function sshAuthorizedKeysCheck(config, options) {
+  const command = sshFollowUpCommand(options);
+  try {
+    const lines = await resolveAuthorizedKeyLines(config.ssh, options.projectDir);
+    const sshConfigured = Object.hasOwn(config, "ssh");
+    const emptyConfiguredSsh = sshConfigured && lines.length === 0;
+    return {
+      id: "doctor.ssh-authorized-keys",
+      title: "SSH authorized keys",
+      scope: "project",
+      status: emptyConfiguredSsh ? "warn" : "pass",
+      severity: emptyConfiguredSsh ? "warning" : "info",
+      message: emptyConfiguredSsh ? "ssh.authorizedKeys resolves to no effective authorized keys, so Container SSH access is disabled." : lines.length > 0 ? `SSH authorized keys are valid (${lines.length} effective key${lines.length === 1 ? "" : "s"}).` : "No SSH block is configured; Container SSH access remains disabled.",
+      ...emptyConfiguredSsh ? {
+        hint: `Add public keys to \`ssh.authorizedKeys\`, or remove the empty \`ssh\` block. Inspect effective SSH state with \`${command}\`.`
+      } : {
+        hint: `Inspect effective SSH state with \`${command}\`.`
+      },
+      commands: [command],
+      details: {
+        configured: sshConfigured,
+        keyCount: lines.length,
+        fingerprints: lines.map(authorizedKeyFingerprint)
+      }
+    };
+  } catch (error) {
+    const details = errorDetails2(error);
+    return {
+      id: "doctor.ssh-authorized-keys",
+      title: "SSH authorized keys",
+      scope: "project",
+      status: "fail",
+      severity: "error",
+      message: details.message ?? "Invalid SSH authorized keys configuration.",
+      hint: `${details.hint ?? "Fix ssh.authorizedKeys in sporades.json."} Inspect effective SSH state with \`${command}\`.`,
+      commands: [command]
+    };
+  }
+}
+function sshFollowUpCommand(options) {
+  if (options.session === "hosted") {
+    return `sporades host ssh ${options.subname} --host ${options.host}`;
+  }
+  return "sporades deploy ssh";
+}
+function doctorScope(session) {
+  return session === "public-dev" ? "dev" : session;
+}
 function sessionDoctorPlaceholderCheck(options) {
   const session = options.session;
   const commandBySession = {
     dev: "sporades dev status",
+    "public-dev": "sporades dev status",
     container: "sporades deploy status",
     hosted: `sporades host health ${options.subname} --host ${options.host}`
   };
   const titleBySession = {
     dev: "Dev session diagnostics pending",
+    "public-dev": "Public Dev session diagnostics pending",
     container: "Container session diagnostics pending",
     hosted: "Hosted Capsule diagnostics pending"
   };
@@ -10268,58 +10809,23 @@ jobs:
 `;
 }
 
-// src/cli/cli-support.ts
-function errorDetails2(error) {
-  if (error === null || error === void 0) {
-    return {};
-  }
-  return typeof error === "object" ? error : { message: String(error) };
-}
-function commandError4(message, hint, diagnostics = null) {
-  const error = new Error(message);
-  error.hint = hint;
-  if (diagnostics) {
-    error.diagnostics = diagnostics;
-  }
-  return error;
-}
-function writeResult(result, failed = false) {
-  process.stdout.write(`${JSON.stringify(result)}
-`);
-  if (failed) {
-    process.exitCode = 1;
-  }
-}
-
 // src/cli/sporades.ts
 var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact"]);
 var SUPPORTED_TEMPLATES = /* @__PURE__ */ new Set(["blank", "todo", "guestbook", "photo-library"]);
-var DEV_SESSION_FILE = path4.join(".sporades", "dev-session.json");
-var CONTAINER_BINDING_FILE = path4.join(".sporades", "binding.json");
-var REMOTE_BINDING_FILE = path4.join(".sporades", "remote-binding.json");
+var DEV_SESSION_FILE = path6.join(".sporades", "dev-session.json");
+var CONTAINER_BINDING_FILE = path6.join(".sporades", "binding.json");
+var REMOTE_BINDING_FILE = path6.join(".sporades", "remote-binding.json");
 var DEV_REBUILD_DEBOUNCE_MS = 100;
 var DEFAULT_HOST_SCHEME = "https";
 var DEFAULT_HOST_REMOTE_ROOT = "/srv/sporades";
 var DEFAULT_HOST_TLS_MODE2 = "automatic";
 var HOST_TLS_MODES2 = /* @__PURE__ */ new Set(["automatic", "cloudflare-origin"]);
-var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
-var DEFAULT_CSP_DIRECTIVES = {
-  "default-src": ["'self'"],
-  "script-src": ["'self'", "'unsafe-inline'"],
-  "style-src": ["'self'", "'unsafe-inline'"],
-  "img-src": ["'self'", "data:", "blob:"],
-  "connect-src": ["'self'", "ws:", "wss:"],
-  "font-src": ["'self'", "data:"],
-  "object-src": ["'none'"],
-  "base-uri": ["'self'"],
-  "frame-ancestors": ["'none'"]
-};
 var RESERVED_CAPSULE_SUBNAMES = /* @__PURE__ */ new Set(["www", "api", "admin", "root", "host"]);
 var MAX_HOST_LOG_LINES = 1e4;
 var HOST_LOG_SOURCES = /* @__PURE__ */ new Set(["http", "stdout", "stderr"]);
 var HOST_HEALTH_PATH = "/__sporades/health";
 var DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW = ".github/workflows/sporades-autodeploy.yml";
-var CLI_ROOT = path4.resolve(path4.dirname(fileURLToPath(import.meta.url)), "..");
+var CLI_ROOT = path6.resolve(path6.dirname(fileURLToPath(import.meta.url)), "..");
 main().catch((error) => {
   writeResult(
     {
@@ -10477,7 +10983,7 @@ function parseCreateArgs(args) {
     install,
     git,
     json,
-    projectDir: path4.resolve(process.cwd(), name)
+    projectDir: path6.resolve(process.cwd(), name)
   };
 }
 function parseDevArgs(args) {
@@ -10617,12 +11123,12 @@ function parseDoctorArgs(args) {
       default:
         throw commandError4(
           `Unknown flag: ${arg}`,
-          "Use `sporades doctor --session dev|container|hosted --strict --json`."
+          "Use `sporades doctor --session dev|public-dev|container|hosted --strict --json`."
         );
     }
   }
   if (session !== null && !DOCTOR_SESSIONS.has(session)) {
-    throw commandError4("Invalid doctor session.", "Use one of: dev, container, hosted.", { session });
+    throw commandError4("Invalid doctor session.", "Use one of: dev, public-dev, container, hosted.", { session });
   }
   if ((host !== null || subname !== null) && session !== "hosted") {
     throw commandError4(
@@ -11152,7 +11658,7 @@ function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
       "Use explicit --client-id and --client-secret values for this provider."
     );
   }
-  const resolvedPath = path4.resolve(projectDir, clientJsonPath);
+  const resolvedPath = path6.resolve(projectDir, clientJsonPath);
   let raw;
   try {
     raw = readFileSync2(resolvedPath, "utf8");
@@ -11289,16 +11795,16 @@ function isValidAuthClientTarget(value) {
   return value === "current" || value === "all" || /^client-[a-z0-9]+$/.test(value);
 }
 async function createProject(options) {
-  await mkdir4(options.projectDir, { recursive: false });
+  await mkdir5(options.projectDir, { recursive: false });
   const files = scaffoldFiles({
     ...options,
     sporadesDependency: defaultSporadesDependency()
   });
   await Promise.all(
     Object.entries(files).map(async ([relativePath, contents]) => {
-      const filePath = path4.join(options.projectDir, relativePath);
-      await mkdir4(path4.dirname(filePath), { recursive: true });
-      await writeFile4(filePath, contents);
+      const filePath = path6.join(options.projectDir, relativePath);
+      await mkdir5(path6.dirname(filePath), { recursive: true });
+      await writeFile5(filePath, contents);
     })
   );
   if (options.install) {
@@ -11309,7 +11815,7 @@ async function createProject(options) {
   }
 }
 async function runDoctor(options) {
-  const envelope = createDoctorEnvelope(options, runDoctorChecks(options));
+  const envelope = createDoctorEnvelope(options, await runDoctorChecks(options));
   const failed = doctorShouldExitNonZero(envelope.data.checks, options.strict);
   if (options.json) {
     writeResult(envelope, failed);
@@ -11321,7 +11827,7 @@ async function runDoctor(options) {
   }
 }
 function defaultSporadesDependency() {
-  const packageJsonPath = path4.join(CLI_ROOT, "package.json");
+  const packageJsonPath = path6.join(CLI_ROOT, "package.json");
   try {
     const packageJson = JSON.parse(readFileSync2(packageJsonPath, "utf8"));
     if (typeof packageJson.version === "string" && packageJson.version.trim()) {
@@ -11401,8 +11907,8 @@ async function startDevSession(options) {
     emit: (data, error) => emitDevEvent(options, data, error)
   });
   let runtimeServiceEnv = capsuleServiceEnv;
-  const sessionFilePath = path4.join(options.projectDir, DEV_SESSION_FILE);
-  const databasePath = path4.join(options.projectDir, ".sporades", "data.db");
+  const sessionFilePath = path6.join(options.projectDir, DEV_SESSION_FILE);
+  const databasePath = path6.join(options.projectDir, ".sporades", "data.db");
   const runtime = await createDevRuntime({
     databasePath,
     serverSource: bundle.serverRuntime.source,
@@ -11495,12 +12001,12 @@ async function startDevSession(options) {
         case "/":
         case "/index.html": {
           response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-          response.end(await readFile4(bundle.staticFiles.indexHtml, "utf8"));
+          response.end(await readFile6(bundle.staticFiles.indexHtml, "utf8"));
           return;
         }
         case "/client.js": {
           response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
-          response.end(await readFile4(bundle.staticFiles.clientBundle, "utf8"));
+          response.end(await readFile6(bundle.staticFiles.clientBundle, "utf8"));
           return;
         }
       }
@@ -11527,13 +12033,16 @@ async function startDevSession(options) {
   const address = server.address();
   const actualPort = typeof address === "object" && address ? address.port : port;
   const url = `http://localhost:${actualPort}`;
-  await writeFile4(
+  await writeFile5(
     sessionFilePath,
     `${JSON.stringify(
       {
         url,
         port: actualPort,
-        pid: process.pid
+        pid: process.pid,
+        session,
+        publicDev: security.cors.publicDev,
+        security
       },
       null,
       2
@@ -11768,11 +12277,11 @@ async function importCapsuleDefinition(moduleSource) {
 }
 function watchDevInputs(projectDir, onChange) {
   const watchedPaths = [
-    { path: path4.join(projectDir, "server"), affectsServerRuntime: true },
-    { path: path4.join(projectDir, "client"), affectsServerRuntime: false },
-    { path: path4.join(projectDir, "shared"), affectsServerRuntime: true },
-    { path: path4.join(projectDir, "index.html"), affectsServerRuntime: false },
-    { path: path4.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true }
+    { path: path6.join(projectDir, "server"), affectsServerRuntime: true },
+    { path: path6.join(projectDir, "client"), affectsServerRuntime: false },
+    { path: path6.join(projectDir, "shared"), affectsServerRuntime: true },
+    { path: path6.join(projectDir, "index.html"), affectsServerRuntime: false },
+    { path: path6.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true }
   ];
   const watchers = [];
   let debounceTimer = null;
@@ -11856,7 +12365,7 @@ function collectPathSignature(filePath, entries) {
       return;
     }
     for (const child of children) {
-      collectPathSignature(path4.join(filePath, child), entries);
+      collectPathSignature(path6.join(filePath, child), entries);
     }
     return;
   }
@@ -11911,7 +12420,7 @@ async function manageAuth(options) {
   switch (options.subcommand) {
     case "status": {
       const config2 = await readProjectConfig(options.projectDir);
-      const envPath = path4.join(options.projectDir, ".env.sporades.server");
+      const envPath = path6.join(options.projectDir, ".env.sporades.server");
       const serverEnv = parseServerEnv(await readServerEnvFile(envPath));
       const status2 = authStatus2(config2, serverEnv);
       if (options.json) {
@@ -11972,7 +12481,7 @@ async function manageAuth(options) {
     default:
       break;
   }
-  const configPath = path4.join(options.projectDir, "sporades.json");
+  const configPath = path6.join(options.projectDir, "sporades.json");
   const config = await readProjectConfig(options.projectDir);
   config.auth = {
     mode: "google",
@@ -11981,9 +12490,9 @@ async function manageAuth(options) {
       clientSecretEnv: "GOOGLE_CLIENT_SECRET"
     }
   };
-  await writeFile4(configPath, `${JSON.stringify(config, null, 2)}
+  await writeFile5(configPath, `${JSON.stringify(config, null, 2)}
 `);
-  await upsertServerEnvValues(path4.join(options.projectDir, ".env.sporades.server"), {
+  await upsertServerEnvValues(path6.join(options.projectDir, ".env.sporades.server"), {
     GOOGLE_CLIENT_ID: options.clientId,
     GOOGLE_CLIENT_SECRET: options.clientSecret
   });
@@ -12035,7 +12544,7 @@ async function manageEnv(options) {
       return;
     }
     case "import": {
-      const envPath = path4.resolve(options.projectDir, options.file ?? ".env.sporades.server");
+      const envPath = path6.resolve(options.projectDir, options.file ?? ".env.sporades.server");
       if (options.sealed) {
         const envelope2 = await readPortableSealedServerEnvEnvelope(envPath);
         await writeSealedServerEnv(paths, envelope2);
@@ -12043,20 +12552,20 @@ async function manageEnv(options) {
           ...envelopeSummary(envelope2, paths),
           imported: true,
           sealed: true,
-          source: normalisePathForOutput(path4.relative(options.projectDir, envPath) || envPath)
+          source: normalisePathForOutput(path6.relative(options.projectDir, envPath) || envPath)
         });
         return;
       }
       const env = parseServerEnv(await readServerEnvFile(envPath));
       const keyPair = await ensureSealedServerEnvKeyPair(paths);
       const envelope = sealServerEnv(env, keyPair.publicKey, {
-        source: normalisePathForOutput(path4.relative(options.projectDir, envPath) || envPath)
+        source: normalisePathForOutput(path6.relative(options.projectDir, envPath) || envPath)
       });
       await writeSealedServerEnv(paths, envelope);
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         imported: true,
-        source: normalisePathForOutput(path4.relative(options.projectDir, envPath) || envPath),
+        source: normalisePathForOutput(path6.relative(options.projectDir, envPath) || envPath),
         privateKeyConfigured: true
       });
       return;
@@ -12067,7 +12576,7 @@ async function manageEnv(options) {
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         privateKeyConfigured: Boolean(keyPair?.privateKey),
-        legacyServerEnvFilePresent: (await readServerEnvFile(path4.join(options.projectDir, ".env.sporades.server"))).exists
+        legacyServerEnvFilePresent: (await readServerEnvFile(path6.join(options.projectDir, ".env.sporades.server"))).exists
       });
       return;
     }
@@ -12078,15 +12587,15 @@ async function manageEnv(options) {
       }
       const exported = exportedEnvelope(envelope);
       if (options.output) {
-        const outputPath = path4.resolve(options.projectDir, options.output);
-        await mkdir4(path4.dirname(outputPath), { recursive: true });
-        await writeFile4(outputPath, `${JSON.stringify(exported, null, 2)}
+        const outputPath = path6.resolve(options.projectDir, options.output);
+        await mkdir5(path6.dirname(outputPath), { recursive: true });
+        await writeFile5(outputPath, `${JSON.stringify(exported, null, 2)}
 `, { mode: 384 });
       }
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         exported: true,
-        outputPath: options.output ? path4.resolve(options.projectDir, options.output) : null,
+        outputPath: options.output ? path6.resolve(options.projectDir, options.output) : null,
         envelope: options.output ? null : exported
       });
       return;
@@ -12110,12 +12619,12 @@ async function manageEnv(options) {
         hostDomain: profile.domain,
         ...options.subname ? { subname: options.subname } : {}
       });
-      const hostEnvelopePath = path4.join(
+      const hostEnvelopePath = path6.join(
         paths.hosts,
         options.subname ? `${options.hostAlias}.${options.subname}.server-env.sealed.json` : `${options.hostAlias}.server-env.sealed.json`
       );
-      await mkdir4(path4.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
-      await writeFile4(hostEnvelopePath, `${JSON.stringify(hostEnvelope, null, 2)}
+      await mkdir5(path6.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
+      await writeFile5(hostEnvelopePath, `${JSON.stringify(hostEnvelope, null, 2)}
 `, { mode: 384 });
       if (!options.subname) {
         await writeHostConfig(hostConfig);
@@ -12136,7 +12645,7 @@ async function manageEnv(options) {
 async function readPortableSealedServerEnvEnvelope(filePath) {
   let envelope;
   try {
-    envelope = JSON.parse(await readFile4(filePath, "utf8"));
+    envelope = JSON.parse(await readFile6(filePath, "utf8"));
   } catch (error) {
     if (errorDetails2(error).code === "ENOENT") {
       throw commandError4(
@@ -12184,7 +12693,7 @@ async function ensureHostProfileEnvKey(config, alias) {
   const hostKey = {
     publicKey,
     privateKey,
-    publicKeyFingerprint: createHash3("sha256").update(publicKey).digest("hex").slice(0, 16)
+    publicKeyFingerprint: createHash4("sha256").update(publicKey).digest("hex").slice(0, 16)
   };
   config.profiles[alias].sealedServerEnv = hostKey;
   return hostKey;
@@ -12281,9 +12790,9 @@ async function manageHost(options) {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
       const binding = createRemoteBinding(resolved.alias, resolved.profile, options.subname);
-      const bindingPath = path4.join(options.projectDir, REMOTE_BINDING_FILE);
-      await mkdir4(path4.dirname(bindingPath), { recursive: true });
-      await writeFile4(bindingPath, `${JSON.stringify(binding, null, 2)}
+      const bindingPath = path6.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir5(path6.dirname(bindingPath), { recursive: true });
+      await writeFile5(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
       if (options.json) {
         writeResult({ ok: true, data: { bindingPath, binding, localOnly: true, authoritative: false }, error: null });
@@ -12314,9 +12823,9 @@ async function manageHost(options) {
         }
         throw commandError4(result.error.message, result.error.hint);
       }
-      const bindingPath = path4.join(options.projectDir, REMOTE_BINDING_FILE);
-      await mkdir4(path4.dirname(bindingPath), { recursive: true });
-      await writeFile4(bindingPath, `${JSON.stringify(binding, null, 2)}
+      const bindingPath = path6.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir5(path6.dirname(bindingPath), { recursive: true });
+      await writeFile5(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
       const data = {
         ...result.data,
@@ -12723,13 +13232,13 @@ async function startContainerSession(options) {
   const port = options.port ?? config.deploy?.port ?? 4e3;
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const bundle = await createBundle(options.projectDir, config);
-  const runtimeDir = path4.join(options.projectDir, ".sporades");
-  const dataDir = path4.join(runtimeDir, "data");
+  const runtimeDir = path6.join(options.projectDir, ".sporades");
+  const dataDir = path6.join(runtimeDir, "data");
   const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
-  await mkdir4(dataDir, { recursive: true });
+  await mkdir5(dataDir, { recursive: true });
   await prepareRuntimeDataPath(dataDir);
-  const containerName = `sporades-${config.name ?? path4.basename(options.projectDir)}`;
-  const bindingPath = path4.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const containerName = `sporades-${config.name ?? path6.basename(options.projectDir)}`;
+  const bindingPath = path6.join(options.projectDir, CONTAINER_BINDING_FILE);
   const existingBinding = await readContainerBinding(bindingPath);
   const updatePolicyMode = readBaseImageUpdatePolicy(config);
   const containerCapsuleServices = await startCapsuleServices(capsuleServices, options.projectDir, {
@@ -12840,7 +13349,7 @@ async function startContainerSession(options) {
       }
     } : {}
   };
-  await writeFile4(bindingPath, `${JSON.stringify(binding, null, 2)}
+  await writeFile5(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
   const url = `http://localhost:${port}`;
   if (options.json) {
@@ -12861,7 +13370,7 @@ async function startContainerSession(options) {
   }
 }
 async function inspectLocalContainerSsh(options) {
-  const bindingPath = path4.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path6.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     const data2 = localContainerSshState({
@@ -13021,8 +13530,8 @@ async function fetchInspectionDatabase(options) {
   ) ?? inspectContainerDatabase(options);
 }
 async function readDevSession(projectDir) {
-  const sessionPath = path4.join(projectDir, DEV_SESSION_FILE);
-  const raw = await readRequiredFile2(
+  const sessionPath = path6.join(projectDir, DEV_SESSION_FILE);
+  const raw = await readRequiredFile3(
     sessionPath,
     "No running Sporades dev session found.",
     "Start one with `sporades dev` from this project, then retry the command."
@@ -13117,8 +13626,8 @@ async function inspectContainerDatabase(options) {
 function resolveLocalContainerDatabasePath(options) {
   const container = resolveLocalContainerTarget(options);
   const mount = container.mounts.find((entry) => entry.Destination === "/app/data");
-  const dataDir = mount?.Source ?? path4.join(options.projectDir, ".sporades", "data");
-  return path4.join(dataDir, "data.db");
+  const dataDir = mount?.Source ?? path6.join(options.projectDir, ".sporades", "data");
+  return path6.join(dataDir, "data.db");
 }
 function resolveLocalContainerTarget(options) {
   if (options.port) {
@@ -13131,7 +13640,7 @@ function resolveLocalContainerTarget(options) {
       return { containerId, mounts: inspectDockerMounts(options.projectDir, containerId) };
     }
   }
-  const bindingPath = path4.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path6.join(options.projectDir, CONTAINER_BINDING_FILE);
   let binding = null;
   try {
     binding = JSON.parse(readFileSync2(bindingPath, "utf8"));
@@ -13239,302 +13748,16 @@ async function upsertServerEnvValues(envPath, values) {
   for (const [key, value] of pending) {
     nextLines.push(`${key}=${value}`);
   }
-  await writeFile4(envPath, `${nextLines.filter((line, index) => line || index < nextLines.length - 1).join("\n")}
+  await writeFile5(envPath, `${nextLines.filter((line, index) => line || index < nextLines.length - 1).join("\n")}
 `);
   parseServerEnv(await readServerEnvFile(envPath));
 }
 function isReadOnlySql(sql) {
   return /^\s*(select|with|pragma)\b/i.test(sql);
 }
-async function readProjectConfig(projectDir) {
-  const configPath = path4.join(projectDir, "sporades.json");
-  const raw = await readRequiredFile2(
-    configPath,
-    "Missing project configuration: sporades.json",
-    "Run `sporades create` to scaffold a new project."
-  );
-  let config;
+async function readRequiredFile3(filePath, message, hint) {
   try {
-    config = JSON.parse(raw);
-  } catch {
-    throw commandError4("Invalid project configuration: sporades.json", "Fix the JSON syntax in sporades.json.");
-  }
-  validateSecurityConfig(config.security);
-  validateCapsuleServicesConfig(config.services);
-  return config;
-}
-async function readOptionalProjectSecurity(projectDir, session) {
-  try {
-    return resolveEffectiveSecurityPolicy(await readProjectConfig(projectDir), session);
-  } catch (error) {
-    if (errorDetails2(error).message === "Missing project configuration: sporades.json") {
-      return null;
-    }
-    throw error;
-  }
-}
-function validateSecurityConfig(security) {
-  if (security === void 0) {
-    return;
-  }
-  if (!security || typeof security !== "object" || Array.isArray(security)) {
-    throw commandError4("Invalid security policy.", "Set `security` in sporades.json to an object.");
-  }
-  const cors = security.cors;
-  if (cors !== void 0) {
-    if (!cors || typeof cors !== "object" || Array.isArray(cors)) {
-      throw commandError4("Invalid CORS policy.", "Set `security.cors` to an object with `allowedOrigins`.");
-    }
-    if (cors.allowedOrigins !== void 0 && (!Array.isArray(cors.allowedOrigins) || !cors.allowedOrigins.every((origin) => typeof origin === "string"))) {
-      throw commandError4("Invalid CORS allowed origins.", "Set `security.cors.allowedOrigins` to an array of origin strings.");
-    }
-  }
-  const csp = security.csp;
-  if (csp !== void 0) {
-    if (!csp || typeof csp !== "object" || Array.isArray(csp)) {
-      throw commandError4("Invalid CSP policy.", "Set `security.csp` to an object with `mode`.");
-    }
-    if (csp.mode !== void 0 && csp.mode !== "report-only" && csp.mode !== "enforce") {
-      throw commandError4("Invalid CSP mode.", "Use `security.csp.mode` of `report-only` or `enforce`.");
-    }
-  }
-}
-function resolveEffectiveSecurityPolicy(config, session) {
-  const security = config.security ?? {};
-  const cors = security.cors ?? {};
-  const csp = security.csp ?? {};
-  const publicDev = session === "public-dev";
-  const dev = session === "dev" || publicDev;
-  const configuredOrigins = [...cors.allowedOrigins ?? []];
-  const devOrigins = dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [];
-  const allowedOrigins = publicDev ? ["*"] : configuredOrigins;
-  return {
-    cors: {
-      sameOrigin: !publicDev,
-      publicDev,
-      allowedOrigins,
-      allowedOriginPatterns: devOrigins,
-      requireExplicitCrossOrigin: !dev && configuredOrigins.length === 0
-    },
-    headers: {
-      contentTypeOptions: "nosniff",
-      referrerPolicy: "no-referrer",
-      frameOptions: "DENY",
-      permissionsPolicy: "camera=(), microphone=(), geolocation=()",
-      crossOriginOpenerPolicy: "same-origin",
-      suppressTechnologyHeaders: true
-    },
-    csp: {
-      mode: csp.mode ?? "report-only",
-      header: (csp.mode ?? "report-only") === "enforce" ? "content-security-policy" : "content-security-policy-report-only",
-      directives: {
-        ...DEFAULT_CSP_DIRECTIVES,
-        ...csp.directives ?? {}
-      }
-    }
-  };
-}
-async function resolveLocalContainerSshAccess(config, projectDir) {
-  const lines = await resolveAuthorizedKeyLines(config.ssh, projectDir);
-  if (lines.length === 0) {
-    return { enabled: false, authorizedKeysPath: null, keyCount: 0 };
-  }
-  const sshDir = path4.join(projectDir, ".sporades", "ssh");
-  const authorizedKeysPath = path4.join(sshDir, "authorized_keys");
-  await mkdir4(sshDir, { recursive: true });
-  await writeFile4(authorizedKeysPath, `${lines.join("\n")}
-`, { mode: 384 });
-  await chmod(authorizedKeysPath, 384);
-  return {
-    enabled: true,
-    authorizedKeysPath,
-    keyCount: lines.length,
-    fingerprints: lines.map(authorizedKeyFingerprint)
-  };
-}
-async function resolveAuthorizedKeyLines(ssh, projectDir) {
-  if (ssh === void 0) {
-    return [];
-  }
-  if (!ssh || typeof ssh !== "object" || Array.isArray(ssh)) {
-    throw commandError4("Invalid SSH access configuration.", "Set `ssh` in sporades.json to an object with `authorizedKeys`.");
-  }
-  if (ssh.authorizedKeys === void 0) {
-    return [];
-  }
-  if (!Array.isArray(ssh.authorizedKeys)) {
-    throw commandError4(
-      "Invalid SSH authorized keys configuration.",
-      "Set `ssh.authorizedKeys` to an array of objects with exactly one of `key` or `file`."
-    );
-  }
-  const lines = [];
-  for (let index = 0; index < ssh.authorizedKeys.length; index += 1) {
-    const entry = ssh.authorizedKeys[index];
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
-      throw commandError4(
-        `Invalid SSH authorized key entry at ssh.authorizedKeys[${index}].`,
-        "Use an object with exactly one of `key` or `file`."
-      );
-    }
-    const hasKey = typeof entry.key === "string";
-    const hasFile = typeof entry.file === "string";
-    if (hasKey === hasFile) {
-      throw commandError4(
-        `Invalid SSH authorized key entry at ssh.authorizedKeys[${index}].`,
-        "Use exactly one of `key` or `file` for each SSH authorized key entry."
-      );
-    }
-    const material = hasKey ? entry.key : await readAuthorizedKeysFile(resolveProjectFileReference(entry.file, projectDir), index);
-    lines.push(...normaliseAuthorizedKeyMaterial(material, `ssh.authorizedKeys[${index}]`));
-  }
-  return lines;
-}
-async function readAuthorizedKeysFile(filePath, index) {
-  try {
-    return await readFile4(filePath, "utf8");
-  } catch {
-    throw commandError4(
-      `Unable to read SSH authorized key file at ssh.authorizedKeys[${index}].`,
-      "Check the `file` path is readable from this machine before running `sporades deploy`."
-    );
-  }
-}
-function resolveProjectFileReference(filePath, projectDir) {
-  if (filePath.startsWith("~/")) {
-    const home = process.env.HOME;
-    if (home) {
-      return path4.join(home, filePath.slice(2));
-    }
-  }
-  if (path4.isAbsolute(filePath)) {
-    return filePath;
-  }
-  return path4.join(projectDir, filePath);
-}
-function normaliseAuthorizedKeyMaterial(material, source) {
-  if (looksLikePrivateKey(material)) {
-    throw commandError4(
-      `SSH authorized key material at ${source} looks like a private key.`,
-      "Provide public authorized_keys material only, such as an `id_ed25519.pub` file."
-    );
-  }
-  return material.split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !line.startsWith("#")).map((line, index) => {
-    validateAuthorizedKeyLine(line, `${source}${material.includes("\n") ? ` line ${index + 1}` : ""}`);
-    return line;
-  });
-}
-function looksLikePrivateKey(material) {
-  return /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/.test(material);
-}
-function validateAuthorizedKeyLine(line, source) {
-  const parts = line.split(/\s+/);
-  const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  if (keyTypeIndex < 0 || !parts[keyTypeIndex + 1]) {
-    throw malformedAuthorizedKeyError(source);
-  }
-  const keyType = parts[keyTypeIndex];
-  const blob = decodeAuthorizedKeyBlob(parts[keyTypeIndex + 1]);
-  if (!blob || !isValidOpenSshPublicKeyBlob(keyType, blob)) {
-    throw malformedAuthorizedKeyError(source);
-  }
-}
-function isOpenSshPublicKeyType(value) {
-  return /^(ssh-(rsa|dss|ed25519)(-cert-v01@openssh\.com)?|ecdsa-sha2-nistp(256|384|521)(-cert-v01@openssh\.com)?|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com)$/.test(value);
-}
-function malformedAuthorizedKeyError(source) {
-  return commandError4(
-    `Malformed SSH authorized key material at ${source}.`,
-    "Use OpenSSH authorized_keys-compatible public key lines."
-  );
-}
-function decodeAuthorizedKeyBlob(value) {
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(value) || value.length % 4 === 1) {
-    return null;
-  }
-  const blob = Buffer.from(value, "base64");
-  if (blob.length === 0) {
-    return null;
-  }
-  const canonical = blob.toString("base64").replace(/=+$/, "");
-  if (canonical !== value.replace(/=+$/, "")) {
-    return null;
-  }
-  return blob;
-}
-function isValidOpenSshPublicKeyBlob(keyType, blob) {
-  const first = readSshString(blob, 0);
-  if (!first || first.value.toString("ascii") !== keyType) {
-    return false;
-  }
-  if (keyType === "ssh-ed25519") {
-    const publicKey = readSshString(blob, first.offset);
-    return Boolean(publicKey && publicKey.value.length === 32 && publicKey.offset === blob.length);
-  }
-  if (keyType === "sk-ssh-ed25519@openssh.com") {
-    const publicKey = readSshString(blob, first.offset);
-    const application = publicKey ? readSshString(blob, publicKey.offset) : null;
-    return Boolean(publicKey && publicKey.value.length === 32 && application && application.value.length > 0 && application.offset === blob.length);
-  }
-  if (keyType.startsWith("ecdsa-sha2-")) {
-    const curve = readSshString(blob, first.offset);
-    const publicKey = curve ? readSshString(blob, curve.offset) : null;
-    return Boolean(curve && curve.value.length > 0 && publicKey && publicKey.value.length > 0 && publicKey.offset === blob.length);
-  }
-  if (keyType === "sk-ecdsa-sha2-nistp256@openssh.com") {
-    const curve = readSshString(blob, first.offset);
-    const publicKey = curve ? readSshString(blob, curve.offset) : null;
-    const application = publicKey ? readSshString(blob, publicKey.offset) : null;
-    return Boolean(curve && curve.value.length > 0 && publicKey && publicKey.value.length > 0 && application && application.value.length > 0 && application.offset === blob.length);
-  }
-  if (keyType === "ssh-rsa") {
-    const exponent = readSshString(blob, first.offset);
-    const modulus = exponent ? readSshString(blob, exponent.offset) : null;
-    return Boolean(exponent && exponent.value.length > 0 && modulus && modulus.value.length > 0 && modulus.offset === blob.length);
-  }
-  if (keyType === "ssh-dss") {
-    let offset = first.offset;
-    for (let index = 0; index < 4; index += 1) {
-      const part = readSshString(blob, offset);
-      if (!part || part.value.length === 0) {
-        return false;
-      }
-      offset = part.offset;
-    }
-    return offset === blob.length;
-  }
-  return keyType.includes("-cert-v01@openssh.com") && first.offset < blob.length;
-}
-function readSshString(blob, offset) {
-  if (offset + 4 > blob.length) {
-    return null;
-  }
-  const length = blob.readUInt32BE(offset);
-  const start = offset + 4;
-  const end = start + length;
-  if (length <= 0 || end > blob.length) {
-    return null;
-  }
-  return { value: blob.subarray(start, end), offset: end };
-}
-function authorizedKeyFingerprint(line) {
-  const parts = line.split(/\s+/);
-  const keyTypeIndex = parts.findIndex((part) => isOpenSshPublicKeyType(part));
-  const digest = createHash3("sha256").update(Buffer.from(parts[keyTypeIndex + 1], "base64")).digest("base64").replace(/=+$/, "");
-  return `SHA256:${digest}`;
-}
-function withRuntimeSecuritySession(config, session) {
-  return {
-    ...config,
-    __sporadesSession: session
-  };
-}
-function readBaseImageUpdatePolicy(config) {
-  return normaliseBaseImageUpdatePolicy(config?.baseImage?.updatePolicy ?? config?.deploy?.baseImageUpdatePolicy);
-}
-async function readRequiredFile2(filePath, message, hint) {
-  try {
-    return await readFile4(filePath, "utf8");
+    return await readFile6(filePath, "utf8");
   } catch (error) {
     if (errorDetails2(error).code === "ENOENT") {
       throw commandError4(message, hint);
@@ -13544,7 +13767,7 @@ async function readRequiredFile2(filePath, message, hint) {
 }
 async function readContainerBinding(bindingPath) {
   try {
-    return JSON.parse(await readFile4(bindingPath, "utf8"));
+    return JSON.parse(await readFile6(bindingPath, "utf8"));
   } catch (error) {
     if (errorDetails2(error).code === "ENOENT") {
       return null;
@@ -13560,7 +13783,7 @@ async function readContainerBinding(bindingPath) {
 }
 async function readRemoteBinding(projectDir) {
   try {
-    return JSON.parse(await readFile4(path4.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
+    return JSON.parse(await readFile6(path6.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
   } catch (error) {
     if (errorDetails2(error).code === "ENOENT") {
       return null;
@@ -13590,7 +13813,7 @@ async function resolveHostPushTarget(config, options) {
 }
 async function readHostConfig() {
   try {
-    const parsed = JSON.parse(await readFile4(hostConfigPath(), "utf8"));
+    const parsed = JSON.parse(await readFile6(hostConfigPath(), "utf8"));
     return normaliseHostConfig(parsed);
   } catch (error) {
     if (errorDetails2(error).code === "ENOENT") {
@@ -13607,13 +13830,13 @@ async function readHostConfig() {
 }
 async function writeHostConfig(config) {
   const filePath = hostConfigPath();
-  await mkdir4(path4.dirname(filePath), { recursive: true });
-  await writeFile4(filePath, `${JSON.stringify(normaliseHostConfig(config), null, 2)}
+  await mkdir5(path6.dirname(filePath), { recursive: true });
+  await writeFile5(filePath, `${JSON.stringify(normaliseHostConfig(config), null, 2)}
 `);
 }
 function hostConfigPath() {
-  const configDir = process.env.SPORADES_CONFIG_DIR ?? path4.join(process.env.XDG_CONFIG_HOME ?? path4.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
-  return path4.join(configDir, "hosts.json");
+  const configDir = process.env.SPORADES_CONFIG_DIR ?? path6.join(process.env.XDG_CONFIG_HOME ?? path6.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
+  return path6.join(configDir, "hosts.json");
 }
 function normaliseHostConfig(value = {}) {
   return {
@@ -13739,7 +13962,7 @@ async function prepareHostPushSealedServerEnv(options) {
   const paths = sealedServerEnvPaths(options.projectDir);
   const envelope = await readSealedServerEnv(paths);
   if (!envelope) {
-    const legacyEnvFile = await readServerEnvFile(path4.join(options.projectDir, ".env.sporades.server"));
+    const legacyEnvFile = await readServerEnvFile(path6.join(options.projectDir, ".env.sporades.server"));
     const legacyValues = legacyEnvFile.exists ? parseServerEnv(legacyEnvFile) : {};
     if (Object.keys(legacyValues).length > 0) {
       throw commandError4(
@@ -13756,7 +13979,7 @@ async function prepareHostPushSealedServerEnv(options) {
     return null;
   }
   const keyPair = await readKeyPair(paths);
-  const legacyServerEnvFilePresent = (await readServerEnvFile(path4.join(options.projectDir, ".env.sporades.server"))).exists;
+  const legacyServerEnvFilePresent = (await readServerEnvFile(path6.join(options.projectDir, ".env.sporades.server"))).exists;
   if (!keyPair?.privateKey) {
     throw missingLocalSealedServerEnvSourceError({
       localPrivateKeyConfigured: false,
@@ -13839,10 +14062,10 @@ async function readHostedCapsuleSealedEnvPublicKey(alias, profile, subname, proj
 }
 async function createHostReleaseArchive(options) {
   const releaseId = createHostReleaseId();
-  const hostPushDir = path4.join(options.projectDir, ".sporades", "host-push");
-  await mkdir4(hostPushDir, { recursive: true });
-  const localArchive = path4.join(hostPushDir, `${releaseId}.tar.gz`);
-  const packageDir = path4.join(hostPushDir, `${releaseId}-files`);
+  const hostPushDir = path6.join(options.projectDir, ".sporades", "host-push");
+  await mkdir5(hostPushDir, { recursive: true });
+  const localArchive = path6.join(hostPushDir, `${releaseId}.tar.gz`);
+  const packageDir = path6.join(hostPushDir, `${releaseId}-files`);
   const remoteArchive = posixJoin2(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
   const sealedServerEnv = await createHostReleaseSealedServerEnv(options);
   const releaseRequest = createHostReleaseRequest({
@@ -13859,31 +14082,31 @@ async function createHostReleaseArchive(options) {
     updatePolicyMode: readBaseImageUpdatePolicy(options.projectConfig)
   });
   await rm2(packageDir, { recursive: true, force: true });
-  await mkdir4(path4.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
-  await mkdir4(path4.join(packageDir, ".sporades", "ssh"), { recursive: true });
+  await mkdir5(path6.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
+  await mkdir5(path6.join(packageDir, ".sporades", "ssh"), { recursive: true });
   const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
   await Promise.all([
-    writeFile4(path4.join(packageDir, "server.mjs"), await readFile4(path4.join(options.bundle.buildDir, "server.mjs"), "utf8")),
-    writeFile4(path4.join(packageDir, "client.js"), await readFile4(path4.join(options.bundle.buildDir, "client.js"), "utf8")),
-    writeFile4(path4.join(packageDir, "index.html"), await readFile4(path4.join(options.projectDir, "index.html"), "utf8")),
-    writeFile4(path4.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
+    writeFile5(path6.join(packageDir, "server.mjs"), await readFile6(path6.join(options.bundle.buildDir, "server.mjs"), "utf8")),
+    writeFile5(path6.join(packageDir, "client.js"), await readFile6(path6.join(options.bundle.buildDir, "client.js"), "utf8")),
+    writeFile5(path6.join(packageDir, "index.html"), await readFile6(path6.join(options.projectDir, "index.html"), "utf8")),
+    writeFile5(path6.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
 `)
   ]);
   if (options.bundle.containerMounts.serverEnv) {
-    await writeFile4(path4.join(packageDir, ".env.sporades.server"), await readFile4(options.bundle.containerMounts.serverEnv.host, "utf8"));
+    await writeFile5(path6.join(packageDir, ".env.sporades.server"), await readFile6(options.bundle.containerMounts.serverEnv.host, "utf8"));
   }
   if (sealedServerEnv) {
-    await writeFile4(
-      path4.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+    await writeFile5(
+      path6.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
       `${JSON.stringify(sealedServerEnv.envelope, null, 2)}
 `
     );
   }
   if (options.sshAccess?.enabled) {
-    const authorizedKeysPath = path4.join(packageDir, ".sporades", "ssh", "authorized_keys");
-    await writeFile4(authorizedKeysPath, `${options.sshAccess.lines.join("\n")}
+    const authorizedKeysPath = path6.join(packageDir, ".sporades", "ssh", "authorized_keys");
+    await writeFile5(authorizedKeysPath, `${options.sshAccess.lines.join("\n")}
 `, { mode: 384 });
-    await chmod(authorizedKeysPath, 384);
+    await chmod2(authorizedKeysPath, 384);
   }
   const tarArgs = [
     "-czf",
@@ -14172,9 +14395,9 @@ async function writeGithubAutodeployWorkflow(options) {
     subname: options.subname,
     branch: options.branch
   });
-  const outputPath = path4.resolve(options.projectDir, options.file);
-  const relativeFile = path4.relative(options.projectDir, outputPath) || options.file;
-  if (relativeFile === ".." || relativeFile.startsWith(`..${path4.sep}`) || path4.isAbsolute(relativeFile)) {
+  const outputPath = path6.resolve(options.projectDir, options.file);
+  const relativeFile = path6.relative(options.projectDir, outputPath) || options.file;
+  if (relativeFile === ".." || relativeFile.startsWith(`..${path6.sep}`) || path6.isAbsolute(relativeFile)) {
     throw commandError4(
       "Invalid GitHub workflow file path.",
       "Pass a relative path inside the project, such as `.github/workflows/sporades-autodeploy.yml`."
@@ -14201,7 +14424,7 @@ async function writeGithubAutodeployWorkflow(options) {
     };
   }
   try {
-    await readFile4(outputPath, "utf8");
+    await readFile6(outputPath, "utf8");
     if (!options.force) {
       throw commandError4(
         "GitHub Actions workflow already exists.",
@@ -14213,8 +14436,8 @@ async function writeGithubAutodeployWorkflow(options) {
       throw error;
     }
   }
-  await mkdir4(path4.dirname(outputPath), { recursive: true });
-  await writeFile4(outputPath, workflow);
+  await mkdir5(path6.dirname(outputPath), { recursive: true });
+  await writeFile5(outputPath, workflow);
   return {
     ok: true,
     data: {
@@ -14227,7 +14450,7 @@ async function writeGithubAutodeployWorkflow(options) {
   };
 }
 function normalisePathForOutput(filePath) {
-  return filePath.split(path4.sep).join("/");
+  return filePath.split(path6.sep).join("/");
 }
 function posixJoin2(...segments) {
   return segments.map((segment, index) => {
@@ -14330,7 +14553,7 @@ function validateGithubWorkflowBranch(branch) {
   }
 }
 function validateGithubWorkflowFile(filePath) {
-  if (!filePath || path4.isAbsolute(filePath) || filePath.includes("\0")) {
+  if (!filePath || path6.isAbsolute(filePath) || filePath.includes("\0")) {
     throw commandError4("Invalid GitHub workflow file path.", "Pass a relative path such as `.github/workflows/sporades-autodeploy.yml`.");
   }
 }
@@ -14389,7 +14612,7 @@ function localCapsuleServicesFromConfig(config, projectDir) {
   }
   validateCapsuleServicesConfig(config.services);
   return {
-    path: path4.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
+    path: path6.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
     relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
     ...capsuleServicesComposeModel(config, projectDir)
   };
@@ -14398,7 +14621,7 @@ function hasDeclaredLocalCapsuleServices(config) {
   return Boolean(config.services?.database || config.services?.storage);
 }
 async function requireLocalContainerBinding(options, action) {
-  const bindingPath = path4.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path6.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     throw commandError4(
@@ -14453,7 +14676,7 @@ async function restartLocalContainerSession(options) {
   }
 }
 async function removeLocalContainerSession(options) {
-  const bindingPath = path4.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path6.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     if (options.missingOk) {
@@ -14568,7 +14791,7 @@ async function localCapsuleServicesStatus(capsuleServices, projectDir) {
       },
       volume: {
         type: "bind",
-        path: path4.join(CAPSULE_SERVICES_STATE_DIR, name),
+        path: path6.join(CAPSULE_SERVICES_STATE_DIR, name),
         exists: await pathExists(service.stateDir)
       },
       containerName: service.name,
@@ -14638,7 +14861,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
       service: name,
       status: "starting",
       engine: service.engine,
-      statePath: path4.join(CAPSULE_SERVICES_STATE_DIR, name)
+      statePath: path6.join(CAPSULE_SERVICES_STATE_DIR, name)
     });
   }
   try {
@@ -14689,7 +14912,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
       service: name,
       status: "ready",
       engine: service.engine,
-      statePath: path4.join(CAPSULE_SERVICES_STATE_DIR, name),
+      statePath: path6.join(CAPSULE_SERVICES_STATE_DIR, name),
       host: connection.host,
       port: connection.port
     });
@@ -14751,7 +14974,7 @@ function capsuleServicesJsonSummary(capsuleServices, status) {
         engine: service.engine,
         network: capsuleServices.networks.services,
         containerName: service.name,
-        statePath: path4.join(CAPSULE_SERVICES_STATE_DIR, name)
+        statePath: path6.join(CAPSULE_SERVICES_STATE_DIR, name)
       }
     ])
   );
@@ -14996,7 +15219,7 @@ function ensureLocalBaseImage(cwd) {
   if (pull.status === 0) {
     return;
   }
-  const dockerfilePath = path4.join(CLI_ROOT, "Dockerfile.base");
+  const dockerfilePath = path6.join(CLI_ROOT, "Dockerfile.base");
   try {
     const stats = statSync(dockerfilePath);
     if (!stats.isFile()) {
@@ -15049,15 +15272,15 @@ async function prepareRuntimeDataPath(targetPath) {
     );
   }
   if (stats.isDirectory()) {
-    await chmod(targetPath, 448);
+    await chmod2(targetPath, 448);
     const entries = await readdir(targetPath, { withFileTypes: true });
     for (const entry of entries) {
-      await prepareRuntimeDataPath(path4.join(targetPath, entry.name));
+      await prepareRuntimeDataPath(path6.join(targetPath, entry.name));
     }
     return;
   }
   if (stats.isFile()) {
-    await chmod(targetPath, 384);
+    await chmod2(targetPath, 384);
   }
 }
 function localContainerRuntimeUser() {

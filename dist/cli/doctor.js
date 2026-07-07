@@ -1,7 +1,11 @@
-export const DOCTOR_SESSIONS = new Set(["dev", "container", "hosted"]);
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { errorDetails } from "./cli-support.js";
+import { authorizedKeyFingerprint, readProjectConfig, resolveAuthorizedKeyLines, resolveEffectiveSecurityPolicy, validateProjectConfigShape, } from "./project-config.js";
+export const DOCTOR_SESSIONS = new Set(["dev", "public-dev", "container", "hosted"]);
 export const DOCTOR_STATUSES = ["pass", "warn", "fail", "skip"];
 export const DOCTOR_SEVERITIES = ["info", "warning", "error"];
-export function runDoctorChecks(options) {
+export async function runDoctorChecks(options) {
     const checks = [
         {
             id: "doctor.command-surface",
@@ -12,20 +16,207 @@ export function runDoctorChecks(options) {
             message: "Doctor command parsed successfully.",
         },
     ];
+    const project = await projectConfigCheck(options.projectDir);
+    checks.push(project.check);
+    if (!project.config) {
+        return checks;
+    }
+    checks.push(await securityPolicyCheck(project.config, options));
+    const publicDevCheck = await publicDevPostureCheck(options);
+    if (publicDevCheck) {
+        checks.push(publicDevCheck);
+    }
+    checks.push(await sshAuthorizedKeysCheck(project.config, options));
     if (options.session) {
         checks.push(sessionDoctorPlaceholderCheck(options));
     }
     return checks;
 }
+async function projectConfigCheck(projectDir) {
+    try {
+        const config = await readProjectConfig(projectDir);
+        validateProjectConfigShape(config);
+        return {
+            config,
+            check: {
+                id: "doctor.project-config",
+                title: "Project configuration",
+                scope: "project",
+                status: "pass",
+                severity: "info",
+                message: "sporades.json is valid and uses supported project-level keys.",
+            },
+        };
+    }
+    catch (error) {
+        const details = errorDetails(error);
+        return {
+            config: null,
+            check: {
+                id: "doctor.project-config",
+                title: "Project configuration",
+                scope: "project",
+                status: "fail",
+                severity: "error",
+                message: details.message ?? "Invalid project configuration.",
+                hint: details.hint ?? "Fix sporades.json and rerun `sporades doctor`.",
+                ...(details.diagnostics ? { details: details.diagnostics } : {}),
+            },
+        };
+    }
+}
+async function securityPolicyCheck(config, options) {
+    const session = options.session ?? "dev";
+    const securitySession = session === "public-dev" ? "public-dev" : session;
+    const security = resolveEffectiveSecurityPolicy(config, securitySession);
+    const warnings = securityPostureWarnings(security, securitySession);
+    const warn = warnings.length > 0;
+    return {
+        id: "doctor.security-policy",
+        title: "Capsule security policy",
+        scope: doctorScope(session),
+        status: warn ? "warn" : "pass",
+        severity: warn ? "warning" : "info",
+        message: warn
+            ? `Effective ${securitySession} security policy has permissive choices: ${warnings.join("; ")}.`
+            : `Effective ${securitySession} security policy resolved successfully.`,
+        ...(warn
+            ? {
+                hint: securityPolicyHint(warnings),
+            }
+            : {}),
+        details: {
+            session: securitySession,
+            security,
+        },
+    };
+}
+function securityPostureWarnings(security, session) {
+    if (session !== "container" && session !== "hosted") {
+        return [];
+    }
+    const warnings = [];
+    if (security.cors.allowedOrigins.includes("*")) {
+        warnings.push("CORS allows every origin");
+    }
+    const permissiveDirectives = Object.entries(security.csp.directives)
+        .filter(([, values]) => Array.isArray(values) && values.some((value) => value === "*" || value === "'unsafe-eval'"))
+        .map(([name]) => name);
+    if (permissiveDirectives.length > 0) {
+        warnings.push(`CSP directives are broad (${permissiveDirectives.join(", ")})`);
+        if (security.csp.mode !== "enforce") {
+            warnings.push("CSP is report-only while permissive directives are configured");
+        }
+    }
+    return warnings;
+}
+function securityPolicyHint(warnings) {
+    const hints = [];
+    if (warnings.some((warning) => warning.includes("CORS"))) {
+        hints.push("Restrict security.cors.allowedOrigins to trusted origins instead of `*`.");
+    }
+    if (warnings.some((warning) => warning.includes("CSP"))) {
+        hints.push("Tighten security.csp.directives and use security.csp.mode `enforce` when the policy is ready.");
+    }
+    return hints.join(" ");
+}
+async function publicDevPostureCheck(options) {
+    const runningPublicDev = await readRunningPublicDevSession(options.projectDir);
+    if (options.session !== "public-dev" && !runningPublicDev) {
+        return null;
+    }
+    return {
+        id: "doctor.public-dev-posture",
+        title: "Public Dev posture",
+        scope: "dev",
+        status: "warn",
+        severity: "warning",
+        message: options.session === "public-dev"
+            ? "Doctor is targeting Public Dev session posture."
+            : "A running Dev session appears to be public.",
+        hint: "Use Public Dev sessions only for temporary demos, device testing, or tunnels, and return to `sporades dev` when finished.",
+        commands: ["sporades dev status"],
+        details: {
+            requestedPublicDev: options.session === "public-dev",
+            runningPublicDev,
+        },
+    };
+}
+async function readRunningPublicDevSession(projectDir) {
+    try {
+        const session = JSON.parse(await readFile(path.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+        return Boolean(session.publicDev || session.public || session.security?.cors?.publicDev);
+    }
+    catch {
+        return false;
+    }
+}
+async function sshAuthorizedKeysCheck(config, options) {
+    const command = sshFollowUpCommand(options);
+    try {
+        const lines = await resolveAuthorizedKeyLines(config.ssh, options.projectDir);
+        const sshConfigured = Object.hasOwn(config, "ssh");
+        const emptyConfiguredSsh = sshConfigured && lines.length === 0;
+        return {
+            id: "doctor.ssh-authorized-keys",
+            title: "SSH authorized keys",
+            scope: "project",
+            status: emptyConfiguredSsh ? "warn" : "pass",
+            severity: emptyConfiguredSsh ? "warning" : "info",
+            message: emptyConfiguredSsh
+                ? "ssh.authorizedKeys resolves to no effective authorized keys, so Container SSH access is disabled."
+                : lines.length > 0
+                    ? `SSH authorized keys are valid (${lines.length} effective key${lines.length === 1 ? "" : "s"}).`
+                    : "No SSH block is configured; Container SSH access remains disabled.",
+            ...(emptyConfiguredSsh
+                ? {
+                    hint: `Add public keys to \`ssh.authorizedKeys\`, or remove the empty \`ssh\` block. Inspect effective SSH state with \`${command}\`.`,
+                }
+                : {
+                    hint: `Inspect effective SSH state with \`${command}\`.`,
+                }),
+            commands: [command],
+            details: {
+                configured: sshConfigured,
+                keyCount: lines.length,
+                fingerprints: lines.map(authorizedKeyFingerprint),
+            },
+        };
+    }
+    catch (error) {
+        const details = errorDetails(error);
+        return {
+            id: "doctor.ssh-authorized-keys",
+            title: "SSH authorized keys",
+            scope: "project",
+            status: "fail",
+            severity: "error",
+            message: details.message ?? "Invalid SSH authorized keys configuration.",
+            hint: `${details.hint ?? "Fix ssh.authorizedKeys in sporades.json."} Inspect effective SSH state with \`${command}\`.`,
+            commands: [command],
+        };
+    }
+}
+function sshFollowUpCommand(options) {
+    if (options.session === "hosted") {
+        return `sporades host ssh ${options.subname} --host ${options.host}`;
+    }
+    return "sporades deploy ssh";
+}
+function doctorScope(session) {
+    return session === "public-dev" ? "dev" : session;
+}
 function sessionDoctorPlaceholderCheck(options) {
     const session = options.session;
     const commandBySession = {
         dev: "sporades dev status",
+        "public-dev": "sporades dev status",
         container: "sporades deploy status",
         hosted: `sporades host health ${options.subname} --host ${options.host}`,
     };
     const titleBySession = {
         dev: "Dev session diagnostics pending",
+        "public-dev": "Public Dev session diagnostics pending",
         container: "Container session diagnostics pending",
         hosted: "Hosted Capsule diagnostics pending",
     };

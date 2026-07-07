@@ -1219,6 +1219,11 @@ test("sporades dev --public makes the relaxed CORS posture visible", async () =>
       assert.equal(started.data.security.cors.publicDev, true);
       assert.deepEqual(started.data.security.cors.allowedOrigins, ["*"]);
 
+      const session = JSON.parse(await readFile(path.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+      assert.equal(session.publicDev, true);
+      assert.equal(session.security.cors.publicDev, true);
+      assert.deepEqual(session.security.cors.allowedOrigins, ["*"]);
+
       const response = await fetch(started.data.url, {
         headers: { origin: "https://demo.example.test" },
       });
