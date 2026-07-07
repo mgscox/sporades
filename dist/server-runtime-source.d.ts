@@ -1154,6 +1154,19 @@ export declare function createLibsqlDatabaseAdapter(options: {
         name: any;
     }, query?: LooseRecord): Record<string, SQLOutputValue>[];
 }>;
+export declare function schemaFromCapsuleDefinition(definition: any): {
+    tables: {
+        name: string;
+        acl: LooseRecord;
+        fields: {
+            name: string;
+            kind: any;
+            sqliteType: string;
+            targetTable: string | undefined;
+            defaultValue: any;
+        }[];
+    }[];
+};
 export declare function routeEndpoint(database: {
     endpoints: any[];
 }, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {

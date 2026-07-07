@@ -96,7 +96,7 @@ async function readRequiredSealedPrivateKey(paths) {
     }
     return keyPair;
 }
-async function bundleServerCapsuleModule(options) {
+export async function bundleServerCapsuleModule(options) {
     const { build } = await import("esbuild");
     try {
         const result = await build({

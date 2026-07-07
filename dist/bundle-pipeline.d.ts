@@ -83,6 +83,10 @@ export declare function createBundle(projectDir: string, config: ProjectConfig):
         } | null;
     };
 }>;
+export declare function bundleServerCapsuleModule(options: {
+    serverSource: string;
+    serverSourcePath: string;
+}): Promise<string>;
 export declare function readServerEnvFile(envPath: PathLike | FileHandle): Promise<ServerEnvFile>;
 export declare function parseServerEnv(envFile: ServerEnvFile): ServerEnv;
 export declare function authStatus(config: ProjectConfig, serverEnv: ServerEnv): {

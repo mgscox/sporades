@@ -130,6 +130,22 @@ async function createProject(dir, name = "doctor-island") {
   return path.join(dir, name);
 }
 
+async function writeCapsuleProject(dir, serverSource) {
+  await Promise.all([
+    mkdir(path.join(dir, "server"), { recursive: true }),
+    mkdir(path.join(dir, "client"), { recursive: true }),
+  ]);
+  await Promise.all([
+    writeFile(
+      path.join(dir, "sporades.json"),
+      `${JSON.stringify({ name: "doctor-acl-test", client: { framework: "react" } }, null, 2)}\n`,
+    ),
+    writeFile(path.join(dir, "server", "index.ts"), serverSource),
+    writeFile(path.join(dir, "client", "index.tsx"), "console.log('client');\n"),
+    writeFile(path.join(dir, "index.html"), "<div id=\"root\"></div>\n"),
+  ]);
+}
+
 async function updateSporadesConfig(projectDir, update) {
   const configPath = path.join(projectDir, "sporades.json");
   const config = JSON.parse(await readFile(configPath, "utf8"));
@@ -142,6 +158,174 @@ function findCheck(envelope, id) {
   assert.ok(check, `Expected doctor check ${id}`);
   return check;
 }
+
+test("sporades doctor warns when Capsule app tables have no ACL declarations", async () => {
+  await withTempDir(async (dir) => {
+    await writeCapsuleProject(
+      dir,
+      `
+        import { String, capsule, table } from "sporades/server";
+        export default capsule({
+          schema: {
+            notes: table({ title: String() }),
+            users: table({ name: String() }),
+          },
+        });
+      `,
+    );
+
+    const result = await runCli(["doctor", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr);
+    const check = findCheck(JSON.parse(result.stdout), "doctor.capsule-authoring.acl-posture");
+
+    assert.equal(check.status, "warn");
+    assert.equal(check.severity, "warning");
+    assert.match(check.message, /not deny-by-default today/);
+    assert.match(check.hint, /Add \.acl\(\{ read, write \}\)/);
+    assert.deepEqual(check.details.tables, [
+      { name: "notes", missing: ["declaration", "read", "write"] },
+      { name: "users", missing: ["declaration", "read", "write"] },
+    ]);
+  });
+});
+
+test("sporades doctor distinguishes partial table ACL declarations", async () => {
+  await withTempDir(async (dir) => {
+    await writeCapsuleProject(
+      dir,
+      `
+        import { String, capsule, table } from "sporades/server";
+        export default capsule({
+          schema: {
+            readOnlyNotes: table({ title: String() }).acl({ read: () => true }),
+            writeOnlyNotes: table({ title: String() }).acl({ write: () => true }),
+            insertOnlyNotes: table({ title: String() }).acl({ insert: () => true }),
+          },
+        });
+      `,
+    );
+
+    const result = await runCli(["doctor", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr);
+    const check = findCheck(JSON.parse(result.stdout), "doctor.capsule-authoring.acl-posture");
+
+    assert.equal(check.status, "warn");
+    assert.deepEqual(check.details.tables, [
+      { name: "readOnlyNotes", missing: ["write"] },
+      { name: "writeOnlyNotes", missing: ["read"] },
+      { name: "insertOnlyNotes", missing: ["read", "write"] },
+    ]);
+  });
+});
+
+test("sporades doctor passes Capsule app tables with complete read and write ACL declarations", async () => {
+  await withTempDir(async (dir) => {
+    await writeCapsuleProject(
+      dir,
+      `
+        import { String, capsule, table } from "sporades/server";
+        export default capsule({
+          schema: {
+            notes: table({ title: String() }).acl({ read: () => true, write: () => true }),
+          },
+        });
+      `,
+    );
+
+    const result = await runCli(["doctor", "--strict", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr);
+    const check = findCheck(JSON.parse(result.stdout), "doctor.capsule-authoring.acl-posture");
+
+    assert.equal(check.status, "pass");
+    assert.equal(check.severity, "info");
+    assert.deepEqual(check.details, { tableCount: 1, inspectedResource: "app-tables" });
+  });
+});
+
+test("sporades doctor reports Capsule metadata load failures with an actionable hint", async () => {
+  await withTempDir(async (dir) => {
+    await writeCapsuleProject(
+      dir,
+      `
+        import { String, capsule, table } from "sporades/server";
+        export default capsule({
+          schema: {
+            notes: table({ title: String() }),
+          },
+      `,
+    );
+
+    const result = await runCli(["doctor", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stderr, "");
+    const check = findCheck(JSON.parse(result.stdout), "doctor.capsule-authoring.metadata-load");
+
+    assert.equal(check.status, "fail");
+    assert.equal(check.severity, "error");
+    assert.match(check.message, /Capsule schema metadata could not be loaded/);
+    assert.match(check.hint, /Fix server\/index\.ts/);
+  });
+});
+
+test("sporades doctor fails when the bundled server module has no default Capsule export", async () => {
+  await withTempDir(async (dir) => {
+    await writeCapsuleProject(
+      dir,
+      `
+        import { String, table } from "sporades/server";
+        export const schema = {
+          notes: table({ title: String() }),
+        };
+      `,
+    );
+
+    const result = await runCli(["doctor", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stderr, "");
+    const check = findCheck(JSON.parse(result.stdout), "doctor.capsule-authoring.metadata-load");
+
+    assert.equal(check.status, "fail");
+    assert.equal(check.severity, "error");
+    assert.match(check.message, /default Capsule definition/);
+    assert.match(check.hint, /export default capsule/);
+  });
+});
+
+test("sporades doctor reports unsupported ACL operations as Capsule metadata load failures", async () => {
+  await withTempDir(async (dir) => {
+    await writeCapsuleProject(
+      dir,
+      `
+        import { String, capsule, table } from "sporades/server";
+        export default capsule({
+          schema: {
+            notes: table({ title: String() }).acl({
+              read: () => true,
+              write: () => true,
+              admin: () => true,
+            }),
+          },
+        });
+      `,
+    );
+
+    const result = await runCli(["doctor", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 1);
+    assert.equal(result.stderr, "");
+    const check = findCheck(JSON.parse(result.stdout), "doctor.capsule-authoring.metadata-load");
+
+    assert.equal(check.status, "fail");
+    assert.equal(check.severity, "error");
+    assert.match(check.message, /Unsupported Capsule table ACL operation: notes\.admin/);
+    assert.match(check.hint, /Supported ACL operations are read, write, insert, update, and delete/);
+  });
+});
 
 test("sporades doctor --help documents the diagnostic command options", async () => {
   await withTempDir(async (dir) => {
@@ -175,11 +359,11 @@ test("sporades doctor --json returns a stable diagnostic envelope", async () => 
     assert.equal(envelope.data.strict, false);
     assert.equal(envelope.data.session, null);
     assert.deepEqual(envelope.data.summary, {
-      pass: 4,
+      pass: 5,
       warn: 0,
       fail: 0,
       skip: 0,
-      info: 4,
+      info: 5,
       warning: 0,
       error: 0,
     });
@@ -187,6 +371,7 @@ test("sporades doctor --json returns a stable diagnostic envelope", async () => 
     assert.equal(findCheck(envelope, "doctor.project-config").status, "pass");
     assert.equal(findCheck(envelope, "doctor.security-policy").status, "pass");
     assert.equal(findCheck(envelope, "doctor.ssh-authorized-keys").status, "pass");
+    assert.equal(findCheck(envelope, "doctor.capsule-authoring.acl-posture").status, "pass");
   });
 });
 

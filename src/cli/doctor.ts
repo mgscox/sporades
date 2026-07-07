@@ -1,8 +1,10 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
+import { bundleServerCapsuleModule } from "../bundle-pipeline.js";
+import { schemaFromCapsuleDefinition } from "../server-runtime-source.js";
 import type { LooseRecord } from "./cli-support.js";
-import { errorDetails } from "./cli-support.js";
+import { commandError, errorDetails } from "./cli-support.js";
 import {
   authorizedKeyFingerprint,
   readProjectConfig,
@@ -39,6 +41,11 @@ export async function runDoctorChecks(options: LooseRecord) {
     checks.push(publicDevCheck);
   }
   checks.push(await sshAuthorizedKeysCheck(project.config, options));
+
+  const capsuleAuthoringCheck = await capsuleAuthoringAclPostureCheck(options);
+  if (capsuleAuthoringCheck) {
+    checks.push(capsuleAuthoringCheck);
+  }
 
   if (options.session) {
     checks.push(sessionDoctorPlaceholderCheck(options));
@@ -224,6 +231,117 @@ function sshFollowUpCommand(options: LooseRecord) {
     return `sporades host ssh ${options.subname} --host ${options.host}`;
   }
   return "sporades deploy ssh";
+}
+
+async function capsuleAuthoringAclPostureCheck(options: LooseRecord) {
+  const projectDir = typeof options.projectDir === "string" ? options.projectDir : process.cwd();
+  const serverEntry = path.join(projectDir, "server", "index.ts");
+
+  try {
+    const serverSource = await readFile(serverEntry, "utf8");
+    const serverModuleSource = await bundleServerCapsuleModule({
+      serverSource,
+      serverSourcePath: serverEntry,
+    });
+    const definition = await loadBundledCapsuleDefinition(serverModuleSource);
+    return capsuleAclDeclarationCheck(definition, schemaFromCapsuleDefinition(definition));
+  } catch (error) {
+    return capsuleMetadataLoadFailureCheck(error);
+  }
+}
+
+async function loadBundledCapsuleDefinition(serverModuleSource: string) {
+  const moduleUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}#${Date.now()}`;
+  const capsuleModule = await import(moduleUrl);
+  if (!capsuleModule.default) {
+    throw commandError(
+      "Capsule server entry did not export a default Capsule definition.",
+      "Fix server/index.ts so it uses `export default capsule({ schema: { ... } })`, then rerun `sporades doctor`.",
+    );
+  }
+  return capsuleModule.default;
+}
+
+function capsuleAclDeclarationCheck(definition: LooseRecord, normalizedSchema: LooseRecord) {
+  const schema = definition?.schema ?? {};
+  const tables = Object.entries(schema)
+    .filter(([, table]) => isAppTableDeclaration(table))
+    .map(([name, table]) => tableAclPosture(name, table as LooseRecord))
+    .filter((table) => table.missing.length > 0);
+
+  if (tables.length === 0) {
+    return {
+      id: "doctor.capsule-authoring.acl-posture",
+      title: "Capsule app table ACL posture",
+      scope: "project",
+      status: "pass",
+      severity: "info",
+      message: "Capsule app table declarations include read and write ACL rules where table metadata is available.",
+      details: {
+        tableCount: Array.isArray(normalizedSchema.tables) ? normalizedSchema.tables.length : 0,
+        inspectedResource: "app-tables",
+      },
+    };
+  }
+
+  return {
+    id: "doctor.capsule-authoring.acl-posture",
+    title: "Capsule app table ACL posture",
+    scope: "project",
+    status: "warn",
+    severity: "warning",
+    message:
+      "Some Capsule app tables are missing ACL declarations; missing ACLs are allow-by-default and not deny-by-default today.",
+    hint:
+      "Add .acl({ read, write }) to app table declarations that should restrict reads or writes. Doctor only inspects declarations and does not evaluate ACL policy outcomes against live user data.",
+    details: {
+      inspectedResource: "app-tables",
+      tables,
+    },
+  };
+}
+
+function isAppTableDeclaration(table: unknown): table is LooseRecord {
+  return Boolean(table && typeof table === "object" && !Array.isArray(table) && (table as LooseRecord).kind === "table");
+}
+
+function tableAclPosture(name: string, table: LooseRecord) {
+  const aclRules = table.aclRules;
+  if (aclRules === undefined) {
+    return {
+      name,
+      missing: ["declaration", "read", "write"],
+    };
+  }
+  if (!aclRules || typeof aclRules !== "object" || Array.isArray(aclRules)) {
+    return {
+      name,
+      missing: ["read", "write"],
+    };
+  }
+  const missing = [];
+  if (typeof aclRules.read !== "function") {
+    missing.push("read");
+  }
+  if (typeof aclRules.write !== "function") {
+    missing.push("write");
+  }
+  return { name, missing };
+}
+
+function capsuleMetadataLoadFailureCheck(error: unknown) {
+  const details = errorDetails(error);
+  return {
+    id: "doctor.capsule-authoring.metadata-load",
+    title: "Capsule schema metadata",
+    scope: "project",
+    status: "fail",
+    severity: "error",
+    message: `Capsule schema metadata could not be loaded: ${details.message ?? "unknown error"}.`,
+    hint:
+      details.hint ??
+      "Fix server/index.ts so Sporades can bundle and load the Capsule definition, then rerun `sporades doctor`.",
+  };
 }
 
 function doctorScope(session: string) {

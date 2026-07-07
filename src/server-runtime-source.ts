@@ -2950,7 +2950,7 @@ function readJsonlLogEvents(logPath: PathOrFileDescriptor, limit = 200) {
     .map((line) => JSON.parse(line));
 }
 
-function schemaFromCapsuleDefinition(definition: any) {
+export function schemaFromCapsuleDefinition(definition: any) {
   const schema = definition?.schema ?? {};
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
     throw commandError(

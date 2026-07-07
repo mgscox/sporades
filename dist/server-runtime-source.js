@@ -2493,7 +2493,7 @@ function readJsonlLogEvents(logPath, limit = 200) {
         .slice(-safeLimit)
         .map((line) => JSON.parse(line));
 }
-function schemaFromCapsuleDefinition(definition) {
+export function schemaFromCapsuleDefinition(definition) {
     const schema = definition?.schema ?? {};
     if (!schema || typeof schema !== "object" || Array.isArray(schema)) {
         throw commandError("Invalid Capsule schema.", "Pass an object whose values are table(...) declarations to capsule({ schema }).");
