@@ -20,6 +20,7 @@ and whether the work belongs in one release or separate tracks.
 
 | Feature | Status | Why it matters | Planning |
 | --- | --- | --- | --- |
+| `sporades doctor` | ready | Gives developers and AFK agents one read-only diagnostic command for local and Hosted Capsule configuration, security posture, service state, and runtime hygiene, while pointing back to existing inspection surfaces instead of duplicating lifecycle behavior. | `.scratch/sporades-doctor/PRD.md` |
 
 ## Recently Implemented
 
@@ -54,7 +55,6 @@ longer belongs in the next-feature queue.
 Backup/restore is for transient data to support redployment or restore after deletion - i.e. should be
 the mapped docker paths. Can be just 'tar' or similar. Likely dependent on 'Job Scheudling' |
 | Host backup and restore | candidate | Back up and restore Host-server-owned state, including Hosted Capsule registry data, persistent Capsule data, uploaded file bytes, Host-generated sealed env keys, release metadata, and route/proxy state. Needs retention, encryption, restore authorization, and disaster-recovery semantics. |
-| `sporades doctor` | candidate | Diagnose local and Hosted Capsule configuration, security posture, service state, and runtime hygiene with structured warnings and hints. Candidate checks include missing ACLs, open-to-the-world data, Capsule service drift, Sealed Server env state, Public Dev session posture, and Hosted Capsule health/config mismatches. |
 | OpenTelemetry hooks | candidate | Add hooks or default instrumentation points for traces, metrics, and logs without requiring app code to import OpenTelemetry directly. |
 | Mail sending | candidate | Add SMTP or third-party mail provider support for server-side mail sending. Likely useful for auth, invites, notifications, and team workflows. |
 | GitHub release auto-update | candidate | For a linked GitHub repository, watch for newly published releases, download the packaged Sporades release artifact, update the Hosted Capsule, and automatically roll back if deployment or verification fails. Assumes a GitHub Action already uses Sporades to build and package the release. |
