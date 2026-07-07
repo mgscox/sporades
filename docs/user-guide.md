@@ -1067,21 +1067,19 @@ target port, key count, fingerprints, running state, and reason codes. Normal
 `sporades deploy`, `sporades host push`, list, stats, and lifecycle output do
 not include SSH state unless validation fails.
 
-Indicative examples, not universal commands:
+Indicative examples: Client SSH commands vary by OS, key agent, local SSH config, and tunneling
+setup. Treat the examples as shape, not a contract.
 
 ```sh
 # Local Container session: first inspect the Docker-assigned loopback port.
 sporades deploy ssh --json
 ssh -p <local-port> sporades@127.0.0.1
 
-# Hosted Capsule: first inspect the loopback-only port on the Host server.
+# Hosted Capsule: create an SSH tunnel to the loopback-only port on the Host server.
 sporades host ssh team-notes --host personal --json
 ssh -N -L <local-port>:127.0.0.1:<host-loopback-port> <host-profile-ssh-target>
 ssh -p <local-port> sporades@127.0.0.1
 ```
-
-Client SSH commands vary by OS, key agent, local SSH config, and tunneling
-setup. Treat the examples as shape, not a contract.
 
 ## File Uploads
 
