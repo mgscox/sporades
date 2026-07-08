@@ -188,6 +188,16 @@ if (call.args[0] === "run") {
   };
 }
 
+async function readProjectAuditEvents(projectDir) {
+  const eventsPath = path.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
+  return (await readFile(eventsPath, "utf8"))
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .filter((entry) => entry.category === "audit");
+}
+
 function expectedLocalContainerRuntimeUser() {
   const uid = process.getuid?.();
   const gid = process.getgid?.();
@@ -710,6 +720,7 @@ test("sporades deploy enables configured SSH access for local Container sessions
 
     const generatedKeysPath = path.join(projectDir, ".sporades", "ssh", "authorized_keys");
     assert.equal(await readFile(generatedKeysPath, "utf8"), `${TEST_PUBLIC_KEY}\n`);
+    assert.equal((await stat(generatedKeysPath)).mode & 0o777, 0o644);
 
     const runCall = firstDockerRunCall(await docker.calls());
     assert.equal(runCall.args[runCall.args.indexOf("--user") + 1], BASE_IMAGE_RUNTIME_USER);
@@ -909,6 +920,14 @@ test("sporades deploy accepts authorized_keys file entries and treats empty effe
     const runCall = (await disabledDocker.calls()).filter((call) => call.args[0] === "run").at(-1);
     assert.equal(runCall.args.includes("127.0.0.1::22"), false);
     assert.equal(runCall.args.includes("SPORADES_SSH_AUTHORIZED_KEYS_PATH=/run/sporades/ssh/authorized_keys"), false);
+    const auditEvents = await readProjectAuditEvents(projectDir);
+    assert.deepEqual(
+      auditEvents.slice(-2).map((entry) => [entry.event, entry.data.operation, entry.data.outcome, entry.data.metadata.enabled, entry.data.metadata.reason]),
+      [
+        ["ssh.config.validated", "ssh.config.validate", "succeeded", false, "no-authorized-keys"],
+        ["ssh.access.disabled", "ssh.container.disabled", "skipped", false, "no-authorized-keys"],
+      ],
+    );
   });
 });
 
@@ -950,6 +969,68 @@ test("sporades deploy accepts OpenSSH security-key public key material", async (
   });
 });
 
+test("sporades deploy audits SSH validation, enabled lifecycle, and inspection without leaking key material", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "ssh-audit-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "ssh-audit-island"));
+    await installFakeReact(projectDir);
+    await updateSporadesConfig(projectDir, (config) => {
+      config.ssh = {
+        authorizedKeys: [
+          { key: TEST_PUBLIC_KEY },
+        ],
+      };
+    });
+    const docker = await installFakeDocker(dir, "container-ssh-audit");
+
+    const deploy = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(deploy.code, 0, deploy.stderr);
+    assert.equal(JSON.parse(deploy.stdout).data.ssh, undefined);
+    assert.doesNotMatch(deploy.stdout, /ssh-ed25519|AAAAC3NzaC1lZDI1NTE5|SHA256:/);
+
+    const inspection = await runCli(["deploy", "ssh", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(inspection.code, 0, inspection.stderr);
+
+    const logs = await runCli(["logs", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(logs.code, 0, logs.stderr);
+    const auditEvents = JSON.parse(logs.stdout).data.entries.filter((entry) => entry.category === "audit");
+    assert.deepEqual(
+      auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome]),
+      [
+        ["ssh.config.validated", "ssh.config.validate", "succeeded"],
+        ["ssh.access.enabled", "ssh.container.start", "succeeded"],
+        ["ssh.state.inspected", "ssh.container.inspect", "succeeded"],
+      ],
+    );
+    const [validation, lifecycle, inspected] = auditEvents;
+    assert.equal(validation.data.actorKind, "platform");
+    assert.equal(validation.data.surface, "sporades/deploy");
+    assert.equal(validation.data.targetResourceKind, "container-ssh-config");
+    assert.equal(validation.data.metadata.enabled, true);
+    assert.equal(validation.data.metadata.keyCount, 1);
+    assert.deepEqual(validation.data.metadata.fingerprints, lifecycle.data.metadata.fingerprints);
+    assert.equal(lifecycle.data.metadata.loopbackOnly, true);
+    assert.equal(lifecycle.data.metadata.targetPort, 22);
+    assert.equal(inspected.data.metadata.running, true);
+    assert.equal(inspected.data.metadata.port, 49162);
+    assert.equal(inspected.data.metadata.host, "127.0.0.1");
+    assert.doesNotMatch(JSON.stringify(auditEvents), /ssh-ed25519|AAAAC3NzaC1lZDI1NTE5|OPENSSH PRIVATE KEY|authorized_keys/);
+  });
+});
+
 test("sporades deploy rejects private-key-looking SSH material", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "private-key-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -976,12 +1057,20 @@ test("sporades deploy rejects private-key-looking SSH material", async () => {
     const body = JSON.parse(result.stdout);
     assert.match(body.error.message, /private key/);
     assert.match(body.error.hint, /public authorized_keys material only/);
+    const auditEvents = await readProjectAuditEvents(projectDir);
+    assert.deepEqual(
+      auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome, entry.data.safeErrorCode]),
+      [["ssh.config.validated", "ssh.config.validate", "failed", "SSH_CONFIG_INVALID"]],
+    );
+    assert.equal(auditEvents[0].data.metadata.reason, "invalid-ssh-config");
+    assert.doesNotMatch(JSON.stringify(auditEvents), /OPENSSH PRIVATE KEY|nope/);
   });
 });
 
-test("Sporades Base image includes dormant OpenSSH startup capability", async () => {
+test("Sporades Base image includes dormant OpenSSH and Fail2ban startup capability", async () => {
   const dockerfile = await readFile(path.join(repoRoot, "Dockerfile.base"), "utf8");
   assert.match(dockerfile, /apk add --no-cache openssh-server/);
+  assert.match(dockerfile, /apk add --no-cache openssh-server fail2ban/);
   assert.match(dockerfile, /\/usr\/local\/bin\/sporades-start/);
   assert.match(dockerfile, /PasswordAuthentication=no/);
   assert.match(dockerfile, /PermitRootLogin=no/);
@@ -989,7 +1078,10 @@ test("Sporades Base image includes dormant OpenSSH startup capability", async ()
   assert.match(dockerfile, /AuthorizedKeysFile="\$target"/);
   assert.match(dockerfile, /HostKey="\$ssh_dir\/ssh_host_ed25519_key"/);
   assert.match(dockerfile, /PidFile=\/tmp\/sporades-sshd\.pid/);
+  assert.match(dockerfile, /adduser -u 10001 -S sporades -G sporades -s \/bin\/sh/);
   assert.match(dockerfile, /USER 10001:10001/);
+  assert.doesNotMatch(dockerfile, /adduser -u 10001 -S sporades -G sporades\s+\\/);
+  assert.doesNotMatch(dockerfile, /fail2ban-(?:client|server)|systemctl enable --now fail2ban|service fail2ban start/);
   assert.doesNotMatch(dockerfile, /sudoers|NOPASSWD|PermitRootLogin=yes|PasswordAuthentication=yes/);
 });
 

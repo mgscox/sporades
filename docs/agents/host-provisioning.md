@@ -515,13 +515,23 @@ ssh -n "$SPORADES_SSH_TARGET" "set -euo pipefail
     exit 1
   fi
   apt-get update
-  apt-get install -y ca-certificates curl gnupg tar
+  apt-get install -y ca-certificates curl fail2ban gnupg tar
   if ! command -v node >/dev/null 2>&1 || ! node --version | grep -Eq '^v2[2-9]\\.'; then
     curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   fi
   apt-get install -y nodejs docker.io caddy
+  printf '%s\n' \
+    '[sshd]' \
+    'enabled = true' \
+    'port = ssh' \
+    'logpath = %(sshd_log)s' \
+    'maxretry = 5' \
+    'findtime = 10m' \
+    'bantime = 1h' \
+    > /etc/fail2ban/jail.d/sporades-sshd.conf
   systemctl enable --now docker
   systemctl enable --now caddy
+  systemctl enable --now fail2ban
   mkdir -p '$SPORADES_REMOTE_ROOT/bin' '$SPORADES_REMOTE_ROOT/incoming'
 "
 
@@ -535,6 +545,7 @@ ssh -n "$SPORADES_SSH_TARGET" "set -euo pipefail
   node --version
   docker --version
   caddy version
+  fail2ban-client status sshd
   tar --version
 "
 
@@ -635,6 +646,7 @@ packages the Host-encrypted envelope for the Hosted Capsule release.
 
 - `ssh "$SPORADES_SSH_TARGET" "node --version"` returns Node.js 22+.
 - `ssh "$SPORADES_SSH_TARGET" "docker --version && caddy version"` succeeds.
+- `ssh "$SPORADES_SSH_TARGET" "fail2ban-client status sshd"` succeeds.
 - `<remote-root>/bin/sporades-host-helper` exists and is executable.
 - `<remote-root>/Dockerfile.base` exists.
 - `sporades host current --json` points at the expected SSH target, Hosted

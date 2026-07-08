@@ -46,6 +46,7 @@ async function withTempDir(fn) {
 }
 
 const createRuntimeLogSink = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createRuntimeLogSink");
+const emitPrivilegedAuditEvent = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "emitPrivilegedAuditEvent");
 
 test("SQLite database adapter owns setup, query execution, and close lifecycle", async () => {
   await withTempDir(async (dir) => {
@@ -1520,6 +1521,177 @@ test("Log index failures degrade inspection without failing the emitted workflow
     assert.deepEqual(
       sink.tail(10).map((entry) => entry.message),
       ["jsonl survives index failure"],
+    );
+  });
+});
+
+test("Privileged audit events use the stable runtime-owned envelope and outcome vocabulary", async () => {
+  await withTempDir(async (dir) => {
+    assert.equal(typeof emitPrivilegedAuditEvent, "function");
+    const database = await openDevDatabase(
+      path.join(dir, "data.db"),
+      "",
+      { WEBHOOK_SECRET: "env-secret-123" },
+      {
+        name: "audit-island",
+        id: "capsule-123",
+        release: { id: "release-456" },
+      },
+    );
+
+    try {
+      const outcomes = ["requested", "allowed", "denied", "succeeded", "failed", "skipped"];
+      const actorKinds = ["privileged-server-role", "captured-user", "platform", "unknown"];
+
+      for (const [index, outcome] of outcomes.entries()) {
+        const event = await emitPrivilegedAuditEvent(database, {
+          actorKind: actorKinds[index % actorKinds.length],
+          operation: `runtime.audit.${outcome}`,
+          surface: "sporades/test-runtime",
+          correlation: { id: `corr-${index}`, jobId: `job-${index}` },
+          targetResourceKind: "runtime-log-index",
+          outcome,
+          safeErrorCode: outcome === "denied" ? "DENIED" : outcome === "failed" ? "INDEX_UNAVAILABLE" : null,
+          source: "runtime",
+          metadata: {
+            visible: `safe-${outcome}`,
+          },
+        });
+
+        assert.equal(event.schema, "sporades.log.v1");
+        assert.equal(event.category, "audit");
+        assert.equal(event.event, `privileged.${outcome}`);
+        assert.equal(event.capsule.name, "audit-island");
+        assert.equal(event.capsule.id, "capsule-123");
+        assert.deepEqual(event.release, { id: "release-456" });
+        assert.deepEqual(event.correlation, { id: `corr-${index}`, jobId: `job-${index}` });
+        assert.equal(event.data.schema, "sporades.privileged-audit.v1");
+        assert.equal(event.data.actorKind, actorKinds[index % actorKinds.length]);
+        assert.equal(event.data.operation, `runtime.audit.${outcome}`);
+        assert.equal(event.data.surface, "sporades/test-runtime");
+        assert.equal(event.data.targetResourceKind, "runtime-log-index");
+        assert.equal(event.data.outcome, outcome);
+        assert.equal(event.data.source, "runtime");
+        assert.equal(event.data.metadata.visible, `safe-${outcome}`);
+      }
+
+      const denied = database.log.recent(10).find((entry) => entry.event === "privileged.denied");
+      const failed = database.log.recent(10).find((entry) => entry.event === "privileged.failed");
+
+      assert.equal(denied.level, "warn");
+      assert.equal(denied.data.safeErrorCode, "DENIED");
+      assert.equal(failed.level, "error");
+      assert.equal(failed.data.safeErrorCode, "INDEX_UNAVAILABLE");
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("Privileged audit metadata is redacted and capped before it reaches JSONL", async () => {
+  await withTempDir(async (dir) => {
+    assert.equal(typeof emitPrivilegedAuditEvent, "function");
+    const database = await openDevDatabase(
+      path.join(dir, "data.db"),
+      "",
+      { WEBHOOK_SECRET: "env-secret-123" },
+      {
+        name: "redacted-audit-island",
+        logs: { payloadMaxBytes: 2048 },
+      },
+    );
+
+    try {
+      const event = await emitPrivilegedAuditEvent(database, {
+        actorKind: "privileged-server-role",
+        operation: "runtime.secret.inspect",
+        surface: "sporades/test-runtime",
+        targetResourceKind: "server-env",
+        outcome: "failed",
+        error: Object.assign(new Error("raw stack should stay private"), { code: "ESECRET" }),
+        source: "runtime",
+        metadata: {
+          safe: "visible",
+          rawRequestBody: { password: "plaintext-password", bodySecret: "body-secret-123" },
+          authorizedKeys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFULLPUBLICKEY user@example"],
+          privateKey: "-----BEGIN OPENSSH PRIVATE KEY-----\nprivate-key-bytes\n-----END OPENSSH PRIVATE KEY-----",
+          serverEnvValue: "env-secret-123",
+          sessionToken: "session-token-123",
+          cookie: "session=abc",
+          authorization: "Bearer auth-123",
+          password: "plaintext-password",
+          clientSecret: "client-secret-123",
+          stack: "Error: nope\n    at runtime.js:1:2",
+          large: "x".repeat(5000),
+        },
+      });
+
+      const serialized = JSON.stringify(event);
+      assert.equal(event.data.safeErrorCode, "ESECRET");
+      assert.equal(event.data.metadata.safe, "visible");
+      assert.equal(event.data.metadata.rawRequestBody, "[REDACTED]");
+      assert.equal(event.data.metadata.authorizedKeys, "[REDACTED]");
+      assert.equal(event.data.metadata.privateKey, "[REDACTED]");
+      assert.equal(event.data.metadata.serverEnvValue, "[REDACTED]");
+      assert.equal(event.data.metadata.sessionToken, "[REDACTED]");
+      assert.equal(event.data.metadata.cookie, "[REDACTED]");
+      assert.equal(event.data.metadata.authorization, "[REDACTED]");
+      assert.equal(event.data.metadata.password, "[REDACTED]");
+      assert.equal(event.data.metadata.clientSecret, "[REDACTED]");
+      assert.equal(event.data.metadata.stack, "[REDACTED]");
+      assert.equal(event.truncated, true);
+      assert.ok(Buffer.byteLength(serialized, "utf8") <= 2048, serialized.length);
+      assert.equal(serialized.includes("FULLPUBLICKEY"), false);
+      assert.equal(serialized.includes("private-key-bytes"), false);
+      assert.equal(serialized.includes("env-secret-123"), false);
+      assert.equal(serialized.includes("session-token-123"), false);
+      assert.equal(serialized.includes("plaintext-password"), false);
+      assert.equal(serialized.includes("client-secret-123"), false);
+      assert.equal(serialized.includes("runtime.js:1:2"), false);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("Privileged audit JSONL emission survives Log index failures", async () => {
+  await withTempDir(async (dir) => {
+    assert.equal(typeof createRuntimeLogSink, "function");
+    assert.equal(typeof emitPrivilegedAuditEvent, "function");
+    const database = {
+      insertLogIndexEvent() {
+        throw new Error("index unavailable");
+      },
+      pruneLogIndex() {
+        throw new Error("prune unavailable");
+      },
+      readRecentLogEvents() {
+        return [];
+      },
+    };
+    const sink = createRuntimeLogSink({
+      database,
+      config: { name: "audit-index-island" },
+      serverEnv: {},
+      dataDir: dir,
+    });
+
+    const event = emitPrivilegedAuditEvent(sink, {
+      actorKind: "platform",
+      operation: "runtime.log-index.write",
+      surface: "sporades/test-runtime",
+      targetResourceKind: "log-index",
+      outcome: "failed",
+      safeErrorCode: "INDEX_UNAVAILABLE",
+      source: "runtime",
+    });
+
+    assert.equal(event.event, "privileged.failed");
+    assert.equal(event.data.safeErrorCode, "INDEX_UNAVAILABLE");
+    assert.deepEqual(sink.recent(10), []);
+    assert.deepEqual(
+      sink.tail(10).map((entry) => [entry.event, entry.data.outcome]),
+      [["privileged.failed", "failed"]],
     );
   });
 });

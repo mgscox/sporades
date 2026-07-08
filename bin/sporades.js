@@ -6,7 +6,7 @@ import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes4 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { chmod as chmod2, lstat as lstat2, mkdir as mkdir5, readdir, readFile as readFile6, rm as rm2, writeFile as writeFile5 } from "node:fs/promises";
+import { appendFile, chmod as chmod2, lstat as lstat2, mkdir as mkdir5, readdir, readFile as readFile6, rm as rm2, writeFile as writeFile5 } from "node:fs/promises";
 import path6 from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -811,10 +811,17 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createRuntimeLogSink,
   requirePathModule,
   createRuntimeLogger,
+  createPrivilegedAuditEmitter,
+  emitPrivilegedAuditEvent,
+  createPrivilegedAuditLogInput,
+  normalizePrivilegedAuditActorKind,
+  normalizePrivilegedAuditOutcome,
+  safePrivilegedAuditErrorCode,
   createLogEnvelope,
   sanitizeLogData,
   redactLogData,
   logDataContainsServerEnvValue,
+  isSensitiveLogString,
   isSensitiveLogKey,
   capLogEnvelope,
   createLogIndexTables,
@@ -1244,6 +1251,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     serverEnv,
     dataDir: path7.dirname(databasePath)
   });
+  database.audit = createPrivilegedAuditEmitter(database.log);
   await sqlite.ensureSystemTable();
   await sqlite.ensureAuthStorage(database.authConfig);
   await sqlite.ensureUserPreferencesStorage();
@@ -3134,6 +3142,96 @@ function createRuntimeLogger(database, context = {}) {
     error: (...args) => write("error", args)
   };
 }
+var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
+var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
+var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["requested", "allowed", "denied", "succeeded", "failed", "skipped"]);
+function createPrivilegedAuditEmitter(log) {
+  return {
+    emit(details) {
+      return emitPrivilegedAuditEvent(log, details);
+    }
+  };
+}
+function emitPrivilegedAuditEvent(target, details = {}) {
+  const log = target?.log?.emit ? target.log : target;
+  if (!log?.emit) {
+    throw new Error("Privileged audit events require a runtime log sink.");
+  }
+  return log.emit(createPrivilegedAuditLogInput(details));
+}
+function createPrivilegedAuditLogInput(details = {}) {
+  const outcome = normalizePrivilegedAuditOutcome(details.outcome);
+  const safeErrorCode = safePrivilegedAuditErrorCode(details.safeErrorCode ?? details.error, outcome);
+  const correlation = normalizePrivilegedAuditCorrelation(details.correlation ?? details.correlationId ?? null);
+  const release = details.release ?? null;
+  const data = {
+    schema: PRIVILEGED_AUDIT_SCHEMA,
+    actorKind: normalizePrivilegedAuditActorKind(details.actorKind),
+    operation: auditString(details.operation, "unknown"),
+    surface: auditString(details.surface ?? details.callSite ?? details.apiSurface, "unknown"),
+    targetResourceKind: auditString(details.targetResourceKind ?? details.target?.resourceKind, "unknown"),
+    outcome,
+    safeErrorCode,
+    source: auditString(details.source, "runtime"),
+    metadata: details.metadata && typeof details.metadata === "object" && !Array.isArray(details.metadata) ? details.metadata : {}
+  };
+  return {
+    category: "audit",
+    event: auditString(details.event, `privileged.${outcome}`),
+    level: details.level ?? privilegedAuditLevelForOutcome(outcome),
+    message: auditString(details.message, `Privileged audit event ${outcome}: ${data.operation}`),
+    data,
+    request: details.request ?? null,
+    release,
+    correlation
+  };
+}
+function normalizePrivilegedAuditActorKind(value) {
+  const candidate = String(value ?? "unknown");
+  return PRIVILEGED_AUDIT_ACTOR_KINDS.has(candidate) ? candidate : "unknown";
+}
+function normalizePrivilegedAuditOutcome(value) {
+  const candidate = String(value ?? "requested");
+  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "requested";
+}
+function privilegedAuditLevelForOutcome(outcome) {
+  if (outcome === "denied" || outcome === "skipped") {
+    return "warn";
+  }
+  if (outcome === "failed") {
+    return "error";
+  }
+  return "info";
+}
+function safePrivilegedAuditErrorCode(value, outcome = "requested") {
+  const source = value && typeof value === "object" && "code" in value ? value.code : value;
+  if (source === null || source === void 0 || source === "") {
+    if (outcome === "denied") {
+      return "DENIED";
+    }
+    if (outcome === "failed") {
+      return "UNKNOWN_ERROR";
+    }
+    return null;
+  }
+  return String(source).trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_").slice(0, 64) || (outcome === "failed" ? "UNKNOWN_ERROR" : null);
+}
+function normalizePrivilegedAuditCorrelation(value) {
+  if (value === null || value === void 0) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return { id: value };
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value;
+  }
+  return { id: String(value) };
+}
+function auditString(value, fallback) {
+  const text = value === null || value === void 0 ? "" : String(value);
+  return text.trim() ? text : fallback;
+}
 function createLogEnvelope(input) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const config = input.config ?? {};
@@ -3168,7 +3266,7 @@ function redactLogData(value, serverEnv) {
     return null;
   }
   if (typeof value === "string") {
-    return logDataContainsServerEnvValue(value, serverEnv) ? logRedactedValue() : value;
+    return logDataContainsServerEnvValue(value, serverEnv) || isSensitiveLogString(value) ? logRedactedValue() : value;
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return value;
@@ -3180,7 +3278,7 @@ function redactLogData(value, serverEnv) {
     return Object.fromEntries(
       Object.entries(value).map(([key, nestedValue]) => [
         key,
-        isSensitiveLogKey(key) || logDataContainsServerEnvValue(nestedValue, serverEnv) ? logRedactedValue() : redactLogData(nestedValue, serverEnv)
+        isSensitiveLogKey(key) ? logRedactedValue() : redactLogData(nestedValue, serverEnv)
       ])
     );
   }
@@ -3204,7 +3302,10 @@ function logDataContainsServerEnvValue(value, serverEnv) {
   return values.some((secret) => serialized.includes(String(secret)));
 }
 function isSensitiveLogKey(key) {
-  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken)/i.test(String(key));
+  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
+}
+function isSensitiveLogString(value) {
+  return /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value) || /\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(value) || /(^|\n)\s*at\s+.+:\d+:\d+/.test(value);
 }
 function capLogEnvelope(envelope, maxBytes) {
   let capped = envelope;
@@ -3218,6 +3319,14 @@ function capLogEnvelope(envelope, maxBytes) {
     },
     truncated: true
   };
+  if (capped.data.metadata && typeof capped.data.metadata === "object" && !Array.isArray(capped.data.metadata)) {
+    for (const key of Object.keys(capped.data.metadata).reverse()) {
+      if (Buffer.byteLength(JSON.stringify(capped), "utf8") <= maxBytes) {
+        return capped;
+      }
+      capped.data.metadata[key] = "[TRUNCATED]";
+    }
+  }
   for (const key of Object.keys(capped.data).reverse()) {
     if (Buffer.byteLength(JSON.stringify(capped), "utf8") <= maxBytes) {
       return capped;
@@ -10271,8 +10380,8 @@ async function resolveLocalContainerSshAccess(config, projectDir) {
   const authorizedKeysPath = path4.join(sshDir, "authorized_keys");
   await mkdir4(sshDir, { recursive: true });
   await writeFile4(authorizedKeysPath, `${lines.join("\n")}
-`, { mode: 384 });
-  await chmod(authorizedKeysPath, 384);
+`, { mode: 420 });
+  await chmod(authorizedKeysPath, 420);
   return {
     enabled: true,
     authorizedKeysPath,
@@ -13015,6 +13124,25 @@ async function startDevSession(options) {
             error: null
           });
           return;
+        case "POST:/__sporades/debug/privileged-audit":
+          if (process.env.SPORADES_TEST_ENABLE_PRIVILEGED_AUDIT_DEBUG !== "1") {
+            writeJsonResponse(response, 404, {
+              ok: false,
+              data: null,
+              error: { message: "Not found." }
+            });
+            return;
+          }
+          {
+            const input = await readJsonRequest(request);
+            const event = await runtime.database.audit.emit(input);
+            writeJsonResponse(response, 200, {
+              ok: true,
+              data: { event },
+              error: null
+            });
+          }
+          return;
         case "GET:/__sporades/debug/logs":
           writeJsonResponse(response, 200, {
             ok: true,
@@ -13919,7 +14047,7 @@ async function manageHost(options) {
       const config = await readHostConfig();
       const target = await resolveHostPushTarget(config, options);
       const projectConfig = await readProjectConfig(options.projectDir);
-      const sshAccess = await resolveHostedCapsuleSshAccess(projectConfig, options.projectDir);
+      const sshAccess = await resolveHostedCapsuleSshAccessForAudit(projectConfig, options.projectDir);
       const hostSealedServerEnv = await prepareHostPushSealedServerEnv({
         projectDir: options.projectDir,
         alias: target.alias,
@@ -14294,12 +14422,96 @@ function redactHostPushSshState(result) {
   }
   if (data.lifecycle && typeof data.lifecycle === "object") {
     delete data.lifecycle.ssh;
+    delete data.lifecycle.auditEvents;
+    if (Object.keys(data.lifecycle).length === 0) {
+      delete data.lifecycle;
+    }
   }
   return { ...result, data };
 }
+async function resolveLocalContainerSshAccessForAudit(config, projectDir, surface, targetResourceKind) {
+  try {
+    const sshAccess = await resolveLocalContainerSshAccess(config, projectDir);
+    if (sshAccess.enabled || explicitSshConfigured(config)) {
+      await emitCliSshAuditEvent(config, projectDir, {
+        event: "ssh.config.validated",
+        operation: "ssh.config.validate",
+        surface,
+        targetResourceKind,
+        outcome: "succeeded",
+        message: "SSH access configuration validated.",
+        metadata: {
+          enabled: sshAccess.enabled,
+          keyCount: sshAccess.keyCount ?? 0,
+          fingerprints: sshAccess.fingerprints ?? [],
+          ...sshAccess.enabled ? {} : { reason: "no-authorized-keys" }
+        }
+      });
+    }
+    return sshAccess;
+  } catch (error) {
+    await emitCliSshAuditEvent(config, projectDir, {
+      event: "ssh.config.validated",
+      operation: "ssh.config.validate",
+      surface,
+      targetResourceKind,
+      outcome: "failed",
+      safeErrorCode: "SSH_CONFIG_INVALID",
+      message: "SSH access configuration validation failed.",
+      metadata: {
+        enabled: false,
+        keyCount: 0,
+        fingerprints: [],
+        reason: "invalid-ssh-config"
+      }
+    });
+    throw error;
+  }
+}
+async function emitCliSshAuditEvent(config, projectDir, details) {
+  const logPath = projectLogPath(config, projectDir);
+  await mkdir5(path6.dirname(logPath), { recursive: true });
+  const input = createPrivilegedAuditLogInput({
+    actorKind: "platform",
+    source: "cli",
+    ...details
+  });
+  const event = createLogEnvelope({
+    ...input,
+    timestamp: null,
+    config,
+    serverEnv: {}
+  });
+  await appendFile(logPath, `${JSON.stringify(event)}
+`);
+  return event;
+}
+function sshAuditMetadata(state) {
+  return {
+    enabled: Boolean(state.enabled),
+    running: Boolean(state.running),
+    host: typeof state.host === "string" ? state.host : null,
+    port: Number.isInteger(state.port) ? state.port : null,
+    targetPort: Number.isInteger(state.targetPort) ? state.targetPort : 22,
+    loopbackOnly: state.host === "127.0.0.1" || state.host === "localhost" || state.host === null,
+    keyCount: Number.isInteger(state.keyCount) ? state.keyCount : 0,
+    fingerprints: Array.isArray(state.fingerprints) ? state.fingerprints.filter((value) => typeof value === "string") : [],
+    reason: typeof state.reason === "string" ? state.reason : null
+  };
+}
+function explicitSshConfigured(config) {
+  return Boolean(config && typeof config === "object" && Object.hasOwn(config, "ssh"));
+}
+function projectLogPath(config, projectDir) {
+  return config?.logs?.jsonlPath ?? config?.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path6.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
+}
+function readProjectConfigSync(projectDir) {
+  const raw = readFileSync2(path6.join(projectDir, "sporades.json"), "utf8");
+  return JSON.parse(raw);
+}
 async function startContainerSession(options) {
   const config = await readProjectConfig(options.projectDir);
-  const sshAccess = await resolveLocalContainerSshAccess(config, options.projectDir);
+  const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
   const port = options.port ?? config.deploy?.port ?? 4e3;
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const bundle = await createBundle(options.projectDir, config);
@@ -14422,6 +14634,26 @@ async function startContainerSession(options) {
   };
   await writeFile5(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
+  if (sshAccess.enabled || explicitSshConfigured(config)) {
+    await emitCliSshAuditEvent(config, options.projectDir, {
+      event: sshAccess.enabled ? "ssh.access.enabled" : "ssh.access.disabled",
+      operation: sshAccess.enabled ? "ssh.container.start" : "ssh.container.disabled",
+      surface: "sporades/deploy",
+      targetResourceKind: "container-ssh-access",
+      outcome: sshAccess.enabled ? "succeeded" : "skipped",
+      message: sshAccess.enabled ? "Container SSH access enabled for local Container session." : "Container SSH access disabled for local Container session.",
+      metadata: {
+        enabled: sshAccess.enabled,
+        running: true,
+        targetPort: 22,
+        loopbackOnly: true,
+        keyCount: sshAccess.keyCount ?? 0,
+        fingerprints: sshAccess.fingerprints ?? [],
+        ...existingBinding?.containerId ? { redeploy: true } : { redeploy: false },
+        ...sshAccess.enabled ? {} : { reason: "no-authorized-keys" }
+      }
+    });
+  }
   const url = `http://localhost:${port}`;
   if (options.json) {
     writeResult({
@@ -14441,6 +14673,7 @@ async function startContainerSession(options) {
   }
 }
 async function inspectLocalContainerSsh(options) {
+  const config = await readProjectConfig(options.projectDir);
   const bindingPath = path6.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
@@ -14454,6 +14687,7 @@ async function inspectLocalContainerSsh(options) {
     } else {
       process.stdout.write("Container SSH disabled: no local Container session. Run `sporades deploy`.\n");
     }
+    await emitLocalContainerSshInspectionAudit(config, options.projectDir, data2);
     return;
   }
   const intended = binding.ssh ?? { enabled: false, reason: "no-authorized-keys" };
@@ -14468,6 +14702,7 @@ async function inspectLocalContainerSsh(options) {
     } else {
       process.stdout.write("Container SSH disabled: no authorized keys configured. Add `ssh.authorizedKeys` and run `sporades deploy`.\n");
     }
+    await emitLocalContainerSshInspectionAudit(config, options.projectDir, data2);
     return;
   }
   const inspected = inspectDockerContainer(options.projectDir, binding.containerId);
@@ -14497,6 +14732,18 @@ async function inspectLocalContainerSsh(options) {
     process.stdout.write(`Container SSH enabled for ${data.user}@${data.host}:${data.port} (${data.keyCount} authorized key${data.keyCount === 1 ? "" : "s"}).
 `);
   }
+  await emitLocalContainerSshInspectionAudit(config, options.projectDir, data);
+}
+async function emitLocalContainerSshInspectionAudit(config, projectDir, data) {
+  await emitCliSshAuditEvent(config, projectDir, {
+    event: "ssh.state.inspected",
+    operation: "ssh.container.inspect",
+    surface: "sporades/deploy-ssh",
+    targetResourceKind: "container-ssh-state",
+    outcome: "succeeded",
+    message: "Container SSH state inspected.",
+    metadata: sshAuditMetadata(data)
+  });
 }
 function localContainerSshState(overrides) {
   return {
@@ -14659,11 +14906,36 @@ function readContainerLogs(options) {
   }
   const entries = `${result.stdout ?? ""}
 ${result.stderr ?? ""}`.split("\n").map((line) => line.trim()).filter(Boolean).map(parseDockerLogLine).filter(Boolean);
+  const localAuditEntries = readLocalAuditLogEntries(options.projectDir);
   return {
     ok: true,
-    data: { source: "docker", containerId: container.containerId, entries },
+    data: { source: "docker", containerId: container.containerId, entries: dedupeLogEntries([...localAuditEntries, ...entries]) },
     error: null
   };
+}
+function readLocalAuditLogEntries(projectDir) {
+  return readProjectJsonlLogEvents(projectDir).filter((entry) => entry?.category === "audit");
+}
+function readProjectJsonlLogEvents(projectDir, limit = 200) {
+  try {
+    const config = readProjectConfigSync(projectDir);
+    return readJsonlLogEvents(projectLogPath(config, projectDir), limit);
+  } catch {
+    return [];
+  }
+}
+function dedupeLogEntries(entries) {
+  const seen = /* @__PURE__ */ new Set();
+  const deduped = [];
+  for (const entry of entries) {
+    const key = JSON.stringify(entry);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(entry);
+  }
+  return deduped;
 }
 function parseDockerLogLine(line) {
   try {
@@ -15176,8 +15448,8 @@ async function createHostReleaseArchive(options) {
   if (options.sshAccess?.enabled) {
     const authorizedKeysPath = path6.join(packageDir, ".sporades", "ssh", "authorized_keys");
     await writeFile5(authorizedKeysPath, `${options.sshAccess.lines.join("\n")}
-`, { mode: 384 });
-    await chmod2(authorizedKeysPath, 384);
+`, { mode: 420 });
+    await chmod2(authorizedKeysPath, 420);
   }
   const tarArgs = [
     "-czf",
@@ -15225,6 +15497,45 @@ async function resolveHostedCapsuleSshAccess(config, projectDir) {
     fingerprints: lines.map(authorizedKeyFingerprint),
     lines
   };
+}
+async function resolveHostedCapsuleSshAccessForAudit(config, projectDir) {
+  try {
+    const sshAccess = await resolveHostedCapsuleSshAccess(config, projectDir);
+    if (sshAccess.enabled || explicitSshConfigured(config)) {
+      await emitCliSshAuditEvent(config, projectDir, {
+        event: "ssh.config.validated",
+        operation: "ssh.config.validate",
+        surface: "sporades/host-push",
+        targetResourceKind: "hosted-ssh-config",
+        outcome: "succeeded",
+        message: "Hosted Capsule SSH access configuration validated.",
+        metadata: {
+          enabled: sshAccess.enabled,
+          keyCount: sshAccess.keyCount ?? 0,
+          fingerprints: sshAccess.fingerprints ?? [],
+          ...sshAccess.enabled ? {} : { reason: "no-authorized-keys" }
+        }
+      });
+    }
+    return sshAccess;
+  } catch (error) {
+    await emitCliSshAuditEvent(config, projectDir, {
+      event: "ssh.config.validated",
+      operation: "ssh.config.validate",
+      surface: "sporades/host-push",
+      targetResourceKind: "hosted-ssh-config",
+      outcome: "failed",
+      safeErrorCode: "SSH_CONFIG_INVALID",
+      message: "Hosted Capsule SSH access configuration validation failed.",
+      metadata: {
+        enabled: false,
+        keyCount: 0,
+        fingerprints: [],
+        reason: "invalid-ssh-config"
+      }
+    });
+    throw error;
+  }
 }
 function sanitizeHostedReleaseConfig(config, sshAccess) {
   const releaseConfig = JSON.parse(JSON.stringify(config ?? {}));

@@ -189,6 +189,57 @@ esac
   });
 });
 
+test("Host provisioning shared install script enables fail2ban for sshd", async () => {
+  const hostProvisioning = await readProjectFile("docs/agents/host-provisioning.md");
+  const script = extractShellBlockAfter(hostProvisioning, "## Shared script: install Sporades Host server");
+
+  assert.match(script, /apt-get install -y ca-certificates curl fail2ban gnupg tar/);
+  assert.match(script, /\/etc\/fail2ban\/jail\.d\/sporades-sshd\.conf/);
+  assert.match(script, /systemctl enable --now fail2ban/);
+  assert.match(script, /fail2ban-client status sshd/);
+});
+
+test("Host installation docs keep Fail2ban hardening separate from SSH audit truth", async () => {
+  const serverInstallation = await readProjectFile("docs/server-installation.md");
+
+  assert.match(serverInstallation, /Fail2ban protects the Host server's own `sshd` service/i);
+  assert.match(serverInstallation, /hardening-adjacent telemetry/i);
+  assert.match(serverInstallation, /not the audit source of truth/i);
+});
+
+test("SSH daemon session-log scanner spike records the parser and cursor decision", async () => {
+  const spike = await readProjectFile(".scratch/privileged-audit-event-contract/ssh-daemon-session-log-scanner-spike.md");
+
+  assert.match(spike, /OpenSSH `sshd -E` can write authentication and session facts/i);
+  assert.match(spike, /Docker Desktop was not running/i);
+  assert.match(spike, /\/app\/data\/ssh\/sshd\.log/);
+  assert.match(spike, /\/app\/data\/ssh\/sshd-audit-cursor\.json/);
+
+  for (const eventName of [
+    "ssh.auth.succeeded",
+    "ssh.auth.failed",
+    "ssh.session.opened",
+    "ssh.session.closed",
+  ]) {
+    assert.match(spike, new RegExp(eventName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  }
+
+  for (const required of [
+    "username",
+    "remoteAddress",
+    "keyFingerprint",
+    "source: `sshd`",
+    "Unknown daemon log lines",
+    "full public keys",
+    "raw daemon log lines",
+    "private key material",
+    "environment values",
+    "Proceed",
+  ]) {
+    assert.match(spike, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+  }
+});
+
 test("canonical docs describe Host stats without introducing host status", async () => {
   const [userGuide, serverInstallation, architecture] = await Promise.all([
     readProjectFile("docs/user-guide.md"),
@@ -269,6 +320,78 @@ test("docs describe implemented preferences and Container SSH access", async () 
 
   assert.match(sshPrd, /Status: implemented/i);
   assert.match(sshPrd, /implemented and documented/i);
+});
+
+test("docs describe the implemented Privileged audit event contract", async () => {
+  const [roadmap, prd, context] = await Promise.all([
+    readProjectFile("docs/ROADMAP.md"),
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("CONTEXT.md"),
+  ]);
+
+  assert.match(roadmap, /Privileged audit event contract \| implemented/);
+  assert.doesNotMatch(roadmap, /\| Privileged audit event contract \| design \|/);
+  assert.doesNotMatch(roadmap, /Blocked by Privileged audit event contract/);
+  assert.match(roadmap, /implemented Privileged audit event contract/);
+  assert.match(roadmap, /Real `sshd` auth\/session capture remains future scanner work/);
+  assert.match(roadmap, /\.scratch\/privileged-audit-event-contract\/ssh-daemon-session-log-scanner-spike\.md/);
+  assert.match(roadmap, /Job Queue \/ Job scheduling planning/);
+
+  assert.match(prd, /Privileged audit event contract for runtime-owned and platform-owned\s+security events/);
+  assert.match(prd, /narrow structured JSONL audit\s+surface/);
+  assert.match(prd, /not a new audit\s+database/);
+  assert.match(prd, /centralized logging replacement/);
+  assert.match(prd, /`sporades logs --json`/);
+  assert.match(prd, /`sporades logs tail --json`/);
+  assert.match(prd, /Host helper JSON/);
+  assert.match(prd, /App `ctx\.log` writes\s+normal app log events only/);
+  assert.match(prd, /browser\/client credentials do not carry privileged\s+authority/);
+
+  for (const field of [
+    "actorKind",
+    "operation",
+    "surface",
+    "targetResourceKind",
+    "outcome",
+    "safeErrorCode",
+    "metadata",
+  ]) {
+    assert.match(prd, new RegExp(field));
+  }
+
+  for (const actorKind of ["platform", "privileged-server-role", "captured-user", "unknown"]) {
+    assert.match(prd, new RegExp(actorKind));
+  }
+
+  for (const outcome of ["requested", "allowed", "denied", "succeeded", "failed", "skipped"]) {
+    assert.match(prd, new RegExp(outcome));
+  }
+
+  for (const redacted of [
+    "full public keys",
+    "private keys",
+    "source key file paths",
+    "generated authorized-key contents",
+    "Server env values",
+    "session tokens",
+    "raw daemon logs",
+  ]) {
+    assert.match(prd, new RegExp(redacted.replaceAll(" ", "\\s+")));
+  }
+
+  assert.match(prd, /ssh\.config\.validated/);
+  assert.match(prd, /ssh\.access\.enabled/);
+  assert.match(prd, /ssh\.access\.disabled/);
+  assert.match(prd, /ssh\.state\.inspected/);
+  assert.match(prd, /Real SSH login\/session\s+capture from `sshd` remains future scanner work/);
+  assert.match(prd, /\.scratch\/privileged-audit-event-contract\/ssh-daemon-session-log-scanner-spike\.md/);
+  assert.match(prd, /Security officers should be able to reconstruct incident timelines/);
+  assert.match(prd, /verify that browser\s+or app credentials could not forge a privileged event/);
+  assert.match(prd, /redacted\s+evidence/);
+
+  assert.match(context, /platform-owned structured JSONL log event/);
+  assert.match(context, /current SSH configuration, lifecycle, and inspection events/);
+  assert.match(context, /Capsule app `ctx\.log` cannot emit Privileged audit events/);
 });
 
 test("docs describe doctor diagnostics as read-only coordination", async () => {

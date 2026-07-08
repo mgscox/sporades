@@ -29,7 +29,7 @@ Add ACL rules declared in Capsule definition code and evaluated as invisible run
 - Do not compile ACL policy into database-specific SQL in the first implementation.
 - Do not expose normal `ctx.db` inside ACL rules.
 - Do not implement storage ACL enforcement in the first slice.
-- Do not implement Root server role.
+- Do not implement Privileged server role.
 - Do not implement `sporades doctor` warnings in this feature.
 - Do not make missing ACLs deny by default.
 
@@ -39,7 +39,7 @@ Add ACL rules declared in Capsule definition code and evaluated as invisible run
 - File validation, upload affordances, and client-facing file checks are not ACL concerns.
 - `ctx.acl.db` sees app tables only during normal ACL evaluation.
 - `ctx.acl.storage` sees stable storage metadata resources, not raw runtime table names.
-- Runtime-owned non-app tables are reserved for a future Root server role.
+- Runtime-owned non-app tables are reserved for a future Privileged server role.
 - Public denials should use a broad code such as `DENIED`.
 
 ## User Stories
@@ -56,4 +56,3 @@ Add ACL rules declared in Capsule definition code and evaluated as invisible run
 - `issues/03-apply-write-acl-transactions.md`
 - `issues/04-add-scoped-acl-context-helpers.md`
 - `issues/05-add-acl-denial-logging-and-docs.md`
-

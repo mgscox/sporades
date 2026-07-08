@@ -118,6 +118,18 @@ _Avoid_: REST API (too broad), route handler (confuses it with client routing)
 A Capsule-defined app-message handler declared with `message((ctx, data) => ...)`. Client-origin App messages enter server code through these handlers before any response or fan-out.
 _Avoid_: socket listener, raw WebSocket handler
 
+**Job**:
+A durable unit of background work owned by a Capsule or by Sporades platform code. Jobs run under an explicit server-side actor, such as a captured Sporades user identity or the Privileged server role, and Capsule server code may inspect known Job state through runtime-owned APIs rather than modelling Jobs as app tables.
+_Avoid_: task, worker request, background mutation
+
+**Job queue**:
+The runtime-owned background-work surface that stores, runs, retries, and exposes Jobs for a Capsule. It is app-facing where Capsule server code needs to enqueue or inspect Jobs, and platform-facing where Sporades uses the same concept for internal work.
+_Avoid_: worker pool, message bus, queue table
+
+**Job state**:
+The runtime-owned status view for one known Job, including lifecycle status, attempt counts, timestamps, and safe failure or result metadata. It is the inspection surface app code sees instead of raw queue internals.
+_Avoid_: queue internals, worker details, job row
+
 **Lifecycle hooks**:
 `init()` and `shutdown()` boundaries on the server runtime. Dev rebuilds currently use a full runtime restart around these boundaries; finer-grained hot reload remains future work.
 _Avoid_: start/stop (too generic), lifecycle methods (they're hooks, not methods)
@@ -296,9 +308,13 @@ _Avoid_: permission helper, manual auth check, database filter
 A constrained read-only policy context exposed to ACL rules as `ctx.acl`. It provides scoped helpers such as `ctx.acl.db.get()`, `ctx.acl.db.exists()`, `ctx.acl.storage.get()`, and `ctx.acl.storage.exists()` so database and storage ACL rules can check each other's stable resources without exposing normal runtime APIs or allowing writes.
 _Avoid_: ctx.db in ACL, admin client, bypass API
 
-**Root server role**:
-A privileged server-side role that can perform API actions without normal user authentication and may inspect runtime-owned non-app resources that normal app ACL helpers cannot see. It is a server/runtime capability, not a browser credential.
-_Avoid_: admin user, superuser account, service account
+**Privileged server role**:
+A server-only authority for trusted runtime and Capsule operations that intentionally run outside normal user rights. It may bypass app ACLs or inspect runtime-owned non-app resources only through explicit server-code APIs, and it is an auditable server/runtime capability rather than a browser credential, user, team member, session, or account.
+_Avoid_: root server role, admin user, superuser account, service account
+
+**Privileged audit event**:
+A platform-owned structured JSONL log event for privileged-boundary and comparable security-sensitive runtime activity, including current SSH configuration, lifecycle, and inspection events. It records actor kind, operation, Capsule identity, call site or API surface, correlation identity, target resource kind, outcome, safe error code, and bounded redacted metadata. Capsule app `ctx.log` cannot emit Privileged audit events, and browser/client credentials do not carry privileged authority.
+_Avoid_: audit log, security log, admin log
 
 ## Configuration
 

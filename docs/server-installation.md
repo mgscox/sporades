@@ -109,13 +109,24 @@ if [ "$apt_locks_clear" -ne 1 ]; then
 fi
 
 apt-get update
-apt-get install -y ca-certificates curl gnupg tar
+apt-get install -y ca-certificates curl fail2ban gnupg tar
 
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs docker.io caddy
 
+cat >/etc/fail2ban/jail.d/sporades-sshd.conf <<'EOF'
+[sshd]
+enabled = true
+port = ssh
+logpath = %(sshd_log)s
+maxretry = 5
+findtime = 10m
+bantime = 1h
+EOF
+
 systemctl enable --now docker
 systemctl enable --now caddy
+systemctl enable --now fail2ban
 
 ufw allow 80/tcp
 ufw allow 443/tcp
@@ -127,8 +138,14 @@ Confirm the tools are available:
 node --version
 docker --version
 caddy version
+fail2ban-client status sshd
 tar --version
 ```
+
+Fail2ban protects the Host server's own `sshd` service. It is Host hardening,
+not the audit source of truth for Capsule SSH sessions. Any later Capsule-level
+Fail2ban activity should be treated as hardening-adjacent telemetry; normalized
+Sporades audit events remain the user-facing record for SSH access facts.
 
 Node 22+ is recommended because the Host helper is an ESM Node script.
 

@@ -8,9 +8,9 @@ LABEL com.sporades.base-image.name="sporades-base"
 LABEL com.sporades.base-image.version="0.1.0-node22-alpine"
 LABEL com.sporades.base-image.node="22"
 
-RUN apk add --no-cache openssh-server \
+RUN apk add --no-cache openssh-server fail2ban \
   && addgroup -g 10001 -S sporades \
-  && adduser -u 10001 -S sporades -G sporades \
+  && adduser -u 10001 -S sporades -G sporades -s /bin/sh \
   && mkdir -p /app /app/data /run/sshd \
   && ssh-keygen -A \
   && printf '%s\n' \

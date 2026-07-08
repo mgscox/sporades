@@ -138,8 +138,8 @@ export async function resolveLocalContainerSshAccess(config, projectDir) {
     const sshDir = path.join(projectDir, ".sporades", "ssh");
     const authorizedKeysPath = path.join(sshDir, "authorized_keys");
     await mkdir(sshDir, { recursive: true });
-    await writeFile(authorizedKeysPath, `${lines.join("\n")}\n`, { mode: 0o600 });
-    await chmod(authorizedKeysPath, 0o600);
+    await writeFile(authorizedKeysPath, `${lines.join("\n")}\n`, { mode: 0o644 });
+    await chmod(authorizedKeysPath, 0o644);
     return {
         enabled: true,
         authorizedKeysPath,

@@ -456,6 +456,11 @@ async function readJsonl(filePath) {
     .map((line) => JSON.parse(line));
 }
 
+async function readProjectAuditEvents(projectDir) {
+  const eventsPath = path.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
+  return (await readJsonl(eventsPath)).filter((entry) => entry.category === "audit");
+}
+
 async function writeHostedCapsuleRollbackFixture(dir, options = {}) {
   const remoteRoot = path.join(dir, "remote-root");
   const domain = "capsules.example.dev";
@@ -683,6 +688,25 @@ async function listArchiveEntries(archivePath, cwd) {
   });
   assert.equal(result.code, 0, result.stderr);
   return result.stdout.trim().split("\n").filter(Boolean).sort();
+}
+
+async function listArchiveVerboseEntries(archivePath, cwd) {
+  const result = await new Promise((resolve) => {
+    const child = spawn("tar", ["-tvzf", archivePath], { cwd, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("close", (code) => {
+      resolve({ code, stdout, stderr });
+    });
+  });
+  assert.equal(result.code, 0, result.stderr);
+  return result.stdout.trim().split("\n").filter(Boolean);
 }
 
 async function extractArchiveFile(archivePath, entry, cwd) {
@@ -2989,6 +3013,22 @@ process.stdout.write(JSON.stringify({
       id: request.release.id,
       files: request.release.files,
       ssh: request.release.ssh || null
+    },
+    lifecycle: {
+      auditEvents: [{
+        category: "audit",
+        event: "ssh.access.enabled",
+        data: {
+          operation: "ssh.hosted-capsule.start",
+          metadata: {
+            enabled: true,
+            keyCount: request.release.ssh?.keyCount ?? 0,
+            fingerprints: request.release.ssh?.fingerprints ?? [],
+            targetPort: 22,
+            loopbackOnly: true
+          }
+        }
+      }]
     }
   },
   error: null
@@ -3031,6 +3071,8 @@ process.exit(0);
     const output = JSON.parse(push.stdout);
     assert.equal(output.ok, true);
     assert.equal(Object.hasOwn(output.data.release, "ssh"), false);
+    assert.equal(Object.hasOwn(output.data, "lifecycle"), false);
+    assert.doesNotMatch(push.stdout, /auditEvents|ssh\.access\.enabled|ssh\.hosted-capsule\.start|SHA256:/);
     assert.deepEqual(output.data.release.files, [
       "server.mjs",
       "client.js",
@@ -3050,6 +3092,10 @@ process.exit(0);
       "sporades.json",
     ]);
     assert.equal(await extractArchiveFile(scpCall.copiedTo, ".sporades/ssh/authorized_keys", projectDir), `${TEST_PUBLIC_KEY}\n`);
+    assert.match(
+      (await listArchiveVerboseEntries(scpCall.copiedTo, projectDir)).find((entry) => entry.endsWith(" .sporades/ssh/authorized_keys")) ?? "",
+      /^-rw-r--r--\s+/,
+    );
     assert.doesNotMatch(await extractArchiveFile(scpCall.copiedTo, "sporades.json", projectDir), /operator\.keys/);
 
     const [sshCall] = await readJsonl(fakeSsh.logPath);
@@ -3066,6 +3112,18 @@ process.exit(0);
     assert.equal(request.release.ssh.authorizedKeysPath, ".sporades/ssh/authorized_keys");
     assert.equal(request.release.ssh.fingerprints.length, 1);
     assert.doesNotMatch(JSON.stringify(request.release.ssh), /operator\.keys/);
+
+    const auditEvents = await readProjectAuditEvents(projectDir);
+    assert.deepEqual(
+      auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome]),
+      [["ssh.config.validated", "ssh.config.validate", "succeeded"]],
+    );
+    assert.equal(auditEvents[0].data.surface, "sporades/host-push");
+    assert.equal(auditEvents[0].data.targetResourceKind, "hosted-ssh-config");
+    assert.equal(auditEvents[0].data.metadata.enabled, true);
+    assert.equal(auditEvents[0].data.metadata.keyCount, 1);
+    assert.deepEqual(auditEvents[0].data.metadata.fingerprints, request.release.ssh.fingerprints);
+    assert.doesNotMatch(JSON.stringify(auditEvents), /operator\.keys|ssh-ed25519|AAAAC3NzaC1lZDI1NTE5|authorized_keys/);
   });
 });
 
@@ -3157,6 +3215,13 @@ process.exit(0);
       "index.html",
       "sporades.json",
     ]);
+    const auditEvents = await readProjectAuditEvents(projectDir);
+    assert.deepEqual(
+      auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome, entry.data.metadata.enabled, entry.data.metadata.reason]),
+      [["ssh.config.validated", "ssh.config.validate", "succeeded", false, "no-authorized-keys"]],
+    );
+    assert.equal(auditEvents[0].data.surface, "sporades/host-push");
+    assert.doesNotMatch(JSON.stringify(auditEvents), /comments-only\.keys|authorized_keys|ssh-ed25519|AAAAC3NzaC1lZDI1NTE5/);
   });
 });
 
@@ -3209,6 +3274,14 @@ process.exit(0);
     assert.equal(output.ok, false);
     assert.match(output.error.message, /private key/);
     assert.match(output.error.hint, /public authorized_keys material only/);
+    const auditEvents = await readProjectAuditEvents(projectDir);
+    assert.deepEqual(
+      auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome, entry.data.safeErrorCode]),
+      [["ssh.config.validated", "ssh.config.validate", "failed", "SSH_CONFIG_INVALID"]],
+    );
+    assert.equal(auditEvents[0].data.surface, "sporades/host-push");
+    assert.equal(auditEvents[0].data.metadata.reason, "invalid-ssh-config");
+    assert.doesNotMatch(JSON.stringify(auditEvents), /OPENSSH PRIVATE KEY|nope/);
     await assert.rejects(readFile(fakeScp.logPath, "utf8"), { code: "ENOENT" });
     await assert.rejects(readFile(fakeSsh.logPath, "utf8"), { code: "ENOENT" });
   });
@@ -7617,6 +7690,17 @@ test("sporades host helper restarts the current release after install when reque
           },
           currentLink: path.join(capsuleDir, "current"),
         },
+        lifecycle: {
+          mounts: {
+            files: [
+              { host: path.join(capsuleDir, "current", "server.mjs"), container: "/app/server.mjs", mode: "ro" },
+              { host: path.join(capsuleDir, "current", "client.js"), container: "/app/client.js", mode: "ro" },
+              { host: path.join(capsuleDir, "current", "index.html"), container: "/app/index.html", mode: "ro" },
+              { host: path.join(capsuleDir, "current", "sporades.json"), container: "/app/sporades.json", mode: "ro" },
+            ],
+            data: { host: path.join(capsuleDir, "data"), container: "/app/data", mode: "rw" },
+          },
+        },
       },
       { cwd: dir, env: docker.env },
     );
@@ -7703,6 +7787,17 @@ test("sporades host helper starts SSH-enabled Hosted Capsules through the Base s
     assert.equal(output.ok, true);
     assert.equal(output.data.lifecycle.started, true);
     assert.equal(Object.hasOwn(output.data.lifecycle, "ssh"), false);
+    assert.deepEqual(
+      output.data.lifecycle.auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome]),
+      [["ssh.access.enabled", "ssh.hosted-capsule.start", "succeeded"]],
+    );
+    assert.equal(output.data.lifecycle.auditEvents[0].data.surface, "sporades-host-helper/capsule.release.install");
+    assert.equal(output.data.lifecycle.auditEvents[0].data.metadata.enabled, true);
+    assert.equal(output.data.lifecycle.auditEvents[0].data.metadata.running, true);
+    assert.equal(output.data.lifecycle.auditEvents[0].data.metadata.loopbackOnly, true);
+    assert.equal(output.data.lifecycle.auditEvents[0].data.metadata.keyCount, 1);
+    assert.deepEqual(output.data.lifecycle.auditEvents[0].data.metadata.fingerprints, ["SHA256:test"]);
+    assert.doesNotMatch(JSON.stringify(output.data.lifecycle.auditEvents), /authorized_keys|ssh-ed25519|AAAAC3NzaC1lZDI1NTE5/);
 
     const runCall = (await docker.calls()).find((call) => call.args[0] === "run");
     assert.equal(runCall.args[runCall.args.indexOf("--user") + 1], "10001:10001");
@@ -7720,6 +7815,22 @@ test("sporades host helper starts SSH-enabled Hosted Capsules through the Base s
     const record = JSON.parse(await readFile(registryRecordPath, "utf8"));
     assert.equal(record.releases[0].source.ssh.enabled, true);
     assert.equal(record.releases[0].source.ssh.keyCount, 1);
+
+    const restart = await runHostHelper(
+      {
+        action: "capsule.restart",
+        host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+        capsule: { subname: "team-notes" },
+      },
+      { cwd: dir, env: docker.env },
+    );
+    assert.equal(restart.code, 0, restart.stderr);
+    const restartOutput = JSON.parse(restart.stdout);
+    assert.deepEqual(
+      restartOutput.data.auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome]),
+      [["ssh.access.enabled", "ssh.hosted-capsule.restart", "succeeded"]],
+    );
+    assert.equal(restartOutput.data.auditEvents[0].data.surface, "sporades-host-helper/capsule.restart");
   });
 });
 
@@ -9583,27 +9694,34 @@ test("sporades host helper inspects effective Hosted Capsule SSH state from Dock
     );
 
     assert.equal(result.code, 0, result.stderr);
-    assert.deepEqual(JSON.parse(result.stdout), {
-      ok: true,
-      data: {
-        capsule: {
-          subname: "team-notes",
-          domain: "capsules.example.dev",
-          hostedUrl: "https://team-notes.capsules.example.dev",
-          remoteCapsuleId: "capsules.example.dev/team-notes",
-        },
-        enabled: true,
-        running: true,
-        user: "sporades",
-        host: "127.0.0.1",
-        port: 49162,
-        targetPort: 22,
-        keyCount: 1,
-        fingerprints: ["SHA256:test"],
-        reason: null,
-      },
-      error: null,
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, true);
+    assert.deepEqual(output.data.capsule, {
+      subname: "team-notes",
+      domain: "capsules.example.dev",
+      hostedUrl: "https://team-notes.capsules.example.dev",
+      remoteCapsuleId: "capsules.example.dev/team-notes",
     });
+    assert.equal(output.data.enabled, true);
+    assert.equal(output.data.running, true);
+    assert.equal(output.data.user, "sporades");
+    assert.equal(output.data.host, "127.0.0.1");
+    assert.equal(output.data.port, 49162);
+    assert.equal(output.data.targetPort, 22);
+    assert.equal(output.data.keyCount, 1);
+    assert.deepEqual(output.data.fingerprints, ["SHA256:test"]);
+    assert.equal(output.data.reason, null);
+    assert.deepEqual(
+      output.data.auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome]),
+      [["ssh.state.inspected", "ssh.hosted-capsule.inspect", "succeeded"]],
+    );
+    assert.equal(output.data.auditEvents[0].data.surface, "sporades-host-helper/capsule.ssh");
+    assert.equal(output.data.auditEvents[0].data.metadata.enabled, true);
+    assert.equal(output.data.auditEvents[0].data.metadata.running, true);
+    assert.equal(output.data.auditEvents[0].data.metadata.loopbackOnly, true);
+    assert.equal(output.data.auditEvents[0].data.metadata.port, 49162);
+    assert.deepEqual(output.data.auditEvents[0].data.metadata.fingerprints, ["SHA256:test"]);
+    assert.doesNotMatch(JSON.stringify(output.data.auditEvents), /authorized_keys|ssh-ed25519|AAAAC3NzaC1lZDI1NTE5/);
     assert.deepEqual((await docker.calls()).map((call) => call.args), [
       ["inspect", "--format", "{{json .}}", "sporades-capsules-example-dev-team-notes"],
     ]);

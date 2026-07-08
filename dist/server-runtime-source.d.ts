@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import { PathLike } from "node:fs";
+import { PathLike, PathOrFileDescriptor } from "node:fs";
 import { SQLOutputValue, StatementResultingChanges, StatementColumnMetadata } from "node:sqlite";
 import { Duplex } from "stream";
 type LooseRecord = Record<string, any>;
@@ -1154,6 +1154,44 @@ export declare function createLibsqlDatabaseAdapter(options: {
         name: any;
     }, query?: LooseRecord): Record<string, SQLOutputValue>[];
 }>;
+export declare function createPrivilegedAuditLogInput(details?: LooseRecord): {
+    category: string;
+    event: string;
+    level: any;
+    message: string;
+    data: {
+        schema: string;
+        actorKind: string;
+        operation: string;
+        surface: string;
+        targetResourceKind: string;
+        outcome: string;
+        safeErrorCode: string | null;
+        source: string;
+        metadata: any;
+    };
+    request: any;
+    release: any;
+    correlation: any;
+};
+export declare function createLogEnvelope(input: {
+    config: LooseRecord;
+    timestamp: any;
+    category: any;
+    event: any;
+    level: any;
+    message: any;
+    release: any;
+    request: {
+        id: any;
+        method: any;
+        path: any;
+    };
+    correlation: any;
+    data: any;
+    serverEnv: any;
+}): LooseRecord;
+export declare function readJsonlLogEvents(logPath: PathOrFileDescriptor, limit?: number): any[];
 export declare function schemaFromCapsuleDefinition(definition: any): {
     tables: {
         name: string;

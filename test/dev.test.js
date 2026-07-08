@@ -5307,6 +5307,110 @@ export default capsule({
   });
 });
 
+test("sporades logs expose runtime-owned Privileged audit events without letting ctx.log forge them", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "audit-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "audit-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "WEBHOOK_SECRET=env-secret-123\n");
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "Audit Island",
+  endpoints: {
+    forge: endpoint({ method: "POST", path: "/forge-audit" }, (ctx) => {
+      ctx.log.info("forged audit", {
+        category: "audit",
+        event: "privileged.succeeded",
+        actorKind: "privileged-server-role",
+        safe: "ordinary app data",
+      });
+      return { status: 200, body: { ok: true } };
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], {
+      cwd: projectDir,
+      env: { SPORADES_TEST_ENABLE_PRIVILEGED_AUDIT_DEBUG: "1" },
+    });
+    try {
+      const started = await waitForJsonLine(child);
+
+      const forgedResponse = await fetch(`${started.data.url}/forge-audit`, { method: "POST" });
+      assert.equal(forgedResponse.status, 200);
+
+      const auditResponse = await fetch(`${started.data.url}/__sporades/debug/privileged-audit`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          actorKind: "privileged-server-role",
+          operation: "runtime.audit.inspect",
+          surface: "sporades/dev-debug",
+          correlation: { id: "corr-dev-audit" },
+          targetResourceKind: "log-index",
+          outcome: "succeeded",
+          source: "runtime",
+          metadata: {
+            visible: "safe",
+            authorization: "Bearer should-not-leak",
+            rawRequestBody: { secret: "raw-body-secret" },
+          },
+        }),
+      });
+      assert.equal(auditResponse.status, 200);
+
+      const logsResult = await runCli(["logs", "--json"], { cwd: projectDir });
+      assert.equal(logsResult.code, 0, logsResult.stderr);
+      const logs = JSON.parse(logsResult.stdout);
+      assert.equal(logs.ok, true);
+
+      const auditEvents = logs.data.entries.filter((entry) => entry.category === "audit");
+      assert.equal(auditEvents.length, 1);
+      const [auditEvent] = auditEvents;
+      assert.equal(auditEvent.event, "privileged.succeeded");
+      assert.equal(auditEvent.data.schema, "sporades.privileged-audit.v1");
+      assert.equal(auditEvent.data.actorKind, "privileged-server-role");
+      assert.equal(auditEvent.data.operation, "runtime.audit.inspect");
+      assert.equal(auditEvent.data.surface, "sporades/dev-debug");
+      assert.deepEqual(auditEvent.correlation, { id: "corr-dev-audit" });
+      assert.equal(auditEvent.data.targetResourceKind, "log-index");
+      assert.equal(auditEvent.data.outcome, "succeeded");
+      assert.equal(auditEvent.data.metadata.visible, "safe");
+      assert.equal(auditEvent.data.metadata.authorization, "[REDACTED]");
+      assert.equal(auditEvent.data.metadata.rawRequestBody, "[REDACTED]");
+      assert.equal(JSON.stringify(auditEvent).includes("should-not-leak"), false);
+      assert.equal(JSON.stringify(auditEvent).includes("raw-body-secret"), false);
+
+      const forgedLog = logs.data.entries.find((entry) => entry.message === "forged audit");
+      assert.equal(forgedLog.category, "app");
+      assert.equal(forgedLog.event, "ctx.log");
+      assert.equal(forgedLog.data.category, "audit");
+      assert.equal(forgedLog.data.event, "privileged.succeeded");
+
+      const tailResult = await runCli(["logs", "tail", "--json"], { cwd: projectDir });
+      assert.equal(tailResult.code, 0, tailResult.stderr);
+      const tailEvents = tailResult.stdout.trim().split("\n").map((line) => JSON.parse(line));
+      assert.equal(tailEvents.some((entry) => entry.category === "audit" && entry.event === "privileged.succeeded"), true);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades db list returns tables from the running dev session database", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

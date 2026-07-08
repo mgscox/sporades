@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { chmod, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -27,6 +27,8 @@ import {
 import { DockerRestartPolcy, restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
 import {
   createSqliteDatabaseAdapter,
+  createLogEnvelope,
+  createPrivilegedAuditLogInput,
   createPostgresConnection,
   createWebSocketHub,
   dumpDatabase,
@@ -39,6 +41,7 @@ import {
   routeSporadesAuth,
   runReadOnlyQuery,
   simulateLocalIdentitySession,
+  readJsonlLogEvents,
 } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import {
@@ -1399,6 +1402,26 @@ async function startDevSession(options: LooseRecord) {
           });
           return;
 
+        case "POST:/__sporades/debug/privileged-audit":
+          if (process.env.SPORADES_TEST_ENABLE_PRIVILEGED_AUDIT_DEBUG !== "1") {
+            writeJsonResponse(response, 404, {
+              ok: false,
+              data: null,
+              error: { message: "Not found." },
+            });
+            return;
+          }
+          {
+            const input = await readJsonRequest(request);
+            const event = await runtime.database.audit.emit(input);
+            writeJsonResponse(response, 200, {
+              ok: true,
+              data: { event },
+              error: null,
+            });
+          }
+          return;
+
         case "GET:/__sporades/debug/logs":
           writeJsonResponse(response, 200, {
             ok: true,
@@ -2371,7 +2394,7 @@ async function manageHost(options: LooseRecord) {
       const config = await readHostConfig();
       const target = await resolveHostPushTarget(config, options);
       const projectConfig = await readProjectConfig(options.projectDir);
-      const sshAccess = await resolveHostedCapsuleSshAccess(projectConfig, options.projectDir);
+      const sshAccess = await resolveHostedCapsuleSshAccessForAudit(projectConfig, options.projectDir);
       const hostSealedServerEnv = await prepareHostPushSealedServerEnv({
         projectDir: options.projectDir,
         alias: target.alias,
@@ -2781,13 +2804,107 @@ function redactHostPushSshState(result: HostHelperEnvelope<LooseRecord>) {
   }
   if (data.lifecycle && typeof data.lifecycle === "object") {
     delete data.lifecycle.ssh;
+    delete data.lifecycle.auditEvents;
+    if (Object.keys(data.lifecycle).length === 0) {
+      delete data.lifecycle;
+    }
   }
   return { ...result, data };
 }
 
+async function resolveLocalContainerSshAccessForAudit(config: LooseRecord, projectDir: string, surface: string, targetResourceKind: string) {
+  try {
+    const sshAccess = await resolveLocalContainerSshAccess(config, projectDir);
+    if (sshAccess.enabled || explicitSshConfigured(config)) {
+      await emitCliSshAuditEvent(config, projectDir, {
+        event: "ssh.config.validated",
+        operation: "ssh.config.validate",
+        surface,
+        targetResourceKind,
+        outcome: "succeeded",
+        message: "SSH access configuration validated.",
+        metadata: {
+          enabled: sshAccess.enabled,
+          keyCount: sshAccess.keyCount ?? 0,
+          fingerprints: sshAccess.fingerprints ?? [],
+          ...(sshAccess.enabled ? {} : { reason: "no-authorized-keys" }),
+        },
+      });
+    }
+    return sshAccess;
+  } catch (error) {
+    await emitCliSshAuditEvent(config, projectDir, {
+      event: "ssh.config.validated",
+      operation: "ssh.config.validate",
+      surface,
+      targetResourceKind,
+      outcome: "failed",
+      safeErrorCode: "SSH_CONFIG_INVALID",
+      message: "SSH access configuration validation failed.",
+      metadata: {
+        enabled: false,
+        keyCount: 0,
+        fingerprints: [],
+        reason: "invalid-ssh-config",
+      },
+    });
+    throw error;
+  }
+}
+
+async function emitCliSshAuditEvent(config: LooseRecord, projectDir: string, details: LooseRecord) {
+  const logPath = projectLogPath(config, projectDir);
+  await mkdir(path.dirname(logPath), { recursive: true });
+  const input = createPrivilegedAuditLogInput({
+    actorKind: "platform",
+    source: "cli",
+    ...details,
+  });
+  const event = createLogEnvelope({
+    ...input,
+    timestamp: null,
+    config,
+    serverEnv: {},
+  });
+  await appendFile(logPath, `${JSON.stringify(event)}\n`);
+  return event;
+}
+
+function sshAuditMetadata(state: LooseRecord) {
+  return {
+    enabled: Boolean(state.enabled),
+    running: Boolean(state.running),
+    host: typeof state.host === "string" ? state.host : null,
+    port: Number.isInteger(state.port) ? state.port : null,
+    targetPort: Number.isInteger(state.targetPort) ? state.targetPort : 22,
+    loopbackOnly: state.host === "127.0.0.1" || state.host === "localhost" || state.host === null,
+    keyCount: Number.isInteger(state.keyCount) ? state.keyCount : 0,
+    fingerprints: Array.isArray(state.fingerprints) ? state.fingerprints.filter((value: unknown) => typeof value === "string") : [],
+    reason: typeof state.reason === "string" ? state.reason : null,
+  };
+}
+
+function explicitSshConfigured(config: LooseRecord) {
+  return Boolean(config && typeof config === "object" && Object.hasOwn(config, "ssh"));
+}
+
+function projectLogPath(config: LooseRecord, projectDir: string) {
+  return (
+    config?.logs?.jsonlPath ??
+    config?.logging?.jsonlPath ??
+    process.env.SPORADES_LOG_PATH ??
+    path.join(projectDir, ".sporades", "data", "logs", "events.jsonl")
+  );
+}
+
+function readProjectConfigSync(projectDir: string) {
+  const raw = readFileSync(path.join(projectDir, "sporades.json"), "utf8");
+  return JSON.parse(raw);
+}
+
 async function startContainerSession(options: LooseRecord) {
   const config = await readProjectConfig(options.projectDir);
-  const sshAccess = await resolveLocalContainerSshAccess(config, options.projectDir);
+  const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
   const port = options.port ?? config.deploy?.port ?? 4000;
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const bundle = await createBundle(options.projectDir, config);
@@ -2920,6 +3037,26 @@ async function startContainerSession(options: LooseRecord) {
     } : {}),
   };
   await writeFile(bindingPath, `${JSON.stringify(binding, null, 2)}\n`);
+  if (sshAccess.enabled || explicitSshConfigured(config)) {
+    await emitCliSshAuditEvent(config, options.projectDir, {
+      event: sshAccess.enabled ? "ssh.access.enabled" : "ssh.access.disabled",
+      operation: sshAccess.enabled ? "ssh.container.start" : "ssh.container.disabled",
+      surface: "sporades/deploy",
+      targetResourceKind: "container-ssh-access",
+      outcome: sshAccess.enabled ? "succeeded" : "skipped",
+      message: sshAccess.enabled ? "Container SSH access enabled for local Container session." : "Container SSH access disabled for local Container session.",
+      metadata: {
+        enabled: sshAccess.enabled,
+        running: true,
+        targetPort: 22,
+        loopbackOnly: true,
+        keyCount: sshAccess.keyCount ?? 0,
+        fingerprints: sshAccess.fingerprints ?? [],
+        ...(existingBinding?.containerId ? { redeploy: true } : { redeploy: false }),
+        ...(sshAccess.enabled ? {} : { reason: "no-authorized-keys" }),
+      },
+    });
+  }
 
   const url = `http://localhost:${port}`;
   if (options.json) {
@@ -2940,6 +3077,7 @@ async function startContainerSession(options: LooseRecord) {
 }
 
 async function inspectLocalContainerSsh(options: LooseRecord) {
+  const config = await readProjectConfig(options.projectDir);
   const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
@@ -2953,6 +3091,7 @@ async function inspectLocalContainerSsh(options: LooseRecord) {
     } else {
       process.stdout.write("Container SSH disabled: no local Container session. Run `sporades deploy`.\n");
     }
+    await emitLocalContainerSshInspectionAudit(config, options.projectDir, data);
     return;
   }
 
@@ -2968,6 +3107,7 @@ async function inspectLocalContainerSsh(options: LooseRecord) {
     } else {
       process.stdout.write("Container SSH disabled: no authorized keys configured. Add `ssh.authorizedKeys` and run `sporades deploy`.\n");
     }
+    await emitLocalContainerSshInspectionAudit(config, options.projectDir, data);
     return;
   }
 
@@ -2997,6 +3137,19 @@ async function inspectLocalContainerSsh(options: LooseRecord) {
   } else {
     process.stdout.write(`Container SSH enabled for ${data.user}@${data.host}:${data.port} (${data.keyCount} authorized key${data.keyCount === 1 ? "" : "s"}).\n`);
   }
+  await emitLocalContainerSshInspectionAudit(config, options.projectDir, data);
+}
+
+async function emitLocalContainerSshInspectionAudit(config: LooseRecord, projectDir: string, data: LooseRecord) {
+  await emitCliSshAuditEvent(config, projectDir, {
+    event: "ssh.state.inspected",
+    operation: "ssh.container.inspect",
+    surface: "sporades/deploy-ssh",
+    targetResourceKind: "container-ssh-state",
+    outcome: "succeeded",
+    message: "Container SSH state inspected.",
+    metadata: sshAuditMetadata(data),
+  });
 }
 
 function localContainerSshState(overrides: LooseRecord) {
@@ -3183,11 +3336,39 @@ function readContainerLogs(options: LooseRecord) {
     .filter(Boolean)
     .map(parseDockerLogLine)
     .filter(Boolean);
+  const localAuditEntries = readLocalAuditLogEntries(options.projectDir);
   return {
     ok: true,
-    data: { source: "docker", containerId: container.containerId, entries },
+    data: { source: "docker", containerId: container.containerId, entries: dedupeLogEntries([...localAuditEntries, ...entries]) },
     error: null,
   };
+}
+
+function readLocalAuditLogEntries(projectDir: string) {
+  return readProjectJsonlLogEvents(projectDir).filter((entry: LooseRecord) => entry?.category === "audit");
+}
+
+function readProjectJsonlLogEvents(projectDir: string, limit = 200) {
+  try {
+    const config = readProjectConfigSync(projectDir);
+    return readJsonlLogEvents(projectLogPath(config, projectDir), limit);
+  } catch {
+    return [];
+  }
+}
+
+function dedupeLogEntries(entries: LooseRecord[]) {
+  const seen = new Set();
+  const deduped = [];
+  for (const entry of entries) {
+    const key = JSON.stringify(entry);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(entry);
+  }
+  return deduped;
 }
 
 function parseDockerLogLine(line: string) {
@@ -3741,8 +3922,8 @@ async function createHostReleaseArchive(options: LooseRecord) {
   }
   if (options.sshAccess?.enabled) {
     const authorizedKeysPath = path.join(packageDir, ".sporades", "ssh", "authorized_keys");
-    await writeFile(authorizedKeysPath, `${options.sshAccess.lines.join("\n")}\n`, { mode: 0o600 });
-    await chmod(authorizedKeysPath, 0o600);
+    await writeFile(authorizedKeysPath, `${options.sshAccess.lines.join("\n")}\n`, { mode: 0o644 });
+    await chmod(authorizedKeysPath, 0o644);
   }
   const tarArgs = [
     "-czf",
@@ -3791,6 +3972,46 @@ async function resolveHostedCapsuleSshAccess(config: LooseRecord, projectDir: st
     fingerprints: lines.map(authorizedKeyFingerprint),
     lines,
   };
+}
+
+async function resolveHostedCapsuleSshAccessForAudit(config: LooseRecord, projectDir: string) {
+  try {
+    const sshAccess = await resolveHostedCapsuleSshAccess(config, projectDir);
+    if (sshAccess.enabled || explicitSshConfigured(config)) {
+      await emitCliSshAuditEvent(config, projectDir, {
+        event: "ssh.config.validated",
+        operation: "ssh.config.validate",
+        surface: "sporades/host-push",
+        targetResourceKind: "hosted-ssh-config",
+        outcome: "succeeded",
+        message: "Hosted Capsule SSH access configuration validated.",
+        metadata: {
+          enabled: sshAccess.enabled,
+          keyCount: sshAccess.keyCount ?? 0,
+          fingerprints: sshAccess.fingerprints ?? [],
+          ...(sshAccess.enabled ? {} : { reason: "no-authorized-keys" }),
+        },
+      });
+    }
+    return sshAccess;
+  } catch (error) {
+    await emitCliSshAuditEvent(config, projectDir, {
+      event: "ssh.config.validated",
+      operation: "ssh.config.validate",
+      surface: "sporades/host-push",
+      targetResourceKind: "hosted-ssh-config",
+      outcome: "failed",
+      safeErrorCode: "SSH_CONFIG_INVALID",
+      message: "Hosted Capsule SSH access configuration validation failed.",
+      metadata: {
+        enabled: false,
+        keyCount: 0,
+        fingerprints: [],
+        reason: "invalid-ssh-config",
+      },
+    });
+    throw error;
+  }
 }
 
 function sanitizeHostedReleaseConfig(config: LooseRecord, sshAccess: LooseRecord) {

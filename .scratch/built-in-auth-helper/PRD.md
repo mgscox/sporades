@@ -87,7 +87,7 @@ machine-readable code.
 
 ## Out of Scope
 
-- Role- or permission-based authorization (see the roadmap "Root server role"
+- Role- or permission-based authorization (see the roadmap "Privileged server role"
   and ACL follow-ups).
 - Client-side helpers or `useAuth()` changes.
 - New auth providers, session storage, or linking flows.

@@ -34,6 +34,10 @@ import type {
   JsonValue,
 } from "./host-helper-contract.js";
 import {
+  createLogEnvelope,
+  createPrivilegedAuditLogInput,
+} from "../server-runtime-source.js";
+import {
   delay,
   errorDetails,
   helperError,
@@ -796,6 +800,31 @@ async function startCapsule(request: HostHelperRequest, options: LooseRecord = {
     route: publicRouteData(runningRoute),
     restartPolicy: restartPolicyStatus("hosted"),
   };
+  const ssh = currentReleaseSshIntent(registryRecord);
+  if (!ssh.reason) {
+    data.auditEvents = [
+      hostedSshAuditEvent(request, {
+        event: "ssh.access.enabled",
+        operation: request.action === "capsule.restart" ? "ssh.hosted-capsule.restart" : "ssh.hosted-capsule.start",
+        surface: `sporades-host-helper/${request.action}`,
+        targetResourceKind: "hosted-capsule-ssh-access",
+        outcome: "succeeded",
+        message: "Hosted Capsule SSH access enabled for lifecycle start.",
+        release: { id: releaseId },
+        metadata: {
+          enabled: true,
+          running: true,
+          host: null,
+          port: null,
+          targetPort: 22,
+          loopbackOnly: true,
+          keyCount: ssh.keyCount,
+          fingerprints: ssh.fingerprints,
+          reason: null,
+        },
+      }),
+    ];
+  }
   if (options.write !== false) {
     writeEnvelope({ ok: true, data, error: null });
   }
@@ -1115,7 +1144,7 @@ async function inspectCapsuleSsh(request: HostHelperRequest) {
     if (errorDetails(error).message === "Hosted Capsule is not registered.") {
       writeEnvelope({
         ok: true,
-        data: hostedCapsuleSshState(request, {
+        data: hostedCapsuleSshStateWithAudit(request, {
           enabled: false,
           running: false,
           reason: "no-hosted-capsule",
@@ -1131,7 +1160,7 @@ async function inspectCapsuleSsh(request: HostHelperRequest) {
   if (ssh.reason) {
     writeEnvelope({
       ok: true,
-      data: hostedCapsuleSshState(request, {
+      data: hostedCapsuleSshStateWithAudit(request, {
         enabled: false,
         running: false,
         reason: ssh.reason,
@@ -1146,7 +1175,7 @@ async function inspectCapsuleSsh(request: HostHelperRequest) {
   if (!inspected) {
     writeEnvelope({
       ok: true,
-      data: hostedCapsuleSshState(request, {
+      data: hostedCapsuleSshStateWithAudit(request, {
         enabled: true,
         running: false,
         keyCount: ssh.keyCount,
@@ -1162,7 +1191,7 @@ async function inspectCapsuleSsh(request: HostHelperRequest) {
   const port = inspectedContainerPort(inspected, 22);
   writeEnvelope({
     ok: true,
-    data: hostedCapsuleSshState(request, {
+    data: hostedCapsuleSshStateWithAudit(request, {
       enabled: true,
       running,
       host: port?.host ?? null,
@@ -1534,9 +1563,12 @@ function normaliseLifecycle(request: HostHelperRequest, registryRecord: any = nu
     ],
     data: { host: paths.data, container: "/app/data", mode: "rw" },
   };
-  const fileMounts = authoritativeSealedServerEnvPrivateKeyMount(
-    provided.mounts?.files ?? defaultMounts.files,
-    sealedServerEnvPrivateKey,
+  const fileMounts = authoritativeSshAuthorizedKeysMount(
+    authoritativeSealedServerEnvPrivateKeyMount(
+      provided.mounts?.files ?? defaultMounts.files,
+      sealedServerEnvPrivateKey,
+    ),
+    sshAuthorizedKeysMount,
   );
   return {
     subname,
@@ -1622,6 +1654,15 @@ function authoritativeSealedServerEnvPrivateKeyMount(fileMounts: any, sealedServ
     });
   }
   return next;
+}
+
+function authoritativeSshAuthorizedKeysMount(fileMounts: any, sshAuthorizedKeysMount: any) {
+  const authorizedKeysContainerPath = "/run/sporades/ssh/authorized_keys";
+  const withoutStaleSshMount = fileMounts.filter((mount: any) => mount.container !== authorizedKeysContainerPath);
+  if (!sshAuthorizedKeysMount) {
+    return withoutStaleSshMount;
+  }
+  return [...withoutStaleSshMount, sshAuthorizedKeysMount];
 }
 
 function withRouteAccessLog(route: HostedCapsuleRoute, accessLog: any) {
@@ -3594,6 +3635,55 @@ function hostedCapsuleSshState(request: HostHelperRequest, overrides: LooseRecor
     fingerprints: [],
     reason: "no-authorized-keys",
     ...overrides,
+  };
+}
+
+function hostedCapsuleSshStateWithAudit(request: HostHelperRequest, overrides: LooseRecord) {
+  const state = hostedCapsuleSshState(request, overrides);
+  return {
+    ...state,
+    auditEvents: [
+      hostedSshAuditEvent(request, {
+        event: "ssh.state.inspected",
+        operation: "ssh.hosted-capsule.inspect",
+        surface: "sporades-host-helper/capsule.ssh",
+        targetResourceKind: "hosted-capsule-ssh-state",
+        outcome: "succeeded",
+        message: "Hosted Capsule SSH state inspected.",
+        metadata: hostedSshAuditMetadata(state),
+      }),
+    ],
+  };
+}
+
+function hostedSshAuditEvent(request: HostHelperRequest, details: LooseRecord) {
+  const input = createPrivilegedAuditLogInput({
+    actorKind: "platform",
+    source: "host-helper",
+    ...details,
+  });
+  return createLogEnvelope({
+    ...input,
+    timestamp: null,
+    config: {
+      name: request.capsule.subname,
+      id: `${request.host.domain}/${request.capsule.subname}`,
+    },
+    serverEnv: {},
+  });
+}
+
+function hostedSshAuditMetadata(state: LooseRecord) {
+  return {
+    enabled: Boolean(state.enabled),
+    running: Boolean(state.running),
+    host: typeof state.host === "string" ? state.host : null,
+    port: Number.isInteger(state.port) ? state.port : null,
+    targetPort: Number.isInteger(state.targetPort) ? state.targetPort : 22,
+    loopbackOnly: state.host === "127.0.0.1" || state.host === "localhost" || state.host === null,
+    keyCount: Number.isInteger(state.keyCount) ? state.keyCount : 0,
+    fingerprints: Array.isArray(state.fingerprints) ? state.fingerprints.filter((value: unknown) => typeof value === "string") : [],
+    reason: typeof state.reason === "string" ? state.reason : null,
   };
 }
 

@@ -53,6 +53,12 @@ The repository currently includes:
   inspection through `sporades deploy ssh` and `sporades host ssh`. It is an
   opt-in compatibility and emergency access path, not the primary management
   interface.
+- Privileged audit event contract for runtime-owned and platform-owned
+  security events. Privileged audit events are a narrow structured JSONL audit
+  surface, not a new audit database or centralized logging system. The initial
+  implemented coverage records Sporades-controlled SSH configuration,
+  lifecycle, and inspection events while leaving real SSH daemon login/session
+  capture as future scanner work.
 - Practical Docker hardening defaults for local and hosted Container sessions:
   the thin Sporades-owned Base image runs Node 22, local Container sessions use
   the invoking host UID/GID when available, Hosted Capsules use the Base image
@@ -98,7 +104,21 @@ The following work is intentionally deferred:
   `.scratch/post-v2-platform-hardening-and-ops/issues/05-centralize-json-server-logging.md`.
 - Runtime restart policy for fatal paths:
   `.scratch/post-v2-platform-hardening-and-ops/issues/06-handle-fatal-runtime-paths-with-restart-policy.md`.
-- Vector storage, background jobs, and scheduling:
+- Real SSH login and session capture:
+  a future scanner may read host SSH daemon logs, normalize accepted/failed
+  login and session events, and emit them through the Privileged audit event
+  contract without coupling `sshd` directly to Sporades runtime code. The spike
+  remains in `.scratch/privileged-audit-event-contract/ssh-daemon-session-log-scanner-spike.md`.
+- Privileged server role:
+  a server-only authority for trusted runtime and Capsule operations that
+  intentionally run outside normal user rights. It is not a browser credential,
+  user, team member, session, or account. The role must be auditable, must be
+  invoked only through explicit server-code APIs, must build on the implemented
+  Privileged audit event contract, and must distinguish privileged execution
+  from work running as a captured Sporades user identity. This is a dependency
+  for Job scheduling because recurring Jobs may need to run without a live user
+  session.
+- Vector storage, Job Queue, and Job scheduling:
   `.scratch/post-v2-platform-hardening-and-ops/issues/07-evaluate-vector-storage-extension.md`,
   `.scratch/post-v2-platform-hardening-and-ops/issues/08-add-job-queue.md`, and
   `.scratch/post-v2-platform-hardening-and-ops/issues/09-add-job-scheduling.md`.
@@ -441,6 +461,58 @@ The JSONL log stream used by app `ctx.log` and platform runtime events is a
 separate durable stream exposed through `sporades logs tail --json` and indexed
 recently for `sporades logs --json`. Host commands support `--json` for
 agent-friendly remote operation.
+
+## Privileged Audit Events
+
+Privileged audit events are implemented as a narrow structured JSONL audit
+surface for platform-owned security activity. They are not a new audit
+database, a centralized logging replacement, or a general-purpose app logging
+API.
+
+Every privileged audit event uses the existing JSONL envelope with
+`category: "audit"` and includes a timestamp, `level`, `event`, `message`, the
+Capsule identity when available, `actorKind`, `operation`, `source`, `surface`,
+correlation identity where available, `targetResourceKind`, `outcome`,
+`safeErrorCode`, bounded `metadata`, and release identity where the event is
+about a Hosted Capsule release. Current actor kinds include `platform`; the
+contract also reserves `privileged-server-role`, `captured-user`, and `unknown`
+for the future Privileged server role and daemon-log capture. Outcomes use the
+vocabulary `requested`, `allowed`, `denied`, `succeeded`, `failed`, and
+`skipped`.
+
+The contract is deliberately redacted. Audit metadata must not contain full
+public keys, private keys, source key file paths, generated authorized-key
+contents, Server env values, session tokens, cookies, authorization headers,
+client secrets, raw request bodies, raw stack traces, or raw daemon logs.
+Payload size is capped by the same bounded logging envelope used by platform
+events.
+
+Audit events are visible through the existing inspection surfaces: local JSONL
+log reads, `sporades logs --json`, `sporades logs tail --json`, local Container
+log output that merges CLI audit JSONL events, Host helper JSON for direct
+helper invocation, and Hosted Capsule log paths where those paths already read
+the JSONL or Docker log stream.
+
+Capsule app code cannot forge privileged audit events. App `ctx.log` writes
+normal app log events only, browser/client credentials do not carry privileged
+authority, and platform-owned helpers are the only current emitters of
+privileged audit events.
+
+Current SSH coverage includes Sporades-controlled configuration validation,
+local Container lifecycle, Hosted Capsule lifecycle, and explicit inspection
+events such as `ssh.config.validated`, `ssh.access.enabled`,
+`ssh.access.disabled`, and `ssh.state.inspected`. Real SSH login/session
+capture from `sshd` remains future scanner work; the first implementation
+should periodically read daemon logs, normalize accepted/failed login and
+session activity, and emit redacted privileged audit events without running a
+second long-lived Sporades logging daemon.
+
+Security officers should be able to reconstruct incident timelines by Capsule,
+time range, operation, actor kind, target resource, and outcome; review allowed,
+denied, failed, skipped, and succeeded privileged activity; verify that browser
+or app credentials could not forge a privileged event; and collect redacted
+evidence without exposing key material, Server env values, tokens, or raw
+daemon logs.
 
 ## Configuration
 

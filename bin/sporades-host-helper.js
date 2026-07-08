@@ -5,7 +5,7 @@
 import { spawnSync as spawnSync2 } from "node:child_process";
 import { constants as fsConstants, statSync } from "node:fs";
 import { access, chmod, chown, lstat, mkdir, readdir as readdir2, readFile as readFile2, readlink, rename, rm as rm2, statfs, symlink, writeFile } from "node:fs/promises";
-import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
+import { createHash as createHash2, generateKeyPairSync, randomBytes as randomBytes2 } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
 import path4 from "node:path";
 
@@ -112,6 +112,201 @@ function restartPolicyStatus(mode, overrides = {}) {
     ...overrides
   };
 }
+
+// src/server-runtime-source.ts
+import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+function logPayloadMaxBytes(config = {}) {
+  const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
+  return Number.isInteger(configured) && configured > 0 ? configured : 4096;
+}
+function logRedactedValue() {
+  return "[REDACTED]";
+}
+var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
+var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
+var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["requested", "allowed", "denied", "succeeded", "failed", "skipped"]);
+function createPrivilegedAuditLogInput(details = {}) {
+  const outcome = normalizePrivilegedAuditOutcome(details.outcome);
+  const safeErrorCode = safePrivilegedAuditErrorCode(details.safeErrorCode ?? details.error, outcome);
+  const correlation = normalizePrivilegedAuditCorrelation(details.correlation ?? details.correlationId ?? null);
+  const release = details.release ?? null;
+  const data = {
+    schema: PRIVILEGED_AUDIT_SCHEMA,
+    actorKind: normalizePrivilegedAuditActorKind(details.actorKind),
+    operation: auditString(details.operation, "unknown"),
+    surface: auditString(details.surface ?? details.callSite ?? details.apiSurface, "unknown"),
+    targetResourceKind: auditString(details.targetResourceKind ?? details.target?.resourceKind, "unknown"),
+    outcome,
+    safeErrorCode,
+    source: auditString(details.source, "runtime"),
+    metadata: details.metadata && typeof details.metadata === "object" && !Array.isArray(details.metadata) ? details.metadata : {}
+  };
+  return {
+    category: "audit",
+    event: auditString(details.event, `privileged.${outcome}`),
+    level: details.level ?? privilegedAuditLevelForOutcome(outcome),
+    message: auditString(details.message, `Privileged audit event ${outcome}: ${data.operation}`),
+    data,
+    request: details.request ?? null,
+    release,
+    correlation
+  };
+}
+function normalizePrivilegedAuditActorKind(value) {
+  const candidate = String(value ?? "unknown");
+  return PRIVILEGED_AUDIT_ACTOR_KINDS.has(candidate) ? candidate : "unknown";
+}
+function normalizePrivilegedAuditOutcome(value) {
+  const candidate = String(value ?? "requested");
+  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "requested";
+}
+function privilegedAuditLevelForOutcome(outcome) {
+  if (outcome === "denied" || outcome === "skipped") {
+    return "warn";
+  }
+  if (outcome === "failed") {
+    return "error";
+  }
+  return "info";
+}
+function safePrivilegedAuditErrorCode(value, outcome = "requested") {
+  const source = value && typeof value === "object" && "code" in value ? value.code : value;
+  if (source === null || source === void 0 || source === "") {
+    if (outcome === "denied") {
+      return "DENIED";
+    }
+    if (outcome === "failed") {
+      return "UNKNOWN_ERROR";
+    }
+    return null;
+  }
+  return String(source).trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_").slice(0, 64) || (outcome === "failed" ? "UNKNOWN_ERROR" : null);
+}
+function normalizePrivilegedAuditCorrelation(value) {
+  if (value === null || value === void 0) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return { id: value };
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value;
+  }
+  return { id: String(value) };
+}
+function auditString(value, fallback) {
+  const text = value === null || value === void 0 ? "" : String(value);
+  return text.trim() ? text : fallback;
+}
+function createLogEnvelope(input) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const config = input.config ?? {};
+  const capsuleName = String(config.name ?? "unknown");
+  const envelope = {
+    schema: "sporades.log.v1",
+    timestamp: input.timestamp ?? now,
+    category: input.category ?? "platform",
+    event: input.event ?? "runtime.event",
+    level: input.level ?? "info",
+    message: String(input.message ?? ""),
+    capsule: {
+      name: capsuleName,
+      id: String(config.capsule?.id ?? config.id ?? capsuleName)
+    },
+    release: input.release ?? config.release ?? null,
+    request: input.request ? {
+      id: input.request.id ?? randomUUID(),
+      method: input.request.method ?? null,
+      path: input.request.path ?? null
+    } : null,
+    correlation: input.correlation ?? null,
+    data: sanitizeLogData(input.data ?? null, input.serverEnv ?? {})
+  };
+  return capLogEnvelope(envelope, logPayloadMaxBytes(config));
+}
+function sanitizeLogData(value, serverEnv) {
+  return redactLogData(value, serverEnv);
+}
+function redactLogData(value, serverEnv) {
+  if (value === null || value === void 0) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return logDataContainsServerEnvValue(value, serverEnv) || isSensitiveLogString(value) ? logRedactedValue() : value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactLogData(item, serverEnv));
+  }
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nestedValue]) => [
+        key,
+        isSensitiveLogKey(key) ? logRedactedValue() : redactLogData(nestedValue, serverEnv)
+      ])
+    );
+  }
+  return String(value);
+}
+function logDataContainsServerEnvValue(value, serverEnv) {
+  const values = Object.values(serverEnv ?? {}).filter((candidate) => typeof candidate === "string" && candidate.length > 0);
+  if (values.length === 0) {
+    return false;
+  }
+  if (typeof value === "string") {
+    return values.includes(value);
+  }
+  if (value === null || value === void 0 || typeof value !== "object") {
+    return false;
+  }
+  const serialized = JSON.stringify(
+    value,
+    (_key, nestedValue) => typeof nestedValue === "bigint" ? String(nestedValue) : nestedValue
+  );
+  return values.some((secret) => serialized.includes(String(secret)));
+}
+function isSensitiveLogKey(key) {
+  return /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) || /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key));
+}
+function isSensitiveLogString(value) {
+  return /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value) || /\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(value) || /(^|\n)\s*at\s+.+:\d+:\d+/.test(value);
+}
+function capLogEnvelope(envelope, maxBytes) {
+  let capped = envelope;
+  if (Buffer.byteLength(JSON.stringify(capped), "utf8") <= maxBytes) {
+    return { ...capped, truncated: false };
+  }
+  capped = {
+    ...capped,
+    data: {
+      ...capped.data && typeof capped.data === "object" && !Array.isArray(capped.data) ? capped.data : { value: capped.data }
+    },
+    truncated: true
+  };
+  if (capped.data.metadata && typeof capped.data.metadata === "object" && !Array.isArray(capped.data.metadata)) {
+    for (const key of Object.keys(capped.data.metadata).reverse()) {
+      if (Buffer.byteLength(JSON.stringify(capped), "utf8") <= maxBytes) {
+        return capped;
+      }
+      capped.data.metadata[key] = "[TRUNCATED]";
+    }
+  }
+  for (const key of Object.keys(capped.data).reverse()) {
+    if (Buffer.byteLength(JSON.stringify(capped), "utf8") <= maxBytes) {
+      return capped;
+    }
+    capped.data[key] = "[TRUNCATED]";
+  }
+  if (Buffer.byteLength(JSON.stringify(capped), "utf8") <= maxBytes) {
+    return capped;
+  }
+  capped.data = { truncated: true };
+  capped.message = capped.message.slice(0, 256);
+  return capped;
+}
+var ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 
 // src/cli/cli-support.ts
 function errorDetails(error) {
@@ -1335,6 +1530,31 @@ async function startCapsule(request, options = {}) {
     route: publicRouteData(runningRoute),
     restartPolicy: restartPolicyStatus("hosted")
   };
+  const ssh = currentReleaseSshIntent(registryRecord);
+  if (!ssh.reason) {
+    data.auditEvents = [
+      hostedSshAuditEvent(request, {
+        event: "ssh.access.enabled",
+        operation: request.action === "capsule.restart" ? "ssh.hosted-capsule.restart" : "ssh.hosted-capsule.start",
+        surface: `sporades-host-helper/${request.action}`,
+        targetResourceKind: "hosted-capsule-ssh-access",
+        outcome: "succeeded",
+        message: "Hosted Capsule SSH access enabled for lifecycle start.",
+        release: { id: releaseId },
+        metadata: {
+          enabled: true,
+          running: true,
+          host: null,
+          port: null,
+          targetPort: 22,
+          loopbackOnly: true,
+          keyCount: ssh.keyCount,
+          fingerprints: ssh.fingerprints,
+          reason: null
+        }
+      })
+    ];
+  }
   if (options.write !== false) {
     writeEnvelope({ ok: true, data, error: null });
   }
@@ -1633,7 +1853,7 @@ async function inspectCapsuleSsh(request) {
     if (errorDetails(error).message === "Hosted Capsule is not registered.") {
       writeEnvelope({
         ok: true,
-        data: hostedCapsuleSshState(request, {
+        data: hostedCapsuleSshStateWithAudit(request, {
           enabled: false,
           running: false,
           reason: "no-hosted-capsule"
@@ -1648,7 +1868,7 @@ async function inspectCapsuleSsh(request) {
   if (ssh.reason) {
     writeEnvelope({
       ok: true,
-      data: hostedCapsuleSshState(request, {
+      data: hostedCapsuleSshStateWithAudit(request, {
         enabled: false,
         running: false,
         reason: ssh.reason
@@ -1662,7 +1882,7 @@ async function inspectCapsuleSsh(request) {
   if (!inspected) {
     writeEnvelope({
       ok: true,
-      data: hostedCapsuleSshState(request, {
+      data: hostedCapsuleSshStateWithAudit(request, {
         enabled: true,
         running: false,
         keyCount: ssh.keyCount,
@@ -1677,7 +1897,7 @@ async function inspectCapsuleSsh(request) {
   const port = inspectedContainerPort(inspected, 22);
   writeEnvelope({
     ok: true,
-    data: hostedCapsuleSshState(request, {
+    data: hostedCapsuleSshStateWithAudit(request, {
       enabled: true,
       running,
       host: port?.host ?? null,
@@ -2013,9 +2233,12 @@ function normaliseLifecycle(request, registryRecord = null) {
     ],
     data: { host: paths.data, container: "/app/data", mode: "rw" }
   };
-  const fileMounts = authoritativeSealedServerEnvPrivateKeyMount(
-    provided.mounts?.files ?? defaultMounts.files,
-    sealedServerEnvPrivateKey
+  const fileMounts = authoritativeSshAuthorizedKeysMount(
+    authoritativeSealedServerEnvPrivateKeyMount(
+      provided.mounts?.files ?? defaultMounts.files,
+      sealedServerEnvPrivateKey
+    ),
+    sshAuthorizedKeysMount
   );
   return {
     subname,
@@ -2101,6 +2324,14 @@ function authoritativeSealedServerEnvPrivateKeyMount(fileMounts, sealedServerEnv
   }
   return next;
 }
+function authoritativeSshAuthorizedKeysMount(fileMounts, sshAuthorizedKeysMount) {
+  const authorizedKeysContainerPath = "/run/sporades/ssh/authorized_keys";
+  const withoutStaleSshMount = fileMounts.filter((mount) => mount.container !== authorizedKeysContainerPath);
+  if (!sshAuthorizedKeysMount) {
+    return withoutStaleSshMount;
+  }
+  return [...withoutStaleSshMount, sshAuthorizedKeysMount];
+}
 function withRouteAccessLog(route, accessLog) {
   if (route.log === null) {
     return route;
@@ -2144,7 +2375,7 @@ async function ensureRuntimeProbeCredential(request) {
   await mutateRegistryRecord(request, (record) => {
     probe = readRuntimeProbeCredential(record) ?? {
       header: RUNTIME_PROBE_HEADER,
-      token: randomBytes(32).toString("hex"),
+      token: randomBytes2(32).toString("hex"),
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     return { ...record, runtimeProbe: probe };
@@ -2764,7 +2995,7 @@ function hostSealedEnvKeyPaths(dataDirectory, fingerprint) {
   };
 }
 function fingerprintPublicKey(publicKey) {
-  return createHash("sha256").update(publicKey).digest("hex").slice(0, 16);
+  return createHash2("sha256").update(publicKey).digest("hex").slice(0, 16);
 }
 function reactivateRegistrationRecord(record, sealedServerEnv = null) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -3910,6 +4141,52 @@ function hostedCapsuleSshState(request, overrides) {
     fingerprints: [],
     reason: "no-authorized-keys",
     ...overrides
+  };
+}
+function hostedCapsuleSshStateWithAudit(request, overrides) {
+  const state = hostedCapsuleSshState(request, overrides);
+  return {
+    ...state,
+    auditEvents: [
+      hostedSshAuditEvent(request, {
+        event: "ssh.state.inspected",
+        operation: "ssh.hosted-capsule.inspect",
+        surface: "sporades-host-helper/capsule.ssh",
+        targetResourceKind: "hosted-capsule-ssh-state",
+        outcome: "succeeded",
+        message: "Hosted Capsule SSH state inspected.",
+        metadata: hostedSshAuditMetadata(state)
+      })
+    ]
+  };
+}
+function hostedSshAuditEvent(request, details) {
+  const input = createPrivilegedAuditLogInput({
+    actorKind: "platform",
+    source: "host-helper",
+    ...details
+  });
+  return createLogEnvelope({
+    ...input,
+    timestamp: null,
+    config: {
+      name: request.capsule.subname,
+      id: `${request.host.domain}/${request.capsule.subname}`
+    },
+    serverEnv: {}
+  });
+}
+function hostedSshAuditMetadata(state) {
+  return {
+    enabled: Boolean(state.enabled),
+    running: Boolean(state.running),
+    host: typeof state.host === "string" ? state.host : null,
+    port: Number.isInteger(state.port) ? state.port : null,
+    targetPort: Number.isInteger(state.targetPort) ? state.targetPort : 22,
+    loopbackOnly: state.host === "127.0.0.1" || state.host === "localhost" || state.host === null,
+    keyCount: Number.isInteger(state.keyCount) ? state.keyCount : 0,
+    fingerprints: Array.isArray(state.fingerprints) ? state.fingerprints.filter((value) => typeof value === "string") : [],
+    reason: typeof state.reason === "string" ? state.reason : null
   };
 }
 function normaliseReleaseEventList(value) {

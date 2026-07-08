@@ -91,10 +91,17 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   createRuntimeLogSink,
   requirePathModule,
   createRuntimeLogger,
+  createPrivilegedAuditEmitter,
+  emitPrivilegedAuditEvent,
+  createPrivilegedAuditLogInput,
+  normalizePrivilegedAuditActorKind,
+  normalizePrivilegedAuditOutcome,
+  safePrivilegedAuditErrorCode,
   createLogEnvelope,
   sanitizeLogData,
   redactLogData,
   logDataContainsServerEnvValue,
+  isSensitiveLogString,
   isSensitiveLogKey,
   capLogEnvelope,
   createLogIndexTables,
@@ -554,6 +561,7 @@ export async function openDevDatabase(
     serverEnv,
     dataDir: path.dirname(databasePath),
   });
+  database.audit = createPrivilegedAuditEmitter(database.log);
   await sqlite.ensureSystemTable();
   await sqlite.ensureAuthStorage(database.authConfig);
   await sqlite.ensureUserPreferencesStorage();
@@ -2787,7 +2795,115 @@ function createRuntimeLogger(database: { log: { emit: (arg0: { category: any; ev
   };
 }
 
-function createLogEnvelope(input: { config: LooseRecord; timestamp: any; category: any; event: any; level: any; message: any; release: any; request: { id: any; method: any; path: any; }; correlation: any; data: any; serverEnv: any; }) {
+const PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
+const PRIVILEGED_AUDIT_ACTOR_KINDS = new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
+// `denied` means policy rejected the action; `failed` means an allowed action did not complete.
+const PRIVILEGED_AUDIT_OUTCOMES = new Set(["requested", "allowed", "denied", "succeeded", "failed", "skipped"]);
+
+function createPrivilegedAuditEmitter(log: { emit: (input: LooseRecord) => any; }) {
+  return {
+    emit(details: LooseRecord) {
+      return emitPrivilegedAuditEvent(log, details);
+    },
+  };
+}
+
+function emitPrivilegedAuditEvent(target: LooseRecord, details: LooseRecord = {}) {
+  const log = target?.log?.emit ? target.log : target;
+  if (!log?.emit) {
+    throw new Error("Privileged audit events require a runtime log sink.");
+  }
+  return log.emit(createPrivilegedAuditLogInput(details));
+}
+
+export function createPrivilegedAuditLogInput(details: LooseRecord = {}) {
+  const outcome = normalizePrivilegedAuditOutcome(details.outcome);
+  const safeErrorCode = safePrivilegedAuditErrorCode(details.safeErrorCode ?? details.error, outcome);
+  const correlation = normalizePrivilegedAuditCorrelation(details.correlation ?? details.correlationId ?? null);
+  const release = details.release ?? null;
+  const data = {
+    schema: PRIVILEGED_AUDIT_SCHEMA,
+    actorKind: normalizePrivilegedAuditActorKind(details.actorKind),
+    operation: auditString(details.operation, "unknown"),
+    surface: auditString(details.surface ?? details.callSite ?? details.apiSurface, "unknown"),
+    targetResourceKind: auditString(details.targetResourceKind ?? details.target?.resourceKind, "unknown"),
+    outcome,
+    safeErrorCode,
+    source: auditString(details.source, "runtime"),
+    metadata: details.metadata && typeof details.metadata === "object" && !Array.isArray(details.metadata)
+      ? details.metadata
+      : {},
+  };
+
+  return {
+    category: "audit",
+    event: auditString(details.event, `privileged.${outcome}`),
+    level: details.level ?? privilegedAuditLevelForOutcome(outcome),
+    message: auditString(details.message, `Privileged audit event ${outcome}: ${data.operation}`),
+    data,
+    request: details.request ?? null,
+    release,
+    correlation,
+  };
+}
+
+function normalizePrivilegedAuditActorKind(value: any) {
+  const candidate = String(value ?? "unknown");
+  return PRIVILEGED_AUDIT_ACTOR_KINDS.has(candidate) ? candidate : "unknown";
+}
+
+function normalizePrivilegedAuditOutcome(value: any) {
+  const candidate = String(value ?? "requested");
+  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "requested";
+}
+
+function privilegedAuditLevelForOutcome(outcome: string) {
+  if (outcome === "denied" || outcome === "skipped") {
+    return "warn";
+  }
+  if (outcome === "failed") {
+    return "error";
+  }
+  return "info";
+}
+
+function safePrivilegedAuditErrorCode(value: any, outcome = "requested") {
+  const source = value && typeof value === "object" && "code" in value ? value.code : value;
+  if (source === null || source === undefined || source === "") {
+    if (outcome === "denied") {
+      return "DENIED";
+    }
+    if (outcome === "failed") {
+      return "UNKNOWN_ERROR";
+    }
+    return null;
+  }
+  return String(source)
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9_.-]+/g, "_")
+    .slice(0, 64) || (outcome === "failed" ? "UNKNOWN_ERROR" : null);
+}
+
+function normalizePrivilegedAuditCorrelation(value: any) {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === "string") {
+    return { id: value };
+  }
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return value;
+  }
+  return { id: String(value) };
+}
+
+function auditString(value: any, fallback: string) {
+  const text = value === null || value === undefined ? "" : String(value);
+  return text.trim() ? text : fallback;
+}
+
+export function createLogEnvelope(input: { config: LooseRecord; timestamp: any; category: any; event: any; level: any; message: any; release: any; request: { id: any; method: any; path: any; }; correlation: any; data: any; serverEnv: any; }) {
   const now = new Date().toISOString();
   const config = input.config ?? {};
   const capsuleName = String(config.name ?? "unknown");
@@ -2825,7 +2941,7 @@ function redactLogData(value: unknown, serverEnv: any): any {
     return null;
   }
   if (typeof value === "string") {
-    return logDataContainsServerEnvValue(value, serverEnv) ? logRedactedValue() : value;
+    return logDataContainsServerEnvValue(value, serverEnv) || isSensitiveLogString(value) ? logRedactedValue() : value;
   }
   if (typeof value === "number" || typeof value === "boolean") {
     return value;
@@ -2837,7 +2953,7 @@ function redactLogData(value: unknown, serverEnv: any): any {
     return Object.fromEntries(
       Object.entries(value).map(([key, nestedValue]: [string, any]) => [
         key,
-        isSensitiveLogKey(key) || logDataContainsServerEnvValue(nestedValue, serverEnv)
+        isSensitiveLogKey(key)
           ? logRedactedValue()
           : redactLogData(nestedValue, serverEnv),
       ]),
@@ -2865,8 +2981,16 @@ function logDataContainsServerEnvValue(value: unknown, serverEnv: any) {
 
 function isSensitiveLogKey(key: string) {
   return (
-    /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token)([-_]|$)/i.test(String(key)) ||
-    /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken)/i.test(String(key))
+    /(^|[-_])(?:password|passwd|token|secret|authorization|cookie|client[-_]?secret|api[-_]?token|private[-_]?key|authorized[-_]?keys?|request[-_]?body|raw[-_]?body|stack(?:trace)?)([-_]|$)/i.test(String(key)) ||
+    /(?:password|passwd|token|secret|authorization|cookie|clientSecret|apiToken|privateKey|authorizedKeys|requestBody|rawRequestBody|stackTrace)/i.test(String(key))
+  );
+}
+
+function isSensitiveLogString(value: string) {
+  return (
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----/.test(value) ||
+    /\b(?:ssh-rsa|ssh-ed25519|ecdsa-sha2-[^\s]+)\s+[A-Za-z0-9+/=]{32,}/.test(value) ||
+    /(^|\n)\s*at\s+.+:\d+:\d+/.test(value)
   );
 }
 
@@ -2882,6 +3006,14 @@ function capLogEnvelope(envelope: LooseRecord, maxBytes: number) {
     },
     truncated: true,
   };
+  if (capped.data.metadata && typeof capped.data.metadata === "object" && !Array.isArray(capped.data.metadata)) {
+    for (const key of Object.keys(capped.data.metadata).reverse()) {
+      if (Buffer.byteLength(JSON.stringify(capped), "utf8") <= maxBytes) {
+        return capped;
+      }
+      capped.data.metadata[key] = "[TRUNCATED]";
+    }
+  }
   for (const key of Object.keys(capped.data).reverse()) {
     if (Buffer.byteLength(JSON.stringify(capped), "utf8") <= maxBytes) {
       return capped;
@@ -2957,7 +3089,7 @@ function readRecentLogEvents(sqlite: { engine?: string; exec?: (sql: any) => voi
     .map((row: { payload: string; }) => JSON.parse(row.payload));
 }
 
-function readJsonlLogEvents(logPath: PathOrFileDescriptor, limit = 200) {
+export function readJsonlLogEvents(logPath: PathOrFileDescriptor, limit = 200) {
   let raw = "";
   try {
     raw = readFileSync(logPath, "utf8");

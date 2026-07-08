@@ -52,7 +52,7 @@ underlying lifecycle and inspection commands; it points to them.
   contracts as separate hidden implementations.
 - Do not expose secrets, full Server env values, private keys, or full SSH
   public-key material.
-- Do not introduce the Root server role or privileged runtime table inspection
+- Do not introduce the Privileged server role or privileged runtime table inspection
   as part of doctor.
 - Do not add Hosted Capsule service orchestration.
 
@@ -184,4 +184,3 @@ checks do not fail the command.
 - `issues/04-add-local-runtime-and-service-checks.md`
 - `issues/05-add-hosted-capsule-doctor-checks.md`
 - `issues/06-document-doctor-and-update-roadmap.md`
-
