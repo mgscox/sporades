@@ -110,14 +110,23 @@ The following work is intentionally deferred:
   contract without coupling `sshd` directly to Sporades runtime code. The spike
   remains in `.scratch/privileged-audit-event-contract/ssh-daemon-session-log-scanner-spike.md`.
 - Privileged server role:
-  a server-only authority for trusted runtime and Capsule operations that
-  intentionally run outside normal user rights. It is not a browser credential,
-  user, team member, session, or account. The role must be auditable, must be
-  invoked only through explicit server-code APIs, must build on the implemented
-  Privileged audit event contract, and must distinguish privileged execution
-  from work running as a captured Sporades user identity. This is a dependency
-  for Job scheduling because recurring Jobs may need to run without a live user
-  session.
+  a server-only actor for trusted system-owned execution that intentionally
+  runs without a Sporades user identity, such as scheduled Jobs or
+  platform-owned maintenance inside a Capsule. It is not a Capsule role, app
+  admin, browser credential, user, team member, session, or account. Capsule
+  admin authorization remains separate as Capsule roles checked through normal
+  ACL rules. Privileged server role activity must be auditable, must be invoked
+  only through explicit server-code APIs, must build on the implemented
+  Privileged audit event contract, and must distinguish userless system-owned
+  execution from work running as a captured Sporades user identity. This is a
+  dependency for Job scheduling because recurring Jobs may need to run without
+  a live user session.
+- Capsule roles:
+  a separate future planning track for Capsule-scoped user authorization labels
+  such as app-defined admin roles. Capsule roles are checked through normal ACL
+  rules over one Capsule's DB, files, and storage resources; they are not the
+  Privileged server role and must not become a global role on runtime-owned
+  Sporades auth users.
 - Vector storage, Job Queue, and Job scheduling:
   `.scratch/post-v2-platform-hardening-and-ops/issues/07-evaluate-vector-storage-extension.md`,
   `.scratch/post-v2-platform-hardening-and-ops/issues/08-add-job-queue.md`, and
@@ -476,9 +485,63 @@ correlation identity where available, `targetResourceKind`, `outcome`,
 `safeErrorCode`, bounded `metadata`, and release identity where the event is
 about a Hosted Capsule release. Current actor kinds include `platform`; the
 contract also reserves `privileged-server-role`, `captured-user`, and `unknown`
-for the future Privileged server role and daemon-log capture. Outcomes use the
-vocabulary `requested`, `allowed`, `denied`, `succeeded`, `failed`, and
-`skipped`.
+for the future Privileged server role and daemon-log capture. Outcomes describe
+audit-event lifecycle state rather than authorization or business result:
+`started`, `completed`, `errored`, and `finished`. `finished` is emitted from
+the privileged-run `finally` path so log readers can pair a `started` event with
+a definitive end event. There is no audit-outcome concept of allowed, denied, or
+skipped.
+Existing SSH and platform audit emitters must use this same `outcome` vocabulary
+in the `outcome` field. Event names may remain domain-specific, such as
+`ssh.config.validated` or future SSH auth/session event names, but the outcome
+field does not use SSH-specific or legacy success/failure terms.
+Required audit metadata is validated and redacted before `started` is emitted so
+the first audit event uses the final safe fields. If metadata validation,
+redaction, or generation fails, the runtime throws before entering the
+privileged path: no privileged audit event is emitted, no privileged context is
+handed out, and the callback does not run.
+Metadata generation for `ctx.privileged.run(...)` is synchronous and structural:
+it uses already-known values supplied in the call options. It must not perform
+async DB, file, storage, network, or service work before `started`; authors who
+need those facts should gather them before calling the privileged run.
+Privileged audit emission is not best-effort. If the runtime cannot emit a
+required privileged audit event, the privileged operation throws rather than
+continuing without durable audit evidence. When audit emission fails after the
+callback has thrown, the audit-emission error is thrown and includes the original
+callback error as structured context. When audit emission fails after the
+callback has returned, the audit-emission error is thrown and includes the
+callback result as structured context so Capsule code can decide how to recover.
+That structured callback context is server-side only and must not be exposed in
+default client-visible error responses. Browser and external caller responses
+remain opaque and stable unless Capsule code explicitly catches the error and
+chooses a safe response shape.
+When privileged audit emission succeeds and the callback returns, the privileged
+run returns the callback result as-is. The runtime does not inspect, sanitize, or
+classify successful callback return values; server code that returns privileged
+data to a browser or external caller remains responsible for shaping that
+response safely.
+Privileged runs do not introduce new runtime timeout, retry, or cancellation
+policy. They should accept a caller-supplied `AbortSignal` so surrounding server
+code, lifecycle code, and future Job execution can propagate cancellation
+deliberately while preserving the existing handler or lifecycle semantics. The
+derived privileged context exposes the same signal as `privilegedCtx.signal` so
+privileged helper code can pass cancellation deeper without capturing outer
+variables. When no signal is supplied, the runtime provides a fresh per-run
+non-aborted default signal on `privilegedCtx.signal`; it must not use a shared
+long-lived signal that can accumulate listeners across privileged runs. Any
+runtime-owned abort listeners or signal bridges are cleaned up when the run
+reaches `finished`.
+The derived privileged context is created and exposed to the callback only after
+`started` audit emission succeeds. If `started` cannot be emitted, no privileged
+context is handed out and the callback does not run.
+If a privileged run is called with an already-aborted signal, the runtime still
+emits privileged audit events: `started`, then `errored` with a stable abort safe
+error code, then `finished`. The callback does not run.
+If the signal aborts while the callback is already running, business logic
+decides how to respond. The runtime does not interrupt arbitrary callback work;
+it propagates the signal and records audit outcomes from the callback's actual
+settlement: `completed` then `finished` if it returns, or `errored` then
+`finished` if it throws.
 
 The contract is deliberately redacted. Audit metadata must not contain full
 public keys, private keys, source key file paths, generated authorized-key
@@ -501,18 +564,18 @@ privileged audit events.
 Current SSH coverage includes Sporades-controlled configuration validation,
 local Container lifecycle, Hosted Capsule lifecycle, and explicit inspection
 events such as `ssh.config.validated`, `ssh.access.enabled`,
-`ssh.access.disabled`, and `ssh.state.inspected`. Real SSH login/session
-capture from `sshd` remains future scanner work; the first implementation
+`ssh.access.disabled`, and `ssh.state.inspected`; those events must use
+`started`, `completed`, `errored`, and `finished` in their `outcome` field. Real
+SSH login/session capture from `sshd` remains future scanner work; the first implementation
 should periodically read daemon logs, normalize accepted/failed login and
 session activity, and emit redacted privileged audit events without running a
 second long-lived Sporades logging daemon.
 
 Security officers should be able to reconstruct incident timelines by Capsule,
-time range, operation, actor kind, target resource, and outcome; review allowed,
-denied, failed, skipped, and succeeded privileged activity; verify that browser
-or app credentials could not forge a privileged event; and collect redacted
-evidence without exposing key material, Server env values, tokens, or raw
-daemon logs.
+time range, operation, actor kind, target resource, and outcome; review started,
+completed, errored, and finished privileged activity; verify that browser or app
+credentials could not forge a privileged event; and collect redacted evidence
+without exposing key material, Server env values, tokens, or raw daemon logs.
 
 ## Configuration
 

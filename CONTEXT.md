@@ -202,6 +202,10 @@ _Avoid_: preferences table, app settings table, localStorage settings
 The Transaction boundary for one current-user preference update. The runtime reads the existing preferences, applies and validates the accepted patch, saves the next value, and only reports or broadcasts committed preference state.
 _Avoid_: optimistic preference broadcast, partial preference update, localStorage preference write
 
+**Capsule role**:
+A Capsule-scoped authorization label associated with a Sporades user for one Capsule, such as an app-defined admin role. Capsule roles are for Capsule DB, file, and storage authorization through normal ACL rules; they are not the Privileged server role and do not grant platform/runtime authority outside the Capsule.
+_Avoid_: global admin, platform admin, root role, Privileged server role
+
 ## Client transport
 
 Sporades is client-framework-agnostic. `sporades/client` exports a transport layer (WebSocket connect, query subscribe, mutation send, auth state, current-user preferences) and a `createHooks` factory that takes a framework's primitives (`useState`, `useEffect`) and returns ready-to-use hooks (`useQuery`, `useMutation`, `useAuth`). The user wires one line; the scaffold template handles it by default.
@@ -309,8 +313,8 @@ A constrained read-only policy context exposed to ACL rules as `ctx.acl`. It pro
 _Avoid_: ctx.db in ACL, admin client, bypass API
 
 **Privileged server role**:
-A server-only authority for trusted runtime and Capsule operations that intentionally run outside normal user rights. It may bypass app ACLs or inspect runtime-owned non-app resources only through explicit server-code APIs, and it is an auditable server/runtime capability rather than a browser credential, user, team member, session, or account.
-_Avoid_: root server role, admin user, superuser account, service account
+A server-only authority for trusted system-owned execution that intentionally runs without a Sporades user identity, such as future scheduled Jobs or platform-owned maintenance. It is separate from Capsule roles, app admin users, browser credentials, users, team members, sessions, and accounts.
+_Avoid_: root server role, admin user, superuser account, service account, Capsule role
 
 **Privileged audit event**:
 A platform-owned structured JSONL log event for privileged-boundary and comparable security-sensitive runtime activity, including current SSH configuration, lifecycle, and inspection events. It records actor kind, operation, Capsule identity, call site or API surface, correlation identity, target resource kind, outcome, safe error code, and bounded redacted metadata. Capsule app `ctx.log` cannot emit Privileged audit events, and browser/client credentials do not carry privileged authority.

@@ -1,0 +1,26 @@
+Status: ready-for-agent
+
+# Implement Privileged DB Access Through Normal Adapter Boundaries
+
+## Parent
+
+.scratch/privileged-server-role/PRD.md
+
+## What to build
+
+Allow `privilegedCtx.db` to use the familiar Capsule table API while bypassing normal ACL gates only through an internal runtime capability. This should preserve normal `ctx.db` behavior by default, keep ACL evaluation constrained, and avoid introducing a separate Database adapter or raw runtime-table escape hatch.
+
+## Acceptance criteria
+
+- [ ] `privilegedCtx.db` can perform approved Capsule app-table reads and writes that would otherwise be blocked by normal ACL gates.
+- [ ] Normal `ctx.db` access remains user-scoped and ACL-protected by default.
+- [ ] Capsule code cannot forge privileged access by setting role-shaped, skip-ACL-looking, or capability-looking properties on a normal handler context.
+- [ ] ACL rule evaluation cannot access or call `ctx.privileged.run(...)`.
+- [ ] `ctx.acl` remains read-only and cannot access Privileged server role execution or runtime-owned non-app resources.
+- [ ] The implementation uses the existing Database adapter boundary; privileged DB behavior is a runtime route decision, not a separate adapter contract.
+
+## Blocked by
+
+- .scratch/privileged-server-role/issues/02-add-minimal-ctx-privileged-run.md
+- .scratch/privileged-server-role/issues/03-harden-privileged-run-failure-and-cancellation.md
+- .scratch/privileged-server-role/issues/04-add-privileged-actor-identity-and-sentinel-guardrails.md

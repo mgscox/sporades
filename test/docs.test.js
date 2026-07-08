@@ -363,8 +363,39 @@ test("docs describe the implemented Privileged audit event contract", async () =
     assert.match(prd, new RegExp(actorKind));
   }
 
-  for (const outcome of ["requested", "allowed", "denied", "succeeded", "failed", "skipped"]) {
+  for (const outcome of ["started", "completed", "errored", "finished"]) {
     assert.match(prd, new RegExp(outcome));
+  }
+  assert.match(prd, /finally/);
+  assert.match(prd, /Privileged audit emission is not best-effort/);
+  assert.match(prd, /cannot emit a\s+required privileged audit event, the privileged operation throws/);
+  assert.match(prd, /original\s+callback error as structured context/);
+  assert.match(prd, /callback result as structured context/);
+  assert.match(prd, /server-side only/);
+  assert.match(prd, /must not be exposed in\s+default client-visible error responses/);
+  assert.match(prd, /returns the callback result as-is/);
+  assert.match(prd, /does not inspect, sanitize, or\s+classify successful callback return values/);
+  assert.match(prd, /caller-supplied `AbortSignal`/);
+  assert.match(prd, /privilegedCtx\.signal/);
+  assert.match(prd, /fresh per-run\s+non-aborted default signal/);
+  assert.match(prd, /must not use a shared\s+long-lived signal/);
+  assert.match(prd, /cleaned up when the run\s+reaches `finished`/);
+  assert.match(prd, /created and exposed to the callback only after\s+`started` audit emission succeeds/);
+  assert.match(prd, /no privileged\s+context is handed out and the callback does not run/);
+  assert.match(prd, /Required audit metadata is validated and redacted before `started`/);
+  assert.match(prd, /metadata validation,\s+redaction, or generation fails/);
+  assert.match(prd, /Metadata generation for `ctx\.privileged\.run\(\.\.\.\)` is synchronous and structural/);
+  assert.match(prd, /must not perform\s+async DB, file, storage, network, or service work before `started`/);
+  assert.match(prd, /do not introduce new runtime timeout, retry, or cancellation\s+policy/);
+  assert.match(prd, /already-aborted signal/);
+  assert.match(prd, /stable abort safe\s+error code/);
+  assert.match(prd, /signal aborts while the callback is already running/);
+  assert.match(prd, /does not interrupt arbitrary callback work/);
+  assert.match(prd, /There is no audit-outcome concept of\s+allowed, denied, or\s+skipped/);
+  assert.match(prd, /Existing SSH and platform audit emitters must use this same `outcome` vocabulary/);
+  assert.match(prd, /the outcome\s+field does not use SSH-specific or legacy success\/failure terms/);
+  for (const staleOutcome of ["allowed", "denied", "skipped"]) {
+    assert.doesNotMatch(prd, new RegExp(`Outcomes use[^.]+${staleOutcome}`));
   }
 
   for (const redacted of [
@@ -383,10 +414,10 @@ test("docs describe the implemented Privileged audit event contract", async () =
   assert.match(prd, /ssh\.access\.enabled/);
   assert.match(prd, /ssh\.access\.disabled/);
   assert.match(prd, /ssh\.state\.inspected/);
-  assert.match(prd, /Real SSH login\/session\s+capture from `sshd` remains future scanner work/);
+  assert.match(prd, /Real\s+SSH login\/session\s+capture from `sshd` remains future scanner work/);
   assert.match(prd, /\.scratch\/privileged-audit-event-contract\/ssh-daemon-session-log-scanner-spike\.md/);
   assert.match(prd, /Security officers should be able to reconstruct incident timelines/);
-  assert.match(prd, /verify that browser\s+or app credentials could not forge a privileged event/);
+  assert.match(prd, /verify that browser\s+or app\s+credentials could not forge a privileged event/);
   assert.match(prd, /redacted\s+evidence/);
 
   assert.match(context, /platform-owned structured JSONL log event/);

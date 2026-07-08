@@ -38,9 +38,9 @@ without waiting for the broader centralized JSON server logging feature.
 
 Define a small, stable Privileged audit event contract for security-relevant
 server-side actions. A Privileged audit event is a structured JSONL log event
-emitted whenever the Privileged server role is requested or used, and for
-selected existing server-controlled access paths that have comparable
-operational sensitivity.
+emitted when privileged or comparable server-controlled activity starts,
+completes, errors, or finishes, and for selected existing access paths that have
+comparable operational sensitivity.
 
 The first contract should define:
 
@@ -73,7 +73,7 @@ using the same audit vocabulary:
 6. As a Capsule operator, I want audit events to include the call site or API surface, so that I can trace which server-code surface requested privileged behavior.
 7. As a Capsule operator, I want audit events to include request, Job, or correlation identity when available, so that I can connect audit events to surrounding logs.
 8. As a Capsule operator, I want audit events to include target resource kind rather than raw resource contents, so that auditability does not leak private data.
-9. As a Capsule operator, I want audit events to include outcomes, so that allowed, denied, succeeded, and failed privileged operations are visible.
+9. As a Capsule operator, I want audit events to include outcomes, so that started, completed, errored, and finished privileged activity is visible without implying business success or authorization policy.
 10. As a Capsule operator, I want safe error codes instead of raw stack traces, so that failures are diagnosable without leaking internals.
 11. As a Capsule operator, I want audit events to redact known sensitive keys, so that secrets do not leak into logs.
 12. As a Capsule operator, I want audit events to cap payload size, so that a privileged operation cannot flood the log stream.
@@ -88,7 +88,7 @@ using the same audit vocabulary:
 21. As a Host server operator, I want SSH audit events to include key counts and fingerprints where already safe, so that I can identify configured access policy without printing public-key contents.
 22. As a Host server operator, I want real SSH login/session auditing to be evaluated explicitly, so that Sporades does not confuse "SSH was configured" with "someone connected".
 23. As a security officer, I want to review all privileged audit events for a Capsule, time window, operation class, or actor kind using existing JSON log surfaces, so that I can reconstruct an incident without needing a separate dashboard.
-24. As a security officer, I want audit events to distinguish requested, allowed, denied, succeeded, failed, and skipped outcomes, so that I can tell the difference between an attempted privileged action and one that actually changed state.
+24. As a security officer, I want audit events to distinguish started, completed, errored, and finished outcomes, so that I can tell whether the privileged action boundary began, returned, threw, and reached its final close marker without overclaiming side-effect durability.
 25. As a security officer, I want audit events to prove that browser/client credentials, sessions, and ordinary Capsule app code cannot forge Privileged server role activity, so that privileged access remains server-side and runtime-owned.
 26. As a security officer, I want audit events to state what sensitive evidence was redacted or represented only by fingerprints, counts, stable IDs, or resource kinds, so that logs are useful without becoming a second secret store.
 27. As a security officer, I want SSH audit coverage to explicitly separate configured/inspected access from real login/session capture, so that emergency-access evidence is not overstated.
@@ -109,10 +109,10 @@ coverage, and tests that prevent contract drift.
 The distinct security-officer scope is incident review rather than day-to-day
 operation. The audit contract should therefore make these needs explicit:
 
-- reconstruct who or what requested privileged authority, where it entered the
-  runtime, which Capsule/resource was targeted, and what happened;
-- prove the difference between requested, denied, failed, and completed
-  privileged actions;
+- reconstruct who or what started privileged activity, where it entered the
+  runtime, which Capsule/resource was targeted, and how the callback completed;
+- prove the difference between started, completed, errored, and finished
+  privileged activity;
 - verify that privileged audit events are runtime/platform-owned and cannot be
   forged by browser code, session tokens, or ordinary `ctx.log` calls;
 - understand the evidence boundary for SSH, especially the difference between
@@ -133,15 +133,30 @@ surfaces already in scope.
 - The bounded Log index may index Privileged audit events for recent structured inspection, but the JSONL log stream remains the durable source.
 - Log index write or pruning failures must not roll back the privileged operation that emitted the event.
 - Privileged audit event emission must run through the runtime logging envelope so it inherits timestamping, redaction, payload caps, stdout emission, and recent-log inspection behavior.
+- Privileged audit event emission is not best-effort. Failure to emit a required
+  privileged audit event must throw rather than allow privileged work to proceed
+  or appear complete without durable audit evidence.
+- If required audit emission fails after the audited action has thrown, the
+  audit-emission error should be thrown with the original action error attached
+  as structured context. If required audit emission fails after the audited
+  action has returned, the audit-emission error should be thrown with the action
+  result attached as structured context.
+- Attached action errors and action results are server-side structured context
+  only. They must not be exposed in default client-visible error responses;
+  browser and external caller responses remain opaque and stable unless Capsule
+  code explicitly catches the error and returns a safe response shape.
 - The first event category should be explicit enough to filter from ordinary app logs. Candidate: `security` or `audit`. The implementation PRD/issues should pick one and use it consistently.
-- Event names should be category-specific and stable. Candidate names include `privileged.requested`, `privileged.allowed`, `privileged.denied`, `privileged.succeeded`, `privileged.failed`, `ssh.config.validated`, `ssh.access.enabled`, `ssh.access.disabled`, `ssh.state.inspected`, and later `ssh.session.opened` / `ssh.session.closed` if real SSH session capture is implemented.
+- Event names should be category-specific and stable. Candidate names include `privileged.started`, `privileged.completed`, `privileged.errored`, `privileged.finished`, `ssh.config.validated`, `ssh.access.enabled`, `ssh.access.disabled`, `ssh.state.inspected`, and later `ssh.session.opened` / `ssh.session.closed` if real SSH session capture is implemented.
 - Required event fields should include timestamp, category, event name, level, message, Capsule identity, release identity when available, actor kind, operation, call site or API surface, correlation identity, target resource kind, outcome, and safe error code where applicable.
 - Actor kind must distinguish at least `privileged-server-role`, `captured-user`, `platform`, and `unknown`.
 - Privileged audit events should not store raw request bodies, full authorized keys, private keys, Server env values, session tokens, cookies, authorization headers, passwords, client secrets, or raw stack traces.
 - Privileged audit events may include SSH public-key fingerprints and key counts because the existing SSH contract treats fingerprints as safe inspection metadata.
 - Privileged audit events should prefer resource kinds and stable IDs over full resource contents.
-- The contract should define outcome vocabulary. Candidate outcomes: `requested`, `allowed`, `denied`, `succeeded`, `failed`, `skipped`.
-- The contract should define where denial and failure differ: denied means policy rejected the privileged action; failed means the action was allowed but did not complete.
+- The contract should define outcome vocabulary: `started`, `completed`, `errored`, and `finished`.
+- Outcomes should describe the audit-event lifecycle state, not authorization policy or business result. `completed` means the audited callback or action returned; `errored` means it threw, rejected, or otherwise surfaced an error; `finished` means the privileged-run wrapper reached its `finally` path and gives log readers a stable end event to pair with `started`.
+- Existing and future SSH audit emitters must use the same `outcome` field
+  vocabulary. Event names may remain domain-specific, but the `outcome` field
+  does not use SSH-specific or legacy success/failure terms.
 - The contract should support correlation with requests, Jobs, scheduled Jobs, Host helper actions, and CLI operations without requiring all of those systems to exist first.
 - Existing app `ctx.log` should not become privileged audit logging. App code can log ordinary app facts, but Privileged audit events are runtime/platform-owned.
 - Privileged audit event emission should not expose a general app-facing logging API that can forge privileged audit events.
@@ -166,7 +181,7 @@ surfaces already in scope.
 - The preferred first design spike for real SSH login/session events is to enable `sshd` auth/session logging to a dedicated file under the writable data mount, then have a Sporades-owned scanner periodically translate newly observed daemon log lines into normalized Privileged audit events.
 - The SSH log scanner should be cursor-based and idempotent so it can resume after runtime restart, file truncation, or log rotation without duplicating old audit events.
 - The SSH log scanner should parse a small whitelist of events, such as authentication success, authentication failure where safe, session open, session close, and disconnect. Unknown daemon log lines should remain raw diagnostic logs, not privileged audit events.
-- Translated SSH audit events should use the same event vocabulary as other privileged audit events, such as `ssh.session.opened`, `ssh.session.closed`, `ssh.auth.succeeded`, and `ssh.auth.failed`, while preserving the source as `sshd`.
+- Translated SSH audit events may use domain-specific event names, such as `ssh.session.opened`, `ssh.session.closed`, `ssh.auth.succeeded`, and `ssh.auth.failed`, while preserving the source as `sshd`; their `outcome` field must still use `started`, `completed`, `errored`, or `finished`.
 - Translated SSH audit events must preserve the same redaction rules as the rest of the contract. They may include safe daemon metadata such as username, remote address where acceptable, key fingerprint where available, and session outcome, but must not include full public keys, commands, environment values, or raw daemon log lines by default.
 - The raw `sshd` log file is an implementation source, not the user-facing audit contract. The user-facing contract is the normalized JSONL audit event emitted through Sporades logging surfaces.
 - The Base image should include Fail2ban as dormant SSH hardening material alongside OpenSSH, but enabling it inside a Capsule must be proven compatible with Sporades container hardening. It must not require broad extra capabilities, public SSH exposure, writable release mounts, sudo, or root login.
