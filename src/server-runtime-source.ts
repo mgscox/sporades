@@ -8643,14 +8643,12 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
     async cancel(id: any) { return await cancelJob(database.__rootDatabase ?? database, contextGetter(), id); },
     async list(options: LooseRecord = {}) {
       const context = contextGetter();
-      if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => key !== "limit" && key !== "cursor")) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list options.", "Pass only limit and cursor when listing Jobs.");
+      if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["limit","cursor","status","handler","createdAfter","createdBefore"].includes(key))) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list options.", "Pass supported Job list filters only.");
       const limit = options.limit === undefined ? 50 : options.limit;
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
       const cursor = decodeJobCursor(options.cursor);
       const queueDatabase = database.__rootDatabase ?? database;
-      const rows = cursor
-        ? await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE actorUserId = ? AND (createdAt > ? OR (createdAt = ? AND id > ?)) ORDER BY createdAt ASC, id ASC LIMIT ?").all(context.auth.userId, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1)
-        : await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE actorUserId = ? ORDER BY createdAt ASC, id ASC LIMIT ?").all(context.auth.userId, limit + 1);
+      const clauses=["actorUserId = ?"]; const params:any[]=[context.auth.userId]; if(options.status){clauses.push("status = ?");params.push(options.status)} if(options.handler){clauses.push("handler = ?");params.push(options.handler)} if(options.createdAfter){clauses.push("createdAt >= ?");params.push(options.createdAfter)} if(options.createdBefore){clauses.push("createdAt <= ?");params.push(options.createdBefore)} if(cursor){clauses.push("(createdAt > ? OR (createdAt = ? AND id > ?))");params.push(cursor.createdAt,cursor.createdAt,cursor.id)} const rows=await queueDatabase.sqlite.prepare(`SELECT * FROM sporades_jobs WHERE ${clauses.join(" AND ")} ORDER BY createdAt ASC, id ASC LIMIT ?`).all(...params,limit+1);
       const page = rows.slice(0, limit);
       return { jobs: page.map((row: any) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     },
