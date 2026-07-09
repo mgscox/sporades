@@ -7573,7 +7573,7 @@ function createCurrentUserJobApi(database, contextGetter) {
                 return jobState(row, true);
             }
             try {
-                await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt) VALUES (?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?)").run(id, handlerName, context.auth.userId, context.auth.userId, payloadJson, now, idempotencyKey ?? null, now);
+                await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt) VALUES (?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?)").run(id, handlerName, row.enqueuedByUserId, row.actorUserId, payloadJson, now, idempotencyKey ?? null, now);
             }
             catch (error) {
                 if (idempotencyKey) {
@@ -7640,12 +7640,14 @@ function jobSummary(row) { return { id: row.id, handler: row.handler, status: ro
 function createPrivilegedJobApi(database, contextGetter) {
     const current = createCurrentUserJobApi(database, contextGetter);
     return {
-        enqueue: current.enqueue,
+        async enqueue(handler, payload, options = {}) { assertActivePrivilegedJobAccess(contextGetter); return await current.enqueue(handler, payload, options); },
         async get(id) {
+            assertActivePrivilegedJobAccess(contextGetter);
             const row = await (database.__rootDatabase ?? database).sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id);
             return row ? jobState(row, true) : null;
         },
         async list(options = {}) {
+            assertActivePrivilegedJobAccess(contextGetter);
             const limit = options.limit === undefined ? 50 : options.limit;
             if (!Number.isInteger(limit) || limit < 1 || limit > 100)
                 throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
@@ -7658,6 +7660,11 @@ function createPrivilegedJobApi(database, contextGetter) {
             return { jobs: page.map((row) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
         },
     };
+}
+function assertActivePrivilegedJobAccess(contextGetter) {
+    if (hasPrivilegedDbAccess(contextGetter?.()))
+        return;
+    throw jobError("PRIVILEGED_JOB_ACCESS_INACTIVE", "Privileged Job access is no longer active.", "Start a new ctx.privileged.run callback before using privileged Job operations.");
 }
 function encodeJobCursor(row) { return Buffer.from(JSON.stringify({ createdAt: row.createdAt, id: row.id })).toString("base64url"); }
 function decodeJobCursor(value) {

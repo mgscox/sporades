@@ -11,12 +11,15 @@ const auth = (userId) => ({ userId, displayName: userId, email: null, picture: n
 test("privileged runs enqueue, execute, inspect, and audit system-owned jobs", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-privileged-jobs-"));
   const seen = [];
+  let leakedJobs;
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "jobs" }, {
     jobs: { maintain: job((ctx, payload) => { seen.push(ctx.auth.userId); return payload; }) },
     mutations: {
       enqueue: mutation((ctx) => ctx.privileged.run({ operation: "jobs.enqueue", targetResourceKind: "job-queue" }, (privilegedCtx) => privilegedCtx.jobs.enqueue("maintain", { ok: true }))),
       get: mutation((ctx, id) => ctx.privileged.run({ operation: "jobs.get", targetResourceKind: "job-queue" }, (privilegedCtx) => privilegedCtx.jobs.get(id))),
       list: mutation((ctx) => ctx.privileged.run({ operation: "jobs.list", targetResourceKind: "job-queue" }, (privilegedCtx) => privilegedCtx.jobs.list())),
+      leak: mutation(async (ctx) => { leakedJobs = await ctx.privileged.run({ operation: "jobs.leak", targetResourceKind: "job-queue" }, (privilegedCtx) => privilegedCtx.jobs); return true; }),
+      useLeak: mutation(() => leakedJobs.enqueue("maintain", { no: "leak" })),
     },
   });
   try {
@@ -27,6 +30,10 @@ test("privileged runs enqueue, execute, inspect, and audit system-owned jobs", a
     assert.deepEqual(seen, ["__privileged__"]);
     assert.equal((await runMutation(database, auth("user-a"), "get", [queued.data.id])).data.id, queued.data.id);
     assert.equal((await runMutation(database, auth("user-a"), "list", [])).data.jobs.some((entry) => entry.id === queued.data.id), true);
+    assert.equal((await runMutation(database, auth("user-a"), "leak", [])).ok, true);
+    const leaked = await runMutation(database, auth("user-a"), "useLeak", []);
+    assert.equal(leaked.ok, false);
+    assert.equal(leaked.error.code, "PRIVILEGED_JOB_ACCESS_INACTIVE");
     const audit = await database.sqlite.readRecentLogEvents(20);
     assert.equal(audit.some((event) => event.event === "privileged.started" && JSON.stringify(event).includes(queued.data.id)), true);
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }

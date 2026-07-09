@@ -333,6 +333,7 @@ export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition
   auth: PrivilegedAuthContext;
   signal: AbortSignal;
   files: PrivilegedFileApi;
+  jobs: JobApi;
 };
 
 /**
@@ -476,7 +477,7 @@ export type JobStatus = "queued" | "running" | "succeeded" | "failed";
 export type JobSummary = { id: string; handler: string; status: JobStatus; attempts: number };
 export type JobState = JobSummary & {
   enqueuedBy: { userId: string };
-  actor: { mode: "current-user"; userId: string };
+  actor: { mode: "current-user"; userId: string } | { mode: "privileged-server-role" };
   result?: JsonValue;
   failure?: { code: string; message: string };
 };
