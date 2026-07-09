@@ -166,8 +166,9 @@ function createConnection() {
     syncSessionTokenFromStorage();
     const url = new URL(websocketPath, window.location.href);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    if (sessionToken) {
-      url.searchParams.set("sessionToken", sessionToken);
+    const connectionToken = window.__SPORADES_CONNECTION_TOKEN;
+    if (typeof connectionToken === "string" && connectionToken.length > 0) {
+      url.searchParams.set("connectionToken", connectionToken);
     }
     socket = new WebSocket(url);
     socket.addEventListener("open", () => {
@@ -208,16 +209,19 @@ function createConnection() {
   }
 
   function send(message) {
-    syncSessionTokenFromStorage();
+    const currentSessionToken = syncSessionTokenFromStorage();
     const activeSocket = open();
+    const outboundMessage = currentSessionToken
+      ? { ...message, sessionToken: currentSessionToken }
+      : message;
     if (activeSocket.readyState === WebSocket.OPEN) {
-      activeSocket.send(JSON.stringify(message));
+      activeSocket.send(JSON.stringify(outboundMessage));
       return;
     }
     activeSocket.addEventListener(
       "open",
       () => {
-        activeSocket.send(JSON.stringify(message));
+        activeSocket.send(JSON.stringify(outboundMessage));
       },
       { once: true },
     );

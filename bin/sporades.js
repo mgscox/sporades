@@ -3,7 +3,7 @@
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes4 } from "node:crypto";
+import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes4, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod as chmod2, lstat as lstat2, mkdir as mkdir5, readdir, readFile as readFile6, rm as rm2, writeFile as writeFile5 } from "node:fs/promises";
@@ -472,8 +472,9 @@ function createConnection() {
     syncSessionTokenFromStorage();
     const url = new URL(websocketPath, window.location.href);
     url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    if (sessionToken) {
-      url.searchParams.set("sessionToken", sessionToken);
+    const connectionToken = window.__SPORADES_CONNECTION_TOKEN;
+    if (typeof connectionToken === "string" && connectionToken.length > 0) {
+      url.searchParams.set("connectionToken", connectionToken);
     }
     socket = new WebSocket(url);
     socket.addEventListener("open", () => {
@@ -514,16 +515,19 @@ function createConnection() {
   }
 
   function send(message) {
-    syncSessionTokenFromStorage();
+    const currentSessionToken = syncSessionTokenFromStorage();
     const activeSocket = open();
+    const outboundMessage = currentSessionToken
+      ? { ...message, sessionToken: currentSessionToken }
+      : message;
     if (activeSocket.readyState === WebSocket.OPEN) {
-      activeSocket.send(JSON.stringify(message));
+      activeSocket.send(JSON.stringify(outboundMessage));
       return;
     }
     activeSocket.addEventListener(
       "open",
       () => {
-        activeSocket.send(JSON.stringify(message));
+        activeSocket.send(JSON.stringify(outboundMessage));
       },
       { once: true },
     );
@@ -760,15 +764,27 @@ function structuredError(error) {
 // src/server-runtime-source.ts
 import { createHash as createHash2, createHmac, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+var EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
+var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
+var EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
 var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   readJsonRequest,
+  readLimitedRequestBody,
+  resolveHttpMaxBodyBytes,
+  createPayloadTooLargeError,
+  isPayloadTooLargeError,
+  writeUnhandledHttpError,
+  emitHttpFailureLog,
   prepareHttpSecurity,
   resolveRuntimeSecurityPolicy,
   defaultRuntimeCspDirectives,
   serializeCspDirectives,
+  injectPageConnectionToken,
   requestOriginAllowed,
+  websocketOriginAllowed,
   isSameOriginRequest,
   isLocalDevOrigin,
+  normalizeOrigin,
   appendVaryHeader,
   sanitizeResponseHeaders,
   createSqliteDatabaseAdapter,
@@ -911,6 +927,7 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   applyContextMiddleware,
   runContextMiddleware,
   readEndpointSessionToken,
+  endpointQueryFromUrl,
   privilegedDbAccessContextSet,
   grantPrivilegedDbAccess,
   revokePrivilegedDbAccess,
@@ -1039,6 +1056,16 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   routeSporadesAuth,
   signUpWithEmail,
   signInWithEmail,
+  createEmailSignInThrottleState,
+  emailSignInThrottleKeys,
+  currentEmailSignInThrottleState,
+  recordFailedEmailSignInAttempt,
+  resetEmailSignInAttempts,
+  pruneEmailSignInThrottleState,
+  boundEmailSignInThrottleState,
+  emailSignInThrottleEvictionPriority,
+  callerContextKey,
+  invalidEmailCredentialsError,
   normalizeEmailCredentials,
   hashEmailPassword,
   verifyEmailPassword,
@@ -1085,13 +1112,74 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   toSqlNumber,
   quoteIdentifier
 ];
-async function readJsonRequest(request) {
-  const chunks = [];
-  for await (const chunk of request) {
-    chunks.push(chunk);
-  }
-  const raw = Buffer.concat(chunks).toString("utf8");
+async function readJsonRequest(request, limitSource = null) {
+  const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
   return raw ? JSON.parse(raw) : {};
+}
+async function readLimitedRequestBody(request, limitSource = null) {
+  const maxBytes = resolveHttpMaxBodyBytes(limitSource);
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    total += buffer.length;
+    if (total > maxBytes) {
+      throw createPayloadTooLargeError(maxBytes);
+    }
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
+}
+function resolveHttpMaxBodyBytes(source = null) {
+  const configured = typeof source === "number" ? source : Number(source?.httpMaxBodyBytes ?? source?.http?.maxBodyBytes ?? source?.config?.http?.maxBodyBytes);
+  return Number.isInteger(configured) && configured > 0 ? configured : 1024 * 1024;
+}
+function createPayloadTooLargeError(maxBytes) {
+  const error = new Error("Request body is too large.");
+  error.code = "PAYLOAD_TOO_LARGE";
+  error.hint = `Send a request body at or below ${maxBytes} bytes, or raise http.maxBodyBytes in sporades.json.`;
+  return error;
+}
+function isPayloadTooLargeError(error) {
+  return error?.code === "PAYLOAD_TOO_LARGE";
+}
+function writeUnhandledHttpError(database, request, response, error) {
+  emitHttpFailureLog(database, request, error);
+  if (isPayloadTooLargeError(error)) {
+    response.writeHead(413, { "content-type": "application/json; charset=utf-8" });
+    response.end(`${JSON.stringify({ ok: false, data: null, error: { code: error.code, message: error.message, hint: error.hint } })}
+`);
+    return;
+  }
+  response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+  response.end(`${JSON.stringify({
+    ok: false,
+    data: null,
+    error: {
+      message: "Internal server error.",
+      hint: "Check server logs and retry the request."
+    }
+  })}
+`);
+}
+function emitHttpFailureLog(database, request, error, context = {}) {
+  const requestUrl = new URL(request.url ?? context.path ?? "/", "http://127.0.0.1");
+  database.log?.emit?.({
+    category: "platform",
+    event: "http.request.failed",
+    level: "error",
+    message: isPayloadTooLargeError(error) ? "HTTP request body exceeded the configured limit." : "HTTP request failed.",
+    request: {
+      method: request.method ?? context.method ?? null,
+      path: requestUrl.pathname
+    },
+    data: {
+      code: error?.code ?? null,
+      message: error?.message ?? String(error),
+      hint: error?.hint ?? null,
+      stack: error?.stack ?? null
+    }
+  });
 }
 function prepareHttpSecurity(database, request, response) {
   const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
@@ -1149,6 +1237,7 @@ function resolveRuntimeSecurityPolicy(config = {}) {
   const publicDev = session === "public-dev";
   const dev = session === "dev" || publicDev;
   const configuredOrigins = Array.isArray(cors.allowedOrigins) ? cors.allowedOrigins.filter((origin) => typeof origin === "string") : [];
+  const publicOrigin = normalizeOrigin(config.__sporadesPublicOrigin);
   const directives = {
     ...defaultRuntimeCspDirectives(),
     ...csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}
@@ -1160,7 +1249,8 @@ function resolveRuntimeSecurityPolicy(config = {}) {
       publicDev,
       allowedOrigins: publicDev ? ["*"] : configuredOrigins,
       allowedOriginPatterns: dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [],
-      requireExplicitCrossOrigin: !dev && configuredOrigins.length === 0
+      requireExplicitCrossOrigin: !dev && configuredOrigins.length === 0,
+      publicOrigin
     },
     csp: {
       mode,
@@ -1185,6 +1275,15 @@ function defaultRuntimeCspDirectives() {
 function serializeCspDirectives(directives) {
   return Object.entries(directives).map(([name, values]) => `${name} ${Array.isArray(values) ? values.join(" ") : String(values)}`).join("; ");
 }
+function injectPageConnectionToken(html, token) {
+  const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
+  if (/<head(\s[^>]*)?>/i.test(html)) {
+    return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}
+${script}`);
+  }
+  return `${script}
+${html}`;
+}
 function requestOriginAllowed(policy, request) {
   const origin = request.headers.origin;
   if (!origin) {
@@ -1193,13 +1292,22 @@ function requestOriginAllowed(policy, request) {
   if (policy.cors.publicDev) {
     return true;
   }
+  if (policy.cors.publicOrigin && normalizeOrigin(origin) === policy.cors.publicOrigin) {
+    return true;
+  }
   if (policy.cors.allowedOrigins.includes("*") || policy.cors.allowedOrigins.includes(origin)) {
     return true;
   }
-  if (policy.cors.sameOrigin && isSameOriginRequest(request, origin)) {
+  if (!policy.cors.publicOrigin && policy.cors.sameOrigin && isSameOriginRequest(request, origin)) {
     return true;
   }
   return policy.cors.allowedOriginPatterns.length > 0 && isLocalDevOrigin(origin);
+}
+function websocketOriginAllowed(policy, request) {
+  if (!request.headers.origin) {
+    return !policy.cors.publicOrigin;
+  }
+  return requestOriginAllowed(policy, request);
 }
 function isSameOriginRequest(request, origin) {
   const host = request.headers["x-forwarded-host"] ?? request.headers.host;
@@ -1208,6 +1316,16 @@ function isSameOriginRequest(request, origin) {
   }
   const protocol = request.headers["x-forwarded-proto"] ?? (request.socket?.encrypted ? "https" : "http");
   return origin === `${protocol}://${host}`;
+}
+function normalizeOrigin(value) {
+  if (typeof value !== "string" || value.trim() === "") {
+    return null;
+  }
+  try {
+    return new URL(value).origin;
+  } catch {
+    return null;
+  }
 }
 function isLocalDevOrigin(origin) {
   try {
@@ -1267,6 +1385,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
     fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
+    httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
     close: () => {
       const sqliteResult = database.sqlite.close();
       const storageResult = database.fileStorage.close();
@@ -1993,6 +2112,10 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     },
     runReadOnlyInspectionQuery(sql) {
       try {
+        const validation = validateReadOnlyInspectionSql(sql);
+        if (!validation.ok) {
+          return validation;
+        }
         if (targetsInternalLogIndexTable(sql)) {
           return {
             ok: false,
@@ -2219,6 +2342,10 @@ async function createPostgresDatabaseAdapter(options) {
     },
     async runReadOnlyInspectionQuery(sql) {
       try {
+        const validation = validateReadOnlyInspectionSql(sql);
+        if (!validation.ok) {
+          return validation;
+        }
         if (targetsInternalLogIndexTable(sql)) {
           return {
             ok: false,
@@ -2925,6 +3052,10 @@ async function createLibsqlDatabaseAdapter(options) {
     },
     async runReadOnlyInspectionQuery(sql) {
       try {
+        const validation = validateReadOnlyInspectionSql(sql);
+        if (!validation.ok) {
+          return validation;
+        }
         if (targetsInternalLogIndexTable(sql)) {
           return {
             ok: false,
@@ -4541,6 +4672,7 @@ async function routeEndpoint(database, request, response) {
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
+    emitHttpFailureLog(database, request, error);
     writeEndpointError(response, error);
   }
   return true;
@@ -4678,7 +4810,20 @@ async function sendFileHttpResponse(database, response, row) {
   }
 }
 function contentTypeForFile(type) {
-  return type || "application/octet-stream";
+  if (typeof type !== "string") {
+    return "application/octet-stream";
+  }
+  const normalized = type.split(";")[0].trim().toLowerCase();
+  const safeInlineTypes = /* @__PURE__ */ new Set([
+    "text/plain",
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/avif",
+    "image/bmp"
+  ]);
+  return safeInlineTypes.has(normalized) ? normalized : "application/octet-stream";
 }
 async function createPendingFileUpload(database, auth, message) {
   const input = message.file ?? {};
@@ -5239,7 +5384,7 @@ async function removeFileVersionBestEffort(database, fileId, version) {
 async function runEndpoint(database, endpoint, requestUrl, request) {
   const createHandler = new Function(`return (${endpoint.handlerSource});`);
   const handler = createHandler();
-  const endpointRequest = await readEndpointRequest(requestUrl, request);
+  const endpointRequest = await readEndpointRequest(database, requestUrl, request);
   const session = await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
   return await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
     const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
@@ -5259,20 +5404,20 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
 function createTransactionDatabase(database, transactionAdapter) {
   return transactionAdapter ? { ...database, adapter: transactionAdapter, sqlite: transactionAdapter, __transactionActive: true } : database;
 }
-async function readEndpointRequest(requestUrl, request) {
+async function readEndpointRequest(database, requestUrl, request) {
   const headers = Object.fromEntries(
     Object.entries(request.headers).map(([name, value]) => [
       name.toLowerCase(),
       Array.isArray(value) ? value.join(", ") : value
     ])
   );
-  const query = Object.fromEntries(requestUrl.searchParams.entries());
+  const query = endpointQueryFromUrl(requestUrl);
   return {
     method: request.method,
     path: requestUrl.pathname,
     headers,
     query,
-    body: await readEndpointBody(request, headers)
+    body: await readEndpointBody(request, headers, database)
   };
 }
 function createEndpointContext(database, endpointRequest, session) {
@@ -5351,7 +5496,17 @@ function runContextMiddleware(middlewareSource, context) {
   return middleware(context);
 }
 function readEndpointSessionToken(headers, query) {
-  return headers["x-sporades-session-token"] ?? query.sessionToken;
+  return headers["x-sporades-session-token"] ?? null;
+}
+function endpointQueryFromUrl(requestUrl) {
+  const query = {};
+  for (const [name, value] of requestUrl.searchParams.entries()) {
+    if (name === "sessionToken") {
+      continue;
+    }
+    query[name] = value;
+  }
+  return query;
 }
 function privilegedDbAccessContextSet() {
   const holder = privilegedDbAccessContextSet;
@@ -5971,12 +6126,8 @@ function deserializeRow(table, row) {
   }
   return output;
 }
-async function readEndpointBody(request, headers) {
-  const chunks = [];
-  for await (const chunk of request) {
-    chunks.push(chunk);
-  }
-  const raw = Buffer.concat(chunks).toString("utf8");
+async function readEndpointBody(request, headers, limitSource = null) {
+  const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
   if (!raw) {
     return null;
   }
@@ -6024,15 +6175,15 @@ function writeEndpointResult(response, result) {
   response.end(String(result ?? ""));
 }
 function writeEndpointError(response, error) {
-  response.writeHead(error?.code === "UNAUTHENTICATED" ? 401 : 500, { "content-type": "application/json; charset=utf-8" });
+  response.writeHead(error?.code === "UNAUTHENTICATED" ? 401 : isPayloadTooLargeError(error) ? 413 : 500, { "content-type": "application/json; charset=utf-8" });
   response.end(
     `${JSON.stringify({
       ok: false,
       data: null,
       error: {
         ...error?.code ? { code: error.code } : {},
-        message: error?.hint ? error.message : error?.sporadesEndpointResponse ? "Invalid endpoint response." : "Endpoint handler failed.",
-        hint: error?.sporadesEndpointResponse ? "Return { status, headers, body } with a numeric status, plain object headers, and a serializable body." : error?.hint ? error.hint : "Check the endpoint handler and retry the request."
+        message: isPayloadTooLargeError(error) ? error.message : error?.hint ? error.message : error?.sporadesEndpointResponse ? "Invalid endpoint response." : "Endpoint handler failed.",
+        hint: error?.sporadesEndpointResponse ? "Return { status, headers, body } with a numeric status, plain object headers, and a serializable body." : isPayloadTooLargeError(error) ? error.hint : error?.hint ? error.hint : "Check the endpoint handler and retry the request."
       }
     })}
 `
@@ -6117,6 +6268,222 @@ async function dumpDatabase(database) {
 }
 async function runReadOnlyQuery(database, sql) {
   return await (database.adapter ?? database.sqlite).runReadOnlyInspectionQuery(sql);
+}
+function validateReadOnlyInspectionSql(sql) {
+  const text = String(sql ?? "");
+  const firstToken = readFirstSqlToken(text);
+  if (!firstToken || hasMultipleSqlStatements(text)) {
+    return readOnlyInspectionSqlError();
+  }
+  const keyword = firstToken.toLowerCase();
+  if (keyword === "pragma") {
+    return isSafeInspectionPragma(text, firstToken.length) ? { ok: true } : readOnlyInspectionSqlError();
+  }
+  if ((keyword === "select" || keyword === "with") && !containsSideEffectSqlToken(text)) {
+    return { ok: true };
+  }
+  return readOnlyInspectionSqlError();
+}
+function readOnlyInspectionSqlError() {
+  return {
+    ok: false,
+    data: null,
+    error: {
+      message: "Only read-only SQL is allowed.",
+      hint: "Use a SELECT, WITH, or safe metadata PRAGMA query for `sporades db query`."
+    }
+  };
+}
+function readFirstSqlToken(sql) {
+  const index = skipSqlTrivia(sql, 0);
+  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
+  return match?.[0] ?? null;
+}
+function hasMultipleSqlStatements(sql) {
+  let index = 0;
+  while (index < sql.length) {
+    const skipped = skipSqlStringOrComment(sql, index);
+    if (skipped > index) {
+      index = skipped;
+      continue;
+    }
+    if (sql[index] === ";") {
+      return skipSqlTrivia(sql, index + 1) < sql.length;
+    }
+    index += 1;
+  }
+  return false;
+}
+function isSafeInspectionPragma(sql, pragmaTokenLength) {
+  let index = skipSqlTrivia(sql, skipSqlTrivia(sql, 0) + pragmaTokenLength);
+  let identifier = readBareSqlIdentifier(sql, index);
+  if (!identifier) {
+    return false;
+  }
+  let pragmaName = identifier.value.toLowerCase();
+  index = skipSqlTrivia(sql, identifier.nextIndex);
+  if (sql[index] === ".") {
+    identifier = readBareSqlIdentifier(sql, skipSqlTrivia(sql, index + 1));
+    if (!identifier) {
+      return false;
+    }
+    pragmaName = identifier.value.toLowerCase();
+    index = skipSqlTrivia(sql, identifier.nextIndex);
+  }
+  if (!SAFE_INSPECTION_PRAGMAS.has(pragmaName)) {
+    return false;
+  }
+  while (index < sql.length) {
+    const skipped = skipSqlStringOrComment(sql, index);
+    if (skipped > index) {
+      index = skipped;
+      continue;
+    }
+    if (sql[index] === "=") {
+      return false;
+    }
+    index += 1;
+  }
+  return true;
+}
+var SAFE_INSPECTION_PRAGMAS = /* @__PURE__ */ new Set([
+  "database_list",
+  "foreign_key_list",
+  "index_info",
+  "index_list",
+  "index_xinfo",
+  "table_info",
+  "table_list",
+  "table_xinfo"
+]);
+function containsSideEffectSqlToken(sql) {
+  for (const token of readSqlTokens(sql)) {
+    const value = token.value.toLowerCase();
+    if (SIDE_EFFECT_SQL_KEYWORDS.has(value)) {
+      return true;
+    }
+    if (SIDE_EFFECT_SQL_FUNCTIONS.has(value) && sql[skipSqlTrivia(sql, token.nextIndex)] === "(") {
+      return true;
+    }
+  }
+  return false;
+}
+var SIDE_EFFECT_SQL_KEYWORDS = /* @__PURE__ */ new Set([
+  "alter",
+  "analyze",
+  "attach",
+  "create",
+  "delete",
+  "detach",
+  "drop",
+  "insert",
+  "reindex",
+  "replace",
+  "update",
+  "vacuum"
+]);
+var SIDE_EFFECT_SQL_FUNCTIONS = /* @__PURE__ */ new Set([
+  "load_extension",
+  "nextval",
+  "set_config",
+  "setval"
+]);
+function readSqlTokens(sql) {
+  const tokens = [];
+  let index = 0;
+  while (index < sql.length) {
+    const skipped = skipSqlLiteralOrComment(sql, index);
+    if (skipped > index) {
+      index = skipped;
+      continue;
+    }
+    const identifier = readSqlTokenIdentifier(sql, index);
+    if (identifier) {
+      tokens.push(identifier);
+      index = identifier.nextIndex;
+      continue;
+    }
+    index += 1;
+  }
+  return tokens;
+}
+function readBareSqlIdentifier(sql, index) {
+  const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
+  return match ? { value: match[0], nextIndex: index + match[0].length } : null;
+}
+function readSqlTokenIdentifier(sql, index) {
+  const quote = sql[index];
+  const closingQuote = quote === "[" ? "]" : quote;
+  if (quote === '"' || quote === "`" || quote === "[") {
+    let value = "";
+    let cursor = index + 1;
+    while (cursor < sql.length) {
+      if (sql[cursor] === closingQuote) {
+        if (quote !== "[" && sql[cursor + 1] === closingQuote) {
+          value += closingQuote;
+          cursor += 2;
+          continue;
+        }
+        return { value, nextIndex: cursor + 1 };
+      }
+      value += sql[cursor];
+      cursor += 1;
+    }
+    return null;
+  }
+  return readBareSqlIdentifier(sql, index);
+}
+function skipSqlLiteralOrComment(sql, index) {
+  if (sql[index] === "/" && sql[index + 1] === "*") {
+    const end = sql.indexOf("*/", index + 2);
+    return end === -1 ? sql.length : end + 2;
+  }
+  if (sql[index] === "-" && sql[index + 1] === "-") {
+    const end = sql.indexOf("\n", index + 2);
+    return end === -1 ? sql.length : end + 1;
+  }
+  if (sql[index] !== "'") {
+    return index;
+  }
+  let cursor = index + 1;
+  while (cursor < sql.length) {
+    if (sql[cursor] === "'") {
+      if (sql[cursor + 1] === "'") {
+        cursor += 2;
+        continue;
+      }
+      return cursor + 1;
+    }
+    cursor += 1;
+  }
+  return sql.length;
+}
+function skipSqlStringOrComment(sql, index) {
+  if (sql[index] === "/" && sql[index + 1] === "*") {
+    const end = sql.indexOf("*/", index + 2);
+    return end === -1 ? sql.length : end + 2;
+  }
+  if (sql[index] === "-" && sql[index + 1] === "-") {
+    const end = sql.indexOf("\n", index + 2);
+    return end === -1 ? sql.length : end + 1;
+  }
+  const quote = sql[index];
+  const closingQuote = quote === "[" ? "]" : quote;
+  if (quote !== "'" && quote !== '"' && quote !== "`" && quote !== "[") {
+    return index;
+  }
+  let cursor = index + 1;
+  while (cursor < sql.length) {
+    if (sql[cursor] === closingQuote) {
+      if (quote !== "[" && sql[cursor + 1] === closingQuote) {
+        cursor += 2;
+        continue;
+      }
+      return cursor + 1;
+    }
+    cursor += 1;
+  }
+  return sql.length;
 }
 function targetsInternalLogIndexTable(sql) {
   const text = String(sql);
@@ -6286,11 +6653,32 @@ function normalizeSimulatedText(value) {
 }
 function createWebSocketHub(getDatabase) {
   const clients = /* @__PURE__ */ new Set();
+  const connectionTokens = /* @__PURE__ */ new Map();
   let nextClientId = 1;
+  const connectionTokenTtlMs = 4 * 60 * 60 * 1e3;
   return {
+    createConnectionToken() {
+      pruneConnectionTokens();
+      const token = randomBytes2(32).toString("base64url");
+      connectionTokens.set(token, Date.now() + connectionTokenTtlMs);
+      return token;
+    },
     async accept(request, socket) {
       const key = request.headers["sec-websocket-key"];
       if (!key) {
+        socket.destroy();
+        return;
+      }
+      const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (!validateConnectionToken(requestUrl.searchParams.get("connectionToken"))) {
+        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+      const database = getDatabase();
+      const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
+      if (!websocketOriginAllowed(policy, request)) {
+        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
         socket.destroy();
         return;
       }
@@ -6304,11 +6692,7 @@ function createWebSocketHub(getDatabase) {
           ""
         ].join("\r\n")
       );
-      const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-      const sessionToken = requestUrl.searchParams.get("sessionToken");
       const origin = requestOrigin(request);
-      const database = getDatabase();
-      const session = await resolveAnonymousSession(database, sessionToken);
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const client = {
         id: `client-${(nextClientId++).toString(36)}`,
@@ -6316,7 +6700,7 @@ function createWebSocketHub(getDatabase) {
         buffer: Buffer.alloc(0),
         messageQueue: Promise.resolve(),
         subscriptions: /* @__PURE__ */ new Map(),
-        session,
+        session: createPendingWebSocketSession(),
         origin,
         connectedAt: now,
         lastSeenAt: now
@@ -6381,6 +6765,36 @@ function createWebSocketHub(getDatabase) {
       };
     }
   };
+  function pruneConnectionTokens() {
+    const now = Date.now();
+    for (const [token, expiresAt] of connectionTokens) {
+      if (expiresAt <= now) {
+        connectionTokens.delete(token);
+      }
+    }
+  }
+  function validateConnectionToken(token) {
+    pruneConnectionTokens();
+    if (!token) {
+      return false;
+    }
+    const expiresAt = connectionTokens.get(token);
+    return Boolean(expiresAt && expiresAt > Date.now());
+  }
+  function createPendingWebSocketSession() {
+    return {
+      token: null,
+      auth: {
+        userId: null,
+        displayName: "Anonymous",
+        email: null,
+        picture: null,
+        isAuthenticated: false,
+        isGuest: true,
+        provider: "anonymous"
+      }
+    };
+  }
   function authSessionRecipients(target) {
     if (target === "all") {
       return [...clients];
@@ -6403,13 +6817,13 @@ function createWebSocketHub(getDatabase) {
   }
   function summarizeAuthForClientList(auth) {
     return {
-      userId: auth.userId,
-      displayName: auth.displayName,
-      email: auth.email,
-      picture: auth.picture,
-      isAuthenticated: auth.isAuthenticated,
-      isGuest: auth.isGuest,
-      provider: auth.provider
+      userId: auth?.userId ?? null,
+      displayName: auth?.displayName ?? null,
+      email: auth?.email ?? null,
+      picture: auth?.picture ?? null,
+      isAuthenticated: Boolean(auth?.isAuthenticated),
+      isGuest: auth?.isGuest ?? true,
+      provider: auth?.provider ?? "anonymous"
     };
   }
   function enqueueClientMessage(client, rawMessage) {
@@ -6449,7 +6863,8 @@ function createWebSocketHub(getDatabase) {
       return;
     }
     const database = getDatabase();
-    client.session = await resolveAnonymousSession(database, client.session.token);
+    const messageSessionToken = typeof message.sessionToken === "string" && message.sessionToken.length > 0 ? message.sessionToken : client.session.token;
+    client.session = await resolveAnonymousSession(database, messageSessionToken ?? null);
     if (message.type === "auth.get") {
       await sendAuthResult(client, message.id ?? null);
       return;
@@ -7006,16 +7421,16 @@ async function signInWithEmail(database, session, credentials) {
   if (!normalized.ok) {
     return normalized;
   }
+  const throttle = currentEmailSignInThrottleState(database, normalized.email, session);
+  if (throttle.throttled) {
+    return { ok: false, error: invalidEmailCredentialsError({ code: "INVALID_EMAIL_CREDENTIALS" }) };
+  }
   const row = await database.sqlite.findEmailCredentialWithUser(normalized.email);
   if (!row || !verifyEmailPassword(normalized.password, row.passwordSalt, row.passwordHash)) {
-    return {
-      ok: false,
-      error: {
-        message: "Email or password is incorrect.",
-        hint: "Check the credentials and try email sign-in again."
-      }
-    };
+    recordFailedEmailSignInAttempt(database, normalized.email, session);
+    return { ok: false, error: invalidEmailCredentialsError() };
   }
+  resetEmailSignInAttempts(database, normalized.email, session);
   const auth = {
     userId: row.userId,
     displayName: row.displayName,
@@ -7030,6 +7445,105 @@ async function signInWithEmail(database, session, credentials) {
     sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId),
     auth
   }));
+}
+function createEmailSignInThrottleState(database) {
+  const existing = database.__emailSignInThrottle;
+  if (existing instanceof Map) {
+    return existing;
+  }
+  const next = /* @__PURE__ */ new Map();
+  database.__emailSignInThrottle = next;
+  return next;
+}
+function emailSignInThrottleKeys(email, session) {
+  return [`email\0${email}`, `caller\0${callerContextKey(session)}`];
+}
+function currentEmailSignInThrottleState(database, email, session) {
+  const attempts = createEmailSignInThrottleState(database);
+  const now = Date.now();
+  pruneEmailSignInThrottleState(attempts, now);
+  const keys = emailSignInThrottleKeys(email, session);
+  const entries = keys.map((key) => {
+    const current = attempts.get(key);
+    return {
+      key,
+      count: current?.count ?? 0,
+      resetAt: current?.resetAt ?? now + EMAIL_SIGN_IN_THROTTLE_WINDOW_MS
+    };
+  });
+  return {
+    throttled: entries.some((entry) => entry.count >= EMAIL_SIGN_IN_FAILURE_LIMIT),
+    entries,
+    count: Math.max(...entries.map((entry) => entry.count)),
+    resetAt: Math.max(...entries.map((entry) => entry.resetAt))
+  };
+}
+function recordFailedEmailSignInAttempt(database, email, session) {
+  const attempts = createEmailSignInThrottleState(database);
+  const current = currentEmailSignInThrottleState(database, email, session);
+  for (const entry of current.entries) {
+    attempts.set(entry.key, {
+      count: entry.count + 1,
+      resetAt: entry.resetAt
+    });
+  }
+  boundEmailSignInThrottleState(attempts);
+}
+function resetEmailSignInAttempts(database, email, session) {
+  const attempts = createEmailSignInThrottleState(database);
+  for (const key of emailSignInThrottleKeys(email, session)) {
+    attempts.delete(key);
+  }
+}
+function pruneEmailSignInThrottleState(attempts, now = Date.now()) {
+  for (const [key, entry] of attempts) {
+    if (!entry || now >= entry.resetAt) {
+      attempts.delete(key);
+    }
+  }
+}
+function boundEmailSignInThrottleState(attempts) {
+  while (attempts.size > EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES) {
+    let evictionKey = null;
+    let evictionPriority = Infinity;
+    let oldestResetAt = Infinity;
+    for (const [key, entry] of attempts) {
+      const priority = emailSignInThrottleEvictionPriority(key, entry);
+      const resetAt = Number(entry?.resetAt ?? 0);
+      if (priority < evictionPriority || priority === evictionPriority && resetAt < oldestResetAt) {
+        evictionPriority = priority;
+        oldestResetAt = resetAt;
+        evictionKey = key;
+      }
+    }
+    if (evictionKey === null) {
+      return;
+    }
+    attempts.delete(evictionKey);
+  }
+}
+function emailSignInThrottleEvictionPriority(key, entry) {
+  const throttled = Number(entry?.count ?? 0) >= EMAIL_SIGN_IN_FAILURE_LIMIT;
+  if (key.startsWith("email\0") && throttled) {
+    return 3;
+  }
+  if (key.startsWith("caller\0") && throttled) {
+    return 2;
+  }
+  if (key.startsWith("email\0")) {
+    return 1;
+  }
+  return 0;
+}
+function callerContextKey(session) {
+  return String(session?.token ?? session?.auth?.userId ?? "anonymous");
+}
+function invalidEmailCredentialsError(options = {}) {
+  return {
+    message: "Email or password is incorrect.",
+    hint: "Check the credentials and try email sign-in again.",
+    ...options.code ? { code: options.code } : {}
+  };
 }
 function normalizeEmailCredentials(credentials) {
   const email = String(credentials.email ?? "").trim().toLowerCase();
@@ -8021,9 +8535,14 @@ ${runtimeFunctions}
 
 const port = Number(process.env.PORT ?? sporadesConfig.deploy?.port ?? 4000);
 const databasePath = process.env.SPORADES_DATABASE_PATH ?? path.join(process.cwd(), "data", "data.db");
+const runtimeConfig = {
+  ...sporadesConfig,
+  __sporadesSession: process.env.SPORADES_SECURITY_SESSION ?? sporadesConfig.__sporadesSession,
+  __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN ?? sporadesConfig.__sporadesPublicOrigin,
+};
 const runtimeServerEnv = await readRuntimeServerEnv(sporadesServerEnv, sporadesSealedServerEnv);
 const runtimeServiceEnv = readRuntimeServiceEnv();
-const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, sporadesConfig, sporadesCapsuleDefinition, {
+const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
   serviceEnv: runtimeServiceEnv,
 });
 database.log.emit({
@@ -8060,7 +8579,7 @@ const server = createServer(async (request, response) => {
     if (request.url === "/" || request.url === "/index.html") {
       const html = await readRuntimeFile("index.html", path.join(process.cwd(), "index.html"));
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(html);
+      response.end(injectPageConnectionToken(html, websocketHub.createConnectionToken()));
       return;
     }
 
@@ -8074,8 +8593,7 @@ const server = createServer(async (request, response) => {
     response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     response.end("Not found");
   } catch (error) {
-    response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-    response.end(error.message);
+    writeUnhandledHttpError(database, request, response, error);
   }
 });
 
@@ -12435,6 +12953,7 @@ jobs:
 var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact"]);
 var SUPPORTED_TEMPLATES = /* @__PURE__ */ new Set(["blank", "todo", "guestbook", "photo-library"]);
 var DEV_SESSION_FILE = path6.join(".sporades", "dev-session.json");
+var DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";
 var CONTAINER_BINDING_FILE = path6.join(".sporades", "binding.json");
 var REMOTE_BINDING_FILE = path6.join(".sporades", "remote-binding.json");
 var DEV_REBUILD_DEBOUNCE_MS = 100;
@@ -13522,6 +14041,7 @@ async function startDevSession(options) {
     emit: (data, error) => emitDevEvent(options, data, error)
   });
   let runtimeServiceEnv = capsuleServiceEnv;
+  const inspectionToken = createDevInspectionToken();
   const sessionFilePath = path6.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path6.join(options.projectDir, ".sporades", "data.db");
   const runtime = await createDevRuntime({
@@ -13547,6 +14067,9 @@ async function startDevSession(options) {
       }
       switch (`${request.method}:${requestUrl.pathname}`) {
         case "POST:/__sporades/debug/ctx-log":
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
           runtime.database.log.emit({
             category: "app",
             event: "ctx.log",
@@ -13560,6 +14083,9 @@ async function startDevSession(options) {
           });
           return;
         case "POST:/__sporades/debug/privileged-audit":
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
           if (process.env.SPORADES_TEST_ENABLE_PRIVILEGED_AUDIT_DEBUG !== "1") {
             writeJsonResponse(response, 404, {
               ok: false,
@@ -13569,7 +14095,7 @@ async function startDevSession(options) {
             return;
           }
           {
-            const input = await readJsonRequest(request);
+            const input = await readJsonRequest(request, runtime.database);
             const event = await runtime.database.audit.emit(input);
             writeJsonResponse(response, 200, {
               ok: true,
@@ -13579,6 +14105,9 @@ async function startDevSession(options) {
           }
           return;
         case "GET:/__sporades/debug/logs":
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
           writeJsonResponse(response, 200, {
             ok: true,
             data: { source: "sqlite", entries: await runtime.database.log.recent() },
@@ -13586,6 +14115,9 @@ async function startDevSession(options) {
           });
           return;
         case "GET:/__sporades/debug/logs/tail":
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
           writeJsonResponse(response, 200, {
             ok: true,
             data: { source: "jsonl", entries: runtime.database.log.tail() },
@@ -13593,6 +14125,9 @@ async function startDevSession(options) {
           });
           return;
         case "GET:/__sporades/debug/db/list":
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
           writeJsonResponse(response, 200, {
             ok: true,
             data: { tables: await listDatabaseTables(runtime.database) },
@@ -13600,6 +14135,9 @@ async function startDevSession(options) {
           });
           return;
         case "GET:/__sporades/debug/db/dump":
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
           writeJsonResponse(response, 200, {
             ok: true,
             data: { tables: await dumpDatabase(runtime.database) },
@@ -13607,12 +14145,18 @@ async function startDevSession(options) {
           });
           return;
         case "POST:/__sporades/debug/db/query": {
-          const body = await readJsonRequest(request);
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
+          const body = await readJsonRequest(request, runtime.database);
           writeJsonResponse(response, 200, await runReadOnlyQuery(runtime.database, body.sql));
           return;
         }
         case "POST:/__sporades/debug/auth/as": {
-          const body = await readJsonRequest(request);
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
+          const body = await readJsonRequest(request, runtime.database);
           const result = await simulateLocalIdentitySession(runtime.database, body);
           if (result.ok && body.client && result.data) {
             result.data.delivery = websocketHub.deliverAuthSession(body.client, result.data);
@@ -13621,6 +14165,9 @@ async function startDevSession(options) {
           return;
         }
         case "GET:/__sporades/debug/auth/clients":
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
           writeJsonResponse(response, 200, {
             ok: true,
             data: { clients: websocketHub.listAuthClients() },
@@ -13635,7 +14182,7 @@ async function startDevSession(options) {
         case "/":
         case "/index.html": {
           response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-          response.end(await readFile6(bundle.staticFiles.indexHtml, "utf8"));
+          response.end(injectPageConnectionToken(await readFile6(bundle.staticFiles.indexHtml, "utf8"), websocketHub.createConnectionToken()));
           return;
         }
         case "/client.js": {
@@ -13647,9 +14194,7 @@ async function startDevSession(options) {
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
       response.end("Not found");
     } catch (error) {
-      const details = errorDetails2(error);
-      response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-      response.end(details.message ?? String(error));
+      writeUnhandledHttpError(runtime.database, request, response, error);
     }
   });
   server.on("upgrade", (request, socket) => {
@@ -13675,6 +14220,7 @@ async function startDevSession(options) {
         port: actualPort,
         pid: process.pid,
         session,
+        inspectionToken,
         publicDev: security.cors.publicDev,
         security
       },
@@ -13904,6 +14450,32 @@ async function createDevRuntime(options) {
     }
   };
 }
+function createDevInspectionToken() {
+  return randomBytes4(32).toString("hex");
+}
+function requireDevInspectionToken(request, response, expectedToken) {
+  if (devInspectionTokenMatches(request.headers[DEV_INSPECTION_TOKEN_HEADER], expectedToken)) {
+    return true;
+  }
+  writeJsonResponse(response, 401, {
+    ok: false,
+    data: null,
+    error: {
+      message: "Dev inspection token is required.",
+      hint: "Use Sporades CLI inspection commands for this Dev session."
+    }
+  });
+  return false;
+}
+function devInspectionTokenMatches(header, expectedToken) {
+  const actualToken = Array.isArray(header) ? header[0] : header;
+  if (typeof actualToken !== "string" || typeof expectedToken !== "string") {
+    return false;
+  }
+  const actual = Buffer.from(actualToken);
+  const expected = Buffer.from(expectedToken);
+  return actual.length === expected.length && timingSafeEqual2(actual, expected);
+}
 async function importCapsuleDefinition(moduleSource) {
   const encodedModule = Buffer.from(moduleSource, "utf8").toString("base64");
   const module = await import(`data:text/javascript;base64,${encodedModule}`);
@@ -14068,7 +14640,7 @@ async function manageAuth(options) {
       return;
     }
     case "as": {
-      const session = options.port ? { url: `http://localhost:${options.port}` } : await readDevSession(options.projectDir);
+      const session = await resolveRequiredDevInspectionSession(options);
       const result = await fetchLocalIdentitySimulation(session, {
         provider: options.provider,
         email: options.email,
@@ -14097,7 +14669,7 @@ async function manageAuth(options) {
       return;
     }
     case "clients": {
-      const session = options.port ? { url: `http://localhost:${options.port}` } : await readDevSession(options.projectDir);
+      const session = await resolveRequiredDevInspectionSession(options);
       const result = await fetchAuthClients(session);
       if (options.json) {
         writeResult(result, !result.ok);
@@ -15214,11 +15786,11 @@ function inspectedSshPort(inspected) {
   return Number.isInteger(port) ? { host: entry.HostIp ?? null, port } : null;
 }
 async function inspectDatabase(options) {
-  if (options.subcommand === "query" && !isReadOnlySql(options.sql)) {
-    throw commandError4(
-      "Only read-only SQL is allowed.",
-      "Use a SELECT, WITH, or PRAGMA query for `sporades db query`."
-    );
+  if (options.subcommand === "query") {
+    const validation = validateReadOnlyInspectionSql(options.sql);
+    if (!validation.ok) {
+      throw commandError4(validation.error.message, validation.error.hint);
+    }
   }
   const result = await fetchInspectionDatabase(options);
   if (options.json) {
@@ -15309,18 +15881,51 @@ async function readOptionalDevSession(projectDir) {
   }
 }
 async function tryFetchInspectionJson(options, pathname, fetchOptions = {}) {
-  const session = options.port ? { url: `http://localhost:${options.port}` } : await readOptionalDevSession(options.projectDir);
+  const session = await resolveOptionalDevInspectionSession(options);
   if (!session) {
     return null;
   }
   try {
-    const response = await fetch(new URL(pathname, session.url), fetchOptions);
+    const response = await fetch(new URL(pathname, session.url), withDevInspectionTokenHeader(session, fetchOptions));
     if (!response.ok) {
       return null;
     }
     return await response.json();
   } catch {
     return null;
+  }
+}
+async function resolveRequiredDevInspectionSession(options) {
+  if (!options.port) {
+    return await readDevSession(options.projectDir);
+  }
+  return await resolvePortDevInspectionSession(options);
+}
+async function resolveOptionalDevInspectionSession(options) {
+  if (!options.port) {
+    return await readOptionalDevSession(options.projectDir);
+  }
+  return await resolvePortDevInspectionSession(options);
+}
+async function resolvePortDevInspectionSession(options) {
+  const url = `http://localhost:${options.port}`;
+  const session = await readOptionalDevSession(options.projectDir);
+  if (session && devSessionMatchesPort(session, Number(options.port))) {
+    return { ...session, url };
+  }
+  return { url };
+}
+function devSessionMatchesPort(session, port) {
+  if (!Number.isInteger(port)) {
+    return false;
+  }
+  if (Number(session?.port) === port) {
+    return true;
+  }
+  try {
+    return Number(new URL(session?.url).port) === port;
+  } catch {
+    return false;
   }
 }
 function readContainerLogs(options) {
@@ -15452,11 +16057,11 @@ function inspectDockerMounts(cwd, containerId) {
 async function fetchLocalIdentitySimulation(session, body) {
   let response;
   try {
-    response = await fetch(new URL("/__sporades/debug/auth/as", session.url), {
+    response = await fetch(new URL("/__sporades/debug/auth/as", session.url), withDevInspectionTokenHeader(session, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body)
-    });
+    }));
   } catch {
     throw commandError4(
       "Unable to reach the running Sporades dev session.",
@@ -15482,7 +16087,7 @@ async function fetchLocalIdentitySimulation(session, body) {
 async function fetchAuthClients(session) {
   let response;
   try {
-    response = await fetch(new URL("/__sporades/debug/auth/clients", session.url));
+    response = await fetch(new URL("/__sporades/debug/auth/clients", session.url), withDevInspectionTokenHeader(session));
   } catch {
     throw commandError4(
       "Unable to reach the running Sporades dev session.",
@@ -15502,6 +16107,18 @@ async function fetchAuthClients(session) {
     error: {
       message: "Dev session does not support auth client listing.",
       hint: "Start a current `sporades dev` session for this project, then retry `sporades auth clients`."
+    }
+  };
+}
+function withDevInspectionTokenHeader(session, fetchOptions = {}) {
+  if (!session?.inspectionToken) {
+    return fetchOptions;
+  }
+  return {
+    ...fetchOptions,
+    headers: {
+      ...fetchOptions.headers ?? {},
+      [DEV_INSPECTION_TOKEN_HEADER]: session.inspectionToken
     }
   };
 }
@@ -15529,9 +16146,6 @@ async function upsertServerEnvValues(envPath, values) {
   await writeFile5(envPath, `${nextLines.filter((line, index) => line || index < nextLines.length - 1).join("\n")}
 `);
   parseServerEnv(await readServerEnvFile(envPath));
-}
-function isReadOnlySql(sql) {
-  return /^\s*(select|with|pragma)\b/i.test(sql);
 }
 async function readRequiredFile3(filePath, message, hint) {
   try {

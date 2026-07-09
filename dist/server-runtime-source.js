@@ -1,15 +1,27 @@
 import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 const PRIVILEGED_AUTH_USER_ID = "__privileged__";
+const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
+const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
+const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
 export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     readJsonRequest,
+    readLimitedRequestBody,
+    resolveHttpMaxBodyBytes,
+    createPayloadTooLargeError,
+    isPayloadTooLargeError,
+    writeUnhandledHttpError,
+    emitHttpFailureLog,
     prepareHttpSecurity,
     resolveRuntimeSecurityPolicy,
     defaultRuntimeCspDirectives,
     serializeCspDirectives,
+    injectPageConnectionToken,
     requestOriginAllowed,
+    websocketOriginAllowed,
     isSameOriginRequest,
     isLocalDevOrigin,
+    normalizeOrigin,
     appendVaryHeader,
     sanitizeResponseHeaders,
     createSqliteDatabaseAdapter,
@@ -152,6 +164,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     applyContextMiddleware,
     runContextMiddleware,
     readEndpointSessionToken,
+    endpointQueryFromUrl,
     privilegedDbAccessContextSet,
     grantPrivilegedDbAccess,
     revokePrivilegedDbAccess,
@@ -280,6 +293,16 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     routeSporadesAuth,
     signUpWithEmail,
     signInWithEmail,
+    createEmailSignInThrottleState,
+    emailSignInThrottleKeys,
+    currentEmailSignInThrottleState,
+    recordFailedEmailSignInAttempt,
+    resetEmailSignInAttempts,
+    pruneEmailSignInThrottleState,
+    boundEmailSignInThrottleState,
+    emailSignInThrottleEvictionPriority,
+    callerContextKey,
+    invalidEmailCredentialsError,
     normalizeEmailCredentials,
     hashEmailPassword,
     verifyEmailPassword,
@@ -326,13 +349,74 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     toSqlNumber,
     quoteIdentifier,
 ];
-export async function readJsonRequest(request) {
-    const chunks = [];
-    for await (const chunk of request) {
-        chunks.push(chunk);
-    }
-    const raw = Buffer.concat(chunks).toString("utf8");
+export async function readJsonRequest(request, limitSource = null) {
+    const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
     return raw ? JSON.parse(raw) : {};
+}
+async function readLimitedRequestBody(request, limitSource = null) {
+    const maxBytes = resolveHttpMaxBodyBytes(limitSource);
+    const chunks = [];
+    let total = 0;
+    for await (const chunk of request) {
+        const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        total += buffer.length;
+        if (total > maxBytes) {
+            throw createPayloadTooLargeError(maxBytes);
+        }
+        chunks.push(buffer);
+    }
+    return Buffer.concat(chunks);
+}
+function resolveHttpMaxBodyBytes(source = null) {
+    const configured = typeof source === "number"
+        ? source
+        : Number(source?.httpMaxBodyBytes ?? source?.http?.maxBodyBytes ?? source?.config?.http?.maxBodyBytes);
+    return Number.isInteger(configured) && configured > 0 ? configured : 1024 * 1024;
+}
+function createPayloadTooLargeError(maxBytes) {
+    const error = new Error("Request body is too large.");
+    error.code = "PAYLOAD_TOO_LARGE";
+    error.hint = `Send a request body at or below ${maxBytes} bytes, or raise http.maxBodyBytes in sporades.json.`;
+    return error;
+}
+function isPayloadTooLargeError(error) {
+    return error?.code === "PAYLOAD_TOO_LARGE";
+}
+export function writeUnhandledHttpError(database, request, response, error) {
+    emitHttpFailureLog(database, request, error);
+    if (isPayloadTooLargeError(error)) {
+        response.writeHead(413, { "content-type": "application/json; charset=utf-8" });
+        response.end(`${JSON.stringify({ ok: false, data: null, error: { code: error.code, message: error.message, hint: error.hint } })}\n`);
+        return;
+    }
+    response.writeHead(500, { "content-type": "application/json; charset=utf-8" });
+    response.end(`${JSON.stringify({
+        ok: false,
+        data: null,
+        error: {
+            message: "Internal server error.",
+            hint: "Check server logs and retry the request.",
+        },
+    })}\n`);
+}
+function emitHttpFailureLog(database, request, error, context = {}) {
+    const requestUrl = new URL(request.url ?? context.path ?? "/", "http://127.0.0.1");
+    database.log?.emit?.({
+        category: "platform",
+        event: "http.request.failed",
+        level: "error",
+        message: isPayloadTooLargeError(error) ? "HTTP request body exceeded the configured limit." : "HTTP request failed.",
+        request: {
+            method: request.method ?? context.method ?? null,
+            path: requestUrl.pathname,
+        },
+        data: {
+            code: error?.code ?? null,
+            message: error?.message ?? String(error),
+            hint: error?.hint ?? null,
+            stack: error?.stack ?? null,
+        },
+    });
 }
 export function prepareHttpSecurity(database, request, response) {
     const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
@@ -388,6 +472,7 @@ function resolveRuntimeSecurityPolicy(config = {}) {
     const publicDev = session === "public-dev";
     const dev = session === "dev" || publicDev;
     const configuredOrigins = Array.isArray(cors.allowedOrigins) ? cors.allowedOrigins.filter((origin) => typeof origin === "string") : [];
+    const publicOrigin = normalizeOrigin(config.__sporadesPublicOrigin);
     const directives = {
         ...defaultRuntimeCspDirectives(),
         ...(csp.directives && typeof csp.directives === "object" && !Array.isArray(csp.directives) ? csp.directives : {}),
@@ -400,6 +485,7 @@ function resolveRuntimeSecurityPolicy(config = {}) {
             allowedOrigins: publicDev ? ["*"] : configuredOrigins,
             allowedOriginPatterns: dev && !publicDev ? ["http://localhost:*", "http://127.0.0.1:*"] : [],
             requireExplicitCrossOrigin: !dev && configuredOrigins.length === 0,
+            publicOrigin,
         },
         csp: {
             mode,
@@ -426,6 +512,13 @@ function serializeCspDirectives(directives) {
         .map(([name, values]) => `${name} ${Array.isArray(values) ? values.join(" ") : String(values)}`)
         .join("; ");
 }
+export function injectPageConnectionToken(html, token) {
+    const script = `<script>window.__SPORADES_CONNECTION_TOKEN=${JSON.stringify(token)};</script>`;
+    if (/<head(\s[^>]*)?>/i.test(html)) {
+        return html.replace(/<head(\s[^>]*)?>/i, (match) => `${match}\n${script}`);
+    }
+    return `${script}\n${html}`;
+}
 function requestOriginAllowed(policy, request) {
     const origin = request.headers.origin;
     if (!origin) {
@@ -434,13 +527,22 @@ function requestOriginAllowed(policy, request) {
     if (policy.cors.publicDev) {
         return true;
     }
+    if (policy.cors.publicOrigin && normalizeOrigin(origin) === policy.cors.publicOrigin) {
+        return true;
+    }
     if (policy.cors.allowedOrigins.includes("*") || policy.cors.allowedOrigins.includes(origin)) {
         return true;
     }
-    if (policy.cors.sameOrigin && isSameOriginRequest(request, origin)) {
+    if (!policy.cors.publicOrigin && policy.cors.sameOrigin && isSameOriginRequest(request, origin)) {
         return true;
     }
     return policy.cors.allowedOriginPatterns.length > 0 && isLocalDevOrigin(origin);
+}
+function websocketOriginAllowed(policy, request) {
+    if (!request.headers.origin) {
+        return !policy.cors.publicOrigin;
+    }
+    return requestOriginAllowed(policy, request);
 }
 function isSameOriginRequest(request, origin) {
     const host = request.headers["x-forwarded-host"] ?? request.headers.host;
@@ -449,6 +551,17 @@ function isSameOriginRequest(request, origin) {
     }
     const protocol = request.headers["x-forwarded-proto"] ?? (request.socket?.encrypted ? "https" : "http");
     return origin === `${protocol}://${host}`;
+}
+function normalizeOrigin(value) {
+    if (typeof value !== "string" || value.trim() === "") {
+        return null;
+    }
+    try {
+        return new URL(value).origin;
+    }
+    catch {
+        return null;
+    }
 }
 function isLocalDevOrigin(origin) {
     try {
@@ -514,6 +627,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         securityPolicy: resolveRuntimeSecurityPolicy(config),
         fileStorage,
         fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
+        httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
         close: () => {
             const sqliteResult = database.sqlite.close();
             const storageResult = database.fileStorage.close();
@@ -1141,6 +1255,10 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         },
         runReadOnlyInspectionQuery(sql) {
             try {
+                const validation = validateReadOnlyInspectionSql(sql);
+                if (!validation.ok) {
+                    return validation;
+                }
                 if (targetsInternalLogIndexTable(sql)) {
                     return {
                         ok: false,
@@ -1405,6 +1523,10 @@ export async function createPostgresDatabaseAdapter(options) {
         },
         async runReadOnlyInspectionQuery(sql) {
             try {
+                const validation = validateReadOnlyInspectionSql(sql);
+                if (!validation.ok) {
+                    return validation;
+                }
                 if (targetsInternalLogIndexTable(sql)) {
                     return {
                         ok: false,
@@ -2148,6 +2270,10 @@ export async function createLibsqlDatabaseAdapter(options) {
         },
         async runReadOnlyInspectionQuery(sql) {
             try {
+                const validation = validateReadOnlyInspectionSql(sql);
+                if (!validation.ok) {
+                    return validation;
+                }
                 if (targetsInternalLogIndexTable(sql)) {
                     return {
                         ok: false,
@@ -3742,6 +3868,7 @@ export async function routeEndpoint(database, request, response) {
         if (error?.sporadesAuthDenialLogData) {
             emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
         }
+        emitHttpFailureLog(database, request, error);
         writeEndpointError(response, error);
     }
     return true;
@@ -3916,7 +4043,20 @@ async function sendFileHttpResponse(database, response, row) {
     }
 }
 function contentTypeForFile(type) {
-    return type || "application/octet-stream";
+    if (typeof type !== "string") {
+        return "application/octet-stream";
+    }
+    const normalized = type.split(";")[0].trim().toLowerCase();
+    const safeInlineTypes = new Set([
+        "text/plain",
+        "image/png",
+        "image/jpeg",
+        "image/gif",
+        "image/webp",
+        "image/avif",
+        "image/bmp",
+    ]);
+    return safeInlineTypes.has(normalized) ? normalized : "application/octet-stream";
 }
 export async function createPendingFileUpload(database, auth, message) {
     const input = message.file ?? {};
@@ -4509,7 +4649,7 @@ async function removeFileVersionBestEffort(database, fileId, version) {
 async function runEndpoint(database, endpoint, requestUrl, request) {
     const createHandler = new Function(`return (${endpoint.handlerSource});`);
     const handler = createHandler();
-    const endpointRequest = await readEndpointRequest(requestUrl, request);
+    const endpointRequest = await readEndpointRequest(database, requestUrl, request);
     const session = await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
     return await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
         const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
@@ -4528,18 +4668,18 @@ function createTransactionDatabase(database, transactionAdapter) {
         ? { ...database, adapter: transactionAdapter, sqlite: transactionAdapter, __transactionActive: true }
         : database;
 }
-async function readEndpointRequest(requestUrl, request) {
+async function readEndpointRequest(database, requestUrl, request) {
     const headers = Object.fromEntries(Object.entries(request.headers).map(([name, value]) => [
         name.toLowerCase(),
         Array.isArray(value) ? value.join(", ") : value,
     ]));
-    const query = Object.fromEntries(requestUrl.searchParams.entries());
+    const query = endpointQueryFromUrl(requestUrl);
     return {
         method: request.method,
         path: requestUrl.pathname,
         headers,
         query,
-        body: await readEndpointBody(request, headers),
+        body: await readEndpointBody(request, headers, database),
     };
 }
 function createEndpointContext(database, endpointRequest, session) {
@@ -4618,7 +4758,17 @@ function runContextMiddleware(middlewareSource, context) {
     return middleware(context);
 }
 function readEndpointSessionToken(headers, query) {
-    return headers["x-sporades-session-token"] ?? query.sessionToken;
+    return headers["x-sporades-session-token"] ?? null;
+}
+function endpointQueryFromUrl(requestUrl) {
+    const query = {};
+    for (const [name, value] of requestUrl.searchParams.entries()) {
+        if (name === "sessionToken") {
+            continue;
+        }
+        query[name] = value;
+    }
+    return query;
 }
 function privilegedDbAccessContextSet() {
     const holder = privilegedDbAccessContextSet;
@@ -5222,12 +5372,8 @@ function deserializeRow(table, row) {
     }
     return output;
 }
-async function readEndpointBody(request, headers) {
-    const chunks = [];
-    for await (const chunk of request) {
-        chunks.push(chunk);
-    }
-    const raw = Buffer.concat(chunks).toString("utf8");
+async function readEndpointBody(request, headers, limitSource = null) {
+    const raw = (await readLimitedRequestBody(request, limitSource)).toString("utf8");
     if (!raw) {
         return null;
     }
@@ -5277,22 +5423,26 @@ function writeEndpointResult(response, result) {
     response.end(String(result ?? ""));
 }
 function writeEndpointError(response, error) {
-    response.writeHead(error?.code === "UNAUTHENTICATED" ? 401 : 500, { "content-type": "application/json; charset=utf-8" });
+    response.writeHead(error?.code === "UNAUTHENTICATED" ? 401 : isPayloadTooLargeError(error) ? 413 : 500, { "content-type": "application/json; charset=utf-8" });
     response.end(`${JSON.stringify({
         ok: false,
         data: null,
         error: {
             ...(error?.code ? { code: error.code } : {}),
-            message: error?.hint
+            message: isPayloadTooLargeError(error)
                 ? error.message
-                : error?.sporadesEndpointResponse
-                    ? "Invalid endpoint response."
-                    : "Endpoint handler failed.",
+                : error?.hint
+                    ? error.message
+                    : error?.sporadesEndpointResponse
+                        ? "Invalid endpoint response."
+                        : "Endpoint handler failed.",
             hint: error?.sporadesEndpointResponse
                 ? "Return { status, headers, body } with a numeric status, plain object headers, and a serializable body."
-                : error?.hint
+                : isPayloadTooLargeError(error)
                     ? error.hint
-                    : "Check the endpoint handler and retry the request.",
+                    : error?.hint
+                        ? error.hint
+                        : "Check the endpoint handler and retry the request.",
         },
     })}\n`);
 }
@@ -5371,6 +5521,222 @@ export async function dumpDatabase(database) {
 }
 export async function runReadOnlyQuery(database, sql) {
     return await (database.adapter ?? database.sqlite).runReadOnlyInspectionQuery(sql);
+}
+export function validateReadOnlyInspectionSql(sql) {
+    const text = String(sql ?? "");
+    const firstToken = readFirstSqlToken(text);
+    if (!firstToken || hasMultipleSqlStatements(text)) {
+        return readOnlyInspectionSqlError();
+    }
+    const keyword = firstToken.toLowerCase();
+    if (keyword === "pragma") {
+        return isSafeInspectionPragma(text, firstToken.length) ? { ok: true } : readOnlyInspectionSqlError();
+    }
+    if ((keyword === "select" || keyword === "with") && !containsSideEffectSqlToken(text)) {
+        return { ok: true };
+    }
+    return readOnlyInspectionSqlError();
+}
+function readOnlyInspectionSqlError() {
+    return {
+        ok: false,
+        data: null,
+        error: {
+            message: "Only read-only SQL is allowed.",
+            hint: "Use a SELECT, WITH, or safe metadata PRAGMA query for `sporades db query`.",
+        },
+    };
+}
+function readFirstSqlToken(sql) {
+    const index = skipSqlTrivia(sql, 0);
+    const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
+    return match?.[0] ?? null;
+}
+function hasMultipleSqlStatements(sql) {
+    let index = 0;
+    while (index < sql.length) {
+        const skipped = skipSqlStringOrComment(sql, index);
+        if (skipped > index) {
+            index = skipped;
+            continue;
+        }
+        if (sql[index] === ";") {
+            return skipSqlTrivia(sql, index + 1) < sql.length;
+        }
+        index += 1;
+    }
+    return false;
+}
+function isSafeInspectionPragma(sql, pragmaTokenLength) {
+    let index = skipSqlTrivia(sql, skipSqlTrivia(sql, 0) + pragmaTokenLength);
+    let identifier = readBareSqlIdentifier(sql, index);
+    if (!identifier) {
+        return false;
+    }
+    let pragmaName = identifier.value.toLowerCase();
+    index = skipSqlTrivia(sql, identifier.nextIndex);
+    if (sql[index] === ".") {
+        identifier = readBareSqlIdentifier(sql, skipSqlTrivia(sql, index + 1));
+        if (!identifier) {
+            return false;
+        }
+        pragmaName = identifier.value.toLowerCase();
+        index = skipSqlTrivia(sql, identifier.nextIndex);
+    }
+    if (!SAFE_INSPECTION_PRAGMAS.has(pragmaName)) {
+        return false;
+    }
+    while (index < sql.length) {
+        const skipped = skipSqlStringOrComment(sql, index);
+        if (skipped > index) {
+            index = skipped;
+            continue;
+        }
+        if (sql[index] === "=") {
+            return false;
+        }
+        index += 1;
+    }
+    return true;
+}
+const SAFE_INSPECTION_PRAGMAS = new Set([
+    "database_list",
+    "foreign_key_list",
+    "index_info",
+    "index_list",
+    "index_xinfo",
+    "table_info",
+    "table_list",
+    "table_xinfo",
+]);
+function containsSideEffectSqlToken(sql) {
+    for (const token of readSqlTokens(sql)) {
+        const value = token.value.toLowerCase();
+        if (SIDE_EFFECT_SQL_KEYWORDS.has(value)) {
+            return true;
+        }
+        if (SIDE_EFFECT_SQL_FUNCTIONS.has(value) && sql[skipSqlTrivia(sql, token.nextIndex)] === "(") {
+            return true;
+        }
+    }
+    return false;
+}
+const SIDE_EFFECT_SQL_KEYWORDS = new Set([
+    "alter",
+    "analyze",
+    "attach",
+    "create",
+    "delete",
+    "detach",
+    "drop",
+    "insert",
+    "reindex",
+    "replace",
+    "update",
+    "vacuum",
+]);
+const SIDE_EFFECT_SQL_FUNCTIONS = new Set([
+    "load_extension",
+    "nextval",
+    "set_config",
+    "setval",
+]);
+function readSqlTokens(sql) {
+    const tokens = [];
+    let index = 0;
+    while (index < sql.length) {
+        const skipped = skipSqlLiteralOrComment(sql, index);
+        if (skipped > index) {
+            index = skipped;
+            continue;
+        }
+        const identifier = readSqlTokenIdentifier(sql, index);
+        if (identifier) {
+            tokens.push(identifier);
+            index = identifier.nextIndex;
+            continue;
+        }
+        index += 1;
+    }
+    return tokens;
+}
+function readBareSqlIdentifier(sql, index) {
+    const match = /^[A-Za-z_][A-Za-z0-9_]*/.exec(sql.slice(index));
+    return match ? { value: match[0], nextIndex: index + match[0].length } : null;
+}
+function readSqlTokenIdentifier(sql, index) {
+    const quote = sql[index];
+    const closingQuote = quote === "[" ? "]" : quote;
+    if (quote === '"' || quote === "`" || quote === "[") {
+        let value = "";
+        let cursor = index + 1;
+        while (cursor < sql.length) {
+            if (sql[cursor] === closingQuote) {
+                if (quote !== "[" && sql[cursor + 1] === closingQuote) {
+                    value += closingQuote;
+                    cursor += 2;
+                    continue;
+                }
+                return { value, nextIndex: cursor + 1 };
+            }
+            value += sql[cursor];
+            cursor += 1;
+        }
+        return null;
+    }
+    return readBareSqlIdentifier(sql, index);
+}
+function skipSqlLiteralOrComment(sql, index) {
+    if (sql[index] === "/" && sql[index + 1] === "*") {
+        const end = sql.indexOf("*/", index + 2);
+        return end === -1 ? sql.length : end + 2;
+    }
+    if (sql[index] === "-" && sql[index + 1] === "-") {
+        const end = sql.indexOf("\n", index + 2);
+        return end === -1 ? sql.length : end + 1;
+    }
+    if (sql[index] !== "'") {
+        return index;
+    }
+    let cursor = index + 1;
+    while (cursor < sql.length) {
+        if (sql[cursor] === "'") {
+            if (sql[cursor + 1] === "'") {
+                cursor += 2;
+                continue;
+            }
+            return cursor + 1;
+        }
+        cursor += 1;
+    }
+    return sql.length;
+}
+function skipSqlStringOrComment(sql, index) {
+    if (sql[index] === "/" && sql[index + 1] === "*") {
+        const end = sql.indexOf("*/", index + 2);
+        return end === -1 ? sql.length : end + 2;
+    }
+    if (sql[index] === "-" && sql[index + 1] === "-") {
+        const end = sql.indexOf("\n", index + 2);
+        return end === -1 ? sql.length : end + 1;
+    }
+    const quote = sql[index];
+    const closingQuote = quote === "[" ? "]" : quote;
+    if (quote !== "'" && quote !== '"' && quote !== "`" && quote !== "[") {
+        return index;
+    }
+    let cursor = index + 1;
+    while (cursor < sql.length) {
+        if (sql[cursor] === closingQuote) {
+            if (quote !== "[" && sql[cursor + 1] === closingQuote) {
+                cursor += 2;
+                continue;
+            }
+            return cursor + 1;
+        }
+        cursor += 1;
+    }
+    return sql.length;
 }
 function targetsInternalLogIndexTable(sql) {
     const text = String(sql);
@@ -5542,11 +5908,32 @@ function normalizeSimulatedText(value) {
 }
 export function createWebSocketHub(getDatabase) {
     const clients = new Set();
+    const connectionTokens = new Map();
     let nextClientId = 1;
+    const connectionTokenTtlMs = 4 * 60 * 60 * 1000;
     return {
+        createConnectionToken() {
+            pruneConnectionTokens();
+            const token = randomBytes(32).toString("base64url");
+            connectionTokens.set(token, Date.now() + connectionTokenTtlMs);
+            return token;
+        },
         async accept(request, socket) {
             const key = request.headers["sec-websocket-key"];
             if (!key) {
+                socket.destroy();
+                return;
+            }
+            const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+            if (!validateConnectionToken(requestUrl.searchParams.get("connectionToken"))) {
+                socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+                socket.destroy();
+                return;
+            }
+            const database = getDatabase();
+            const policy = database.securityPolicy ?? resolveRuntimeSecurityPolicy({});
+            if (!websocketOriginAllowed(policy, request)) {
+                socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
                 socket.destroy();
                 return;
             }
@@ -5558,11 +5945,7 @@ export function createWebSocketHub(getDatabase) {
                 "",
                 "",
             ].join("\r\n"));
-            const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-            const sessionToken = requestUrl.searchParams.get("sessionToken");
             const origin = requestOrigin(request);
-            const database = getDatabase();
-            const session = await resolveAnonymousSession(database, sessionToken);
             const now = new Date().toISOString();
             const client = {
                 id: `client-${(nextClientId++).toString(36)}`,
@@ -5570,7 +5953,7 @@ export function createWebSocketHub(getDatabase) {
                 buffer: Buffer.alloc(0),
                 messageQueue: Promise.resolve(),
                 subscriptions: new Map(),
-                session,
+                session: createPendingWebSocketSession(),
                 origin,
                 connectedAt: now,
                 lastSeenAt: now,
@@ -5635,6 +6018,36 @@ export function createWebSocketHub(getDatabase) {
             };
         },
     };
+    function pruneConnectionTokens() {
+        const now = Date.now();
+        for (const [token, expiresAt] of connectionTokens) {
+            if (expiresAt <= now) {
+                connectionTokens.delete(token);
+            }
+        }
+    }
+    function validateConnectionToken(token) {
+        pruneConnectionTokens();
+        if (!token) {
+            return false;
+        }
+        const expiresAt = connectionTokens.get(token);
+        return Boolean(expiresAt && expiresAt > Date.now());
+    }
+    function createPendingWebSocketSession() {
+        return {
+            token: null,
+            auth: {
+                userId: null,
+                displayName: "Anonymous",
+                email: null,
+                picture: null,
+                isAuthenticated: false,
+                isGuest: true,
+                provider: "anonymous",
+            },
+        };
+    }
     function authSessionRecipients(target) {
         if (target === "all") {
             return [...clients];
@@ -5660,13 +6073,13 @@ export function createWebSocketHub(getDatabase) {
     }
     function summarizeAuthForClientList(auth) {
         return {
-            userId: auth.userId,
-            displayName: auth.displayName,
-            email: auth.email,
-            picture: auth.picture,
-            isAuthenticated: auth.isAuthenticated,
-            isGuest: auth.isGuest,
-            provider: auth.provider,
+            userId: auth?.userId ?? null,
+            displayName: auth?.displayName ?? null,
+            email: auth?.email ?? null,
+            picture: auth?.picture ?? null,
+            isAuthenticated: Boolean(auth?.isAuthenticated),
+            isGuest: auth?.isGuest ?? true,
+            provider: auth?.provider ?? "anonymous",
         };
     }
     function enqueueClientMessage(client, rawMessage) {
@@ -5710,7 +6123,8 @@ export function createWebSocketHub(getDatabase) {
             return;
         }
         const database = getDatabase();
-        client.session = await resolveAnonymousSession(database, client.session.token);
+        const messageSessionToken = typeof message.sessionToken === "string" && message.sessionToken.length > 0 ? message.sessionToken : client.session.token;
+        client.session = await resolveAnonymousSession(database, messageSessionToken ?? null);
         if (message.type === "auth.get") {
             await sendAuthResult(client, message.id ?? null);
             return;
@@ -6271,16 +6685,16 @@ export async function signInWithEmail(database, session, credentials) {
     if (!normalized.ok) {
         return normalized;
     }
+    const throttle = currentEmailSignInThrottleState(database, normalized.email, session);
+    if (throttle.throttled) {
+        return { ok: false, error: invalidEmailCredentialsError({ code: "INVALID_EMAIL_CREDENTIALS" }) };
+    }
     const row = await database.sqlite.findEmailCredentialWithUser(normalized.email);
     if (!row || !verifyEmailPassword(normalized.password, row.passwordSalt, row.passwordHash)) {
-        return {
-            ok: false,
-            error: {
-                message: "Email or password is incorrect.",
-                hint: "Check the credentials and try email sign-in again.",
-            },
-        };
+        recordFailedEmailSignInAttempt(database, normalized.email, session);
+        return { ok: false, error: invalidEmailCredentialsError() };
     }
+    resetEmailSignInAttempts(database, normalized.email, session);
     const auth = {
         userId: row.userId,
         displayName: row.displayName,
@@ -6295,6 +6709,105 @@ export async function signInWithEmail(database, session, credentials) {
         sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId),
         auth,
     }));
+}
+function createEmailSignInThrottleState(database) {
+    const existing = database.__emailSignInThrottle;
+    if (existing instanceof Map) {
+        return existing;
+    }
+    const next = new Map();
+    database.__emailSignInThrottle = next;
+    return next;
+}
+function emailSignInThrottleKeys(email, session) {
+    return [`email\0${email}`, `caller\0${callerContextKey(session)}`];
+}
+function currentEmailSignInThrottleState(database, email, session) {
+    const attempts = createEmailSignInThrottleState(database);
+    const now = Date.now();
+    pruneEmailSignInThrottleState(attempts, now);
+    const keys = emailSignInThrottleKeys(email, session);
+    const entries = keys.map((key) => {
+        const current = attempts.get(key);
+        return {
+            key,
+            count: current?.count ?? 0,
+            resetAt: current?.resetAt ?? now + EMAIL_SIGN_IN_THROTTLE_WINDOW_MS,
+        };
+    });
+    return {
+        throttled: entries.some((entry) => entry.count >= EMAIL_SIGN_IN_FAILURE_LIMIT),
+        entries,
+        count: Math.max(...entries.map((entry) => entry.count)),
+        resetAt: Math.max(...entries.map((entry) => entry.resetAt)),
+    };
+}
+function recordFailedEmailSignInAttempt(database, email, session) {
+    const attempts = createEmailSignInThrottleState(database);
+    const current = currentEmailSignInThrottleState(database, email, session);
+    for (const entry of current.entries) {
+        attempts.set(entry.key, {
+            count: entry.count + 1,
+            resetAt: entry.resetAt,
+        });
+    }
+    boundEmailSignInThrottleState(attempts);
+}
+function resetEmailSignInAttempts(database, email, session) {
+    const attempts = createEmailSignInThrottleState(database);
+    for (const key of emailSignInThrottleKeys(email, session)) {
+        attempts.delete(key);
+    }
+}
+function pruneEmailSignInThrottleState(attempts, now = Date.now()) {
+    for (const [key, entry] of attempts) {
+        if (!entry || now >= entry.resetAt) {
+            attempts.delete(key);
+        }
+    }
+}
+function boundEmailSignInThrottleState(attempts) {
+    while (attempts.size > EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES) {
+        let evictionKey = null;
+        let evictionPriority = Infinity;
+        let oldestResetAt = Infinity;
+        for (const [key, entry] of attempts) {
+            const priority = emailSignInThrottleEvictionPriority(key, entry);
+            const resetAt = Number(entry?.resetAt ?? 0);
+            if (priority < evictionPriority || (priority === evictionPriority && resetAt < oldestResetAt)) {
+                evictionPriority = priority;
+                oldestResetAt = resetAt;
+                evictionKey = key;
+            }
+        }
+        if (evictionKey === null) {
+            return;
+        }
+        attempts.delete(evictionKey);
+    }
+}
+function emailSignInThrottleEvictionPriority(key, entry) {
+    const throttled = Number(entry?.count ?? 0) >= EMAIL_SIGN_IN_FAILURE_LIMIT;
+    if (key.startsWith("email\0") && throttled) {
+        return 3;
+    }
+    if (key.startsWith("caller\0") && throttled) {
+        return 2;
+    }
+    if (key.startsWith("email\0")) {
+        return 1;
+    }
+    return 0;
+}
+function callerContextKey(session) {
+    return String(session?.token ?? session?.auth?.userId ?? "anonymous");
+}
+function invalidEmailCredentialsError(options = {}) {
+    return {
+        message: "Email or password is incorrect.",
+        hint: "Check the credentials and try email sign-in again.",
+        ...(options.code ? { code: options.code } : {}),
+    };
 }
 function normalizeEmailCredentials(credentials) {
     const email = String(credentials.email ?? "").trim().toLowerCase();

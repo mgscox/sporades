@@ -12,6 +12,7 @@ type RuntimeSecurityPolicy = {
         allowedOrigins: string[];
         allowedOriginPatterns: string[];
         requireExplicitCrossOrigin: boolean;
+        publicOrigin: string | null;
     };
     csp: {
         mode: string;
@@ -20,12 +21,14 @@ type RuntimeSecurityPolicy = {
     };
 };
 export declare const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[];
-export declare function readJsonRequest(request: IncomingMessage): Promise<LooseRecord>;
+export declare function readJsonRequest(request: IncomingMessage, limitSource?: LooseRecord | number | null): Promise<LooseRecord>;
+export declare function writeUnhandledHttpError(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage>, error: any): void;
 export declare function prepareHttpSecurity(database: {
     securityPolicy?: RuntimeSecurityPolicy;
 }, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {
     req: IncomingMessage;
 }): boolean;
+export declare function injectPageConnectionToken(html: string, token: string): string;
 export declare function openDevDatabase(databasePath: string, serverSource: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig, capsuleDefinition?: any, options?: LooseRecord): Promise<LooseRecord>;
 export declare function createRuntimeFileStorageAdapter({ config, databasePath, serviceEnv }: {
     config?: RuntimeConfig;
@@ -462,6 +465,13 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
         rows: Record<string, SQLOutputValue>[];
     }[];
     runReadOnlyInspectionQuery(sql: string | undefined): {
+        ok: false;
+        data: any;
+        error: {
+            message: string;
+            hint: string;
+        };
+    } | {
         ok: boolean;
         data: {
             columns: any[];
@@ -577,6 +587,13 @@ export declare function createPostgresDatabaseAdapter(options: {
         rows: any;
     }[]>;
     runReadOnlyInspectionQuery(sql: string | undefined): Promise<{
+        ok: false;
+        data: any;
+        error: {
+            message: string;
+            hint: string;
+        };
+    } | {
         ok: boolean;
         data: {
             columns: string[];
@@ -947,6 +964,13 @@ export declare function createLibsqlDatabaseAdapter(options: {
         rows: any;
     }[]>;
     runReadOnlyInspectionQuery(sql: string | undefined): Promise<{
+        ok: false;
+        data: any;
+        error: {
+            message: string;
+            hint: string;
+        };
+    } | {
         ok: boolean;
         data: {
             columns: any;
@@ -1260,8 +1284,19 @@ export declare function runReadOnlyQuery(database: {
     adapter: any;
     sqlite: any;
 }, sql: any): Promise<any>;
+export declare function validateReadOnlyInspectionSql(sql: any): {
+    ok: false;
+    data: any;
+    error: {
+        message: string;
+        hint: string;
+    };
+} | {
+    ok: true;
+};
 export declare function simulateLocalIdentitySession(database: LooseRecord, options?: LooseRecord): Promise<any>;
 export declare function createWebSocketHub(getDatabase: () => any): {
+    createConnectionToken(): string;
     accept(request: IncomingMessage, socket: Duplex): Promise<void>;
     disconnectAll(): void;
     listAuthClients(): {
@@ -1273,7 +1308,7 @@ export declare function createWebSocketHub(getDatabase: () => any): {
             displayName: any;
             email: any;
             picture: any;
-            isAuthenticated: any;
+            isAuthenticated: boolean;
             isGuest: any;
             provider: any;
         };

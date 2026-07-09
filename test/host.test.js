@@ -7,13 +7,15 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { connect } from "node:net";
 
-import { openDevDatabase, routeRuntimeHealth } from "../dist/server-runtime-source.js";
+import { createWebSocketHub, openDevDatabase, prepareHttpSecurity, routeRuntimeHealth } from "../dist/server-runtime-source.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
 const hostHelperPath = path.join(repoRoot, "bin", "sporades-host-helper.js");
 const TEST_PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDI9R+ElI6awrzqT1DDZjMa6q7iH+jF5bughycSLBOa/ test@example";
+const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-host-"));
@@ -38,6 +40,50 @@ async function withHttpServer(handler, fn) {
   }
 }
 
+async function withHostedRuntimeTransportServer(dir, config, fn) {
+  const database = await openDevDatabase(
+    path.join(dir, "runtime.db"),
+    `export default capsule({ name: "hosted-origin-test" });`,
+    {},
+    {
+      __sporadesSession: "hosted",
+      __sporadesPublicOrigin: "https://team-notes.capsules.example.dev",
+      ...config,
+    },
+    { name: "hosted-origin-test", schema: {}, queries: {}, mutations: {}, endpoints: {}, messages: {} },
+  );
+  const websocketHub = createWebSocketHub(() => database);
+  const server = createServer((request, response) => {
+    if (prepareHttpSecurity(database, request, response)) {
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ ok: true }));
+  });
+  server.on("upgrade", (request, socket) => {
+    const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
+    if (requestUrl.pathname !== "/__sporades/ws") {
+      socket.destroy();
+      return;
+    }
+    websocketHub.accept(request, socket);
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  try {
+    const address = server.address();
+    return await fn(`http://127.0.0.1:${address.port}`, () => websocketHub.createConnectionToken());
+  } finally {
+    websocketHub.disconnectAll();
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+    database.close();
+  }
+}
+
 async function reserveUnusedPort() {
   let port;
   await withHttpServer((request, response) => {
@@ -48,6 +94,123 @@ async function reserveUnusedPort() {
   });
   return port;
 }
+
+function openRawWebSocketHandshake(baseUrl, headers = {}, connectionToken = null) {
+  return new Promise((resolve, reject) => {
+    const url = new URL("/__sporades/ws", baseUrl);
+    if (connectionToken) {
+      url.searchParams.set("connectionToken", connectionToken);
+    }
+    const socket = connect(Number(url.port), url.hostname);
+    const key = "dGhlIHNhbXBsZSBub25jZQ==";
+    let buffer = Buffer.alloc(0);
+    const timeout = setTimeout(() => {
+      cleanup();
+      socket.destroy();
+      reject(new Error("Timed out opening raw WebSocket."));
+    }, TEST_WEBSOCKET_TIMEOUT_MS);
+
+    function cleanup() {
+      clearTimeout(timeout);
+      socket.off("data", onData);
+      socket.off("error", onError);
+      socket.off("end", onEnd);
+      socket.off("close", onClose);
+    }
+    function settle(response) {
+      cleanup();
+      socket.destroy();
+      resolve(response);
+    }
+    function onError(error) {
+      cleanup();
+      reject(error);
+    }
+    function onEnd() {
+      settle(buffer.toString("utf8"));
+    }
+    function onClose() {
+      settle(buffer.toString("utf8"));
+    }
+    function onData(chunk) {
+      buffer = Buffer.concat([buffer, chunk]);
+      const marker = buffer.indexOf("\r\n\r\n");
+      if (marker !== -1) {
+        settle(buffer.subarray(0, marker).toString("utf8"));
+      }
+    }
+
+    socket.on("error", onError);
+    socket.on("data", onData);
+    socket.on("end", onEnd);
+    socket.on("close", onClose);
+    socket.on("connect", () => {
+      const requestHeaders = {
+        host: url.host,
+        upgrade: "websocket",
+        connection: "Upgrade",
+        "sec-websocket-key": key,
+        "sec-websocket-version": "13",
+        ...headers,
+      };
+      socket.write(
+        [`GET ${url.pathname}${url.search} HTTP/1.1`, ...Object.entries(requestHeaders).map(([name, value]) => `${name}: ${value}`), "", ""].join(
+          "\r\n",
+        ),
+      );
+    });
+  });
+}
+
+test("Hosted Capsule CORS checks use the configured public origin instead of spoofed forwarded headers", async () => {
+  await withTempDir(async (dir) => {
+    await withHostedRuntimeTransportServer(
+      dir,
+      { security: { cors: { allowedOrigins: ["https://ops.example.test"] } } },
+      async (baseUrl) => {
+        const publicOrigin = await fetch(baseUrl, {
+          headers: { origin: "https://team-notes.capsules.example.dev" },
+        });
+        assert.equal(publicOrigin.headers.get("access-control-allow-origin"), "https://team-notes.capsules.example.dev");
+
+        const explicitOrigin = await fetch(baseUrl, {
+          headers: { origin: "https://ops.example.test" },
+        });
+        assert.equal(explicitOrigin.headers.get("access-control-allow-origin"), "https://ops.example.test");
+
+        const spoofedForwardedOrigin = await fetch(baseUrl, {
+          headers: {
+            origin: "https://evil.example.test",
+            "x-forwarded-host": "evil.example.test",
+            "x-forwarded-proto": "https",
+          },
+        });
+        assert.equal(spoofedForwardedOrigin.headers.get("access-control-allow-origin"), null);
+      },
+    );
+  });
+});
+
+test("Hosted Capsule WebSocket upgrades reject missing and cross-site origins before activating transport", async () => {
+  await withTempDir(async (dir) => {
+    await withHostedRuntimeTransportServer(dir, {}, async (baseUrl, createConnectionToken) => {
+      const missingOrigin = await openRawWebSocketHandshake(baseUrl, {}, createConnectionToken());
+      assert.doesNotMatch(missingOrigin, /^HTTP\/1\.1 101/m);
+
+      const crossSiteOrigin = await openRawWebSocketHandshake(baseUrl, {
+        origin: "https://evil.example.test",
+        "x-forwarded-host": "evil.example.test",
+        "x-forwarded-proto": "https",
+      }, createConnectionToken());
+      assert.doesNotMatch(crossSiteOrigin, /^HTTP\/1\.1 101/m);
+
+      const publicOrigin = await openRawWebSocketHandshake(baseUrl, {
+        origin: "https://team-notes.capsules.example.dev",
+      }, createConnectionToken());
+      assert.match(publicOrigin, /^HTTP\/1\.1 101/m);
+    });
+  });
+});
 
 function runCli(args, options = {}) {
   return new Promise((resolve) => {
@@ -4697,6 +4860,8 @@ test("sporades host helper starts the current release in Docker and routes throu
     assert.equal(runCall.args[runCall.args.indexOf("--env-file") + 1], path.join(capsuleDir, "current", ".env.sporades.server"));
     assert(runCall.args.includes(`${path.join(capsuleDir, "data")}:/app/data:rw`));
     assert(runCall.args.includes("SPORADES_LOG_STDOUT=1"));
+    assert(runCall.args.includes("SPORADES_SECURITY_SESSION=hosted"));
+    assert(runCall.args.includes("SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev"));
     assert(runCall.args.includes("SPORADES_RELEASE_ID=20260630T221500Z-feedface"));
     assert.deepEqual(runCall.args.slice(runCall.args.indexOf("ghcr.io/sporades/sporades-base:0.1.0-node22-alpine")), [
       "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
@@ -6749,7 +6914,7 @@ test("sporades host helper fails start when Docker does not report a usable loop
         ["stop", "sporades-capsules-example-dev-team-notes"],
         ["rm", "sporades-capsules-example-dev-team-notes"],
         ["image", "inspect", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"],
-        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.1.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "client.js")}:/app/client.js:ro`, "--volume", `${path.join(capsuleDir, "current", "index.html")}:/app/index.html:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine", "node", "/app/server.mjs"],
+        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.1.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "client.js")}:/app/client.js:ro`, "--volume", `${path.join(capsuleDir, "current", "index.html")}:/app/index.html:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", "SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine", "node", "/app/server.mjs"],
         ["inspect", "-f", "{{.State.Running}}", "sporades-capsules-example-dev-team-notes"],
         ["inspect", "-f", "{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostIp}}:{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostPort}}", "sporades-capsules-example-dev-team-notes"],
         ["stop", "sporades-capsules-example-dev-team-notes"],

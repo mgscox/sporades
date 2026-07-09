@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
+import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
 import { readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
@@ -33,6 +33,7 @@ import {
   createWebSocketHub,
   dumpDatabase,
   handleFileHttpRoute,
+  injectPageConnectionToken,
   listDatabaseTables,
   openDevDatabase,
   prepareHttpSecurity,
@@ -42,6 +43,8 @@ import {
   runReadOnlyQuery,
   simulateLocalIdentitySession,
   readJsonlLogEvents,
+  validateReadOnlyInspectionSql,
+  writeUnhandledHttpError,
 } from "../server-runtime-source.js";
 import { scaffoldFiles } from "../templates/scaffold-template.js";
 import {
@@ -111,6 +114,7 @@ type StartCapsuleServicesOptions = {
 const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
 const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
+const DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";
 const CONTAINER_BINDING_FILE = path.join(".sporades", "binding.json");
 const REMOTE_BINDING_FILE = path.join(".sporades", "remote-binding.json");
 const DEV_REBUILD_DEBOUNCE_MS = 100;
@@ -1360,6 +1364,7 @@ async function startDevSession(options: LooseRecord) {
     emit: (data, error) => emitDevEvent(options, data, error),
   });
   let runtimeServiceEnv = capsuleServiceEnv;
+  const inspectionToken = createDevInspectionToken();
 
   const sessionFilePath = path.join(options.projectDir, DEV_SESSION_FILE);
   const databasePath = path.join(options.projectDir, ".sporades", "data.db");
@@ -1389,6 +1394,9 @@ async function startDevSession(options: LooseRecord) {
 
       switch (`${request.method}:${requestUrl.pathname}`) {
         case "POST:/__sporades/debug/ctx-log":
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
           runtime.database.log.emit({
             category: "app",
             event: "ctx.log",
@@ -1403,6 +1411,9 @@ async function startDevSession(options: LooseRecord) {
           return;
 
         case "POST:/__sporades/debug/privileged-audit":
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
           if (process.env.SPORADES_TEST_ENABLE_PRIVILEGED_AUDIT_DEBUG !== "1") {
             writeJsonResponse(response, 404, {
               ok: false,
@@ -1412,7 +1423,7 @@ async function startDevSession(options: LooseRecord) {
             return;
           }
           {
-            const input = await readJsonRequest(request);
+            const input = await readJsonRequest(request, runtime.database);
             const event = await runtime.database.audit.emit(input);
             writeJsonResponse(response, 200, {
               ok: true,
@@ -1423,6 +1434,9 @@ async function startDevSession(options: LooseRecord) {
           return;
 
         case "GET:/__sporades/debug/logs":
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
           writeJsonResponse(response, 200, {
             ok: true,
             data: { source: "sqlite", entries: await runtime.database.log.recent() },
@@ -1431,6 +1445,9 @@ async function startDevSession(options: LooseRecord) {
           return;
 
         case "GET:/__sporades/debug/logs/tail":
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
           writeJsonResponse(response, 200, {
             ok: true,
             data: { source: "jsonl", entries: runtime.database.log.tail() },
@@ -1439,6 +1456,9 @@ async function startDevSession(options: LooseRecord) {
           return;
 
         case "GET:/__sporades/debug/db/list":
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
           writeJsonResponse(response, 200, {
             ok: true,
             data: { tables: await listDatabaseTables(runtime.database) },
@@ -1447,6 +1467,9 @@ async function startDevSession(options: LooseRecord) {
           return;
 
         case "GET:/__sporades/debug/db/dump":
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
           writeJsonResponse(response, 200, {
             ok: true,
             data: { tables: await dumpDatabase(runtime.database) },
@@ -1455,13 +1478,19 @@ async function startDevSession(options: LooseRecord) {
           return;
 
         case "POST:/__sporades/debug/db/query": {
-          const body = await readJsonRequest(request);
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
+          const body = await readJsonRequest(request, runtime.database);
           writeJsonResponse(response, 200, await runReadOnlyQuery(runtime.database, body.sql));
           return;
         }
 
         case "POST:/__sporades/debug/auth/as": {
-          const body = await readJsonRequest(request);
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
+          const body = await readJsonRequest(request, runtime.database);
           const result: LooseRecord = await simulateLocalIdentitySession(runtime.database, body);
           if (result.ok && body.client && result.data) {
             result.data.delivery = websocketHub.deliverAuthSession(body.client, result.data);
@@ -1471,6 +1500,9 @@ async function startDevSession(options: LooseRecord) {
         }
 
         case "GET:/__sporades/debug/auth/clients":
+          if (!requireDevInspectionToken(request, response, inspectionToken)) {
+            return;
+          }
           writeJsonResponse(response, 200, {
             ok: true,
             data: { clients: websocketHub.listAuthClients() },
@@ -1491,7 +1523,7 @@ async function startDevSession(options: LooseRecord) {
         case '/':
         case '/index.html': {
           response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-          response.end(await readFile(bundle.staticFiles.indexHtml, "utf8"));
+          response.end(injectPageConnectionToken(await readFile(bundle.staticFiles.indexHtml, "utf8"), websocketHub.createConnectionToken()));
           return;
         }
         case '/client.js': {
@@ -1504,9 +1536,7 @@ async function startDevSession(options: LooseRecord) {
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
       response.end("Not found");
     } catch (error) {
-      const details = errorDetails(error);
-      response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-      response.end(details.message ?? String(error));
+      writeUnhandledHttpError(runtime.database, request, response, error);
     }
   });
   server.on("upgrade", (request, socket) => {
@@ -1534,6 +1564,7 @@ async function startDevSession(options: LooseRecord) {
         port: actualPort,
         pid: process.pid,
         session,
+        inspectionToken,
         publicDev: security.cors.publicDev,
         security,
       },
@@ -1768,6 +1799,35 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
   };
 }
 
+function createDevInspectionToken() {
+  return randomBytes(32).toString("hex");
+}
+
+function requireDevInspectionToken(request: IncomingMessage, response: ServerResponse<IncomingMessage>, expectedToken: string) {
+  if (devInspectionTokenMatches(request.headers[DEV_INSPECTION_TOKEN_HEADER], expectedToken)) {
+    return true;
+  }
+  writeJsonResponse(response, 401, {
+    ok: false,
+    data: null,
+    error: {
+      message: "Dev inspection token is required.",
+      hint: "Use Sporades CLI inspection commands for this Dev session.",
+    },
+  });
+  return false;
+}
+
+function devInspectionTokenMatches(header: string | string[] | undefined, expectedToken: string) {
+  const actualToken = Array.isArray(header) ? header[0] : header;
+  if (typeof actualToken !== "string" || typeof expectedToken !== "string") {
+    return false;
+  }
+  const actual = Buffer.from(actualToken);
+  const expected = Buffer.from(expectedToken);
+  return actual.length === expected.length && timingSafeEqual(actual, expected);
+}
+
 async function importCapsuleDefinition(moduleSource: WithImplicitCoercion<string>) {
   const encodedModule = Buffer.from(moduleSource, "utf8").toString("base64");
   const module = await import(`data:text/javascript;base64,${encodedModule}`);
@@ -1948,7 +2008,7 @@ async function manageAuth(options: LooseRecord) {
     }
 
     case "as": {
-      const session = options.port ? { url: `http://localhost:${options.port}` } : await readDevSession(options.projectDir);
+      const session = await resolveRequiredDevInspectionSession(options);
       const result = await fetchLocalIdentitySimulation(session, {
         provider: options.provider,
         email: options.email,
@@ -1978,7 +2038,7 @@ async function manageAuth(options: LooseRecord) {
     }
 
     case "clients": {
-      const session = options.port ? { url: `http://localhost:${options.port}` } : await readDevSession(options.projectDir);
+      const session = await resolveRequiredDevInspectionSession(options);
       const result = await fetchAuthClients(session);
 
       if (options.json) {
@@ -3189,11 +3249,11 @@ function inspectedSshPort(inspected: LooseRecord) {
 }
 
 async function inspectDatabase(options: LooseRecord) {
-  if (options.subcommand === "query" && !isReadOnlySql(options.sql)) {
-    throw commandError(
-      "Only read-only SQL is allowed.",
-      "Use a SELECT, WITH, or PRAGMA query for `sporades db query`.",
-    );
+  if (options.subcommand === "query") {
+    const validation = validateReadOnlyInspectionSql(options.sql);
+    if (!validation.ok) {
+      throw commandError(validation.error.message, validation.error.hint);
+    }
   }
 
   const result = await fetchInspectionDatabase(options);
@@ -3299,18 +3359,55 @@ async function readOptionalDevSession(projectDir: any) {
 }
 
 async function tryFetchInspectionJson(options: LooseRecord, pathname: string | URL, fetchOptions: LooseRecord = {}) {
-  const session = options.port ? { url: `http://localhost:${options.port}` } : await readOptionalDevSession(options.projectDir);
+  const session = await resolveOptionalDevInspectionSession(options);
   if (!session) {
     return null;
   }
   try {
-    const response = await fetch(new URL(pathname, session.url), fetchOptions);
+    const response = await fetch(new URL(pathname, session.url), withDevInspectionTokenHeader(session, fetchOptions));
     if (!response.ok) {
       return null;
     }
     return await response.json();
   } catch {
     return null;
+  }
+}
+
+async function resolveRequiredDevInspectionSession(options: LooseRecord) {
+  if (!options.port) {
+    return await readDevSession(options.projectDir);
+  }
+  return await resolvePortDevInspectionSession(options);
+}
+
+async function resolveOptionalDevInspectionSession(options: LooseRecord) {
+  if (!options.port) {
+    return await readOptionalDevSession(options.projectDir);
+  }
+  return await resolvePortDevInspectionSession(options);
+}
+
+async function resolvePortDevInspectionSession(options: LooseRecord) {
+  const url = `http://localhost:${options.port}`;
+  const session = await readOptionalDevSession(options.projectDir);
+  if (session && devSessionMatchesPort(session, Number(options.port))) {
+    return { ...session, url };
+  }
+  return { url };
+}
+
+function devSessionMatchesPort(session: LooseRecord, port: number) {
+  if (!Number.isInteger(port)) {
+    return false;
+  }
+  if (Number(session?.port) === port) {
+    return true;
+  }
+  try {
+    return Number(new URL(session?.url).port) === port;
+  } catch {
+    return false;
   }
 }
 
@@ -3461,11 +3558,11 @@ function inspectDockerMounts(cwd: any, containerId: string) {
 async function fetchLocalIdentitySimulation(session: LooseRecord, body: LooseRecord) {
   let response;
   try {
-    response = await fetch(new URL("/__sporades/debug/auth/as", session.url), {
+    response = await fetch(new URL("/__sporades/debug/auth/as", session.url), withDevInspectionTokenHeader(session, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
-    });
+    }));
   } catch {
     throw commandError(
       "Unable to reach the running Sporades dev session.",
@@ -3495,7 +3592,7 @@ async function fetchLocalIdentitySimulation(session: LooseRecord, body: LooseRec
 async function fetchAuthClients(session: LooseRecord) {
   let response;
   try {
-    response = await fetch(new URL("/__sporades/debug/auth/clients", session.url));
+    response = await fetch(new URL("/__sporades/debug/auth/clients", session.url), withDevInspectionTokenHeader(session));
   } catch {
     throw commandError(
       "Unable to reach the running Sporades dev session.",
@@ -3518,6 +3615,19 @@ async function fetchAuthClients(session: LooseRecord) {
     error: {
       message: "Dev session does not support auth client listing.",
       hint: "Start a current `sporades dev` session for this project, then retry `sporades auth clients`.",
+    },
+  };
+}
+
+function withDevInspectionTokenHeader(session: LooseRecord, fetchOptions: LooseRecord = {}) {
+  if (!session?.inspectionToken) {
+    return fetchOptions;
+  }
+  return {
+    ...fetchOptions,
+    headers: {
+      ...(fetchOptions.headers ?? {}),
+      [DEV_INSPECTION_TOKEN_HEADER]: session.inspectionToken,
     },
   };
 }
@@ -3546,10 +3656,6 @@ async function upsertServerEnvValues(envPath: PathLike | FileHandle, values: { [
   }
   await writeFile(envPath, `${nextLines.filter((line, index) => line || index < nextLines.length - 1).join("\n")}\n`);
   parseServerEnv(await readServerEnvFile(envPath));
-}
-
-function isReadOnlySql(sql: string) {
-  return /^\s*(select|with|pragma)\b/i.test(sql);
 }
 
 async function readRequiredFile(filePath: PathLike | FileHandle, message: string, hint: string) {

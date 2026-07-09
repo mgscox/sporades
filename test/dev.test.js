@@ -3937,6 +3937,13 @@ export default capsule({
         ownerId: ctx.auth.userId,
       }),
     })),
+    query: endpoint({ method: "GET", path: "/query" }, (ctx) => ({
+      status: 200,
+      body: {
+        userId: ctx.auth.userId,
+        query: ctx.request.query,
+      },
+    })),
     invalid: endpoint({ method: "POST", path: "/invalid-json" }, (ctx) => {
       ctx.db.notes.insert({
         text: "bad",
@@ -3961,11 +3968,27 @@ export default capsule({
       };
       socket = await openSocket(started.data.url);
       socket.send(JSON.stringify({ id: "auth-1", type: "auth.get" }));
-      const sessionToken = (await readSocketMessage(socket)).data.sessionToken;
+      const auth = await readSocketMessage(socket);
+      const sessionToken = auth.data.sessionToken;
 
-      const seedResponse = await fetch(`${started.data.url}/seed?sessionToken=${encodeURIComponent(sessionToken)}`, {
+      const queryOnlyResponse = await fetch(`${started.data.url}/query?sessionToken=${encodeURIComponent(sessionToken)}&keep=1`);
+      assert.equal(queryOnlyResponse.status, 200);
+      const queryOnly = await queryOnlyResponse.json();
+      assert.notEqual(queryOnly.userId, auth.data.auth.userId);
+      assert.deepEqual(queryOnly.query, { keep: "1" });
+
+      const headerQueryResponse = await fetch(`${started.data.url}/query?sessionToken=${encodeURIComponent(sessionToken)}&keep=1`, {
+        headers: { "x-sporades-session-token": sessionToken },
+      });
+      assert.equal(headerQueryResponse.status, 200);
+      assert.deepEqual(await headerQueryResponse.json(), {
+        userId: auth.data.auth.userId,
+        query: { keep: "1" },
+      });
+
+      const seedResponse = await fetch(`${started.data.url}/seed`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: { "content-type": "application/json", "x-sporades-session-token": sessionToken },
         body: JSON.stringify({ text: "Seeded", meta }),
       });
       assert.equal(seedResponse.status, 200);
@@ -3979,9 +4002,9 @@ export default capsule({
         ["Null", null],
       ];
       for (const [text, value] of compatibleValues) {
-        const response = await fetch(`${started.data.url}/seed?sessionToken=${encodeURIComponent(sessionToken)}`, {
+        const response = await fetch(`${started.data.url}/seed`, {
           method: "POST",
-          headers: { "content-type": "application/json" },
+          headers: { "content-type": "application/json", "x-sporades-session-token": sessionToken },
           body: JSON.stringify({ text, meta: value }),
         });
         assert.equal(response.status, 200);
@@ -4460,7 +4483,7 @@ test("sporades dev rejects unsupported Capsule schema changes with a structured 
 
     const child = startCli(["dev", "--json"], { cwd: projectDir });
     try {
-      await waitForJsonLine(child);
+      const started = await waitForJsonLine(child);
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       const serverPath = path.join(projectDir, "server", "index.ts");
@@ -5307,6 +5330,223 @@ export default capsule({
   });
 });
 
+test("dev inspection routes require the per-session inspection token while CLI logs send it", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "inspect-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "inspect-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      const session = JSON.parse(await readFile(path.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+      assert.equal(session.url, started.data.url);
+      assert.match(session.inspectionToken, /^[a-f0-9]{64}$/);
+
+      const unauthenticatedLogs = await fetch(`${started.data.url}/__sporades/debug/logs`);
+      assert.equal(unauthenticatedLogs.status, 401);
+      assert.deepEqual(await unauthenticatedLogs.json(), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Dev inspection token is required.",
+          hint: "Use Sporades CLI inspection commands for this Dev session.",
+        },
+      });
+
+      const invalidLogs = await fetch(`${started.data.url}/__sporades/debug/logs`, {
+        headers: { "x-sporades-inspection-token": "not-the-token" },
+      });
+      assert.equal(invalidLogs.status, 401);
+      assert.equal((await invalidLogs.json()).data, null);
+
+      const logsResult = await runCli(["logs", "--json"], { cwd: projectDir });
+      assert.equal(logsResult.code, 0, logsResult.stderr);
+      const logs = JSON.parse(logsResult.stdout);
+      assert.equal(logs.ok, true);
+      assert.equal(logs.data.source, "sqlite");
+      assert.equal(logs.data.entries.some((entry) => entry.event === "dev.session.started"), true);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("dev inspection JSON requests reject oversized bodies with structured diagnostics", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "request-limit-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "request-limit-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.http = { maxBodyBytes: 64 };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      const session = JSON.parse(await readFile(path.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+      const response = await fetch(`${started.data.url}/__sporades/debug/db/query`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-sporades-inspection-token": session.inspectionToken,
+        },
+        body: JSON.stringify({ sql: "SELECT 1", filler: "x".repeat(128) }),
+      });
+
+      assert.equal(response.status, 413);
+      assert.deepEqual(await response.json(), {
+        ok: false,
+        data: null,
+        error: {
+          code: "PAYLOAD_TOO_LARGE",
+          message: "Request body is too large.",
+          hint: "Send a request body at or below 64 bytes, or raise http.maxBodyBytes in sporades.json.",
+        },
+      });
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("dev inspection token rejection protects database inspection and local identity simulation", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "guarded-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "guarded-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.auth = { providers: { anonymous: true, email: true } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      const dbListResponse = await fetch(`${started.data.url}/__sporades/debug/db/list`);
+      assert.equal(dbListResponse.status, 401);
+      assert.equal((await dbListResponse.json()).data, null);
+
+      const dbQueryResponse = await fetch(`${started.data.url}/__sporades/debug/db/query`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ sql: "SELECT name FROM sqlite_schema" }),
+      });
+      assert.equal(dbQueryResponse.status, 401);
+      assert.equal((await dbQueryResponse.json()).data, null);
+
+      const authResponse = await fetch(`${started.data.url}/__sporades/debug/auth/as`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-sporades-inspection-token": "wrong-token",
+        },
+        body: JSON.stringify({ provider: "email", email: "mira@example.com" }),
+      });
+      assert.equal(authResponse.status, 401);
+      assert.equal((await authResponse.json()).data, null);
+
+      const { DatabaseSync } = await import("node:sqlite");
+      const sqlite = new DatabaseSync(path.join(projectDir, ".sporades", "data.db"));
+      try {
+        const sessionCount = sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_auth_sessions").get();
+        assert.equal(sessionCount.count, 0);
+      } finally {
+        sqlite.close();
+      }
+
+      const dbResult = await runCli(["db", "query", "SELECT COUNT(*) AS count FROM todos", "--json"], { cwd: projectDir });
+      assert.equal(dbResult.code, 0, dbResult.stderr);
+      assert.deepEqual(JSON.parse(dbResult.stdout).data.rows, [{ count: 0 }]);
+
+      const authResult = await runCli(["auth", "as", "email", "--email", "mira@example.com", "--json"], { cwd: projectDir });
+      assert.equal(authResult.code, 0, authResult.stderr);
+      assert.equal(JSON.parse(authResult.stdout).data.auth.email, "mira@example.com");
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("dev inspection token rotates across dev session restarts", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "rotation-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "rotation-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const firstChild = startCli(["dev", "--json"], { cwd: projectDir });
+    let firstToken;
+    try {
+      const firstStarted = await waitForJsonLine(firstChild);
+      assert.equal(firstStarted.ok, true, JSON.stringify(firstStarted.error));
+      const firstSession = JSON.parse(await readFile(path.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+      firstToken = firstSession.inspectionToken;
+      assert.match(firstToken, /^[a-f0-9]{64}$/);
+    } finally {
+      firstChild.kill("SIGTERM");
+      await new Promise((resolve) => firstChild.once("exit", resolve));
+    }
+
+    const secondChild = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const secondStarted = await waitForJsonLine(secondChild);
+      assert.equal(secondStarted.ok, true, JSON.stringify(secondStarted.error));
+      const secondSession = JSON.parse(await readFile(path.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+      assert.match(secondSession.inspectionToken, /^[a-f0-9]{64}$/);
+      assert.notEqual(secondSession.inspectionToken, firstToken);
+
+      const oldTokenResponse = await fetch(`${secondStarted.data.url}/__sporades/debug/db/list`, {
+        headers: { "x-sporades-inspection-token": firstToken },
+      });
+      assert.equal(oldTokenResponse.status, 401);
+      assert.equal((await oldTokenResponse.json()).data, null);
+
+      const listResult = await runCli(["db", "list", "--json"], { cwd: projectDir });
+      assert.equal(listResult.code, 0, listResult.stderr);
+      assert.equal(JSON.parse(listResult.stdout).ok, true);
+    } finally {
+      secondChild.kill("SIGTERM");
+      await new Promise((resolve) => secondChild.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades logs expose runtime-owned Privileged audit events without letting ctx.log forge them", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "audit-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -5348,13 +5588,17 @@ export default capsule({
     });
     try {
       const started = await waitForJsonLine(child);
+      const session = JSON.parse(await readFile(path.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
 
       const forgedResponse = await fetch(`${started.data.url}/forge-audit`, { method: "POST" });
       assert.equal(forgedResponse.status, 200);
 
       const auditResponse = await fetch(`${started.data.url}/__sporades/debug/privileged-audit`, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: {
+          "content-type": "application/json",
+          "x-sporades-inspection-token": session.inspectionToken,
+        },
         body: JSON.stringify({
           actorKind: "privileged-server-role",
           operation: "runtime.audit.inspect",
@@ -5427,7 +5671,7 @@ test("sporades db list returns tables from the running dev session database", as
 
     const child = startCli(["dev", "--json"], { cwd: projectDir });
     try {
-      await waitForJsonLine(child);
+      const started = await waitForJsonLine(child);
 
       const listResult = await runCli(["db", "list", "--json"], { cwd: projectDir });
       assert.equal(listResult.code, 0, listResult.stderr);
@@ -5588,7 +5832,7 @@ test("sporades db query runs read-only SQL against the running dev session datab
 
     const child = startCli(["dev", "--json"], { cwd: projectDir });
     try {
-      await waitForJsonLine(child);
+      const started = await waitForJsonLine(child);
 
       const queryResult = await runCli(
         ["db", "query", "SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name", "--json"],
@@ -5740,6 +5984,38 @@ test("sporades db query runs read-only SQL against the running dev session datab
         },
         error: null,
       });
+
+      const session = JSON.parse(await readFile(path.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+      const mutatingPragma = await fetch(new URL("/__sporades/debug/db/query", started.data.url), {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-sporades-inspection-token": session.inspectionToken,
+        },
+        body: JSON.stringify({ sql: "PRAGMA user_version = 7" }),
+      });
+      assert.equal(mutatingPragma.status, 200);
+      assert.deepEqual(await mutatingPragma.json(), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Only read-only SQL is allowed.",
+          hint: "Use a SELECT, WITH, or safe metadata PRAGMA query for `sporades db query`.",
+        },
+      });
+
+      const userVersion = await runCli(["db", "query", "SELECT * FROM pragma_user_version", "--json"], {
+        cwd: projectDir,
+      });
+      assert.equal(userVersion.code, 0, userVersion.stderr);
+      assert.deepEqual(JSON.parse(userVersion.stdout), {
+        ok: true,
+        data: {
+          columns: ["user_version"],
+          rows: [{ user_version: 0 }],
+        },
+        error: null,
+      });
     } finally {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
@@ -5772,7 +6048,7 @@ test("sporades db query rejects write SQL with a structured hint", async () => {
         data: null,
         error: {
           message: "Only read-only SQL is allowed.",
-          hint: "Use a SELECT, WITH, or PRAGMA query for `sporades db query`.",
+          hint: "Use a SELECT, WITH, or safe metadata PRAGMA query for `sporades db query`.",
         },
       });
     } finally {
@@ -6354,6 +6630,8 @@ export default capsule({
       firstSocket.send(JSON.stringify({ id: "auth", type: "auth.get" }));
       const auth = await readSocketMessage(firstSocket);
       secondSocket = await openSocket(started.data.url, auth.data.sessionToken);
+      secondSocket.send(JSON.stringify({ id: "second-auth", type: "auth.get" }));
+      assert.equal((await readSocketMessage(secondSocket)).type, "auth.result");
 
       const firstAppMessage = waitForSocketMessage(
         firstSocket,
@@ -6444,6 +6722,8 @@ export default capsule({
       const firstAuth = await readSocketMessage(firstSocket);
 
       secondSocket = await openSocket(started.data.url, firstAuth.data.sessionToken);
+      secondSocket.send(JSON.stringify({ id: "second-auth", type: "auth.get" }));
+      assert.equal((await readSocketMessage(secondSocket)).type, "auth.result");
       otherUserSocket = await openSocket(started.data.url);
 
       const firstAppMessage = waitForSocketMessage(
@@ -7783,6 +8063,35 @@ test("WebSocket auth.get creates a persistent anonymous session token", async ()
   });
 });
 
+test("WebSocket upgrade requires a page-bound connection token", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "todo-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      const response = await readWebSocketUpgradeResponse(started.data.url);
+      assert.match(response, /^HTTP\/1\.1 403 Forbidden/);
+
+      const socket = await openSocket(started.data.url);
+      socket.close();
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("WebSocket todo data is isolated by anonymous session token across reconnects", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -7948,6 +8257,130 @@ test("sporades dev persists private file uploads across dev session restarts", a
       });
       assert.equal(persistedResponse.status, 200);
       assert.equal(await persistedResponse.text(), "hello world");
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev applies the safe MIME allowlist to private and public file URL responses", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "file-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "file-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      socket = await openSocket(started.data.url);
+
+      async function sendAndWait(payload) {
+        socket.send(JSON.stringify(payload));
+        return await waitForSocketMessage(socket, (message) => message.id === payload.id);
+      }
+
+      async function uploadCase(id, file, body) {
+        const uploadUrl = await sendAndWait({
+          id: `${id}-upload-url`,
+          type: "file.uploadUrl",
+          file: { ...file, size: Buffer.byteLength(body) },
+        });
+        assert.equal(uploadUrl.error, null, uploadUrl.error?.message);
+        const uploadResponse = await fetch(new URL(uploadUrl.data.uploadUrl, started.data.url), {
+          method: uploadUrl.data.method,
+          body,
+        });
+        assert.equal(uploadResponse.status, 200);
+        const uploaded = await uploadResponse.json();
+        assert.equal(uploaded.ok, true, uploaded.error?.message);
+        return uploaded.data.file;
+      }
+
+      const auth = await sendAndWait({ id: "auth", type: "auth.get" });
+      const cases = [
+        {
+          id: "text",
+          file: { name: "safe.txt", type: "text/plain", path: "/mime/safe.txt" },
+          body: "plain text",
+          expectedContentType: "text/plain",
+        },
+        {
+          id: "png",
+          file: { name: "safe.png", type: "image/png", path: "/mime/safe.png" },
+          body: "png bytes",
+          expectedContentType: "image/png",
+        },
+        {
+          id: "html",
+          file: { name: "page.html", type: "text/html", path: "/mime/page.html" },
+          body: "<script>throw new Error('nope')</script>",
+          expectedContentType: "application/octet-stream",
+        },
+        {
+          id: "svg",
+          file: { name: "vector.svg", type: "image/svg+xml", path: "/mime/vector.svg" },
+          body: "<svg><script>throw new Error('nope')</script></svg>",
+          expectedContentType: "application/octet-stream",
+        },
+        {
+          id: "xml",
+          file: { name: "feed.xml", type: "application/xml", path: "/mime/feed.xml" },
+          body: "<?xml version=\"1.0\"?><feed />",
+          expectedContentType: "application/octet-stream",
+        },
+        {
+          id: "missing",
+          file: { name: "missing-type.bin", path: "/mime/missing-type.bin" },
+          body: "missing type",
+          expectedContentType: "application/octet-stream",
+        },
+        {
+          id: "unknown",
+          file: { name: "unknown.bin", type: "application/x-unknown", path: "/mime/unknown.bin" },
+          body: "unknown type",
+          expectedContentType: "application/octet-stream",
+        },
+      ];
+
+      for (const testCase of cases) {
+        const file = await uploadCase(testCase.id, testCase.file, testCase.body);
+        const privateUrl = await sendAndWait({
+          id: `${testCase.id}-private-url`,
+          type: "file.url",
+          fileId: file.id,
+        });
+        assert.equal(privateUrl.error, null);
+        const privateRead = await fetch(new URL(privateUrl.data.url, started.data.url), {
+          headers: { "x-sporades-session-token": auth.data.sessionToken },
+        });
+        assert.equal(privateRead.status, 200);
+        assert.equal(privateRead.headers.get("content-type"), testCase.expectedContentType);
+        assert.equal(await privateRead.text(), testCase.body);
+
+        const publicUrl = await sendAndWait({
+          id: `${testCase.id}-public-url`,
+          type: "file.publicUrl.create",
+          fileId: file.id,
+          options: { noExpiry: true },
+        });
+        assert.equal(publicUrl.error, null);
+        const publicRead = await fetch(new URL(publicUrl.data.publicUrl.url, started.data.url));
+        assert.equal(publicRead.status, 200);
+        assert.equal(publicRead.headers.get("content-type"), testCase.expectedContentType);
+        assert.equal(await publicRead.text(), testCase.body);
+      }
     } finally {
       socket?.close();
       child.kill("SIGTERM");
@@ -8330,21 +8763,98 @@ test("sporades dev preserves file lifecycle parity with MinIO-backed storage", a
   });
 });
 
-function openSocket(baseUrl, sessionToken = null) {
+async function openSocket(baseUrl, sessionToken = null) {
+  const connectionToken = await readPageConnectionToken(baseUrl);
   return new Promise((resolve, reject) => {
     const url = new URL("/__sporades/ws", baseUrl);
-    if (sessionToken) {
-      url.searchParams.set("sessionToken", sessionToken);
-    }
+    url.searchParams.set("connectionToken", connectionToken);
     const socket = new WebSocket(url);
+    installSessionTokenEnvelope(socket, sessionToken);
     socket.addEventListener("open", () => resolve(socket), { once: true });
     socket.addEventListener("error", reject, { once: true });
   });
 }
 
-function openSocketWithHeaders(baseUrl, headers = {}) {
+async function readPageConnectionToken(baseUrl) {
+  const response = await fetch(new URL("/", baseUrl));
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  const match = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(html);
+  assert.ok(match, "Expected served page to include a Sporades connection token.");
+  return match[1];
+}
+
+function readWebSocketUpgradeResponse(baseUrl) {
   return new Promise((resolve, reject) => {
     const url = new URL("/__sporades/ws", baseUrl);
+    const socket = connect(Number(url.port), url.hostname);
+    const key = randomBytes(16).toString("base64");
+    let buffer = Buffer.alloc(0);
+    const timeout = setTimeout(() => {
+      cleanup();
+      socket.destroy();
+      reject(new Error("Timed out waiting for WebSocket handshake response."));
+    }, TEST_WEBSOCKET_TIMEOUT_MS);
+
+    function cleanup() {
+      clearTimeout(timeout);
+      socket.off("data", onData);
+      socket.off("error", onError);
+    }
+    function onError(error) {
+      cleanup();
+      reject(error);
+    }
+    function onData(chunk) {
+      buffer = Buffer.concat([buffer, chunk]);
+      const marker = buffer.indexOf("\r\n\r\n");
+      if (marker === -1) return;
+      cleanup();
+      socket.destroy();
+      resolve(buffer.subarray(0, marker).toString("utf8"));
+    }
+
+    socket.on("error", onError);
+    socket.on("data", onData);
+    socket.on("connect", () => {
+      socket.write(
+        [
+          `GET ${url.pathname} HTTP/1.1`,
+          `Host: ${url.host}`,
+          "Upgrade: websocket",
+          "Connection: Upgrade",
+          `Sec-WebSocket-Key: ${key}`,
+          "Sec-WebSocket-Version: 13",
+          "",
+          "",
+        ].join("\r\n"),
+      );
+    });
+  });
+}
+
+function installSessionTokenEnvelope(socket, sessionToken) {
+  if (!sessionToken) return;
+  const send = socket.send.bind(socket);
+  socket.send = (rawMessage) => {
+    try {
+      const message = JSON.parse(rawMessage);
+      if (message && typeof message === "object" && !message.sessionToken) {
+        send(JSON.stringify({ ...message, sessionToken }));
+        return;
+      }
+    } catch {
+      // Fall through to the original payload for non-JSON test frames.
+    }
+    send(rawMessage);
+  };
+}
+
+async function openSocketWithHeaders(baseUrl, headers = {}) {
+  const connectionToken = await readPageConnectionToken(baseUrl);
+  return new Promise((resolve, reject) => {
+    const url = new URL("/__sporades/ws", baseUrl);
+    url.searchParams.set("connectionToken", connectionToken);
     const socket = connect(Number(url.port), url.hostname);
     const key = randomBytes(16).toString("base64");
     let buffer = Buffer.alloc(0);
@@ -8559,9 +9069,15 @@ function waitForSocketClose(socket) {
   });
 }
 
-function openWebSocket(url) {
+async function openWebSocket(url) {
+  const webSocketUrl = new URL(url);
+  const pageBaseUrl = new URL(url);
+  pageBaseUrl.protocol = pageBaseUrl.protocol === "wss:" ? "https:" : "http:";
+  pageBaseUrl.pathname = "/";
+  pageBaseUrl.search = "";
+  webSocketUrl.searchParams.set("connectionToken", await readPageConnectionToken(pageBaseUrl));
   return new Promise((resolve, reject) => {
-    const socket = new WebSocket(url);
+    const socket = new WebSocket(webSocketUrl);
     socket.addEventListener("open", () => resolve(socket), { once: true });
     socket.addEventListener("error", () => reject(new Error("WebSocket connection failed")), { once: true });
   });

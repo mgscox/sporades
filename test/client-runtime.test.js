@@ -35,6 +35,7 @@ function installBrowserFakes(auth, options = {}) {
     },
   };
   globalThis.window = {
+    __SPORADES_CONNECTION_TOKEN: options.connectionToken ?? "fake-page-connection-token",
     location: {
       href: options.href ?? "http://localhost:4000/",
       assign(url) {
@@ -185,6 +186,25 @@ test("client isAuthenticated returns false for anonymous auth", async () => {
   }
 });
 
+test("client WebSocket URL does not include the stored session token", async () => {
+  const browser = installBrowserFakes(anonymousAuth, { autoOpen: false });
+  browser.storage.set("sporades.sessionToken", "stored-session-token");
+  try {
+    const runtime = await importClientRuntime();
+    const authPromise = runtime.isAuthenticated();
+    browser.openSockets();
+    await authPromise;
+
+    assert.equal(browser.sockets.length, 1);
+    const url = new URL(browser.sockets[0].url);
+    assert.equal(url.pathname, "/__sporades/ws");
+    assert.equal(url.searchParams.has("sessionToken"), false);
+    assert.equal(String(browser.sockets[0].url).includes("stored-session-token"), false);
+  } finally {
+    browser.cleanup();
+  }
+});
+
 test("client isAuthenticated returns true for linked auth", async () => {
   const browser = installBrowserFakes({
     userId: "linked-user",
@@ -283,6 +303,7 @@ test("client preferences SDK reads and updates current-user preferences over the
       id: "request-id",
       type: "preferences.update",
       patch: { theme: "dark" },
+      sessionToken: "session-token",
     });
   } finally {
     browser.cleanup();
@@ -394,6 +415,7 @@ test("client auth.signIn sends email credentials without starting a redirect", a
         email: "mira@example.com",
         password: "correct horse battery staple",
       },
+      sessionToken: "session-token",
     });
     assert.equal(browser.storage.get("assignedLocation"), undefined);
     assert.equal(browser.storage.get("sporades.authReturnTo"), undefined);
@@ -466,6 +488,7 @@ test("client auth.signUp sends email credentials through the provider-generic au
         password: "correct horse battery staple",
         name: "Mira",
       },
+      sessionToken: "session-token",
     });
     assert.equal(result.type, "auth.signUp.result");
     assert.equal(result.error, null);

@@ -22,9 +22,14 @@ ${runtimeFunctions}
 
 const port = Number(process.env.PORT ?? sporadesConfig.deploy?.port ?? 4000);
 const databasePath = process.env.SPORADES_DATABASE_PATH ?? path.join(process.cwd(), "data", "data.db");
+const runtimeConfig = {
+  ...sporadesConfig,
+  __sporadesSession: process.env.SPORADES_SECURITY_SESSION ?? sporadesConfig.__sporadesSession,
+  __sporadesPublicOrigin: process.env.SPORADES_PUBLIC_ORIGIN ?? sporadesConfig.__sporadesPublicOrigin,
+};
 const runtimeServerEnv = await readRuntimeServerEnv(sporadesServerEnv, sporadesSealedServerEnv);
 const runtimeServiceEnv = readRuntimeServiceEnv();
-const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, sporadesConfig, sporadesCapsuleDefinition, {
+const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
   serviceEnv: runtimeServiceEnv,
 });
 database.log.emit({
@@ -61,7 +66,7 @@ const server = createServer(async (request, response) => {
     if (request.url === "/" || request.url === "/index.html") {
       const html = await readRuntimeFile("index.html", path.join(process.cwd(), "index.html"));
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(html);
+      response.end(injectPageConnectionToken(html, websocketHub.createConnectionToken()));
       return;
     }
 
@@ -75,8 +80,7 @@ const server = createServer(async (request, response) => {
     response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
     response.end("Not found");
   } catch (error) {
-    response.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-    response.end(error.message);
+    writeUnhandledHttpError(database, request, response, error);
   }
 });
 

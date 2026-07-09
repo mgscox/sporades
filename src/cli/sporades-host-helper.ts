@@ -2846,6 +2846,10 @@ async function dockerRunArgs(lifecycle: HostedCapsuleLifecycle, releaseId: strin
     "--env",
     "SPORADES_LOG_STDOUT=1",
     "--env",
+    "SPORADES_SECURITY_SESSION=hosted",
+    "--env",
+    `SPORADES_PUBLIC_ORIGIN=${lifecycle.hostedUrl}`,
+    "--env",
     `SPORADES_RELEASE_ID=${releaseId}`,
   );
   args.push("--publish", `127.0.0.1::${lifecycle.routes.running.port ?? 4000}`);

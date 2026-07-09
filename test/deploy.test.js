@@ -2362,6 +2362,110 @@ export default capsule({
   });
 });
 
+test("sporades deploy endpoint request bodies are size-limited and unexpected errors are generic", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "hardened-endpoint-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "hardened-endpoint-island"));
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.http = { maxBodyBytes: 64 };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "hardened-endpoint-island",
+
+  endpoints: {
+    echo: endpoint({ method: "POST", path: "/integrations/echo" }, (ctx) => ({
+      status: 200,
+      body: { body: ctx.request.body },
+    })),
+    explode: endpoint({ method: "POST", path: "/integrations/explode" }, () => {
+      const error = new Error("SQLITE_CONSTRAINT at /tmp/secret/server/index.ts:42");
+      error.stack = "Error: SQLITE_CONSTRAINT\\n    at secret (/tmp/secret/server/index.ts:42:7)";
+      throw error;
+    }),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "container-hardened-endpoint");
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+
+    const port = await getAvailablePort();
+    const serverBundlePath = path.join(projectDir, ".sporades", "build", "server.mjs");
+    const logPath = path.join(projectDir, ".sporades", "logs", "events.jsonl");
+    const child = spawn(process.execPath, [serverBundlePath], {
+      cwd: projectDir,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+
+    try {
+      await waitForHttp(`http://127.0.0.1:${port}/`, child);
+      for (const contentType of ["application/json", "text/plain"]) {
+        const tooLarge = await fetch(`http://127.0.0.1:${port}/integrations/echo`, {
+          method: "POST",
+          headers: { "content-type": contentType },
+          body: contentType === "application/json"
+            ? JSON.stringify({ filler: "x".repeat(128) })
+            : "x".repeat(128),
+        });
+        assert.equal(tooLarge.status, 413);
+        assert.deepEqual(await tooLarge.json(), {
+          ok: false,
+          data: null,
+          error: {
+            code: "PAYLOAD_TOO_LARGE",
+            message: "Request body is too large.",
+            hint: "Send a request body at or below 64 bytes, or raise http.maxBodyBytes in sporades.json.",
+          },
+        });
+      }
+
+      const exploded = await fetch(`http://127.0.0.1:${port}/integrations/explode`, { method: "POST" });
+      assert.equal(exploded.status, 500);
+      const clientBody = await exploded.text();
+      assert.deepEqual(JSON.parse(clientBody), {
+        ok: false,
+        data: null,
+        error: {
+          message: "Endpoint handler failed.",
+          hint: "Check the endpoint handler and retry the request.",
+        },
+      });
+      assert.equal(clientBody.includes("/tmp/secret"), false);
+      assert.equal(clientBody.includes("SQLITE_CONSTRAINT"), false);
+
+      const logs = (await readFile(logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      const failureLog = logs.find((entry) => entry.event === "http.request.failed" && entry.request?.path === "/integrations/explode");
+      assert(failureLog, JSON.stringify(logs));
+      assert.equal(failureLog.level, "error");
+      assert.equal(failureLog.request.path, "/integrations/explode");
+      assert.equal(failureLog.data.message, "SQLITE_CONSTRAINT at /tmp/secret/server/index.ts:42");
+      assert.equal(failureLog.data.stack, "[REDACTED]");
+    } finally {
+      await stopChild(child);
+    }
+  });
+});
+
 test("sporades deploy endpoints resolve linked Google auth from the Sporades session token", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "endpoint-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -3514,16 +3618,42 @@ test("sporades deploy fails on stale container bindings without --force", async 
   });
 });
 
-function openSocket(baseUrl, sessionToken = null) {
+async function openSocket(baseUrl, sessionToken = null) {
+  const connectionToken = await readPageConnectionToken(baseUrl);
   return new Promise((resolve, reject) => {
     const url = new URL("/__sporades/ws", baseUrl);
-    if (sessionToken) {
-      url.searchParams.set("sessionToken", sessionToken);
-    }
+    url.searchParams.set("connectionToken", connectionToken);
     const socket = new WebSocket(url);
+    installSessionTokenEnvelope(socket, sessionToken);
     socket.addEventListener("open", () => resolve(socket), { once: true });
     socket.addEventListener("error", reject, { once: true });
   });
+}
+
+async function readPageConnectionToken(baseUrl) {
+  const response = await fetch(new URL("/", baseUrl));
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  const match = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(html);
+  assert.ok(match, "Expected served page to include a Sporades connection token.");
+  return match[1];
+}
+
+function installSessionTokenEnvelope(socket, sessionToken) {
+  if (!sessionToken) return;
+  const send = socket.send.bind(socket);
+  socket.send = (rawMessage) => {
+    try {
+      const message = JSON.parse(rawMessage);
+      if (message && typeof message === "object" && !message.sessionToken) {
+        send(JSON.stringify({ ...message, sessionToken }));
+        return;
+      }
+    } catch {
+      // Fall through to the original payload for non-JSON test frames.
+    }
+    send(rawMessage);
+  };
 }
 
 function readSocketMessage(socket) {

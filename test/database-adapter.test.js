@@ -80,6 +80,66 @@ test("SQLite database adapter owns setup, query execution, and close lifecycle",
   });
 });
 
+test("database inspection SQL rejects side-effect statements with a structured hint", async () => {
+  await withTempDir(async (dir) => {
+    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "inspection.db"));
+    const database = { adapter, sqlite: adapter };
+    try {
+      adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
+      adapter.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("one", "hello");
+
+      const readResult = await runReadOnlyQuery(database, "SELECT value FROM entries");
+      assert.deepEqual({ ...readResult, data: { ...readResult.data, rows: readResult.data.rows.map((row) => ({ ...row })) } }, {
+        ok: true,
+        data: {
+          columns: ["value"],
+          rows: [{ value: "hello" }],
+        },
+        error: null,
+      });
+      const pragmaResult = await runReadOnlyQuery(database, "PRAGMA table_info(entries)");
+      assert.deepEqual({ ...pragmaResult, data: { ...pragmaResult.data, rows: pragmaResult.data.rows.map((row) => ({ ...row })) } }, {
+        ok: true,
+        data: {
+          columns: ["cid", "name", "type", "notnull", "dflt_value", "pk"],
+          rows: [
+            { cid: 0, name: "id", type: "TEXT", notnull: 0, dflt_value: null, pk: 1 },
+            { cid: 1, name: "value", type: "TEXT", notnull: 1, dflt_value: null, pk: 0 },
+          ],
+        },
+        error: null,
+      });
+
+      for (const sql of [
+        "INSERT INTO entries (id, value) VALUES ('two', 'write')",
+        "CREATE TABLE surprise (id TEXT)",
+        "ATTACH DATABASE 'sidecar.db' AS sidecar",
+        "PRAGMA user_version = 7",
+        "SELECT nextval('entries_id_seq')",
+        "SELECT setval('entries_id_seq', 42)",
+        "SELECT set_config('search_path', 'public', true)",
+        'SELECT "load_extension"(\'x\')',
+        "SELECT `load_extension`('x')",
+        "SELECT [load_extension]('x')",
+      ]) {
+        assert.deepEqual(await runReadOnlyQuery(database, sql), {
+          ok: false,
+          data: null,
+          error: {
+            message: "Only read-only SQL is allowed.",
+            hint: "Use a SELECT, WITH, or safe metadata PRAGMA query for `sporades db query`.",
+          },
+        });
+      }
+
+      assert.equal(adapter.prepare("SELECT COUNT(*) AS count FROM entries").get().count, 1);
+      assert.equal(adapter.prepare("PRAGMA user_version").get().user_version, 0);
+    } finally {
+      adapter.close();
+    }
+  });
+});
+
 test("LocalFileStorageAdapter owns local file bytes, health, and close lifecycle", async () => {
   await withTempDir(async (dir) => {
     const storagePath = path.join(dir, "files");
@@ -3933,6 +3993,297 @@ test("failed email sign-in rotation keeps the old Anonymous session token valid"
       assert.equal(preservedSession.provider, "anonymous");
       assert.equal(preservedSession.userId, anonymousSession.auth.userId);
     } finally {
+      database.close();
+    }
+  });
+});
+
+test("email sign-in throttles repeated failed attempts for the same email and caller context", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true, email: { enabled: true } } },
+    });
+
+    try {
+      const signUpSession = await resolveAnonymousSession(database, null);
+      const signUp = await signUpWithEmail(database, signUpSession, "email", {
+        email: "ada@example.com",
+        password: "correct horse battery staple",
+        name: "Ada",
+      });
+      assert.equal(signUp.ok, true);
+
+      const callerSession = await resolveAnonymousSession(database, null);
+      const credentials = { email: "ada@example.com", password: "wrong password" };
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const result = await signInWithEmail(database, callerSession, credentials);
+        assert.equal(result.ok, false);
+        assert.equal(result.error.message, "Email or password is incorrect.");
+      }
+
+      const throttled = await signInWithEmail(database, callerSession, credentials);
+      assert.equal(throttled.ok, false);
+      assert.equal(throttled.error.message, "Email or password is incorrect.");
+      assert.equal(throttled.error.code, "INVALID_EMAIL_CREDENTIALS");
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("email sign-in throttling cannot be bypassed by rotating Anonymous sessions for the same email", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true, email: { enabled: true } } },
+    });
+
+    try {
+      const signUpSession = await resolveAnonymousSession(database, null);
+      const signUp = await signUpWithEmail(database, signUpSession, "email", {
+        email: "ada@example.com",
+        password: "correct horse battery staple",
+        name: "Ada",
+      });
+      assert.equal(signUp.ok, true);
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const rotatingSession = await resolveAnonymousSession(database, null);
+        const result = await signInWithEmail(database, rotatingSession, {
+          email: "ada@example.com",
+          password: "wrong password",
+        });
+        assert.equal(result.ok, false);
+        assert.equal(result.error.code, undefined);
+      }
+
+      const freshSession = await resolveAnonymousSession(database, null);
+      const throttled = await signInWithEmail(database, freshSession, {
+        email: "ada@example.com",
+        password: "correct horse battery staple",
+      });
+      assert.equal(throttled.ok, false);
+      assert.equal(throttled.error.message, "Email or password is incorrect.");
+      assert.equal(throttled.error.code, "INVALID_EMAIL_CREDENTIALS");
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("email sign-in throttling protects caller context and resets after successful non-abusive sign-in", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true, email: { enabled: true } } },
+    });
+
+    try {
+      const emails = ["ada", "grace", "mira", "lin", "sara"].map((name) => `${name}@example.com`);
+      const signUps = [];
+      for (const email of emails) {
+        const signUpSession = await resolveAnonymousSession(database, null);
+        const signUp = await signUpWithEmail(database, signUpSession, "email", {
+          email,
+          password: "correct horse battery staple",
+          name: email.split("@")[0],
+        });
+        assert.equal(signUp.ok, true);
+        signUps.push(signUp);
+      }
+      const recoveryEmail = "recovery@example.com";
+      const recoverySignUpSession = await resolveAnonymousSession(database, null);
+      const recoverySignUp = await signUpWithEmail(database, recoverySignUpSession, "email", {
+        email: recoveryEmail,
+        password: "correct horse battery staple",
+        name: "Recovery",
+      });
+      assert.equal(recoverySignUp.ok, true);
+
+      const abusiveSession = await resolveAnonymousSession(database, null);
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const result = await signInWithEmail(database, abusiveSession, {
+          email: emails[attempt],
+          password: "wrong password",
+        });
+        assert.equal(result.ok, false);
+      }
+      const abusiveThrottled = await signInWithEmail(database, abusiveSession, {
+        email: emails[0],
+        password: "correct horse battery staple",
+      });
+      assert.equal(abusiveThrottled.ok, false);
+      assert.equal(abusiveThrottled.error.message, "Email or password is incorrect.");
+
+      const normalSession = await resolveAnonymousSession(database, null);
+      const normalSignIn = await signInWithEmail(database, normalSession, {
+        email: emails[0],
+        password: "correct horse battery staple",
+      });
+      assert.equal(normalSignIn.ok, true);
+      assert.equal(normalSignIn.auth.userId, signUps[0].auth.userId);
+
+      const recoveringSession = await resolveAnonymousSession(database, null);
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const result = await signInWithEmail(database, recoveringSession, {
+          email: recoveryEmail,
+          password: "wrong password",
+        });
+        assert.equal(result.ok, false);
+      }
+      const recovered = await signInWithEmail(database, recoveringSession, {
+        email: recoveryEmail,
+        password: "correct horse battery staple",
+      });
+      assert.equal(recovered.ok, true);
+      assert.equal(recovered.auth.userId, recoverySignUp.auth.userId);
+      const recoveredSession = await resolveAnonymousSession(database, recovered.sessionToken);
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const result = await signInWithEmail(database, recoveredSession, {
+          email: recoveryEmail,
+          password: "wrong again",
+        });
+        assert.equal(result.ok, false);
+        assert.equal(result.error.code, undefined);
+      }
+      const throttledAgain = await signInWithEmail(database, recoveredSession, {
+        email: recoveryEmail,
+        password: "wrong again",
+      });
+      assert.equal(throttledAgain.error.code, "INVALID_EMAIL_CREDENTIALS");
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("email sign-in throttling prunes expired attempts and bounds stale state", async () => {
+  await withTempDir(async (dir) => {
+    const originalNow = Date.now;
+    let now = Date.parse("2026-07-09T12:00:00.000Z");
+    Date.now = () => now;
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true, email: { enabled: true } } },
+    });
+
+    try {
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        const rotatingSession = await resolveAnonymousSession(database, null);
+        const result = await signInWithEmail(database, rotatingSession, {
+          email: `attacker-${attempt}@example.com`,
+          password: "wrong password",
+        });
+        assert.equal(result.ok, false);
+      }
+      assert(database.__emailSignInThrottle.size <= 256);
+
+      now += 15 * 60 * 1000 + 1;
+      const afterCooldownSession = await resolveAnonymousSession(database, null);
+      await signInWithEmail(database, afterCooldownSession, {
+        email: "after-cooldown@example.com",
+        password: "wrong password",
+      });
+      assert(database.__emailSignInThrottle.size <= 2);
+    } finally {
+      Date.now = originalNow;
+      database.close();
+    }
+  });
+});
+
+test("email sign-in throttling preserves a throttled account bucket under filler pressure", async () => {
+  await withTempDir(async (dir) => {
+    const originalNow = Date.now;
+    let now = Date.parse("2026-07-09T12:00:00.000Z");
+    Date.now = () => now;
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true, email: { enabled: true } } },
+    });
+
+    try {
+      const signUpSession = await resolveAnonymousSession(database, null);
+      const signUp = await signUpWithEmail(database, signUpSession, "email", {
+        email: "target@example.com",
+        password: "correct horse battery staple",
+        name: "Target",
+      });
+      assert.equal(signUp.ok, true);
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const rotatingSession = await resolveAnonymousSession(database, null);
+        const result = await signInWithEmail(database, rotatingSession, {
+          email: "target@example.com",
+          password: "wrong password",
+        });
+        assert.equal(result.ok, false);
+      }
+      assert.equal(database.__emailSignInThrottle.get("email\0target@example.com").count, 5);
+
+      now += 60 * 1000;
+      for (let attempt = 0; attempt < 300; attempt += 1) {
+        const fillerSession = await resolveAnonymousSession(database, null);
+        const result = await signInWithEmail(database, fillerSession, {
+          email: `filler-${attempt}@example.com`,
+          password: "wrong password",
+        });
+        assert.equal(result.ok, false);
+      }
+      assert(database.__emailSignInThrottle.size <= 256);
+      assert.equal(database.__emailSignInThrottle.get("email\0target@example.com").count, 5);
+
+      const freshSession = await resolveAnonymousSession(database, null);
+      const throttled = await signInWithEmail(database, freshSession, {
+        email: "target@example.com",
+        password: "correct horse battery staple",
+      });
+      assert.equal(throttled.ok, false);
+      assert.equal(throttled.error.code, "INVALID_EMAIL_CREDENTIALS");
+    } finally {
+      Date.now = originalNow;
+      database.close();
+    }
+  });
+});
+
+test("email sign-in throttling allows attempts again after the cooldown window", async () => {
+  await withTempDir(async (dir) => {
+    const originalNow = Date.now;
+    let now = Date.parse("2026-07-09T12:00:00.000Z");
+    Date.now = () => now;
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true, email: { enabled: true } } },
+    });
+
+    try {
+      const signUpSession = await resolveAnonymousSession(database, null);
+      const signUp = await signUpWithEmail(database, signUpSession, "email", {
+        email: "ada@example.com",
+        password: "correct horse battery staple",
+        name: "Ada",
+      });
+      assert.equal(signUp.ok, true);
+
+      const callerSession = await resolveAnonymousSession(database, null);
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        await signInWithEmail(database, callerSession, {
+          email: "ada@example.com",
+          password: "wrong password",
+        });
+      }
+      const throttled = await signInWithEmail(database, callerSession, {
+        email: "ada@example.com",
+        password: "wrong password",
+      });
+      assert.equal(throttled.error.code, "INVALID_EMAIL_CREDENTIALS");
+
+      now += 15 * 60 * 1000 + 1;
+      const afterCooldown = await signInWithEmail(database, callerSession, {
+        email: "ada@example.com",
+        password: "wrong password",
+      });
+      assert.equal(afterCooldown.ok, false);
+      assert.equal(afterCooldown.error.message, "Email or password is incorrect.");
+      assert.equal(afterCooldown.error.code, undefined);
+    } finally {
+      Date.now = originalNow;
       database.close();
     }
   });

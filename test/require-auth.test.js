@@ -200,16 +200,36 @@ async function installFakeReact(projectDir) {
   );
 }
 
-function openSocket(baseUrl, sessionToken = null) {
+async function openSocket(baseUrl, sessionToken = null) {
+  const connectionToken = await readPageConnectionToken(baseUrl);
   return new Promise((resolve, reject) => {
     const url = new URL("/__sporades/ws", baseUrl);
-    if (sessionToken) {
-      url.searchParams.set("sessionToken", sessionToken);
-    }
+    url.searchParams.set("connectionToken", connectionToken);
     const socket = new WebSocket(url);
+    if (sessionToken) {
+      const send = socket.send.bind(socket);
+      socket.send = (rawMessage) => {
+        try {
+          const message = JSON.parse(rawMessage);
+          send(JSON.stringify({ ...message, sessionToken }));
+          return;
+        } catch {
+          send(rawMessage);
+        }
+      };
+    }
     socket.addEventListener("open", () => resolve(socket), { once: true });
     socket.addEventListener("error", reject, { once: true });
   });
+}
+
+async function readPageConnectionToken(baseUrl) {
+  const response = await fetch(new URL("/", baseUrl));
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  const match = /window\.__SPORADES_CONNECTION_TOKEN="([^"]+)"/.exec(html);
+  assert.ok(match, "Expected served page to include a Sporades connection token.");
+  return match[1];
 }
 
 function waitForSocketMessage(socket, predicate) {

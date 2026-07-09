@@ -115,6 +115,7 @@ function restartPolicyStatus(mode, overrides = {}) {
 
 // src/server-runtime-source.ts
 import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 function logPayloadMaxBytes(config = {}) {
   const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
   return Number.isInteger(configured) && configured > 0 ? configured : 4096;
@@ -3406,6 +3407,10 @@ async function dockerRunArgs(lifecycle, releaseId) {
     "PORT=4000",
     "--env",
     "SPORADES_LOG_STDOUT=1",
+    "--env",
+    "SPORADES_SECURITY_SESSION=hosted",
+    "--env",
+    `SPORADES_PUBLIC_ORIGIN=${lifecycle.hostedUrl}`,
     "--env",
     `SPORADES_RELEASE_ID=${releaseId}`
   );
