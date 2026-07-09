@@ -16,6 +16,11 @@ test("privileged runs enqueue, execute, inspect, and audit system-owned jobs", a
     jobs: { maintain: job((ctx, payload) => { seen.push(ctx.auth.userId); return payload; }) },
     mutations: {
       enqueue: mutation((ctx) => ctx.privileged.run({ operation: "jobs.enqueue", targetResourceKind: "job-queue" }, (privilegedCtx) => privilegedCtx.jobs.enqueue("maintain", { ok: true }))),
+      enqueueTwice: mutation((ctx) => ctx.privileged.run({ operation: "jobs.enqueue-twice", targetResourceKind: "job-queue" }, async (privilegedCtx) => {
+        const first = await privilegedCtx.jobs.enqueue("maintain", { ok: "once" }, { idempotencyKey: "privileged-once" });
+        const second = await privilegedCtx.jobs.enqueue("maintain", { ok: "ignored" }, { idempotencyKey: "privileged-once" });
+        return { first, second };
+      })),
       get: mutation((ctx, id) => ctx.privileged.run({ operation: "jobs.get", targetResourceKind: "job-queue" }, (privilegedCtx) => privilegedCtx.jobs.get(id))),
       list: mutation((ctx) => ctx.privileged.run({ operation: "jobs.list", targetResourceKind: "job-queue" }, (privilegedCtx) => privilegedCtx.jobs.list())),
       leak: mutation(async (ctx) => { leakedJobs = await ctx.privileged.run({ operation: "jobs.leak", targetResourceKind: "job-queue" }, (privilegedCtx) => privilegedCtx.jobs); return true; }),
@@ -26,10 +31,15 @@ test("privileged runs enqueue, execute, inspect, and audit system-owned jobs", a
     const queued = await runMutation(database, auth("user-a"), "enqueue", []);
     assert.equal(queued.ok, true);
     assert.deepEqual(queued.data.actor, { mode: "privileged-server-role" });
+    const repeated = await runMutation(database, auth("user-a"), "enqueueTwice", []);
+    assert.equal(repeated.ok, true);
+    assert.equal(repeated.data.first.id, repeated.data.second.id);
     await new Promise((resolve) => setTimeout(resolve, 25));
-    assert.deepEqual(seen, ["__privileged__"]);
+    assert.equal(seen.every((userId) => userId === "__privileged__"), true);
+    assert.equal(seen.length, 2);
     assert.equal((await runMutation(database, auth("user-a"), "get", [queued.data.id])).data.id, queued.data.id);
     assert.equal((await runMutation(database, auth("user-a"), "list", [])).data.jobs.some((entry) => entry.id === queued.data.id), true);
+    assert.equal((await runMutation(database, auth("user-a"), "list", [])).data.jobs.filter((entry) => entry.id === repeated.data.first.id).length, 1);
     assert.equal((await runMutation(database, auth("user-a"), "leak", [])).ok, true);
     const leaked = await runMutation(database, auth("user-a"), "useLeak", []);
     assert.equal(leaked.ok, false);
