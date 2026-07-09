@@ -66,6 +66,23 @@ test("sporades -h prints top-level CLI help", async () => {
   });
 });
 
+test("sporades --version prints the baked local CLI version", async () => {
+  await withTempDir(async (dir) => {
+    const plain = await runCli(["--version"], { cwd: dir });
+    assert.equal(plain.code, 0, plain.stderr);
+    assert.equal(plain.stderr, "");
+    assert.equal(plain.stdout, `${rootPackageJson.version}\n`);
+
+    const shorthandJson = await runCli(["-v", "--json"], { cwd: dir });
+    assert.equal(shorthandJson.code, 0, shorthandJson.stderr);
+    assert.deepEqual(JSON.parse(shorthandJson.stdout), {
+      ok: true,
+      data: { version: rootPackageJson.version, source: "cli" },
+      error: null,
+    });
+  });
+});
+
 test("sporades command --help prints command-specific help", async () => {
   const cases = [
     ["create", /^Usage: sporades create <name> \[options\]/, /--template <name>/],

@@ -14,6 +14,7 @@ import { createWebSocketHub, openDevDatabase, prepareHttpSecurity, routeRuntimeH
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
 const hostHelperPath = path.join(repoRoot, "bin", "sporades-host-helper.js");
+const rootPackageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
 const TEST_PUBLIC_KEY = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDI9R+ElI6awrzqT1DDZjMa6q7iH+jF5bughycSLBOa/ test@example";
 const TEST_WEBSOCKET_TIMEOUT_MS = 10000;
 
@@ -289,6 +290,35 @@ process.exit(42);
     },
     async assertNotCalled() {
       await assert.rejects(readFile(logPath, "utf8"), { code: "ENOENT" });
+    },
+  };
+}
+
+async function installFakeShellSsh(dir) {
+  const fakeBinDir = path.join(dir, "fake-shell-ssh-bin");
+  const logPath = path.join(dir, "ssh-shell-calls.jsonl");
+  const sshPath = path.join(fakeBinDir, "ssh");
+  await mkdir(fakeBinDir, { recursive: true });
+  await writeFile(
+    sshPath,
+    `#!/usr/bin/env node
+const { appendFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(process.env.FAKE_SSH_SHELL_LOG, JSON.stringify({ args, cwd: process.cwd() }) + "\\n");
+if (process.env.FAKE_SSH_SHELL_STATUS) {
+  process.exit(Number(process.env.FAKE_SSH_SHELL_STATUS));
+}
+process.exit(0);
+`,
+  );
+  await chmod(sshPath, 0o755);
+
+  return {
+    fakeBinDir,
+    logPath,
+    env: {
+      PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
+      FAKE_SSH_SHELL_LOG: logPath,
     },
   };
 }
@@ -1194,6 +1224,129 @@ test("sporades host bind is a local-only project remote binding helper", async (
 
     await assert.rejects(readFile(path.join(configDir, "remote-binding.json"), "utf8"), { code: "ENOENT" });
     await fakeSsh.assertNotCalled();
+  });
+});
+
+test("sporades --version --host reports the Host server CLI version", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    await writeHostProfileConfig(configDir, {
+      profiles: {
+        personal: {
+          server: "root@203.0.113.10",
+          domain: "capsules.example.dev",
+          scheme: "https",
+          remoteRoot: "/srv/sporades",
+          tls: { mode: "automatic" },
+        },
+      },
+      currentHostAlias: "personal",
+    });
+    const fakeSsh = await installContractFakeSsh(
+      dir,
+      `
+const request = JSON.parse(stdin);
+if (request.action !== "host.version") {
+  process.stderr.write("unexpected action " + request.action + "\\n");
+  process.exit(1);
+}
+process.stdout.write(JSON.stringify({
+  ok: true,
+  data: {
+    version: "${rootPackageJson.version}",
+    source: "host",
+    host: {
+      alias: request.host.alias,
+      domain: request.host.domain
+    }
+  },
+  error: null
+}) + "\\n");
+`,
+    );
+
+    const plain = await runCli(["--version", "--host", "personal"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(plain.code, 0, plain.stderr);
+    assert.equal(plain.stdout, `${rootPackageJson.version}\n`);
+
+    const json = await runCli(["-v", "--host", "personal", "--json"], {
+      cwd: dir,
+      env: { ...hostEnv(configDir), ...fakeSsh.env },
+    });
+    assert.equal(json.code, 0, json.stderr);
+    assert.deepEqual(JSON.parse(json.stdout), {
+      ok: true,
+      data: {
+        version: rootPackageJson.version,
+        source: "host",
+        host: {
+          alias: "personal",
+          domain: "capsules.example.dev",
+        },
+      },
+      error: null,
+    });
+
+    const calls = (await readFile(fakeSsh.logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls.map((call) => JSON.parse(call.stdin).action), ["host.version", "host.version"]);
+  });
+});
+
+test("sporades host upgrade copies the running CLI sibling Host helper to the selected Host server", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    await writeHostProfileConfig(configDir, {
+      profiles: {
+        personal: {
+          server: "root@example.test",
+          domain: "capsules.example.dev",
+          scheme: "https",
+          remoteRoot: "/opt/sporades",
+          tls: { mode: "automatic" },
+        },
+      },
+      currentHostAlias: "personal",
+    });
+    const fakeSsh = await installFakeShellSsh(path.join(dir, "fake-ssh"));
+    const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
+    const env = {
+      ...hostEnv(configDir),
+      ...fakeSsh.env,
+      ...fakeScp.env,
+      PATH: `${fakeSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+
+    const result = await runCli(["host", "upgrade", "--host", "personal", "--json"], {
+      cwd: dir,
+      env,
+    });
+    assert.equal(result.code, 0, result.stderr);
+
+    const output = JSON.parse(result.stdout);
+    assert.deepEqual(output, {
+      ok: true,
+      data: {
+        alias: "personal",
+        version: rootPackageJson.version,
+        localHelper: path.join(repoRoot, "bin", "sporades-host-helper.js").split(path.sep).join("/"),
+        remoteHelper: "/opt/sporades/bin/sporades-host-helper",
+      },
+      error: null,
+    });
+
+    const sshCalls = (await readFile(fakeSsh.logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(sshCalls.map((call) => call.args), [
+      ["root@example.test", "mkdir -p '/opt/sporades/bin'"],
+      ["root@example.test", "chmod 0755 '/opt/sporades/bin/sporades-host-helper'"],
+    ]);
+
+    const [scpCall] = (await readFile(fakeScp.logPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(scpCall.source, path.join(repoRoot, "bin", "sporades-host-helper.js"));
+    assert.equal(scpCall.target, "root@example.test:/opt/sporades/bin/sporades-host-helper");
   });
 });
 

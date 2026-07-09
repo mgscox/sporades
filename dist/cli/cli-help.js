@@ -118,6 +118,7 @@ Profile commands:
   use <alias>         Set the default Host profile
   current             Print the selected Host profile
   bootstrap           Provision the remote Host server
+  upgrade             Copy the local Host helper to the Host server
   health [subname]    Check Host server or Hosted Capsule health
 
 Capsule commands:
@@ -208,6 +209,8 @@ Options:
     
     Options:
       --help, -h     Show help for command
+      --version, -v  Show CLI version
+      --host <alias> Show Host server CLI version with --version
       --json         Write JSON output when supported by the command
     `,
 };

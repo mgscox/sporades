@@ -93,6 +93,7 @@ import type {
   HostHelperEnvelope,
 } from "./host-helper-contract.js";
 import { commandError, errorDetails, writeResult, type CommandError, type LooseRecord } from "./cli-support.js";
+import { CLI_VERSION } from "./cli-version.js";
 
 type HostProfile = LooseRecord;
 type CapsuleService = LooseRecord;
@@ -145,7 +146,13 @@ main().catch((error) => {
 });
 
 async function main() {
-  const [command = '-h', ...args] = process.argv.slice(2);
+  const rawArgs = process.argv.slice(2);
+  if (rawArgs.includes("--version") || rawArgs.includes("-v")) {
+    await printVersion(parseVersionArgs(rawArgs));
+    return;
+  }
+
+  const [command = '-h', ...args] = rawArgs;
   const isHelp = args.includes('-h') || args.includes('--help');
 
   switch (command) {
@@ -249,6 +256,63 @@ async function main() {
 
 function printHelp(cmd?: string) {
   process.stdout.write(renderCliHelp(cmd));
+}
+
+function parseVersionArgs(args: string[]) {
+  let hostAlias = null;
+  let json = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--version" || arg === "-v") {
+      continue;
+    }
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg === "--host") {
+      hostAlias = readFlagValue(args, ++index, "--host");
+      continue;
+    }
+    throw commandError("Unknown version argument.", "Use `sporades --version` or `sporades --version --host <alias>`.");
+  }
+
+  if (hostAlias) {
+    validateHostAlias(hostAlias);
+  }
+
+  return { hostAlias, json, projectDir: process.cwd() };
+}
+
+async function printVersion(options: LooseRecord) {
+  if (!options.hostAlias) {
+    if (options.json) {
+      writeResult({ ok: true, data: { version: CLI_VERSION, source: "cli" }, error: null });
+    } else {
+      process.stdout.write(`${CLI_VERSION}\n`);
+    }
+    return;
+  }
+
+  const config = await readHostConfig();
+  const resolved = resolveHostProfile(config, options.hostAlias);
+  const result = invokeRemoteHostHelper({
+    alias: resolved.alias,
+    profile: resolved.profile,
+    action: "host.version",
+    projectDir: options.projectDir,
+  });
+
+  if (options.json) {
+    writeResult(result, !result.ok);
+    return;
+  }
+
+  if (!result.ok) {
+    throw commandError(result.error.message, result.error.hint);
+  }
+  process.stdout.write(`${result.data.version}\n`);
 }
 
 function parseCreateArgs(args: string[]): LooseRecord {
@@ -771,7 +835,7 @@ function parseHostArgs(args: string[]): LooseRecord {
         if (arg.startsWith("--")) {
           throw commandError(
             `Unknown flag: ${arg}`,
-            "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
+            "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host upgrade`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
           );
         }
         positional.push(arg);
@@ -886,6 +950,15 @@ function parseHostArgs(args: string[]): LooseRecord {
     case "bootstrap":
       if (positional.length > 0) {
         throw commandError("Too many positional arguments.", "Use `sporades host bootstrap --host <alias> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      return { subcommand, hostAlias, json, projectDir: process.cwd() };
+
+    case "upgrade":
+      if (positional.length > 0) {
+        throw commandError("Too many positional arguments.", "Use `sporades host upgrade --host <alias> --json`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -1064,7 +1137,7 @@ function parseHostArgs(args: string[]): LooseRecord {
     default:
       throw commandError(
         `Unknown host command: ${subcommand ?? ""}`.trim(),
-        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
+        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host upgrade`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`.",
       );
   }
 }
@@ -2767,6 +2840,23 @@ async function manageHost(options: LooseRecord) {
       return;
     }
 
+    case "upgrade": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const result = upgradeHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        projectDir: options.projectDir,
+      });
+
+      if (options.json) {
+        writeResult(result, false);
+        return;
+      }
+      process.stdout.write(`Host helper upgraded on ${resolved.alias}: ${result.data.remoteHelper}\n`);
+      return;
+    }
+
     case "list": {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
@@ -4388,6 +4478,75 @@ function unexpectedHostHealthResponse(alias: any, healthUrl: string, statusCode:
 
 function remoteHostHelperPath(profile: LooseRecord) {
   return `${profile.remoteRoot}/bin/sporades-host-helper`;
+}
+
+function localHostHelperPath() {
+  return path.join(path.dirname(fileURLToPath(import.meta.url)), "sporades-host-helper.js");
+}
+
+function upgradeHostHelper(options: LooseRecord) {
+  const localHelper = localHostHelperPath();
+  const remoteHelper = remoteHostHelperPath(options.profile);
+  const remoteBin = path.posix.dirname(remoteHelper);
+
+  try {
+    if (!statSync(localHelper).isFile()) {
+      throw new Error("not a file");
+    }
+  } catch {
+    throw commandError(
+      "Local Host helper file was not found.",
+      "Run `npm run build` or reinstall Sporades, then retry `sporades host upgrade --host <alias>`.",
+    );
+  }
+
+  const prepare = spawnSync("ssh", [options.profile.server, `mkdir -p ${quoteRemoteShell(remoteBin)}`], {
+    cwd: options.projectDir,
+    encoding: "utf8",
+  });
+  if (prepare.error || prepare.status !== 0) {
+    throw commandError(
+      "Failed to prepare Host helper directory.",
+      "Check the Host profile SSH target, network connectivity, SSH key access, and remote root permissions.",
+    );
+  }
+
+  const upload = spawnSync("scp", [localHelper, `${options.profile.server}:${remoteHelper}`], {
+    cwd: options.projectDir,
+    encoding: "utf8",
+  });
+  if (upload.error || upload.status !== 0) {
+    throw commandError(
+      "Failed to upload Host helper.",
+      "Check the Host profile SSH target, network connectivity, SSH key access, and remote root permissions.",
+    );
+  }
+
+  const chmod = spawnSync("ssh", [options.profile.server, `chmod 0755 ${quoteRemoteShell(remoteHelper)}`], {
+    cwd: options.projectDir,
+    encoding: "utf8",
+  });
+  if (chmod.error || chmod.status !== 0) {
+    throw commandError(
+      "Failed to mark the Host helper executable.",
+      "Check the Host profile SSH target, SSH key access, and remote root permissions.",
+    );
+  }
+
+  return {
+    ok: true,
+    data: {
+      alias: options.alias,
+      version: CLI_VERSION,
+      localHelper: normalisePathForOutput(localHelper),
+      remoteHelper,
+    },
+    error: null as any,
+  };
+}
+
+function quoteRemoteShell(value: string) {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 async function writeGithubAutodeployWorkflow(options: LooseRecord) {

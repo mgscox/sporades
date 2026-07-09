@@ -11063,6 +11063,7 @@ Profile commands:
   use <alias>         Set the default Host profile
   current             Print the selected Host profile
   bootstrap           Provision the remote Host server
+  upgrade             Copy the local Host helper to the Host server
   health [subname]    Check Host server or Hosted Capsule health
 
 Capsule commands:
@@ -11153,6 +11154,8 @@ Options:
     
     Options:
       --help, -h     Show help for command
+      --version, -v  Show CLI version
+      --host <alias> Show Host server CLI version with --version
       --json         Write JSON output when supported by the command
     `
 };
@@ -12949,6 +12952,9 @@ jobs:
 `;
 }
 
+// src/cli/cli-version.ts
+var CLI_VERSION = "0.3.0";
+
 // src/cli/sporades.ts
 var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact"]);
 var SUPPORTED_TEMPLATES = /* @__PURE__ */ new Set(["blank", "todo", "guestbook", "photo-library"]);
@@ -12982,7 +12988,12 @@ main().catch((error) => {
   );
 });
 async function main() {
-  const [command = "-h", ...args] = process.argv.slice(2);
+  const rawArgs = process.argv.slice(2);
+  if (rawArgs.includes("--version") || rawArgs.includes("-v")) {
+    await printVersion(parseVersionArgs(rawArgs));
+    return;
+  }
+  const [command = "-h", ...args] = rawArgs;
   const isHelp = args.includes("-h") || args.includes("--help");
   switch (command) {
     case "--help":
@@ -13072,6 +13083,57 @@ async function main() {
 }
 function printHelp(cmd) {
   process.stdout.write(renderCliHelp(cmd));
+}
+function parseVersionArgs(args) {
+  let hostAlias = null;
+  let json = false;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--version" || arg === "-v") {
+      continue;
+    }
+    if (arg === "--json") {
+      json = true;
+      continue;
+    }
+    if (arg === "--host") {
+      hostAlias = readFlagValue(args, ++index, "--host");
+      continue;
+    }
+    throw commandError4("Unknown version argument.", "Use `sporades --version` or `sporades --version --host <alias>`.");
+  }
+  if (hostAlias) {
+    validateHostAlias(hostAlias);
+  }
+  return { hostAlias, json, projectDir: process.cwd() };
+}
+async function printVersion(options) {
+  if (!options.hostAlias) {
+    if (options.json) {
+      writeResult({ ok: true, data: { version: CLI_VERSION, source: "cli" }, error: null });
+    } else {
+      process.stdout.write(`${CLI_VERSION}
+`);
+    }
+    return;
+  }
+  const config = await readHostConfig();
+  const resolved = resolveHostProfile(config, options.hostAlias);
+  const result = invokeRemoteHostHelper({
+    alias: resolved.alias,
+    profile: resolved.profile,
+    action: "host.version",
+    projectDir: options.projectDir
+  });
+  if (options.json) {
+    writeResult(result, !result.ok);
+    return;
+  }
+  if (!result.ok) {
+    throw commandError4(result.error.message, result.error.hint);
+  }
+  process.stdout.write(`${result.data.version}
+`);
 }
 function parseCreateArgs(args) {
   let name = null;
@@ -13507,7 +13569,7 @@ function parseHostArgs(args) {
         if (arg.startsWith("--")) {
           throw commandError4(
             `Unknown flag: ${arg}`,
-            "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`."
+            "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host upgrade`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`."
           );
         }
         positional.push(arg);
@@ -13614,6 +13676,14 @@ function parseHostArgs(args) {
     case "bootstrap":
       if (positional.length > 0) {
         throw commandError4("Too many positional arguments.", "Use `sporades host bootstrap --host <alias> --json`.");
+      }
+      if (hostAlias) {
+        validateHostAlias(hostAlias);
+      }
+      return { subcommand, hostAlias, json, projectDir: process.cwd() };
+    case "upgrade":
+      if (positional.length > 0) {
+        throw commandError4("Too many positional arguments.", "Use `sporades host upgrade --host <alias> --json`.");
       }
       if (hostAlias) {
         validateHostAlias(hostAlias);
@@ -13781,7 +13851,7 @@ function parseHostArgs(args) {
     default:
       throw commandError4(
         `Unknown host command: ${subcommand ?? ""}`.trim(),
-        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`."
+        "Use `sporades host add`, `sporades host use`, `sporades host current`, `sporades host health`, `sporades host bind`, `sporades host register`, `sporades host rotate-key`, `sporades host unregister`, `sporades host delete`, `sporades host push`, `sporades host bootstrap`, `sporades host upgrade`, `sporades host list`, `sporades host releases`, `sporades host rollback`, `sporades host stats`, `sporades host logs`, or `sporades host invoke`."
       );
   }
 }
@@ -15346,6 +15416,22 @@ async function manageHost(options) {
 `);
       return;
     }
+    case "upgrade": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const result = upgradeHostHelper({
+        alias: resolved.alias,
+        profile: resolved.profile,
+        projectDir: options.projectDir
+      });
+      if (options.json) {
+        writeResult(result, false);
+        return;
+      }
+      process.stdout.write(`Host helper upgraded on ${resolved.alias}: ${result.data.remoteHelper}
+`);
+      return;
+    }
     case "list": {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
@@ -16819,6 +16905,67 @@ function unexpectedHostHealthResponse(alias, healthUrl, statusCode) {
 }
 function remoteHostHelperPath(profile) {
   return `${profile.remoteRoot}/bin/sporades-host-helper`;
+}
+function localHostHelperPath() {
+  return path6.join(path6.dirname(fileURLToPath(import.meta.url)), "sporades-host-helper.js");
+}
+function upgradeHostHelper(options) {
+  const localHelper = localHostHelperPath();
+  const remoteHelper = remoteHostHelperPath(options.profile);
+  const remoteBin = path6.posix.dirname(remoteHelper);
+  try {
+    if (!statSync(localHelper).isFile()) {
+      throw new Error("not a file");
+    }
+  } catch {
+    throw commandError4(
+      "Local Host helper file was not found.",
+      "Run `npm run build` or reinstall Sporades, then retry `sporades host upgrade --host <alias>`."
+    );
+  }
+  const prepare = spawnSync2("ssh", [options.profile.server, `mkdir -p ${quoteRemoteShell(remoteBin)}`], {
+    cwd: options.projectDir,
+    encoding: "utf8"
+  });
+  if (prepare.error || prepare.status !== 0) {
+    throw commandError4(
+      "Failed to prepare Host helper directory.",
+      "Check the Host profile SSH target, network connectivity, SSH key access, and remote root permissions."
+    );
+  }
+  const upload = spawnSync2("scp", [localHelper, `${options.profile.server}:${remoteHelper}`], {
+    cwd: options.projectDir,
+    encoding: "utf8"
+  });
+  if (upload.error || upload.status !== 0) {
+    throw commandError4(
+      "Failed to upload Host helper.",
+      "Check the Host profile SSH target, network connectivity, SSH key access, and remote root permissions."
+    );
+  }
+  const chmod3 = spawnSync2("ssh", [options.profile.server, `chmod 0755 ${quoteRemoteShell(remoteHelper)}`], {
+    cwd: options.projectDir,
+    encoding: "utf8"
+  });
+  if (chmod3.error || chmod3.status !== 0) {
+    throw commandError4(
+      "Failed to mark the Host helper executable.",
+      "Check the Host profile SSH target, SSH key access, and remote root permissions."
+    );
+  }
+  return {
+    ok: true,
+    data: {
+      alias: options.alias,
+      version: CLI_VERSION,
+      localHelper: normalisePathForOutput(localHelper),
+      remoteHelper
+    },
+    error: null
+  };
+}
+function quoteRemoteShell(value) {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 async function writeGithubAutodeployWorkflow(options) {
   const workflow = createGithubAutodeployWorkflow({
