@@ -394,7 +394,7 @@ test("docs describe the implemented Privileged audit event contract", async () =
   assert.match(prd, /There is no audit-outcome concept of\s+allowed, denied, or\s+skipped/);
   assert.match(prd, /Existing SSH and platform audit emitters must use this same `outcome` vocabulary/);
   assert.match(prd, /the outcome\s+field does not use SSH-specific or legacy success\/failure terms/);
-  for (const staleOutcome of ["allowed", "denied", "skipped"]) {
+  for (const staleOutcome of ["requested", "allowed", "denied", "succeeded", "failed", "skipped"]) {
     assert.doesNotMatch(prd, new RegExp(`Outcomes use[^.]+${staleOutcome}`));
   }
 
@@ -423,6 +423,56 @@ test("docs describe the implemented Privileged audit event contract", async () =
   assert.match(context, /platform-owned structured JSONL log event/);
   assert.match(context, /current SSH configuration, lifecycle, and inspection events/);
   assert.match(context, /Capsule app `ctx\.log` cannot emit Privileged audit events/);
+});
+
+test("docs describe the implemented Privileged server role contract", async () => {
+  const [roadmap, prd, userGuide, apiServer, apiPrivileged] = await Promise.all([
+    readProjectFile("docs/ROADMAP.md"),
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/user-guide.md"),
+    readProjectFile("docs/api/modules/server.html"),
+    readProjectFile("docs/api/types/server.PrivilegedApi.html"),
+  ]);
+
+  assert.match(roadmap, /Privileged server role \| implemented/);
+  assert.doesNotMatch(roadmap, /\| Privileged server role \| design \|/);
+  assert.match(roadmap, /Planning remains in `\.scratch\/privileged-server-role\/PRD\.md`/);
+  assert.match(roadmap, /Job queue \| design[\s\S]*depends on the implemented Privileged server role actor boundary/);
+  assert.match(roadmap, /Job scheduling \| design[\s\S]*depends on the implemented Privileged server role actor boundary/);
+
+  const implementedScope = prd.slice(prd.indexOf("### Implemented scope"), prd.indexOf("### Future scope"));
+  const futureScope = prd.slice(prd.indexOf("### Future scope"), prd.indexOf("## Product Principles"));
+  assert.match(implementedScope, /Privileged server role/);
+  assert.match(implementedScope, /`ctx\.privileged\.run\(\.\.\.\)`/);
+  assert.doesNotMatch(futureScope, /- Privileged server role:/);
+  assert.doesNotMatch(futureScope, /trusted userless work inside a Capsule/);
+
+  assert.match(prd, /Privileged server role is implemented/);
+  assert.match(prd, /`ctx\.privileged\.run\(\.\.\.\)`/);
+  assert.match(prd, /query, mutation, Custom endpoint,\s+App message, context middleware, and supported mutation hook/);
+  assert.match(prd, /current user identity/);
+  assert.match(prd, /captured user identity/);
+  assert.match(prd, /Privileged server role/);
+  for (const notA of ["Capsule role", "app admin", "Teams", "user", "session", "browser credential", "service account"]) {
+    assert.match(prd, new RegExp(notA));
+  }
+  for (const outcome of ["started", "completed", "errored", "finished"]) {
+    assert.match(prd, new RegExp(outcome));
+  }
+  assert.match(prd, /Privileged run aborted/);
+  assert.match(prd, /generated runtime artifacts/);
+
+  assert.match(userGuide, /Choosing a server actor/);
+  assert.match(userGuide, /current user/);
+  assert.match(userGuide, /future captured user identity/);
+  assert.match(userGuide, /Privileged server role/);
+  assert.match(userGuide, /`ctx\.privileged\.run\(\.\.\.\)`/);
+  assert.match(userGuide, /not a Capsule role, app admin, Team, user, session,\s+service account, or browser credential/);
+
+  assert.match(apiServer, /PrivilegedApi/);
+  assert.match(apiServer, /PrivilegedContext/);
+  assert.match(apiPrivileged, /ctx\.privileged\.run/);
+  assert.match(apiPrivileged, /server-only/);
 });
 
 test("docs describe doctor diagnostics as read-only coordination", async () => {

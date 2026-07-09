@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Add Privileged Actor Identity And Sentinel Guardrails
 

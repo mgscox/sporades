@@ -94,6 +94,8 @@ const app = capsule({
         const file = ctx.acl.storage.get("files", "/avatars/profile.png");
         const hasFile = ctx.acl.storage.exists("files", file?.id ?? "/avatars/profile.png");
         const userExists = ctx.acl.db.exists("users", row?.authorId ?? "missing");
+        // @ts-expect-error ACL policy contexts cannot start privileged server-role work.
+        ctx.privileged.run({ operation: "acl.bad", targetResourceKind: "capsule-db" }, () => true);
         if (file) {
           file.bucket.toUpperCase();
           // @ts-expect-error ACL file metadata exposes logical bucket names, not internal bucket row IDs.
@@ -128,6 +130,22 @@ const app = capsule({
       await Promise.resolve();
       return ctx.db.todos.where("ownerId", ctx.auth.userId).all();
     }),
+    privilegedTodos: query(async (ctx) => {
+      const rows = await ctx.privileged.run({
+        operation: "todos.maintenance.read",
+        targetResourceKind: "capsule-db",
+        metadata: { reason: "type-test" },
+        signal: new AbortController().signal,
+      }, async (privilegedCtx) => {
+        privilegedCtx.auth.userId satisfies "__privileged__";
+        const fileUrl = await privilegedCtx.files.url("/reports/private.txt");
+        if (fileUrl.ok) {
+          fileUrl.data.url.toUpperCase();
+        }
+        return privilegedCtx.db.todos.all();
+      });
+      return rows.length;
+    }),
   },
   mutations: {
     addTodo: mutation(async (ctx, text) => {
@@ -160,6 +178,10 @@ const app = capsule({
   },
   messages: {
     typing: message(async (ctx, data) => {
+      await ctx.privileged.run({
+        operation: "messages.auditTyping",
+        targetResourceKind: "capsule-db",
+      }, (privilegedCtx) => privilegedCtx.db.todos.all().length);
       const sentToClients: number = ctx.messages.send({ type: "typing", data, scope: "currentUser" });
       return { ok: true, sentToClients };
     }),
@@ -168,6 +190,7 @@ const app = capsule({
     beforeMutation: [
       async ({ ctx, name, args }) => {
         await Promise.resolve();
+        await ctx.privileged.run({ operation: "hooks.beforeMutation", targetResourceKind: "capsule-db" }, () => undefined);
         ctx.log.info("before", name, args.length);
       },
     ],
@@ -192,6 +215,10 @@ todos.data?.map((todo) => todo.text.toUpperCase());
 hooks.useMutation("addTodo").run("Ship the types");
 hooks.useAuth().signIn("google");
 auth.signUp("email", { email: "a@example.com", password: "secret", name: "Ada" });
+// @ts-expect-error browser auth API does not expose privileged server-role authority.
+auth.privileged;
+// @ts-expect-error browser file API cannot run privileged file operations.
+files.privileged;
 files.upload(new Blob(["hello"], { type: "text/plain" }));
 files.publicUrl("/docs/hello.txt", { expires: new globalThis.Date() });
 // @ts-expect-error public URL expiry option is named expires, not expiresAt.

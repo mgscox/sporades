@@ -47,6 +47,17 @@ async function withTempDir(fn) {
 
 const createRuntimeLogSink = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createRuntimeLogSink");
 const emitPrivilegedAuditEvent = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "emitPrivilegedAuditEvent");
+const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
+const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
+
+async function captureErrorCode(fn) {
+  try {
+    await fn();
+    return null;
+  } catch (error) {
+    return error.code ?? error.message;
+  }
+}
 
 test("SQLite database adapter owns setup, query execution, and close lifecycle", async () => {
   await withTempDir(async (dir) => {
@@ -1540,7 +1551,7 @@ test("Privileged audit events use the stable runtime-owned envelope and outcome 
     );
 
     try {
-      const outcomes = ["requested", "allowed", "denied", "succeeded", "failed", "skipped"];
+      const outcomes = ["started", "completed", "errored", "finished"];
       const actorKinds = ["privileged-server-role", "captured-user", "platform", "unknown"];
 
       for (const [index, outcome] of outcomes.entries()) {
@@ -1551,7 +1562,7 @@ test("Privileged audit events use the stable runtime-owned envelope and outcome 
           correlation: { id: `corr-${index}`, jobId: `job-${index}` },
           targetResourceKind: "runtime-log-index",
           outcome,
-          safeErrorCode: outcome === "denied" ? "DENIED" : outcome === "failed" ? "INDEX_UNAVAILABLE" : null,
+          safeErrorCode: outcome === "errored" ? "INDEX_UNAVAILABLE" : null,
           source: "runtime",
           metadata: {
             visible: `safe-${outcome}`,
@@ -1575,13 +1586,39 @@ test("Privileged audit events use the stable runtime-owned envelope and outcome 
         assert.equal(event.data.metadata.visible, `safe-${outcome}`);
       }
 
-      const denied = database.log.recent(10).find((entry) => entry.event === "privileged.denied");
-      const failed = database.log.recent(10).find((entry) => entry.event === "privileged.failed");
+      const errored = database.log.recent(10).find((entry) => entry.event === "privileged.errored");
 
-      assert.equal(denied.level, "warn");
-      assert.equal(denied.data.safeErrorCode, "DENIED");
-      assert.equal(failed.level, "error");
-      assert.equal(failed.data.safeErrorCode, "INDEX_UNAVAILABLE");
+      assert.equal(errored.level, "error");
+      assert.equal(errored.data.safeErrorCode, "INDEX_UNAVAILABLE");
+
+      const missingOutcome = await emitPrivilegedAuditEvent(database, {
+        actorKind: "platform",
+        operation: "runtime.audit.missing-outcome",
+        surface: "sporades/test-runtime",
+        targetResourceKind: "runtime-log-index",
+      });
+      const invalidOutcome = await emitPrivilegedAuditEvent(database, {
+        actorKind: "platform",
+        operation: "runtime.audit.invalid-outcome",
+        surface: "sporades/test-runtime",
+        targetResourceKind: "runtime-log-index",
+        outcome: "succeeded",
+      });
+      const erroredWithoutCode = await emitPrivilegedAuditEvent(database, {
+        actorKind: "platform",
+        operation: "runtime.audit.errored-without-code",
+        surface: "sporades/test-runtime",
+        targetResourceKind: "runtime-log-index",
+        outcome: "errored",
+      });
+
+      assert.equal(missingOutcome.event, "privileged.started");
+      assert.equal(missingOutcome.data.outcome, "started");
+      assert.equal(missingOutcome.data.safeErrorCode, null);
+      assert.equal(invalidOutcome.event, "privileged.started");
+      assert.equal(invalidOutcome.data.outcome, "started");
+      assert.equal(erroredWithoutCode.level, "error");
+      assert.equal(erroredWithoutCode.data.safeErrorCode, "UNKNOWN_ERROR");
     } finally {
       database.close();
     }
@@ -1607,7 +1644,7 @@ test("Privileged audit metadata is redacted and capped before it reaches JSONL",
         operation: "runtime.secret.inspect",
         surface: "sporades/test-runtime",
         targetResourceKind: "server-env",
-        outcome: "failed",
+        outcome: "errored",
         error: Object.assign(new Error("raw stack should stay private"), { code: "ESECRET" }),
         source: "runtime",
         metadata: {
@@ -1681,18 +1718,1814 @@ test("Privileged audit JSONL emission survives Log index failures", async () => 
       operation: "runtime.log-index.write",
       surface: "sporades/test-runtime",
       targetResourceKind: "log-index",
-      outcome: "failed",
+      outcome: "errored",
       safeErrorCode: "INDEX_UNAVAILABLE",
       source: "runtime",
     });
 
-    assert.equal(event.event, "privileged.failed");
+    assert.equal(event.event, "privileged.errored");
     assert.equal(event.data.safeErrorCode, "INDEX_UNAVAILABLE");
     assert.deepEqual(sink.recent(10), []);
     assert.deepEqual(
       sink.tail(10).map((entry) => [entry.event, entry.data.outcome]),
-      [["privileged.failed", "failed"]],
+      [["privileged.errored", "errored"]],
     );
+  });
+});
+
+test("trusted server handlers can run minimal privileged callbacks with audit boundaries", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-run-island",
+    });
+
+    try {
+      database.queries = [
+        {
+          name: "privilegedSummary",
+          handler: (ctx) =>
+            ctx.privileged.run({
+              operation: "notes.repair",
+              targetResourceKind: "capsule-db",
+              metadata: {
+                count: 2,
+                authorization: "Bearer should-not-leak",
+              },
+            }, (privilegedCtx) => ({
+              outerUserId: ctx.auth.userId,
+              privilegedUserId: privilegedCtx.auth.userId,
+              privilegedContextIsDerived: privilegedCtx !== ctx,
+              sameEnv: privilegedCtx.env === ctx.env,
+              hasDb: Boolean(privilegedCtx.db),
+            })),
+        },
+      ];
+
+      const result = await runQuery(database, { userId: "user-1" }, "privilegedSummary");
+
+      assert.deepEqual(result, {
+        data: {
+          outerUserId: "user-1",
+          privilegedUserId: "__privileged__",
+          privilegedContextIsDerived: true,
+          sameEnv: true,
+          hasDb: true,
+        },
+        error: null,
+      });
+
+      const auditEvents = database.log.recent(10).filter((entry) => entry.category === "audit");
+      assert.deepEqual(
+        auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome]),
+        [
+          ["privileged.started", "notes.repair", "started"],
+          ["privileged.completed", "notes.repair", "completed"],
+          ["privileged.finished", "notes.repair", "finished"],
+        ],
+      );
+      for (const event of auditEvents) {
+        assert.equal(event.data.actorKind, "privileged-server-role");
+        assert.equal(event.data.surface, "query");
+        assert.equal(event.data.targetResourceKind, "capsule-db");
+        assert.equal(event.data.metadata.count, 2);
+        assert.equal(event.data.metadata.authorization, "[REDACTED]");
+      }
+      assert.equal(JSON.stringify(auditEvents).includes("should-not-leak"), false);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("privileged table writes only use sentinel ownership when Capsule code supplies it", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-owner-island",
+    });
+
+    try {
+      const table = {
+        name: "notes",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT", defaultValue: null },
+        ],
+      };
+      database.schema = { tables: [table] };
+      database.sqlite.migrateAppSchema(database.schema);
+      database.queries = [
+        {
+          name: "writePrivilegedNotes",
+          handler: (ctx) =>
+            ctx.privileged.run({
+              operation: "notes.ownerAudit",
+              targetResourceKind: "capsule-db",
+            }, (privilegedCtx) => {
+              privilegedCtx.db.notes.insert({ text: "implicit owner" });
+              privilegedCtx.db.notes.insert({ text: "explicit owner", ownerId: privilegedCtx.auth.userId });
+              return { ok: true };
+            }),
+        },
+      ];
+
+      const result = await runQuery(database, { userId: "user-1" }, "writePrivilegedNotes");
+
+      assert.deepEqual(result, { data: { ok: true }, error: null });
+      assert.deepEqual(
+        database.sqlite
+          .selectAppRows(table, {
+            columns: ["text", "ownerId"],
+            orderBy: { fieldName: "createdAt", direction: "asc" },
+          })
+          .map((row) => ({ ...row })),
+        [
+          { text: "implicit owner", ownerId: null },
+          { text: "explicit owner", ownerId: "__privileged__" },
+        ],
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("privileged table API bypasses normal ACL gates while normal ctx.db remains denied", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-db-acl-island",
+    });
+
+    try {
+      const aclContexts = [];
+      const table = {
+        name: "notes",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+        ],
+        acl: {
+          resolve(operation) {
+            if (!["read", "insert", "update", "delete"].includes(operation)) {
+              return null;
+            }
+            return ({ ctx }) => {
+              aclContexts.push({
+                operation,
+                hasDb: Object.hasOwn(ctx, "db"),
+                hasPrivileged: Object.hasOwn(ctx, "privileged"),
+              });
+              return false;
+            };
+          },
+        },
+      };
+      database.schema = { tables: [table] };
+      database.sqlite.migrateAppSchema(database.schema);
+      database.sqlite.insertAppRow(table, {
+        id: "seed-note",
+        text: "blocked seed",
+        ownerId: "user-2",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+      database.queries = [
+        {
+          name: "normalRead",
+          handler: (ctx) => ctx.db.notes.all(),
+        },
+        {
+          name: "normalWrite",
+          handler: (ctx) => ctx.db.notes.insert({ text: "normal denied", ownerId: ctx.auth.userId }),
+        },
+        {
+          name: "privilegedRepair",
+          handler: (ctx) =>
+            ctx.privileged.run({
+              operation: "notes.repairAcl",
+              targetResourceKind: "capsule-db",
+            }, (privilegedCtx) => {
+              const before = privilegedCtx.db.notes.orderBy("createdAt", "asc").all().map((row) => row.text);
+              const inserted = privilegedCtx.db.notes.insert({ text: "privileged inserted", ownerId: privilegedCtx.auth.userId });
+              const after = privilegedCtx.db.notes.orderBy("createdAt", "asc").all().map((row) => row.text);
+              return {
+                before,
+                insertedOwnerId: inserted.ownerId,
+                after,
+              };
+            }),
+        },
+      ];
+
+      assert.deepEqual(await runQuery(database, { userId: "user-1" }, "normalRead"), {
+        data: [],
+        error: null,
+      });
+      assert.deepEqual(await runQuery(database, { userId: "user-1" }, "normalWrite"), {
+        data: null,
+        error: {
+          code: "DENIED",
+          message: "Denied.",
+          hint: "The current user is not allowed to perform this operation.",
+        },
+      });
+
+      assert.deepEqual(await runQuery(database, { userId: "user-1" }, "privilegedRepair"), {
+        data: {
+          before: ["blocked seed"],
+          insertedOwnerId: "__privileged__",
+          after: ["blocked seed", "privileged inserted"],
+        },
+        error: null,
+      });
+      assert.deepEqual(
+        aclContexts.map((context) => [context.operation, context.hasDb, context.hasPrivileged]),
+        [
+          ["read", false, false],
+          ["insert", false, false],
+        ],
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("privileged DB writes in failing mutations roll back while audit evidence remains durable", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-db-transaction-island",
+    });
+
+    try {
+      const table = {
+        name: "notes",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+        ],
+        acl: {
+          resolve(operation) {
+            return ["read", "insert", "update", "delete"].includes(operation) ? () => false : null;
+          },
+        },
+      };
+      database.schema = { tables: [table] };
+      database.sqlite.migrateAppSchema(database.schema);
+      database.sqlite.insertAppRow(table, {
+        id: "seed-note",
+        text: "seed",
+        ownerId: "user-2",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+      database.mutations = [
+        {
+          name: "privilegedRepairThenFail",
+          handler: async (ctx) => {
+            await ctx.privileged.run({
+              operation: "notes.transactionRepair",
+              targetResourceKind: "capsule-db",
+            }, (privilegedCtx) => {
+              privilegedCtx.db.notes.insert({
+                text: "rolled back privileged write",
+                ownerId: privilegedCtx.auth.userId,
+              });
+            });
+            throw new Error("rollback privileged work");
+          },
+        },
+      ];
+      database.mutationHooks = { beforeMutation: [], afterMutation: [] };
+
+      const failed = await runMutation(database, { userId: "user-1" }, "privilegedRepairThenFail", []);
+
+      assert.deepEqual(failed, {
+        ok: false,
+        error: {
+          message: "rollback privileged work",
+          hint: "Check the Capsule mutation hooks and retry the mutation.",
+        },
+      });
+      assert.deepEqual(
+        database.sqlite
+          .selectAppRows(table, {
+            columns: ["text", "ownerId"],
+            orderBy: { fieldName: "createdAt", direction: "asc" },
+          })
+          .map((row) => ({ ...row })),
+        [{ text: "seed", ownerId: "user-2" }],
+      );
+      assert.deepEqual(
+        database.log.recent(10)
+          .filter((entry) => entry.category === "audit")
+          .map((entry) => [entry.event, entry.data.operation, entry.data.outcome]),
+        [
+          ["privileged.started", "notes.transactionRepair", "started"],
+          ["privileged.completed", "notes.transactionRepair", "completed"],
+          ["privileged.finished", "notes.transactionRepair", "finished"],
+        ],
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("privileged DB work outside existing transactions does not add callback-wide atomicity", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-db-no-implicit-transaction-island",
+    });
+
+    try {
+      const table = {
+        name: "notes",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+        ],
+        acl: {
+          resolve(operation) {
+            return ["read", "insert", "update", "delete"].includes(operation) ? () => false : null;
+          },
+        },
+      };
+      database.schema = { tables: [table] };
+      database.sqlite.migrateAppSchema(database.schema);
+      database.queries = [
+        {
+          name: "privilegedRepairThenFail",
+          handler: (ctx) =>
+            ctx.privileged.run({
+              operation: "notes.nonTransactionalRepair",
+              targetResourceKind: "capsule-db",
+            }, (privilegedCtx) => {
+              privilegedCtx.db.notes.insert({
+                text: "kept privileged write",
+                ownerId: privilegedCtx.auth.userId,
+              });
+              throw Object.assign(new Error("outside mutation failure"), { code: "OUTSIDE_MUTATION_FAILURE" });
+            }),
+        },
+      ];
+
+      assert.deepEqual(await runQuery(database, { userId: "user-1" }, "privilegedRepairThenFail"), {
+        data: null,
+        error: {
+          code: "PRIVILEGED_RUN_FAILED",
+          message: "Privileged run failed.",
+          hint: "Check the privileged audit events and server logs before exposing a safe response.",
+        },
+      });
+      assert.deepEqual(
+        database.sqlite
+          .selectAppRows(table, {
+            columns: ["text", "ownerId"],
+            orderBy: { fieldName: "createdAt", direction: "asc" },
+          })
+          .map((row) => ({ ...row })),
+        [{ text: "kept privileged write", ownerId: "__privileged__" }],
+      );
+      assert.deepEqual(
+        database.log.recent(10)
+          .filter((entry) => entry.category === "audit")
+          .map((entry) => [entry.event, entry.data.operation, entry.data.outcome, entry.data.safeErrorCode]),
+        [
+          ["privileged.started", "notes.nonTransactionalRepair", "started", null],
+          ["privileged.errored", "notes.nonTransactionalRepair", "errored", "OUTSIDE_MUTATION_FAILURE"],
+          ["privileged.finished", "notes.nonTransactionalRepair", "finished", null],
+        ],
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("privileged audit rollback recovery does not duplicate already durable audit index entries", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-db-durable-audit-island",
+    });
+    const baseAdapter = database.sqlite;
+
+    try {
+      const table = {
+        name: "notes",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+        ],
+        acl: {
+          resolve(operation) {
+            return ["read", "insert", "update", "delete"].includes(operation) ? () => false : null;
+          },
+        },
+      };
+      database.schema = { tables: [table] };
+      database.sqlite.migrateAppSchema(database.schema);
+      database.adapter = createDurableAuditTransactionAdapter(baseAdapter);
+      database.mutations = [
+        {
+          name: "privilegedRepairThenFail",
+          handler: async (ctx) => {
+            await ctx.privileged.run({
+              operation: "notes.durableAuditRepair",
+              targetResourceKind: "capsule-db",
+            }, (privilegedCtx) => {
+              privilegedCtx.db.notes.insert({
+                text: "adapter-scoped privileged write",
+                ownerId: privilegedCtx.auth.userId,
+              });
+            });
+            throw new Error("rollback with durable audit");
+          },
+        },
+      ];
+      database.mutationHooks = { beforeMutation: [], afterMutation: [] };
+
+      const failed = await runMutation(database, { userId: "user-1" }, "privilegedRepairThenFail", []);
+
+      assert.deepEqual(failed, {
+        ok: false,
+        error: {
+          message: "rollback with durable audit",
+          hint: "Check the Capsule mutation hooks and retry the mutation.",
+        },
+      });
+      assert.deepEqual(
+        database.log.recent(10)
+          .filter((entry) => entry.category === "audit")
+          .map((entry) => [entry.event, entry.data.operation, entry.data.outcome]),
+        [
+          ["privileged.started", "notes.durableAuditRepair", "started"],
+          ["privileged.completed", "notes.durableAuditRepair", "completed"],
+          ["privileged.finished", "notes.durableAuditRepair", "finished"],
+        ],
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("normal handler contexts cannot forge privileged DB ACL bypass", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-db-forgery-island",
+    });
+
+    try {
+      const table = {
+        name: "notes",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+        ],
+        acl: {
+          resolve(operation) {
+            return ["read", "insert", "update", "delete"].includes(operation) ? () => false : null;
+          },
+        },
+      };
+      database.schema = { tables: [table] };
+      database.sqlite.migrateAppSchema(database.schema);
+      database.sqlite.insertAppRow(table, {
+        id: "seed-note",
+        text: "forgery seed",
+        ownerId: "user-2",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+      database.queries = [
+        {
+          name: "forgedRead",
+          handler: (ctx) => {
+            ctx.__privilegedRunActive = true;
+            ctx.__privilegedDbAccess = true;
+            ctx.skipAcl = true;
+            ctx.bypassAcl = true;
+            ctx.auth = {
+              ...ctx.auth,
+              userId: "__privileged__",
+              provider: "privileged-server-role",
+            };
+            return ctx.db.notes.all();
+          },
+        },
+        {
+          name: "forgedWrite",
+          handler: (ctx) => {
+            ctx.__privilegedRunActive = true;
+            ctx.__privilegedDbAccess = true;
+            ctx.skipAcl = true;
+            ctx.bypassAcl = true;
+            ctx.auth = {
+              ...ctx.auth,
+              userId: "__privileged__",
+              provider: "privileged-server-role",
+            };
+            return ctx.db.notes.insert({ text: "forged insert", ownerId: "__privileged__" });
+          },
+        },
+      ];
+
+      assert.deepEqual(await runQuery(database, { userId: "user-1" }, "forgedRead"), {
+        data: [],
+        error: null,
+      });
+      assert.deepEqual(await runQuery(database, { userId: "user-1" }, "forgedWrite"), {
+        data: null,
+        error: {
+          code: "DENIED",
+          message: "Denied.",
+          hint: "The current user is not allowed to perform this operation.",
+        },
+      });
+      assert.deepEqual(
+        database.sqlite
+          .selectAppRows(table, {
+            columns: ["text", "ownerId"],
+            orderBy: { fieldName: "createdAt", direction: "asc" },
+          })
+          .map((row) => ({ ...row })),
+        [{ text: "forgery seed", ownerId: "user-2" }],
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("leaked privileged table APIs cannot bypass ACL after privileged run finishes", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-db-leak-island",
+    });
+
+    try {
+      const table = {
+        name: "notes",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+        ],
+        acl: {
+          resolve(operation) {
+            return ["read", "insert", "update", "delete"].includes(operation) ? () => false : null;
+          },
+        },
+      };
+      database.schema = { tables: [table] };
+      database.sqlite.migrateAppSchema(database.schema);
+      database.sqlite.insertAppRow(table, {
+        id: "seed-note",
+        text: "leak seed",
+        ownerId: "user-2",
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+      });
+      database.queries = [
+        {
+          name: "leakedPrivilegedApis",
+          handler: async (ctx) => {
+            let leakedDb;
+            let leakedTable;
+            const inRun = await ctx.privileged.run({
+              operation: "notes.leakCheck",
+              targetResourceKind: "capsule-db",
+            }, (privilegedCtx) => {
+              leakedDb = privilegedCtx.db;
+              leakedTable = privilegedCtx.db.notes;
+              privilegedCtx.db.notes.insert({ text: "inside run", ownerId: privilegedCtx.auth.userId });
+              return privilegedCtx.db.notes.orderBy("createdAt", "asc").all().map((row) => row.text);
+            });
+
+            const leakedDbRead = leakedDb.notes.orderBy("createdAt", "asc").all().map((row) => row.text);
+            const leakedTableRead = leakedTable.orderBy("createdAt", "asc").all().map((row) => row.text);
+            let leakedDbWriteCode = null;
+            let leakedTableWriteCode = null;
+            try {
+              leakedDb.notes.insert({ text: "after run via db", ownerId: "__privileged__" });
+            } catch (error) {
+              leakedDbWriteCode = error.code;
+            }
+            try {
+              leakedTable.insert({ text: "after run via table", ownerId: "__privileged__" });
+            } catch (error) {
+              leakedTableWriteCode = error.code;
+            }
+
+            return {
+              inRun,
+              leakedDbRead,
+              leakedTableRead,
+              leakedDbWriteCode,
+              leakedTableWriteCode,
+            };
+          },
+        },
+      ];
+
+      assert.deepEqual(await runQuery(database, { userId: "user-1" }, "leakedPrivilegedApis"), {
+        data: {
+          inRun: ["leak seed", "inside run"],
+          leakedDbRead: [],
+          leakedTableRead: [],
+          leakedDbWriteCode: "DENIED",
+          leakedTableWriteCode: "DENIED",
+        },
+        error: null,
+      });
+      assert.deepEqual(
+        database.sqlite
+          .selectAppRows(table, {
+            columns: ["text", "ownerId"],
+            orderBy: { fieldName: "createdAt", direction: "asc" },
+          })
+          .map((row) => ({ ...row })),
+        [
+          { text: "leak seed", ownerId: "user-2" },
+          { text: "inside run", ownerId: "__privileged__" },
+        ],
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("privileged file access can read approved Capsule files that normal access cannot", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-files-island",
+      files: { storagePath: path.join(dir, "files") },
+    });
+    const ownerAuth = { userId: "owner-1", displayName: "Owner", isAuthenticated: true, isGuest: false, provider: "email" };
+    const otherAuth = { userId: "user-2", displayName: "Other", isAuthenticated: false, isGuest: true, provider: "anonymous" };
+
+    try {
+      const pending = await createPendingFileUpload(database, ownerAuth, {
+        file: { name: "report.txt", type: "text/plain", size: 11, path: "/reports/private.txt" },
+      });
+      assert.equal(pending.ok, true, pending.error?.message);
+      const uploadId = pending.data.uploadUrl.split("/").pop();
+      const completed = await completePendingFileUpload(database, uploadId, Readable.from([Buffer.from("secret data")]));
+      assert.equal(completed.ok, true, completed.error?.message);
+
+      const deniedNormalAccess = await getPrivateFileUrl(database, otherAuth, completed.data.file.id);
+      assert.equal(deniedNormalAccess.ok, false);
+      assert.equal(deniedNormalAccess.error.message, "File not found.");
+
+      database.queries = [
+        {
+          name: "repairFile",
+          handler: (ctx) =>
+            ctx.privileged.run({
+              operation: "files.repair",
+              targetResourceKind: "files",
+              metadata: { fileId: completed.data.file.id },
+            }, async (privilegedCtx) => {
+              const byId = await privilegedCtx.files.url(completed.data.file.id);
+              const byPath = await privilegedCtx.files.url("/reports/private.txt");
+              return {
+                actor: privilegedCtx.auth.userId,
+                byIdFileId: byId.data.file.id,
+                byPathFileId: byPath.data.file.id,
+                url: byId.data.url,
+              };
+            }),
+        },
+      ];
+
+      const result = await runQuery(database, otherAuth, "repairFile");
+
+      assert.deepEqual(result, {
+        data: {
+          actor: "__privileged__",
+          byIdFileId: completed.data.file.id,
+          byPathFileId: completed.data.file.id,
+          url: `/__sporades/files/private/${completed.data.file.id}?v=${encodeURIComponent(completed.data.file.version)}`,
+        },
+        error: null,
+      });
+
+      const auditEvents = database.log.recent(10).filter((entry) => entry.category === "audit");
+      assert.deepEqual(
+        auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome, entry.data.targetResourceKind]),
+        [
+          ["privileged.started", "files.repair", "started", "files"],
+          ["privileged.completed", "files.repair", "completed", "files"],
+          ["privileged.finished", "files.repair", "finished", "files"],
+        ],
+      );
+      for (const event of auditEvents) {
+        assert.equal(event.data.metadata.fileId, completed.data.file.id);
+      }
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("unsupported privileged storage operations fail closed with stable errors", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-files-closed-island",
+      files: { storagePath: path.join(dir, "files") },
+    });
+
+    try {
+      database.queries = [
+        {
+          name: "unsupportedStorageAccess",
+          handler: (ctx) =>
+            ctx.privileged.run({
+              operation: "files.rawObjectRead",
+              targetResourceKind: "storage",
+            }, async (privilegedCtx) => privilegedCtx.files.unsupported("rawObjectRead")),
+        },
+      ];
+
+      const result = await runQuery(database, { userId: "user-1" }, "unsupportedStorageAccess");
+
+      assert.deepEqual(result, {
+        data: null,
+        error: {
+          code: "PRIVILEGED_RUN_FAILED",
+          message: "Privileged run failed.",
+          hint: "Check the privileged audit events and server logs before exposing a safe response.",
+        },
+      });
+      const errored = database.log.recent(10).find((entry) => entry.event === "privileged.errored");
+      assert.equal(errored.data.operation, "files.rawObjectRead");
+      assert.equal(errored.data.safeErrorCode, "UNSUPPORTED_PRIVILEGED_FILE_OPERATION");
+      assert.equal(errored.data.targetResourceKind, "storage");
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("privileged file deletion uses configured Capsule storage services", async () => {
+  await withFakeS3CompatibleService(async ({ endpoint, objects }) => {
+    await withTempDir(async (dir) => {
+      const database = await openDevDatabase(
+        path.join(dir, "data.db"),
+        "",
+        {},
+        {
+          name: "privileged-s3-files-island",
+          services: { storage: { kind: "storage", engine: "minio" } },
+        },
+        null,
+        {
+          serviceEnv: {
+            SPORADES_SERVICE_STORAGE_ENGINE: "minio",
+            SPORADES_SERVICE_STORAGE_ENDPOINT: endpoint,
+            SPORADES_SERVICE_STORAGE_ACCESS_KEY: "sporades",
+            SPORADES_SERVICE_STORAGE_SECRET_KEY: "sporades-minio-local-secret",
+            SPORADES_SERVICE_STORAGE_BUCKET: "sporades-files",
+            SPORADES_SERVICE_STORAGE_REGION: "eu-west-2",
+            SPORADES_SERVICE_STORAGE_NAMESPACE: "privileged-s3-files-island",
+          },
+        },
+      );
+      const ownerAuth = { userId: "owner-1", displayName: "Owner", isAuthenticated: true, isGuest: false, provider: "email" };
+      const otherAuth = { userId: "user-2", displayName: "Other", isAuthenticated: false, isGuest: true, provider: "anonymous" };
+
+      try {
+        const pending = await createPendingFileUpload(database, ownerAuth, {
+          file: { name: "report.txt", type: "text/plain", size: 11, path: "/reports/private.txt" },
+        });
+        assert.equal(pending.ok, true, pending.error?.message);
+        const completed = await completePendingFileUpload(
+          database,
+          pending.data.uploadUrl.split("/").pop(),
+          Readable.from([Buffer.from("secret data")]),
+        );
+        assert.equal(completed.ok, true, completed.error?.message);
+
+        const objectKey = `capsules/privileged-s3-files-island/files/${completed.data.file.id}/${completed.data.file.version}`;
+        assert.equal(objects.has(objectKey), true);
+        assert.equal((await deletePrivateFile(database, otherAuth, completed.data.file.id)).ok, false);
+        assert.equal(objects.has(objectKey), true);
+
+        database.queries = [
+          {
+            name: "deleteFile",
+            handler: (ctx) =>
+              ctx.privileged.run({
+                operation: "files.delete",
+                targetResourceKind: "files",
+                metadata: { fileId: completed.data.file.id },
+              }, (privilegedCtx) => privilegedCtx.files.delete(completed.data.file.id)),
+          },
+        ];
+
+        const result = await runQuery(database, otherAuth, "deleteFile");
+
+        assert.equal(result.error, null);
+        assert.equal(result.data.ok, true);
+        assert.equal(result.data.data.file.id, completed.data.file.id);
+        assert.equal(objects.has(objectKey), false);
+        assert.equal((await getPrivateFileUrl(database, ownerAuth, completed.data.file.id)).ok, false);
+      } finally {
+        database.close();
+      }
+    });
+  });
+});
+
+test("privileged file writes preserve the surrounding mutation transaction", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-file-mutation-island",
+      files: { storagePath: path.join(dir, "files") },
+    });
+    const ownerAuth = { userId: "owner-1", displayName: "Owner", isAuthenticated: true, isGuest: false, provider: "email" };
+    const otherAuth = { userId: "user-2", displayName: "Other", isAuthenticated: false, isGuest: true, provider: "anonymous" };
+
+    try {
+      const pending = await createPendingFileUpload(database, ownerAuth, {
+        file: { name: "report.txt", type: "text/plain", size: 11, path: "/reports/private.txt" },
+      });
+      assert.equal(pending.ok, true, pending.error?.message);
+      const completed = await completePendingFileUpload(
+        database,
+        pending.data.uploadUrl.split("/").pop(),
+        Readable.from([Buffer.from("secret data")]),
+      );
+      assert.equal(completed.ok, true, completed.error?.message);
+
+      database.mutations = [
+        {
+          name: "publishAndDeleteFile",
+          handler: (ctx, fileId) =>
+            ctx.privileged.run({
+              operation: "files.publishAndDelete",
+              targetResourceKind: "files",
+              metadata: { fileId },
+            }, async (privilegedCtx) => {
+              const publicUrl = await privilegedCtx.files.createPublicUrl(fileId, { noExpiry: true });
+              const deleted = await privilegedCtx.files.delete(fileId);
+              return {
+                publicUrlOk: publicUrl.ok,
+                publicUrlFileId: publicUrl.data.publicUrl.fileId,
+                deleteOk: deleted.ok,
+                deletedFileId: deleted.data.file.id,
+              };
+            }),
+        },
+      ];
+
+      const result = await runMutation(database, otherAuth, "publishAndDeleteFile", [completed.data.file.id]);
+
+      assert.deepEqual(result, {
+        ok: true,
+        data: {
+          publicUrlOk: true,
+          publicUrlFileId: completed.data.file.id,
+          deleteOk: true,
+          deletedFileId: completed.data.file.id,
+        },
+        error: null,
+      });
+      assert.equal((await getPrivateFileUrl(database, ownerAuth, completed.data.file.id)).ok, false);
+      assert.deepEqual(
+        database.log
+          .recent(10)
+          .filter((entry) => entry.category === "audit")
+          .map((entry) => [entry.event, entry.data.operation, entry.data.outcome]),
+        [
+          ["privileged.started", "files.publishAndDelete", "started"],
+          ["privileged.completed", "files.publishAndDelete", "completed"],
+          ["privileged.finished", "files.publishAndDelete", "finished"],
+        ],
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("privileged run metadata is validated before audit emission or callback execution", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-run-validation-island",
+    });
+    const calls = [];
+
+    try {
+      database.queries = [
+        {
+          name: "missingOperation",
+          handler: (ctx) =>
+            ctx.privileged.run({}, () => {
+              calls.push("missingOperation");
+              return { ok: true };
+            }),
+        },
+        {
+          name: "promiseMetadata",
+          handler: (ctx) =>
+            ctx.privileged.run({
+              operation: "notes.repair",
+              targetResourceKind: "capsule-db",
+              metadata: Promise.resolve({ shouldNotResolve: true }),
+            }, () => {
+              calls.push("promiseMetadata");
+              return { ok: true };
+            }),
+        },
+        {
+          name: "missingCallback",
+          handler: (ctx) =>
+            ctx.privileged.run({
+              operation: "notes.repair",
+              targetResourceKind: "capsule-db",
+            }),
+        },
+      ];
+
+      const missingOperation = await runQuery(database, { userId: "user-1" }, "missingOperation");
+      assert.equal(missingOperation.error?.code, "INVALID_PRIVILEGED_RUN_METADATA");
+      assert.match(missingOperation.error?.message ?? "", /operation/i);
+
+      const promiseMetadata = await runQuery(database, { userId: "user-1" }, "promiseMetadata");
+      assert.equal(promiseMetadata.error?.code, "INVALID_PRIVILEGED_RUN_METADATA");
+      assert.match(promiseMetadata.error?.message ?? "", /metadata/i);
+
+      const missingCallback = await runQuery(database, { userId: "user-1" }, "missingCallback");
+      assert.equal(missingCallback.error?.code, "INVALID_PRIVILEGED_RUN_CALLBACK");
+      assert.match(missingCallback.error?.message ?? "", /callback/i);
+
+      assert.deepEqual(calls, []);
+      assert.deepEqual(database.log.recent(10).filter((entry) => entry.category === "audit"), []);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("throwing and rejecting privileged callbacks emit errored audit boundaries with opaque handler errors", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-run-error-island",
+    });
+
+    try {
+      database.queries = [
+        {
+          name: "throwingPrivilegedRun",
+          handler: (ctx) =>
+            ctx.privileged.run({
+              operation: "notes.secretRepair",
+              targetResourceKind: "capsule-db",
+            }, () => {
+              throw Object.assign(new Error("database password leaked"), { code: "SECRET_FAILURE" });
+            }),
+        },
+        {
+          name: "rejectingPrivilegedRun",
+          handler: (ctx) =>
+            ctx.privileged.run({
+              operation: "notes.secretMutation",
+              targetResourceKind: "capsule-db",
+            }, async () => {
+              throw Object.assign(new Error("private token leaked"), { code: "TOKEN_FAILURE" });
+            }),
+        },
+      ];
+
+      const queryResult = await runQuery(database, { userId: "user-1" }, "throwingPrivilegedRun");
+      assert.deepEqual(queryResult, {
+        data: null,
+        error: {
+          code: "PRIVILEGED_RUN_FAILED",
+          message: "Privileged run failed.",
+          hint: "Check the privileged audit events and server logs before exposing a safe response.",
+        },
+      });
+
+      const rejectingQueryResult = await runQuery(database, { userId: "user-1" }, "rejectingPrivilegedRun");
+      assert.deepEqual(rejectingQueryResult, {
+        data: null,
+        error: {
+          code: "PRIVILEGED_RUN_FAILED",
+          message: "Privileged run failed.",
+          hint: "Check the privileged audit events and server logs before exposing a safe response.",
+        },
+      });
+
+      const auditEvents = database.log.recent(20).filter((entry) => entry.category === "audit");
+      assert.deepEqual(
+        auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome, entry.data.safeErrorCode]),
+        [
+          ["privileged.started", "notes.secretRepair", "started", null],
+          ["privileged.errored", "notes.secretRepair", "errored", "SECRET_FAILURE"],
+          ["privileged.finished", "notes.secretRepair", "finished", null],
+          ["privileged.started", "notes.secretMutation", "started", null],
+          ["privileged.errored", "notes.secretMutation", "errored", "TOKEN_FAILURE"],
+          ["privileged.finished", "notes.secretMutation", "finished", null],
+        ],
+      );
+
+      const serializedResults = JSON.stringify([queryResult, rejectingQueryResult]);
+      assert.equal(serializedResults.includes("database password leaked"), false);
+      assert.equal(serializedResults.includes("private token leaked"), false);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("already-aborted privileged run signals emit audit boundaries without executing the callback", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-run-aborted-island",
+    });
+    const calls = [];
+
+    try {
+      database.queries = [
+        {
+          name: "alreadyAbortedPrivilegedRun",
+          handler: (ctx) => {
+            const controller = new AbortController();
+            controller.abort(new Error("client cancellation internals"));
+            return ctx.privileged.run({
+              operation: "notes.cancelledRepair",
+              targetResourceKind: "capsule-db",
+              signal: controller.signal,
+            }, () => {
+              calls.push("callback");
+              return { ok: true };
+            });
+          },
+        },
+      ];
+
+      const queryResult = await runQuery(database, { userId: "user-1" }, "alreadyAbortedPrivilegedRun");
+      assert.deepEqual(queryResult, {
+        data: null,
+        error: {
+          code: "PRIVILEGED_RUN_FAILED",
+          message: "Privileged run failed.",
+          hint: "Check the privileged audit events and server logs before exposing a safe response.",
+        },
+      });
+
+      assert.deepEqual(calls, []);
+      const auditEvents = database.log.recent(10).filter((entry) => entry.category === "audit");
+      assert.deepEqual(
+        auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome, entry.data.safeErrorCode]),
+        [
+          ["privileged.started", "notes.cancelledRepair", "started", null],
+          ["privileged.errored", "notes.cancelledRepair", "errored", "ABORTED"],
+          ["privileged.finished", "notes.cancelledRepair", "finished", null],
+        ],
+      );
+      assert.equal(JSON.stringify(queryResult).includes("client cancellation internals"), false);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("privileged audit emission failures carry private callback context without default response leaks", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-run-audit-failure-island",
+    });
+    const originalEmit = database.audit.emit;
+    const failures = [];
+
+    database.audit.emit = async (details) => {
+      const failure = failures.find((candidate) =>
+        candidate.outcome === details.outcome && candidate.operation === details.operation
+      );
+      if (failure && details.outcome === failure.outcome && details.operation === failure.operation) {
+        throw Object.assign(new Error(`audit sink saw ${failure.secret}`), { code: failure.code });
+      }
+      return originalEmit.call(database.audit, details);
+    };
+
+    try {
+      database.queries = [
+        {
+          name: "completedAuditFails",
+          handler: async (ctx) => {
+            failures.push({
+              operation: "notes.completedAudit",
+              outcome: "completed",
+              code: "COMPLETED_AUDIT_DOWN",
+              secret: "returned-secret",
+            });
+            try {
+              await ctx.privileged.run({
+                operation: "notes.completedAudit",
+                targetResourceKind: "capsule-db",
+              }, () => ({ safe: false, token: "returned-secret" }));
+            } catch (error) {
+              return {
+                code: error.code,
+                causeCode: error.cause?.code,
+                callbackResult: error.privilegedAuditContext?.callbackResult,
+              };
+            }
+            return { missed: true };
+          },
+        },
+        {
+          name: "erroredAuditFails",
+          handler: async (ctx) => {
+            failures.push({
+              operation: "notes.erroredAudit",
+              outcome: "errored",
+              code: "ERRORED_AUDIT_DOWN",
+              secret: "thrown-secret",
+            });
+            try {
+              await ctx.privileged.run({
+                operation: "notes.erroredAudit",
+                targetResourceKind: "capsule-db",
+              }, () => {
+                throw Object.assign(new Error("thrown-secret"), { code: "CALLBACK_SECRET" });
+              });
+            } catch (error) {
+              return {
+                code: error.code,
+                causeCode: error.cause?.code,
+                callbackErrorCode: error.privilegedAuditContext?.callbackError?.code,
+                callbackErrorMessage: error.privilegedAuditContext?.callbackError?.message,
+              };
+            }
+            return { missed: true };
+          },
+        },
+        {
+          name: "finishedAuditFails",
+          handler: async (ctx) => {
+            failures.push({
+              operation: "notes.finishedAudit",
+              outcome: "finished",
+              code: "FINISHED_AUDIT_DOWN",
+              secret: "finished-secret",
+            });
+            try {
+              await ctx.privileged.run({
+                operation: "notes.finishedAudit",
+                targetResourceKind: "capsule-db",
+              }, () => ({ id: "result-secret" }));
+            } catch (error) {
+              return {
+                code: error.code,
+                causeCode: error.cause?.code,
+                callbackResult: error.privilegedAuditContext?.callbackResult,
+              };
+            }
+            return { missed: true };
+          },
+        },
+        {
+          name: "defaultAuditFailureResponse",
+          handler: (ctx) => {
+            failures.push({
+              operation: "notes.defaultLeakCheck",
+              outcome: "completed",
+              code: "DEFAULT_AUDIT_DOWN",
+              secret: "default-secret",
+            });
+            return ctx.privileged.run({
+              operation: "notes.defaultLeakCheck",
+              targetResourceKind: "capsule-db",
+            }, () => ({ token: "default-secret" }));
+          },
+        },
+      ];
+
+      const completedAuditFails = await runQuery(database, { userId: "user-1" }, "completedAuditFails");
+      assert.deepEqual(completedAuditFails, {
+        data: {
+          code: "PRIVILEGED_AUDIT_EMISSION_FAILED",
+          causeCode: "COMPLETED_AUDIT_DOWN",
+          callbackResult: { safe: false, token: "returned-secret" },
+        },
+        error: null,
+      });
+
+      const erroredAuditFails = await runQuery(database, { userId: "user-1" }, "erroredAuditFails");
+      assert.deepEqual(erroredAuditFails, {
+        data: {
+          code: "PRIVILEGED_AUDIT_EMISSION_FAILED",
+          causeCode: "ERRORED_AUDIT_DOWN",
+          callbackErrorCode: "CALLBACK_SECRET",
+          callbackErrorMessage: "thrown-secret",
+        },
+        error: null,
+      });
+
+      const finishedAuditFails = await runQuery(database, { userId: "user-1" }, "finishedAuditFails");
+      assert.deepEqual(finishedAuditFails, {
+        data: {
+          code: "PRIVILEGED_AUDIT_EMISSION_FAILED",
+          causeCode: "FINISHED_AUDIT_DOWN",
+          callbackResult: { id: "result-secret" },
+        },
+        error: null,
+      });
+
+      const defaultAuditFailureResponse = await runQuery(database, { userId: "user-1" }, "defaultAuditFailureResponse");
+      assert.deepEqual(defaultAuditFailureResponse, {
+        data: null,
+        error: {
+          code: "PRIVILEGED_AUDIT_EMISSION_FAILED",
+          message: "Privileged audit emission failed.",
+          hint: "Check the server audit log configuration before retrying the privileged operation.",
+        },
+      });
+      assert.equal(JSON.stringify(defaultAuditFailureResponse).includes("default-secret"), false);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("privileged runs are available across trusted server surfaces without leaking through middleware", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-surfaces-island",
+      files: { storagePath: path.join(dir, "files") },
+    });
+    try {
+      const table = {
+        name: "notes",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+        ],
+        acl: {
+          allowByDefault: false,
+          resolve(operation) {
+            return operation === "read"
+              ? () => true
+              : ({ ctx }) => ctx.auth.userId === "allowed-writer";
+          },
+        },
+      };
+      database.schema = { tables: [table] };
+      database.sqlite.migrateAppSchema(database.schema);
+      const fileOwnerAuth = { userId: "file-owner", displayName: "File Owner", isAuthenticated: true, isGuest: false, provider: "email" };
+      const pendingFile = await createPendingFileUpload(database, fileOwnerAuth, {
+        file: { name: "leak.txt", type: "text/plain", size: 11, path: "/leaks/private.txt" },
+      });
+      assert.equal(pendingFile.ok, true, pendingFile.error?.message);
+      const completedFile = await completePendingFileUpload(
+        database,
+        pendingFile.data.uploadUrl.split("/").pop(),
+        Readable.from([Buffer.from("secret data")]),
+      );
+      assert.equal(completedFile.ok, true, completedFile.error?.message);
+
+      database.contextMiddleware = [
+        async (ctx) => {
+          const leaked = await ctx.privileged.run({
+            operation: `notes.middleware.${ctx.kind}`,
+            targetResourceKind: "capsule-db",
+          }, (privilegedCtx) => {
+            privilegedCtx.db.notes.insert({ text: `middleware:${ctx.kind}`, ownerId: privilegedCtx.auth.userId });
+            return privilegedCtx;
+          });
+          return {
+            ...ctx,
+            leakedPrivilegedAuthUserId: leaked.auth.userId,
+            leakedPrivilegedContext: leaked,
+          };
+        },
+      ];
+      database.queries = [
+        {
+          name: "surfaceQuery",
+          handler: async (ctx) => {
+            const normalInsert = await captureErrorCode(() => ctx.db.notes.insert({ text: "query:normal", ownerId: "__privileged__" }));
+            const privilegedUserId = await ctx.privileged.run({
+              operation: "notes.query",
+              targetResourceKind: "capsule-db",
+            }, (privilegedCtx) => {
+              privilegedCtx.db.notes.insert({ text: "query:privileged", ownerId: privilegedCtx.auth.userId });
+              return privilegedCtx.auth.userId;
+            });
+            const leakedInsert = await captureErrorCode(() =>
+              ctx.leakedPrivilegedContext.db.notes.insert({ text: "query:leaked", ownerId: "__privileged__" }),
+            );
+            const leakedFileUrl = await ctx.leakedPrivilegedContext.files.url(completedFile.data.file.id);
+            const leakedPublicUrl = await ctx.leakedPrivilegedContext.files.createPublicUrl(completedFile.data.file.id, { noExpiry: true });
+            const leakedDelete = await ctx.leakedPrivilegedContext.files.delete(completedFile.data.file.id);
+            const fileAfterLeakedOperations = await getPrivateFileUrl(database, fileOwnerAuth, completedFile.data.file.id);
+            return {
+              kind: ctx.kind,
+              normalInsert,
+              privilegedUserId,
+              leakedInsert,
+              leakedPrivilegedAuthUserId: ctx.leakedPrivilegedAuthUserId,
+              leakedFileUrl,
+              leakedPublicUrl,
+              leakedDelete,
+              fileStillReadable: fileAfterLeakedOperations.ok,
+            };
+          },
+        },
+      ];
+      database.mutations = [
+        {
+          name: "surfaceMutation",
+          handler: async (ctx) => {
+            const normalInsert = await captureErrorCode(() => ctx.db.notes.insert({ text: "mutation:normal", ownerId: "__privileged__" }));
+            const privilegedUserId = await ctx.privileged.run({
+              operation: "notes.mutation",
+              targetResourceKind: "capsule-db",
+            }, (privilegedCtx) => {
+              privilegedCtx.db.notes.insert({ text: "mutation:privileged", ownerId: privilegedCtx.auth.userId });
+              return privilegedCtx.auth.userId;
+            });
+            return { kind: ctx.kind, normalInsert, privilegedUserId };
+          },
+        },
+      ];
+      database.endpoints = [
+        {
+          options: { method: "GET", path: "/surface" },
+          handlerSource: `async (ctx) => {
+            const privilegedUserId = await ctx.privileged.run({
+              operation: "notes.endpoint",
+              targetResourceKind: "capsule-db",
+            }, (privilegedCtx) => {
+              privilegedCtx.db.notes.insert({ text: "endpoint:privileged", ownerId: privilegedCtx.auth.userId });
+              return privilegedCtx.auth.userId;
+            });
+            return { kind: ctx.kind, privilegedUserId, leakedPrivilegedAuthUserId: ctx.leakedPrivilegedAuthUserId };
+          }`,
+        },
+      ];
+      database.messages = [
+        {
+          name: "surfaceMessage",
+          handlerSource: `async (ctx) => {
+            const privilegedUserId = await ctx.privileged.run({
+              operation: "notes.message",
+              targetResourceKind: "capsule-db",
+            }, (privilegedCtx) => {
+              privilegedCtx.db.notes.insert({ text: "message:privileged", ownerId: privilegedCtx.auth.userId });
+              return privilegedCtx.auth.userId;
+            });
+            return { kind: ctx.kind, privilegedUserId, leakedPrivilegedAuthUserId: ctx.leakedPrivilegedAuthUserId };
+          }`,
+        },
+      ];
+      database.mutationHooks = {
+        beforeMutation: [
+          async ({ ctx }) => {
+            await ctx.privileged.run({
+              operation: "notes.beforeMutation",
+              targetResourceKind: "capsule-db",
+            }, (privilegedCtx) => {
+              privilegedCtx.db.notes.insert({ text: "hook:before", ownerId: privilegedCtx.auth.userId });
+            });
+          },
+        ],
+        afterMutation: [
+          async ({ ctx }) => {
+            await ctx.privileged.run({
+              operation: "notes.afterMutation",
+              targetResourceKind: "capsule-db",
+            }, (privilegedCtx) => {
+              privilegedCtx.db.notes.insert({ text: "hook:after", ownerId: privilegedCtx.auth.userId });
+            });
+          },
+        ],
+      };
+
+      assert.deepEqual(await runQuery(database, { userId: "user-1" }, "surfaceQuery"), {
+        data: {
+          kind: "query",
+          normalInsert: "DENIED",
+          privilegedUserId: "__privileged__",
+          leakedInsert: "DENIED",
+          leakedPrivilegedAuthUserId: "__privileged__",
+          leakedFileUrl: {
+            ok: false,
+            error: {
+              message: "Privileged file access is no longer active.",
+              hint: "Start a new ctx.privileged.run callback before using privileged file operations.",
+            },
+          },
+          leakedPublicUrl: {
+            ok: false,
+            error: {
+              message: "Privileged file access is no longer active.",
+              hint: "Start a new ctx.privileged.run callback before using privileged file operations.",
+            },
+          },
+          leakedDelete: {
+            ok: false,
+            error: {
+              message: "Privileged file access is no longer active.",
+              hint: "Start a new ctx.privileged.run callback before using privileged file operations.",
+            },
+          },
+          fileStillReadable: true,
+        },
+        error: null,
+      });
+      assert.deepEqual(await runMutation(database, { userId: "user-1" }, "surfaceMutation", []), {
+        ok: true,
+        data: {
+          kind: "mutation",
+          normalInsert: "DENIED",
+          privilegedUserId: "__privileged__",
+        },
+        error: null,
+      });
+      assert.deepEqual(
+        await runEndpoint(
+          database,
+          database.endpoints[0],
+          new URL("http://localhost/surface"),
+          Object.assign(Readable.from([]), { method: "GET", headers: {} }),
+        ),
+        {
+          kind: "endpoint",
+          privilegedUserId: "__privileged__",
+          leakedPrivilegedAuthUserId: "__privileged__",
+        },
+      );
+      assert.deepEqual(await runAppMessage(database, { userId: "user-1" }, "surfaceMessage", null), {
+        data: {
+          kind: "message",
+          privilegedUserId: "__privileged__",
+          leakedPrivilegedAuthUserId: "__privileged__",
+        },
+        error: null,
+      });
+
+      const rows = await database.sqlite.selectAppRows(table, { columns: ["text", "ownerId"], orderBy: { fieldName: "createdAt", direction: "asc" } });
+      assert.deepEqual(
+        rows.map((row) => ({ ...row })),
+        [
+          { text: "middleware:query", ownerId: "__privileged__" },
+          { text: "query:privileged", ownerId: "__privileged__" },
+          { text: "middleware:mutation", ownerId: "__privileged__" },
+          { text: "hook:before", ownerId: "__privileged__" },
+          { text: "mutation:privileged", ownerId: "__privileged__" },
+          { text: "hook:after", ownerId: "__privileged__" },
+          { text: "middleware:endpoint", ownerId: "__privileged__" },
+          { text: "endpoint:privileged", ownerId: "__privileged__" },
+          { text: "middleware:message", ownerId: "__privileged__" },
+          { text: "message:privileged", ownerId: "__privileged__" },
+        ],
+      );
+
+      const auditOperations = database.log.recent(100)
+        .filter((entry) => entry.category === "audit" && entry.event === "privileged.completed")
+        .map((entry) => [entry.data.operation, entry.data.surface]);
+      assert.deepEqual(auditOperations, [
+        ["notes.middleware.query", "query"],
+        ["notes.query", "query"],
+        ["notes.middleware.mutation", "mutation"],
+        ["notes.beforeMutation", "mutation"],
+        ["notes.mutation", "mutation"],
+        ["notes.afterMutation", "mutation"],
+        ["notes.middleware.endpoint", "endpoint"],
+        ["notes.endpoint", "endpoint"],
+        ["notes.middleware.message", "message"],
+        ["notes.message", "message"],
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("supported lifecycle hooks emit privileged audit events for each actual hook execution", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-lifecycle-hooks-island",
+    });
+
+    try {
+      const table = {
+        name: "notes",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+        ],
+        acl: {
+          resolve(operation) {
+            return ["insert", "read"].includes(operation) ? () => false : null;
+          },
+        },
+      };
+      database.schema = { tables: [table] };
+      database.sqlite.migrateAppSchema(database.schema);
+      database.mutations = [
+        {
+          name: "writeNormalNote",
+          handler: () => ({ ok: true }),
+        },
+      ];
+      database.mutationHooks = {
+        beforeMutation: [
+          async ({ ctx, args }) => {
+            await ctx.privileged.run({
+              operation: "notes.lifecycle.beforeMutation",
+              targetResourceKind: "capsule-db",
+              metadata: { runId: args[0] },
+            }, (privilegedCtx) => {
+              privilegedCtx.db.notes.insert({ text: `before:${args[0]}`, ownerId: privilegedCtx.auth.userId });
+            });
+          },
+        ],
+        afterMutation: [
+          async ({ ctx, args }) => {
+            await ctx.privileged.run({
+              operation: "notes.lifecycle.afterMutation",
+              targetResourceKind: "capsule-db",
+              metadata: { runId: args[0] },
+            }, (privilegedCtx) => {
+              privilegedCtx.db.notes.insert({ text: `after:${args[0]}`, ownerId: privilegedCtx.auth.userId });
+            });
+          },
+        ],
+      };
+
+      assert.deepEqual(await runMutation(database, { userId: "user-1" }, "writeNormalNote", ["first"]), {
+        ok: true,
+        data: { ok: true },
+        error: null,
+      });
+      assert.deepEqual(await runMutation(database, { userId: "user-1" }, "writeNormalNote", ["second"]), {
+        ok: true,
+        data: { ok: true },
+        error: null,
+      });
+
+      assert.deepEqual(
+        database.sqlite
+          .selectAppRows(table, { columns: ["text", "ownerId"], orderBy: { fieldName: "createdAt", direction: "asc" } })
+          .map((row) => ({ ...row })),
+        [
+          { text: "before:first", ownerId: "__privileged__" },
+          { text: "after:first", ownerId: "__privileged__" },
+          { text: "before:second", ownerId: "__privileged__" },
+          { text: "after:second", ownerId: "__privileged__" },
+        ],
+      );
+      assert.deepEqual(
+        database.log.recent(30)
+          .filter((entry) => entry.category === "audit" && entry.event === "privileged.completed")
+          .map((entry) => [entry.data.operation, entry.data.surface, entry.data.metadata.runId]),
+        [
+          ["notes.lifecycle.beforeMutation", "mutation", "first"],
+          ["notes.lifecycle.afterMutation", "mutation", "first"],
+          ["notes.lifecycle.beforeMutation", "mutation", "second"],
+          ["notes.lifecycle.afterMutation", "mutation", "second"],
+        ],
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("started audit failures and nested privileged runs do not execute protected callbacks", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-run-guard-island",
+    });
+    const originalEmit = database.audit.emit;
+    const calls = [];
+
+    database.audit.emit = async (details) => {
+      if (details.operation === "notes.startedFails" && details.outcome === "started") {
+        throw Object.assign(new Error("audit start secret"), { code: "START_AUDIT_DOWN" });
+      }
+      return originalEmit.call(database.audit, details);
+    };
+
+    try {
+      database.queries = [
+        {
+          name: "startedAuditFails",
+          handler: (ctx) =>
+            ctx.privileged.run({
+              operation: "notes.startedFails",
+              targetResourceKind: "capsule-db",
+            }, () => {
+              calls.push("started-callback");
+              return { ok: true };
+            }),
+        },
+        {
+          name: "nestedPrivilegedRun",
+          handler: async (ctx) =>
+            ctx.privileged.run({
+              operation: "notes.outerRun",
+              targetResourceKind: "capsule-db",
+            }, async (privilegedCtx) => {
+              try {
+                await privilegedCtx.privileged.run({
+                  operation: "notes.innerRun",
+                  targetResourceKind: "capsule-db",
+                }, () => {
+                  calls.push("inner-callback");
+                  return { ok: true };
+                });
+              } catch (error) {
+                return { code: error.code, message: error.message };
+              }
+              return { missed: true };
+            }),
+        },
+      ];
+
+      const startedAuditFails = await runQuery(database, { userId: "user-1" }, "startedAuditFails");
+      assert.deepEqual(startedAuditFails, {
+        data: null,
+        error: {
+          code: "PRIVILEGED_AUDIT_EMISSION_FAILED",
+          message: "Privileged audit emission failed.",
+          hint: "Check the server audit log configuration before retrying the privileged operation.",
+        },
+      });
+      assert.deepEqual(calls, []);
+
+      const nestedPrivilegedRun = await runQuery(database, { userId: "user-1" }, "nestedPrivilegedRun");
+      assert.deepEqual(nestedPrivilegedRun, {
+        data: {
+          code: "NESTED_PRIVILEGED_RUN",
+          message: "Nested privileged runs are not supported.",
+        },
+        error: null,
+      });
+      assert.deepEqual(calls, []);
+
+      const auditEvents = database.log.recent(20).filter((entry) => entry.category === "audit");
+      assert.deepEqual(
+        auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome, entry.data.safeErrorCode]),
+        [
+          ["privileged.started", "notes.outerRun", "started", null],
+          ["privileged.completed", "notes.outerRun", "completed", null],
+          ["privileged.finished", "notes.outerRun", "finished", null],
+        ],
+      );
+      assert.equal(JSON.stringify(startedAuditFails).includes("audit start secret"), false);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("privileged run signals are propagated, fresh by default, and cooperative during callback execution", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      name: "privileged-run-signal-island",
+    });
+    const observedDefaultSignals = [];
+
+    try {
+      database.queries = [
+        {
+          name: "suppliedSignal",
+          handler: (ctx) => {
+            const controller = new AbortController();
+            return ctx.privileged.run({
+              operation: "notes.suppliedSignal",
+              targetResourceKind: "capsule-db",
+              signal: controller.signal,
+            }, (privilegedCtx) => ({
+              sameSignal: privilegedCtx.signal === controller.signal,
+              initiallyAborted: privilegedCtx.signal.aborted,
+            }));
+          },
+        },
+        {
+          name: "defaultSignals",
+          handler: async (ctx) => {
+            const first = await ctx.privileged.run({
+              operation: "notes.defaultSignalOne",
+              targetResourceKind: "capsule-db",
+            }, (privilegedCtx) => {
+              observedDefaultSignals.push(privilegedCtx.signal);
+              return {
+                aborted: privilegedCtx.signal.aborted,
+                hasAbortApi: typeof privilegedCtx.signal.addEventListener === "function",
+              };
+            });
+            const second = await ctx.privileged.run({
+              operation: "notes.defaultSignalTwo",
+              targetResourceKind: "capsule-db",
+            }, (privilegedCtx) => {
+              observedDefaultSignals.push(privilegedCtx.signal);
+              return {
+                aborted: privilegedCtx.signal.aborted,
+                hasAbortApi: typeof privilegedCtx.signal.addEventListener === "function",
+              };
+            });
+            return {
+              first,
+              second,
+              freshSignals: observedDefaultSignals[0] !== observedDefaultSignals[1],
+            };
+          },
+        },
+        {
+          name: "abortDuringCallbackReturns",
+          handler: (ctx) => {
+            const controller = new AbortController();
+            return ctx.privileged.run({
+              operation: "notes.midRunReturn",
+              targetResourceKind: "capsule-db",
+              signal: controller.signal,
+            }, (privilegedCtx) => {
+              controller.abort(new Error("mid-run cancellation internals"));
+              return {
+                abortedInsideCallback: privilegedCtx.signal.aborted,
+                returnedAfterAbort: true,
+              };
+            });
+          },
+        },
+        {
+          name: "abortDuringCallbackThrows",
+          handler: async (ctx) => {
+            const controller = new AbortController();
+            try {
+              await ctx.privileged.run({
+                operation: "notes.midRunThrow",
+                targetResourceKind: "capsule-db",
+                signal: controller.signal,
+              }, () => {
+                controller.abort(new Error("mid-run throw cancellation internals"));
+                throw Object.assign(new Error("callback decides failure"), { code: "CALLBACK_DECIDED" });
+              });
+            } catch (error) {
+              return { code: error.code, causeCode: error.cause?.code };
+            }
+            return { missed: true };
+          },
+        },
+      ];
+
+      assert.deepEqual(await runQuery(database, { userId: "user-1" }, "suppliedSignal"), {
+        data: {
+          sameSignal: true,
+          initiallyAborted: false,
+        },
+        error: null,
+      });
+
+      assert.deepEqual(await runQuery(database, { userId: "user-1" }, "defaultSignals"), {
+        data: {
+          first: { aborted: false, hasAbortApi: true },
+          second: { aborted: false, hasAbortApi: true },
+          freshSignals: true,
+        },
+        error: null,
+      });
+
+      assert.deepEqual(await runQuery(database, { userId: "user-1" }, "abortDuringCallbackReturns"), {
+        data: {
+          abortedInsideCallback: true,
+          returnedAfterAbort: true,
+        },
+        error: null,
+      });
+
+      assert.deepEqual(await runQuery(database, { userId: "user-1" }, "abortDuringCallbackThrows"), {
+        data: {
+          code: "PRIVILEGED_RUN_FAILED",
+          causeCode: "CALLBACK_DECIDED",
+        },
+        error: null,
+      });
+
+      const midRunAuditEvents = database.log.recent(30)
+        .filter((entry) => entry.category === "audit" && entry.data.operation.startsWith("notes.midRun"));
+      assert.deepEqual(
+        midRunAuditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome, entry.data.safeErrorCode]),
+        [
+          ["privileged.started", "notes.midRunReturn", "started", null],
+          ["privileged.completed", "notes.midRunReturn", "completed", null],
+          ["privileged.finished", "notes.midRunReturn", "finished", null],
+          ["privileged.started", "notes.midRunThrow", "started", null],
+          ["privileged.errored", "notes.midRunThrow", "errored", "CALLBACK_DECIDED"],
+          ["privileged.finished", "notes.midRunThrow", "finished", null],
+        ],
+      );
+    } finally {
+      database.close();
+    }
   });
 });
 
@@ -1955,6 +3788,79 @@ test("anonymous session creation rolls back the auth user when session insertion
       assert.equal(
         baseAdapter.prepare("SELECT COUNT(*) AS count FROM sporades_auth_sessions").get().count,
         0,
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("runtime auth storage rejects the privileged sentinel as a real user", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true, email: { enabled: true } } },
+    });
+
+    try {
+      assert.throws(
+        () =>
+          database.sqlite.insertAuthUser({
+            id: "__privileged__",
+            createdAt: new Date().toISOString(),
+            displayName: "Pretend Privileged",
+            email: "privileged@example.com",
+            picture: null,
+            isAuthenticated: 1,
+            isGuest: 0,
+            provider: "email",
+          }),
+        /reserved/i,
+      );
+      assert.equal(
+        database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_auth_users WHERE id = ?").get("__privileged__").count,
+        0,
+      );
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("sessions and local identity simulation cannot resolve the privileged sentinel as a user", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true, email: { enabled: true } } },
+    });
+
+    try {
+      const now = new Date().toISOString();
+      database.sqlite.prepare(
+        "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run("__privileged__", now, "Forged Privileged", "privileged@example.com", null, 1, 0, "email");
+      database.sqlite.prepare(
+        "INSERT INTO sporades_auth_sessions (token, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?)",
+      ).run("forged-token", "__privileged__", now, new Date(Date.parse(now) + 60_000).toISOString());
+
+      const resolved = await resolveAnonymousSession(database, "forged-token");
+      assert.notEqual(resolved.auth.userId, "__privileged__");
+      assert.equal(resolved.auth.provider, "anonymous");
+
+      const simulated = await simulateLocalIdentitySession(database, {
+        provider: "email",
+        email: "local@example.com",
+        displayName: "Local User",
+        userId: "__privileged__",
+      });
+      assert.equal(simulated.ok, true);
+      assert.notEqual(simulated.data.auth.userId, "__privileged__");
+      assert.equal(
+        database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_auth_users WHERE id = ?").get("__privileged__").count,
+        1,
+      );
+      assert.equal(
+        database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_auth_sessions WHERE userId = ?").get("__privileged__").count,
+        1,
       );
     } finally {
       database.close();
@@ -2281,6 +4187,29 @@ function wrapAsyncRuntimeAdapter(adapter) {
         return value;
       }
       return async (...args) => await value.apply(target, args);
+    },
+  });
+}
+
+function createDurableAuditTransactionAdapter(adapter) {
+  return new Proxy(adapter, {
+    get(target, property, receiver) {
+      if (property === "withTransaction") {
+        return async (fn) => {
+          const transactionAdapter = new Proxy(target, {
+            get(currentTarget, transactionProperty, transactionReceiver) {
+              if (transactionProperty === "withTransaction") {
+                return async () => {
+                  throw new Error("Nested database transactions are not supported.");
+                };
+              }
+              return Reflect.get(currentTarget, transactionProperty, transactionReceiver);
+            },
+          });
+          return await fn(transactionAdapter);
+        };
+      }
+      return Reflect.get(target, property, receiver);
     },
   });
 }

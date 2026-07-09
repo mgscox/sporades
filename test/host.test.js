@@ -3116,7 +3116,7 @@ process.exit(0);
     const auditEvents = await readProjectAuditEvents(projectDir);
     assert.deepEqual(
       auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome]),
-      [["ssh.config.validated", "ssh.config.validate", "succeeded"]],
+      [["ssh.config.validated", "ssh.config.validate", "completed"]],
     );
     assert.equal(auditEvents[0].data.surface, "sporades/host-push");
     assert.equal(auditEvents[0].data.targetResourceKind, "hosted-ssh-config");
@@ -3218,7 +3218,7 @@ process.exit(0);
     const auditEvents = await readProjectAuditEvents(projectDir);
     assert.deepEqual(
       auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome, entry.data.metadata.enabled, entry.data.metadata.reason]),
-      [["ssh.config.validated", "ssh.config.validate", "succeeded", false, "no-authorized-keys"]],
+      [["ssh.config.validated", "ssh.config.validate", "completed", false, "no-authorized-keys"]],
     );
     assert.equal(auditEvents[0].data.surface, "sporades/host-push");
     assert.doesNotMatch(JSON.stringify(auditEvents), /comments-only\.keys|authorized_keys|ssh-ed25519|AAAAC3NzaC1lZDI1NTE5/);
@@ -3277,7 +3277,7 @@ process.exit(0);
     const auditEvents = await readProjectAuditEvents(projectDir);
     assert.deepEqual(
       auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome, entry.data.safeErrorCode]),
-      [["ssh.config.validated", "ssh.config.validate", "failed", "SSH_CONFIG_INVALID"]],
+      [["ssh.config.validated", "ssh.config.validate", "errored", "SSH_CONFIG_INVALID"]],
     );
     assert.equal(auditEvents[0].data.surface, "sporades/host-push");
     assert.equal(auditEvents[0].data.metadata.reason, "invalid-ssh-config");
@@ -7789,7 +7789,7 @@ test("sporades host helper starts SSH-enabled Hosted Capsules through the Base s
     assert.equal(Object.hasOwn(output.data.lifecycle, "ssh"), false);
     assert.deepEqual(
       output.data.lifecycle.auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome]),
-      [["ssh.access.enabled", "ssh.hosted-capsule.start", "succeeded"]],
+      [["ssh.access.enabled", "ssh.hosted-capsule.start", "completed"]],
     );
     assert.equal(output.data.lifecycle.auditEvents[0].data.surface, "sporades-host-helper/capsule.release.install");
     assert.equal(output.data.lifecycle.auditEvents[0].data.metadata.enabled, true);
@@ -7828,7 +7828,7 @@ test("sporades host helper starts SSH-enabled Hosted Capsules through the Base s
     const restartOutput = JSON.parse(restart.stdout);
     assert.deepEqual(
       restartOutput.data.auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome]),
-      [["ssh.access.enabled", "ssh.hosted-capsule.restart", "succeeded"]],
+      [["ssh.access.enabled", "ssh.hosted-capsule.restart", "completed"]],
     );
     assert.equal(restartOutput.data.auditEvents[0].data.surface, "sporades-host-helper/capsule.restart");
   });
@@ -9713,7 +9713,7 @@ test("sporades host helper inspects effective Hosted Capsule SSH state from Dock
     assert.equal(output.data.reason, null);
     assert.deepEqual(
       output.data.auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome]),
-      [["ssh.state.inspected", "ssh.hosted-capsule.inspect", "succeeded"]],
+      [["ssh.state.inspected", "ssh.hosted-capsule.inspect", "completed"]],
     );
     assert.equal(output.data.auditEvents[0].data.surface, "sporades-host-helper/capsule.ssh");
     assert.equal(output.data.auditEvents[0].data.metadata.enabled, true);

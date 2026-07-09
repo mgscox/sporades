@@ -737,6 +737,50 @@ return Promises. Sporades awaits them before sending WebSocket results, writing
 HTTP endpoint responses, committing mutation transactions, or refreshing query
 subscriptions.
 
+### Choosing a server actor
+
+Most server handlers should use the current user from `ctx.auth`. That identity
+is the live Sporades session behind the request or App message, including
+Anonymous sessions before sign-up. Use it for ordinary per-user reads, writes,
+file ownership, and authorization checks.
+
+future captured user identity may come from Job Queue and Job scheduling work for
+background work that should stay accountable to the user who authorized it after
+the original request ends. That is different from system-owned work.
+
+Use the Privileged server role only for trusted userless work that must run
+inside the Capsule without pretending to be a Sporades user:
+
+```ts
+mutations: {
+  repairIndex: mutation(async (ctx) => {
+    return await ctx.privileged.run({
+      operation: "search.repairIndex",
+      targetResourceKind: "capsule-db",
+      metadata: { source: "operator-action" },
+    }, async (privilegedCtx) => {
+      const rows = privilegedCtx.db.documents.all();
+      return { repaired: rows.length };
+    });
+  }),
+}
+```
+
+`ctx.privileged.run(...)` is available only in trusted server contexts: queries,
+mutations, Custom endpoints, App messages, context middleware, and supported
+mutation hooks. The derived `privilegedCtx` exposes `auth.userId` as
+`"__privileged__"`, carries `privilegedCtx.signal`, and may use approved
+Capsule DB and File operations through the normal runtime boundaries.
+
+Privileged server role is not a Capsule role, app admin, Team, user, session,
+service account, or browser credential. It does not make downstream middleware
+or handlers privileged, and leaked derived contexts become ineffective after the
+callback finishes. Table ACL rules and `sporades/client` cannot call it.
+
+Every privileged run emits Privileged audit events with `started`, `completed`
+or `errored`, and `finished` outcomes. If the signal is already aborted, the
+callback does not run and the runtime reports `Privileged run aborted`.
+
 ## Building the Client Side
 
 ### Use Queries

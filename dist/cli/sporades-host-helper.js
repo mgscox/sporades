@@ -660,7 +660,7 @@ async function startCapsule(request, options = {}) {
                 operation: request.action === "capsule.restart" ? "ssh.hosted-capsule.restart" : "ssh.hosted-capsule.start",
                 surface: `sporades-host-helper/${request.action}`,
                 targetResourceKind: "hosted-capsule-ssh-access",
-                outcome: "succeeded",
+                outcome: "completed",
                 message: "Hosted Capsule SSH access enabled for lifecycle start.",
                 release: { id: releaseId },
                 metadata: {
@@ -3097,7 +3097,7 @@ function hostedCapsuleSshStateWithAudit(request, overrides) {
                 operation: "ssh.hosted-capsule.inspect",
                 surface: "sporades-host-helper/capsule.ssh",
                 targetResourceKind: "hosted-capsule-ssh-state",
-                outcome: "succeeded",
+                outcome: "completed",
                 message: "Hosted Capsule SSH state inspected.",
                 metadata: hostedSshAuditMetadata(state),
             }),

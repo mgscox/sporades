@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Add Minimal `ctx.privileged.run(...)`
 

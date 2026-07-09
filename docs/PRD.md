@@ -59,6 +59,13 @@ The repository currently includes:
   implemented coverage records Sporades-controlled SSH configuration,
   lifecycle, and inspection events while leaving real SSH daemon login/session
   capture as future scanner work.
+- Privileged server role as an explicit `ctx.privileged.run(...)` server-code
+  API for trusted userless work inside a Capsule. It is a server-only authority
+  for system-owned execution, not a Capsule role, app admin, Teams membership,
+  user, session, service account, or browser credential. It emits Privileged
+  audit lifecycle events, exposes narrow DB and File access through existing
+  runtime boundaries, and provides the actor boundary needed by future Job Queue
+  and Job scheduling work without implementing Jobs.
 - Practical Docker hardening defaults for local and hosted Container sessions:
   the thin Sporades-owned Base image runs Node 22, local Container sessions use
   the invoking host UID/GID when available, Hosted Capsules use the Base image
@@ -109,18 +116,6 @@ The following work is intentionally deferred:
   login and session events, and emit them through the Privileged audit event
   contract without coupling `sshd` directly to Sporades runtime code. The spike
   remains in `.scratch/privileged-audit-event-contract/ssh-daemon-session-log-scanner-spike.md`.
-- Privileged server role:
-  a server-only actor for trusted system-owned execution that intentionally
-  runs without a Sporades user identity, such as scheduled Jobs or
-  platform-owned maintenance inside a Capsule. It is not a Capsule role, app
-  admin, browser credential, user, team member, session, or account. Capsule
-  admin authorization remains separate as Capsule roles checked through normal
-  ACL rules. Privileged server role activity must be auditable, must be invoked
-  only through explicit server-code APIs, must build on the implemented
-  Privileged audit event contract, and must distinguish userless system-owned
-  execution from work running as a captured Sporades user identity. This is a
-  dependency for Job scheduling because recurring Jobs may need to run without
-  a live user session.
 - Capsule roles:
   a separate future planning track for Capsule-scoped user authorization labels
   such as app-defined admin roles. Capsule roles are checked through normal ACL
@@ -576,6 +571,46 @@ time range, operation, actor kind, target resource, and outcome; review started,
 completed, errored, and finished privileged activity; verify that browser or app
 credentials could not forge a privileged event; and collect redacted evidence
 without exposing key material, Server env values, tokens, or raw daemon logs.
+
+## Privileged Server Role
+
+Privileged server role is implemented as a server-only authority for trusted
+system-owned execution inside a Capsule. Capsule server code invokes it
+explicitly with `ctx.privileged.run(...)` from query, mutation, Custom endpoint,
+App message, context middleware, and supported mutation hook contexts. The
+callback receives a derived `privilegedCtx` with the familiar server DB API, a
+narrow approved File API, `privilegedCtx.signal`, and
+`privilegedCtx.auth.userId === "__privileged__"`.
+
+Use the current user identity when work should be authorized as the live
+Sporades user represented by `ctx.auth`. Future captured user identity is for
+background Jobs that should remain accountable to the user who authorized them,
+even after the original request has ended. Use Privileged server role only for
+system-owned work that intentionally has no Sporades user identity, such as
+future scheduled maintenance or recurring Jobs that may run without a live user
+session.
+
+Privileged server role is not a Capsule role, app admin, Teams membership, user,
+session, service account, browser credential, Host profile, or platform operator
+login. Capsule admin authorization remains a separate future Capsule roles
+track checked through normal ACL rules. Browser/client credentials cannot carry
+Privileged server role authority, and table ACL rule contexts cannot call
+`ctx.privileged.run(...)`.
+
+Every privileged run emits Privileged audit events with actor kind
+`privileged-server-role` and the lifecycle outcomes `started`, then
+`completed` or `errored`, then `finished`. If a privileged run receives an
+already-aborted signal, the callback does not run and the runtime emits an
+errored audit event with the stable public message `Privileged run aborted`.
+Privileged run metadata is synchronous and structural, privileged audit emission
+is not best-effort, and default client-visible errors stay opaque unless
+Capsule server code catches and shapes a safe response.
+
+generated runtime artifacts expose the same Privileged server role behavior as
+the source runtime code. `npm run build` regenerates the bundled `bin/` and
+`dist/` outputs, and the generated-runtime parity check protects helper lists
+such as `SERVER_RUNTIME_SOURCE_FUNCTIONS` so Dev sessions, Container sessions,
+and Hosted Capsules do not drift from source behavior.
 
 ## Configuration
 

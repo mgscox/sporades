@@ -124,7 +124,7 @@ function logRedactedValue() {
 }
 var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
 var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
-var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["requested", "allowed", "denied", "succeeded", "failed", "skipped"]);
+var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["started", "completed", "errored", "finished"]);
 function createPrivilegedAuditLogInput(details = {}) {
   const outcome = normalizePrivilegedAuditOutcome(details.outcome);
   const safeErrorCode = safePrivilegedAuditErrorCode(details.safeErrorCode ?? details.error, outcome);
@@ -157,30 +157,24 @@ function normalizePrivilegedAuditActorKind(value) {
   return PRIVILEGED_AUDIT_ACTOR_KINDS.has(candidate) ? candidate : "unknown";
 }
 function normalizePrivilegedAuditOutcome(value) {
-  const candidate = String(value ?? "requested");
-  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "requested";
+  const candidate = String(value ?? "started");
+  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "started";
 }
 function privilegedAuditLevelForOutcome(outcome) {
-  if (outcome === "denied" || outcome === "skipped") {
-    return "warn";
-  }
-  if (outcome === "failed") {
+  if (outcome === "errored") {
     return "error";
   }
   return "info";
 }
-function safePrivilegedAuditErrorCode(value, outcome = "requested") {
+function safePrivilegedAuditErrorCode(value, outcome = "started") {
   const source = value && typeof value === "object" && "code" in value ? value.code : value;
   if (source === null || source === void 0 || source === "") {
-    if (outcome === "denied") {
-      return "DENIED";
-    }
-    if (outcome === "failed") {
+    if (outcome === "errored") {
       return "UNKNOWN_ERROR";
     }
     return null;
   }
-  return String(source).trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_").slice(0, 64) || (outcome === "failed" ? "UNKNOWN_ERROR" : null);
+  return String(source).trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_").slice(0, 64) || (outcome === "errored" ? "UNKNOWN_ERROR" : null);
 }
 function normalizePrivilegedAuditCorrelation(value) {
   if (value === null || value === void 0) {
@@ -1538,7 +1532,7 @@ async function startCapsule(request, options = {}) {
         operation: request.action === "capsule.restart" ? "ssh.hosted-capsule.restart" : "ssh.hosted-capsule.start",
         surface: `sporades-host-helper/${request.action}`,
         targetResourceKind: "hosted-capsule-ssh-access",
-        outcome: "succeeded",
+        outcome: "completed",
         message: "Hosted Capsule SSH access enabled for lifecycle start.",
         release: { id: releaseId },
         metadata: {
@@ -4153,7 +4147,7 @@ function hostedCapsuleSshStateWithAudit(request, overrides) {
         operation: "ssh.hosted-capsule.inspect",
         surface: "sporades-host-helper/capsule.ssh",
         targetResourceKind: "hosted-capsule-ssh-state",
-        outcome: "succeeded",
+        outcome: "completed",
         message: "Hosted Capsule SSH state inspected.",
         metadata: hostedSshAuditMetadata(state)
       })

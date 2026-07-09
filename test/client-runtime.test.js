@@ -9,6 +9,15 @@ async function importClientRuntime() {
   return import(`data:text/javascript;base64,${encoded}#${Date.now()}-${Math.random()}`);
 }
 
+test("browser client runtime exposes no Privileged server role authority", async () => {
+  const runtime = await importClientRuntime();
+
+  assert.equal(Object.hasOwn(runtime, "privileged"), false);
+  assert.equal(Object.hasOwn(runtime.auth, "privileged"), false);
+  assert.equal(Object.hasOwn(runtime.auth, "runPrivileged"), false);
+  assert.equal(Object.hasOwn(runtime.auth, "asPrivileged"), false);
+});
+
 function installBrowserFakes(auth, options = {}) {
   const storage = new Map();
   const sockets = [];

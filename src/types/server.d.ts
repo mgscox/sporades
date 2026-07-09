@@ -2,6 +2,7 @@ export type FieldKind = "String" | "Boolean" | "Number" | "Date" | "Json" | "Ref
 
 /** JSON-compatible values accepted by Sporades `Json()` fields and preferences APIs. */
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+export type JsonObject = { [key: string]: JsonValue };
 
 export type MaybePromise<Value> = Value | Promise<Value>;
 
@@ -254,6 +255,100 @@ export type MessageApi = {
   send(message: { type: string; data?: unknown; scope?: MessageScope }): number;
 };
 
+export type PrivilegedRunOptions = {
+  /** Stable operation name emitted in Privileged audit events. */
+  operation: string;
+  /** Resource class touched by the privileged operation, such as `capsule-db` or `files`. */
+  targetResourceKind?: string;
+  /** Synchronous JSON-compatible metadata redacted before `started` audit emission. */
+  metadata?: JsonObject;
+  /** Optional caller-supplied cancellation signal propagated to the privileged callback. */
+  signal?: AbortSignal;
+};
+
+export type PrivilegedFileError = {
+  message: string;
+  hint?: string;
+};
+
+export type PrivilegedResult<Data> =
+  | {
+      ok: true;
+      data: Data;
+      error: null;
+    }
+  | {
+      ok: false;
+      data?: null;
+      error: PrivilegedFileError;
+    };
+
+export type PrivilegedFileMetadata = {
+  id: string;
+  name: string;
+  type: string;
+  size: number;
+  path?: string;
+  version?: string;
+  url?: string;
+  [key: string]: unknown;
+};
+
+export type PrivilegedPublicFileUrl = {
+  id: string;
+  fileId: string;
+  url: string;
+  expiresAt: string | null;
+  revokedAt?: string | null;
+  [key: string]: unknown;
+};
+
+export type PrivilegedFileApi = {
+  /** Return a private runtime URL for one live Capsule File by id or absolute File path. */
+  url(fileReference: string): Promise<PrivilegedResult<{ url: string; file: PrivilegedFileMetadata }>>;
+  /** Create a public URL for one live Capsule File while preserving File runtime boundaries. */
+  createPublicUrl(fileReference: string, options?: { expires?: string | Date; ttlSeconds?: number; noExpiry?: boolean }): Promise<PrivilegedResult<PrivilegedPublicFileUrl>>;
+  /** Delete one live Capsule File through the configured Capsule File storage adapter. */
+  delete(fileReference: string): Promise<PrivilegedResult<PrivilegedFileMetadata>>;
+};
+
+export type PrivilegedAuthContext = AuthContext & {
+  userId: "__privileged__";
+  displayName: "Privileged server role";
+  email: null;
+  picture: null;
+  isAuthenticated: false;
+  isGuest: false;
+  provider: "privileged-server-role";
+};
+
+/**
+ * Derived context passed only to a `ctx.privileged.run(...)` callback.
+ *
+ * It is a server-only, userless execution actor. It is not a Capsule role, app
+ * admin, Sporades user, session, team member, service account, or browser
+ * credential.
+ */
+export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition> = Omit<CapsuleContext<Schema>, "auth" | "privileged"> & {
+  auth: PrivilegedAuthContext;
+  signal: AbortSignal;
+  files: PrivilegedFileApi;
+};
+
+/**
+ * Explicit server-only `ctx.privileged.run(...)` Privileged server role API.
+ *
+ * The runtime emits `started`, then `completed` or `errored`, then `finished`
+ * Privileged audit events around each callback. Privilege is scoped to the
+ * callback and becomes ineffective after the run finishes.
+ */
+export type PrivilegedApi<Schema extends SchemaDefinition = SchemaDefinition> = {
+  run<Result>(
+    options: PrivilegedRunOptions,
+    callback: (ctx: PrivilegedContext<Schema>) => MaybePromise<Result>,
+  ): Promise<Result>;
+};
+
 /**
  * Runtime-owned context passed to queries, mutations, endpoints, messages,
  * middleware, and hooks.
@@ -264,6 +359,7 @@ export type CapsuleContext<Schema extends SchemaDefinition = SchemaDefinition> =
   env: Record<string, string>;
   log: Logger;
   messages: MessageApi;
+  privileged: PrivilegedApi<Schema>;
 };
 
 /** Request details available only inside Custom endpoint handlers. */

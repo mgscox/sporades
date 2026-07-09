@@ -2322,7 +2322,7 @@ async function resolveLocalContainerSshAccessForAudit(config, projectDir, surfac
                 operation: "ssh.config.validate",
                 surface,
                 targetResourceKind,
-                outcome: "succeeded",
+                outcome: "completed",
                 message: "SSH access configuration validated.",
                 metadata: {
                     enabled: sshAccess.enabled,
@@ -2340,7 +2340,7 @@ async function resolveLocalContainerSshAccessForAudit(config, projectDir, surfac
             operation: "ssh.config.validate",
             surface,
             targetResourceKind,
-            outcome: "failed",
+            outcome: "errored",
             safeErrorCode: "SSH_CONFIG_INVALID",
             message: "SSH access configuration validation failed.",
             metadata: {
@@ -2515,7 +2515,7 @@ async function startContainerSession(options) {
             operation: sshAccess.enabled ? "ssh.container.start" : "ssh.container.disabled",
             surface: "sporades/deploy",
             targetResourceKind: "container-ssh-access",
-            outcome: sshAccess.enabled ? "succeeded" : "skipped",
+            outcome: "completed",
             message: sshAccess.enabled ? "Container SSH access enabled for local Container session." : "Container SSH access disabled for local Container session.",
             metadata: {
                 enabled: sshAccess.enabled,
@@ -2620,7 +2620,7 @@ async function emitLocalContainerSshInspectionAudit(config, projectDir, data) {
         operation: "ssh.container.inspect",
         surface: "sporades/deploy-ssh",
         targetResourceKind: "container-ssh-state",
-        outcome: "succeeded",
+        outcome: "completed",
         message: "Container SSH state inspected.",
         metadata: sshAuditMetadata(data),
     });
@@ -3334,7 +3334,7 @@ async function resolveHostedCapsuleSshAccessForAudit(config, projectDir) {
                 operation: "ssh.config.validate",
                 surface: "sporades/host-push",
                 targetResourceKind: "hosted-ssh-config",
-                outcome: "succeeded",
+                outcome: "completed",
                 message: "Hosted Capsule SSH access configuration validated.",
                 metadata: {
                     enabled: sshAccess.enabled,
@@ -3352,7 +3352,7 @@ async function resolveHostedCapsuleSshAccessForAudit(config, projectDir) {
             operation: "ssh.config.validate",
             surface: "sporades/host-push",
             targetResourceKind: "hosted-ssh-config",
-            outcome: "failed",
+            outcome: "errored",
             safeErrorCode: "SSH_CONFIG_INVALID",
             message: "Hosted Capsule SSH access configuration validation failed.",
             metadata: {

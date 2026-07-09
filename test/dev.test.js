@@ -5361,7 +5361,7 @@ export default capsule({
           surface: "sporades/dev-debug",
           correlation: { id: "corr-dev-audit" },
           targetResourceKind: "log-index",
-          outcome: "succeeded",
+          outcome: "completed",
           source: "runtime",
           metadata: {
             visible: "safe",
@@ -5380,14 +5380,14 @@ export default capsule({
       const auditEvents = logs.data.entries.filter((entry) => entry.category === "audit");
       assert.equal(auditEvents.length, 1);
       const [auditEvent] = auditEvents;
-      assert.equal(auditEvent.event, "privileged.succeeded");
+      assert.equal(auditEvent.event, "privileged.completed");
       assert.equal(auditEvent.data.schema, "sporades.privileged-audit.v1");
       assert.equal(auditEvent.data.actorKind, "privileged-server-role");
       assert.equal(auditEvent.data.operation, "runtime.audit.inspect");
       assert.equal(auditEvent.data.surface, "sporades/dev-debug");
       assert.deepEqual(auditEvent.correlation, { id: "corr-dev-audit" });
       assert.equal(auditEvent.data.targetResourceKind, "log-index");
-      assert.equal(auditEvent.data.outcome, "succeeded");
+      assert.equal(auditEvent.data.outcome, "completed");
       assert.equal(auditEvent.data.metadata.visible, "safe");
       assert.equal(auditEvent.data.metadata.authorization, "[REDACTED]");
       assert.equal(auditEvent.data.metadata.rawRequestBody, "[REDACTED]");
@@ -5403,7 +5403,7 @@ export default capsule({
       const tailResult = await runCli(["logs", "tail", "--json"], { cwd: projectDir });
       assert.equal(tailResult.code, 0, tailResult.stderr);
       const tailEvents = tailResult.stdout.trim().split("\n").map((line) => JSON.parse(line));
-      assert.equal(tailEvents.some((entry) => entry.category === "audit" && entry.event === "privileged.succeeded"), true);
+      assert.equal(tailEvents.some((entry) => entry.category === "audit" && entry.event === "privileged.completed"), true);
     } finally {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));

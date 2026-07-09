@@ -813,10 +813,32 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createRuntimeLogger,
   createPrivilegedAuditEmitter,
   emitPrivilegedAuditEvent,
+  createContextPrivilegedApi,
+  emitPrivilegedRunAudit,
+  recordPrivilegedAuditEventForTransaction,
+  reindexPrivilegedAuditEventsAfterRollback,
+  privilegedAuditEventAlreadyIndexed,
+  samePrivilegedAuditLogEvent,
+  normalizePrivilegedRunSignal,
+  createPrivilegedRunAbortError,
+  createPrivilegedRunAuditDetails,
+  validatedPrivilegedOperation,
+  validatedPrivilegedMetadata,
+  isPlainPrivilegedMetadata,
+  invalidPrivilegedRunMetadata,
+  createPrivilegedRunPublicError,
+  createPrivilegedAuditEmissionPublicError,
+  isPrivilegedAuditEmissionPublicError,
+  createPrivilegedHandlerContext,
+  createPrivilegedFileApi,
+  privilegedAuthUserId,
+  isReservedAuthUserId,
+  assertNotReservedAuthUserId,
   createPrivilegedAuditLogInput,
   normalizePrivilegedAuditActorKind,
   normalizePrivilegedAuditOutcome,
   safePrivilegedAuditErrorCode,
+  auditString,
   createLogEnvelope,
   sanitizeLogData,
   redactLogData,
@@ -889,6 +911,10 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   applyContextMiddleware,
   runContextMiddleware,
   readEndpointSessionToken,
+  privilegedDbAccessContextSet,
+  grantPrivilegedDbAccess,
+  revokePrivilegedDbAccess,
+  hasPrivilegedDbAccess,
   createEndpointDatabaseApi,
   createEndpointTableApi,
   runTableWriteWithAcl,
@@ -965,11 +991,13 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   deletePrivateFile,
   fileMetadataFromRow,
   fileMetadataFromUpload,
+  runFileMetadataTransaction,
   resolveFileWriteTarget,
   normalizeAbsoluteFilePath,
   normalizeFileName,
   isAbsoluteFilePath,
   resolveLiveFileReference,
+  resolvePrivilegedLiveFileReference,
   singleActiveFileRowByPath,
   singleLiveFileRowByPath,
   ambiguousFileReferenceError,
@@ -1793,24 +1821,29 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       ).run(row.userId, row.value, row.updatedAt);
     },
     findAuthUserByProviderEmail(provider, email) {
-      return this.prepare("SELECT id FROM sporades_auth_users WHERE provider = ? AND email = ?").get(provider, email) ?? null;
+      const row = this.prepare("SELECT id FROM sporades_auth_users WHERE provider = ? AND email = ?").get(provider, email) ?? null;
+      return isReservedAuthUserId(row?.id) ? null : row;
     },
     insertAuthUser(row) {
+      assertNotReservedAuthUserId(row.id);
       return this.prepare(
         "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
       ).run(row.id, row.createdAt, row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider);
     },
     updateAuthUserProfile(row) {
+      assertNotReservedAuthUserId(row.id);
       return this.prepare(
         "UPDATE sporades_auth_users SET displayName = ?, picture = ?, isAuthenticated = ?, isGuest = ? WHERE id = ?"
       ).run(row.displayName, row.picture, row.isAuthenticated, row.isGuest, row.id);
     },
     linkAuthUser(row) {
+      assertNotReservedAuthUserId(row.id);
       return this.prepare(
         "UPDATE sporades_auth_users SET displayName = ?, email = ?, picture = ?, isAuthenticated = ?, isGuest = ?, provider = ? WHERE id = ?"
       ).run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.id);
     },
     insertAuthSession(row) {
+      assertNotReservedAuthUserId(row.userId);
       return this.prepare("INSERT INTO sporades_auth_sessions (token, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?)").run(
         row.token,
         row.userId,
@@ -1825,6 +1858,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       return this.prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE token = ?").run(expiresAt, token);
     },
     rotateAuthSession(previousToken, row) {
+      assertNotReservedAuthUserId(row.userId);
       return this.prepare("UPDATE sporades_auth_sessions SET token = ?, userId = ?, createdAt = ?, expiresAt = ? WHERE token = ?").run(
         row.token,
         row.userId,
@@ -1834,9 +1868,13 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       );
     },
     readAuthSessionWithUser(token) {
-      return this.prepare(
+      const row = this.prepare(
         "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, u.provider FROM sporades_auth_sessions s JOIN sporades_auth_users u ON u.id = s.userId WHERE s.token = ?"
       ).get(token) ?? null;
+      if (isReservedAuthUserId(row?.userId)) {
+        return null;
+      }
+      return row;
     },
     insertOAuthState(row) {
       return this.prepare(
@@ -1852,14 +1890,16 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       return Boolean(this.prepare("SELECT email FROM sporades_auth_email_credentials WHERE email = ?").get(email));
     },
     insertEmailCredential(row) {
+      assertNotReservedAuthUserId(row.userId);
       return this.prepare(
         "INSERT INTO sporades_auth_email_credentials (email, userId, passwordHash, passwordSalt, createdAt) VALUES (?, ?, ?, ?, ?)"
       ).run(row.email, row.userId, row.passwordHash, row.passwordSalt, row.createdAt);
     },
     findEmailCredentialWithUser(email) {
-      return this.prepare(
+      const row = this.prepare(
         "SELECT c.email, c.userId, c.passwordHash, c.passwordSalt, u.displayName, u.picture, u.isAuthenticated, u.isGuest, u.provider FROM sporades_auth_email_credentials c JOIN sporades_auth_users u ON u.id = c.userId WHERE c.email = ?"
       ).get(email) ?? null;
+      return isReservedAuthUserId(row?.userId) ? null : row;
     },
     migrateAppSchema(schema) {
       this.exec("BEGIN");
@@ -3144,7 +3184,7 @@ function createRuntimeLogger(database, context = {}) {
 }
 var PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
 var PRIVILEGED_AUDIT_ACTOR_KINDS = /* @__PURE__ */ new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
-var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["requested", "allowed", "denied", "succeeded", "failed", "skipped"]);
+var PRIVILEGED_AUDIT_OUTCOMES = /* @__PURE__ */ new Set(["started", "completed", "errored", "finished"]);
 function createPrivilegedAuditEmitter(log) {
   return {
     emit(details) {
@@ -3158,6 +3198,346 @@ function emitPrivilegedAuditEvent(target, details = {}) {
     throw new Error("Privileged audit events require a runtime log sink.");
   }
   return log.emit(createPrivilegedAuditLogInput(details));
+}
+function createContextPrivilegedApi(database, contextGetter) {
+  return {
+    async run(options, callback) {
+      const context = contextGetter();
+      if (context?.__privilegedRunActive) {
+        throw commandError(
+          "Nested privileged runs are not supported.",
+          "Call separate top-level ctx.privileged.run operations instead of starting one privileged run from inside another.",
+          "NESTED_PRIVILEGED_RUN"
+        );
+      }
+      const auditDetails = createPrivilegedRunAuditDetails(context, options);
+      if (typeof callback !== "function") {
+        throw commandError(
+          "Privileged run requires a callback.",
+          "Pass a callback to ctx.privileged.run after the operation metadata.",
+          "INVALID_PRIVILEGED_RUN_CALLBACK"
+        );
+      }
+      const signal = normalizePrivilegedRunSignal(options.signal);
+      try {
+        await emitPrivilegedRunAudit(database, context, { ...auditDetails, outcome: "started" });
+      } catch (error) {
+        throw createPrivilegedAuditEmissionPublicError(error);
+      }
+      const privilegedContext = createPrivilegedHandlerContext(database, context, signal);
+      let callbackResult;
+      let callbackError;
+      let callbackSettled = false;
+      try {
+        if (signal.aborted) {
+          throw createPrivilegedRunAbortError();
+        }
+        try {
+          callbackResult = await callback(privilegedContext);
+          callbackSettled = true;
+        } catch (error) {
+          callbackError = error;
+          callbackSettled = true;
+          throw error;
+        }
+        try {
+          await emitPrivilegedRunAudit(database, context, { ...auditDetails, outcome: "completed" });
+        } catch (error) {
+          throw createPrivilegedAuditEmissionPublicError(error, { callbackResult });
+        }
+        return callbackResult;
+      } catch (error) {
+        if (isPrivilegedAuditEmissionPublicError(error)) {
+          throw error;
+        }
+        const safeErrorCode = signal.aborted && !callbackSettled ? "ABORTED" : safePrivilegedAuditErrorCode(error, "errored");
+        try {
+          await emitPrivilegedRunAudit(database, context, {
+            ...auditDetails,
+            outcome: "errored",
+            safeErrorCode
+          });
+        } catch (auditError) {
+          throw createPrivilegedAuditEmissionPublicError(auditError, { callbackError: callbackSettled ? callbackError ?? error : error });
+        }
+        throw createPrivilegedRunPublicError(error);
+      } finally {
+        try {
+          await emitPrivilegedRunAudit(database, context, { ...auditDetails, outcome: "finished" });
+        } catch (error) {
+          throw createPrivilegedAuditEmissionPublicError(
+            error,
+            callbackSettled ? callbackError ? { callbackError } : { callbackResult } : void 0
+          );
+        } finally {
+          revokePrivilegedDbAccess(privilegedContext);
+        }
+      }
+    }
+  };
+}
+async function emitPrivilegedRunAudit(database, context, details) {
+  const event = await database.audit.emit(details);
+  recordPrivilegedAuditEventForTransaction(context, event);
+  return event;
+}
+function recordPrivilegedAuditEventForTransaction(context, event) {
+  if (!context || event?.category !== "audit" || !String(event?.event ?? "").startsWith("privileged.")) {
+    return;
+  }
+  if (!Array.isArray(context.__privilegedAuditEvents)) {
+    Object.defineProperty(context, "__privilegedAuditEvents", {
+      value: [],
+      enumerable: false,
+      configurable: true
+    });
+  }
+  context.__privilegedAuditEvents.push(event);
+}
+async function reindexPrivilegedAuditEventsAfterRollback(database, context) {
+  const events = context?.__privilegedAuditEvents;
+  if (!Array.isArray(events) || events.length === 0) {
+    return;
+  }
+  for (const event of events) {
+    try {
+      if (await privilegedAuditEventAlreadyIndexed(database, event)) {
+        continue;
+      }
+      await database.sqlite.insertLogIndexEvent(event);
+    } catch {
+      return;
+    }
+  }
+  try {
+    await database.sqlite.pruneLogIndex(logIndexLimit(database.config ?? {}));
+  } catch {
+  }
+}
+async function privilegedAuditEventAlreadyIndexed(database, event) {
+  const recent = await database.sqlite.readRecentLogEvents(logIndexLimit(database.config ?? {}));
+  return Array.isArray(recent) && recent.some((candidate) => samePrivilegedAuditLogEvent(candidate, event));
+}
+function samePrivilegedAuditLogEvent(left, right) {
+  return left?.category === right?.category && left?.event === right?.event && left?.timestamp === right?.timestamp && left?.data?.schema === right?.data?.schema && left?.data?.operation === right?.data?.operation && left?.data?.outcome === right?.data?.outcome && left?.data?.actorKind === right?.data?.actorKind && (left?.data?.safeErrorCode ?? null) === (right?.data?.safeErrorCode ?? null);
+}
+function normalizePrivilegedRunSignal(value) {
+  if (value && typeof value === "object" && typeof value.aborted === "boolean") {
+    return value;
+  }
+  return new AbortController().signal;
+}
+function createPrivilegedRunAbortError() {
+  return commandError(
+    "Privileged run aborted.",
+    "Retry the privileged operation if cancellation was not intended.",
+    "ABORTED"
+  );
+}
+function createPrivilegedRunAuditDetails(context, options) {
+  if (!options || typeof options !== "object" || Array.isArray(options)) {
+    throw invalidPrivilegedRunMetadata("Privileged run requires operation metadata.");
+  }
+  const operation = validatedPrivilegedOperation(options.operation);
+  const metadata = validatedPrivilegedMetadata(options.metadata);
+  return {
+    actorKind: "privileged-server-role",
+    operation,
+    surface: auditString(options.surface ?? context?.kind, "server-handler"),
+    targetResourceKind: auditString(options.targetResourceKind ?? options.target?.resourceKind, "unknown"),
+    correlation: options.correlation ?? null,
+    request: options.request ?? null,
+    source: "runtime",
+    metadata
+  };
+}
+function validatedPrivilegedOperation(value) {
+  if (typeof value !== "string" || !value.trim()) {
+    throw invalidPrivilegedRunMetadata("Privileged run requires a stable operation name.");
+  }
+  const operation = value.trim();
+  if (!/^[a-z][a-z0-9]*(?:[._:-][a-z0-9]+)*$/i.test(operation)) {
+    throw invalidPrivilegedRunMetadata("Privileged run operation metadata is invalid.");
+  }
+  return operation;
+}
+function validatedPrivilegedMetadata(value) {
+  if (value === void 0) {
+    return {};
+  }
+  if (!isPlainPrivilegedMetadata(value)) {
+    throw invalidPrivilegedRunMetadata("Privileged run metadata must be a structural object.");
+  }
+  return { ...value };
+}
+function isPlainPrivilegedMetadata(value) {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  if (typeof value.then === "function") {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+function invalidPrivilegedRunMetadata(message) {
+  return commandError(
+    message,
+    "Pass stable, synchronous, structural metadata to ctx.privileged.run before starting privileged work.",
+    "INVALID_PRIVILEGED_RUN_METADATA"
+  );
+}
+function createPrivilegedRunPublicError(cause) {
+  const error = commandError(
+    "Privileged run failed.",
+    "Check the privileged audit events and server logs before exposing a safe response.",
+    "PRIVILEGED_RUN_FAILED"
+  );
+  error.cause = cause;
+  return error;
+}
+function createPrivilegedAuditEmissionPublicError(cause, context = void 0) {
+  const error = commandError(
+    "Privileged audit emission failed.",
+    "Check the server audit log configuration before retrying the privileged operation.",
+    "PRIVILEGED_AUDIT_EMISSION_FAILED"
+  );
+  error.cause = cause;
+  if (context) {
+    error.privilegedAuditContext = context;
+  }
+  return error;
+}
+function isPrivilegedAuditEmissionPublicError(error) {
+  return error?.code === "PRIVILEGED_AUDIT_EMISSION_FAILED";
+}
+function createPrivilegedHandlerContext(database, context, signal) {
+  const privilegedContext = {
+    ...context,
+    signal,
+    __privilegedRunActive: true,
+    auth: {
+      userId: privilegedAuthUserId(),
+      displayName: "Privileged server role",
+      email: null,
+      picture: null,
+      isAuthenticated: false,
+      isGuest: false,
+      provider: "privileged-server-role"
+    }
+  };
+  grantPrivilegedDbAccess(privilegedContext);
+  const holder = createContextHolder(privilegedContext);
+  privilegedContext.db = createEndpointDatabaseApi(database, () => holder.current);
+  privilegedContext.files = createPrivilegedFileApi(database, () => holder.current);
+  privilegedContext.privileged = createContextPrivilegedApi(database, () => holder.current);
+  return privilegedContext;
+}
+function createPrivilegedFileApi(database, contextGetter) {
+  return Object.freeze({
+    async url(fileReference) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        return active;
+      }
+      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
+      if (!resolved.ok) {
+        return resolved;
+      }
+      const row = resolved.row;
+      if (!row) {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
+        };
+      }
+      return {
+        ok: true,
+        data: {
+          url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
+          file: fileMetadataFromRow(row)
+        },
+        error: null
+      };
+    },
+    async createPublicUrl(fileReference, options = {}) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        return active;
+      }
+      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
+      if (!resolved.ok) {
+        return resolved;
+      }
+      if (!resolved.row) {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
+        };
+      }
+      return await createPublicFileUrl(database, { userId: resolved.row.ownerId }, resolved.row.id, options);
+    },
+    async delete(fileReference) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        return active;
+      }
+      const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
+      if (!resolved.ok) {
+        return resolved;
+      }
+      if (!resolved.row) {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file.")
+        };
+      }
+      return await deletePrivateFile(database, { userId: resolved.row.ownerId }, resolved.row.id);
+    },
+    unsupported() {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        throw commandError(
+          active.error?.message ?? "Privileged file access is no longer active.",
+          active.error?.hint ?? "Start a new ctx.privileged.run callback before using privileged file operations.",
+          "PRIVILEGED_FILE_ACCESS_INACTIVE"
+        );
+      }
+      throw commandError(
+        "Unsupported privileged file operation.",
+        "Use one of the approved privileged file operations: url, createPublicUrl, or delete.",
+        "UNSUPPORTED_PRIVILEGED_FILE_OPERATION"
+      );
+    }
+  });
+}
+function activePrivilegedFileAccess(contextGetter) {
+  if (hasPrivilegedDbAccess(contextGetter?.())) {
+    return { ok: true };
+  }
+  return {
+    ok: false,
+    error: createStructuredFileError(
+      "Privileged file access is no longer active.",
+      "Start a new ctx.privileged.run callback before using privileged file operations."
+    )
+  };
+}
+function privilegedAuthUserId() {
+  return "__privileged__";
+}
+function isReservedAuthUserId(userId) {
+  return userId === privilegedAuthUserId();
+}
+function assertNotReservedAuthUserId(userId) {
+  if (!isReservedAuthUserId(userId)) {
+    return;
+  }
+  throw commandError(
+    "Reserved auth user ID cannot be used for a real Sporades user.",
+    "Use runtime-generated user IDs for sessions and auth provider links.",
+    "RESERVED_AUTH_USER_ID"
+  );
 }
 function createPrivilegedAuditLogInput(details = {}) {
   const outcome = normalizePrivilegedAuditOutcome(details.outcome);
@@ -3191,30 +3571,24 @@ function normalizePrivilegedAuditActorKind(value) {
   return PRIVILEGED_AUDIT_ACTOR_KINDS.has(candidate) ? candidate : "unknown";
 }
 function normalizePrivilegedAuditOutcome(value) {
-  const candidate = String(value ?? "requested");
-  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "requested";
+  const candidate = String(value ?? "started");
+  return PRIVILEGED_AUDIT_OUTCOMES.has(candidate) ? candidate : "started";
 }
 function privilegedAuditLevelForOutcome(outcome) {
-  if (outcome === "denied" || outcome === "skipped") {
-    return "warn";
-  }
-  if (outcome === "failed") {
+  if (outcome === "errored") {
     return "error";
   }
   return "info";
 }
-function safePrivilegedAuditErrorCode(value, outcome = "requested") {
+function safePrivilegedAuditErrorCode(value, outcome = "started") {
   const source = value && typeof value === "object" && "code" in value ? value.code : value;
   if (source === null || source === void 0 || source === "") {
-    if (outcome === "denied") {
-      return "DENIED";
-    }
-    if (outcome === "failed") {
+    if (outcome === "errored") {
       return "UNKNOWN_ERROR";
     }
     return null;
   }
-  return String(source).trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_").slice(0, 64) || (outcome === "failed" ? "UNKNOWN_ERROR" : null);
+  return String(source).trim().toUpperCase().replace(/[^A-Z0-9_.-]+/g, "_").slice(0, 64) || (outcome === "errored" ? "UNKNOWN_ERROR" : null);
 }
 function normalizePrivilegedAuditCorrelation(value) {
   if (value === null || value === void 0) {
@@ -4517,7 +4891,7 @@ async function createPublicFileUrl(database, auth, fileReference, options = {}) 
   if (!expiry.ok) {
     return expiry;
   }
-  return await database.sqlite.withTransaction(async (sqlite) => {
+  return await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
     const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
     if (!resolved.ok) {
@@ -4572,7 +4946,7 @@ async function revokePublicFileUrl(database, auth, publicUrlId) {
 }
 async function deletePrivateFile(database, auth, fileReference) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  const result = await database.sqlite.withTransaction(async (sqlite) => {
+  const result = await runFileMetadataTransaction(database, async (sqlite) => {
     const transactionDatabase = { ...database, sqlite, adapter: sqlite };
     const resolved = await resolveLiveFileReference(transactionDatabase, auth.userId, fileReference);
     if (!resolved.ok) {
@@ -4605,6 +4979,12 @@ async function deletePrivateFile(database, auth, fileReference) {
     data: result.data,
     error: null
   };
+}
+async function runFileMetadataTransaction(database, fn) {
+  if (database.__transactionActive) {
+    return await fn(database.sqlite);
+  }
+  return await database.sqlite.withTransaction(fn);
 }
 function validatePublicUrlExpiry(options) {
   const choices = [options.ttlSeconds !== void 0, options.expires !== void 0, options.noExpiry === true].filter(Boolean);
@@ -4749,6 +5129,27 @@ async function resolveLiveFileReference(database, ownerId, reference) {
   }
   return { ok: true, row: await database.sqlite.fileRowForOwner(value, ownerId) };
 }
+async function resolvePrivilegedLiveFileReference(database, reference) {
+  const value = String(reference ?? "");
+  if (isAbsoluteFilePath(value)) {
+    let path7;
+    try {
+      path7 = normalizeAbsoluteFilePath(value);
+    } catch {
+      return { ok: true, row: null };
+    }
+    const resolved = await singleLiveFileRowByPath(database, path7);
+    if (resolved?.ambiguous) {
+      return ambiguousFileReferenceError(value);
+    }
+    return { ok: true, row: resolved };
+  }
+  const row = await database.sqlite.selectFileById(value);
+  if (!row || row.deletedAt !== null || row.status !== "uploaded") {
+    return { ok: true, row: null };
+  }
+  return { ok: true, row };
+}
 function singleLiveFileRowByPath(database, path7) {
   return thenIfPromise(database.sqlite.selectLiveFileByPath(path7), (rows) => {
     if (rows.length > 1) return { ambiguous: true };
@@ -4856,7 +5257,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
   });
 }
 function createTransactionDatabase(database, transactionAdapter) {
-  return transactionAdapter ? { ...database, adapter: transactionAdapter, sqlite: transactionAdapter } : database;
+  return transactionAdapter ? { ...database, adapter: transactionAdapter, sqlite: transactionAdapter, __transactionActive: true } : database;
 }
 async function readEndpointRequest(requestUrl, request) {
   const headers = Object.fromEntries(
@@ -4894,6 +5295,7 @@ function createEndpointContext(database, endpointRequest, session) {
   };
   const holder = createContextHolder(context);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
+  context.privileged = createContextPrivilegedApi(database, () => holder.current);
   return context;
 }
 function createContextHolder(context) {
@@ -4906,7 +5308,7 @@ function createContextHolder(context) {
   return holder;
 }
 function createTableAclContext(context, database) {
-  const { db, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
+  const { db, privileged, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
   return {
     ...aclContext,
     acl: createAclHelpers(database)
@@ -4950,6 +5352,32 @@ function runContextMiddleware(middlewareSource, context) {
 }
 function readEndpointSessionToken(headers, query) {
   return headers["x-sporades-session-token"] ?? query.sessionToken;
+}
+function privilegedDbAccessContextSet() {
+  const holder = privilegedDbAccessContextSet;
+  if (!holder.contexts) {
+    Object.defineProperty(holder, "contexts", {
+      value: /* @__PURE__ */ new WeakSet(),
+      enumerable: false,
+      configurable: false
+    });
+  }
+  return holder.contexts;
+}
+function grantPrivilegedDbAccess(context) {
+  if (context && typeof context === "object") {
+    privilegedDbAccessContextSet().add(context);
+  }
+  return context;
+}
+function revokePrivilegedDbAccess(context) {
+  if (context && typeof context === "object") {
+    privilegedDbAccessContextSet().delete(context);
+  }
+  return context;
+}
+function hasPrivilegedDbAccess(context) {
+  return Boolean(context && typeof context === "object" && privilegedDbAccessContextSet().has(context));
 }
 function createEndpointDatabaseApi(database, contextGetter = null) {
   return Object.fromEntries(
@@ -5102,6 +5530,9 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
   };
 }
 function runTableWriteWithAcl(database, table, operation, previous, next, contextGetter, write) {
+  if (hasPrivilegedDbAccess(contextGetter?.())) {
+    return write();
+  }
   const rule = table.acl?.resolve?.(operation);
   if (!rule) {
     return write();
@@ -5164,6 +5595,9 @@ function chainMaybePromise(steps) {
   return pending ?? void 0;
 }
 function applyReadAcl(database, table, row, context) {
+  if (hasPrivilegedDbAccess(context)) {
+    return true;
+  }
   const rule = table.acl?.resolve?.("read");
   if (!rule) {
     return true;
@@ -7071,7 +7505,7 @@ async function runMutation(database, auth, mutationName, args) {
   let result;
   try {
     return await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
-      const transactionDatabase = transactionAdapter ? { ...database, adapter: transactionAdapter, sqlite: transactionAdapter } : database;
+      const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       context = await applyContextMiddleware(transactionDatabase, createMutationContext(transactionDatabase, auth), "mutation");
       for (const hookSource of database.mutationHooks.beforeMutation) {
         await runMutationHookAndDrainPendingAclWrites(hookSource, { name: mutationName, args, ctx: context }, context);
@@ -7091,6 +7525,7 @@ async function runMutation(database, auth, mutationName, args) {
     });
   } catch (error) {
     database.rowCache.clear();
+    await reindexPrivilegedAuditEventsAfterRollback(database, context);
     if (error?.sporadesAclDenialLogData) {
       emitAclDeniedLog(database, { data: error.sporadesAclDenialLogData });
     }
@@ -7208,24 +7643,23 @@ function isAllAppMessageScope(scope) {
   return scope === "all" || scope?.scope === "all";
 }
 function createMessageContext(database, auth, sendAppMessage) {
-  return {
-    ...createMutationContext(database, auth),
-    messages: {
-      send(appMessage) {
-        validateAppMessageType(appMessage?.type);
-        if (isAllAppMessageScope(appMessage?.scope)) {
-          throw commandError(
-            "Client-origin app messages cannot broadcast to all clients.",
-            "Use the default current-user scope or an explicit users scope authorized by the message handler."
-          );
-        }
-        if (appMessage?.data !== void 0) {
-          assertJsonCompatible(appMessage.data);
-        }
-        return sendAppMessage?.(auth, appMessage) ?? 0;
+  const context = createMutationContext(database, auth);
+  context.messages = {
+    send(appMessage) {
+      validateAppMessageType(appMessage?.type);
+      if (isAllAppMessageScope(appMessage?.scope)) {
+        throw commandError(
+          "Client-origin app messages cannot broadcast to all clients.",
+          "Use the default current-user scope or an explicit users scope authorized by the message handler."
+        );
       }
+      if (appMessage?.data !== void 0) {
+        assertJsonCompatible(appMessage.data);
+      }
+      return sendAppMessage?.(auth, appMessage) ?? 0;
     }
   };
+  return context;
 }
 async function runMutationHook(hookSource, event) {
   const createHook = new Function(`return (${hookSource});`);
@@ -7248,6 +7682,7 @@ function createMutationContext(database, auth) {
   };
   const holder = createContextHolder(context);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
+  context.privileged = createContextPrivilegedApi(database, () => holder.current);
   return context;
 }
 async function drainPendingAclWrites(context) {
@@ -14438,7 +14873,7 @@ async function resolveLocalContainerSshAccessForAudit(config, projectDir, surfac
         operation: "ssh.config.validate",
         surface,
         targetResourceKind,
-        outcome: "succeeded",
+        outcome: "completed",
         message: "SSH access configuration validated.",
         metadata: {
           enabled: sshAccess.enabled,
@@ -14455,7 +14890,7 @@ async function resolveLocalContainerSshAccessForAudit(config, projectDir, surfac
       operation: "ssh.config.validate",
       surface,
       targetResourceKind,
-      outcome: "failed",
+      outcome: "errored",
       safeErrorCode: "SSH_CONFIG_INVALID",
       message: "SSH access configuration validation failed.",
       metadata: {
@@ -14640,7 +15075,7 @@ async function startContainerSession(options) {
       operation: sshAccess.enabled ? "ssh.container.start" : "ssh.container.disabled",
       surface: "sporades/deploy",
       targetResourceKind: "container-ssh-access",
-      outcome: sshAccess.enabled ? "succeeded" : "skipped",
+      outcome: "completed",
       message: sshAccess.enabled ? "Container SSH access enabled for local Container session." : "Container SSH access disabled for local Container session.",
       metadata: {
         enabled: sshAccess.enabled,
@@ -14740,7 +15175,7 @@ async function emitLocalContainerSshInspectionAudit(config, projectDir, data) {
     operation: "ssh.container.inspect",
     surface: "sporades/deploy-ssh",
     targetResourceKind: "container-ssh-state",
-    outcome: "succeeded",
+    outcome: "completed",
     message: "Container SSH state inspected.",
     metadata: sshAuditMetadata(data)
   });
@@ -15507,7 +15942,7 @@ async function resolveHostedCapsuleSshAccessForAudit(config, projectDir) {
         operation: "ssh.config.validate",
         surface: "sporades/host-push",
         targetResourceKind: "hosted-ssh-config",
-        outcome: "succeeded",
+        outcome: "completed",
         message: "Hosted Capsule SSH access configuration validated.",
         metadata: {
           enabled: sshAccess.enabled,
@@ -15524,7 +15959,7 @@ async function resolveHostedCapsuleSshAccessForAudit(config, projectDir) {
       operation: "ssh.config.validate",
       surface: "sporades/host-push",
       targetResourceKind: "hosted-ssh-config",
-      outcome: "failed",
+      outcome: "errored",
       safeErrorCode: "SSH_CONFIG_INVALID",
       message: "Hosted Capsule SSH access configuration validation failed.",
       metadata: {

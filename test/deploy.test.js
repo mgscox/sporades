@@ -924,8 +924,8 @@ test("sporades deploy accepts authorized_keys file entries and treats empty effe
     assert.deepEqual(
       auditEvents.slice(-2).map((entry) => [entry.event, entry.data.operation, entry.data.outcome, entry.data.metadata.enabled, entry.data.metadata.reason]),
       [
-        ["ssh.config.validated", "ssh.config.validate", "succeeded", false, "no-authorized-keys"],
-        ["ssh.access.disabled", "ssh.container.disabled", "skipped", false, "no-authorized-keys"],
+        ["ssh.config.validated", "ssh.config.validate", "completed", false, "no-authorized-keys"],
+        ["ssh.access.disabled", "ssh.container.disabled", "completed", false, "no-authorized-keys"],
       ],
     );
   });
@@ -1010,9 +1010,9 @@ test("sporades deploy audits SSH validation, enabled lifecycle, and inspection w
     assert.deepEqual(
       auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome]),
       [
-        ["ssh.config.validated", "ssh.config.validate", "succeeded"],
-        ["ssh.access.enabled", "ssh.container.start", "succeeded"],
-        ["ssh.state.inspected", "ssh.container.inspect", "succeeded"],
+        ["ssh.config.validated", "ssh.config.validate", "completed"],
+        ["ssh.access.enabled", "ssh.container.start", "completed"],
+        ["ssh.state.inspected", "ssh.container.inspect", "completed"],
       ],
     );
     const [validation, lifecycle, inspected] = auditEvents;
@@ -1060,7 +1060,7 @@ test("sporades deploy rejects private-key-looking SSH material", async () => {
     const auditEvents = await readProjectAuditEvents(projectDir);
     assert.deepEqual(
       auditEvents.map((entry) => [entry.event, entry.data.operation, entry.data.outcome, entry.data.safeErrorCode]),
-      [["ssh.config.validated", "ssh.config.validate", "failed", "SSH_CONFIG_INVALID"]],
+      [["ssh.config.validated", "ssh.config.validate", "errored", "SSH_CONFIG_INVALID"]],
     );
     assert.equal(auditEvents[0].data.metadata.reason, "invalid-ssh-config");
     assert.doesNotMatch(JSON.stringify(auditEvents), /OPENSSH PRIVATE KEY|nope/);
