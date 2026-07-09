@@ -31,3 +31,9 @@ test("running cancellation preserves success, cancels AbortError, and retries or
   for(const expected of ["succeeded","cancelled","failed"]){ mode=expected==="succeeded"?"success":expected==="cancelled"?"abort":"fail"; const began=new Promise(r=>started=r); const q=await runMutation(db,auth,"enqueue",[{retry:{maxAttempts:1}}]); await began; const request=await runMutation(db,auth,"cancel",[q.data.id]); assert.equal(request.data.cancelRequestedAt !== undefined,true); release(); await new Promise(r=>setTimeout(r,15)); assert.equal((await runMutation(db,auth,"get",[q.data.id])).data.status,expected); }
  } finally {db.close();await rm(dir,{recursive:true,force:true});}
 });
+
+test("queued cancellation and delayed ordering are deterministic", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-order-")); const seen=[];
+ const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{record:job((ctx,p)=>seen.push(p.id))},mutations:{enqueue:mutation((ctx,id,o)=>ctx.jobs.enqueue("record",{id},o)),cancel:mutation((ctx,id)=>ctx.jobs.cancel(id))}});
+ try {db.sqlite.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",new Date().toISOString(),"u",null,null,0,1,"anonymous"); const future=new Date(Date.now()+20).toISOString(); const a=await runMutation(db,auth,"enqueue",["a",{availableAt:future}]); const b=await runMutation(db,auth,"enqueue",["b",{availableAt:future}]); const queued=await runMutation(db,auth,"enqueue",["cancel",{availableAt:new Date(Date.now()+100).toISOString()}]); await runMutation(db,auth,"cancel",[queued.data.id]); await new Promise(r=>setTimeout(r,45)); assert.deepEqual(seen, [a.data.id < b.data.id ? "a":"b",a.data.id < b.data.id ? "b":"a"]);} finally {db.close();await rm(dir,{recursive:true,force:true});}
+});
