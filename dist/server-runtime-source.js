@@ -659,18 +659,20 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     return database;
 }
 async function recoverExpiredJobLeases(database) {
-    const rows = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status='running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ?").all(new Date().toISOString());
+    const recoveredAt = new Date();
+    const recoveredIso = recoveredAt.toISOString();
+    const rows = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status='running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ? ORDER BY availableAt ASC, id ASC").all(recoveredIso);
     for (const row of rows) {
         const retry = JSON.parse(row.retryJson || '{"maxAttempts":1,"delayMs":0}');
         const history = JSON.parse(row.attemptHistory || "[]");
-        history.push({ attempt: Number(row.attempts), outcome: "interrupted", code: "JOB_LEASE_EXPIRED", completedAt: new Date().toISOString() });
+        history.push({ attempt: Number(row.attempts), outcome: "interrupted", code: "JOB_LEASE_EXPIRED", completedAt: recoveredIso });
         if (Number(row.attempts) < retry.maxAttempts) {
-            const availableAt = new Date(Date.now() + retry.delayMs).toISOString();
+            const availableAt = new Date(recoveredAt.getTime() + retry.delayMs).toISOString();
             await database.sqlite.prepare("UPDATE sporades_jobs SET status='delayed', availableAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(availableAt, JSON.stringify(history), row.id);
             setTimeout(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1);
         }
         else
-            await database.sqlite.prepare("UPDATE sporades_jobs SET status='failed', failure=?, failedAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(JSON.stringify({ code: "JOB_LEASE_EXPIRED", message: "Job lease expired." }), new Date().toISOString(), JSON.stringify(history), row.id);
+            await database.sqlite.prepare("UPDATE sporades_jobs SET status='failed', failure=?, failedAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(JSON.stringify({ code: "JOB_LEASE_EXPIRED", message: "Job lease expired." }), recoveredIso, JSON.stringify(history), row.id);
     }
     if (rows.some((row) => Number(row.attempts) < JSON.parse(row.retryJson || '{"maxAttempts":1}').maxAttempts))
         scheduleCurrentUserJobWorker(database);
