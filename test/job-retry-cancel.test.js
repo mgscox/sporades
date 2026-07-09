@@ -23,3 +23,11 @@ test("delayed Jobs wake automatically and retry exhaustion retains one Job histo
   const failed=await runMutation(db,auth,"enqueue",["fail",{retry:{maxAttempts:2,delayMs:1}}]); await new Promise(r=>setTimeout(r,35)); const state=(await runMutation(db,auth,"get",[failed.data.id])).data; assert.equal(state.status,"failed"); assert.equal(state.attempts,2); assert.equal(state.attemptHistory.length,2); assert.equal(JSON.stringify(state.attemptHistory).includes("hidden"),false);
  } finally {db.close();await rm(dir,{recursive:true,force:true});}
 });
+
+test("running cancellation preserves success, cancels AbortError, and retries ordinary failure", async () => {
+ const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-running-")); let started; let release; let mode="success";
+ const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{gate:job(async(ctx)=>{started?.(); await new Promise(r=>release=r); if(mode==="abort"){const e=new Error("aborted");e.name="AbortError";throw e;} if(mode==="fail") throw new Error("ordinary"); return {ok:true};})},mutations:{enqueue:mutation((ctx,o)=>ctx.jobs.enqueue("gate",{},o)),get:mutation((ctx,id)=>ctx.jobs.get(id)),cancel:mutation((ctx,id)=>ctx.jobs.cancel(id))}});
+ try {db.sqlite.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",new Date().toISOString(),"u",null,null,0,1,"anonymous");
+  for(const expected of ["succeeded","cancelled","failed"]){ mode=expected==="succeeded"?"success":expected==="cancelled"?"abort":"fail"; const began=new Promise(r=>started=r); const q=await runMutation(db,auth,"enqueue",[{retry:{maxAttempts:1}}]); await began; const request=await runMutation(db,auth,"cancel",[q.data.id]); assert.equal(request.data.cancelRequestedAt !== undefined,true); release(); await new Promise(r=>setTimeout(r,15)); assert.equal((await runMutation(db,auth,"get",[q.data.id])).data.status,expected); }
+ } finally {db.close();await rm(dir,{recursive:true,force:true});}
+});
