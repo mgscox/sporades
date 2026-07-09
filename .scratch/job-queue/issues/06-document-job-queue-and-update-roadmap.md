@@ -1,0 +1,32 @@
+# Document Job Queue And Update Roadmap
+
+Status: ready-for-agent
+
+## Parent
+
+.scratch/job-queue/PRD.md
+
+## What to build
+
+Publish the Job Queue contract across product docs, user guide, public API docs,
+and roadmap. Documentation should explain actor modes, server-only APIs,
+runtime-owned storage, delayed availability, at-least-once delivery, retry and
+lease semantics, actor-scoped inspection, and the remaining dependency
+relationship with recurring Job scheduling.
+
+## Acceptance criteria
+
+- [ ] `docs/PRD.md` describes Job Queue as implemented scope once the feature is complete.
+- [ ] `CONTEXT.md` glossary stays aligned with the implemented Job, Job Queue, and Job state meanings.
+- [ ] User-facing docs explain how Capsule server code declares, enqueues, delays, gets, and lists Jobs, including the non-atomic boundary with Capsule app mutations and optional idempotency keys.
+- [ ] Public SDK/API docs include the server-only Job Queue types and omit client-side queue authority.
+- [ ] Docs distinguish `enqueuedBy` provenance from the captured-user or Privileged server role execution actor and explain current-user versus privileged list visibility.
+- [ ] Docs define `delayed`, `queued`, `running`, `succeeded`, `failed`, and `cancelled`, and explain that only `queued` means ready to run.
+- [ ] Docs state the at-least-once guarantee, single-worker initial concurrency, lease recovery, and handler idempotency requirement without promising exactly-once execution.
+- [ ] Roadmap moves Job Queue out of Recommended Next Features when implemented and keeps Job scheduling as the next dependent design item.
+- [ ] Docs clarify that one-time delayed availability is queue behavior while recurring scheduling, cron syntax, timezone handling, missed-run handling, and duplicate recurring-run protection remain future work.
+- [ ] Docs tests guard the server-only API, actor vocabulary, state machine, at-least-once guarantee, user/privileged inspection boundary, and recurring scheduling boundary.
+
+## Blocked by
+
+- .scratch/job-queue/issues/05-list-and-inspect-jobs-across-runtime-sessions.md
