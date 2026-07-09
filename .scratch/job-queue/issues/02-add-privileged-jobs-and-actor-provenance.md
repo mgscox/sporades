@@ -1,6 +1,6 @@
 # Add Privileged Jobs And Actor Provenance
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -30,3 +30,8 @@ Privileged server role context get or list every Job belonging to the Capsule.
 ## Blocked by
 
 - .scratch/job-queue/issues/01-run-and-inspect-current-user-jobs.md
+
+## Comments
+
+- Integrated by the Job Queue swarm as `b46b35e`, `5463788`, `32d0ced`, `0fef839`, and `1ffebf8` after independent review accepted worker SHA `eb3146a0a160d588b81a50321889adf907ad35f4`.
+- Integration checks: `npm run build && node --test test/captured-job-actor.test.js test/privileged-jobs.test.js test/job-queue.test.js test/types.test.js` passed.

@@ -5,8 +5,8 @@ Base: `0e78191709f3562fbf5b8517ebe22362e11859a8`
 | Issue | State | Blockers | Base SHA | Worker SHA | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 01-run-and-inspect-current-user-jobs | done | None | 0e78191709f3562fbf5b8517ebe22362e11859a8 | e9c3c185ded6319728c097f4504652da46511fc1 | ACCEPT | d1664d0 | Integration: build + focused job/type tests green; docs test baseline failure recorded | worktree retained until swarm completion |
-| 02-add-privileged-jobs-and-actor-provenance | ready | 01 | d1664d0 | — | — | — | ready after issue 01 integration | pending |
-| 03-add-delays-retries-and-cancellation | blocked | 02 | — | — | — | — | — | — |
+| 02-add-privileged-jobs-and-actor-provenance | done | 01 | a1ab9047b8c570a60584e9256638885bdb3026cc | eb3146a0a160d588b81a50321889adf907ad35f4 | ACCEPT | 1ffebf8 | Integration: build + captured/privileged/current-user/type tests green | worktree retained until swarm completion |
+| 03-add-delays-retries-and-cancellation | ready | 02 | 1ffebf8 | — | — | — | ready after issue 02 integration | pending |
 | 04-recover-jobs-with-at-least-once-delivery | blocked | 03 | — | — | — | — | — | — |
 | 05-list-and-inspect-jobs-across-runtime-sessions | blocked | 04 | — | — | — | — | — | — |
 | 06-document-job-queue-and-update-roadmap | blocked | 05 | — | — | — | — | — | — |
