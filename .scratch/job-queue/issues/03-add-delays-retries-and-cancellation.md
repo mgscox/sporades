@@ -1,6 +1,6 @@
 # Add Delays, Retries, And Cancellation
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -29,3 +29,8 @@ backoff without introducing recurring Job scheduling.
 ## Blocked by
 
 - .scratch/job-queue/issues/02-add-privileged-jobs-and-actor-provenance.md
+
+## Comments
+
+- Integrated by the Job Queue swarm as `0946b9c`, `15f7a33`, `40a48be`, `c38b5b9`, `fb75562`, `0ecca6a`, `231ced6`, and `44459dc` after independent review accepted worker SHA `1d322d68623eb60fd472b9e52fbff995c8bd6405`.
+- Integration checks: build plus full delay/retry/cancel, privileged, current-user, and type suites passed.
