@@ -163,6 +163,10 @@ this is not recurring scheduling. A bounded `retry` policy records attempts and
 uses a deterministic delay. `ctx.jobs.cancel(id)` cancels queued or delayed
 work, or cooperatively requests cancellation of running work through its signal.
 
+Job delivery is **at least once**, not exactly once: an interrupted leased
+attempt can be recovered and run again under the same Job ID. Make handlers
+duplicate-safe and use idempotency keys for cross-boundary caller retries.
+
 ### 4. Make Your First Client Change
 
 Open `client/index.tsx`. The scaffold wires the framework primitives into

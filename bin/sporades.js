@@ -1435,7 +1435,7 @@ async function recoverExpiredJobLeases(database) {
       setTimeout(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1);
     } else await database.sqlite.prepare("UPDATE sporades_jobs SET status='failed', failure=?, failedAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(JSON.stringify({ code: "JOB_LEASE_EXPIRED", message: "Job lease expired." }), (/* @__PURE__ */ new Date()).toISOString(), JSON.stringify(history), row.id);
   }
-  if (rows.length) scheduleCurrentUserJobWorker(database);
+  if (rows.some((row) => Number(row.attempts) < JSON.parse(row.retryJson || '{"maxAttempts":1}').maxAttempts)) scheduleCurrentUserJobWorker(database);
 }
 function jobHandlersFromCapsuleDefinition(capsuleDefinition) {
   const handlers = [];
