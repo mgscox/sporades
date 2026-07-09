@@ -1,0 +1,8 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import { openDevDatabase } from "../dist/server-runtime-source.js";
+import { job } from "../dist/server.js";
+test("startup recovers an expired running lease as a consumed retry", async()=>{const dir=await mkdtemp(path.join(tmpdir(),"sporades-lease-"));const file=path.join(dir,"data.db");let ran=0;let db=await openDevDatabase(file,"",{},{name:"jobs"},{jobs:{work:job(()=>{ran++;return null})}});try{const now=new Date().toISOString();db.sqlite.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run("u",now,"u",null,null,0,1,"anonymous");db.sqlite.prepare("INSERT INTO sporades_jobs (id,handler,enqueuedByUserId,actorUserId,payload,status,availableAt,attempts,createdAt,retryJson,attemptHistory,leaseExpiresAt) VALUES (?,?,?,?,?,'running',?,1,?,?,?,?)").run("expired","work","u","u","{}",now,now,'{"maxAttempts":2,"delayMs":0}',"[]",new Date(Date.now()-1).toISOString());db.close();db=await openDevDatabase(file,"",{},{name:"jobs"},{jobs:{work:job(()=>{ran++;return null})}});await new Promise(r=>setTimeout(r,20));assert.equal(ran,1);assert.equal(db.sqlite.prepare("SELECT attempts,status FROM sporades_jobs WHERE id='expired'").get().attempts,2);}finally{db.close();await rm(dir,{recursive:true,force:true});}});

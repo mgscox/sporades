@@ -724,10 +724,17 @@ export async function openDevDatabase(
   await ensureJobStorage(sqlite);
   await sqlite.ensureFileStorage();
   await sqlite.ensureLogStorage();
+  await recoverExpiredJobLeases(database);
   assertValidReferenceTargets(schema);
   await sqlite.migrateAppSchema(schema);
 
   return database;
+}
+
+async function recoverExpiredJobLeases(database: LooseRecord) {
+  const rows = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status='running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ?").all(new Date().toISOString());
+  for (const row of rows) { const retry=JSON.parse(row.retryJson||'{"maxAttempts":1,"delayMs":0}'); const history=JSON.parse(row.attemptHistory||"[]"); history.push({attempt:Number(row.attempts),outcome:"interrupted",code:"JOB_LEASE_EXPIRED",completedAt:new Date().toISOString()}); if(Number(row.attempts)<retry.maxAttempts) await database.sqlite.prepare("UPDATE sporades_jobs SET status='queued', leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(JSON.stringify(history),row.id); else await database.sqlite.prepare("UPDATE sporades_jobs SET status='failed', failure=?, failedAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(JSON.stringify({code:"JOB_LEASE_EXPIRED",message:"Job lease expired."}),new Date().toISOString(),JSON.stringify(history),row.id); }
+  if(rows.length) scheduleCurrentUserJobWorker(database);
 }
 
 function jobHandlersFromCapsuleDefinition(capsuleDefinition: any) {
@@ -754,7 +761,7 @@ async function ensureJobStorage(sqlite: LooseRecord) {
   await sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_jobs_idempotency ON sporades_jobs(handler, actorUserId, idempotencyKey) WHERE idempotencyKey IS NOT NULL");
   await sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_jobs_runnable ON sporades_jobs(status, availableAt, id)");
   const columns = await sqlite.prepare("PRAGMA table_info(sporades_jobs)").all();
-  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"]]) if (!columns.some((column: any) => column.name === name)) await sqlite.exec(`ALTER TABLE sporades_jobs ADD COLUMN ${name} ${type}`);
+  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"]]) if (!columns.some((column: any) => column.name === name)) await sqlite.exec(`ALTER TABLE sporades_jobs ADD COLUMN ${name} ${type}`);
 }
 
 async function createRuntimeDatabaseAdapter(databasePath: any, serverEnv: RuntimeEnv = {}, config: RuntimeConfig = {}) {
@@ -8750,7 +8757,7 @@ async function runCurrentUserJobWorker(database: LooseRecord) {
       const row = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status = 'queued' AND availableAt <= ? ORDER BY availableAt ASC, id ASC LIMIT 1").get(new Date().toISOString());
       if (!row) { await scheduleNextDelayedJob(database); return; }
       const startedAt = new Date().toISOString();
-      const claimed = await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'running', attempts = attempts + 1, startedAt = ? WHERE id = ? AND status = 'queued'").run(startedAt, row.id);
+      const claimed = await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'running', attempts = attempts + 1, startedAt = ?, leaseExpiresAt = ? WHERE id = ? AND status = 'queued'").run(startedAt, new Date(Date.now()+30_000).toISOString(), row.id);
       if (!claimed?.changes) continue;
       const handler = database.jobs?.find((candidate: any) => candidate.name === row.handler);
       database.__jobAbortControllers ??= new Map(); const abortController = new AbortController(); database.__jobAbortControllers.set(row.id, abortController);
