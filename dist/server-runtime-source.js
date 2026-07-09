@@ -664,8 +664,11 @@ async function recoverExpiredJobLeases(database) {
         const retry = JSON.parse(row.retryJson || '{"maxAttempts":1,"delayMs":0}');
         const history = JSON.parse(row.attemptHistory || "[]");
         history.push({ attempt: Number(row.attempts), outcome: "interrupted", code: "JOB_LEASE_EXPIRED", completedAt: new Date().toISOString() });
-        if (Number(row.attempts) < retry.maxAttempts)
-            await database.sqlite.prepare("UPDATE sporades_jobs SET status='queued', leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(JSON.stringify(history), row.id);
+        if (Number(row.attempts) < retry.maxAttempts) {
+            const availableAt = new Date(Date.now() + retry.delayMs).toISOString();
+            await database.sqlite.prepare("UPDATE sporades_jobs SET status='delayed', availableAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(availableAt, JSON.stringify(history), row.id);
+            setTimeout(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1);
+        }
         else
             await database.sqlite.prepare("UPDATE sporades_jobs SET status='failed', failure=?, failedAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(JSON.stringify({ code: "JOB_LEASE_EXPIRED", message: "Job lease expired." }), new Date().toISOString(), JSON.stringify(history), row.id);
     }
