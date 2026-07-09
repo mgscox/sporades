@@ -1,6 +1,6 @@
 # Run And Inspect Current-User Jobs
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -33,3 +33,8 @@ Session tokens and browser credentials are never persisted.
 ## Blocked by
 
 None - can start immediately
+
+## Comments
+
+- Integrated by the Job Queue swarm as `c39658a`, `0f958a5`, `8b89aa5`, and `d1664d0` after independent review accepted worker SHA `e9c3c185ded6319728c097f4504652da46511fc1`.
+- Integration checks: `npm run build && node --test test/job-queue.test.js test/types.test.js` passed. `test/docs.test.js` has a pre-existing planning-base failure because it expects `Job queue | design` while the committed roadmap correctly says `ready`.
