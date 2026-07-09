@@ -27,6 +27,11 @@ test("current users can enqueue, execute, get, and list their own durable jobs",
     },
     mutations: {
       enqueue: mutation((ctx, input) => ctx.jobs.enqueue("record", input, { idempotencyKey: "once" })),
+      enqueueTwice: mutation(async (ctx) => {
+        const first = await ctx.jobs.enqueue("record", { value: "same-transaction" }, { idempotencyKey: "same-transaction" });
+        const second = await ctx.jobs.enqueue("record", { value: "ignored" }, { idempotencyKey: "same-transaction" });
+        return { first, second };
+      }),
       enqueueThenFail: mutation(async (ctx) => {
         await ctx.jobs.enqueue("record", { value: "survives-rollback" });
         throw new Error("app mutation rolled back");
@@ -44,6 +49,9 @@ test("current users can enqueue, execute, get, and list their own durable jobs",
     const duplicate = await runMutation(database, auth("user-a"), "enqueue", [{ value: "ignored" }]);
     assert.equal(first.ok, true);
     assert.equal(first.data.id, duplicate.data.id);
+    const repeated = await runMutation(database, auth("user-a"), "enqueueTwice", []);
+    assert.equal(repeated.ok, true);
+    assert.equal(repeated.data.first.id, repeated.data.second.id);
     await new Promise((resolve) => setTimeout(resolve, 25));
     const completed = await runMutation(database, auth("user-a"), "getJob", [first.data.id]);
     assert.deepEqual(completed.data, {
@@ -55,11 +63,11 @@ test("current users can enqueue, execute, get, and list their own durable jobs",
       attempts: 1,
       result: { recorded: "hello" },
     });
-    assert.deepEqual(seen, [{ userId: "user-a", input: { value: "hello" } }]);
+    assert.deepEqual(seen[0], { userId: "user-a", input: { value: "hello" } });
     const hidden = await runMutation(database, auth("user-b"), "getJob", [first.data.id]);
     assert.equal(hidden.data, null);
     const list = await runMutation(database, auth("user-a"), "listJobs", []);
-    assert.deepEqual(list.data, { jobs: [{ id: first.data.id, handler: "record", status: "succeeded", attempts: 1 }], nextCursor: null });
+    assert.deepEqual(list.data.jobs.find((entry) => entry.id === first.data.id), { id: first.data.id, handler: "record", status: "succeeded", attempts: 1 });
 
     const rolledBack = await runMutation(database, auth("user-a"), "enqueueThenFail", []);
     assert.equal(rolledBack.ok, false);
@@ -67,6 +75,7 @@ test("current users can enqueue, execute, get, and list their own durable jobs",
     const afterRollback = await runMutation(database, auth("user-a"), "listJobs", []);
     assert.equal(afterRollback.data.jobs.some((entry) => entry.handler === "record"), true);
     assert.equal(seen.some((entry) => entry.input.value === "survives-rollback"), true);
+    assert.equal((await runMutation(database, auth("user-a"), "listJobs", [])).data.jobs.filter((entry) => entry.id === repeated.data.first.id).length, 1);
 
     const failed = await runMutation(database, auth("user-a"), "enqueueFailure", []);
     await new Promise((resolve) => setTimeout(resolve, 25));

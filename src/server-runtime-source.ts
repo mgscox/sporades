@@ -8591,6 +8591,10 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       if (idempotencyKey) {
         const existing = await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
         if (existing) return jobState(existing, true);
+        const pending = context.__pendingJobEnqueues?.find((candidate: any) =>
+          candidate.handler === handlerName && candidate.actorUserId === context.auth.userId && candidate.idempotencyKey === idempotencyKey,
+        );
+        if (pending) return jobState(pending, true);
       }
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
