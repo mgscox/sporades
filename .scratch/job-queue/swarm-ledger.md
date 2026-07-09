@@ -8,7 +8,7 @@ Base: `0e78191709f3562fbf5b8517ebe22362e11859a8`
 | 02-add-privileged-jobs-and-actor-provenance | done | 01 | a1ab9047b8c570a60584e9256638885bdb3026cc | eb3146a0a160d588b81a50321889adf907ad35f4 | ACCEPT | 1ffebf8 | Integration: build + captured/privileged/current-user/type tests green | worktree retained until swarm completion |
 | 03-add-delays-retries-and-cancellation | done | 02 | 34a02ae984b0170a0100b6e5a03012a40655d935 | 1d322d68623eb60fd472b9e52fbff995c8bd6405 | ACCEPT | 44459dc | Integration: full delay/retry/cancel + privileged/current-user/type suites green | worktree retained until swarm completion |
 | 04-recover-jobs-with-at-least-once-delivery | done | 03 | 0995023 | f9728983b2c47a3db2e8d7c41d499bcfe0e91b8e | ACCEPT | 3d58b91 | Integration: full queue + lease/recovery/type suites green; Container/Hosted seam limitation recorded | worktree retained until swarm completion |
-| 05-list-and-inspect-jobs-across-runtime-sessions | ready | 04 | 3d58b91 | — | — | — | ready after issue 04 integration | pending |
+| 05-list-and-inspect-jobs-across-runtime-sessions | external-blocked | 04 | 175dd66 | 1681c90f997f36872c41e37838b2c5367c9a4550 | ACCEPT (server slice) | — | Server inspection/filter/audit green; CLI Dev/Container/Hosted requires new shared protocol action/schema | worktree retained; human design required |
 | 06-document-job-queue-and-update-roadmap | blocked | 05 | — | — | — | — | — | — |
 
 ## Baseline

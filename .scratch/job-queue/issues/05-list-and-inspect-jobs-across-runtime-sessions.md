@@ -1,6 +1,6 @@
 # List And Inspect Jobs Across Runtime Sessions
 
-Status: ready-for-agent
+Status: ready-for-human
 
 ## Parent
 
@@ -28,3 +28,8 @@ Hosted Capsule runtime paths.
 ## Blocked by
 
 - .scratch/job-queue/issues/04-recover-jobs-with-at-least-once-delivery.md
+
+## Comments
+
+- Server inspection/filter slice integrated through worker tip `1681c90f997f36872c41e37838b2c5367c9a4550` after independent review accepted it.
+- External blocker: deterministic CLI JSON/human inspection across Dev, local Container, and Hosted Capsule requires a new shared queue inspection action/schema across CLI, runtime, Host-helper, and Hosted protocols. Existing contracts expose no narrow queue request seam; this needs a human-owned cross-surface design/implementation slice.
