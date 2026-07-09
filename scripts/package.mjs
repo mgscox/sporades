@@ -215,7 +215,9 @@ export async function packageForNpm(args = process.argv.slice(2)) {
   console.log("Updated CHANGES.md.");
   await updatePackageVersion(options.releaseType);
   console.log(`Version bumped to ${nextVersion}.`);
-  await run("git", ["add", "--", "package.json", "package-lock.json", "CHANGES.md", "docs/api"]);
+  await run("npm", ["run", "build"]);
+  console.log("Rebuilt packaged files with baked CLI version.");
+  await run("git", ["add", "--", "package.json", "package-lock.json", "CHANGES.md", "docs/api", "src/cli/cli-version.ts", "dist", "bin"]);
   await run("git", ["commit", "--message", releaseCommitMessage(releaseTag)]);
   const packOutput = await run("npm", ["pack", "--json"], { captureStdout: true });
   const tarball = parsePackedTarball(packOutput);

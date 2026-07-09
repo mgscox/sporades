@@ -9,6 +9,7 @@ import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageMetadata, baseImageRunti
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
 import { createLogEnvelope, createPrivilegedAuditLogInput, } from "../server-runtime-source.js";
 import { delay, errorDetails, helperError, readStdin, writeEnvelope, } from "./cli-support.js";
+import { CLI_VERSION } from "./cli-version.js";
 import { removeDiscardedArchiveMetadata, validateReleaseArchive } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig } from "./host-helper-config.js";
 import { hostRegistryRetryCommand, missingCapsuleHint, validateBootstrapRequest, validateDeleteRequest, validateHealthRequest, validateHostLogsRequest, validateHostStatsRequest, validateInstallRequest, validateLifecycleRequest, validateListRegistryRecord, validateListRequest, validateRegisterRequest, validateReleaseListRequest, validateRollbackRequest, validateSealedEnvRotationRequest, validateStatsRequest, validateUnregisterRequest, } from "./host-helper-validation.js";
@@ -93,11 +94,29 @@ async function main() {
         await logsHost(request);
         return;
     }
+    if (request.action === "host.version") {
+        versionHost(request);
+        return;
+    }
     if (request.action === "host.bootstrap") {
         await bootstrapHost(request);
         return;
     }
     throw helperError("Unsupported Host helper action.", "Update the Host helper or use a supported Sporades host command.");
+}
+function versionHost(request) {
+    writeEnvelope({
+        ok: true,
+        data: {
+            version: CLI_VERSION,
+            source: "host",
+            host: {
+                alias: request.host.alias,
+                domain: request.host.domain,
+            },
+        },
+        error: null,
+    });
 }
 async function bootstrapHost(request) {
     validateBootstrapRequest(request);

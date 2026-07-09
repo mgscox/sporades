@@ -343,6 +343,9 @@ function writeEnvelope(result, failed = false) {
   writeResult(result, failed);
 }
 
+// src/cli/cli-version.ts
+var CLI_VERSION = "0.3.0";
+
 // src/cli/host-helper-archive.ts
 import { spawnSync } from "node:child_process";
 import { readdir, rm } from "node:fs/promises";
@@ -945,11 +948,29 @@ async function main() {
     await logsHost(request);
     return;
   }
+  if (request.action === "host.version") {
+    versionHost(request);
+    return;
+  }
   if (request.action === "host.bootstrap") {
     await bootstrapHost(request);
     return;
   }
   throw helperError("Unsupported Host helper action.", "Update the Host helper or use a supported Sporades host command.");
+}
+function versionHost(request) {
+  writeEnvelope({
+    ok: true,
+    data: {
+      version: CLI_VERSION,
+      source: "host",
+      host: {
+        alias: request.host.alias,
+        domain: request.host.domain
+      }
+    },
+    error: null
+  });
 }
 async function bootstrapHost(request) {
   validateBootstrapRequest(request);

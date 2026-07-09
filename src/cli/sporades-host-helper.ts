@@ -46,6 +46,7 @@ import {
   type HelperError,
   type LooseRecord,
 } from "./cli-support.js";
+import { CLI_VERSION } from "./cli-version.js";
 import { removeDiscardedArchiveMetadata, validateReleaseArchive } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig, type HostHelperConfig } from "./host-helper-config.js";
 import {
@@ -167,12 +168,31 @@ async function main() {
     await logsHost(request);
     return;
   }
+  if (request.action === "host.version") {
+    versionHost(request);
+    return;
+  }
   if (request.action === "host.bootstrap") {
     await bootstrapHost(request);
     return;
   }
 
   throw helperError("Unsupported Host helper action.", "Update the Host helper or use a supported Sporades host command.");
+}
+
+function versionHost(request: HostHelperRequest) {
+  writeEnvelope({
+    ok: true,
+    data: {
+      version: CLI_VERSION,
+      source: "host",
+      host: {
+        alias: request.host.alias,
+        domain: request.host.domain,
+      },
+    },
+    error: null,
+  });
 }
 
 async function bootstrapHost(request: HostHelperRequest) {

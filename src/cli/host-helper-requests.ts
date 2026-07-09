@@ -25,6 +25,7 @@ export type HostHelperAction =
   | "capsule.list"
   | "host.stats"
   | "host.logs"
+  | "host.version"
   | "host.bootstrap";
 
 export type HostHelperVerification = JsonObject & {
@@ -167,6 +168,7 @@ export type HostLogsRequest = HostHelperRequestBase & {
   lines: number;
 };
 export type HostCapsuleListRequest = HostHelperRequestBase & { action: "capsule.list" };
+export type HostVersionRequest = HostHelperRequestBase & { action: "host.version" };
 
 export type HostHelperRequest =
   | HostBootstrapRequest
@@ -182,7 +184,8 @@ export type HostHelperRequest =
   | HostSshRequest
   | HostHealthRequest
   | HostLogsRequest
-  | HostCapsuleListRequest;
+  | HostCapsuleListRequest
+  | HostVersionRequest;
 
 export type HostHelperErrorBody = JsonObject & {
   message: string;
