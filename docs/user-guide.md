@@ -158,6 +158,11 @@ Transaction boundary: it is not atomic with `ctx.db` writes. Supply an
 idempotency key when callers can retry a cross-boundary workflow; repeating the
 same key for the same handler and captured user returns the retained Job.
 
+Jobs may use a one-time future `availableAt` and become `delayed` until then;
+this is not recurring scheduling. A bounded `retry` policy records attempts and
+uses a deterministic delay. `ctx.jobs.cancel(id)` cancels queued or delayed
+work, or cooperatively requests cancellation of running work through its signal.
+
 ### 4. Make Your First Client Change
 
 Open `client/index.tsx`. The scaffold wires the framework primitives into

@@ -8355,7 +8355,7 @@ function normalizeJobRetry(value) {
   return { maxAttempts: value.maxAttempts, delayMs: value.delayMs ?? 0 };
 }
 async function cancelJob(database, context, id) {
-  const row = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId);
+  const row = context.__privilegedJobAccess ? await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id) : await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId);
   if (!row) return null;
   const now = (/* @__PURE__ */ new Date()).toISOString();
   if (["queued", "delayed"].includes(row.status)) {
@@ -8393,6 +8393,10 @@ function createPrivilegedJobApi(database, contextGetter) {
       const rows = cursor ? await sqlite.prepare("SELECT * FROM sporades_jobs WHERE createdAt > ? OR (createdAt = ? AND id > ?) ORDER BY createdAt ASC, id ASC LIMIT ?").all(cursor.createdAt, cursor.createdAt, cursor.id, limit + 1) : await sqlite.prepare("SELECT * FROM sporades_jobs ORDER BY createdAt ASC, id ASC LIMIT ?").all(limit + 1);
       const page = rows.slice(0, limit);
       return { jobs: page.map((row) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
+    },
+    async cancel(id) {
+      assertActivePrivilegedJobAccess(contextGetter);
+      return await cancelJob(database.__rootDatabase ?? database, { auth: { userId: privilegedAuthUserId() }, __privilegedJobAccess: true }, id);
     }
   };
 }
@@ -8430,6 +8434,15 @@ function scheduleCurrentUserJobWorker(database) {
     await runCurrentUserJobWorker(database);
   }, 0);
 }
+async function scheduleNextDelayedJob(database) {
+  const row = await database.sqlite.prepare("SELECT availableAt FROM sporades_jobs WHERE status='delayed' ORDER BY availableAt ASC, id ASC LIMIT 1").get();
+  if (!row) return;
+  if (database.__jobWakeTimer) clearTimeout(database.__jobWakeTimer);
+  database.__jobWakeTimer = setTimeout(() => {
+    database.__jobWakeTimer = null;
+    scheduleCurrentUserJobWorker(database);
+  }, Math.max(0, Date.parse(row.availableAt) - Date.now()) + 1);
+}
 async function runCurrentUserJobWorker(database) {
   if (database.__jobWorkerRunning) return;
   database.__jobWorkerRunning = true;
@@ -8437,7 +8450,10 @@ async function runCurrentUserJobWorker(database) {
     while (true) {
       await database.sqlite.prepare("UPDATE sporades_jobs SET status='queued' WHERE status='delayed' AND availableAt <= ?").run((/* @__PURE__ */ new Date()).toISOString());
       const row = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status = 'queued' AND availableAt <= ? ORDER BY availableAt ASC, id ASC LIMIT 1").get((/* @__PURE__ */ new Date()).toISOString());
-      if (!row) return;
+      if (!row) {
+        await scheduleNextDelayedJob(database);
+        return;
+      }
       const startedAt = (/* @__PURE__ */ new Date()).toISOString();
       const claimed = await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'running', attempts = attempts + 1, startedAt = ? WHERE id = ? AND status = 'queued'").run(startedAt, row.id);
       if (!claimed?.changes) continue;
@@ -8450,7 +8466,7 @@ async function runCurrentUserJobWorker(database) {
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {
           const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
-          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1 } }, (privilegedCtx) => handler.handler(privilegedCtx, JSON.parse(row.payload)));
+          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1 } }, (privilegedCtx) => handler.handler(privilegedCtx, JSON.parse(row.payload)));
         } else {
           const user = await database.sqlite.prepare("SELECT * FROM sporades_auth_users WHERE id = ?").get(row.actorUserId);
           if (!user) throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");
