@@ -240,6 +240,13 @@ export function message(handler) {
   };
 }
 
+export function job(handler) {
+  return {
+    kind: "job",
+    handler,
+  };
+}
+
 export function table(fields) {
   return tableDefinition(fields);
 }
@@ -1366,6 +1373,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   const queries = extractQueryHandlersFromCapsule(capsuleDefinition) ?? extractQueryHandlers(serverSource);
   const mutations = capsuleDefinition ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition) : extractMutationHandlers(serverSource);
   const messages = extractMessageHandlers(serverSource);
+  const jobs = jobHandlersFromCapsuleDefinition(capsuleDefinition);
   const contextMiddleware = extractContextMiddleware(serverSource);
   const mutationHooks = extractMutationHooks(serverSource);
   const rowCache = /* @__PURE__ */ new Map();
@@ -1377,6 +1385,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     queries,
     mutations,
     messages,
+    jobs,
     contextMiddleware,
     mutationHooks,
     rowCache,
@@ -1402,11 +1411,32 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   await sqlite.ensureSystemTable();
   await sqlite.ensureAuthStorage(database.authConfig);
   await sqlite.ensureUserPreferencesStorage();
+  await ensureJobStorage(sqlite);
   await sqlite.ensureFileStorage();
   await sqlite.ensureLogStorage();
   assertValidReferenceTargets(schema);
   await sqlite.migrateAppSchema(schema);
   return database;
+}
+function jobHandlersFromCapsuleDefinition(capsuleDefinition) {
+  const handlers = [];
+  for (const [name, definition] of Object.entries(capsuleDefinition?.jobs ?? {})) {
+    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name) || definition?.kind !== "job" || typeof definition.handler !== "function") {
+      throw commandError("Invalid Job handler.", "Declare jobs as named job(...) handlers using letters, numbers, underscores, or hyphens.");
+    }
+    if (handlers.some((handler) => handler.name === name)) {
+      throw commandError(`Duplicate Job handler: ${name}`, "Use one unique Job handler name per Capsule.");
+    }
+    handlers.push({ name, handler: definition.handler });
+  }
+  return handlers;
+}
+async function ensureJobStorage(sqlite) {
+  await sqlite.exec(
+    "CREATE TABLE IF NOT EXISTS sporades_jobs (id TEXT PRIMARY KEY, handler TEXT NOT NULL, enqueuedByUserId TEXT NOT NULL, actorUserId TEXT NOT NULL, payload TEXT NOT NULL, status TEXT NOT NULL, availableAt TEXT NOT NULL, attempts INTEGER NOT NULL, idempotencyKey TEXT, result TEXT, failure TEXT, createdAt TEXT NOT NULL, startedAt TEXT, completedAt TEXT, failedAt TEXT)"
+  );
+  await sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_jobs_idempotency ON sporades_jobs(handler, actorUserId, idempotencyKey) WHERE idempotencyKey IS NOT NULL");
+  await sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_jobs_runnable ON sporades_jobs(status, availableAt, id)");
 }
 async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
   if (config.services?.database?.engine === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
@@ -2407,7 +2437,7 @@ async function createPostgresDatabaseAdapter(options) {
 }
 async function createPostgresConnection(url) {
   const net = await import("node:net");
-  const crypto = await import("node:crypto");
+  const crypto2 = await import("node:crypto");
   const options = postgresUrlOptions(url);
   const socket = net.createConnection({ host: options.host, port: options.port });
   socket.setNoDelay(true);
@@ -2457,7 +2487,7 @@ async function createPostgresConnection(url) {
             "Use the Sporades-managed Postgres Capsule service, which authenticates with SCRAM-SHA-256."
           );
         }
-        scram = createPostgresScramSession(crypto, options.password);
+        scram = createPostgresScramSession(crypto2, options.password);
         const clientFirst = Buffer.from(scram.clientFirstMessage, "utf8");
         socket.write(
           postgresPasswordMessage(
@@ -2581,8 +2611,8 @@ function postgresPasswordMessage(body) {
   const bodyBuffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
   return Buffer.concat([Buffer.from("p"), postgresInt32(bodyBuffer.length + 4), bodyBuffer]);
 }
-function createPostgresScramSession(crypto, password) {
-  const clientNonce = crypto.randomBytes(18).toString("base64");
+function createPostgresScramSession(crypto2, password) {
+  const clientNonce = crypto2.randomBytes(18).toString("base64");
   const clientFirstBare = `n=,r=${clientNonce}`;
   let serverSignature = null;
   return {
@@ -2595,15 +2625,15 @@ function createPostgresScramSession(crypto, password) {
       if (!serverNonce.startsWith(clientNonce) || salt.length === 0 || !Number.isInteger(iterations) || iterations <= 0) {
         throw new Error("Invalid Postgres SCRAM server-first message.");
       }
-      const saltedPassword = crypto.pbkdf2Sync(password, salt, iterations, 32, "sha256");
-      const clientKey = crypto.createHmac("sha256", saltedPassword).update("Client Key").digest();
-      const storedKey = crypto.createHash("sha256").update(clientKey).digest();
+      const saltedPassword = crypto2.pbkdf2Sync(password, salt, iterations, 32, "sha256");
+      const clientKey = crypto2.createHmac("sha256", saltedPassword).update("Client Key").digest();
+      const storedKey = crypto2.createHash("sha256").update(clientKey).digest();
       const clientFinalWithoutProof = `c=biws,r=${serverNonce}`;
       const authMessage = `${clientFirstBare},${serverFirstMessage},${clientFinalWithoutProof}`;
-      const clientSignature = crypto.createHmac("sha256", storedKey).update(authMessage).digest();
+      const clientSignature = crypto2.createHmac("sha256", storedKey).update(authMessage).digest();
       const clientProof = Buffer.from(clientKey.map((byte, index) => byte ^ clientSignature[index]));
-      const serverKey = crypto.createHmac("sha256", saltedPassword).update("Server Key").digest();
-      serverSignature = crypto.createHmac("sha256", serverKey).update(authMessage).digest("base64");
+      const serverKey = crypto2.createHmac("sha256", saltedPassword).update("Server Key").digest();
+      serverSignature = crypto2.createHmac("sha256", serverKey).update(authMessage).digest("base64");
       return `${clientFinalWithoutProof},p=${clientProof.toString("base64")}`;
     },
     verify(serverFinalMessage) {
@@ -5441,6 +5471,7 @@ function createEndpointContext(database, endpointRequest, session) {
   const holder = createContextHolder(context);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
+  context.jobs = createCurrentUserJobApi(database, () => holder.current);
   return context;
 }
 function createContextHolder(context) {
@@ -5453,7 +5484,7 @@ function createContextHolder(context) {
   return holder;
 }
 function createTableAclContext(context, database) {
-  const { db, privileged, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
+  const { db, privileged, jobs, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
   return {
     ...aclContext,
     acl: createAclHelpers(database)
@@ -8197,7 +8228,120 @@ function createMutationContext(database, auth) {
   const holder = createContextHolder(context);
   context.db = createEndpointDatabaseApi(database, () => holder.current);
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
+  context.jobs = createCurrentUserJobApi(database, () => holder.current);
   return context;
+}
+function createCurrentUserJobApi(database, contextGetter) {
+  return {
+    async enqueue(handlerName, payload, options = {}) {
+      const context = contextGetter();
+      const handler = database.jobs?.find((candidate) => candidate.name === handlerName);
+      if (!handler) {
+        throw jobError("UNKNOWN_JOB_HANDLER", `Unknown Job handler: ${String(handlerName)}`, "Declare the named handler in capsule({ jobs }) before enqueueing it.");
+      }
+      if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => key !== "idempotencyKey")) {
+        throw jobError("INVALID_JOB_OPTIONS", "Invalid Job enqueue options.", "Only idempotencyKey is supported for current-user Jobs.");
+      }
+      const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
+      const idempotencyKey = options.idempotencyKey;
+      if (idempotencyKey !== void 0 && (typeof idempotencyKey !== "string" || !idempotencyKey || idempotencyKey.length > 256)) {
+        throw jobError("INVALID_JOB_OPTIONS", "Invalid Job idempotency key.", "Pass a non-empty idempotencyKey no longer than 256 characters.");
+      }
+      if (idempotencyKey) {
+        const existing = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
+        if (existing) return jobState(existing, true);
+      }
+      const id = crypto.randomUUID();
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      try {
+        await database.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt) VALUES (?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?)").run(id, handlerName, context.auth.userId, context.auth.userId, payloadJson, now, idempotencyKey ?? null, now);
+      } catch (error) {
+        if (idempotencyKey) {
+          const existing = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
+          if (existing) return jobState(existing, true);
+        }
+        throw error;
+      }
+      scheduleCurrentUserJobWorker(database);
+      return jobState(await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id), true);
+    },
+    async get(id) {
+      const context = contextGetter();
+      const row = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId);
+      return row ? jobState(row, true) : null;
+    },
+    async list(options = {}) {
+      const context = contextGetter();
+      if (options === null || typeof options !== "object" || Array.isArray(options)) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list options.", "Pass an options object when listing Jobs.");
+      const limit = options.limit === void 0 ? 50 : options.limit;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
+      const rows = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE actorUserId = ? ORDER BY createdAt ASC, id ASC LIMIT ?").all(context.auth.userId, limit);
+      return { jobs: rows.map((row) => jobSummary(row)), nextCursor: null };
+    }
+  };
+}
+function jobError(code, message, hint) {
+  const error = new Error(message);
+  error.code = code;
+  error.hint = hint;
+  return error;
+}
+function boundedJobJson(value, limit, code, label) {
+  let serialized;
+  try {
+    assertJsonCompatible(value);
+    serialized = JSON.stringify(value);
+  } catch {
+    throw jobError("INVALID_JOB_PAYLOAD", `${label} must be JSON-compatible.`, "Pass plain JSON data without functions, cycles, or live request objects.");
+  }
+  if (Buffer.byteLength(serialized, "utf8") > limit) throw jobError(code, `${label} exceeds the ${limit} byte limit.`, "Reduce the serialized JSON value before enqueueing or returning it.");
+  return serialized;
+}
+function jobState(row, includeDetail) {
+  const state = { id: row.id, handler: row.handler, status: row.status, enqueuedBy: { userId: row.enqueuedByUserId }, actor: { mode: "current-user", userId: row.actorUserId }, attempts: Number(row.attempts) };
+  if (includeDetail && row.result) state.result = JSON.parse(row.result);
+  if (includeDetail && row.failure) state.failure = JSON.parse(row.failure);
+  return state;
+}
+function jobSummary(row) {
+  return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) };
+}
+function scheduleCurrentUserJobWorker(database) {
+  if (database.__jobWorkerScheduled || database.__jobWorkerRunning) return;
+  database.__jobWorkerScheduled = true;
+  setTimeout(async () => {
+    database.__jobWorkerScheduled = false;
+    await runCurrentUserJobWorker(database);
+  }, 0);
+}
+async function runCurrentUserJobWorker(database) {
+  if (database.__jobWorkerRunning) return;
+  database.__jobWorkerRunning = true;
+  try {
+    while (true) {
+      const row = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status = 'queued' AND availableAt <= ? ORDER BY availableAt ASC, id ASC LIMIT 1").get((/* @__PURE__ */ new Date()).toISOString());
+      if (!row) return;
+      const startedAt = (/* @__PURE__ */ new Date()).toISOString();
+      const claimed = await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'running', attempts = attempts + 1, startedAt = ? WHERE id = ? AND status = 'queued'").run(startedAt, row.id);
+      if (!claimed?.changes) continue;
+      const handler = database.jobs?.find((candidate) => candidate.name === row.handler);
+      try {
+        if (!handler) throw jobError("UNKNOWN_JOB_HANDLER", "Job handler is no longer declared.", "Restore the handler or inspect the retained Job state.");
+        const user = await database.sqlite.prepare("SELECT * FROM sporades_auth_users WHERE id = ?").get(row.actorUserId);
+        if (!user) throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");
+        const auth = { userId: user.id, displayName: user.displayName, email: user.email, picture: user.picture, isAuthenticated: Boolean(user.isAuthenticated), isGuest: Boolean(user.isGuest), provider: user.provider };
+        const context = createMutationContext(database, auth);
+        const result = await handler.handler(context, JSON.parse(row.payload));
+        const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");
+        await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'succeeded', result = ?, completedAt = ? WHERE id = ?").run(resultJson, (/* @__PURE__ */ new Date()).toISOString(), row.id);
+      } catch (error) {
+        const failure = { code: error?.code ?? "JOB_FAILED", message: String(error?.message ?? "Job handler failed.").slice(0, 1024) };
+        await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'failed', failure = ?, failedAt = ? WHERE id = ?").run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), (/* @__PURE__ */ new Date()).toISOString(), row.id);
+      }
+    }
+  } finally {
+    database.__jobWorkerRunning = false;
+  }
 }
 async function drainPendingAclWrites(context) {
   let firstError = null;

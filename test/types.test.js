@@ -67,11 +67,19 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     );
     await writeFile(
       path.join(dir, "app.ts"),
-      `import { Boolean, Date, Json, Number, Reference, String, capsule, endpoint, message, mutation, query, requireAuth, table } from "sporades/server";
+      `import { Boolean, Date, Json, Number, Reference, String, capsule, endpoint, job, message, mutation, query, requireAuth, table } from "sporades/server";
 import { auth, createHooks, files, isAuthenticated, onMessage, preferences, sendMessage } from "sporades/client";
 
 const app = capsule({
   name: "typed island",
+  jobs: {
+    summarise: job(async (ctx, payload) => {
+      const text = typeof payload === "object" && payload !== null && "text" in payload && typeof payload.text === "string" ? payload.text : "";
+      const queued = await ctx.jobs.enqueue("summarise", { text }, { idempotencyKey: text });
+      const visible = await ctx.jobs.get(queued.id);
+      return { id: visible?.id ?? queued.id };
+    }),
+  },
   schema: {
     users: table({
       name: String(),
@@ -219,6 +227,8 @@ auth.signUp("email", { email: "a@example.com", password: "secret", name: "Ada" }
 auth.privileged;
 // @ts-expect-error browser file API cannot run privileged file operations.
 files.privileged;
+// @ts-expect-error browser auth API has no direct Job Queue authority.
+auth.jobs;
 files.upload(new Blob(["hello"], { type: "text/plain" }));
 files.publicUrl("/docs/hello.txt", { expires: new globalThis.Date() });
 // @ts-expect-error public URL expiry option is named expires, not expiresAt.

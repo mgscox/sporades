@@ -360,6 +360,8 @@ export type CapsuleContext<Schema extends SchemaDefinition = SchemaDefinition> =
   log: Logger;
   messages: MessageApi;
   privileged: PrivilegedApi<Schema>;
+  /** Server-only current-user durable Job Queue. */
+  jobs: JobApi;
 };
 
 /** Request details available only inside Custom endpoint handlers. */
@@ -470,6 +472,21 @@ export type MessageDefinition<Handler = MessageHandler> = {
   handler: Handler;
 };
 
+export type JobStatus = "queued" | "running" | "succeeded" | "failed";
+export type JobSummary = { id: string; handler: string; status: JobStatus; attempts: number };
+export type JobState = JobSummary & {
+  enqueuedBy: { userId: string };
+  actor: { mode: "current-user"; userId: string };
+  result?: JsonValue;
+  failure?: { code: string; message: string };
+};
+export type JobApi = {
+  enqueue(handler: string, payload: JsonValue, options?: { idempotencyKey?: string }): Promise<JobState>;
+  get(id: string): Promise<JobState | null>;
+  list(options?: { limit?: number }): Promise<{ jobs: JobSummary[]; nextCursor: null }>;
+};
+export type JobDefinition<Handler = (ctx: CapsuleContext, payload: JsonValue) => MaybePromise<JsonValue>> = { kind: "job"; handler: Handler };
+
 /**
  * Top-level Capsule definition passed to `capsule()`.
  *
@@ -483,6 +500,7 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   mutations?: Record<string, MutationDefinition>;
   endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema>>>;
   messages?: Record<string, MessageDefinition<MessageHandler<Schema>>>;
+  jobs?: Record<string, JobDefinition>;
   middleware?: ContextMiddleware<Schema>[];
   hooks?: CapsuleHooks<Schema>;
 };
@@ -520,6 +538,10 @@ export function mutation<const Args extends unknown[] = string[], Result = unkno
 ): MutationDefinition<(ctx: CapsuleContext, ...args: Args) => MaybePromise<Result>>;
 /** Define a server-mediated App message handler. */
 export function message<Handler extends MessageHandler>(handler: Handler): MessageDefinition<Handler>;
+/** Declare a named server-only Job handler in `capsule({ jobs })`. */
+export function job<Payload extends JsonValue, Result extends JsonValue>(
+  handler: (ctx: CapsuleContext, payload: Payload) => MaybePromise<Result>,
+): JobDefinition<(ctx: CapsuleContext, payload: Payload) => MaybePromise<Result>>;
 /** Define a Capsule table from field builders. */
 export function table<const Fields extends Record<string, AnyFieldDefinition>>(fields: Fields): TableDefinition<Fields>;
 

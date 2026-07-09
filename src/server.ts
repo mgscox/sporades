@@ -26,6 +26,11 @@ export type HandlerDefinition<Kind extends "query" | "mutation" | "message", Han
   handler: HandlerType;
 };
 
+export type JobDefinition<HandlerType extends Handler = Handler> = {
+  kind: "job";
+  handler: HandlerType;
+};
+
 export type FieldDefinition<Value = unknown> = {
   kind: FieldKind;
   defaultValue?: Value;
@@ -139,6 +144,11 @@ export function message<const HandlerType extends Handler>(
     kind: "message",
     handler,
   };
+}
+
+/** Declare a named, server-only durable Job handler in `capsule({ jobs })`. */
+export function job<const HandlerType extends Handler>(handler: HandlerType): JobDefinition<HandlerType> {
+  return { kind: "job", handler };
 }
 
 export function table<const Fields extends UnknownRecord>(fields: Fields): TableDefinition<Fields> {
@@ -259,6 +269,13 @@ export function mutation(handler) {
 export function message(handler) {
   return {
     kind: "message",
+    handler,
+  };
+}
+
+export function job(handler) {
+  return {
+    kind: "job",
     handler,
   };
 }

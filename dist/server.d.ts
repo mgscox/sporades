@@ -20,6 +20,10 @@ export type HandlerDefinition<Kind extends "query" | "mutation" | "message", Han
     kind: Kind;
     handler: HandlerType;
 };
+export type JobDefinition<HandlerType extends Handler = Handler> = {
+    kind: "job";
+    handler: HandlerType;
+};
 export type FieldDefinition<Value = unknown> = {
     kind: FieldKind;
     defaultValue?: Value;
@@ -64,6 +68,8 @@ export declare function endpoint<const HandlerType extends Handler>(options: End
 export declare function query<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"query", HandlerType>;
 export declare function mutation<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"mutation", HandlerType>;
 export declare function message<const HandlerType extends Handler>(handler: HandlerType): HandlerDefinition<"message", HandlerType>;
+/** Declare a named, server-only durable Job handler in `capsule({ jobs })`. */
+export declare function job<const HandlerType extends Handler>(handler: HandlerType): JobDefinition<HandlerType>;
 export declare function table<const Fields extends UnknownRecord>(fields: Fields): TableDefinition<Fields>;
 export declare function String(): FieldBuilder<unknown>;
 export declare function Boolean(): FieldBuilder<unknown>;

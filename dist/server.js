@@ -52,6 +52,10 @@ export function message(handler) {
         handler,
     };
 }
+/** Declare a named, server-only durable Job handler in `capsule({ jobs })`. */
+export function job(handler) {
+    return { kind: "job", handler };
+}
 export function table(fields) {
     return tableDefinition(fields);
 }
@@ -161,6 +165,13 @@ export function mutation(handler) {
 export function message(handler) {
   return {
     kind: "message",
+    handler,
+  };
+}
+
+export function job(handler) {
+  return {
+    kind: "job",
     handler,
   };
 }
