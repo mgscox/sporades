@@ -752,6 +752,8 @@ async function ensureJobStorage(sqlite: LooseRecord) {
   );
   await sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_jobs_idempotency ON sporades_jobs(handler, actorUserId, idempotencyKey) WHERE idempotencyKey IS NOT NULL");
   await sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_jobs_runnable ON sporades_jobs(status, availableAt, id)");
+  const columns = await sqlite.prepare("PRAGMA table_info(sporades_jobs)").all();
+  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"]]) if (!columns.some((column: any) => column.name === name)) await sqlite.exec(`ALTER TABLE sporades_jobs ADD COLUMN ${name} ${type}`);
 }
 
 async function createRuntimeDatabaseAdapter(databasePath: any, serverEnv: RuntimeEnv = {}, config: RuntimeConfig = {}) {
@@ -8583,7 +8585,7 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       if (!handler) {
         throw jobError("UNKNOWN_JOB_HANDLER", `Unknown Job handler: ${String(handlerName)}`, "Declare the named handler in capsule({ jobs }) before enqueueing it.");
       }
-      if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => key !== "idempotencyKey")) {
+      if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => !["idempotencyKey", "availableAt", "retry"].includes(key))) {
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job enqueue options.", "Only idempotencyKey is supported for current-user Jobs.");
       }
       const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
@@ -8601,7 +8603,10 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       }
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
-      const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, payload: payloadJson, status: "queued", availableAt: now, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now };
+      const availableAt = options.availableAt === undefined ? now : new Date(options.availableAt).toISOString();
+      if (Number.isNaN(Date.parse(availableAt))) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an ISO 8601 availableAt value.");
+      const retry = normalizeJobRetry(options.retry);
+      const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]" };
       if (database.__transactionActive) {
         const pendingContext = context.__jobParentContext ?? context;
         pendingContext.__pendingJobEnqueues ??= [];
@@ -8610,7 +8615,7 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
         return jobState(row, true);
       }
       try {
-        await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt) VALUES (?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?)").run(id, handlerName, row.enqueuedByUserId, row.actorUserId, payloadJson, now, idempotencyKey ?? null, now);
+        await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)").run(id, handlerName, row.enqueuedByUserId, row.actorUserId, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory);
       } catch (error: any) {
         if (idempotencyKey) {
           const existing = await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
@@ -8626,6 +8631,7 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       const row = await (database.__rootDatabase ?? database).sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId);
       return row ? jobState(row, true) : null;
     },
+    async cancel(id: any) { return await cancelJob(database.__rootDatabase ?? database, contextGetter(), id); },
     async list(options: LooseRecord = {}) {
       const context = contextGetter();
       if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => key !== "limit" && key !== "cursor")) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list options.", "Pass only limit and cursor when listing Jobs.");
@@ -8658,8 +8664,13 @@ function jobState(row: any, includeDetail: boolean) {
   const state: any = { id: row.id, handler: row.handler, status: row.status, enqueuedBy: { userId: row.enqueuedByUserId }, actor, attempts: Number(row.attempts) };
   if (includeDetail && row.result) state.result = JSON.parse(row.result);
   if (includeDetail && row.failure) state.failure = JSON.parse(row.failure);
+  if (includeDetail) state.attemptHistory = JSON.parse(row.attemptHistory || "[]");
+  if (row.cancelRequestedAt) state.cancelRequestedAt = row.cancelRequestedAt;
   return state;
 }
+
+function normalizeJobRetry(value: any) { if (value === undefined) return { maxAttempts: 1, delayMs: 0 }; if (!value || !Number.isInteger(value.maxAttempts) || value.maxAttempts < 1 || value.maxAttempts > 20 || !Number.isInteger(value.delayMs ?? 0) || (value.delayMs ?? 0) < 0) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.maxAttempts (1-20) and non-negative retry.delayMs."); return { maxAttempts: value.maxAttempts, delayMs: value.delayMs ?? 0 }; }
+async function cancelJob(database: LooseRecord, context: any, id: any) { const row = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId); if (!row) return null; const now=new Date().toISOString(); if (["queued","delayed"].includes(row.status)) { await database.sqlite.prepare("UPDATE sporades_jobs SET status='cancelled', completedAt=? WHERE id=?").run(now,id); return jobState({...row,status:"cancelled",completedAt:now},true); } if(row.status==="running"){ database.__jobAbortControllers?.get(id)?.abort(); await database.sqlite.prepare("UPDATE sporades_jobs SET cancelRequestedAt=? WHERE id=?").run(now,id); return jobState({...row,cancelRequestedAt:now},true);} throw jobError("INVALID_JOB_STATE","Job cannot be cancelled from its current state.","Only queued, delayed, or running Jobs can be cancelled."); }
 
 function jobSummary(row: any) { return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) }; }
 
@@ -8707,7 +8718,7 @@ async function flushPendingJobEnqueues(context: LooseRecord | undefined) {
   context.__pendingJobsFlushed = true;
   const queueDatabase = context.__jobQueueDatabase;
   for (const row of context.__pendingJobEnqueues) {
-    await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt);
+    await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory);
   }
   scheduleCurrentUserJobWorker(queueDatabase);
 }
@@ -8726,12 +8737,14 @@ async function runCurrentUserJobWorker(database: LooseRecord) {
   database.__jobWorkerRunning = true;
   try {
     while (true) {
+      await database.sqlite.prepare("UPDATE sporades_jobs SET status='queued' WHERE status='delayed' AND availableAt <= ?").run(new Date().toISOString());
       const row = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status = 'queued' AND availableAt <= ? ORDER BY availableAt ASC, id ASC LIMIT 1").get(new Date().toISOString());
       if (!row) return;
       const startedAt = new Date().toISOString();
       const claimed = await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'running', attempts = attempts + 1, startedAt = ? WHERE id = ? AND status = 'queued'").run(startedAt, row.id);
       if (!claimed?.changes) continue;
       const handler = database.jobs?.find((candidate: any) => candidate.name === row.handler);
+      database.__jobAbortControllers ??= new Map(); const abortController = new AbortController(); database.__jobAbortControllers.set(row.id, abortController);
       try {
         if (!handler) throw jobError("UNKNOWN_JOB_HANDLER", "Job handler is no longer declared.", "Restore the handler or inspect the retained Job state.");
         let result;
@@ -8742,14 +8755,15 @@ async function runCurrentUserJobWorker(database: LooseRecord) {
           const user = await database.sqlite.prepare("SELECT * FROM sporades_auth_users WHERE id = ?").get(row.actorUserId);
           if (!user) throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");
           const auth = { userId: user.id, displayName: user.displayName, email: user.email, picture: user.picture, isAuthenticated: Boolean(user.isAuthenticated), isGuest: Boolean(user.isGuest), provider: user.provider };
-          const context = createMutationContext(database, auth);
+          const context = createMutationContext(database, auth); context.signal = abortController.signal;
           result = await handler.handler(context, JSON.parse(row.payload));
         }
         const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");
-        await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'succeeded', result = ?, completedAt = ? WHERE id = ?").run(resultJson, new Date().toISOString(), row.id);
+        const history=JSON.parse(row.attemptHistory||"[]"); history.push({ attempt:Number(row.attempts)+1, startedAt, outcome:"succeeded", completedAt:new Date().toISOString() }); await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'succeeded', result = ?, completedAt = ?, attemptHistory = ? WHERE id = ?").run(resultJson, new Date().toISOString(), JSON.stringify(history), row.id);
       } catch (error: any) {
         const failure = safeJobFailure(error);
-        await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'failed', failure = ?, failedAt = ? WHERE id = ?").run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), new Date().toISOString(), row.id);
+        const history=JSON.parse(row.attemptHistory||"[]"); const retry=JSON.parse(row.retryJson||'{"maxAttempts":1,"delayMs":0}'); const cancelled=abortController.signal.aborted && (error?.name === "AbortError" || error?.code === "ABORT_ERR"); history.push({attempt:Number(row.attempts)+1,startedAt,outcome:cancelled?"cancelled":"failed",code:failure.code,completedAt:new Date().toISOString()}); if(cancelled) await database.sqlite.prepare("UPDATE sporades_jobs SET status='cancelled', failure=?, failedAt=?, attemptHistory=? WHERE id=?").run(JSON.stringify(failure),new Date().toISOString(),JSON.stringify(history),row.id); else if(Number(row.attempts)+1 < retry.maxAttempts){ const availableAt=new Date(Date.now()+retry.delayMs).toISOString(); await database.sqlite.prepare("UPDATE sporades_jobs SET status='delayed', availableAt=?, attemptHistory=? WHERE id=?").run(availableAt,JSON.stringify(history),row.id); setTimeout(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1); } else await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'failed', failure = ?, failedAt = ?, attemptHistory=? WHERE id = ?").run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), new Date().toISOString(),JSON.stringify(history), row.id);
+      } finally { database.__jobAbortControllers?.delete(row.id);
       }
     }
   } finally { database.__jobWorkerRunning = false; }

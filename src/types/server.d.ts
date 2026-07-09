@@ -473,16 +473,18 @@ export type MessageDefinition<Handler = MessageHandler> = {
   handler: Handler;
 };
 
-export type JobStatus = "queued" | "running" | "succeeded" | "failed";
+export type JobStatus = "queued" | "delayed" | "running" | "succeeded" | "failed" | "cancelled";
 export type JobSummary = { id: string; handler: string; status: JobStatus; attempts: number };
 export type JobState = JobSummary & {
   enqueuedBy: { userId: string };
   actor: { mode: "current-user"; userId: string } | { mode: "privileged-server-role" };
   result?: JsonValue;
   failure?: { code: string; message: string };
+  attemptHistory?: Array<{ attempt: number; startedAt: string; outcome: string; completedAt: string; code?: string }>;
 };
 export type JobApi = {
-  enqueue(handler: string, payload: JsonValue, options?: { idempotencyKey?: string }): Promise<JobState>;
+  enqueue(handler: string, payload: JsonValue, options?: { idempotencyKey?: string; availableAt?: string | Date; retry?: { maxAttempts: number; delayMs?: number } }): Promise<JobState>;
+  cancel(id: string): Promise<JobState | null>;
   get(id: string): Promise<JobState | null>;
   list(options?: { limit?: number; cursor?: string }): Promise<{ jobs: JobSummary[]; nextCursor: string | null }>;
 };

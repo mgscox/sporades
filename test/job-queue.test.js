@@ -54,7 +54,7 @@ test("current users can enqueue, execute, get, and list their own durable jobs",
     assert.equal(repeated.data.first.id, repeated.data.second.id);
     await new Promise((resolve) => setTimeout(resolve, 25));
     const completed = await runMutation(database, auth("user-a"), "getJob", [first.data.id]);
-    assert.deepEqual(completed.data, {
+    assert.deepEqual({ ...completed.data, attemptHistory: undefined }, {
       id: first.data.id,
       handler: "record",
       status: "succeeded",
@@ -62,6 +62,7 @@ test("current users can enqueue, execute, get, and list their own durable jobs",
       actor: { mode: "current-user", userId: "user-a" },
       attempts: 1,
       result: { recorded: "hello" },
+      attemptHistory: undefined,
     });
     assert.equal(seen.some((entry) => entry.userId === "user-a" && entry.input.value === "hello"), true);
     const hidden = await runMutation(database, auth("user-b"), "getJob", [first.data.id]);
