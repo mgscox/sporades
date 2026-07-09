@@ -1,6 +1,6 @@
 # Recover Jobs With At-Least-Once Delivery
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -29,3 +29,8 @@ for duplicate-safe execution.
 ## Blocked by
 
 - .scratch/job-queue/issues/03-add-delays-retries-and-cancellation.md
+
+## Comments
+
+- Integrated by the Job Queue swarm as `9897c78`, `57c22a0`, `9cf771b`, `0ac7ec8`, `c932161`, and `3d58b91` after independent review accepted worker SHA `f9728983b2c47a3db2e8d7c41d499bcfe0e91b8e`.
+- Integration checks: build plus lease/recovery and all prior queue suites passed. Existing runtime data paths cover Container/Hosted persistence; no narrow queue-specific fake seam exists without synthetic infrastructure.
