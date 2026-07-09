@@ -3268,6 +3268,8 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
     ...context,
     signal,
     __privilegedRunActive: true,
+    __jobEnqueuedBy: context.auth?.userId ?? null,
+    __jobParentContext: context,
     auth: {
       userId: privilegedAuthUserId(),
       displayName: "Privileged server role",
@@ -3283,6 +3285,7 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
   privilegedContext.db = createEndpointDatabaseApi(database, () => holder.current);
   privilegedContext.files = createPrivilegedFileApi(database, () => holder.current);
   privilegedContext.privileged = createContextPrivilegedApi(database, () => holder.current);
+  privilegedContext.jobs = createPrivilegedJobApi(database, () => holder.current);
   return privilegedContext;
 }
 
@@ -8598,11 +8601,12 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       }
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
-      const row = { id, handler: handlerName, enqueuedByUserId: context.auth.userId, actorUserId: context.auth.userId, payload: payloadJson, status: "queued", availableAt: now, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now };
+      const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, payload: payloadJson, status: "queued", availableAt: now, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now };
       if (database.__transactionActive) {
-        context.__pendingJobEnqueues ??= [];
-        context.__jobQueueDatabase = queueDatabase;
-        context.__pendingJobEnqueues.push(row);
+        const pendingContext = context.__jobParentContext ?? context;
+        pendingContext.__pendingJobEnqueues ??= [];
+        pendingContext.__jobQueueDatabase = queueDatabase;
+        pendingContext.__pendingJobEnqueues.push(row);
         return jobState(row, true);
       }
       try {
@@ -8650,13 +8654,36 @@ function boundedJobJson(value: any, limit: number, code: string, label: string) 
 }
 
 function jobState(row: any, includeDetail: boolean) {
-  const state: any = { id: row.id, handler: row.handler, status: row.status, enqueuedBy: { userId: row.enqueuedByUserId }, actor: { mode: "current-user", userId: row.actorUserId }, attempts: Number(row.attempts) };
+  const actor = row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: row.actorUserId };
+  const state: any = { id: row.id, handler: row.handler, status: row.status, enqueuedBy: { userId: row.enqueuedByUserId }, actor, attempts: Number(row.attempts) };
   if (includeDetail && row.result) state.result = JSON.parse(row.result);
   if (includeDetail && row.failure) state.failure = JSON.parse(row.failure);
   return state;
 }
 
 function jobSummary(row: any) { return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) }; }
+
+function createPrivilegedJobApi(database: LooseRecord, contextGetter: () => LooseRecord) {
+  const current = createCurrentUserJobApi(database, contextGetter);
+  return {
+    enqueue: current.enqueue,
+    async get(id: any) {
+      const row = await (database.__rootDatabase ?? database).sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id);
+      return row ? jobState(row, true) : null;
+    },
+    async list(options: LooseRecord = {}) {
+      const limit = options.limit === undefined ? 50 : options.limit;
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
+      const cursor = decodeJobCursor(options.cursor);
+      const sqlite = (database.__rootDatabase ?? database).sqlite;
+      const rows = cursor
+        ? await sqlite.prepare("SELECT * FROM sporades_jobs WHERE createdAt > ? OR (createdAt = ? AND id > ?) ORDER BY createdAt ASC, id ASC LIMIT ?").all(cursor.createdAt, cursor.createdAt, cursor.id, limit + 1)
+        : await sqlite.prepare("SELECT * FROM sporades_jobs ORDER BY createdAt ASC, id ASC LIMIT ?").all(limit + 1);
+      const page = rows.slice(0, limit);
+      return { jobs: page.map((row: any) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
+    },
+  };
+}
 
 function encodeJobCursor(row: any) { return Buffer.from(JSON.stringify({ createdAt: row.createdAt, id: row.id })).toString("base64url"); }
 function decodeJobCursor(value: any) {
@@ -8700,11 +8727,17 @@ async function runCurrentUserJobWorker(database: LooseRecord) {
       const handler = database.jobs?.find((candidate: any) => candidate.name === row.handler);
       try {
         if (!handler) throw jobError("UNKNOWN_JOB_HANDLER", "Job handler is no longer declared.", "Restore the handler or inspect the retained Job state.");
-        const user = await database.sqlite.prepare("SELECT * FROM sporades_auth_users WHERE id = ?").get(row.actorUserId);
-        if (!user) throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");
-        const auth = { userId: user.id, displayName: user.displayName, email: user.email, picture: user.picture, isAuthenticated: Boolean(user.isAuthenticated), isGuest: Boolean(user.isGuest), provider: user.provider };
-        const context = createMutationContext(database, auth);
-        const result = await handler.handler(context, JSON.parse(row.payload));
+        let result;
+        if (row.actorUserId === privilegedAuthUserId()) {
+          const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
+          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1 } }, (privilegedCtx: any) => handler.handler(privilegedCtx, JSON.parse(row.payload)));
+        } else {
+          const user = await database.sqlite.prepare("SELECT * FROM sporades_auth_users WHERE id = ?").get(row.actorUserId);
+          if (!user) throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");
+          const auth = { userId: user.id, displayName: user.displayName, email: user.email, picture: user.picture, isAuthenticated: Boolean(user.isAuthenticated), isGuest: Boolean(user.isGuest), provider: user.provider };
+          const context = createMutationContext(database, auth);
+          result = await handler.handler(context, JSON.parse(row.payload));
+        }
         const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");
         await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'succeeded', result = ?, completedAt = ? WHERE id = ?").run(resultJson, new Date().toISOString(), row.id);
       } catch (error: any) {
