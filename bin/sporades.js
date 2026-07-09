@@ -1396,6 +1396,10 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
     httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
     close: () => {
+      if (database.__jobWakeTimer) {
+        clearTimeout(database.__jobWakeTimer);
+        database.__jobWakeTimer = null;
+      }
       const sqliteResult = database.sqlite.close();
       const storageResult = database.fileStorage.close();
       return storageResult ?? sqliteResult;
@@ -8483,7 +8487,8 @@ async function runCurrentUserJobWorker(database) {
         const failure = safeJobFailure(error);
         const history = JSON.parse(row.attemptHistory || "[]");
         const retry = JSON.parse(row.retryJson || '{"maxAttempts":1,"delayMs":0}');
-        const cancelled = abortController.signal.aborted && (error?.name === "AbortError" || error?.code === "ABORT_ERR");
+        const abortError = error?.cause ?? error;
+        const cancelled = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: cancelled ? "cancelled" : "failed", code: failure.code, completedAt: (/* @__PURE__ */ new Date()).toISOString() });
         if (cancelled) await database.sqlite.prepare("UPDATE sporades_jobs SET status='cancelled', failure=?, failedAt=?, attemptHistory=? WHERE id=?").run(JSON.stringify(failure), (/* @__PURE__ */ new Date()).toISOString(), JSON.stringify(history), row.id);
         else if (Number(row.attempts) + 1 < retry.maxAttempts) {
