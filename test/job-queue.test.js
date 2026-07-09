@@ -20,11 +20,17 @@ test("current users can enqueue, execute, get, and list their own durable jobs",
         seen.push({ userId: ctx.auth.userId, input });
         return { recorded: input.value };
       }),
+      explode: job(() => { throw new Error("TOKEN=super-secret Cookie=session-cookie request-body=private"); }),
     },
     mutations: {
       enqueue: mutation((ctx, input) => ctx.jobs.enqueue("record", input, { idempotencyKey: "once" })),
+      enqueueThenFail: mutation(async (ctx) => {
+        await ctx.jobs.enqueue("record", { value: "survives-rollback" });
+        throw new Error("app mutation rolled back");
+      }),
+      enqueueFailure: mutation((ctx) => ctx.jobs.enqueue("explode", { value: "secret-payload" })),
       getJob: mutation((ctx, id) => ctx.jobs.get(id)),
-      listJobs: mutation((ctx) => ctx.jobs.list()),
+      listJobs: mutation((ctx, options) => ctx.jobs.list(options)),
     },
   };
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "jobs" }, capsule);
@@ -51,6 +57,27 @@ test("current users can enqueue, execute, get, and list their own durable jobs",
     assert.equal(hidden.data, null);
     const list = await runMutation(database, auth("user-a"), "listJobs", []);
     assert.deepEqual(list.data, { jobs: [{ id: first.data.id, handler: "record", status: "succeeded", attempts: 1 }], nextCursor: null });
+
+    const rolledBack = await runMutation(database, auth("user-a"), "enqueueThenFail", []);
+    assert.equal(rolledBack.ok, false);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const afterRollback = await runMutation(database, auth("user-a"), "listJobs", []);
+    assert.equal(afterRollback.data.jobs.some((entry) => entry.handler === "record"), true);
+    assert.equal(seen.some((entry) => entry.input.value === "survives-rollback"), true);
+
+    const failed = await runMutation(database, auth("user-a"), "enqueueFailure", []);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    const failedState = await runMutation(database, auth("user-a"), "getJob", [failed.data.id]);
+    assert.equal(failedState.data.failure.code, "JOB_FAILED");
+    assert.equal(failedState.data.failure.message, "Job handler failed.");
+    assert.equal(JSON.stringify(failedState.data).includes("super-secret"), false);
+
+    await runMutation(database, auth("user-a"), "enqueue", [{ value: "other" }]);
+    const firstPage = await runMutation(database, auth("user-a"), "listJobs", [{ limit: 1 }]);
+    assert.equal(firstPage.data.jobs.length, 1);
+    assert.ok(firstPage.data.nextCursor);
+    const secondPage = await runMutation(database, auth("user-a"), "listJobs", [{ limit: 10, cursor: firstPage.data.nextCursor }]);
+    assert.equal(secondPage.data.jobs.some((entry) => entry.id === firstPage.data.jobs[0].id), false);
   } finally {
     database.close();
     await rm(dir, { recursive: true, force: true });

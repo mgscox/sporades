@@ -5445,7 +5445,7 @@ async function runEndpoint(database: any, endpoint: { handlerSource: any; }, req
 
 function createTransactionDatabase(database: LooseRecord, transactionAdapter: any) {
   return transactionAdapter
-    ? { ...database, adapter: transactionAdapter, sqlite: transactionAdapter, __transactionActive: true }
+    ? { ...database, adapter: transactionAdapter, sqlite: transactionAdapter, __transactionActive: true, __rootDatabase: database.__rootDatabase ?? database }
     : database;
 }
 
@@ -8351,7 +8351,7 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
   let context;
   let result;
   try {
-    return await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter: any) => {
+    const committed = await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       context = await applyContextMiddleware(transactionDatabase, createMutationContext(transactionDatabase, auth), "mutation");
 
@@ -8376,7 +8376,10 @@ export async function runMutation(database: LooseRecord, auth: any, mutationName
 
       return result;
     });
+    await flushPendingJobEnqueues(context);
+    return committed;
   } catch (error: any) {
+    await flushPendingJobEnqueues(context);
     database.rowCache.clear();
     await reindexPrivilegedAuditEventsAfterRollback(database, context);
     if (error?.sporadesAclDenialLogData) {
@@ -8559,6 +8562,7 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
   return {
     async enqueue(handlerName: any, payload: any, options: LooseRecord = {}) {
       const context = contextGetter();
+      const queueDatabase = database.__rootDatabase ?? database;
       const handler = database.jobs?.find((candidate: any) => candidate.name === handlerName);
       if (!handler) {
         throw jobError("UNKNOWN_JOB_HANDLER", `Unknown Job handler: ${String(handlerName)}`, "Declare the named handler in capsule({ jobs }) before enqueueing it.");
@@ -8572,35 +8576,47 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job idempotency key.", "Pass a non-empty idempotencyKey no longer than 256 characters.");
       }
       if (idempotencyKey) {
-        const existing = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
+        const existing = await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
         if (existing) return jobState(existing, true);
       }
       const id = crypto.randomUUID();
       const now = new Date().toISOString();
+      const row = { id, handler: handlerName, enqueuedByUserId: context.auth.userId, actorUserId: context.auth.userId, payload: payloadJson, status: "queued", availableAt: now, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now };
+      if (database.__transactionActive) {
+        context.__pendingJobEnqueues ??= [];
+        context.__jobQueueDatabase = queueDatabase;
+        context.__pendingJobEnqueues.push(row);
+        return jobState(row, true);
+      }
       try {
-        await database.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt) VALUES (?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?)").run(id, handlerName, context.auth.userId, context.auth.userId, payloadJson, now, idempotencyKey ?? null, now);
+        await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt) VALUES (?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?)").run(id, handlerName, context.auth.userId, context.auth.userId, payloadJson, now, idempotencyKey ?? null, now);
       } catch (error: any) {
         if (idempotencyKey) {
-          const existing = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
+          const existing = await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
           if (existing) return jobState(existing, true);
         }
         throw error;
       }
-      scheduleCurrentUserJobWorker(database);
-      return jobState(await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id), true);
+      scheduleCurrentUserJobWorker(queueDatabase);
+      return jobState(await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id), true);
     },
     async get(id: any) {
       const context = contextGetter();
-      const row = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId);
+      const row = await (database.__rootDatabase ?? database).sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId);
       return row ? jobState(row, true) : null;
     },
     async list(options: LooseRecord = {}) {
       const context = contextGetter();
-      if (options === null || typeof options !== "object" || Array.isArray(options)) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list options.", "Pass an options object when listing Jobs.");
+      if (options === null || typeof options !== "object" || Array.isArray(options) || Object.keys(options).some((key) => key !== "limit" && key !== "cursor")) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list options.", "Pass only limit and cursor when listing Jobs.");
       const limit = options.limit === undefined ? 50 : options.limit;
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
-      const rows = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE actorUserId = ? ORDER BY createdAt ASC, id ASC LIMIT ?").all(context.auth.userId, limit);
-      return { jobs: rows.map((row: any) => jobSummary(row)), nextCursor: null };
+      const cursor = decodeJobCursor(options.cursor);
+      const queueDatabase = database.__rootDatabase ?? database;
+      const rows = cursor
+        ? await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE actorUserId = ? AND (createdAt > ? OR (createdAt = ? AND id > ?)) ORDER BY createdAt ASC, id ASC LIMIT ?").all(context.auth.userId, cursor.createdAt, cursor.createdAt, cursor.id, limit + 1)
+        : await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE actorUserId = ? ORDER BY createdAt ASC, id ASC LIMIT ?").all(context.auth.userId, limit + 1);
+      const page = rows.slice(0, limit);
+      return { jobs: page.map((row: any) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     },
   };
 }
@@ -8624,6 +8640,26 @@ function jobState(row: any, includeDetail: boolean) {
 }
 
 function jobSummary(row: any) { return { id: row.id, handler: row.handler, status: row.status, attempts: Number(row.attempts) }; }
+
+function encodeJobCursor(row: any) { return Buffer.from(JSON.stringify({ createdAt: row.createdAt, id: row.id })).toString("base64url"); }
+function decodeJobCursor(value: any) {
+  if (value === undefined) return null;
+  try {
+    const cursor = JSON.parse(Buffer.from(String(value), "base64url").toString("utf8"));
+    if (typeof cursor?.createdAt !== "string" || typeof cursor?.id !== "string") throw new Error("invalid");
+    return cursor;
+  } catch { throw jobError("INVALID_JOB_OPTIONS", "Invalid Job cursor.", "Pass the nextCursor returned by a previous Job list call."); }
+}
+
+async function flushPendingJobEnqueues(context: LooseRecord | undefined) {
+  if (!context?.__pendingJobEnqueues?.length || context.__pendingJobsFlushed) return;
+  context.__pendingJobsFlushed = true;
+  const queueDatabase = context.__jobQueueDatabase;
+  for (const row of context.__pendingJobEnqueues) {
+    await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt);
+  }
+  scheduleCurrentUserJobWorker(queueDatabase);
+}
 
 function scheduleCurrentUserJobWorker(database: LooseRecord) {
   if (database.__jobWorkerScheduled || database.__jobWorkerRunning) return;
@@ -8655,11 +8691,24 @@ async function runCurrentUserJobWorker(database: LooseRecord) {
         const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");
         await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'succeeded', result = ?, completedAt = ? WHERE id = ?").run(resultJson, new Date().toISOString(), row.id);
       } catch (error: any) {
-        const failure = { code: error?.code ?? "JOB_FAILED", message: String(error?.message ?? "Job handler failed.").slice(0, 1024) };
+        const failure = safeJobFailure(error);
         await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'failed', failure = ?, failedAt = ? WHERE id = ?").run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), new Date().toISOString(), row.id);
       }
     }
   } finally { database.__jobWorkerRunning = false; }
+}
+
+function safeJobFailure(error: any) {
+  const knownCodes = new Set(["JOB_ACTOR_UNAVAILABLE", "UNKNOWN_JOB_HANDLER", "JOB_RESULT_TOO_LARGE", "INVALID_JOB_PAYLOAD"]);
+  const code = knownCodes.has(error?.code) ? error.code : "JOB_FAILED";
+  const messages: LooseRecord = {
+    JOB_ACTOR_UNAVAILABLE: "The captured Job actor is unavailable.",
+    UNKNOWN_JOB_HANDLER: "The Job handler is unavailable.",
+    JOB_RESULT_TOO_LARGE: "The Job result exceeded its safe size limit.",
+    INVALID_JOB_PAYLOAD: "The Job produced an unsupported result.",
+    JOB_FAILED: "Job handler failed.",
+  };
+  return { code, message: messages[code] };
 }
 
 async function drainPendingAclWrites(context: LooseRecord) {

@@ -483,7 +483,7 @@ export type JobState = JobSummary & {
 export type JobApi = {
   enqueue(handler: string, payload: JsonValue, options?: { idempotencyKey?: string }): Promise<JobState>;
   get(id: string): Promise<JobState | null>;
-  list(options?: { limit?: number }): Promise<{ jobs: JobSummary[]; nextCursor: null }>;
+  list(options?: { limit?: number; cursor?: string }): Promise<{ jobs: JobSummary[]; nextCursor: string | null }>;
 };
 export type JobDefinition<Handler = (ctx: CapsuleContext, payload: JsonValue) => MaybePromise<JsonValue>> = { kind: "job"; handler: Handler };
 
