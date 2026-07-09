@@ -1,0 +1,9 @@
+import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import { test } from "node:test";
+import { openDevDatabase, runMutation } from "../dist/server-runtime-source.js";
+import { job, mutation } from "../dist/server.js";
+const auth=(userId)=>({userId,displayName:userId,email:null,picture:null,isAuthenticated:false,isGuest:true,provider:"anonymous"});
+test("Job inspection filters are actor-scoped and privileged enumeration is audited",async()=>{const dir=await mkdtemp(path.join(tmpdir(),"sporades-job-inspect-"));const db=await openDevDatabase(path.join(dir,"data.db"),"",{},{name:"jobs"},{jobs:{one:job(()=>null),two:job(()=>null)},mutations:{enqueue:mutation((ctx,h)=>ctx.jobs.enqueue(h,{})),list:mutation((ctx,o)=>ctx.jobs.list(o)),all:mutation((ctx,o)=>ctx.privileged.run({operation:"jobs.list",targetResourceKind:"job-queue",metadata:{filter:"safe"}},p=>p.jobs.list(o)))}});try{for(const u of ["a","b"])db.sqlite.prepare("INSERT INTO sporades_auth_users (id,createdAt,displayName,email,picture,isAuthenticated,isGuest,provider) VALUES (?,?,?,?,?,?,?,?)").run(u,new Date().toISOString(),u,null,null,0,1,"anonymous");await runMutation(db,auth("a"),"enqueue",["one"]);await runMutation(db,auth("b"),"enqueue",["two"]);await new Promise(r=>setTimeout(r,15));const user=await runMutation(db,auth("a"),"list",[{handler:"one",status:"succeeded"}]);assert.equal(user.data.jobs.length,1);assert.equal(user.data.jobs[0].handler,"one");const privileged=await runMutation(db,auth("a"),"all",[{status:"succeeded"}]);assert.equal(privileged.data.jobs.length,2);const events=await db.sqlite.readRecentLogEvents(20);assert.equal(events.some(e=>e.event==="privileged.started"),true);}finally{db.close();await rm(dir,{recursive:true,force:true});}});
