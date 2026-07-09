@@ -127,6 +127,37 @@ Use queries for data the UI reads. Use mutations for changes. Keep ownership and
 validation on the server; the client should not be trusted to send fields such
 as `ownerId`.
 
+### Current-user Jobs
+
+Declare durable server-only work with `job()` and enqueue it from a trusted
+mutation, Custom endpoint, or App message handler through `ctx.jobs`. Enqueue
+captures the current Sporades user; browser credentials are not stored with the
+Job.
+
+```ts
+import { capsule, job, mutation } from "sporades/server";
+
+export default capsule({
+  name: "notes",
+  jobs: {
+    indexNote: job(async (ctx, input: { id: string }) => {
+      // Runs later as the captured current user.
+      return { indexed: input.id };
+    }),
+  },
+  mutations: {
+    index: mutation((ctx, id: string) =>
+      ctx.jobs.enqueue("indexNote", { id }, { idempotencyKey: id }),
+    ),
+  },
+});
+```
+
+Enqueue is a durable runtime side effect, not part of the Capsule mutation
+Transaction boundary: it is not atomic with `ctx.db` writes. Supply an
+idempotency key when callers can retry a cross-boundary workflow; repeating the
+same key for the same handler and captured user returns the retained Job.
+
 ### 4. Make Your First Client Change
 
 Open `client/index.tsx`. The scaffold wires the framework primitives into

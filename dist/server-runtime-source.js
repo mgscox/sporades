@@ -4675,17 +4675,26 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
     const handler = createHandler();
     const endpointRequest = await readEndpointRequest(database, requestUrl, request);
     const session = await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
-    return await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
-        const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-        const context = await applyContextMiddleware(transactionDatabase, createEndpointContext(transactionDatabase, endpointRequest, session), "endpoint");
-        try {
-            return await handler(context);
-        }
-        finally {
-            await drainPendingAclWrites(context);
-            transactionDatabase.rowCache.clear();
-        }
-    });
+    let context;
+    try {
+        const result = await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
+            const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+            context = await applyContextMiddleware(transactionDatabase, createEndpointContext(transactionDatabase, endpointRequest, session), "endpoint");
+            try {
+                return await handler(context);
+            }
+            finally {
+                await drainPendingAclWrites(context);
+                transactionDatabase.rowCache.clear();
+            }
+        });
+        await flushPendingJobEnqueues(context);
+        return result;
+    }
+    catch (error) {
+        await flushPendingJobEnqueues(context);
+        throw error;
+    }
 }
 function createTransactionDatabase(database, transactionAdapter) {
     return transactionAdapter
@@ -5365,6 +5374,7 @@ function dateValueError(fieldName) {
     return commandError(`Invalid date value for field: ${fieldName}`, "Pass an ISO 8601 date string or JavaScript Date value.");
 }
 function assertJsonCompatible(value) {
+    let context;
     try {
         const serialized = JSON.stringify(value);
         if (serialized === undefined) {
@@ -7406,6 +7416,7 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
             },
         };
     }
+    let context;
     try {
         validateAppMessageType(messageName);
     }
@@ -7433,9 +7444,9 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
             assertJsonCompatible(data);
         }
         const createHandler = new Function(`return (${handler.handlerSource});`);
-        return await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
+        const response = await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
             const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-            const context = await applyContextMiddleware(transactionDatabase, createMessageContext(transactionDatabase, auth, options.sendAppMessage), "message");
+            context = await applyContextMiddleware(transactionDatabase, createMessageContext(transactionDatabase, auth, options.sendAppMessage), "message");
             let result;
             try {
                 result = await createHandler()(context, data);
@@ -7449,8 +7460,11 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
             }
             return { data: result ?? null, error: null };
         });
+        await flushPendingJobEnqueues(context);
+        return response;
     }
     catch (error) {
+        await flushPendingJobEnqueues(context);
         if (error?.sporadesAuthDenialLogData) {
             emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
         }

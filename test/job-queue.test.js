@@ -4,12 +4,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { openDevDatabase, runMutation } from "../dist/server-runtime-source.js";
+import { openDevDatabase, runMutation, SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
 import { job, mutation } from "../dist/server.js";
 
 function auth(userId) {
   return { userId, displayName: userId, email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" };
 }
+
+const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
+const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
 
 test("current users can enqueue, execute, get, and list their own durable jobs", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-jobs-"));
@@ -78,6 +81,15 @@ test("current users can enqueue, execute, get, and list their own durable jobs",
     assert.ok(firstPage.data.nextCursor);
     const secondPage = await runMutation(database, auth("user-a"), "listJobs", [{ limit: 10, cursor: firstPage.data.nextCursor }]);
     assert.equal(secondPage.data.jobs.some((entry) => entry.id === firstPage.data.jobs[0].id), false);
+
+    const endpointJob = await runEndpoint(database, { handlerSource: "async (ctx) => ctx.jobs.enqueue('record', { value: 'endpoint' })" }, new URL("http://capsule.test/jobs"), { method: "POST", headers: {}, async *[Symbol.asyncIterator]() {} });
+    database.messages = [{ name: "enqueueMessage", handlerSource: "async (ctx, data) => ctx.jobs.enqueue('record', data)" }];
+    const messageJob = await runAppMessage(database, auth("user-a"), "enqueueMessage", { value: "message" });
+    assert.ok(endpointJob.id);
+    assert.ok(messageJob.data.id);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(seen.some((entry) => entry.input.value === "endpoint"), true);
+    assert.equal(seen.some((entry) => entry.input.value === "message"), true);
   } finally {
     database.close();
     await rm(dir, { recursive: true, force: true });

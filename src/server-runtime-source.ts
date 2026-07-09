@@ -5427,20 +5427,28 @@ async function runEndpoint(database: any, endpoint: { handlerSource: any; }, req
   const handler = createHandler();
   const endpointRequest = await readEndpointRequest(database, requestUrl, request);
   const session = await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
-  return await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter: any) => {
-    const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-    const context = await applyContextMiddleware(
+  let context: LooseRecord | undefined;
+  try {
+    const result = await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter: any) => {
+      const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
+      context = await applyContextMiddleware(
       transactionDatabase,
       createEndpointContext(transactionDatabase, endpointRequest, session),
       "endpoint",
     );
-    try {
-      return await handler(context);
-    } finally {
-      await drainPendingAclWrites(context);
-      transactionDatabase.rowCache.clear();
-    }
-  });
+      try {
+        return await handler(context);
+      } finally {
+        await drainPendingAclWrites(context);
+        transactionDatabase.rowCache.clear();
+      }
+    });
+    await flushPendingJobEnqueues(context);
+    return result;
+  } catch (error) {
+    await flushPendingJobEnqueues(context);
+    throw error;
+  }
 }
 
 function createTransactionDatabase(database: LooseRecord, transactionAdapter: any) {
@@ -6191,6 +6199,7 @@ function dateValueError(fieldName: any) {
 }
 
 function assertJsonCompatible(value: any) {
+  let context: LooseRecord | undefined;
   try {
     const serialized = JSON.stringify(value);
     if (serialized === undefined) {
@@ -8426,6 +8435,7 @@ async function runAppMessage(database: LooseRecord, auth: any, messageName: any,
     };
   }
 
+  let context: LooseRecord | undefined;
   try {
     validateAppMessageType(messageName);
   } catch (error: any) {
@@ -8454,9 +8464,9 @@ async function runAppMessage(database: LooseRecord, auth: any, messageName: any,
       assertJsonCompatible(data);
     }
     const createHandler = new Function(`return (${handler.handlerSource});`);
-    return await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter: any) => {
+    const response = await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter: any) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
-      const context = await applyContextMiddleware(
+      context = await applyContextMiddleware(
         transactionDatabase,
         createMessageContext(transactionDatabase, auth, options.sendAppMessage),
         "message",
@@ -8473,7 +8483,10 @@ async function runAppMessage(database: LooseRecord, auth: any, messageName: any,
       }
       return { data: result ?? null, error: null as any };
     });
+    await flushPendingJobEnqueues(context);
+    return response;
   } catch (error: any) {
+    await flushPendingJobEnqueues(context);
     if (error?.sporadesAuthDenialLogData) {
       emitAuthDeniedLog(database, { data: error.sporadesAuthDenialLogData });
     }
