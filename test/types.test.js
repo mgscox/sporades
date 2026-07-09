@@ -146,6 +146,8 @@ const app = capsule({
         signal: new AbortController().signal,
       }, async (privilegedCtx) => {
         privilegedCtx.auth.userId satisfies "__privileged__";
+        const allJobs = await privilegedCtx.jobs.list();
+        allJobs.nextCursor?.toUpperCase();
         const fileUrl = await privilegedCtx.files.url("/reports/private.txt");
         if (fileUrl.ok) {
           fileUrl.data.url.toUpperCase();

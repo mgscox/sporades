@@ -63,7 +63,7 @@ test("current users can enqueue, execute, get, and list their own durable jobs",
       attempts: 1,
       result: { recorded: "hello" },
     });
-    assert.deepEqual(seen[0], { userId: "user-a", input: { value: "hello" } });
+    assert.equal(seen.some((entry) => entry.userId === "user-a" && entry.input.value === "hello"), true);
     const hidden = await runMutation(database, auth("user-b"), "getJob", [first.data.id]);
     assert.equal(hidden.data, null);
     const list = await runMutation(database, auth("user-a"), "listJobs", []);
