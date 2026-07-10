@@ -1440,6 +1440,7 @@ test("sporades logs and db can inspect a local Container session by published po
         "sporades_file_public_urls",
         "sporades_file_uploads",
         "sporades_files",
+        "sporades_jobs",
         "sporades_user_preferences",
         "todos",
       ],

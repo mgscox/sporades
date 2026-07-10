@@ -335,7 +335,7 @@ test("docs describe the implemented Privileged audit event contract", async () =
   assert.match(roadmap, /implemented Privileged audit event contract/);
   assert.match(roadmap, /Real `sshd` auth\/session capture remains future scanner work/);
   assert.match(roadmap, /\.scratch\/privileged-audit-event-contract\/ssh-daemon-session-log-scanner-spike\.md/);
-  assert.match(roadmap, /Job Queue \/ Job scheduling planning/);
+  assert.match(roadmap, /Job scheduling remains a dependent roadmap track/);
 
   assert.match(prd, /Privileged audit event contract for runtime-owned and platform-owned\s+security events/);
   assert.match(prd, /narrow structured JSONL audit\s+surface/);
