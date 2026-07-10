@@ -705,6 +705,10 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
             await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
         }
         database.__scheduleStopped = false;
+        database.__scheduleTimers = new Set();
+        database.__activeScheduleOccurrences = new Set();
+        database.__scheduleRecoveryTimer = null;
+        database.__scheduleRecoveryDueAt = null;
         await reconcileSchedules(database);
         await startStaticSchedules(database);
         database.__runtimeInitialized = true;
@@ -715,6 +719,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         for (const timer of database.__scheduleTimers ?? [])
             database.clock.clearTimer(timer);
         database.__scheduleTimers?.clear?.();
+        database.__scheduleRecoveryTimer = null;
+        database.__scheduleRecoveryDueAt = null;
         await Promise.allSettled([...(database.__activeScheduleOccurrences ?? [])]);
         if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
             if (typeof database.lifecycleHooks.shutdown !== "function")
@@ -922,8 +928,8 @@ async function reconcileSchedules(database) {
     await recoverPendingScheduleOccurrences(database);
 }
 async function startStaticSchedules(database) {
-    database.__scheduleTimers = new Set();
-    database.__activeScheduleOccurrences = new Set();
+    database.__scheduleTimers ??= new Set();
+    database.__activeScheduleOccurrences ??= new Set();
     for (const definition of database.schedules) {
         if (!definition.enabled)
             continue;
@@ -1000,8 +1006,12 @@ async function claimScheduledOccurrence(database, definition, occurrence) {
         const existing = await database.sqlite.prepare("SELECT status, claimExpiresAt FROM sporades_schedule_occurrences WHERE id=?").get(id);
         if (!existing)
             throw error;
-        if (existing.status !== "pending" || (existing.claimExpiresAt && existing.claimExpiresAt > nowIso))
+        if (existing.status !== "pending")
             return null;
+        if (existing.claimExpiresAt && existing.claimExpiresAt > nowIso) {
+            schedulePendingOccurrenceRecovery(database, existing.claimExpiresAt);
+            return null;
+        }
         const result = await database.sqlite.prepare("UPDATE sporades_schedule_occurrences SET claimToken=?, claimExpiresAt=?, updatedAt=? WHERE id=? AND status='pending' AND (claimExpiresAt IS NULL OR claimExpiresAt <= ?)").run(token, expiresAt, nowIso, id, nowIso);
         return Number(result.changes) === 1 ? { id, token } : null;
     }
@@ -1013,6 +1023,37 @@ async function recoverPendingScheduleOccurrences(database) {
         if (definition)
             await recordScheduledOccurrence(database, definition, new Date(row.scheduledFor));
     }
+    const next = await database.sqlite.prepare("SELECT claimExpiresAt FROM sporades_schedule_occurrences WHERE status='pending' AND claimExpiresAt IS NOT NULL ORDER BY claimExpiresAt ASC LIMIT 1").get();
+    if (next?.claimExpiresAt)
+        schedulePendingOccurrenceRecovery(database, String(next.claimExpiresAt));
+}
+function schedulePendingOccurrenceRecovery(database, claimExpiresAt) {
+    if (database.__scheduleStopped)
+        return;
+    const dueAt = Date.parse(claimExpiresAt);
+    if (!Number.isFinite(dueAt))
+        return;
+    if (database.__scheduleRecoveryTimer && database.__scheduleRecoveryDueAt <= dueAt)
+        return;
+    if (database.__scheduleRecoveryTimer) {
+        database.clock.clearTimer(database.__scheduleRecoveryTimer);
+        database.__scheduleTimers?.delete(database.__scheduleRecoveryTimer);
+    }
+    database.__scheduleRecoveryDueAt = dueAt;
+    const timer = database.clock.setTimer(() => {
+        database.__scheduleTimers?.delete(timer);
+        database.__scheduleRecoveryTimer = null;
+        database.__scheduleRecoveryDueAt = null;
+        if (database.__scheduleStopped)
+            return;
+        const active = recoverPendingScheduleOccurrences(database).catch((error) => {
+            database.log.emit({ category: "platform", event: "schedule.occurrence.recovery_failed", level: "error", message: "Pending Scheduled occurrence recovery failed", data: { code: String(error?.code ?? "SCHEDULE_RECOVERY_FAILED").slice(0, 80) } });
+        }).finally(() => database.__activeScheduleOccurrences?.delete(active));
+        database.__activeScheduleOccurrences?.add(active);
+        return active;
+    }, Math.max(0, dueAt - database.clock.now().getTime()));
+    database.__scheduleRecoveryTimer = timer;
+    database.__scheduleTimers?.add(timer);
 }
 export async function enqueueScheduledOccurrence(database, definition, occurrence) {
     const scheduledFor = occurrence.toISOString();

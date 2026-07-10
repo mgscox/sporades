@@ -564,6 +564,24 @@ test("a restart recovers a durable occurrence that crashed before enqueue", asyn
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("an immediate restart revisits a pending occurrence when its claim expires", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-unexpired-restart-"));
+  const file = path.join(dir, "data.db");
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const capsule = { jobs: { work: job(() => null) }, schedules: { durable: schedule({ expression: "* * * * *", job: "work" }) } };
+  let database = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock, scheduleOccurrenceFault: (boundary) => {
+    if (boundary === "after-pending") { database.__scheduleStopped = true; throw new Error("simulated crash"); }
+  } });
+  try {
+    await database.init(); clock.advanceBy(30_000); await clock.runDueTimers(); database.close();
+    database = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock });
+    await database.init();
+    assert.equal(database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+    clock.advanceBy(30_000); await clock.runDueTimers();
+    assert.equal(database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 1);
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("a restart after enqueue reuses one deterministic occurrence Job", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-crash-after-enqueue-"));
   const file = path.join(dir, "data.db");
@@ -603,6 +621,27 @@ test("overlapping runtime starts converge on one occurrence Job identity", async
     assert.equal(jobs.length, 1);
     assert.deepEqual(occurrences.map(({ jobId, status }) => ({ jobId, status })), [{ jobId: jobs[0].id, status: "enqueued" }]);
   } finally { await Promise.all([first.shutdown(), second.shutdown()]); first.close(); second.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("an overlapping loser recovers after the winner crashes with an active claim", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-overlap-winner-crash-"));
+  const file = path.join(dir, "data.db");
+  const clockA = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const clockB = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const capsule = { jobs: { work: job(() => null) }, schedules: { shared: schedule({ expression: "* * * * *", job: "work" }) } };
+  let first;
+  first = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock: clockA, scheduleOccurrenceFault: (boundary) => {
+    if (boundary === "after-pending") { first.__scheduleStopped = true; throw new Error("winner crashed"); }
+  } });
+  const second = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock: clockB });
+  try {
+    await first.init(); await second.init();
+    clockA.advanceBy(30_000); clockB.advanceBy(30_000);
+    await clockA.runDueTimers(); await clockB.runDueTimers();
+    assert.equal(second.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+    clockB.advanceBy(30_000); await clockB.runDueTimers();
+    assert.equal(second.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 1);
+  } finally { first.close(); await second.shutdown(); second.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("Capsule code cannot forge Schedule provenance through context properties", async () => {
