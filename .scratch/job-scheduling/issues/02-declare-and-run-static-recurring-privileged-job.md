@@ -2,7 +2,7 @@
 
 **What to build:** Let Capsule server code declare a named enabled Schedule that binds a valid five-field cron expression and static JSON-safe payload to an existing Job handler, then enqueues one due Privileged Job for the Job Queue to manage and execute.
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
