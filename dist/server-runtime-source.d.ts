@@ -30,6 +30,15 @@ export declare function prepareHttpSecurity(database: {
 }): boolean;
 export declare function injectPageConnectionToken(html: string, token: string): string;
 export declare function openDevDatabase(databasePath: string, serverSource: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig, capsuleDefinition?: any, options?: LooseRecord): Promise<LooseRecord>;
+/** Internal full-runtime test support; not exported from sporades/server or sporades/client. */
+export declare function createControllableRuntimeClock(initialInstant: string | number | Date): {
+    now: () => Date;
+    setInstant(instant: string | number | Date): void;
+    advanceBy(delayMs: number): void;
+    setTimer(callback: () => any, delayMs: number): number;
+    clearTimer(id: number): void;
+    runDueTimers(): Promise<void>;
+};
 export declare function createRuntimeInspectionAdapter(databasePath: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig): Promise<LooseRecord | null>;
 export declare function createRuntimeFileStorageAdapter({ config, databasePath, serviceEnv }: {
     config?: RuntimeConfig;

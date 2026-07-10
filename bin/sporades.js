@@ -798,6 +798,7 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createLibsqlDatabaseAdapter,
   createPostgresDatabaseAdapter,
   createRuntimeDatabaseAdapter,
+  createRuntimeClock,
   createRuntimeInspectionAdapter,
   inspectRuntimeJobs,
   jobError,
@@ -1395,6 +1396,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   const mutations = capsuleDefinition ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition) : extractMutationHandlers(serverSource);
   const messages = extractMessageHandlers(serverSource);
   const jobs = jobHandlersFromCapsuleDefinition(capsuleDefinition);
+  const clock = createRuntimeClock(options?.clock);
   const contextMiddleware = extractContextMiddleware(serverSource);
   const mutationHooks = extractMutationHooks(serverSource);
   const rowCache = /* @__PURE__ */ new Map();
@@ -1407,6 +1409,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     mutations,
     messages,
     jobs,
+    clock,
     contextMiddleware,
     mutationHooks,
     rowCache,
@@ -1418,7 +1421,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
     close: () => {
       if (database.__jobWakeTimer) {
-        clearTimeout(database.__jobWakeTimer);
+        database.clock.clearTimer(database.__jobWakeTimer);
         database.__jobWakeTimer = null;
       }
       const sqliteResult = database.sqlite.close();
@@ -1445,7 +1448,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   return database;
 }
 async function recoverExpiredJobLeases(database) {
-  const recoveredAt = /* @__PURE__ */ new Date();
+  const recoveredAt = database.clock.now();
   const recoveredIso = recoveredAt.toISOString();
   const rows = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status='running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ? ORDER BY availableAt ASC, id ASC").all(recoveredIso);
   for (const row of rows) {
@@ -1455,10 +1458,18 @@ async function recoverExpiredJobLeases(database) {
     if (Number(row.attempts) < retry.maxAttempts) {
       const availableAt = new Date(recoveredAt.getTime() + retry.delayMs).toISOString();
       await database.sqlite.prepare("UPDATE sporades_jobs SET status='delayed', availableAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(availableAt, JSON.stringify(history), row.id);
-      setTimeout(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1);
+      database.clock.setTimer(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1);
     } else await database.sqlite.prepare("UPDATE sporades_jobs SET status='failed', failure=?, failedAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(JSON.stringify({ code: "JOB_LEASE_EXPIRED", message: "Job lease expired." }), recoveredIso, JSON.stringify(history), row.id);
   }
   if (rows.some((row) => Number(row.attempts) < JSON.parse(row.retryJson || '{"maxAttempts":1}').maxAttempts)) scheduleCurrentUserJobWorker(database);
+}
+function createRuntimeClock(clock) {
+  if (clock) return clock;
+  return {
+    now: () => /* @__PURE__ */ new Date(),
+    setTimer: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimer: (timer) => clearTimeout(timer)
+  };
 }
 function jobHandlersFromCapsuleDefinition(capsuleDefinition) {
   const handlers = [];
@@ -8378,7 +8389,7 @@ function createCurrentUserJobApi(database, contextGetter) {
         if (pending) return jobState(pending, true);
       }
       const id = crypto.randomUUID();
-      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const now = queueDatabase.clock.now().toISOString();
       const availableAt = options.availableAt === void 0 ? now : new Date(options.availableAt).toISOString();
       if (Number.isNaN(Date.parse(availableAt))) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an ISO 8601 availableAt value.");
       const retry = normalizeJobRetry(options.retry);
@@ -8526,7 +8537,7 @@ function normalizeJobRetry(value) {
 async function cancelJob(database, context, id) {
   const row = context.__privilegedJobAccess ? await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id) : await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId);
   if (!row) return null;
-  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const now = database.clock.now().toISOString();
   if (["queued", "delayed"].includes(row.status)) {
     await database.sqlite.prepare("UPDATE sporades_jobs SET status='cancelled', completedAt=? WHERE id=?").run(now, id);
     return jobState({ ...row, status: "cancelled", completedAt: now }, true);
@@ -8621,7 +8632,7 @@ async function flushPendingJobEnqueues(context) {
 function scheduleCurrentUserJobWorker(database) {
   if (database.__jobWorkerScheduled || database.__jobWorkerRunning) return;
   database.__jobWorkerScheduled = true;
-  setTimeout(async () => {
+  database.clock.setTimer(async () => {
     database.__jobWorkerScheduled = false;
     await runCurrentUserJobWorker(database);
   }, 0);
@@ -8629,25 +8640,25 @@ function scheduleCurrentUserJobWorker(database) {
 async function scheduleNextDelayedJob(database) {
   const row = await database.sqlite.prepare("SELECT availableAt FROM sporades_jobs WHERE status='delayed' ORDER BY availableAt ASC, id ASC LIMIT 1").get();
   if (!row) return;
-  if (database.__jobWakeTimer) clearTimeout(database.__jobWakeTimer);
-  database.__jobWakeTimer = setTimeout(() => {
+  if (database.__jobWakeTimer) database.clock.clearTimer(database.__jobWakeTimer);
+  database.__jobWakeTimer = database.clock.setTimer(() => {
     database.__jobWakeTimer = null;
     scheduleCurrentUserJobWorker(database);
-  }, Math.max(0, Date.parse(row.availableAt) - Date.now()) + 1);
+  }, Math.max(0, Date.parse(row.availableAt) - database.clock.now().getTime()) + 1);
 }
 async function runCurrentUserJobWorker(database) {
   if (database.__jobWorkerRunning) return;
   database.__jobWorkerRunning = true;
   try {
     while (true) {
-      await database.sqlite.prepare("UPDATE sporades_jobs SET status='queued' WHERE status='delayed' AND availableAt <= ?").run((/* @__PURE__ */ new Date()).toISOString());
-      const row = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status = 'queued' AND availableAt <= ? ORDER BY availableAt ASC, id ASC LIMIT 1").get((/* @__PURE__ */ new Date()).toISOString());
+      await database.sqlite.prepare("UPDATE sporades_jobs SET status='queued' WHERE status='delayed' AND availableAt <= ?").run(database.clock.now().toISOString());
+      const row = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status = 'queued' AND availableAt <= ? ORDER BY availableAt ASC, id ASC LIMIT 1").get(database.clock.now().toISOString());
       if (!row) {
         await scheduleNextDelayedJob(database);
         return;
       }
-      const startedAt = (/* @__PURE__ */ new Date()).toISOString();
-      const claimed = await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'running', attempts = attempts + 1, startedAt = ?, leaseExpiresAt = ? WHERE id = ? AND status = 'queued'").run(startedAt, new Date(Date.now() + 3e4).toISOString(), row.id);
+      const startedAt = database.clock.now().toISOString();
+      const claimed = await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'running', attempts = attempts + 1, startedAt = ?, leaseExpiresAt = ? WHERE id = ? AND status = 'queued'").run(startedAt, new Date(database.clock.now().getTime() + 3e4).toISOString(), row.id);
       if (!claimed?.changes) continue;
       const handler = database.jobs?.find((candidate) => candidate.name === row.handler);
       database.__jobAbortControllers ??= /* @__PURE__ */ new Map();
@@ -8668,22 +8679,24 @@ async function runCurrentUserJobWorker(database) {
           result = await handler.handler(context, JSON.parse(row.payload));
         }
         const resultJson = boundedJobJson(result ?? null, 64 * 1024, "JOB_RESULT_TOO_LARGE", "Job result");
+        const completedAt = database.clock.now().toISOString();
         const history = JSON.parse(row.attemptHistory || "[]");
-        history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "succeeded", completedAt: (/* @__PURE__ */ new Date()).toISOString() });
-        await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'succeeded', result = ?, completedAt = ?, attemptHistory = ? WHERE id = ?").run(resultJson, (/* @__PURE__ */ new Date()).toISOString(), JSON.stringify(history), row.id);
+        history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "succeeded", completedAt });
+        await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'succeeded', result = ?, completedAt = ?, attemptHistory = ? WHERE id = ?").run(resultJson, completedAt, JSON.stringify(history), row.id);
       } catch (error) {
         const failure = safeJobFailure(error);
+        const failedAt = database.clock.now().toISOString();
         const history = JSON.parse(row.attemptHistory || "[]");
         const retry = JSON.parse(row.retryJson || '{"maxAttempts":1,"delayMs":0}');
         const abortError = error?.cause ?? error;
         const cancelled = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
-        history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: cancelled ? "cancelled" : "failed", code: failure.code, completedAt: (/* @__PURE__ */ new Date()).toISOString() });
-        if (cancelled) await database.sqlite.prepare("UPDATE sporades_jobs SET status='cancelled', failure=?, failedAt=?, attemptHistory=? WHERE id=?").run(JSON.stringify(failure), (/* @__PURE__ */ new Date()).toISOString(), JSON.stringify(history), row.id);
+        history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: cancelled ? "cancelled" : "failed", code: failure.code, completedAt: failedAt });
+        if (cancelled) await database.sqlite.prepare("UPDATE sporades_jobs SET status='cancelled', failure=?, failedAt=?, attemptHistory=? WHERE id=?").run(JSON.stringify(failure), failedAt, JSON.stringify(history), row.id);
         else if (Number(row.attempts) + 1 < retry.maxAttempts) {
-          const availableAt = new Date(Date.now() + retry.delayMs).toISOString();
+          const availableAt = new Date(database.clock.now().getTime() + retry.delayMs).toISOString();
           await database.sqlite.prepare("UPDATE sporades_jobs SET status='delayed', availableAt=?, attemptHistory=? WHERE id=?").run(availableAt, JSON.stringify(history), row.id);
-          setTimeout(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1);
-        } else await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'failed', failure = ?, failedAt = ?, attemptHistory=? WHERE id = ?").run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), (/* @__PURE__ */ new Date()).toISOString(), JSON.stringify(history), row.id);
+          database.clock.setTimer(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1);
+        } else await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'failed', failure = ?, failedAt = ?, attemptHistory=? WHERE id = ?").run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt, JSON.stringify(history), row.id);
       } finally {
         database.__jobAbortControllers?.delete(row.id);
       }
