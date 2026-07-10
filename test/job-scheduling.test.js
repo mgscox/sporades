@@ -434,6 +434,30 @@ test("Schedule reconciliation treats changes and re-enabling as future-only and 
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("Schedule reconciliation validates the complete plan before changing durable state", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-reconcile-atomic-"));
+  const file = path.join(dir, "data.db");
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const open = (schedules) => openDevDatabase(file, "", {}, { name: "scheduled" }, { jobs: { record: job(() => null) }, schedules }, { clock });
+  let database = await open({
+    removed: schedule({ expression: "* * * * *", job: "record" }),
+    changed: schedule({ expression: "*/2 * * * *", job: "record" }),
+  });
+  await database.init(); await database.shutdown(); database.close();
+  database = await open({
+    changed: schedule({ expression: "*/5 * * * *", job: "record" }),
+    impossible: schedule({ expression: "0 0 30 2 *", job: "record" }),
+  });
+  try {
+    await assert.rejects(database.init(), /Schedule has no future occurrence/);
+    const rows = await database.sqlite.prepare("SELECT name, expression, nextOccurrence FROM sporades_schedules ORDER BY name").all();
+    assert.deepEqual(rows.map((row) => ({ ...row })), [
+      { name: "changed", expression: "*/2 * * * *", nextOccurrence: "2030-01-01T00:02:00.000Z" },
+      { name: "removed", expression: "* * * * *", nextOccurrence: "2030-01-01T00:01:00.000Z" },
+    ]);
+  } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("disabling the runtime aborts an active payload factory and creates no Job", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-disable-abort-"));
   const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");

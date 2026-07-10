@@ -862,14 +862,12 @@ async function reconcileSchedules(database) {
     const now = database.clock.now();
     const declaredNames = new Set(database.schedules.map((definition) => definition.name));
     const persisted = await database.sqlite.prepare("SELECT * FROM sporades_schedules").all();
-    for (const row of persisted) {
-        if (!declaredNames.has(String(row.name)))
-            await database.sqlite.prepare("DELETE FROM sporades_schedules WHERE name=?").run(row.name);
-    }
+    const plans = [];
     for (const definition of database.schedules) {
         const row = persisted.find((candidate) => candidate.name === definition.name);
         const changed = !row || row.definitionFingerprint !== definition.fingerprint || Boolean(row.enabled) !== definition.enabled;
         let nextOccurrence = null;
+        let recoveredOccurrence = null;
         if (definition.enabled) {
             if (changed || !row?.nextOccurrence) {
                 nextOccurrence = nextScheduleOccurrence(definition.fields, now, definition.effectiveTimezone).toISOString();
@@ -885,15 +883,28 @@ async function reconcileSchedules(database) {
                     }
                     nextOccurrence = future.toISOString();
                     if (definition.missedRun === "latest")
-                        await recordScheduledOccurrence(database, definition, latest);
+                        recoveredOccurrence = latest;
                 }
             }
         }
+        plans.push({ definition, row, nextOccurrence, recoveredOccurrence });
+    }
+    // Every declaration, including calendars with no possible future instant,
+    // has now been evaluated without mutating durable state.
+    for (const row of persisted) {
+        if (!declaredNames.has(String(row.name)))
+            await database.sqlite.prepare("DELETE FROM sporades_schedules WHERE name=?").run(row.name);
+    }
+    for (const { definition, row, nextOccurrence } of plans) {
         if (row)
             await database.sqlite.prepare("UPDATE sporades_schedules SET definitionFingerprint=?, expression=?, effectiveTimezone=?, missedRunPolicy=?, enabled=?, nextOccurrence=? WHERE name=?").run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
         else
             await database.sqlite.prepare("INSERT INTO sporades_schedules (name, definitionFingerprint, expression, effectiveTimezone, missedRunPolicy, enabled, nextOccurrence) VALUES (?, ?, ?, ?, ?, ?, ?)").run(definition.name, definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
         definition.nextOccurrence = nextOccurrence;
+    }
+    for (const { definition, recoveredOccurrence } of plans) {
+        if (recoveredOccurrence)
+            await recordScheduledOccurrence(database, definition, recoveredOccurrence);
     }
 }
 async function startStaticSchedules(database) {
