@@ -1698,11 +1698,11 @@ async function finishFailedScheduledOccurrence(database, definition, occurrence,
   const scheduledFor = occurrence.toISOString();
   const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
   const completedAt = database.clock.now().toISOString();
-  const code = String(error?.code ?? "SCHEDULE_ENQUEUE_FAILED").slice(0, 80);
+  const code = "SCHEDULE_ENQUEUE_FAILED";
   await database.sqlite.prepare("UPDATE sporades_schedule_occurrences SET status='enqueue-failed', claimToken=NULL, claimExpiresAt=NULL, errorCode=?, updatedAt=? WHERE id=? AND status='pending'").run(code, completedAt, id);
   const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
   definition.nextOccurrence = next;
-  await database.sqlite.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=?, latestOutcome='enqueue-failed', latestJobId=NULL, latestErrorCode=? WHERE name=? AND enabled=1").run(next, scheduledFor, code, definition.name);
+  await database.sqlite.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=?, latestOutcome='payload-failed', latestJobId=NULL, latestErrorCode=? WHERE name=? AND enabled=1").run(next, scheduledFor, code, definition.name);
 }
 async function recordScheduledOccurrence(database, definition, occurrence) {
   const claim = await claimScheduledOccurrence(database, definition, occurrence);
@@ -4139,16 +4139,18 @@ function createPrivilegedScheduleApi(database, contextGetter) {
       assertActivePrivilegedJobAccess(contextGetter);
       if (typeof name !== "string" || !name) throw jobError("INVALID_SCHEDULE_NAME", "Invalid Schedule name.", "Pass a non-empty declared Schedule name.");
       const row = await sqlite().prepare("SELECT * FROM sporades_schedules WHERE name=?").get(name);
-      return row ? scheduleSummary(row) : null;
+      return row ? await scheduleSummary(sqlite(), row) : null;
     },
     async list() {
       assertActivePrivilegedJobAccess(contextGetter);
       const rows = await sqlite().prepare("SELECT * FROM sporades_schedules ORDER BY name ASC").all();
-      return rows.map(scheduleSummary);
+      const summaries = [];
+      for (const row of rows) summaries.push(await scheduleSummary(sqlite(), row));
+      return summaries;
     }
   };
 }
-function scheduleSummary(row) {
+async function scheduleSummary(sqlite, row) {
   const invalid = (field) => {
     const error = jobError("SCHEDULE_INSPECTION_INVALID_STATE", "Stored Schedule state is invalid.", "Repair or remove the malformed Schedule before retrying inspection.");
     error.scheduleName = typeof row?.name === "string" ? row.name : null;
@@ -4163,13 +4165,19 @@ function scheduleSummary(row) {
   if (row.nextOccurrence != null && Number.isNaN(Date.parse(row.nextOccurrence))) throw invalid("nextOccurrence");
   const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
   let latestOccurrence = null;
+  if (latestOutcome === null && [row.latestScheduledFor, row.latestJobId, row.latestErrorCode].some((value) => value != null)) throw invalid("latestOccurrence");
   if (latestOutcome !== null && (typeof row.latestScheduledFor !== "string" || Number.isNaN(Date.parse(row.latestScheduledFor)))) throw invalid("latestOccurrence.scheduledFor");
   if (latestOutcome === "enqueued") {
     if (typeof row.latestJobId !== "string" || !row.latestJobId) throw invalid("latestOccurrence.jobId");
+    if (row.latestErrorCode != null) throw invalid("latestOccurrence.errorCode");
+    const job = await sqlite.prepare("SELECT id FROM sporades_jobs WHERE id=? AND scheduleName=? AND scheduledFor=?").get(row.latestJobId, row.name, row.latestScheduledFor);
+    if (!job) throw invalid("latestOccurrence.jobId");
     latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "enqueued", jobId: row.latestJobId };
   } else if (latestOutcome === "payload-failed") {
+    if (row.latestJobId != null) throw invalid("latestOccurrence.jobId");
     if (typeof row.latestErrorCode !== "string" || !row.latestErrorCode) throw invalid("latestOccurrence.errorCode");
-    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "payload-failed", errorCode: row.latestErrorCode.slice(0, 80) };
+    if (!["SCHEDULE_PAYLOAD_FAILED", "SCHEDULE_ENQUEUE_FAILED"].includes(row.latestErrorCode)) throw invalid("latestOccurrence.errorCode");
+    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "payload-failed", errorCode: row.latestErrorCode };
   } else if (latestOutcome !== null) throw invalid("latestOccurrence.outcome");
   return {
     name: String(row.name),

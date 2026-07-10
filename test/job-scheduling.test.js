@@ -85,9 +85,22 @@ test("Privileged Schedule inspection is bounded, ordered, correlated, and side-e
     assert.equal(database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, beforeJobs);
     assert.equal(audits.every((entry) => entry.operation === "test.inspect"), true);
 
-    database.sqlite.prepare("UPDATE sporades_schedules SET latestScheduledFor=?, latestOutcome='payload-failed', latestErrorCode=? WHERE name='zeta'").run("2030-01-01T00:00:00.000Z", "SCHEDULE_PAYLOAD_FACTORY_FAILED");
+    database.sqlite.prepare("UPDATE sporades_schedules SET latestScheduledFor=?, latestOutcome='payload-failed', latestErrorCode=? WHERE name='zeta'").run("2030-01-01T00:00:00.000Z", "SCHEDULE_PAYLOAD_FAILED");
     const failed = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
-    assert.deepEqual(failed.data.one.latestOccurrence, { scheduledFor: "2030-01-01T00:00:00.000Z", outcome: "payload-failed", errorCode: "SCHEDULE_PAYLOAD_FACTORY_FAILED" });
+    assert.deepEqual(failed.data.one.latestOccurrence, { scheduledFor: "2030-01-01T00:00:00.000Z", outcome: "payload-failed", errorCode: "SCHEDULE_PAYLOAD_FAILED" });
+
+    const assertInvalidInspection = async (values) => {
+      database.sqlite.prepare("UPDATE sporades_schedules SET latestScheduledFor=?, latestOutcome=?, latestJobId=?, latestErrorCode=? WHERE name='zeta'").run(...values);
+      const invalid = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
+      assert.equal(invalid.ok, false);
+      assert.equal(invalid.error.code, "PRIVILEGED_RUN_FAILED");
+    };
+    database.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES ('unrelated', 'work', '__privileged__', '__privileged__', 'null', 'queued', ?, 0, ?, '{\"maxAttempts\":1,\"delayMs\":0}', '[]', 'other', '2030-01-01T00:00:00.000Z')").run(clock.now().toISOString(), clock.now().toISOString());
+    await assertInvalidInspection(["2030-01-01T00:00:00.000Z", "enqueued", "unrelated", null]);
+    await assertInvalidInspection(["2030-01-01T00:00:00.000Z", "enqueued", "unrelated", "STALE_ERROR"]);
+    await assertInvalidInspection(["2030-01-01T00:00:00.000Z", "payload-failed", "unrelated", "SCHEDULE_PAYLOAD_FAILED"]);
+    await assertInvalidInspection(["2030-01-01T00:00:00.000Z", "payload-failed", null, "SECRET_database_password"]);
+    database.sqlite.prepare("DELETE FROM sporades_jobs WHERE id='unrelated'").run();
 
     clock.advanceBy(270_000); await clock.runDueTimers();
     const latest = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
@@ -754,6 +767,7 @@ test("a failed occurrence logs safely and re-arms the next occurrence", async ()
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
     jobs: { work: job(() => { runs += 1; return null; }) },
     schedules: { resilient: schedule({ expression: "* * * * *", job: "work" }) },
+    mutations: { inspect: mutation((ctx) => ctx.privileged.run({ operation: "test.inspect", targetResourceKind: "schedule-store" }, (privilegedCtx) => privilegedCtx.schedules.get("resilient"))) },
   }, { clock });
   try {
     const originalPrepare = database.sqlite.prepare.bind(database.sqlite);
@@ -767,6 +781,9 @@ test("a failed occurrence logs safely and re-arms the next occurrence", async ()
     clock.advanceBy(30_000);
     await clock.runDueTimers();
     assert.equal(runs, 0);
+    const inspected = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
+    assert.equal(inspected.ok, true);
+    assert.deepEqual(inspected.data.latestOccurrence, { scheduledFor: "2030-01-01T00:01:00.000Z", outcome: "payload-failed", errorCode: "SCHEDULE_ENQUEUE_FAILED" });
     clock.advanceBy(60_000);
     await clock.runDueTimers();
     assert.equal(runs, 1);
