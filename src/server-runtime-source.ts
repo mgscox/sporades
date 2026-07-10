@@ -75,10 +75,14 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   scheduleDefinitionsFromCapsule,
   parseScheduleExpression,
   nextScheduleOccurrence,
+  ensureScheduleStorage,
+  reconcileSchedules,
   startStaticSchedules,
+  recordScheduledOccurrence,
   acquireSchedulePayloadFactoryLane,
   acquireSchedulePayloadFactorySlot,
   resolveSchedulePayload,
+  abortSchedulePayloadFactories,
   enqueueScheduledOccurrence,
   createRuntimeInspectionAdapter,
   inspectRuntimeJobs,
@@ -737,6 +741,7 @@ export async function openDevDatabase(
     schedulePayloadFactoryActive: 0,
     schedulePayloadFactoryWaiters: [],
     schedulePayloadFactoryLanes: new Map(),
+    schedulePayloadFactoryControllers: new Map(),
     contextMiddleware,
     mutationHooks,
     lifecycleHooks,
@@ -750,6 +755,7 @@ export async function openDevDatabase(
     httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
     close: () => {
       database.__scheduleStopped = true;
+      abortSchedulePayloadFactories(database);
       for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
       database.__scheduleTimers?.clear?.();
       if (database.__jobWakeTimer) { database.clock.clearTimer(database.__jobWakeTimer); database.__jobWakeTimer = null; }
@@ -765,11 +771,13 @@ export async function openDevDatabase(
       await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
     }
     database.__scheduleStopped = false;
-    startStaticSchedules(database);
+    await reconcileSchedules(database);
+    await startStaticSchedules(database);
     database.__runtimeInitialized = true;
   };
   database.shutdown = async () => {
     database.__scheduleStopped = true;
+    abortSchedulePayloadFactories(database);
     for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
     database.__scheduleTimers?.clear?.();
     await Promise.allSettled([...(database.__activeScheduleOccurrences ?? [])]);
@@ -790,6 +798,7 @@ export async function openDevDatabase(
   await sqlite.ensureAuthStorage(database.authConfig);
   await sqlite.ensureUserPreferencesStorage();
   await ensureJobStorage(sqlite);
+  await ensureScheduleStorage(sqlite);
   await sqlite.ensureFileStorage();
   await sqlite.ensureLogStorage();
   await recoverExpiredJobLeases(database);
@@ -803,7 +812,7 @@ function scheduleDefinitionsFromCapsule(capsuleDefinition: any, jobs: any[]) {
   const schedules: any[] = [];
   for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {}) as [string, any][]) {
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)) throw commandError(`Invalid Schedule name: ${name}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
-    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "retry", "enabled"].includes(key))) throw commandError(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, retry?, enabled? }).");
+    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "retry", "missedRun", "enabled"].includes(key))) throw commandError(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, retry?, missedRun?, enabled? }).");
     if (schedules.some((candidate) => candidate.name === name)) throw commandError(`Duplicate Schedule declaration: ${name}`, "Use one unique Schedule name per Capsule.");
     if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job)) throw commandError(`Unknown Job handler for Schedule: ${name}`, "Reference a Job declared in the Capsule jobs map.");
     const expression = parseScheduleExpression(definition.expression);
@@ -811,8 +820,13 @@ function scheduleDefinitionsFromCapsule(capsuleDefinition: any, jobs: any[]) {
     const payload = definition.payload === undefined ? null : definition.payload;
     if (typeof payload !== "function") boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
     const retry = normalizeJobRetry(definition.retry);
+    const missedRun = definition.missedRun ?? "skip";
+    if (missedRun !== "skip" && missedRun !== "latest") throw commandError(`Invalid missed-run policy for Schedule: ${name}`, "Use `skip` or `latest`.");
     if (definition.enabled !== undefined && typeof definition.enabled !== "boolean") throw commandError(`Invalid enabled value for Schedule: ${name}`, "Pass true or false for enabled.");
-    schedules.push({ name, expression: definition.expression.trim().replace(/\s+/g, " "), fields: expression, effectiveTimezone, job: definition.job, payload, retry, enabled: definition.enabled ?? true });
+    const normalizedExpression = definition.expression.trim().replace(/\s+/g, " ");
+    const enabled = definition.enabled ?? true;
+    const fingerprint = JSON.stringify({ expression: normalizedExpression, timezone: effectiveTimezone, job: definition.job, payload: typeof payload === "function" ? String(payload) : payload, retry, missedRun });
+    schedules.push({ name, expression: normalizedExpression, fields: expression, effectiveTimezone, job: definition.job, payload, retry, missedRun, enabled, fingerprint });
   }
   return schedules;
 }
@@ -890,17 +904,52 @@ function nextScheduleOccurrence(fields: Set<number>[], after: Date, timezone: st
   throw commandError("Schedule has no future occurrence.", "Check the Schedule cron expression.");
 }
 
-function startStaticSchedules(database: LooseRecord) {
+async function ensureScheduleStorage(sqlite: LooseRecord) {
+  await sqlite.exec("CREATE TABLE IF NOT EXISTS sporades_schedules (name TEXT PRIMARY KEY, definitionFingerprint TEXT NOT NULL, expression TEXT NOT NULL, effectiveTimezone TEXT NOT NULL, missedRunPolicy TEXT NOT NULL, enabled INTEGER NOT NULL, nextOccurrence TEXT, latestScheduledFor TEXT, latestOutcome TEXT, latestJobId TEXT, latestErrorCode TEXT)");
+}
+
+async function reconcileSchedules(database: LooseRecord) {
+  const now = database.clock.now();
+  const declaredNames = new Set(database.schedules.map((definition: any) => definition.name));
+  const persisted = await database.sqlite.prepare("SELECT * FROM sporades_schedules").all();
+  for (const row of persisted) {
+    if (!declaredNames.has(String(row.name))) await database.sqlite.prepare("DELETE FROM sporades_schedules WHERE name=?").run(row.name);
+  }
+  for (const definition of database.schedules) {
+    const row = persisted.find((candidate: any) => candidate.name === definition.name);
+    const changed = !row || row.definitionFingerprint !== definition.fingerprint || Boolean(row.enabled) !== definition.enabled;
+    let nextOccurrence: string | null = null;
+    if (definition.enabled) {
+      if (changed || !row?.nextOccurrence) {
+        nextOccurrence = nextScheduleOccurrence(definition.fields, now, definition.effectiveTimezone).toISOString();
+      } else {
+        nextOccurrence = String(row.nextOccurrence);
+        if (Date.parse(nextOccurrence) <= now.getTime()) {
+          let latest = new Date(nextOccurrence);
+          let future = nextScheduleOccurrence(definition.fields, latest, definition.effectiveTimezone);
+          while (future.getTime() <= now.getTime()) { latest = future; future = nextScheduleOccurrence(definition.fields, latest, definition.effectiveTimezone); }
+          nextOccurrence = future.toISOString();
+          if (definition.missedRun === "latest") await recordScheduledOccurrence(database, definition, latest);
+        }
+      }
+    }
+    if (row) await database.sqlite.prepare("UPDATE sporades_schedules SET definitionFingerprint=?, expression=?, effectiveTimezone=?, missedRunPolicy=?, enabled=?, nextOccurrence=? WHERE name=?").run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
+    else await database.sqlite.prepare("INSERT INTO sporades_schedules (name, definitionFingerprint, expression, effectiveTimezone, missedRunPolicy, enabled, nextOccurrence) VALUES (?, ?, ?, ?, ?, ?, ?)").run(definition.name, definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
+    definition.nextOccurrence = nextOccurrence;
+  }
+}
+
+async function startStaticSchedules(database: LooseRecord) {
   database.__scheduleTimers = new Set();
   database.__activeScheduleOccurrences = new Set();
   for (const definition of database.schedules) {
     if (!definition.enabled) continue;
     const arm = () => {
       if (database.__scheduleStopped) return;
-      const occurrence = nextScheduleOccurrence(definition.fields, database.clock.now(), definition.effectiveTimezone);
+      const occurrence = new Date(definition.nextOccurrence);
       const timer = database.clock.setTimer(() => {
         database.__scheduleTimers.delete(timer);
-        const active = enqueueScheduledOccurrence(database, definition, occurrence).catch((error: any) => {
+        const active = recordScheduledOccurrence(database, definition, occurrence).catch((error: any) => {
           database.log.emit({ category: "platform", event: "schedule.occurrence.enqueue_failed", level: "error", message: "Scheduled occurrence could not enqueue its Job", data: { scheduleName: definition.name, scheduledFor: occurrence.toISOString(), code: String(error?.code ?? "SCHEDULE_ENQUEUE_FAILED").slice(0, 80) } });
         }).finally(() => { database.__activeScheduleOccurrences.delete(active); arm(); });
         database.__activeScheduleOccurrences.add(active);
@@ -910,6 +959,15 @@ function startStaticSchedules(database: LooseRecord) {
     };
     arm();
   }
+}
+
+async function recordScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date) {
+  const state = await enqueueScheduledOccurrence(database, definition, occurrence);
+  if (database.__scheduleStopped) return state;
+  const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
+  definition.nextOccurrence = next;
+  await database.sqlite.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=?, latestOutcome=?, latestJobId=?, latestErrorCode=? WHERE name=? AND enabled=1").run(next, occurrence.toISOString(), state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", definition.name);
+  return state;
 }
 
 export async function enqueueScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date) {
@@ -956,6 +1014,9 @@ async function resolveSchedulePayload(database: LooseRecord, definition: any, sc
   const releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
   let releaseSlot: (() => void) | undefined;
   const controller = new AbortController();
+  const controllers = database.schedulePayloadFactoryControllers.get(definition.name) ?? new Set();
+  controllers.add(controller);
+  database.schedulePayloadFactoryControllers.set(definition.name, controllers);
   const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
   const factoryContext = Object.freeze({ signal: controller.signal, privileged: context.privileged });
   let timeout: any;
@@ -969,7 +1030,12 @@ async function resolveSchedulePayload(database: LooseRecord, definition: any, sc
         reject(error);
       }, database.schedulePayloadFactoryTimeoutMs);
     });
-    const value = await Promise.race([Promise.resolve().then(() => definition.payload(occurrence, factoryContext)), timeoutFailure]);
+    const aborted = new Promise((_resolve, reject) => controller.signal.addEventListener("abort", () => {
+      const error: any = new Error("Schedule payload factory aborted.");
+      error.code = "SCHEDULE_PAYLOAD_FACTORY_ABORTED";
+      reject(error);
+    }, { once: true }));
+    const value = await Promise.race([Promise.resolve().then(() => definition.payload(occurrence, factoryContext)), timeoutFailure, aborted]);
     database.clock.clearTimer(timeout);
     boundedJobJson(value, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
     return { ok: true, value };
@@ -981,9 +1047,15 @@ async function resolveSchedulePayload(database: LooseRecord, definition: any, sc
     await database.log.emit({ category: "platform", event: "schedule.occurrence.payload_failed", level: "error", message: "Scheduled occurrence payload creation failed", data: { scheduleName: definition.name, scheduledFor, code } });
     return { ok: false };
   } finally {
+    controllers.delete(controller);
+    if (controllers.size === 0) database.schedulePayloadFactoryControllers.delete(definition.name);
     releaseSlot?.();
     releaseLane();
   }
+}
+
+function abortSchedulePayloadFactories(database: LooseRecord) {
+  for (const controllers of database.schedulePayloadFactoryControllers?.values?.() ?? []) for (const controller of controllers) controller.abort();
 }
 
 async function recoverExpiredJobLeases(database: LooseRecord) {
@@ -1863,7 +1935,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       return this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .all()
         .map((row: any) => row.name)
-        .filter((name: any) => name !== "sporades_log_events");
+        .filter((name: any) => name !== "sporades_log_events" && name !== "sporades_schedules");
     },
     dumpInspectableDatabase() {
       return this.listInspectableTables().map((tableName: any) => ({
@@ -2184,7 +2256,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
       const rows = await this.prepare(
         "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name",
       ).all();
-      return rows.map((row: { name: any; }) => row.name).filter((name: string) => name !== "sporades_log_events");
+      return rows.map((row: { name: any; }) => row.name).filter((name: string) => name !== "sporades_log_events" && name !== "sporades_schedules");
     },
     async dumpInspectableDatabase() {
       const tableNames = await this.listInspectableTables();
@@ -3030,7 +3102,7 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     },
     async listInspectableTables() {
       const rows = await this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-      return rows.map((row: { name: any; }) => row.name).filter((name: string) => name !== "sporades_log_events");
+      return rows.map((row: { name: any; }) => row.name).filter((name: string) => name !== "sporades_log_events" && name !== "sporades_schedules");
     },
     async dumpInspectableDatabase() {
       const tableNames = await this.listInspectableTables();

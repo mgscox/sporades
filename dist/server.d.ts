@@ -33,6 +33,7 @@ export type ScheduleDefinition = {
         maxAttempts: number;
         delayMs?: number;
     };
+    missedRun?: "skip" | "latest";
     enabled?: boolean;
 };
 export type ScheduleOccurrence = Readonly<{

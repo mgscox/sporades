@@ -37,6 +37,7 @@ export type ScheduleDefinition = {
   job: string;
   payload?: unknown | SchedulePayloadFactory;
   retry?: { maxAttempts: number; delayMs?: number };
+  missedRun?: "skip" | "latest";
   enabled?: boolean;
 };
 

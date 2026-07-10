@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { createControllableRuntimeClock, enqueueScheduledOccurrence, openDevDatabase } from "../dist/server-runtime-source.js";
+import { createControllableRuntimeClock, createPostgresDatabaseAdapter, enqueueScheduledOccurrence, openDevDatabase } from "../dist/server-runtime-source.js";
 import { job, mutation, schedule } from "../dist/server.js";
 import { runMutation } from "../dist/server-runtime-source.js";
+import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
 test("a matching static Schedule enqueues and runs one ordinary Privileged Job", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-"));
@@ -369,6 +370,127 @@ test("static Schedules default payload to null and disabled declarations remain 
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("Schedule restart recovery persists state and applies skip or latest without backfilling", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-recovery-"));
+  const file = path.join(dir, "data.db");
+  const definition = (missedRun) => ({
+    jobs: { record: job(() => null) },
+    schedules: { recurring: schedule({ expression: "* * * * *", timezone: "UTC", job: "record", missedRun }) },
+  });
+  for (const [policy, expected] of [["skip", []], ["latest", ["2030-01-01T00:03:00.000Z"]]]) {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+    let database = await openDevDatabase(file, "", {}, { name: "scheduled" }, definition(policy), { clock });
+    await database.init();
+    await database.shutdown();
+    database.close();
+    clock.advanceBy(180_000);
+    database = await openDevDatabase(file, "", {}, { name: "scheduled" }, definition(policy), { clock });
+    try {
+      await database.init();
+      await clock.runDueTimers();
+      const rows = await database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs WHERE scheduleName='recurring' ORDER BY scheduledFor").all();
+      assert.deepEqual(rows.map((row) => row.scheduledFor), expected);
+      const state = await database.sqlite.prepare("SELECT nextOccurrence, missedRunPolicy, enabled FROM sporades_schedules WHERE name='recurring'").get();
+      assert.deepEqual({ ...state }, { nextOccurrence: "2030-01-01T00:04:00.000Z", missedRunPolicy: policy, enabled: 1 });
+    } finally { await database.shutdown(); database.close(); }
+  }
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("an armed Schedule timer keeps its intended occurrence identity when it fires late", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-late-timer-"));
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
+    jobs: { record: job(() => null) },
+    schedules: { late: schedule({ expression: "* * * * *", timezone: "UTC", job: "record", missedRun: "skip" }) },
+  }, { clock });
+  try {
+    await database.init();
+    clock.advanceBy(150_000);
+    await clock.runDueTimers();
+    const row = await database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs WHERE scheduleName='late'").get();
+    assert.equal(row.scheduledFor, "2030-01-01T00:01:00.000Z");
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("Schedule reconciliation treats changes and re-enabling as future-only and removal forgets state", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-reconcile-"));
+  const file = path.join(dir, "data.db");
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const open = (schedules) => openDevDatabase(file, "", {}, { name: "scheduled" }, { jobs: { record: job(() => null) }, schedules }, { clock });
+  let database = await open({ kept: schedule({ expression: "* * * * *", job: "record", enabled: false }) });
+  await database.init(); await database.shutdown(); database.close();
+  clock.advanceBy(180_000);
+  database = await open({ kept: schedule({ expression: "*/2 * * * *", job: "record", enabled: true }) });
+  await database.init();
+  let state = await database.sqlite.prepare("SELECT enabled, nextOccurrence FROM sporades_schedules WHERE name='kept'").get();
+  assert.deepEqual({ ...state }, { enabled: 1, nextOccurrence: "2030-01-01T00:04:00.000Z" });
+  await database.shutdown(); database.close();
+  database = await open({ renamed: schedule({ expression: "* * * * *", job: "record" }) });
+  try {
+    await database.init();
+    const names = await database.sqlite.prepare("SELECT name FROM sporades_schedules ORDER BY name").all();
+    assert.deepEqual(names.map((row) => row.name), ["renamed"]);
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("disabling the runtime aborts an active payload factory and creates no Job", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-disable-abort-"));
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  let signal;
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
+    jobs: { record: job(() => null) },
+    schedules: { active: schedule({ expression: "* * * * *", job: "record", payload: (_occurrence, ctx) => {
+      signal = ctx.signal;
+      return new Promise(() => {});
+    } }) },
+  }, { clock });
+  try {
+    await database.init();
+    clock.advanceBy(30_000);
+    const due = clock.runDueTimers();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(signal.aborted, false);
+    await database.shutdown();
+    await due;
+    assert.equal(signal.aborted, true);
+    assert.equal((await database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_jobs").get()).count, 0);
+  } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("libSQL persists and reconciles Schedule state through the configured adapter", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-libsql-"));
+  await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url }) => {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+    const options = { clock, serviceEnv: { SPORADES_SERVICE_DATABASE_ENGINE: "libsql", SPORADES_SERVICE_DATABASE_URL: url } };
+    const config = { name: "scheduled", services: { database: { kind: "database", engine: "libsql" } } };
+    let database = await openDevDatabase(path.join(dir, "unused.db"), "", {}, config, { jobs: { work: job(() => null) }, schedules: { durable: schedule({ expression: "* * * * *", job: "work" }) } }, options);
+    await database.init(); await database.shutdown(); await database.close();
+    clock.advanceBy(120_000);
+    database = await openDevDatabase(path.join(dir, "unused.db"), "", {}, config, { jobs: { work: job(() => null) }, schedules: { durable: schedule({ expression: "*/2 * * * *", job: "work" }) } }, options);
+    try {
+      await database.init();
+      const state = await database.sqlite.prepare("SELECT expression, nextOccurrence FROM sporades_schedules WHERE name=?").get("durable");
+      assert.deepEqual(state, { expression: "*/2 * * * *", nextOccurrence: "2030-01-01T00:04:00.000Z" });
+    } finally { await database.shutdown(); await database.close(); }
+  });
+  await rm(dir, { recursive: true, force: true });
+});
+
+test("Postgres persists Schedule state through the configured adapter", { skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the Postgres adapter integration test." }, async () => {
+  const admin = await createPostgresDatabaseAdapter({ url: process.env.SPORADES_POSTGRES_TEST_URL });
+  await admin.exec("DROP TABLE IF EXISTS sporades_schedules, sporades_jobs, sporades, sporades_auth_users, sporades_auth_sessions, sporades_auth_email_credentials, sporades_auth_oauth_states, sporades_user_preferences, sporades_file_buckets, sporades_files, sporades_file_uploads, sporades_file_public_urls, sporades_log_events");
+  await admin.close();
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const config = { name: "scheduled", services: { database: { kind: "database", engine: "postgres" } } };
+  const options = { clock, serviceEnv: { SPORADES_SERVICE_DATABASE_ENGINE: "postgres", SPORADES_SERVICE_DATABASE_URL: process.env.SPORADES_POSTGRES_TEST_URL } };
+  const database = await openDevDatabase("unused.db", "", {}, config, { jobs: { work: job(() => null) }, schedules: { durable: schedule({ expression: "* * * * *", job: "work" }) } }, options);
+  try {
+    await database.init();
+    assert.equal((await database.sqlite.prepare("SELECT nextOccurrence FROM sporades_schedules WHERE name=?").get("durable")).nextOccurrence, "2030-01-01T00:01:00.000Z");
+  } finally { await database.shutdown(); await database.close(); }
+});
+
 test("Scheduled provenance is present at the atomic enqueue boundary", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-provenance-"));
   const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
@@ -543,6 +665,7 @@ test("invalid Schedule declarations reject Capsule startup as one unit", async (
     ["nickname", { valid: schedule({ expression: "@daily", job: "record" }) }],
     ["invalid payload", { valid: schedule({ expression: "* * * * *", job: "record", payload: Symbol("invalid") }) }],
     ["invalid retry", { valid: schedule({ expression: "* * * * *", job: "record", retry: { maxAttempts: 0 } }) }],
+    ["invalid missed-run policy", { valid: schedule({ expression: "* * * * *", job: "record", missedRun: "all" }) }],
   ];
   for (const [label, schedules] of cases) {
     const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-invalid-"));

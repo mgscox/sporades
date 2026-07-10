@@ -84,6 +84,7 @@ const app = capsule({
     dynamicSummary: schedule({
       expression: "* * * * *",
       job: "summarise",
+      missedRun: "latest",
       payload: async (occurrence, ctx) => {
         occurrence.scheduleName.toUpperCase();
         occurrence.scheduledFor.toUpperCase();
