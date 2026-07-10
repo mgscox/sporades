@@ -214,10 +214,10 @@ _Avoid_: global admin, platform admin, root role, Privileged server role
 
 ## Client transport
 
-Sporades is client-framework-agnostic. `sporades/client` exports a transport layer (WebSocket connect, query subscribe, mutation send, auth state, current-user preferences) and a `createHooks` factory that takes a framework's primitives (`useState`, `useEffect`) and returns ready-to-use hooks (`useQuery`, `useMutation`, `useAuth`). The user wires one line; the scaffold template handles it by default.
+Sporades is client-framework-agnostic at its internal transport seam, which owns the WebSocket connection, query subscriptions, mutation sending, auth state, and current-user preferences. The public `sporades/client` surface currently exposes that query and mutation behavior through `createHooks`, a React/Preact adapter that takes compatible primitives (`useState`, `useEffect`) and returns ready-to-use hooks (`useQuery`, `useMutation`, `useAuth`). Direct framework-neutral query subscriptions are not yet public. Frameworks with different reactivity models require native adapters over the internal transport seam rather than emulating React hooks.
 
 **createHooks**:
-A factory function exported by `sporades/client`. Accepts `{ useState, useEffect }` from any JSX framework (React, Preact, Solid) and returns Sporades hooks bound to that framework's reactivity model.
+A React/Preact adapter factory exported by `sporades/client`. Accepts React/Preact-compatible `{ useState, useEffect }` primitives and returns Sporades hooks bound to that lifecycle model. It is not the framework-neutral transport interface and does not model SolidJS signals, Vue composables, Svelte stores, or other native reactivity systems.
 _Avoid_: useQuery (that's what it produces, not what it is), hooks provider
 
 **App message**:
