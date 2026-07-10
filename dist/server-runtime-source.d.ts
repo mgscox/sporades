@@ -1357,5 +1357,7 @@ export declare function updateCurrentUserPreferences(database: LooseRecord, auth
 }>;
 export declare function runQuery(database: LooseRecord, auth: any, queryName: string): Promise<any>;
 export declare function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any): Promise<any>;
+/** Read the bounded operator view of every Job in one adapter snapshot. */
+export declare function inspectRuntimeJobs(adapter: LooseRecord): Promise<any>;
 export {};
 //# sourceMappingURL=server-runtime-source.d.ts.map

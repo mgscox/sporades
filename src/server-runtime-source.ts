@@ -70,6 +70,23 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   createLibsqlDatabaseAdapter,
   createPostgresDatabaseAdapter,
   createRuntimeDatabaseAdapter,
+  inspectRuntimeJobs,
+  jobError,
+  boundedJobJson,
+  jobState,
+  normalizeJobRetry,
+  cancelJob,
+  jobSummary,
+  createCurrentUserJobApi,
+  createPrivilegedJobApi,
+  assertActivePrivilegedJobAccess,
+  encodeJobCursor,
+  decodeJobCursor,
+  flushPendingJobEnqueues,
+  scheduleCurrentUserJobWorker,
+  scheduleNextDelayedJob,
+  runCurrentUserJobWorker,
+  safeJobFailure,
   postgresPlaceholders,
   postgresInterpolate,
   createPostgresConnection,
@@ -103,6 +120,9 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   migrateExistingLibsqlAppTable,
   splitSqlStatements,
   openDevDatabase,
+  recoverExpiredJobLeases,
+  jobHandlersFromCapsuleDefinition,
+  ensureJobStorage,
   createRuntimeLogSink,
   requirePathModule,
   createRuntimeLogger,
@@ -8674,6 +8694,40 @@ function jobState(row: any, includeDetail: boolean) {
   if (includeDetail) state.attemptHistory = JSON.parse(row.attemptHistory || "[]");
   if (row.cancelRequestedAt) state.cancelRequestedAt = row.cancelRequestedAt;
   return state;
+}
+
+/** Read the bounded operator view of every Job in one adapter snapshot. */
+export async function inspectRuntimeJobs(adapter: LooseRecord) {
+  const decode = (row: LooseRecord, field: string, value: unknown, fallback: unknown) => {
+    if (value === null || value === undefined || value === "") return fallback;
+    try { return JSON.parse(String(value)); }
+    catch {
+      const error: any = jobError("JOB_INSPECTION_INVALID_STATE", "Stored Job state is invalid.", "Repair or remove the malformed Job before retrying inspection.");
+      error.jobId = String(row.id); error.field = field; throw error;
+    }
+  };
+  const read = async (tx: LooseRecord) => {
+    let rows: LooseRecord[];
+    try {
+      rows = await tx.prepare("SELECT * FROM sporades_jobs ORDER BY createdAt DESC, id DESC").all();
+    } catch (error) {
+      const message = String((error as any)?.message ?? error);
+      if (/no such table|does not exist|unknown table/i.test(message)) return [];
+      throw error;
+    }
+    return rows.map((row) => ({
+      id: String(row.id), handler: String(row.handler), status: String(row.status),
+      enqueuedBy: { userId: String(row.enqueuedByUserId) },
+      actor: row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: String(row.actorUserId) },
+      attempts: Number(row.attempts), retry: decode(row, "retry", row.retryJson, { maxAttempts: 1, delayMs: 0 }),
+      idempotencyKeyPresent: row.idempotencyKey !== null && row.idempotencyKey !== undefined,
+      availableAt: row.availableAt ?? null, createdAt: row.createdAt ?? null, startedAt: row.startedAt ?? null,
+      completedAt: row.completedAt ?? null, failedAt: row.failedAt ?? null, cancelRequestedAt: row.cancelRequestedAt ?? null,
+      leaseExpiresAt: row.leaseExpiresAt ?? null, attemptHistory: decode(row, "attemptHistory", row.attemptHistory, []),
+      result: decode(row, "result", row.result, null), failure: decode(row, "failure", row.failure, null),
+    }));
+  };
+  return adapter.withTransaction ? await adapter.withTransaction(read) : await read(adapter);
 }
 
 function normalizeJobRetry(value: any) { if (value === undefined) return { maxAttempts: 1, delayMs: 0 }; if (!value || !Number.isInteger(value.maxAttempts) || value.maxAttempts < 1 || value.maxAttempts > 20 || !Number.isInteger(value.delayMs ?? 0) || (value.delayMs ?? 0) < 0) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.maxAttempts (1-20) and non-negative retry.delayMs."); return { maxAttempts: value.maxAttempts, delayMs: value.delayMs ?? 0 }; }

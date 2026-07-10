@@ -15,9 +15,10 @@ export const sporadesConfig = ${JSON.stringify(config, null, 2)};
 export const sporadesServerEnv = ${JSON.stringify(serverEnv, null, 2)};
 export const sporadesSealedServerEnv = ${JSON.stringify(sealedServerEnv, null, 2)};
 export const sporadesServerSource = ${JSON.stringify(serverSource)};
-const sporadesCapsuleModule = await import(${JSON.stringify(serverModuleDataUrl)});
-const sporadesCapsuleDefinition = sporadesCapsuleModule.default ?? null;
-
+const sporadesActionIndex = process.argv.indexOf("--sporades-action");
+const sporadesAction = sporadesActionIndex < 0 ? null : process.argv[sporadesActionIndex + 1];
+const sporadesCapsuleModule = sporadesAction ? null : await import(${JSON.stringify(serverModuleDataUrl)});
+const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
 ${runtimeFunctions}
 
 const port = Number(process.env.PORT ?? sporadesConfig.deploy?.port ?? 4000);
@@ -29,6 +30,21 @@ const runtimeConfig = {
 };
 const runtimeServerEnv = await readRuntimeServerEnv(sporadesServerEnv, sporadesSealedServerEnv);
 const runtimeServiceEnv = readRuntimeServiceEnv();
+if (sporadesAction) {
+  if (sporadesAction !== "jobs.inspect") {
+    process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Unsupported Sporades runtime action.", hint: "Upgrade the Sporades CLI and generated Bundle together." } }) + "\\n");
+    process.exit(1);
+  }
+  const adapter = await createRuntimeDatabaseAdapter(databasePath, runtimeServiceEnv, runtimeConfig);
+  try {
+    const jobs = await inspectRuntimeJobs(adapter);
+    process.stdout.write(JSON.stringify({ ok: true, data: { capsule: { name: sporadesConfig.name }, jobs }, error: null }) + "\\n");
+  } catch (error) {
+    process.stdout.write(JSON.stringify({ ok: false, data: null, error: { code: error.code ?? "JOB_INSPECTION_FAILED", message: error.message, hint: error.hint, ...(error.jobId ? { jobId: error.jobId, field: error.field } : {}) } }) + "\\n");
+    process.exitCode = 1;
+  } finally { await adapter.close(); }
+  process.exit();
+}
 const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
   serviceEnv: runtimeServiceEnv,
 });

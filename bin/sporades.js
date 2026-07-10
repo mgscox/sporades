@@ -798,6 +798,23 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createLibsqlDatabaseAdapter,
   createPostgresDatabaseAdapter,
   createRuntimeDatabaseAdapter,
+  inspectRuntimeJobs,
+  jobError,
+  boundedJobJson,
+  jobState,
+  normalizeJobRetry,
+  cancelJob,
+  jobSummary,
+  createCurrentUserJobApi,
+  createPrivilegedJobApi,
+  assertActivePrivilegedJobAccess,
+  encodeJobCursor,
+  decodeJobCursor,
+  flushPendingJobEnqueues,
+  scheduleCurrentUserJobWorker,
+  scheduleNextDelayedJob,
+  runCurrentUserJobWorker,
+  safeJobFailure,
   postgresPlaceholders,
   postgresInterpolate,
   createPostgresConnection,
@@ -831,6 +848,9 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   migrateExistingLibsqlAppTable,
   splitSqlStatements,
   openDevDatabase,
+  recoverExpiredJobLeases,
+  jobHandlersFromCapsuleDefinition,
+  ensureJobStorage,
   createRuntimeLogSink,
   requirePathModule,
   createRuntimeLogger,
@@ -8392,6 +8412,50 @@ function jobState(row, includeDetail) {
   if (row.cancelRequestedAt) state.cancelRequestedAt = row.cancelRequestedAt;
   return state;
 }
+async function inspectRuntimeJobs(adapter) {
+  const decode = (row, field, value, fallback) => {
+    if (value === null || value === void 0 || value === "") return fallback;
+    try {
+      return JSON.parse(String(value));
+    } catch {
+      const error = jobError("JOB_INSPECTION_INVALID_STATE", "Stored Job state is invalid.", "Repair or remove the malformed Job before retrying inspection.");
+      error.jobId = String(row.id);
+      error.field = field;
+      throw error;
+    }
+  };
+  const read = async (tx) => {
+    let rows;
+    try {
+      rows = await tx.prepare("SELECT * FROM sporades_jobs ORDER BY createdAt DESC, id DESC").all();
+    } catch (error) {
+      const message = String(error?.message ?? error);
+      if (/no such table|does not exist|unknown table/i.test(message)) return [];
+      throw error;
+    }
+    return rows.map((row) => ({
+      id: String(row.id),
+      handler: String(row.handler),
+      status: String(row.status),
+      enqueuedBy: { userId: String(row.enqueuedByUserId) },
+      actor: row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: String(row.actorUserId) },
+      attempts: Number(row.attempts),
+      retry: decode(row, "retry", row.retryJson, { maxAttempts: 1, delayMs: 0 }),
+      idempotencyKeyPresent: row.idempotencyKey !== null && row.idempotencyKey !== void 0,
+      availableAt: row.availableAt ?? null,
+      createdAt: row.createdAt ?? null,
+      startedAt: row.startedAt ?? null,
+      completedAt: row.completedAt ?? null,
+      failedAt: row.failedAt ?? null,
+      cancelRequestedAt: row.cancelRequestedAt ?? null,
+      leaseExpiresAt: row.leaseExpiresAt ?? null,
+      attemptHistory: decode(row, "attemptHistory", row.attemptHistory, []),
+      result: decode(row, "result", row.result, null),
+      failure: decode(row, "failure", row.failure, null)
+    }));
+  };
+  return adapter.withTransaction ? await adapter.withTransaction(read) : await read(adapter);
+}
 function normalizeJobRetry(value) {
   if (value === void 0) return { maxAttempts: 1, delayMs: 0 };
   if (!value || !Number.isInteger(value.maxAttempts) || value.maxAttempts < 1 || value.maxAttempts > 20 || !Number.isInteger(value.delayMs ?? 0) || (value.delayMs ?? 0) < 0) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.maxAttempts (1-20) and non-negative retry.delayMs.");
@@ -8907,9 +8971,10 @@ export const sporadesConfig = ${JSON.stringify(config, null, 2)};
 export const sporadesServerEnv = ${JSON.stringify(serverEnv, null, 2)};
 export const sporadesSealedServerEnv = ${JSON.stringify(sealedServerEnv, null, 2)};
 export const sporadesServerSource = ${JSON.stringify(serverSource)};
-const sporadesCapsuleModule = await import(${JSON.stringify(serverModuleDataUrl)});
-const sporadesCapsuleDefinition = sporadesCapsuleModule.default ?? null;
-
+const sporadesActionIndex = process.argv.indexOf("--sporades-action");
+const sporadesAction = sporadesActionIndex < 0 ? null : process.argv[sporadesActionIndex + 1];
+const sporadesCapsuleModule = sporadesAction ? null : await import(${JSON.stringify(serverModuleDataUrl)});
+const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
 ${runtimeFunctions}
 
 const port = Number(process.env.PORT ?? sporadesConfig.deploy?.port ?? 4000);
@@ -8921,6 +8986,21 @@ const runtimeConfig = {
 };
 const runtimeServerEnv = await readRuntimeServerEnv(sporadesServerEnv, sporadesSealedServerEnv);
 const runtimeServiceEnv = readRuntimeServiceEnv();
+if (sporadesAction) {
+  if (sporadesAction !== "jobs.inspect") {
+    process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Unsupported Sporades runtime action.", hint: "Upgrade the Sporades CLI and generated Bundle together." } }) + "\\n");
+    process.exit(1);
+  }
+  const adapter = await createRuntimeDatabaseAdapter(databasePath, runtimeServiceEnv, runtimeConfig);
+  try {
+    const jobs = await inspectRuntimeJobs(adapter);
+    process.stdout.write(JSON.stringify({ ok: true, data: { capsule: { name: sporadesConfig.name }, jobs }, error: null }) + "\\n");
+  } catch (error) {
+    process.stdout.write(JSON.stringify({ ok: false, data: null, error: { code: error.code ?? "JOB_INSPECTION_FAILED", message: error.message, hint: error.hint, ...(error.jobId ? { jobId: error.jobId, field: error.field } : {}) } }) + "\\n");
+    process.exitCode = 1;
+  } finally { await adapter.close(); }
+  process.exit();
+}
 const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
   serviceEnv: runtimeServiceEnv,
 });
@@ -13435,6 +13515,10 @@ async function main() {
       }
       await manageLocalLifecycle("deploy", parseDeployArgs(args));
       return;
+    case "jobs":
+      if (args.length) throw commandError4("Unknown jobs argument.", "Use `sporades jobs`.");
+      await inspectDevJobs({ projectDir: process.cwd() });
+      return;
     case "host":
       if (isHelp) {
         printHelp("host");
@@ -13611,7 +13695,7 @@ function parseDevArgs(args) {
   };
 }
 function parseDeployArgs(args) {
-  const lifecycleCommands = /* @__PURE__ */ new Set(["status", "stop", "restart", "remove", "reset", "ssh"]);
+  const lifecycleCommands = /* @__PURE__ */ new Set(["status", "stop", "restart", "remove", "reset", "ssh", "jobs"]);
   const subcommand = lifecycleCommands.has(args[0]) ? args[0] : "start";
   const rest = subcommand === "start" ? args : args.slice(1);
   let port = null;
@@ -14089,6 +14173,13 @@ function parseHostArgs(args) {
       }
       return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
     }
+    case "jobs":
+      if (positional.length > 0) throw commandError4("Too many positional arguments.", "Use `sporades host jobs --host <alias> --subname <name>`.");
+      if (!hostAlias) throw commandError4("Missing Host profile alias.", "Pass `--host <alias>`.");
+      if (!subname) throw commandError4("Missing Capsule subname.", "Pass `--subname <name>`.");
+      validateHostAlias(hostAlias);
+      validateCapsuleSubname(subname);
+      return { subcommand, subname, hostAlias, json: true, projectDir: process.cwd() };
     case "ssh": {
       const [positionalSubname, ...extra] = positional;
       if (extra.length > 0) {
@@ -14450,6 +14541,10 @@ async function manageLocalLifecycle(surface, options) {
       }
       await inspectLocalContainerSsh(options);
       return;
+    case "jobs":
+      if (surface !== "deploy") throw commandError4("Unsupported lifecycle command: jobs", "Use `sporades deploy jobs`.");
+      await inspectContainerJobs(options);
+      return;
     case "remove":
       if (surface !== "deploy") {
         throw commandError4("Unsupported lifecycle command: remove", "Use `sporades deploy remove`.");
@@ -14476,6 +14571,43 @@ async function manageLocalLifecycle(surface, options) {
       }
       await startContainerSession(options);
   }
+}
+function parseInspectionProcess(result, hint) {
+  let envelope;
+  try {
+    envelope = JSON.parse(result.stdout.trim());
+  } catch {
+    throw commandError4("Job inspection returned invalid JSON.", hint);
+  }
+  if (!envelope?.ok) throw commandError4(envelope?.error?.message ?? "Job inspection failed.", envelope?.error?.hint ?? hint, envelope?.error);
+  writeResult(envelope);
+}
+async function inspectDevJobs(options) {
+  const session = await readDevSession(options.projectDir);
+  try {
+    process.kill(Number(session.pid), 0);
+  } catch {
+    throw commandError4("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades jobs`.");
+  }
+  const bundle = path6.join(options.projectDir, ".sporades", "build", "server.mjs");
+  const result = spawnSync2(process.execPath, [bundle, "--sporades-action", "jobs.inspect"], {
+    cwd: options.projectDir,
+    encoding: "utf8",
+    env: { ...process.env, SPORADES_DATABASE_PATH: path6.join(options.projectDir, ".sporades", "data.db") }
+  });
+  parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades jobs`.");
+}
+async function inspectContainerJobs(options) {
+  const { binding } = await requireLocalContainerBinding(options, "jobs");
+  const running = runDocker(
+    ["inspect", "--format", "{{.State.Running}}", binding.containerId],
+    options.projectDir,
+    "Unable to inspect the local Container session.",
+    "Check Docker and retry `sporades deploy jobs`."
+  );
+  if (running !== "true") throw commandError4("The local Container session is not running.", "Run `sporades deploy restart`, then retry `sporades deploy jobs`.");
+  const result = spawnSync2("docker", ["exec", binding.containerId, "node", "/app/server.mjs", "--sporades-action", "jobs.inspect"], { cwd: options.projectDir, encoding: "utf8" });
+  parseInspectionProcess(result, "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy jobs`.");
 }
 async function startDevSession(options) {
   let config = await readProjectConfig(options.projectDir);
@@ -15355,6 +15487,17 @@ async function ensureHostProfileEnvKey(config, alias) {
 }
 async function manageHost(options) {
   switch (options.subcommand) {
+    case "jobs": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: "jobs.inspect", subname: options.subname, projectDir: options.projectDir });
+      if (!result.ok && /Unsupported Host helper action/i.test(result.error.message)) {
+        writeResult({ ok: false, data: null, error: { code: "HOST_HELPER_UPGRADE_REQUIRED", message: "The Host server CLI does not support Job inspection.", hint: `Run \`sporades host upgrade --host ${resolved.alias}\`, then retry the command.` } }, true);
+        return;
+      }
+      writeResult(result, !result.ok);
+      return;
+    }
     case "add": {
       const config = await readHostConfig();
       const profile = {

@@ -22,6 +22,7 @@ export type HostHelperAction =
   | "capsule.stats"
   | "capsule.ssh"
   | "capsule.health"
+  | "jobs.inspect"
   | "capsule.list"
   | "host.stats"
   | "host.logs"
@@ -169,6 +170,7 @@ export type HostLogsRequest = HostHelperRequestBase & {
 };
 export type HostCapsuleListRequest = HostHelperRequestBase & { action: "capsule.list" };
 export type HostVersionRequest = HostHelperRequestBase & { action: "host.version" };
+export type HostJobsInspectRequest = HostHelperRequestBase & { action: "jobs.inspect"; capsule: HostHelperCapsuleTarget };
 
 export type HostHelperRequest =
   | HostBootstrapRequest
@@ -185,7 +187,8 @@ export type HostHelperRequest =
   | HostHealthRequest
   | HostLogsRequest
   | HostCapsuleListRequest
-  | HostVersionRequest;
+  | HostVersionRequest
+  | HostJobsInspectRequest;
 
 export type HostHelperErrorBody = JsonObject & {
   message: string;
