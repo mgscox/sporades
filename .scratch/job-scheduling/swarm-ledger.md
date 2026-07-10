@@ -5,7 +5,7 @@ Validated swarm base: `4377ca26858dfbc9c61e9f9660c3e1ed79b6c0d8`
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 01 | ready | None | — | — | — | — | — | — | — | Baseline: `npm test` 533 pass, 7 expected skips; graph validation green | pending |
+| 01 | working | None | `4b33165249ca7cbc6e09242c291b658288c1254c` | `codex/job-scheduling-01-clock` / `/Users/mattcox/.codex/worktrees/job-scheduling-01` | `job_scheduling_01` | — | — | — | — | Baseline: `npm test` 533 pass, 7 expected skips; graph validation green | pending |
 | 02 | blocked | 01 | — | — | — | — | — | — | — | — | pending |
 | 03 | blocked | 02 | — | — | — | — | — | — | — | — | pending |
 | 04 | blocked | 02 | — | — | — | — | — | — | — | — | pending |
