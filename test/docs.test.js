@@ -145,9 +145,15 @@ test("published docs describe the complete Job scheduling contract", async () =>
   assert.match(guide, /payload factor(?:y|ies)[\s\S]*may run more than once/i);
   assert.match(guide, /remov(?:e|ing)[\s\S]*fresh identity/i);
   assert.match(guide, /`availableAt`[\s\S]*not recurring/i);
+  assert.match(guide, /import \{ capsule, job, schedule \} from "sporades\/server"/);
+  assert.match(guide, /sendDigest:\s*job\(/);
+  assert.match(guide, /jobs:\s*\{[\s\S]*sendDigest[\s\S]*schedules:\s*\{/);
   assert.match(context, /\*\*Schedule\*\*:/);
   assert.match(context, /\*\*Scheduled occurrence\*\*:/);
   assert.match(roadmap, /\| Job scheduling \| implemented \|/);
+  assert.doesNotMatch(roadmap, /Recurring Job scheduling remains a dependent design item/);
+  assert.doesNotMatch(roadmap, /required by future Job scheduling/);
+  assert.doesNotMatch(roadmap, /Job scheduling remains a dependent roadmap track/);
   assert.match(prd, /\.scratch\/job-scheduling\/PRD\.md/);
 
   for (const api of [serverSource, serverDeclarations]) {
@@ -379,7 +385,7 @@ test("docs describe the implemented Privileged audit event contract", async () =
   assert.match(roadmap, /implemented Privileged audit event contract/);
   assert.match(roadmap, /Real `sshd` auth\/session capture remains future scanner work/);
   assert.match(roadmap, /\.scratch\/privileged-audit-event-contract\/ssh-daemon-session-log-scanner-spike\.md/);
-  assert.match(roadmap, /Job scheduling remains a dependent roadmap track/);
+  assert.match(roadmap, /Implemented scheduled Privileged Jobs reuse the existing Privileged audit boundary/);
 
   assert.match(prd, /Privileged audit event contract for runtime-owned and platform-owned\s+security events/);
   assert.match(prd, /narrow structured JSONL audit\s+surface/);

@@ -185,13 +185,26 @@ One-time delayed availability is Job Queue behavior. For recurring work,
 Capsule server code declares a named Schedule alongside its named Jobs:
 
 ```ts
-schedules: {
-  weekdayDigest: schedule({
-    expression: "0 9 * * 1-5",
-    timezone: "Europe/London",
-    job: "sendDigest",
-  }),
-}
+import { capsule, job, schedule } from "sporades/server";
+
+export default capsule({
+  name: "reports",
+  jobs: {
+    sendDigest: job(async (_ctx, input: { audience: string }) => {
+      return { audience: input.audience, sent: true };
+    }),
+  },
+  schedules: {
+    weekdayDigest: schedule({
+      expression: "0 9 * * 1-5",
+      timezone: "Europe/London",
+      job: "sendDigest",
+      payload: { audience: "subscribers" },
+      retry: { maxAttempts: 3, delayMs: 60_000 },
+      missedRun: "latest",
+    }),
+  },
+});
 ```
 
 Schedules use numeric five-field cron expressions. An explicit `timezone` must
