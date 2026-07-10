@@ -482,10 +482,12 @@ async function getAvailablePort() {
 async function waitForHttp(url, child) {
   const deadline = Date.now() + 5000;
   let lastError;
+  let childStderr = "";
+  child.stderr?.on("data", (chunk) => { childStderr += String(chunk); });
 
   while (Date.now() < deadline) {
     if (child.exitCode !== null) {
-      throw new Error(`Server bundle exited before serving ${url}`);
+      throw new Error(`Server bundle exited before serving ${url}: ${childStderr.trim()}`);
     }
 
     try {

@@ -5882,6 +5882,7 @@ test("sporades db query runs read-only SQL against the running dev session datab
             { name: "sporades_file_uploads" },
             { name: "sporades_files" },
             { name: "sporades_jobs" },
+            { name: "sporades_schedule_occurrences" },
             { name: "sporades_schedules" },
             { name: "sporades_user_preferences" },
             { name: "todos" },
