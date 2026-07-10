@@ -130,6 +130,10 @@ _Avoid_: worker pool, message bus, queue table
 The runtime-owned status view for one known Job, including lifecycle status, attempt counts, timestamps, and safe failure or result metadata. It is the inspection surface app code sees instead of raw queue internals.
 _Avoid_: queue internals, worker details, job row
 
+**Job inspection action**:
+A runtime-owned operator action that returns bounded safe state for all Jobs in one Capsule to an administrator of its Dev session, Container session, or Host server. It is an internal CLI/runtime operation rather than a Capsule API route or actor-scoped app API.
+_Avoid_: Job API route, user Job query, queue-table access
+
 **Lifecycle hooks**:
 `init()` and `shutdown()` boundaries on the server runtime. Dev rebuilds currently use a full runtime restart around these boundaries; finer-grained hot reload remains future work.
 _Avoid_: start/stop (too generic), lifecycle methods (they're hooks, not methods)

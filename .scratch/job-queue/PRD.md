@@ -9,6 +9,7 @@ Status: ready-for-agent
 - `CONTEXT.md`
 - `docs/adr/0026-database-writes-use-intended-transaction-boundaries.md`
 - `docs/adr/0027-capsule-roles-and-privileged-server-role-are-separate.md`
+- `docs/adr/0028-job-inspection-is-a-one-shot-bundle-action.md`
 - `.scratch/post-v2-platform-hardening-and-ops/issues/08-add-job-queue.md`
 - `.scratch/privileged-server-role/PRD.md`
 
@@ -159,19 +160,106 @@ same Job, not a new Job unless server code explicitly enqueues one.
 
 ## Inspection
 
-Sporades should expose Job state through deterministic, agent-friendly,
-paginated inspection. In normal user mode, Capsule server code can get and list
+Sporades should expose Job state through deterministic, agent-friendly
+inspection. In normal user mode, Capsule server code can get and list
 only Jobs whose execution actor is the current captured user. In Privileged
 server role mode, Capsule server code can get and list all Jobs belonging to the
 Capsule. `enqueuedBy` provenance does not grant visibility. An unauthorized
 Job ID must be indistinguishable from an unknown Job ID.
 
-Lists expose bounded safe summaries, omit payloads, results, and failure detail
-by default, and support cursor, status, handler, and creation-time filters.
-Privileged listing must run through `ctx.privileged.run(...)` and emit the
-existing mandatory audit events. CLI JSON inspection should expose equivalent
-operator-safe summaries; human output should stay concise and point operators
-at Job IDs and follow-up commands rather than dumping internals.
+Capsule-facing lists expose bounded safe summaries and omit payloads, results,
+and failure detail by default. Privileged listing must run through
+`ctx.privileged.run(...)` and emit the existing mandatory audit events.
+Separately, CLI inspection uses a runtime-owned Job inspection action to return
+all bounded safe Job states in deterministic JSON to an administrator of the
+Dev session, Container session, or Host server. The first CLI slice has no
+actor scoping, user-supplied filters, cursor, or pagination and is not an API
+route; callers may filter or transform its JSON output themselves.
+Jobs are ordered by `createdAt DESC`, then Job ID descending, so the newest work
+appears first with a stable tie-breaker.
+The shared inspection function reads the complete array in one read
+transaction/snapshot so each response represents one coherent database view.
+If any stored Job cannot be decoded, the whole action fails with
+`JOB_INSPECTION_INVALID_STATE`, identifying only the Job ID and malformed field.
+It does not return a partial array or the corrupt raw value.
+A missing runtime-owned Job store/table succeeds with `jobs: []`; inspection
+does not create or migrate storage.
+
+CLI targets remain explicit: `sporades jobs` inspects the active Dev session,
+`sporades deploy jobs` inspects the bound local Container session, and
+`sporades host jobs --host <alias> --subname <name>` inspects one Hosted
+Capsule. The CLI does not guess which runtime location the operator intended.
+These commands are JSON-only and always return the standard Sporades structured
+JSON envelope; v1 has no human renderer or separate `--json` mode.
+Success returns `{ ok: true, data: { capsule: { name }, jobs }, error: null }`.
+An empty queue returns `jobs: []`. V1 adds no session-location field, redundant
+count, or explicit schema-version field.
+
+The CLI view is operational rather than a raw Job record. It includes Job ID,
+handler, status, actor mode, `enqueuedBy`, attempt count and bounded attempt
+history, retry policy, lifecycle timestamps, idempotency-key presence, and
+bounded result or failure metadata already classified safe by the runtime. It
+does not return input payloads or idempotency-key values.
+Each Job has the stable fields `id`, `handler`, `status`, `enqueuedBy`, `actor`,
+`attempts`, `retry`, `idempotencyKeyPresent`, `availableAt`, `createdAt`,
+`startedAt`, `completedAt`, `failedAt`, `cancelRequestedAt`, `leaseExpiresAt`,
+`attemptHistory`, `result`, and `failure`. Absent lifecycle values, result, and
+failure are `null` rather than omitted. Current-user actors include `userId`;
+Privileged server role actors expose only their mode.
+
+All three commands call one shared read-only Job inspection function rather than
+generic SQL. `sporades jobs` invokes it against the Dev session Runtime
+directory. `sporades deploy jobs` invokes it inside the bound Container through
+`docker exec`. `sporades host jobs` asks the Host helper to invoke it inside the
+Hosted Capsule through `docker exec`. No transport requires a Job inspection
+HTTP endpoint in the running Capsule.
+The shared internal runtime and Host-helper action identifier is `jobs.inspect`.
+It accepts no filter or pagination arguments; transports add only the target
+identity they require.
+The generated server Bundle provides the executable boundary:
+`node <server.mjs> --sporades-action jobs.inspect`. It detects this
+Sporades-owned internal action before Capsule-module evaluation, migrations,
+recovery, workers, lifecycle hooks, runtime-start logs, HTTP, or WebSocket
+startup. It loads only Sporades-owned configuration, required Database adapter
+credentials, and the read-only inspection function, opens the runtime store
+read-only, emits exactly one JSON envelope, and exits. Dev invokes
+`.sporades/build/server.mjs`; Container paths invoke
+`/app/server.mjs` through `docker exec`. V1 adds no second inspector executable
+or Base-image artifact, and `--sporades-action` is not a Capsule authoring API.
+The action reads through the Capsule's configured Database adapter and supports
+SQLite, libSQL, and Postgres runtime persistence rather than opening a SQLite
+file directly. Dev reproduces the active session's runtime configuration for
+the one-shot Bundle; Container invocations inherit their configured environment.
+
+Local Dev inspection does not pass or validate the HTTP inspection token.
+Filesystem access is the authority; Dev-session metadata only verifies that the
+recorded process is active and locates the target Runtime state.
+
+V1 inspects live targets only. Dev requires an active Dev session, and local or
+Hosted inspection requires the target Container to be running. Missing,
+stopped, or unreachable targets return structured errors with the appropriate
+start or restart command. Offline database discovery, direct volume mounting,
+and ephemeral inspection Containers remain out of scope.
+
+Job inspection is a bounded read-only administrator action. It does not execute
+as the Privileged server role and does not emit Privileged audit events merely
+for reading Job state.
+
+If the installed Host server CLI/Host helper does not recognize the Job
+inspection action, `sporades host jobs` fails with
+`HOST_HELPER_UPGRADE_REQUIRED` and a hint to run `sporades host upgrade`. It
+does not fall back to SSH-side SQL, direct file reads, or protocol guessing.
+Inactive Dev sessions, missing bindings, stopped Containers, unreachable Host
+servers, and stopped Hosted Capsules reuse their existing structured CLI errors.
+V1 adds only `JOB_INSPECTION_INVALID_STATE` and
+`HOST_HELPER_UPGRADE_REQUIRED` for inspection-specific failures.
+
+Automated verification exercises the real one-shot generated Bundle and a
+temporary Dev session, existing fake Docker and fake SSH/Host-helper seams for
+Container transports, generated Bundle/Host-helper parity, and SQLite, libSQL,
+and Postgres through their existing adapter test setup. The standard suite does
+not require a live Host server; a later Hosted Capsule smoke run is useful but
+does not gate completion.
 
 ## User Stories
 
@@ -322,6 +410,8 @@ at Job IDs and follow-up commands rather than dumping internals.
 - `issues/04-recover-jobs-with-at-least-once-delivery.md`
 - `issues/05-list-and-inspect-jobs-across-runtime-sessions.md`
 - `issues/06-document-job-queue-and-update-roadmap.md`
+- `issues/07-design-cross-runtime-job-inspection-protocol.md`
+- `issues/08-align-implemented-job-queue-docs.md`
 
 ## Further Notes
 
