@@ -3857,11 +3857,12 @@ async function scheduleSummary(sqlite: LooseRecord, row: any) {
   if (typeof row.effectiveTimezone !== "string" || !row.effectiveTimezone) throw invalid("timezone");
   if (!["skip", "latest"].includes(row.missedRunPolicy)) throw invalid("missedRun");
   if (![0, 1, false, true].includes(row.enabled)) throw invalid("enabled");
-  if (row.nextOccurrence != null && Number.isNaN(Date.parse(row.nextOccurrence))) throw invalid("nextOccurrence");
+  const canonicalInstant = (value: unknown) => typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
+  if (row.nextOccurrence != null && !canonicalInstant(row.nextOccurrence)) throw invalid("nextOccurrence");
   const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
   let latestOccurrence = null;
   if (latestOutcome === null && [row.latestScheduledFor, row.latestJobId, row.latestErrorCode].some((value) => value != null)) throw invalid("latestOccurrence");
-  if (latestOutcome !== null && (typeof row.latestScheduledFor !== "string" || Number.isNaN(Date.parse(row.latestScheduledFor)))) throw invalid("latestOccurrence.scheduledFor");
+  if (latestOutcome !== null && !canonicalInstant(row.latestScheduledFor)) throw invalid("latestOccurrence.scheduledFor");
   if (latestOutcome === "enqueued") {
     if (typeof row.latestJobId !== "string" || !row.latestJobId) throw invalid("latestOccurrence.jobId");
     if (row.latestErrorCode != null) throw invalid("latestOccurrence.errorCode");

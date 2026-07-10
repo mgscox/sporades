@@ -3490,13 +3490,14 @@ async function scheduleSummary(sqlite, row) {
         throw invalid("missedRun");
     if (![0, 1, false, true].includes(row.enabled))
         throw invalid("enabled");
-    if (row.nextOccurrence != null && Number.isNaN(Date.parse(row.nextOccurrence)))
+    const canonicalInstant = (value) => typeof value === "string" && !Number.isNaN(Date.parse(value)) && new Date(value).toISOString() === value;
+    if (row.nextOccurrence != null && !canonicalInstant(row.nextOccurrence))
         throw invalid("nextOccurrence");
     const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
     let latestOccurrence = null;
     if (latestOutcome === null && [row.latestScheduledFor, row.latestJobId, row.latestErrorCode].some((value) => value != null))
         throw invalid("latestOccurrence");
-    if (latestOutcome !== null && (typeof row.latestScheduledFor !== "string" || Number.isNaN(Date.parse(row.latestScheduledFor))))
+    if (latestOutcome !== null && !canonicalInstant(row.latestScheduledFor))
         throw invalid("latestOccurrence.scheduledFor");
     if (latestOutcome === "enqueued") {
         if (typeof row.latestJobId !== "string" || !row.latestJobId)

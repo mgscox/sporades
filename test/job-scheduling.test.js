@@ -100,6 +100,13 @@ test("Privileged Schedule inspection is bounded, ordered, correlated, and side-e
     await assertInvalidInspection(["2030-01-01T00:00:00.000Z", "enqueued", "unrelated", "STALE_ERROR"]);
     await assertInvalidInspection(["2030-01-01T00:00:00.000Z", "payload-failed", "unrelated", "SCHEDULE_PAYLOAD_FAILED"]);
     await assertInvalidInspection(["2030-01-01T00:00:00.000Z", "payload-failed", null, "SECRET_database_password"]);
+    await assertInvalidInspection(["0", "payload-failed", null, "SCHEDULE_PAYLOAD_FAILED"]);
+    await assertInvalidInspection(["2030-01-01", "payload-failed", null, "SCHEDULE_PAYLOAD_FAILED"]);
+    for (const noncanonical of ["0", "2030-01-01"]) {
+      database.sqlite.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=NULL, latestOutcome=NULL, latestJobId=NULL, latestErrorCode=NULL WHERE name='zeta'").run(noncanonical);
+      const invalid = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
+      assert.equal(invalid.ok, false);
+    }
     database.sqlite.prepare("DELETE FROM sporades_jobs WHERE id='unrelated'").run();
 
     clock.advanceBy(270_000); await clock.runDueTimers();
