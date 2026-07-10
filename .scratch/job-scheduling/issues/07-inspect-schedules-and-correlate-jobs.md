@@ -2,7 +2,7 @@
 
 **What to build:** Give trusted server code bounded schedule inspection through the Privileged server role and correlate each scheduled Job and privileged attempt with its originating schedule and occurrence.
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
