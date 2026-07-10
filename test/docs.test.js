@@ -504,7 +504,12 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.match(userGuide, /current-user inspection[\s\S]*captured execution actor/i);
   assert.match(userGuide, /Privileged inspection[\s\S]*all Jobs/);
   assert.match(userGuide, /`enqueuedBy`[\s\S]*provenance/);
-  assert.match(userGuide, /cron syntax[\s\S]*timezone handling[\s\S]*missed-run handling[\s\S]*duplicate\s+recurring-run protection/i);
+  assert.match(userGuide, /numeric five-field cron expressions/);
+  assert.match(userGuide, /IANA timezone[\s\S]*server timezone[\s\S]*Dev, Container,[\s\S]*Hosted/);
+  assert.match(userGuide, /future occurrence calculation only[\s\S]*does not backfill/);
+  assert.match(userGuide, /day-of-month and day-of-week[\s\S]*OR behavior/);
+  assert.match(userGuide, /spring[\s\S]*no occurrence[\s\S]*repeated fall hour[\s\S]*both matching UTC instants/);
+  assert.match(userGuide, /Use `UTC`/);
 
   assert.match(apiServer, /JobApi/);
   assert.match(apiServer, /JobState/);

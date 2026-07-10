@@ -181,9 +181,34 @@ provenance—the user who caused the Job to be created—and is distinct from th
 captured current-user or Privileged server role actor under which the handler
 executes.
 
-One-time delayed availability is Job Queue behavior, not recurring Job
-scheduling. Cron syntax, timezone handling, missed-run handling, and duplicate
-recurring-run protection remain future Job scheduling work.
+One-time delayed availability is Job Queue behavior. For recurring work,
+Capsule server code declares a named Schedule alongside its named Jobs:
+
+```ts
+schedules: {
+  weekdayDigest: schedule({
+    expression: "0 9 * * 1-5",
+    timezone: "Europe/London",
+    job: "sendDigest",
+  }),
+}
+```
+
+Schedules use numeric five-field cron expressions. An explicit `timezone` must
+be an IANA timezone available through the Node runtime. When it is omitted,
+Sporades resolves the server timezone at each runtime startup. Dev, Container,
+and Hosted environments can have different server timezone defaults, so pin a
+timezone when recurrence must be portable. A changed server default affects
+future occurrence calculation only; Sporades does not backfill under the old
+timezone.
+
+Cron fields are matched against local wall-clock time in the effective
+timezone. When day-of-month and day-of-week are both restricted, either field
+may match (conventional cron OR behavior). A local time skipped by a daylight-
+saving spring transition produces no occurrence. During a repeated fall hour,
+both matching UTC instants are eligible and have distinct occurrence identities.
+Use `UTC` when recurrence must not skip or repeat because of daylight-saving
+transitions.
 
 ### Inspect Jobs from the CLI
 

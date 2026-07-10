@@ -646,9 +646,19 @@ jobs`, `sporades deploy jobs`, and `sporades host jobs` commands. This operator
 action is separate from actor-scoped Capsule APIs and omits payloads and
 idempotency-key values.
 
-A one-time future `availableAt` belongs to the Job Queue. Recurring Job
-scheduling remains future work, including cron syntax, timezone handling,
-missed-run handling, and duplicate recurring-run protection.
+A one-time future `availableAt` belongs to the Job Queue. Recurring Schedule
+declarations now provide numeric five-field cron evaluation and enqueue ordinary
+Privileged Jobs. A Schedule may pin an available IANA timezone or omit it to use
+the server timezone resolved by Node at each runtime startup. Because Dev,
+Container, and Hosted environments may use different defaults, portable
+recurrence should pin its timezone; a changed startup default affects future
+occurrences without backfilling the old definition.
+
+Cron fields match local wall-clock values in the effective timezone. Restricted
+day-of-month and day-of-week fields use conventional OR behavior. A nonexistent
+spring-forward local time creates no occurrence, while both UTC instants in a
+repeated fall-back hour are eligible with distinct identities. Authors who need
+invariant recurrence without daylight-saving skips or repeats should use `UTC`.
 
 ## Configuration
 

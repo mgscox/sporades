@@ -4,7 +4,7 @@ Sporades separates Capsule-scoped user authorization from userless system-owned
 execution. Capsule admin behavior belongs in Capsule roles checked through
 normal ACL rules. Privileged server role is a server-only actor for trusted
 system-owned execution that intentionally runs without a Sporades user identity,
-such as future scheduled Jobs or platform-owned maintenance inside a Capsule.
+such as scheduled Jobs or platform-owned maintenance inside a Capsule.
 
 Sporades will not add a global `admin` role to runtime-owned auth users for this
 feature. A runtime auth-user role would make ACL checks easy, but it would also

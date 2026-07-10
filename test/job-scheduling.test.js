@@ -52,7 +52,7 @@ test("a Schedule matches wall-clock fields in its explicit IANA timezone", async
   }, { clock });
   try {
     await database.init();
-    assert.equal(database.schedules[0].timezone, "America/Los_Angeles");
+    assert.equal(database.schedules[0].effectiveTimezone, "America/Los_Angeles");
     clock.advanceBy(30_000);
     await clock.runDueTimers();
     assert.deepEqual(seen, [null]);
@@ -78,6 +78,20 @@ test("Schedule timezone evaluation covers offsets and calendar boundaries", asyn
       assert.equal(database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, expected, label);
     } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
   }
+});
+
+test("leap-day scheduling crosses a non-leap Gregorian century", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-century-leap-"));
+  const clock = createControllableRuntimeClock("2096-02-29T00:00:30.000Z");
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
+    jobs: { record: job(() => null) }, schedules: { leapDay: schedule({ expression: "0 0 29 2 *", timezone: "UTC", job: "record" }) },
+  }, { clock });
+  try {
+    await database.init();
+    clock.setInstant("2104-02-29T00:00:00.000Z");
+    await clock.runDueTimers();
+    assert.equal(database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, "2104-02-29T00:00:00.000Z");
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
 test("cron day-of-month and day-of-week use OR when both are restricted", async () => {
@@ -124,7 +138,7 @@ test("omitted timezone resolves from the runtime and invalid timezones reject st
     jobs: { record: job(() => null) }, schedules: { serverLocal: schedule({ expression: "* * * * *", job: "record" }) },
   });
   try {
-    assert.equal(database.schedules[0].timezone, Intl.DateTimeFormat().resolvedOptions().timeZone);
+    assert.equal(database.schedules[0].effectiveTimezone, Intl.DateTimeFormat().resolvedOptions().timeZone);
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
 
   for (const timezone of ["Not/A_Timezone", "", 42]) {

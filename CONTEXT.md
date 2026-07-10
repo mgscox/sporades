@@ -335,7 +335,7 @@ A constrained read-only policy context exposed to ACL rules as `ctx.acl`. It pro
 _Avoid_: ctx.db in ACL, admin client, bypass API
 
 **Privileged server role**:
-A server-only authority for trusted system-owned execution that intentionally runs without a Sporades user identity, such as future scheduled Jobs or platform-owned maintenance. It is separate from Capsule roles, app admin users, browser credentials, users, team members, sessions, and accounts.
+A server-only authority for trusted system-owned execution that intentionally runs without a Sporades user identity, such as scheduled Jobs or platform-owned maintenance. It is separate from Capsule roles, app admin users, browser credentials, users, team members, sessions, and accounts.
 _Avoid_: root server role, admin user, superuser account, service account, Capsule role
 
 **Privileged audit event**:

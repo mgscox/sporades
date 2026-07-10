@@ -807,12 +807,12 @@ function scheduleDefinitionsFromCapsule(capsuleDefinition: any, jobs: any[]) {
     if (schedules.some((candidate) => candidate.name === name)) throw commandError(`Duplicate Schedule declaration: ${name}`, "Use one unique Schedule name per Capsule.");
     if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job)) throw commandError(`Unknown Job handler for Schedule: ${name}`, "Reference a Job declared in the Capsule jobs map.");
     const expression = parseScheduleExpression(definition.expression);
-    const timezone = resolveScheduleTimezone(definition.timezone);
+    const effectiveTimezone = resolveScheduleTimezone(definition.timezone);
     const payload = definition.payload === undefined ? null : definition.payload;
     if (typeof payload !== "function") boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
     const retry = normalizeJobRetry(definition.retry);
     if (definition.enabled !== undefined && typeof definition.enabled !== "boolean") throw commandError(`Invalid enabled value for Schedule: ${name}`, "Pass true or false for enabled.");
-    schedules.push({ name, expression: definition.expression.trim().replace(/\s+/g, " "), fields: expression, timezone, job: definition.job, payload, retry, enabled: definition.enabled ?? true });
+    schedules.push({ name, expression: definition.expression.trim().replace(/\s+/g, " "), fields: expression, effectiveTimezone, job: definition.job, payload, retry, enabled: definition.enabled ?? true });
   }
   return schedules;
 }
@@ -878,7 +878,9 @@ function nextScheduleOccurrence(fields: Set<number>[], after: Date, timezone: st
   const candidate = new Date(after.getTime());
   candidate.setUTCSeconds(0, 0);
   candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
-  for (let count=0; count < 366 * 24 * 60 * 5; count++, candidate.setUTCMinutes(candidate.getUTCMinutes()+1)) {
+  // Eight years covers the longest gap between valid annual Gregorian dates:
+  // leap day immediately before a non-leap century (for example 2096 to 2104).
+  for (let count=0; count < 8 * 366 * 24 * 60; count++, candidate.setUTCMinutes(candidate.getUTCMinutes()+1)) {
     const local = scheduleWallClockParts(formatter, candidate);
     const dom = fields[2].has(local.day); const dow = fields[4].has(local.weekday);
     const domRestricted = (fields as any).restricted?.[2] ?? fields[2].size !== 31; const dowRestricted = (fields as any).restricted?.[4] ?? fields[4].size !== 7;
@@ -895,7 +897,7 @@ function startStaticSchedules(database: LooseRecord) {
     if (!definition.enabled) continue;
     const arm = () => {
       if (database.__scheduleStopped) return;
-      const occurrence = nextScheduleOccurrence(definition.fields, database.clock.now(), definition.timezone);
+      const occurrence = nextScheduleOccurrence(definition.fields, database.clock.now(), definition.effectiveTimezone);
       const timer = database.clock.setTimer(() => {
         database.__scheduleTimers.delete(timer);
         const active = enqueueScheduledOccurrence(database, definition, occurrence).catch((error: any) => {
