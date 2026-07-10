@@ -2,7 +2,7 @@
 
 **What to build:** Ensure repeated evaluation, overlapping runtime starts, and crashes on either side of Job creation converge on one durable Job identity for each scheduled UTC occurrence.
 
-**Blocked by:** 05 — Recover Missed Runs And Reconcile Declarations.
+Blocked by: 05 — Recover Missed Runs And Reconcile Declarations.
 
 Status: ready-for-agent
 

@@ -2,7 +2,7 @@
 
 **What to build:** Let each recurring Schedule use an explicit IANA timezone or the runtime server timezone by default, then calculate matching UTC occurrence instants from the effective local wall-clock fields with deterministic daylight-saving behavior.
 
-**Blocked by:** 02 — Declare And Run A Static Recurring Privileged Job.
+Blocked by: 02 — Declare And Run A Static Recurring Privileged Job.
 
 Status: ready-for-agent
 

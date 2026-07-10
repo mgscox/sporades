@@ -2,7 +2,7 @@
 
 **What to build:** Persist schedule evaluation state across runtime restarts, apply bounded missed-run behavior, and reconcile deployed declaration changes without rewriting history or producing surprise backfills.
 
-**Blocked by:** 03 — Add Dynamic Schedule Payload Factories; 04 — Apply Timezone And Daylight-Saving Semantics.
+Blocked by: 03 — Add Dynamic Schedule Payload Factories; 04 — Apply Timezone And Daylight-Saving Semantics.
 
 Status: ready-for-agent
 

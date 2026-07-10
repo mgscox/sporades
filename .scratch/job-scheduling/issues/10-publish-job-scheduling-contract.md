@@ -2,7 +2,7 @@
 
 **What to build:** Publish one consistent Capsule-author, operator, and maintainer contract for recurring Job scheduling and mark the roadmap feature implemented once every prior slice is complete.
 
-**Blocked by:** 09 — Extend Schedule Inspection To Container And Hosted Capsules.
+Blocked by: 09 — Extend Schedule Inspection To Container And Hosted Capsules.
 
 Status: ready-for-agent
 

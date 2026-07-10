@@ -2,7 +2,7 @@
 
 **What to build:** Let an administrator inspect all bounded schedule state for the active Dev session through the JSON-only `sporades schedules` command backed by a read-only one-shot generated-Bundle action.
 
-**Blocked by:** 07 — Inspect Schedules And Correlate Their Jobs.
+Blocked by: 07 — Inspect Schedules And Correlate Their Jobs.
 
 Status: ready-for-agent
 

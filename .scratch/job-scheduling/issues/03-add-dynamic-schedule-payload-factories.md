@@ -2,7 +2,7 @@
 
 **What to build:** Let a Schedule calculate an ordinary JSON-safe Job payload at occurrence time through a bounded synchronous or asynchronous factory with immutable occurrence metadata, cooperative cancellation, and optional explicit Privileged server role access.
 
-**Blocked by:** 02 — Declare And Run A Static Recurring Privileged Job.
+Blocked by: 02 — Declare And Run A Static Recurring Privileged Job.
 
 Status: ready-for-agent
 
