@@ -2,7 +2,7 @@
 
 **What to build:** Expose the same bounded schedule inspection contract through `sporades deploy schedules` for a bound local Container session and `sporades host schedules --host <alias> --subname <name>` for one Hosted Capsule using the existing Docker and Host-helper transports.
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
