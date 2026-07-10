@@ -770,7 +770,7 @@ function structuredError(error) {
 
 // src/server-runtime-source.ts
 import { createHash as createHash2, createHmac, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 var EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 var EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
@@ -798,6 +798,7 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createLibsqlDatabaseAdapter,
   createPostgresDatabaseAdapter,
   createRuntimeDatabaseAdapter,
+  createRuntimeInspectionAdapter,
   inspectRuntimeJobs,
   jobError,
   boundedJobJson,
@@ -1495,6 +1496,16 @@ async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config
   }
   return await createSqliteDatabaseAdapter(databasePath);
 }
+async function createRuntimeInspectionAdapter(databasePath, serverEnv = {}, config = {}) {
+  if (config.services?.database?.engine === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
+    return await createLibsqlDatabaseAdapter({ url: serverEnv.SPORADES_SERVICE_DATABASE_URL, authToken: serverEnv.SPORADES_SERVICE_DATABASE_AUTH_TOKEN });
+  }
+  if (config.services?.database?.engine === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
+    return await createPostgresDatabaseAdapter({ url: serverEnv.SPORADES_SERVICE_DATABASE_URL });
+  }
+  if (!existsSync(String(databasePath))) return null;
+  return await createSqliteDatabaseAdapter(databasePath, { readOnly: true });
+}
 async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
   const path7 = await import("node:path");
   if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
@@ -1786,7 +1797,7 @@ function s3ObjectNotFoundError() {
 async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const { DatabaseSync } = await import("node:sqlite");
   const path7 = await import("node:path");
-  mkdirSync(path7.dirname(String(databasePath)), { recursive: true });
+  if (!options.readOnly) mkdirSync(path7.dirname(String(databasePath)), { recursive: true });
   const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
   const adapter = {
     engine: "sqlite",
@@ -2126,6 +2137,20 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         throw error;
       }
     },
+    async withReadOnlySnapshot(fn) {
+      this.exec("BEGIN");
+      this.exec("PRAGMA query_only = ON");
+      try {
+        const result = await fn(this);
+        this.exec("COMMIT");
+        return result;
+      } catch (error) {
+        this.exec("ROLLBACK");
+        throw error;
+      } finally {
+        if (!options.readOnly) this.exec("PRAGMA query_only = OFF");
+      }
+    },
     insertAppRow(table, row) {
       const columns = Object.keys(row);
       return this.prepare(
@@ -2459,6 +2484,20 @@ async function createPostgresDatabaseAdapter(options) {
     },
     async withTransaction(fn) {
       await this.exec("BEGIN");
+      try {
+        const result = await fn(this);
+        await this.exec("COMMIT");
+        return result;
+      } catch (error) {
+        try {
+          await this.exec("ROLLBACK");
+        } catch {
+        }
+        throw error;
+      }
+    },
+    async withReadOnlySnapshot(fn) {
+      await this.exec("BEGIN TRANSACTION READ ONLY");
       try {
         const result = await fn(this);
         await this.exec("COMMIT");
@@ -3175,6 +3214,26 @@ async function createLibsqlDatabaseAdapter(options) {
       try {
         await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
         const result = await fn(transactionAdapter);
+        await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
+        return result;
+      } catch (error) {
+        try {
+          await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true });
+        } catch {
+        }
+        throw error;
+      } finally {
+        activeTransactions.delete(transaction);
+      }
+    },
+    async withReadOnlySnapshot(fn) {
+      const transaction = { baton: null, baseUrl: endpoint };
+      const snapshotAdapter = { ...adapter, ...createOperations(transaction) };
+      activeTransactions.add(transaction);
+      try {
+        await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
+        await libsqlExecute({ endpoint, authToken, transaction, sql: "PRAGMA query_only = ON", params: [], close: false });
+        const result = await fn(snapshotAdapter);
         await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
         return result;
       } catch (error) {
@@ -8456,7 +8515,8 @@ async function inspectRuntimeJobs(adapter) {
       failure: decode(row, "failure", row.failure, null)
     }));
   };
-  return adapter.withTransaction ? await adapter.withTransaction(read) : await read(adapter);
+  if (!adapter?.withReadOnlySnapshot) throw jobError("JOB_INSPECTION_READ_ONLY_UNAVAILABLE", "Database adapter does not support read-only Job inspection.", "Upgrade the Sporades runtime and retry inspection.");
+  return await adapter.withReadOnlySnapshot(read);
 }
 function normalizeJobRetry(value) {
   if (value === void 0) return { maxAttempts: 1, delayMs: 0 };
@@ -8964,7 +9024,7 @@ function createServerBundleSource({
   const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
   return `// Sporades server bundle
 import { createDecipheriv, createHash, createHash as createHash2, createHmac, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync, readFileSync as readFileSync2 } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readFileSync as readFileSync2 } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
@@ -8993,14 +9053,14 @@ if (sporadesAction) {
     process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Unsupported Sporades runtime action.", hint: "Upgrade the Sporades CLI and generated Bundle together." } }) + "\\n");
     process.exit(1);
   }
-  const adapter = await createRuntimeDatabaseAdapter(databasePath, runtimeServiceEnv, runtimeConfig);
+  const adapter = await createRuntimeInspectionAdapter(databasePath, runtimeServiceEnv, runtimeConfig);
   try {
-    const jobs = await inspectRuntimeJobs(adapter);
+    const jobs = adapter ? await inspectRuntimeJobs(adapter) : [];
     process.stdout.write(JSON.stringify({ ok: true, data: { capsule: { name: sporadesConfig.name }, jobs }, error: null }) + "\\n");
   } catch (error) {
     process.stdout.write(JSON.stringify({ ok: false, data: null, error: { code: error.code ?? "JOB_INSPECTION_FAILED", message: error.message, hint: error.hint, ...(error.jobId ? { jobId: error.jobId, field: error.field } : {}) } }) + "\\n");
     process.exitCode = 1;
-  } finally { await adapter.close(); }
+  } finally { await adapter?.close(); }
   process.exit();
 }
 const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {

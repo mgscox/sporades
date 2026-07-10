@@ -2,7 +2,7 @@ import type { IncomingMessage, ServerResponse, IncomingHttpHeaders, OutgoingHttp
 import { WithImplicitCoercion } from "buffer";
 import { BinaryLike, KeyObject } from "node:crypto";
 import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
-import { PathLike, PathOrFileDescriptor, appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { PathLike, PathOrFileDescriptor, appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { SQLOutputValue, StatementResultingChanges, StatementColumnMetadata } from "node:sqlite";
 import { Duplex } from "stream";
 
@@ -70,6 +70,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   createLibsqlDatabaseAdapter,
   createPostgresDatabaseAdapter,
   createRuntimeDatabaseAdapter,
+  createRuntimeInspectionAdapter,
   inspectRuntimeJobs,
   jobError,
   boundedJobJson,
@@ -808,6 +809,17 @@ async function createRuntimeDatabaseAdapter(databasePath: any, serverEnv: Runtim
   return await createSqliteDatabaseAdapter(databasePath);
 }
 
+export async function createRuntimeInspectionAdapter(databasePath: any, serverEnv: RuntimeEnv = {}, config: RuntimeConfig = {}) {
+  if (config.services?.database?.engine === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
+    return await createLibsqlDatabaseAdapter({ url: serverEnv.SPORADES_SERVICE_DATABASE_URL, authToken: serverEnv.SPORADES_SERVICE_DATABASE_AUTH_TOKEN });
+  }
+  if (config.services?.database?.engine === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "postgres" && serverEnv.SPORADES_SERVICE_DATABASE_URL) {
+    return await createPostgresDatabaseAdapter({ url: serverEnv.SPORADES_SERVICE_DATABASE_URL });
+  }
+  if (!existsSync(String(databasePath))) return null;
+  return await createSqliteDatabaseAdapter(databasePath, { readOnly: true });
+}
+
 export async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }: { config?: RuntimeConfig; databasePath: string; serviceEnv?: RuntimeEnv }) {
   const path = await import("node:path");
   if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
@@ -1144,7 +1156,7 @@ function s3ObjectNotFoundError() {
 export async function createSqliteDatabaseAdapter(databasePath: PathLike, options: LooseRecord = {}) {
   const { DatabaseSync } = await import("node:sqlite");
   const path = await import("node:path");
-  mkdirSync(path.dirname(String(databasePath)), { recursive: true });
+  if (!options.readOnly) mkdirSync(path.dirname(String(databasePath)), { recursive: true });
   const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
 
   const adapter = {
@@ -1509,6 +1521,12 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
         this.exec("ROLLBACK");
         throw error;
       }
+    },
+    async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
+      this.exec("BEGIN"); this.exec("PRAGMA query_only = ON");
+      try { const result = await fn(this); this.exec("COMMIT"); return result; }
+      catch (error) { this.exec("ROLLBACK"); throw error; }
+      finally { if (!options.readOnly) this.exec("PRAGMA query_only = OFF"); }
     },
     insertAppRow(table: { name: any; }, row: { [x: string]: any; }) {
       const columns = Object.keys(row);
@@ -1960,6 +1978,11 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         } catch { }
         throw error;
       }
+    },
+    async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
+      await this.exec("BEGIN TRANSACTION READ ONLY");
+      try { const result = await fn(this); await this.exec("COMMIT"); return result; }
+      catch (error) { try { await this.exec("ROLLBACK"); } catch {} throw error; }
     },
     async close() {
       closed = true;
@@ -2803,6 +2826,19 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
       } finally {
         activeTransactions.delete(transaction);
       }
+    },
+    async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
+      const transaction = { baton: null as any, baseUrl: endpoint };
+      const snapshotAdapter = { ...adapter, ...createOperations(transaction) };
+      activeTransactions.add(transaction);
+      try {
+        await libsqlExecute({ endpoint, authToken, transaction, sql: "BEGIN", params: [], close: false });
+        await libsqlExecute({ endpoint, authToken, transaction, sql: "PRAGMA query_only = ON", params: [], close: false });
+        const result = await fn(snapshotAdapter);
+        await libsqlExecute({ endpoint, authToken, transaction, sql: "COMMIT", params: [], close: true });
+        return result;
+      } catch (error) { try { await libsqlExecute({ endpoint, authToken, transaction, sql: "ROLLBACK", params: [], close: true }); } catch {} throw error; }
+      finally { activeTransactions.delete(transaction); }
     },
     async close() {
       closed = true;
@@ -8729,7 +8765,8 @@ export async function inspectRuntimeJobs(adapter: LooseRecord) {
       result: (decode(row, "result", row.result, null), null), failure: decode(row, "failure", row.failure, null),
     }));
   };
-  return adapter.withTransaction ? await adapter.withTransaction(read) : await read(adapter);
+  if (!adapter?.withReadOnlySnapshot) throw jobError("JOB_INSPECTION_READ_ONLY_UNAVAILABLE", "Database adapter does not support read-only Job inspection.", "Upgrade the Sporades runtime and retry inspection.");
+  return await adapter.withReadOnlySnapshot(read);
 }
 
 function normalizeJobRetry(value: any) { if (value === undefined) return { maxAttempts: 1, delayMs: 0 }; if (!value || !Number.isInteger(value.maxAttempts) || value.maxAttempts < 1 || value.maxAttempts > 20 || !Number.isInteger(value.delayMs ?? 0) || (value.delayMs ?? 0) < 0) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job retry policy.", "Pass retry.maxAttempts (1-20) and non-negative retry.delayMs."); return { maxAttempts: value.maxAttempts, delayMs: value.delayMs ?? 0 }; }

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -25,6 +25,7 @@ test("operator Job inspection returns one deterministic bounded snapshot", async
     assert.equal("idempotencyKey" in jobs[1], false);
     assert.equal(jobs[1].idempotencyKeyPresent, true);
     assert.equal(jobs[1].result, null, "operator inspection must not disclose arbitrary Capsule result JSON");
+    await assert.rejects(() => adapter.withReadOnlySnapshot((snapshot) => snapshot.prepare("DELETE FROM sporades_jobs").run()), /readonly|read-only/i);
   } finally {
     await adapter.close();
     await rm(dir, { recursive: true, force: true });
@@ -36,7 +37,7 @@ test("operator Job inspection reads through the configured libSQL adapter", asyn
   try {
     await withFakeLibsqlService(path.join(dir, "remote.db"), async ({ url }) => {
       const adapter = await createLibsqlDatabaseAdapter({ url });
-      try { assert.deepEqual(await inspectRuntimeJobs(adapter), []); }
+      try { assert.deepEqual(await inspectRuntimeJobs(adapter), []); await assert.rejects(() => adapter.withReadOnlySnapshot((snapshot) => snapshot.exec("CREATE TABLE forbidden (id TEXT)")), /readonly|read-only/i); }
       finally { await adapter.close(); }
     });
   } finally { await rm(dir, { recursive: true, force: true }); }
@@ -54,7 +55,6 @@ test("operator Job inspection reads sporades_jobs through Postgres", { skip: !pr
 
 test("one-shot Bundle action does not evaluate Capsule code", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-action-"));
-  await mkdir(path.join(dir, "data"));
   const marker = path.join(dir, "capsule-evaluated");
   const bundle = createServerBundleSource({
     config: { name: "team-notes" }, serverEnv: {}, serverSource: "",
@@ -65,6 +65,8 @@ test("one-shot Bundle action does not evaluate Capsule code", async () => {
   assert.equal(result.status, 0, result.stderr);
   assert.deepEqual(JSON.parse(result.stdout), { ok: true, data: { capsule: { name: "team-notes" }, jobs: [] }, error: null });
   await assert.rejects(readFile(marker, "utf8"), { code: "ENOENT" });
+  await assert.rejects(stat(path.join(dir, "data")), { code: "ENOENT" });
+  await assert.rejects(stat(path.join(dir, "data", "data.db")), { code: "ENOENT" });
   await rm(dir, { recursive: true, force: true });
 });
 
