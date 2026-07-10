@@ -65,6 +65,7 @@ import {
   createHostUnregisterRequest,
 } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
+import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
 import {
   DOCTOR_SESSIONS,
   createDoctorEnvelope,
@@ -1526,7 +1527,14 @@ async function inspectContainerSchedules(options: LooseRecord) {
     "Unable to inspect the local Container session.", "Check Docker and retry `sporades deploy schedules`.");
   if (running !== "true") throw commandError("The local Container session is not running.", "Run `sporades deploy restart`, then retry `sporades deploy schedules`.");
   const result = spawnSync("docker", ["exec", binding.containerId, "node", "/app/server.mjs", "--sporades-action", "schedules.inspect"], { cwd: options.projectDir, encoding: "utf8" });
-  parseInspectionProcess(result, "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy schedules`.");
+  let envelope;
+  try { envelope = JSON.parse(result.stdout.trim()); }
+  catch { throw commandError("Runtime inspection returned invalid JSON.", "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy schedules`."); }
+  const bounded = sanitizeScheduleInspectionEnvelope(envelope, () => {
+    throw commandError("Runtime Schedule inspection returned an invalid response.", "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy schedules`.");
+  });
+  if (!bounded.ok) throw commandError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
+  writeResult(bounded);
 }
 
 async function startDevSession(options: LooseRecord) {

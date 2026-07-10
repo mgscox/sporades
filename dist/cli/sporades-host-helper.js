@@ -10,6 +10,7 @@ import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-po
 import { createLogEnvelope, createPrivilegedAuditLogInput, } from "../server-runtime-source.js";
 import { delay, errorDetails, helperError, readStdin, writeEnvelope, } from "./cli-support.js";
 import { CLI_VERSION } from "./cli-version.js";
+import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
 import { removeDiscardedArchiveMetadata, validateReleaseArchive } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig } from "./host-helper-config.js";
 import { hostRegistryRetryCommand, missingCapsuleHint, validateBootstrapRequest, validateDeleteRequest, validateHealthRequest, validateHostLogsRequest, validateHostStatsRequest, validateInstallRequest, validateLifecycleRequest, validateListRegistryRecord, validateListRequest, validateRegisterRequest, validateReleaseListRequest, validateScheduleInspectionRequest, validateRollbackRequest, validateSealedEnvRotationRequest, validateStatsRequest, validateUnregisterRequest, } from "./host-helper-validation.js";
@@ -119,7 +120,9 @@ function inspectCapsuleJobs(request) {
 }
 function inspectCapsuleSchedules(request) {
     validateScheduleInspectionRequest(request);
-    inspectCapsuleRuntime(request, "schedules.inspect", "Schedule", sanitizeScheduleInspectionEnvelope);
+    inspectCapsuleRuntime(request, "schedules.inspect", "Schedule", (envelope) => sanitizeScheduleInspectionEnvelope(envelope, () => {
+        throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
+    }));
 }
 function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => envelope) {
     const containerName = createHostedContainerName(request.host.domain, request.capsule.subname);
@@ -138,41 +141,6 @@ function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => 
     if (!bounded.ok)
         throw helperError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
     writeEnvelope(bounded);
-}
-function sanitizeScheduleInspectionEnvelope(envelope) {
-    if (envelope?.ok === false) {
-        const source = envelope.error;
-        const diagnostics = source?.code === "SCHEDULE_INSPECTION_INVALID_STATE" && typeof source.scheduleName === "string" && typeof source.field === "string"
-            ? { code: source.code, scheduleName: source.scheduleName, field: source.field }
-            : undefined;
-        return { ok: false, data: null, error: {
-                message: diagnostics ? "Persisted Schedule state is malformed." : "Hosted Schedule inspection failed.",
-                hint: diagnostics ? "Repair or remove the malformed Schedule before retrying inspection." : "Inspect the Hosted Capsule and retry the command.",
-                ...(diagnostics ? { diagnostics } : {}),
-            } };
-    }
-    if (envelope?.ok !== true || typeof envelope.data?.capsule?.name !== "string" || !Array.isArray(envelope.data?.schedules)) {
-        throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
-    }
-    const schedules = envelope.data.schedules.map((value) => {
-        if (!value || typeof value.name !== "string" || typeof value.expression !== "string" || typeof value.timezone !== "string" || !["skip", "latest"].includes(value.missedRun) || typeof value.enabled !== "boolean" || (value.nextOccurrence !== null && typeof value.nextOccurrence !== "string")) {
-            throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
-        }
-        let latestOccurrence = null;
-        if (value.latestOccurrence !== null) {
-            const latest = value.latestOccurrence;
-            if (!latest || typeof latest.scheduledFor !== "string" || !["enqueued", "payload-failed"].includes(latest.outcome))
-                throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
-            if (latest.outcome === "enqueued" && typeof latest.jobId === "string")
-                latestOccurrence = { scheduledFor: latest.scheduledFor, outcome: latest.outcome, jobId: latest.jobId };
-            else if (latest.outcome === "payload-failed" && ["SCHEDULE_PAYLOAD_FAILED", "SCHEDULE_ENQUEUE_FAILED"].includes(latest.errorCode))
-                latestOccurrence = { scheduledFor: latest.scheduledFor, outcome: latest.outcome, errorCode: latest.errorCode };
-            else
-                throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
-        }
-        return { name: value.name, expression: value.expression, timezone: value.timezone, missedRun: value.missedRun, enabled: value.enabled, nextOccurrence: value.nextOccurrence, latestOccurrence };
-    });
-    return { ok: true, data: { capsule: { name: envelope.data.capsule.name }, schedules }, error: null };
 }
 function versionHost(request) {
     writeEnvelope({

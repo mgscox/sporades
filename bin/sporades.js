@@ -12219,6 +12219,33 @@ function renderCliHelp(command) {
   return HELP_TEXT[command] ?? HELP_TEXT.default;
 }
 
+// src/cli/schedule-inspection-envelope.ts
+function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
+  if (envelope?.ok === false) {
+    const source = envelope.error;
+    const diagnostics = source?.code === "SCHEDULE_INSPECTION_INVALID_STATE" && typeof source.scheduleName === "string" && typeof source.field === "string" ? { code: source.code, scheduleName: source.scheduleName, field: source.field } : void 0;
+    return { ok: false, data: null, error: {
+      message: diagnostics ? "Persisted Schedule state is malformed." : "Schedule inspection failed.",
+      hint: diagnostics ? "Repair or remove the malformed Schedule before retrying inspection." : "Inspect the Capsule and retry the command.",
+      ...diagnostics ? { diagnostics } : {}
+    } };
+  }
+  if (envelope?.ok !== true || typeof envelope.data?.capsule?.name !== "string" || !Array.isArray(envelope.data?.schedules)) invalid();
+  const schedules = envelope.data.schedules.map((value) => {
+    if (!value || typeof value.name !== "string" || typeof value.expression !== "string" || typeof value.timezone !== "string" || !["skip", "latest"].includes(value.missedRun) || typeof value.enabled !== "boolean" || value.nextOccurrence !== null && typeof value.nextOccurrence !== "string") invalid();
+    let latestOccurrence = null;
+    if (value.latestOccurrence !== null) {
+      const latest = value.latestOccurrence;
+      if (!latest || typeof latest.scheduledFor !== "string" || !["enqueued", "payload-failed"].includes(latest.outcome)) invalid();
+      if (latest.outcome === "enqueued" && typeof latest.jobId === "string") latestOccurrence = { scheduledFor: latest.scheduledFor, outcome: latest.outcome, jobId: latest.jobId };
+      else if (latest.outcome === "payload-failed" && ["SCHEDULE_PAYLOAD_FAILED", "SCHEDULE_ENQUEUE_FAILED"].includes(latest.errorCode)) latestOccurrence = { scheduledFor: latest.scheduledFor, outcome: latest.outcome, errorCode: latest.errorCode };
+      else invalid();
+    }
+    return { name: value.name, expression: value.expression, timezone: value.timezone, missedRun: value.missedRun, enabled: value.enabled, nextOccurrence: value.nextOccurrence, latestOccurrence };
+  });
+  return { ok: true, data: { capsule: { name: envelope.data.capsule.name }, schedules }, error: null };
+}
+
 // src/cli/doctor.ts
 import { spawn, spawnSync } from "node:child_process";
 import { lstat, readFile as readFile5 } from "node:fs/promises";
@@ -15281,7 +15308,17 @@ async function inspectContainerSchedules(options) {
   );
   if (running !== "true") throw commandError4("The local Container session is not running.", "Run `sporades deploy restart`, then retry `sporades deploy schedules`.");
   const result = spawnSync2("docker", ["exec", binding.containerId, "node", "/app/server.mjs", "--sporades-action", "schedules.inspect"], { cwd: options.projectDir, encoding: "utf8" });
-  parseInspectionProcess(result, "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy schedules`.");
+  let envelope;
+  try {
+    envelope = JSON.parse(result.stdout.trim());
+  } catch {
+    throw commandError4("Runtime inspection returned invalid JSON.", "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy schedules`.");
+  }
+  const bounded = sanitizeScheduleInspectionEnvelope(envelope, () => {
+    throw commandError4("Runtime Schedule inspection returned an invalid response.", "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy schedules`.");
+  });
+  if (!bounded.ok) throw commandError4(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
+  writeResult(bounded);
 }
 async function startDevSession(options) {
   let config = await readProjectConfig(options.projectDir);

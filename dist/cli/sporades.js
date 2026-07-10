@@ -15,6 +15,7 @@ import { scaffoldFiles } from "../templates/scaffold-template.js";
 import { CAPSULE_SERVICES_COMPOSE_FILE, CAPSULE_SERVICES_STATE_DIR, capsuleServicesComposeModel, validateCapsuleServicesConfig, writeCapsuleServicesCompose, } from "../capsule-services.js";
 import { createHostBootstrapRequest, createHostDeleteRequest, createHostLifecycleRequest, createHostRegistrationRequest, createHostReleaseRequest, createHostRuntimeHealthRequest, createHostStatsRequest, createHostUnregisterRequest, } from "./host-request-builders.js";
 import { renderCliHelp } from "./cli-help.js";
+import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
 import { DOCTOR_SESSIONS, createDoctorEnvelope, doctorShouldExitNonZero, renderDoctorHumanOutput, runDoctorChecks, } from "./doctor.js";
 import { createGithubAutodeployWorkflow } from "./github-autodeploy-workflow.js";
 import { SECURITY_SESSIONS, authorizedKeyFingerprint, readBaseImageUpdatePolicy, readOptionalProjectSecurity, readProjectConfig, resolveAuthorizedKeyLines, resolveEffectiveSecurityPolicy, resolveLocalContainerSshAccess, withRuntimeSecuritySession, } from "./project-config.js";
@@ -1216,7 +1217,19 @@ async function inspectContainerSchedules(options) {
     if (running !== "true")
         throw commandError("The local Container session is not running.", "Run `sporades deploy restart`, then retry `sporades deploy schedules`.");
     const result = spawnSync("docker", ["exec", binding.containerId, "node", "/app/server.mjs", "--sporades-action", "schedules.inspect"], { cwd: options.projectDir, encoding: "utf8" });
-    parseInspectionProcess(result, "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy schedules`.");
+    let envelope;
+    try {
+        envelope = JSON.parse(result.stdout.trim());
+    }
+    catch {
+        throw commandError("Runtime inspection returned invalid JSON.", "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy schedules`.");
+    }
+    const bounded = sanitizeScheduleInspectionEnvelope(envelope, () => {
+        throw commandError("Runtime Schedule inspection returned an invalid response.", "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy schedules`.");
+    });
+    if (!bounded.ok)
+        throw commandError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
+    writeResult(bounded);
 }
 async function startDevSession(options) {
     let config = await readProjectConfig(options.projectDir);

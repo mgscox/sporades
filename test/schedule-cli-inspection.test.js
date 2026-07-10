@@ -89,9 +89,11 @@ test("sporades deploy schedules invokes the shared one-shot action through Docke
     const bin = path.join(dir, "bin"); await mkdir(path.join(dir, ".sporades"), { recursive: true }); await mkdir(bin);
     await writeFile(path.join(dir, ".sporades", "binding.json"), JSON.stringify({ containerId: "capsule-1" }));
     const docker = path.join(bin, "docker");
-    await writeFile(docker, `#!/bin/sh\nif [ "$1" = inspect ]; then echo true; exit 0; fi\nif [ "$1" = exec ] && [ "$4" = /app/server.mjs ] && [ "$5" = --sporades-action ] && [ "$6" = schedules.inspect ]; then echo '${JSON.stringify(remoteEnvelope)}'; exit 0; fi\nexit 9\n`); await chmod(docker, 0o755);
+    const hostileSuccess = { ...remoteEnvelope, data: { ...remoteEnvelope.data, payload: "raw-secret", schedules: remoteEnvelope.data.schedules.map((schedule) => ({ ...schedule, definitionFingerprint: "raw-secret", credentials: "raw-secret" })) }, privateKey: "raw-secret" };
+    await writeFile(docker, `#!/bin/sh\nif [ "$1" = inspect ]; then echo true; exit 0; fi\nif [ "$1" = exec ] && [ "$4" = /app/server.mjs ] && [ "$5" = --sporades-action ] && [ "$6" = schedules.inspect ]; then echo '${JSON.stringify(hostileSuccess)}'; exit 0; fi\nexit 9\n`); await chmod(docker, 0o755);
     const result = runCommand(["deploy", "schedules"], dir, { PATH: `${bin}${path.delimiter}${process.env.PATH}` });
     assert.equal(result.status, 0, result.stderr); assert.deepEqual(JSON.parse(result.stdout), remoteEnvelope);
+    assert.doesNotMatch(result.stdout, /payload|definitionFingerprint|credentials|privateKey|raw-secret/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -128,7 +130,7 @@ test("remote Schedule inspection preserves unavailable targets and bounded malfo
     await writeFile(path.join(dir, ".sporades", "binding.json"), JSON.stringify({ containerId: "stopped" }));
     const docker = path.join(bin, "docker"); await writeFile(docker, "#!/bin/sh\nif [ \"$1\" = inspect ]; then echo false; exit 0; fi\n"); await chmod(docker, 0o755);
     const stopped = runCommand(["deploy", "schedules"], dir, { PATH: `${bin}${path.delimiter}${process.env.PATH}` }); assert.equal(stopped.status, 1); assert.match(JSON.parse(stopped.stdout).error.hint, /deploy restart/);
-    const malformed = { ok: false, data: null, error: { code: "SCHEDULE_INSPECTION_INVALID_STATE", message: "Persisted Schedule state is malformed.", hint: "Repair Schedule state.", scheduleName: "broken", field: "nextOccurrence" } };
+    const malformed = { ok: false, data: null, error: { code: "SCHEDULE_INSPECTION_INVALID_STATE", message: "raw-secret message", hint: "credential=raw-secret", scheduleName: "broken", field: "nextOccurrence", payload: { token: "raw-secret" }, definitionFingerprint: "raw-secret", credentials: "raw-secret" } };
     await writeFile(docker, `#!/bin/sh\nif [ "$1" = inspect ]; then echo true; exit 0; fi\nif [ "$1" = exec ]; then echo '${JSON.stringify(malformed)}'; exit 0; fi\n`); await chmod(docker, 0o755);
     const corrupt = runCommand(["deploy", "schedules"], dir, { PATH: `${bin}${path.delimiter}${process.env.PATH}` }); assert.equal(corrupt.status, 1); const body = JSON.parse(corrupt.stdout);
     assert.deepEqual({ code: body.error.diagnostics.code, scheduleName: body.error.diagnostics.scheduleName, field: body.error.diagnostics.field }, { code: "SCHEDULE_INSPECTION_INVALID_STATE", scheduleName: "broken", field: "nextOccurrence" });
