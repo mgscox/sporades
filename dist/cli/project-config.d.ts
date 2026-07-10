@@ -1,6 +1,7 @@
 import { type LooseRecord } from "./cli-support.js";
 export declare const SECURITY_SESSIONS: Set<string>;
 export declare function readProjectConfig(projectDir: string): Promise<any>;
+export declare function validateSchedulingConfig(scheduling: LooseRecord): void;
 export declare function readOptionalProjectSecurity(projectDir: string, session: string): Promise<{
     cors: {
         sameOrigin: boolean;

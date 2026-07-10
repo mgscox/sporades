@@ -34,10 +34,19 @@ export type JobDefinition<HandlerType extends Handler = Handler> = {
 export type ScheduleDefinition = {
   expression: string;
   job: string;
-  payload?: unknown;
+  payload?: unknown | SchedulePayloadFactory;
   retry?: { maxAttempts: number; delayMs?: number };
   enabled?: boolean;
 };
+
+export type ScheduleOccurrence = Readonly<{ scheduleName: string; scheduledFor: string }>;
+/**
+ * Calculates ordinary Job input for one occurrence. Factories are for dynamic
+ * data population, may run more than once during recovery, and should avoid
+ * state mutation. Explicit Privileged side effects must tolerate repetition.
+ * Timeout cancellation is cooperative and cannot undo completed side effects.
+ */
+export type SchedulePayloadFactory = (occurrence: ScheduleOccurrence, ctx: Readonly<{ signal: AbortSignal; privileged: unknown }>) => unknown | Promise<unknown>;
 
 export type FieldDefinition<Value = unknown> = {
   kind: FieldKind;

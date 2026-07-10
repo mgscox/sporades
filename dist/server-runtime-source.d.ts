@@ -30,6 +30,7 @@ export declare function prepareHttpSecurity(database: {
 }): boolean;
 export declare function injectPageConnectionToken(html: string, token: string): string;
 export declare function openDevDatabase(databasePath: string, serverSource: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig, capsuleDefinition?: any, options?: LooseRecord): Promise<LooseRecord>;
+export declare function enqueueScheduledOccurrence(database: LooseRecord, definition: any, occurrence: Date): Promise<any>;
 /** Internal full-runtime test support; not exported from sporades/server or sporades/client. */
 export declare function createControllableRuntimeClock(initialInstant: string | number | Date): {
     now: () => Date;

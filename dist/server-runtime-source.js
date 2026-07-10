@@ -29,10 +29,13 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     createPostgresDatabaseAdapter,
     createRuntimeDatabaseAdapter,
     createRuntimeClock,
+    resolveSchedulePayloadFactoryTimeoutMs,
     scheduleDefinitionsFromCapsule,
     parseScheduleExpression,
     nextScheduleOccurrence,
     startStaticSchedules,
+    acquireSchedulePayloadFactorySlot,
+    resolveSchedulePayload,
     enqueueScheduledOccurrence,
     createRuntimeInspectionAdapter,
     inspectRuntimeJobs,
@@ -618,6 +621,7 @@ function sanitizeResponseHeaders(headers) {
 }
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
     const path = await import("node:path");
+    const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
     // Handler sources extracted from Capsule server code are re-created with
     // `new Function`, which only sees globals. Install the sporades/server
     // requireAuth helper there so those handlers resolve the same auth gate.
@@ -654,6 +658,9 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         jobs,
         schedules,
         clock,
+        schedulePayloadFactoryTimeoutMs,
+        schedulePayloadFactoryActive: 0,
+        schedulePayloadFactoryWaiters: [],
         contextMiddleware,
         mutationHooks,
         lifecycleHooks,
@@ -735,13 +742,27 @@ function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
             throw commandError(`Unknown Job handler for Schedule: ${name}`, "Reference a Job declared in the Capsule jobs map.");
         const expression = parseScheduleExpression(definition.expression);
         const payload = definition.payload === undefined ? null : definition.payload;
-        boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
+        if (typeof payload !== "function")
+            boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
         const retry = normalizeJobRetry(definition.retry);
         if (definition.enabled !== undefined && typeof definition.enabled !== "boolean")
             throw commandError(`Invalid enabled value for Schedule: ${name}`, "Pass true or false for enabled.");
         schedules.push({ name, expression: definition.expression.trim().replace(/\s+/g, " "), fields: expression, job: definition.job, payload, retry, enabled: definition.enabled ?? true });
     }
     return schedules;
+}
+function resolveSchedulePayloadFactoryTimeoutMs(config = {}) {
+    const scheduling = config.scheduling;
+    if (scheduling === undefined)
+        return 30_000;
+    if (!scheduling || typeof scheduling !== "object" || Array.isArray(scheduling) || Object.keys(scheduling).some((key) => key !== "payloadFactoryTimeoutSeconds")) {
+        throw commandError("Invalid scheduling configuration.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
+    }
+    const seconds = scheduling.payloadFactoryTimeoutSeconds ?? 30;
+    if (!Number.isInteger(seconds) || seconds < 1 || seconds > 300) {
+        throw commandError("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
+    }
+    return seconds * 1000;
 }
 function parseScheduleExpression(value) {
     if (typeof value !== "string")
@@ -815,13 +836,63 @@ function startStaticSchedules(database) {
         arm();
     }
 }
-async function enqueueScheduledOccurrence(database, definition, occurrence) {
+export async function enqueueScheduledOccurrence(database, definition, occurrence) {
     const scheduledFor = occurrence.toISOString();
     const provenance = `schedule:${definition.name}:${scheduledFor}`;
     const context = createMutationContext(database, { userId: provenance, displayName: "Schedule", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "schedule" });
+    const payload = await resolveSchedulePayload(database, definition, scheduledFor, context);
+    if (!payload.ok)
+        return null;
     database.jobScheduleProvenanceByContext.set(context, { scheduleName: definition.name, scheduledFor });
-    const state = await context.privileged.run({ operation: "schedules.enqueue", targetResourceKind: "job-queue", metadata: { scheduleName: definition.name, scheduledFor } }, (privilegedContext) => privilegedContext.jobs.enqueue(definition.job, definition.payload, { retry: definition.retry, idempotencyKey: provenance }));
+    const state = await context.privileged.run({ operation: "schedules.enqueue", targetResourceKind: "job-queue", metadata: { scheduleName: definition.name, scheduledFor } }, (privilegedContext) => privilegedContext.jobs.enqueue(definition.job, payload.value, { retry: definition.retry, idempotencyKey: provenance }));
     return state;
+}
+async function acquireSchedulePayloadFactorySlot(database) {
+    if (database.schedulePayloadFactoryActive >= 4)
+        await new Promise((resolve) => database.schedulePayloadFactoryWaiters.push(resolve));
+    database.schedulePayloadFactoryActive += 1;
+    let released = false;
+    return () => {
+        if (released)
+            return;
+        released = true;
+        database.schedulePayloadFactoryActive -= 1;
+        database.schedulePayloadFactoryWaiters.shift()?.();
+    };
+}
+async function resolveSchedulePayload(database, definition, scheduledFor, context) {
+    if (typeof definition.payload !== "function")
+        return { ok: true, value: definition.payload };
+    const release = await acquireSchedulePayloadFactorySlot(database);
+    const controller = new AbortController();
+    const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
+    const factoryContext = Object.freeze({ signal: controller.signal, privileged: context.privileged });
+    let timeout;
+    try {
+        const timeoutFailure = new Promise((_resolve, reject) => {
+            timeout = database.clock.setTimer(() => {
+                controller.abort();
+                const error = new Error("Schedule payload factory timed out.");
+                error.code = "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT";
+                reject(error);
+            }, database.schedulePayloadFactoryTimeoutMs);
+        });
+        const value = await Promise.race([Promise.resolve().then(() => definition.payload(occurrence, factoryContext)), timeoutFailure]);
+        database.clock.clearTimer(timeout);
+        boundedJobJson(value, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
+        return { ok: true, value };
+    }
+    catch (error) {
+        database.clock.clearTimer(timeout);
+        const code = error?.code === "SCHEDULE_PAYLOAD_FACTORY_TIMEOUT" ? error.code
+            : error?.code === "INVALID_JOB_PAYLOAD" || error?.code === "JOB_PAYLOAD_TOO_LARGE" ? `SCHEDULE_PAYLOAD_${error.code}`
+                : "SCHEDULE_PAYLOAD_FACTORY_FAILED";
+        await database.log.emit({ category: "platform", event: "schedule.occurrence.payload_failed", level: "error", message: "Scheduled occurrence payload creation failed", data: { scheduleName: definition.name, scheduledFor, code } });
+        return { ok: false };
+    }
+    finally {
+        release();
+    }
 }
 async function recoverExpiredJobLeases(database) {
     const recoveredAt = database.clock.now();

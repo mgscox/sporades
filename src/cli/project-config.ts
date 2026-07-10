@@ -34,6 +34,7 @@ const SUPPORTED_PROJECT_KEYS = new Set([
   "name",
   "release",
   "security",
+  "scheduling",
   "services",
   "ssh",
   "template",
@@ -53,8 +54,20 @@ export async function readProjectConfig(projectDir: string) {
     throw commandError("Invalid project configuration: sporades.json", "Fix the JSON syntax in sporades.json.");
   }
   validateSecurityConfig(config.security);
+  validateSchedulingConfig(config.scheduling);
   validateCapsuleServicesConfig(config.services);
   return config;
+}
+
+export function validateSchedulingConfig(scheduling: LooseRecord) {
+  if (scheduling === undefined) return;
+  if (!scheduling || typeof scheduling !== "object" || Array.isArray(scheduling) || Object.keys(scheduling).some((key) => key !== "payloadFactoryTimeoutSeconds")) {
+    throw commandError("Invalid scheduling configuration.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
+  }
+  const seconds = scheduling.payloadFactoryTimeoutSeconds;
+  if (seconds !== undefined && (!Number.isInteger(seconds) || seconds < 1 || seconds > 300)) {
+    throw commandError("Invalid Schedule payload factory timeout.", "Set `scheduling.payloadFactoryTimeoutSeconds` to an integer from 1 through 300.");
+  }
 }
 
 export async function readOptionalProjectSecurity(projectDir: string, session: string) {

@@ -500,11 +500,20 @@ export type JobApi = {
   list(options?: { limit?: number; cursor?: string }): Promise<{ jobs: JobSummary[]; nextCursor: string | null }>;
 };
 export type JobDefinition<Handler = (ctx: CapsuleContext, payload: JsonValue) => MaybePromise<JsonValue>> = { kind: "job"; handler: Handler };
+export type ScheduleOccurrence = Readonly<{ scheduleName: string; scheduledFor: string }>;
+export type ScheduleContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ signal: AbortSignal; privileged: PrivilegedApi<Schema> }>;
+/**
+ * Calculates ordinary Job input for one occurrence. Factories are for dynamic
+ * data population, may run more than once during recovery, and should avoid
+ * state mutation. Explicit Privileged side effects must tolerate repetition.
+ * Timeout cancellation is cooperative and cannot undo completed side effects.
+ */
+export type SchedulePayloadFactory<Schema extends SchemaDefinition = SchemaDefinition> = (occurrence: ScheduleOccurrence, ctx: ScheduleContext<Schema>) => MaybePromise<JsonValue>;
 export type ScheduleDefinition = {
   kind?: "schedule";
   expression: string;
   job: string;
-  payload?: JsonValue;
+  payload?: JsonValue | SchedulePayloadFactory;
   retry?: { maxAttempts: number; delayMs?: number };
   enabled?: boolean;
 };

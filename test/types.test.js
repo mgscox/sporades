@@ -67,7 +67,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     );
     await writeFile(
       path.join(dir, "app.ts"),
-      `import { Boolean, Date, Json, Number, Reference, String, capsule, endpoint, job, message, mutation, query, requireAuth, table } from "sporades/server";
+      `import { Boolean, Date, Json, Number, Reference, String, capsule, endpoint, job, message, mutation, query, requireAuth, schedule, table } from "sporades/server";
 import { auth, createHooks, files, isAuthenticated, onMessage, preferences, sendMessage } from "sporades/client";
 
 const app = capsule({
@@ -78,6 +78,18 @@ const app = capsule({
       const queued = await ctx.jobs.enqueue("summarise", { text }, { idempotencyKey: text });
       const visible = await ctx.jobs.get(queued.id);
       return { id: visible?.id ?? queued.id };
+    }),
+  },
+  schedules: {
+    dynamicSummary: schedule({
+      expression: "* * * * *",
+      job: "summarise",
+      payload: async (occurrence, ctx) => {
+        occurrence.scheduleName.toUpperCase();
+        occurrence.scheduledFor.toUpperCase();
+        ctx.signal.throwIfAborted();
+        return ctx.privileged.run({ operation: "schedules.payload.read", targetResourceKind: "capsule-db" }, () => ({ text: occurrence.scheduledFor }));
+      },
     }),
   },
   schema: {
