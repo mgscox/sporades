@@ -10,6 +10,8 @@ Statuses:
 - `ready` - shaped enough to split into implementation issues.
 - `active` - currently being built.
 - `deferred` - intentionally parked.
+- `implemented` - delivered and documented; retained under Recently Implemented
+  for traceability rather than remaining in the next-feature queue.
 
 ## Recommended Next Features
 
@@ -78,5 +80,7 @@ When a roadmap item becomes concrete enough to build:
 1. Use the "To Issues" skill to create `.scratch/<feature-slug>/PRD.md` with implementation split into `.scratch/<feature-slug>/issues/<NN>-<slug>.md`.
    Ensure each feature PRD links to the relevant planning artifact from this roadmap. Ensure the PRD explicitly requires this roadmap to be updated.
 2. Update the roadmap status as idea maturation progresses and work moves from
-   `candidate` to `design`, `ready`, or `active`. Remove completed work from
-   this roadmap once it is implemented and documented.
+   `candidate` to `design`, `ready`, or `active`. Once work is implemented and
+   documented, move it out of the candidate/recommended queue into Recently
+   Implemented with status `implemented` and retain its planning link for
+   traceability.
