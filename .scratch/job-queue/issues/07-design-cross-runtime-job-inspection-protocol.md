@@ -3,7 +3,7 @@
 # Design Cross-Runtime Job Inspection Protocol
 
 Category: enhancement
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -142,3 +142,12 @@ fully specified for an AFK agent.
 ## Blocked by
 
 None.
+
+## Comments
+
+- Integrated from reviewed worker tip `be5939c4d21749a34162eb7a8c82bbe4116b29c0`
+  in merge commit `b79625fe50f5c82398dbc173c7ae7fdb7b35a8a1` after independent review returned
+  `ACCEPT` for base `aaa73b9e7f937c89b7ba9e76bb80c7583c7dd6e4`.
+- Integration gate: build passed; 25 focused Job Queue, CLI, Bundle, Container,
+  and Hosted transport tests passed. The conditional Postgres inspection test
+  was skipped because `SPORADES_POSTGRES_TEST_URL` was unset.

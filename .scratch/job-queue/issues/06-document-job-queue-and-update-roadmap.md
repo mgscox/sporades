@@ -3,7 +3,7 @@
 # Document Job Queue And Update Roadmap
 
 Category: enhancement
-Status: needs-triage
+Status: ready-for-agent
 
 ## Parent
 
@@ -40,3 +40,6 @@ relationship with recurring Job scheduling.
   inspection contract exists across Dev, local Container, and Hosted Capsule
   runtime paths. The already-implemented server API documentation cleanup is
   tracked independently in `08-align-implemented-job-queue-docs.md`.
+- Issue 07 is integrated and integration-green. This final documentation slice
+  is now ready, but should follow Issue 08 to avoid overlapping canonical docs
+  and documentation tests.

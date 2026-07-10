@@ -9,8 +9,8 @@ Base: `0e78191709f3562fbf5b8517ebe22362e11859a8`
 | 03-add-delays-retries-and-cancellation | done | 02 | 34a02ae984b0170a0100b6e5a03012a40655d935 | 1d322d68623eb60fd472b9e52fbff995c8bd6405 | ACCEPT | 44459dc | Integration: full delay/retry/cancel + privileged/current-user/type suites green | worktree retained until swarm completion |
 | 04-recover-jobs-with-at-least-once-delivery | done | 03 | 0995023 | f9728983b2c47a3db2e8d7c41d499bcfe0e91b8e | ACCEPT | 3d58b91 | Integration: full queue + lease/recovery/type suites green; Container/Hosted seam limitation recorded | worktree retained until swarm completion |
 | 05-list-and-inspect-jobs-across-runtime-sessions | done | 04 | 175dd66 | 1681c90f997f36872c41e37838b2c5367c9a4550 | ACCEPT | 875e413 | Server inspection/filter/audit green | server slice complete; operator inspection split to 07 |
-| 06-document-job-queue-and-update-roadmap | blocked | 07 | — | — | — | — | — | final docs wait for operator inspection |
-| 07-design-cross-runtime-job-inspection-protocol | ready-for-agent | None | 9c83866 | — | — | — | — | grilling complete; ADR 0028 records Bundle action boundary |
+| 06-document-job-queue-and-update-roadmap | ready | 07 | — | — | — | — | — | serialized after 08 to avoid docs overlap |
+| 07-design-cross-runtime-job-inspection-protocol | done | None | aaa73b9 | be5939c | ACCEPT | b79625f | Build + 25 focused tests green; conditional Postgres inspection skipped without test URL | worker worktree retained until swarm completion |
 | 08-align-implemented-job-queue-docs | ready-for-agent | None | 9c83866 | — | — | — | — | independent docs coherence slice |
 
 ## Baseline
