@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -537,6 +538,73 @@ test("Scheduled provenance is present at the atomic enqueue boundary", async () 
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
+test("a restart recovers a durable occurrence that crashed before enqueue", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-crash-before-enqueue-"));
+  const file = path.join(dir, "data.db");
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const capsule = { jobs: { work: job(() => null) }, schedules: { durable: schedule({ expression: "* * * * *", job: "work" }) } };
+  let crashed = false;
+  let database = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock, scheduleOccurrenceFault: (boundary) => {
+    if (!crashed && boundary === "after-pending") { crashed = true; database.__scheduleStopped = true; throw new Error("simulated crash"); }
+  } });
+  try {
+    await database.init();
+    clock.advanceBy(30_000);
+    await clock.runDueTimers();
+    assert.equal(database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+    database.close();
+
+    clock.advanceBy(31_000);
+    database = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock });
+    await database.init();
+    assert.equal(database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 1);
+    const occurrence = database.sqlite.prepare("SELECT status, jobId FROM sporades_schedule_occurrences").get();
+    assert.equal(occurrence.status, "enqueued");
+    assert.ok(occurrence.jobId);
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("a restart after enqueue reuses one deterministic occurrence Job", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-crash-after-enqueue-"));
+  const file = path.join(dir, "data.db");
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const capsule = { jobs: { work: job(() => null) }, schedules: { durable: schedule({ expression: "* * * * *", job: "work" }) } };
+  let crashed = false;
+  let database = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock, scheduleOccurrenceFault: (boundary) => {
+    if (!crashed && boundary === "after-enqueue") { crashed = true; database.__scheduleStopped = true; throw new Error("simulated crash"); }
+  } });
+  try {
+    await database.init(); clock.advanceBy(30_000); await clock.runDueTimers();
+    const firstId = database.sqlite.prepare("SELECT id FROM sporades_jobs").get().id;
+    database.close();
+    clock.advanceBy(31_000);
+    database = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock });
+    await database.init();
+    const jobs = database.sqlite.prepare("SELECT id FROM sporades_jobs").all();
+    assert.deepEqual(jobs.map((row) => row.id), [firstId]);
+    assert.equal(database.sqlite.prepare("SELECT jobId FROM sporades_schedule_occurrences").get().jobId, firstId);
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("overlapping runtime starts converge on one occurrence Job identity", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-overlap-"));
+  const file = path.join(dir, "data.db");
+  const clockA = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const clockB = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const capsule = { jobs: { work: job(() => null) }, schedules: { shared: schedule({ expression: "* * * * *", job: "work" }) } };
+  const first = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock: clockA });
+  const second = await openDevDatabase(file, "", {}, { name: "capsule-a" }, capsule, { clock: clockB });
+  try {
+    await Promise.all([first.init(), second.init()]);
+    clockA.advanceBy(30_000); clockB.advanceBy(30_000);
+    await Promise.all([clockA.runDueTimers(), clockB.runDueTimers()]);
+    const jobs = first.sqlite.prepare("SELECT id FROM sporades_jobs").all();
+    const occurrences = first.sqlite.prepare("SELECT id, jobId, status FROM sporades_schedule_occurrences").all();
+    assert.equal(jobs.length, 1);
+    assert.deepEqual(occurrences.map(({ jobId, status }) => ({ jobId, status })), [{ jobId: jobs[0].id, status: "enqueued" }]);
+  } finally { await Promise.all([first.shutdown(), second.shutdown()]); first.close(); second.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("Capsule code cannot forge Schedule provenance through context properties", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-forgery-"));
   const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
@@ -562,7 +630,7 @@ test("Capsule code cannot forge Schedule provenance through context properties",
 test("Scheduled idempotent returns reject an existing Job without matching private provenance", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-idempotency-conflict-"));
   const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
-  const occurrenceKey = "schedule:collision:2030-01-01T00:01:00.000Z";
+  const occurrenceKey = `schedule:${createHash("sha256").update(JSON.stringify(["scheduled", "collision", "2030-01-01T00:01:00.000Z"])).digest("hex")}`;
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
     jobs: { work: job(() => null) },
     schedules: { collision: schedule({ expression: "* * * * *", job: "work" }) },

@@ -663,6 +663,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         jobs,
         schedules,
         clock,
+        capsuleIdentity: String(config.name ?? "capsule"),
+        scheduleOccurrenceFault: options?.scheduleOccurrenceFault,
         schedulePayloadFactoryTimeoutMs,
         schedulePayloadFactoryActive: 0,
         schedulePayloadFactoryWaiters: [],
@@ -857,6 +859,8 @@ function nextScheduleOccurrence(fields, after, timezone) {
 }
 async function ensureScheduleStorage(sqlite) {
     await sqlite.exec("CREATE TABLE IF NOT EXISTS sporades_schedules (name TEXT PRIMARY KEY, definitionFingerprint TEXT NOT NULL, expression TEXT NOT NULL, effectiveTimezone TEXT NOT NULL, missedRunPolicy TEXT NOT NULL, enabled INTEGER NOT NULL, nextOccurrence TEXT, latestScheduledFor TEXT, latestOutcome TEXT, latestJobId TEXT, latestErrorCode TEXT)");
+    await sqlite.exec("CREATE TABLE IF NOT EXISTS sporades_schedule_occurrences (id TEXT PRIMARY KEY, scheduleName TEXT NOT NULL, scheduledFor TEXT NOT NULL, status TEXT NOT NULL, claimToken TEXT, claimExpiresAt TEXT, jobId TEXT, errorCode TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL)");
+    await sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_schedule_occurrence_identity ON sporades_schedule_occurrences(scheduleName, scheduledFor)");
 }
 async function reconcileSchedules(database) {
     const now = database.clock.now();
@@ -898,14 +902,24 @@ async function reconcileSchedules(database) {
     for (const { definition, row, nextOccurrence } of plans) {
         if (row)
             await database.sqlite.prepare("UPDATE sporades_schedules SET definitionFingerprint=?, expression=?, effectiveTimezone=?, missedRunPolicy=?, enabled=?, nextOccurrence=? WHERE name=?").run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
-        else
-            await database.sqlite.prepare("INSERT INTO sporades_schedules (name, definitionFingerprint, expression, effectiveTimezone, missedRunPolicy, enabled, nextOccurrence) VALUES (?, ?, ?, ?, ?, ?, ?)").run(definition.name, definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
+        else {
+            try {
+                await database.sqlite.prepare("INSERT INTO sporades_schedules (name, definitionFingerprint, expression, effectiveTimezone, missedRunPolicy, enabled, nextOccurrence) VALUES (?, ?, ?, ?, ?, ?, ?)").run(definition.name, definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
+            }
+            catch (error) {
+                const concurrent = await database.sqlite.prepare("SELECT name FROM sporades_schedules WHERE name=?").get(definition.name);
+                if (!concurrent)
+                    throw error;
+                await database.sqlite.prepare("UPDATE sporades_schedules SET definitionFingerprint=?, expression=?, effectiveTimezone=?, missedRunPolicy=?, enabled=?, nextOccurrence=? WHERE name=?").run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
+            }
+        }
         definition.nextOccurrence = nextOccurrence;
     }
     for (const { definition, recoveredOccurrence } of plans) {
         if (recoveredOccurrence)
             await recordScheduledOccurrence(database, definition, recoveredOccurrence);
     }
+    await recoverPendingScheduleOccurrences(database);
 }
 async function startStaticSchedules(database) {
     database.__scheduleTimers = new Set();
@@ -919,9 +933,16 @@ async function startStaticSchedules(database) {
             const occurrence = new Date(definition.nextOccurrence);
             const timer = database.clock.setTimer(() => {
                 database.__scheduleTimers.delete(timer);
-                const active = recordScheduledOccurrence(database, definition, occurrence).catch((error) => {
+                const active = recordScheduledOccurrence(database, definition, occurrence).catch(async (error) => {
                     database.log.emit({ category: "platform", event: "schedule.occurrence.enqueue_failed", level: "error", message: "Scheduled occurrence could not enqueue its Job", data: { scheduleName: definition.name, scheduledFor: occurrence.toISOString(), code: String(error?.code ?? "SCHEDULE_ENQUEUE_FAILED").slice(0, 80) } });
-                }).finally(() => { database.__activeScheduleOccurrences.delete(active); arm(); });
+                    if (!database.__scheduleStopped)
+                        await finishFailedScheduledOccurrence(database, definition, occurrence, error);
+                }).finally(() => {
+                    database.__activeScheduleOccurrences.delete(active);
+                    if (database.__scheduleStopped)
+                        return;
+                    arm();
+                });
                 database.__activeScheduleOccurrences.add(active);
                 return active;
             }, Math.max(0, occurrence.getTime() - database.clock.now().getTime()));
@@ -930,8 +951,30 @@ async function startStaticSchedules(database) {
         arm();
     }
 }
+async function finishFailedScheduledOccurrence(database, definition, occurrence, error) {
+    const scheduledFor = occurrence.toISOString();
+    const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
+    const completedAt = database.clock.now().toISOString();
+    const code = String(error?.code ?? "SCHEDULE_ENQUEUE_FAILED").slice(0, 80);
+    await database.sqlite.prepare("UPDATE sporades_schedule_occurrences SET status='enqueue-failed', claimToken=NULL, claimExpiresAt=NULL, errorCode=?, updatedAt=? WHERE id=? AND status='pending'").run(code, completedAt, id);
+    const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
+    definition.nextOccurrence = next;
+    await database.sqlite.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=?, latestOutcome='enqueue-failed', latestJobId=NULL, latestErrorCode=? WHERE name=? AND enabled=1").run(next, scheduledFor, code, definition.name);
+}
 async function recordScheduledOccurrence(database, definition, occurrence) {
+    const claim = await claimScheduledOccurrence(database, definition, occurrence);
+    if (!claim) {
+        // Another runtime owns this exact occurrence. Advance only this runtime's
+        // timer cursor; the winner owns durable Schedule bookkeeping.
+        definition.nextOccurrence = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
+        return null;
+    }
+    await database.scheduleOccurrenceFault?.("after-pending", { scheduleName: definition.name, scheduledFor: occurrence.toISOString() });
     const state = await enqueueScheduledOccurrence(database, definition, occurrence);
+    if (state)
+        await database.scheduleOccurrenceFault?.("after-enqueue", { scheduleName: definition.name, scheduledFor: occurrence.toISOString(), jobId: state.id });
+    const completedAt = database.clock.now().toISOString();
+    await database.sqlite.prepare("UPDATE sporades_schedule_occurrences SET status=?, claimToken=NULL, claimExpiresAt=NULL, jobId=?, errorCode=?, updatedAt=? WHERE id=? AND claimToken=?").run(state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", completedAt, claim.id, claim.token);
     if (database.__scheduleStopped)
         return state;
     const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
@@ -939,9 +982,41 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
     await database.sqlite.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=?, latestOutcome=?, latestJobId=?, latestErrorCode=? WHERE name=? AND enabled=1").run(next, occurrence.toISOString(), state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", definition.name);
     return state;
 }
+function scheduledOccurrenceIdentity(database, scheduleName, scheduledFor) {
+    return createHash("sha256").update(JSON.stringify([database.capsuleIdentity, scheduleName, scheduledFor])).digest("hex");
+}
+async function claimScheduledOccurrence(database, definition, occurrence) {
+    const scheduledFor = occurrence.toISOString();
+    const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
+    const token = randomUUID();
+    const now = database.clock.now();
+    const nowIso = now.toISOString();
+    const expiresAt = new Date(now.getTime() + 30_000).toISOString();
+    try {
+        await database.sqlite.prepare("INSERT INTO sporades_schedule_occurrences (id, scheduleName, scheduledFor, status, claimToken, claimExpiresAt, createdAt, updatedAt) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)").run(id, definition.name, scheduledFor, token, expiresAt, nowIso, nowIso);
+        return { id, token };
+    }
+    catch (error) {
+        const existing = await database.sqlite.prepare("SELECT status, claimExpiresAt FROM sporades_schedule_occurrences WHERE id=?").get(id);
+        if (!existing)
+            throw error;
+        if (existing.status !== "pending" || (existing.claimExpiresAt && existing.claimExpiresAt > nowIso))
+            return null;
+        const result = await database.sqlite.prepare("UPDATE sporades_schedule_occurrences SET claimToken=?, claimExpiresAt=?, updatedAt=? WHERE id=? AND status='pending' AND (claimExpiresAt IS NULL OR claimExpiresAt <= ?)").run(token, expiresAt, nowIso, id, nowIso);
+        return Number(result.changes) === 1 ? { id, token } : null;
+    }
+}
+async function recoverPendingScheduleOccurrences(database) {
+    const rows = await database.sqlite.prepare("SELECT scheduleName, scheduledFor FROM sporades_schedule_occurrences WHERE status='pending' AND (claimExpiresAt IS NULL OR claimExpiresAt <= ?) ORDER BY scheduledFor ASC, scheduleName ASC").all(database.clock.now().toISOString());
+    for (const row of rows) {
+        const definition = database.schedules.find((candidate) => candidate.enabled && candidate.name === row.scheduleName);
+        if (definition)
+            await recordScheduledOccurrence(database, definition, new Date(row.scheduledFor));
+    }
+}
 export async function enqueueScheduledOccurrence(database, definition, occurrence) {
     const scheduledFor = occurrence.toISOString();
-    const provenance = `schedule:${definition.name}:${scheduledFor}`;
+    const provenance = `schedule:${scheduledOccurrenceIdentity(database, definition.name, scheduledFor)}`;
     const context = createMutationContext(database, { userId: provenance, displayName: "Schedule", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "schedule" });
     const payload = await resolveSchedulePayload(database, definition, scheduledFor, context);
     if (!payload.ok)
@@ -1745,7 +1820,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
             return this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
                 .all()
                 .map((row) => row.name)
-                .filter((name) => name !== "sporades_log_events" && name !== "sporades_schedules");
+                .filter((name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
         },
         dumpInspectableDatabase() {
             return this.listInspectableTables().map((tableName) => ({
@@ -2012,7 +2087,7 @@ export async function createPostgresDatabaseAdapter(options) {
         },
         async listInspectableTables() {
             const rows = await this.prepare("SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name").all();
-            return rows.map((row) => row.name).filter((name) => name !== "sporades_log_events" && name !== "sporades_schedules");
+            return rows.map((row) => row.name).filter((name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
         },
         async dumpInspectableDatabase() {
             const tableNames = await this.listInspectableTables();
@@ -2774,7 +2849,7 @@ export async function createLibsqlDatabaseAdapter(options) {
         },
         async listInspectableTables() {
             const rows = await this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-            return rows.map((row) => row.name).filter((name) => name !== "sporades_log_events" && name !== "sporades_schedules");
+            return rows.map((row) => row.name).filter((name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
         },
         async dumpInspectableDatabase() {
             const tableNames = await this.listInspectableTables();
