@@ -156,6 +156,10 @@ async function main() {
     await healthCapsule(request);
     return;
   }
+  if (request.action === "jobs.inspect") {
+    inspectCapsuleJobs(request);
+    return;
+  }
   if (request.action === "host.stats") {
     await statsHost(request);
     return;
@@ -178,6 +182,19 @@ async function main() {
   }
 
   throw helperError("Unsupported Host helper action.", "Update the Host helper or use a supported Sporades host command.");
+}
+
+function inspectCapsuleJobs(request: HostHelperRequest) {
+  const containerName = createHostedContainerName(request.host.domain, request.capsule.subname);
+  if (!checkContainerRunning(containerName)) {
+    throw helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
+  }
+  const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", "jobs.inspect"]);
+  let envelope: LooseRecord;
+  try { envelope = JSON.parse(result.stdout.trim()); }
+  catch { throw helperError("Hosted Job inspection returned invalid JSON.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command."); }
+  if (!envelope.ok) throw helperError(envelope.error?.message ?? "Hosted Job inspection failed.", envelope.error?.hint ?? "Inspect the Hosted Capsule and retry the command.", envelope.error);
+  writeEnvelope(envelope);
 }
 
 function versionHost(request: HostHelperRequest) {

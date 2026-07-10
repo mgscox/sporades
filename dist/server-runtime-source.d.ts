@@ -30,6 +30,7 @@ export declare function prepareHttpSecurity(database: {
 }): boolean;
 export declare function injectPageConnectionToken(html: string, token: string): string;
 export declare function openDevDatabase(databasePath: string, serverSource: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig, capsuleDefinition?: any, options?: LooseRecord): Promise<LooseRecord>;
+export declare function createRuntimeInspectionAdapter(databasePath: any, serverEnv?: RuntimeEnv, config?: RuntimeConfig): Promise<LooseRecord | null>;
 export declare function createRuntimeFileStorageAdapter({ config, databasePath, serviceEnv }: {
     config?: RuntimeConfig;
     databasePath: string;
@@ -437,6 +438,7 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
         };
         close(): void;
     }) => any): Promise<any>;
+    withReadOnlySnapshot(fn: (adapter: LooseRecord) => any): Promise<any>;
     insertAppRow(table: {
         name: any;
     }, row: {
@@ -717,6 +719,7 @@ export declare function createPostgresDatabaseAdapter(options: {
         deleteAppRow(table: any, id: any): StatementResultingChanges;
         selectAppRows(table: any, query?: {}): Record<string, SQLOutputValue>[];
     }) => any): Promise<any>;
+    withReadOnlySnapshot(fn: (adapter: LooseRecord) => any): Promise<any>;
     close(): Promise<void>;
     ensureSystemTable(): void;
     readSystemMetadata(key: string): Record<string, SQLOutputValue> | null;
@@ -989,6 +992,7 @@ export declare function createLibsqlDatabaseAdapter(options: {
         ok: boolean;
     }>;
     withTransaction(fn: (transactionAdapter: LooseRecord) => any): Promise<any>;
+    withReadOnlySnapshot(fn: (adapter: LooseRecord) => any): Promise<any>;
     close(): Promise<void>;
     exec(sql: string): Promise<undefined>;
     prepare(sql: string): {
@@ -1357,5 +1361,7 @@ export declare function updateCurrentUserPreferences(database: LooseRecord, auth
 }>;
 export declare function runQuery(database: LooseRecord, auth: any, queryName: string): Promise<any>;
 export declare function runMutation(database: LooseRecord, auth: any, mutationName: string, args: any): Promise<any>;
+/** Read the bounded operator view of every Job in one adapter snapshot. */
+export declare function inspectRuntimeJobs(adapter: LooseRecord): Promise<any>;
 export {};
 //# sourceMappingURL=server-runtime-source.d.ts.map

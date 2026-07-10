@@ -115,6 +115,7 @@ type StartCapsuleServicesOptions = {
 const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
 const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
+const DEV_DATABASE_ENV_FILE = path.join(".sporades", "dev-database-env.json");
 const DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";
 const CONTAINER_BINDING_FILE = path.join(".sporades", "binding.json");
 const REMOTE_BINDING_FILE = path.join(".sporades", "remote-binding.json");
@@ -223,6 +224,11 @@ async function main() {
         return;
       }
       await manageLocalLifecycle("deploy", parseDeployArgs(args));
+      return;
+
+    case "jobs":
+      if (args.length) throw commandError("Unknown jobs argument.", "Use `sporades jobs`.");
+      await inspectDevJobs({ projectDir: process.cwd() });
       return;
 
     case "host":
@@ -429,7 +435,7 @@ function parseDevArgs(args: string[]): LooseRecord {
 }
 
 function parseDeployArgs(args: string[]): LooseRecord {
-  const lifecycleCommands = new Set(["status", "stop", "restart", "remove", "reset", "ssh"]);
+  const lifecycleCommands = new Set(["status", "stop", "restart", "remove", "reset", "ssh", "jobs"]);
   const subcommand = lifecycleCommands.has(args[0]) ? args[0] : "start";
   const rest = subcommand === "start" ? args : args.slice(1);
   let port = null;
@@ -988,6 +994,13 @@ function parseHostArgs(args: string[]): LooseRecord {
       return { subcommand, subname: positionalSubname ?? null, hostAlias, json, projectDir: process.cwd() };
     }
 
+    case "jobs":
+      if (positional.length > 0) throw commandError("Too many positional arguments.", "Use `sporades host jobs --host <alias> --subname <name>`.");
+      if (!hostAlias) throw commandError("Missing Host profile alias.", "Pass `--host <alias>`.");
+      if (!subname) throw commandError("Missing Capsule subname.", "Pass `--subname <name>`.");
+      validateHostAlias(hostAlias); validateCapsuleSubname(subname);
+      return { subcommand, subname, hostAlias, json: true, projectDir: process.cwd() };
+
     case "ssh": {
       const [positionalSubname, ...extra] = positional;
       if (extra.length > 0) {
@@ -1394,6 +1407,11 @@ async function manageLocalLifecycle(surface: string, options: LooseRecord) {
       await inspectLocalContainerSsh(options);
       return;
 
+    case "jobs":
+      if (surface !== "deploy") throw commandError("Unsupported lifecycle command: jobs", "Use `sporades deploy jobs`.");
+      await inspectContainerJobs(options);
+      return;
+
     case "remove":
       if (surface !== "deploy") {
         throw commandError("Unsupported lifecycle command: remove", "Use `sporades deploy remove`.");
@@ -1424,6 +1442,54 @@ async function manageLocalLifecycle(surface: string, options: LooseRecord) {
   }
 }
 
+function parseInspectionProcess(result: SpawnSyncReturns<string>, hint: string) {
+  let envelope;
+  try { envelope = JSON.parse(result.stdout.trim()); }
+  catch { throw commandError("Job inspection returned invalid JSON.", hint); }
+  if (!envelope?.ok) throw commandError(envelope?.error?.message ?? "Job inspection failed.", envelope?.error?.hint ?? hint, envelope?.error);
+  writeResult(envelope);
+}
+
+async function inspectDevJobs(options: LooseRecord) {
+  const session = await readDevSession(options.projectDir);
+  try { process.kill(Number(session.pid), 0); }
+  catch { throw commandError("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades jobs`."); }
+  const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir);
+  const bundle = path.join(options.projectDir, ".sporades", "build", "server.mjs");
+  const result = spawnSync(process.execPath, [bundle, "--sporades-action", "jobs.inspect"], {
+    cwd: options.projectDir, encoding: "utf8",
+    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path.join(options.projectDir, ".sporades", "data.db") },
+  });
+  parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades jobs`.");
+}
+
+async function readActiveDevDatabaseServiceEnv(projectDir: string) {
+  try { return JSON.parse(await readFile(path.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8")); }
+  catch (error) { if (errorDetails(error).code !== "ENOENT") throw commandError("Invalid active Dev database adapter metadata.", "Restart `sporades dev`, then retry `sporades jobs`."); }
+  const config = await readProjectConfig(projectDir);
+  const capsuleServices = localCapsuleServicesFromConfig(config, projectDir);
+  const database = capsuleServices?.services?.database;
+  if (!database) return {};
+  const connection = await waitForCapsuleService(capsuleServices, projectDir, "database", database, "local");
+  return capsuleServicesLocalEnv({ ...capsuleServices, services: { database } }, { database: connection });
+}
+
+async function writeActiveDevDatabaseServiceEnv(projectDir: string, serviceEnv: LooseRecord) {
+  const databaseEnv = Object.fromEntries(Object.entries(serviceEnv).filter(([key, value]) => key.startsWith("SPORADES_SERVICE_DATABASE_") && typeof value === "string"));
+  const filePath = path.join(projectDir, DEV_DATABASE_ENV_FILE);
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, `${JSON.stringify(databaseEnv)}\n`, { mode: 0o600 });
+}
+
+async function inspectContainerJobs(options: LooseRecord) {
+  const { binding } = await requireLocalContainerBinding(options, "jobs");
+  const running = runDocker(["inspect", "--format", "{{.State.Running}}", binding.containerId], options.projectDir,
+    "Unable to inspect the local Container session.", "Check Docker and retry `sporades deploy jobs`.");
+  if (running !== "true") throw commandError("The local Container session is not running.", "Run `sporades deploy restart`, then retry `sporades deploy jobs`.");
+  const result = spawnSync("docker", ["exec", binding.containerId, "node", "/app/server.mjs", "--sporades-action", "jobs.inspect"], { cwd: options.projectDir, encoding: "utf8" });
+  parseInspectionProcess(result, "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy jobs`.");
+}
+
 async function startDevSession(options: LooseRecord) {
   let config = await readProjectConfig(options.projectDir);
   const session = options.publicDev ? "public-dev" : "dev";
@@ -1449,6 +1515,7 @@ async function startDevSession(options: LooseRecord) {
     capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
     config: withRuntimeSecuritySession(config, session),
   });
+  await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
   runtime.database.log.emit({
     category: "platform",
     event: "dev.session.started",
@@ -1785,6 +1852,7 @@ async function startDevSession(options: LooseRecord) {
         );
         bundle = rebuild;
         runtimeServiceEnv = nextCapsuleServiceEnv;
+        await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
         fatalRestartAttempts = 0;
         websocketHub.disconnectAll();
       }
@@ -1827,6 +1895,7 @@ async function startDevSession(options: LooseRecord) {
     for (const watcher of watchers) {
       watcher.close();
     }
+    rm(path.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {});
     websocketHub.disconnectAll();
     server.close(async () => {
       await rm(sessionFilePath, { force: true });
@@ -2371,6 +2440,17 @@ async function ensureHostProfileEnvKey(config: LooseRecord, alias: string | numb
 
 async function manageHost(options: LooseRecord) {
   switch (options.subcommand) {
+    case "jobs": {
+      const config = await readHostConfig();
+      const resolved = resolveHostProfile(config, options.hostAlias);
+      const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: "jobs.inspect", subname: options.subname, projectDir: options.projectDir });
+      if (!result.ok && /Unsupported Host helper action/i.test(result.error.message)) {
+        writeResult({ ok: false, data: null, error: { code: "HOST_HELPER_UPGRADE_REQUIRED", message: "The Host server CLI does not support Job inspection.", hint: `Run \`sporades host upgrade --host ${resolved.alias}\`, then retry the command.` } }, true);
+        return;
+      }
+      writeResult(result, !result.ok);
+      return;
+    }
     case "add": {
       const config = await readHostConfig();
       const profile = {
