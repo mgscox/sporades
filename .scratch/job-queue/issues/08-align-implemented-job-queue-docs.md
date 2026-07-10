@@ -3,7 +3,7 @@
 # Align Implemented Job Queue Documentation
 
 Category: enhancement
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -60,3 +60,10 @@ complete.
 ## Blocked by
 
 None.
+
+## Comments
+
+- Integrated from reviewed worker tip `4f7263c9e738fd948c0c693d3137375b24be7b81`
+  in merge commit `b4b2eb29aa360aa95b0cfccaf27d447b36439b9e` after independent review returned
+  `ACCEPT` for base `83261ade861ff3482da4281d4f4c4767fdf984f3`.
+- Integration gate: all 15 documentation tests passed and diff hygiene was clean.

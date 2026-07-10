@@ -11,7 +11,7 @@ Base: `0e78191709f3562fbf5b8517ebe22362e11859a8`
 | 05-list-and-inspect-jobs-across-runtime-sessions | done | 04 | 175dd66 | 1681c90f997f36872c41e37838b2c5367c9a4550 | ACCEPT | 875e413 | Server inspection/filter/audit green | server slice complete; operator inspection split to 07 |
 | 06-document-job-queue-and-update-roadmap | ready | 07 | — | — | — | — | — | serialized after 08 to avoid docs overlap |
 | 07-design-cross-runtime-job-inspection-protocol | done | None | aaa73b9 | be5939c | ACCEPT | b79625f | Build + 25 focused tests green; conditional Postgres inspection skipped without test URL | worker worktree retained until swarm completion |
-| 08-align-implemented-job-queue-docs | ready-for-agent | None | 9c83866 | — | — | — | — | independent docs coherence slice |
+| 08-align-implemented-job-queue-docs | done | None | 83261ad | 4f7263c | ACCEPT | b4b2eb2 | 15 documentation tests green | worker worktree retained until swarm completion |
 
 ## Baseline
 
