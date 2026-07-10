@@ -4,7 +4,7 @@
 
 **Blocked by:** 09 — Extend Schedule Inspection To Container And Hosted Capsules.
 
-**Status:** ready-for-agent
+Status: ready-for-agent
 
 - [ ] Public server API docs and generated declarations describe schedule authoring, five-field cron restrictions, payload and retry behavior, and server-only authority.
 - [ ] User guidance explains IANA timezone and daylight-saving behavior, `skip` and `latest` missed-run policies, restart recovery, declaration changes, and duplicate protection.

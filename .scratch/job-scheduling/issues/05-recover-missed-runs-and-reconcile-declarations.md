@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 — Add Dynamic Schedule Payload Factories; 04 — Apply Timezone And Daylight-Saving Semantics.
 
-**Status:** ready-for-agent
+Status: ready-for-agent
 
 - [ ] Schedule state survives Dev, local Container, and Hosted Capsule runtime restarts through the configured Database adapter.
 - [ ] The default `skip` policy creates no Jobs for missed occurrences and resumes at the next future occurrence.

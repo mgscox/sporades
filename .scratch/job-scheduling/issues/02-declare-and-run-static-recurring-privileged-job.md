@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — Add A Controllable Runtime Clock.
 
-**Status:** ready-for-agent
+Status: ready-for-agent
 
 - [ ] Capsule server code declares Schedules in a named map alongside named Jobs, using a server-only declaration whose map key is the stable Schedule identity.
 - [ ] Schedule names begin with a letter and then allow letters, numbers, underscores, or hyphens, so integer-like object-key enumeration cannot change declaration order.

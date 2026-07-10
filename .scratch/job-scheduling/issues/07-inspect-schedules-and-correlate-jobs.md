@@ -4,7 +4,7 @@
 
 **Blocked by:** 06 — Make Occurrence Creation Crash-Safe And Duplicate-Resistant.
 
-**Status:** ready-for-agent
+Status: ready-for-agent
 
 - [ ] Privileged server context can get and list schedule summaries; ordinary current-user contexts have no schedule inspection authority.
 - [ ] Each summary includes stable schedule name, normalized expression, timezone, missed-run policy, enabled state, next occurrence, and the latest occurrence summary.

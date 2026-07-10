@@ -4,7 +4,7 @@
 
 **Blocked by:** 05 — Recover Missed Runs And Reconcile Declarations.
 
-**Status:** ready-for-agent
+Status: ready-for-agent
 
 - [ ] Each occurrence has a deterministic identity derived from Capsule identity, schedule name, and scheduled UTC instant.
 - [ ] Conditional persistent evaluation claims allow only one active evaluator for a due occurrence and expired claims recover safely.

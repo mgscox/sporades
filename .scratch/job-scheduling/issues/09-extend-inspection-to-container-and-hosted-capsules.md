@@ -4,7 +4,7 @@
 
 **Blocked by:** 08 — Inspect Dev-Session Schedules From The CLI.
 
-**Status:** ready-for-agent
+Status: ready-for-agent
 
 - [ ] Local Container and Hosted commands return the same schedule JSON schema and structured envelope as Dev inspection.
 - [ ] Each command targets its explicit runtime location and never guesses between Dev, local Container, and Hosted state.

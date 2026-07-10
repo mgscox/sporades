@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+Status: ready-for-agent
 
 - [ ] Full-runtime tests can set the current instant, advance time, and trigger due timers without sleeping or replacing global time functions.
 - [ ] Production runtime behavior continues to use the real system clock and timers by default.

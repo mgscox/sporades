@@ -4,7 +4,7 @@
 
 **Blocked by:** 07 — Inspect Schedules And Correlate Their Jobs.
 
-**Status:** ready-for-agent
+Status: ready-for-agent
 
 - [ ] The Dev schedule command returns the standard structured JSON envelope with Capsule identity and schedules ordered by name.
 - [ ] A Capsule with no schedules or no schedule store succeeds with `schedules: []` without creating or migrating storage.
