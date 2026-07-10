@@ -1,0 +1,3 @@
+# Job Scheduling Only Enqueues Ordinary Jobs
+
+Job Scheduling calculates when a Scheduled occurrence is due, prepares its payload, and uses the ordinary privileged Job Queue enqueue boundary; after enqueue, the Job Queue exclusively owns execution, ordering, retry, cancellation, leases, recovery, and results. Sporades deliberately uses persisted pending occurrences plus deterministic enqueue idempotency instead of coupling Scheduling to queue storage or adding Schedule-specific Job behavior. This preserves one background-work implementation and allows disablement or definition changes to stop future Job creation without mutating Jobs already enqueued.

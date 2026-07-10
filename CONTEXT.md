@@ -132,6 +132,22 @@ _Avoid_: queue internals, worker details, job row
 
 Job state progresses through `delayed`, `queued`, `running`, `succeeded`, `failed`, or `cancelled`; only `queued` means ready to run.
 
+**Job provenance**:
+The runtime-owned identity of the user or Schedule that requested a Job. Provenance explains why the Job exists but grants neither visibility nor execution authority.
+_Avoid_: Job owner, Job actor, enqueuing Session
+
+**Job requeue**:
+A deliberate non-terminal Job-handler outcome that keeps the same Job identity and makes another attempt eligible later for an application-determined reason. It is distinct from a failure retry and from enqueueing a new Job.
+_Avoid_: retry, replacement Job, recursive enqueue
+
+**Schedule**:
+A named Capsule declaration that determines when Sporades should enqueue an ordinary Privileged Job. It owns recurrence and occurrence creation, not Job execution or queue management.
+_Avoid_: cron job, recurring Job, timer
+
+**Scheduled occurrence**:
+One UTC instant produced by a Schedule and associated with one durable Job identity when enqueue succeeds.
+_Avoid_: run, tick, retry
+
 **Job inspection action**:
 A runtime-owned operator action that returns bounded safe state for all Jobs in one Capsule to an administrator of its Dev session, Container session, or Host server. It is an internal CLI/runtime operation rather than a Capsule API route or actor-scoped app API.
 _Avoid_: Job API route, user Job query, queue-table access
@@ -329,8 +345,12 @@ _Avoid_: audit log, security log, admin log
 ## Configuration
 
 **sporades.json**:
-The project configuration file at the project root. Read by the CLI at startup; relevant pieces passed to the server runtime as a startup argument. The server runtime does not read files. Contains: app name, client framework, enabled auth providers (or legacy auth mode), security policy, deploy port, optional dev port override.
+The project configuration file at the project root. Read by the CLI at startup; relevant pieces passed to the server runtime as a startup argument. The server runtime does not read files. Contains: app name, client framework, enabled auth providers (or legacy auth mode), security and scheduling policy, deploy port, optional dev port override.
 _Avoid_: config file (too generic — it's the specific project config)
+
+**Scheduling policy**:
+The `sporades.json` configuration for Capsule-wide Job Scheduling runtime limits, such as payload-factory timeout. It controls scheduler operation rather than defining individual Schedules.
+_Avoid_: Schedule definition, cron config, Job retry policy
 
 **Security policy**:
 The `sporades.json` configuration that defines Capsule HTTP security posture, including CORS and Content Security Policy defaults and overrides. It is runtime policy, not app business logic.

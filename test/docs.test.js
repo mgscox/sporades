@@ -442,7 +442,7 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.match(roadmap, /Planning remains in `\.scratch\/privileged-server-role\/PRD\.md`/);
   assert.match(roadmap, /Job queue \| implemented[\s\S]*current-user and Privileged server role actors/);
   assert.doesNotMatch(roadmap, /\| Job queue \| ready \|/);
-  assert.match(roadmap, /Job scheduling \| design[\s\S]*depends on the implemented Job Queue/);
+  assert.match(roadmap, /Job scheduling \| ready[\s\S]*depends on the implemented Job Queue/);
 
   const implementedScope = prd.slice(prd.indexOf("### Implemented scope"), prd.indexOf("### Future scope"));
   const futureScope = prd.slice(prd.indexOf("### Future scope"), prd.indexOf("## Product Principles"));

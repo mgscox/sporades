@@ -1,0 +1,3 @@
+# Scheduled Jobs Use Schedule Provenance
+
+Scheduled Jobs record their `enqueuedBy` provenance as the named Schedule and UTC `scheduledFor` occurrence that requested them, while their execution actor remains the Privileged server role. Sporades does not add a second Schedule field, invent a user, preserve a Session, or reuse the privileged sentinel as provenance: those alternatives would duplicate the source of truth or collapse why a Job exists into the authority under which it runs. Ordinary user-originated Jobs use explicit user provenance, and provenance grants neither visibility nor execution authority.

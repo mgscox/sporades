@@ -13,16 +13,16 @@ Statuses:
 
 ## Recommended Next Features
 
-The recommended next features are design-stage items that are concrete enough
-to shape into ADRs, PRDs, or implementation briefs. They are not ordered as one
+The recommended next features are concrete enough to shape into ADRs, PRDs,
+implementation briefs, or implementation issues. They are not ordered as one
 release theme yet; promotion should clarify dependency order, acceptance bars,
 and whether the work belongs in one release or separate tracks.
 
 | Feature | Status | Why it matters | Planning |
 | --- | --- | --- | --- |
 | User journey tracker | design | Gives Capsule authors an opt-in way to understand active user state and journey progress without exposing Sporades user identity, enabling online/viewing/typing-style UI, support diagnostics, and lightweight collaboration cues. | Needs PRD. Use the Data And Auth Helpers roadmap note as the source planning artifact. |
+| Job scheduling | ready | Gives Capsule authors a first-class way to run recurring work with persistence, missed-run behavior, timezone handling, and duplicate-run protection. It can support platform needs such as automated backups, and it depends on the implemented Job Queue and Privileged server role because recurring Jobs need durable state and an explicit execution actor when no live user session exists. | The promoted PRD is `.scratch/job-scheduling/PRD.md`; it defines five-field cron syntax, IANA timezone and daylight-saving behavior, bounded missed-run recovery, durable occurrence identity, Privileged Job execution, duplicate protection, and deterministic inspection. |
 | Multi-framework client toolchains | design | Expands Capsule client support beyond React and Preact while preserving one Sporades-owned Bundle pipeline, deterministic Dev/Container/Hosted behavior, and framework-native authoring. The intended initial set is Vanilla TypeScript, React, Preact, Vue, Svelte, SolidJS, Lit, and Inferno. | Needs a PRD covering an internal client-toolchain adapter seam, esbuild and Vite capability rules, a normalized public asset tree instead of the fixed `client.js` release assumption, framework-neutral transport subscriptions, native hooks/composables/stores/signals/controllers, scaffold and dependency generation, structured build events, and Dev-session refresh behavior. The design must revisit or supersede ADR 0010's fixed `/client.js` and user-owned `index.html` contract while preserving explicit HTML ownership semantics. Angular and server-owning meta-frameworks are out of scope because they would replace rather than fit the Sporades project and runtime model. |
-| Job scheduling | design | Gives Capsule authors a first-class way to run recurring work with persistence, missed-run behavior, timezone handling, and duplicate-run protection. It can support platform needs such as automated backups, and it depends on the implemented Job Queue and Privileged server role because recurring Jobs need durable state and an explicit execution actor when no live user session exists. | Needs a PRD for cron syntax, timezone handling, missed-run handling, and duplicate recurring-run protection. Use `.scratch/post-v2-platform-hardening-and-ops/issues/09-add-job-scheduling.md`, the Ops And Automation roadmap notes, and `.scratch/job-queue/PRD.md` as source planning artifacts. |
 
 ## Recently Implemented
 
