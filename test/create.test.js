@@ -349,6 +349,12 @@ test("sporades create writes a minimal React photo library scaffold when request
     assert.match(serverEntry, /personalPhotos: query/);
     assert.match(serverEntry, /ctx\.auth\.provider !== "google"/);
     assert.match(serverEntry, /recordPhoto: mutation/);
+    assert.match(serverEntry, /job, mutation, Number, query, schedule, String, table/);
+    assert.match(serverEntry, /timestampPhotoNames: job/);
+    assert.match(serverEntry, /expression: "\* \* \* \* \*"/);
+    assert.match(serverEntry, /job: "timestampPhotoNames"/);
+    assert.match(serverEntry, /toISOString\(\)\.slice\(11, 16\)/);
+    assert.match(serverEntry, /ctx\.db\.photos\.update/);
     assert.match(serverEntry, /ctx\.auth\.provider === "google" \? globalThis\.Boolean\(input\.isPublic\) : true/);
     assert.match(serverEntry, /throw new Error\("Public photos need a public file URL\."\)/);
     assert.match(serverEntry, /ctx\.db\.photos\.insert/);

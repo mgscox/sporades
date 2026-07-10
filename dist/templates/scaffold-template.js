@@ -246,7 +246,7 @@ Uploads use \`files.upload()\` from \`sporades/client\`, then store the returned
 
 Google is enabled in \`sporades.json\` with placeholder server env values so the Capsule starts immediately. Replace them with real OAuth credentials via \`sporades auth set google\` before using real Google sign-in.
 `,
-        "server/index.ts": `import { Boolean, capsule, mutation, Number, query, String, table } from "sporades/server";
+        "server/index.ts": `import { Boolean, capsule, job, mutation, Number, query, schedule, String, table } from "sporades/server";
 
 export default capsule({
   name: ${JSON.stringify(options.name)},
@@ -289,6 +289,27 @@ export default capsule({
           ...photo,
           status: photo.isPublic ? "public" : "private",
         }));
+    }),
+  },
+
+  jobs: {
+    timestampPhotoNames: job((ctx) => {
+      const time = new globalThis.Date().toISOString().slice(11, 16);
+      for (const photo of ctx.db.photos.all()) {
+        const title = globalThis.String(photo.title).replace(/^\\d{2}:\\d{2}\\s+/, "");
+        const fileName = globalThis.String(photo.fileName).replace(/^\\d{2}:\\d{2}\\s+/, "");
+        ctx.db.photos.update(photo.id, {
+          title: \`\${time} \${title}\`,
+          fileName: \`\${time} \${fileName}\`,
+        });
+      }
+    }),
+  },
+
+  schedules: {
+    timestampPhotoNames: schedule({
+      expression: "* * * * *",
+      job: "timestampPhotoNames",
     }),
   },
 
