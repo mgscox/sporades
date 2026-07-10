@@ -14,7 +14,7 @@ Validated swarm base: `4377ca26858dfbc9c61e9f9660c3e1ed79b6c0d8`
 | 07 | done | 06 | `413b1220d47a5ed7183b9d1218b84edc30840888` | `codex/job-scheduling-07-inspection` / removed worktree | `job_scheduling_07` | `169ef50de5307f8714a96483f3cd28517f660ebd` | `job_scheduling_07_review` | ACCEPT | `28abf9dc46989ee4f8e108507ce47e6f614b32ec` | Review 3 rounds; integration build/type/generated + inspection green | worktree removed; branch retained |
 | 08 | done | 07 | `37334f02b999edd64d24c60dd1e8d3f580581237` | `codex/job-scheduling-08-dev-cli` / removed worktree | `job_scheduling_08` | `04bb45b69047a64fadde9d740f792936b1f58547` | `job_scheduling_08_review` | ACCEPT | `915610191a7da50f0d971e877d72b5b0d0018e44` | Review focused 8 pass/1 PG skip; integration CLI 10/10 + generated | worktree removed; branch retained |
 | 09 | done | 08 | `8816c9788fc987c22183ca98e8ec9fe05cd0001c` | `codex/job-scheduling-09-remote-cli` / removed worktree | `job_scheduling_09` | `68a625e18c47204de85b5c038fc787863bdeb8fa` | `job_scheduling_09_review` | ACCEPT | `09fc9bd9d3e1ae1a432c1033ec57ad2c51ac6eb7` | Review 3 rounds; integration CLI 16/16 + build/type/generated | worktree removed; branch retained |
-| 10 | working | 09 | `c3b4ec2b69fa5227d828b5139c23fe6f3d8e2049` | `codex/job-scheduling-10-docs` / `/Users/mattcox/.codex/worktrees/job-scheduling-10` | `job_scheduling_10` | — | — | — | — | — | pending |
+| 10 | review | 09 | `c3b4ec2b69fa5227d828b5139c23fe6f3d8e2049` | `codex/job-scheduling-10-docs` / `/Users/mattcox/.codex/worktrees/job-scheduling-10` | `job_scheduling_10` | `1f8e3c18755368072112bf620346518fd1360f9b` | `job_scheduling_10_review` | — | — | RED stale/missing publication; docs/types 17/17, build/TypeDoc/generated green | pending |
 
 ## Baseline
 
