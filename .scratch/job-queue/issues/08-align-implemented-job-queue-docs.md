@@ -13,8 +13,8 @@ Status: ready-for-agent
 
 **Category:** enhancement
 **Summary:** Reconcile canonical docs and tests with the Job Queue server
-behavior that is already implemented, without claiming operator inspection is
-complete.
+and operator-inspection behavior that is already implemented, without moving
+the roadmap to fully implemented before final documentation is complete.
 
 **Current behavior:**
 The user guide documents current-user Jobs, while the product PRD still places
@@ -24,14 +24,19 @@ supports future Jobs. A docs test also expects the roadmap's pre-promotion
 `ready`.
 
 **Desired behavior:**
-Canonical docs accurately distinguish the implemented server-runtime Job Queue
-surface from the still-blocked cross-runtime operator inspection surface. Docs
-and tests agree with the roadmap without moving Job Queue to fully implemented.
+Canonical docs accurately describe the implemented server-runtime Job Queue and
+the JSON-only `sporades jobs`, `sporades deploy jobs`, and
+`sporades host jobs` operator inspection surfaces. Docs and tests agree with the
+roadmap while Job Queue remains `ready` until the final documentation issue is
+complete.
 
 **Key interfaces:**
 
 - Product scope documentation — describes implemented server Job declaration,
   enqueue, execution, actors, retry, cancellation, and recovery.
+- Operator inspection documentation — describes the implemented bounded,
+  read-only, JSON-only Dev, Container, and Hosted commands without exposing raw
+  payloads or idempotency-key values.
 - Roadmap contract — keeps Job Queue active/ready until operator inspection and
   final documentation are complete.
 - Documentation tests — assert the current staged status and terminology.
@@ -39,7 +44,8 @@ and tests agree with the roadmap without moving Job Queue to fully implemented.
 **Acceptance criteria:**
 
 - [ ] Product scope docs no longer describe every Job Queue capability as future work.
-- [ ] Docs state that deterministic CLI inspection across Dev, Container, and Hosted Capsule remains incomplete.
+- [ ] Docs describe deterministic JSON-only Job inspection across Dev, local Container, and Hosted Capsule as implemented through `sporades jobs`, `sporades deploy jobs`, and `sporades host jobs`.
+- [ ] Inspection docs state that administrators see all bounded Job state, payloads and idempotency-key values are omitted, and v1 has no filters, cursor, pagination, human renderer, or offline inspection.
 - [ ] Privileged server role documentation reflects implemented privileged Jobs without conflating them with Capsule roles or browser authority.
 - [ ] The roadmap remains in a non-complete state and continues to identify Job scheduling as dependent work.
 - [ ] The stale docs assertion expecting `Job queue | design` is replaced with the current staged contract.
@@ -47,7 +53,7 @@ and tests agree with the roadmap without moving Job Queue to fully implemented.
 
 **Out of scope:**
 
-- Implementing the cross-runtime inspection protocol or CLI commands.
+- Changing the implemented cross-runtime inspection protocol or CLI commands.
 - Moving Job Queue into Recently Implemented.
 - Documenting recurring Job scheduling as implemented.
 
