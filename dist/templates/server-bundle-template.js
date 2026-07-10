@@ -31,16 +31,17 @@ const runtimeConfig = {
 const runtimeServerEnv = await readRuntimeServerEnv(sporadesServerEnv, sporadesSealedServerEnv);
 const runtimeServiceEnv = readRuntimeServiceEnv();
 if (sporadesAction) {
-  if (sporadesAction !== "jobs.inspect") {
+  if (!['jobs.inspect', 'schedules.inspect'].includes(sporadesAction)) {
     process.stdout.write(JSON.stringify({ ok: false, data: null, error: { message: "Unsupported Sporades runtime action.", hint: "Upgrade the Sporades CLI and generated Bundle together." } }) + "\\n");
     process.exit(1);
   }
   const adapter = await createRuntimeInspectionAdapter(databasePath, runtimeServiceEnv, runtimeConfig);
   try {
-    const jobs = adapter ? await inspectRuntimeJobs(adapter) : [];
-    process.stdout.write(JSON.stringify({ ok: true, data: { capsule: { name: sporadesConfig.name }, jobs }, error: null }) + "\\n");
+    const items = adapter ? await (sporadesAction === 'jobs.inspect' ? inspectRuntimeJobs(adapter) : inspectRuntimeSchedules(adapter)) : [];
+    const key = sporadesAction === 'jobs.inspect' ? 'jobs' : 'schedules';
+    process.stdout.write(JSON.stringify({ ok: true, data: { capsule: { name: sporadesConfig.name }, [key]: items }, error: null }) + "\\n");
   } catch (error) {
-    process.stdout.write(JSON.stringify({ ok: false, data: null, error: { code: error.code ?? "JOB_INSPECTION_FAILED", message: error.message, hint: error.hint, ...(error.jobId ? { jobId: error.jobId, field: error.field } : {}) } }) + "\\n");
+    process.stdout.write(JSON.stringify({ ok: false, data: null, error: { code: error.code ?? (sporadesAction === 'jobs.inspect' ? "JOB_INSPECTION_FAILED" : "SCHEDULE_INSPECTION_FAILED"), message: error.message, hint: error.hint, ...(error.jobId ? { jobId: error.jobId, field: error.field } : {}), ...(error.scheduleName ? { scheduleName: error.scheduleName, field: error.field } : {}) } }) + "\\n");
     process.exitCode = 1;
   } finally { await adapter?.close(); }
   process.exit();

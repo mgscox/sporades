@@ -123,6 +123,11 @@ async function main() {
                 throw commandError("Unknown jobs argument.", "Use `sporades jobs`.");
             await inspectDevJobs({ projectDir: process.cwd() });
             return;
+        case "schedules":
+            if (args.length)
+                throw commandError("Unknown schedules argument.", "Use `sporades schedules`.");
+            await inspectDevSchedules({ projectDir: process.cwd() });
+            return;
         case "host":
             if (isHelp) {
                 printHelp('host');
@@ -1122,10 +1127,10 @@ function parseInspectionProcess(result, hint) {
         envelope = JSON.parse(result.stdout.trim());
     }
     catch {
-        throw commandError("Job inspection returned invalid JSON.", hint);
+        throw commandError("Runtime inspection returned invalid JSON.", hint);
     }
     if (!envelope?.ok)
-        throw commandError(envelope?.error?.message ?? "Job inspection failed.", envelope?.error?.hint ?? hint, envelope?.error);
+        throw commandError(envelope?.error?.message ?? "Runtime inspection failed.", envelope?.error?.hint ?? hint, envelope?.error);
     writeResult(envelope);
 }
 async function inspectDevJobs(options) {
@@ -1144,13 +1149,29 @@ async function inspectDevJobs(options) {
     });
     parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades jobs`.");
 }
-async function readActiveDevDatabaseServiceEnv(projectDir) {
+async function inspectDevSchedules(options) {
+    const session = await readDevSession(options.projectDir);
+    try {
+        process.kill(Number(session.pid), 0);
+    }
+    catch {
+        throw commandError("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades schedules`.");
+    }
+    const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir, "schedules");
+    const bundle = path.join(options.projectDir, ".sporades", "build", "server.mjs");
+    const result = spawnSync(process.execPath, [bundle, "--sporades-action", "schedules.inspect"], {
+        cwd: options.projectDir, encoding: "utf8",
+        env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path.join(options.projectDir, ".sporades", "data.db") },
+    });
+    parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades schedules`.");
+}
+async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
     try {
         return JSON.parse(await readFile(path.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
     }
     catch (error) {
         if (errorDetails(error).code !== "ENOENT")
-            throw commandError("Invalid active Dev database adapter metadata.", "Restart `sporades dev`, then retry `sporades jobs`.");
+            throw commandError("Invalid active Dev database adapter metadata.", `Restart \`sporades dev\`, then retry \`sporades ${command}\`.`);
     }
     const config = await readProjectConfig(projectDir);
     const capsuleServices = localCapsuleServicesFromConfig(config, projectDir);

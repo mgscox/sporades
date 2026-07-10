@@ -44,6 +44,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     enqueueScheduledOccurrence,
     createRuntimeInspectionAdapter,
     inspectRuntimeJobs,
+    inspectRuntimeSchedules,
+    scheduleSummary,
     jobError,
     boundedJobJson,
     jobState,
@@ -8431,6 +8433,28 @@ export async function inspectRuntimeJobs(adapter) {
     };
     if (!adapter?.withReadOnlySnapshot)
         throw jobError("JOB_INSPECTION_READ_ONLY_UNAVAILABLE", "Database adapter does not support read-only Job inspection.", "Upgrade the Sporades runtime and retry inspection.");
+    return await adapter.withReadOnlySnapshot(read);
+}
+/** Read the bounded operator view of every Schedule in one adapter snapshot. */
+export async function inspectRuntimeSchedules(adapter) {
+    const read = async (tx) => {
+        let rows;
+        try {
+            rows = await tx.prepare("SELECT * FROM sporades_schedules ORDER BY name ASC").all();
+        }
+        catch (error) {
+            const message = String(error?.message ?? error);
+            if (/no such table|does not exist|unknown table/i.test(message))
+                return [];
+            throw error;
+        }
+        const summaries = [];
+        for (const row of rows)
+            summaries.push(await scheduleSummary(tx, row));
+        return summaries;
+    };
+    if (!adapter?.withReadOnlySnapshot)
+        throw jobError("SCHEDULE_INSPECTION_READ_ONLY_UNAVAILABLE", "Database adapter does not support read-only Schedule inspection.", "Upgrade the Sporades runtime and retry inspection.");
     return await adapter.withReadOnlySnapshot(read);
 }
 function normalizeJobRetry(value) { if (value === undefined)
