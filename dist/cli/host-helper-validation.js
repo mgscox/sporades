@@ -71,6 +71,12 @@ export function validateHealthRequest(request) {
         throw helperError("Invalid Hosted Capsule health request.", "Update the Sporades CLI and retry the host health command.");
     }
 }
+export function validateScheduleInspectionRequest(request) {
+    const requiredStrings = [request.host?.domain, request.host?.alias, request.host?.remoteRoot, request.capsule?.subname];
+    if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
+        throw helperError("Invalid Hosted Capsule Schedule inspection request.", "Update the Sporades CLI and retry `sporades host schedules`.");
+    }
+}
 export function validateHostStatsRequest(request) {
     const requiredStrings = [
         request.host?.domain,

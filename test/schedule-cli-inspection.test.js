@@ -145,10 +145,22 @@ test("generated Host helper preserves stopped and malformed Schedule inspection 
     const docker = path.join(bin, "docker"); await writeFile(docker, "#!/bin/sh\nif [ \"$1\" = inspect ]; then echo false; exit 0; fi\n"); await chmod(docker, 0o755);
     const env = { PATH: `${bin}${path.delimiter}${process.env.PATH}`, SPORADES_CONFIG_DIR: config };
     const stopped = runCommand(["host", "schedules", "--host", "live", "--subname", "team-notes"], dir, env); assert.equal(stopped.status, 1); assert.match(JSON.parse(stopped.stdout).error.hint, /sporades host start/);
-    const malformed = { ok: false, data: null, error: { code: "SCHEDULE_INSPECTION_INVALID_STATE", message: "Persisted Schedule state is malformed.", hint: "Repair Schedule state.", scheduleName: "broken", field: "nextOccurrence" } };
+    const malformed = { ok: false, data: null, error: { code: "SCHEDULE_INSPECTION_INVALID_STATE", message: "raw-secret message", hint: "credential=raw-secret", scheduleName: "broken", field: "nextOccurrence", payload: { token: "raw-secret" }, definitionFingerprint: "raw-secret", credentials: "raw-secret" } };
     await writeFile(docker, `#!/bin/sh\nif [ "$1" = inspect ]; then echo true; exit 0; fi\nif [ "$1" = exec ]; then echo '${JSON.stringify(malformed)}'; exit 0; fi\n`); await chmod(docker, 0o755);
     const corrupt = runCommand(["host", "schedules", "--host", "live", "--subname", "team-notes"], dir, env); assert.equal(corrupt.status, 1); const body = JSON.parse(corrupt.stdout);
     assert.deepEqual({ code: body.error.diagnostics.code, scheduleName: body.error.diagnostics.scheduleName, field: body.error.diagnostics.field }, { code: "SCHEDULE_INSPECTION_INVALID_STATE", scheduleName: "broken", field: "nextOccurrence" });
     assert.doesNotMatch(corrupt.stdout, /payload|definitionFingerprint|raw-secret/);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("generated Host helper rejects malformed Schedule targets before Docker", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedules-invalid-request-"));
+  try {
+    const bin = path.join(dir, "bin"), dockerLog = path.join(dir, "docker.log"); await mkdir(bin);
+    const docker = path.join(bin, "docker"); await writeFile(docker, `#!/bin/sh\necho called > ${JSON.stringify(dockerLog)}\nexit 9\n`); await chmod(docker, 0o755);
+    const result = spawnSync(process.execPath, [path.join(root, "bin", "sporades-host-helper.js")], { input: JSON.stringify({ action: "schedules.inspect", host: {}, capsule: {} }), encoding: "utf8", env: { ...process.env, PATH: `${bin}${path.delimiter}${process.env.PATH}` } });
+    assert.equal(result.status, 0); const body = JSON.parse(result.stdout);
+    assert.deepEqual(body, { ok: false, data: null, error: { message: "Invalid Hosted Capsule Schedule inspection request.", hint: "Update the Sporades CLI and retry `sporades host schedules`." } });
+    assert.equal(existsSync(dockerLog), false); assert.doesNotMatch(result.stdout, /TypeError|undefined/);
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

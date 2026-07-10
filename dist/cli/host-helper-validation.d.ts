@@ -14,6 +14,7 @@ export declare function validateSealedEnvRotationRequest(request: HostHelperRequ
 export declare function validateStatsRequest(request: HostHelperRequest): void;
 export declare function validateReleaseListRequest(request: HostHelperRequest): void;
 export declare function validateHealthRequest(request: HostHelperRequest): void;
+export declare function validateScheduleInspectionRequest(request: HostHelperRequest): void;
 export declare function validateHostStatsRequest(request: HostHelperRequest): void;
 export declare function validateRollbackRequest(request: HostHelperRequest): void;
 export declare function validateHostLogsRequest(request: HostHelperRequest, limits: HostLogLineLimits): void;

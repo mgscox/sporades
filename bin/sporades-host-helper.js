@@ -661,6 +661,12 @@ function validateHealthRequest(request) {
     throw helperError("Invalid Hosted Capsule health request.", "Update the Sporades CLI and retry the host health command.");
   }
 }
+function validateScheduleInspectionRequest(request) {
+  const requiredStrings = [request.host?.domain, request.host?.alias, request.host?.remoteRoot, request.capsule?.subname];
+  if (requiredStrings.some((value) => typeof value !== "string" || value.length === 0)) {
+    throw helperError("Invalid Hosted Capsule Schedule inspection request.", "Update the Sporades CLI and retry `sporades host schedules`.");
+  }
+}
 function validateHostStatsRequest(request) {
   const requiredStrings = [
     request.host?.domain,
@@ -883,6 +889,7 @@ main().catch((error) => {
 });
 async function main() {
   const request = JSON.parse(await readStdin());
+  if (request.action === "schedules.inspect") validateScheduleInspectionRequest(request);
   hostHelperConfig = await loadHostHelperConfig(request);
   if (request.action === "capsule.register") {
     await registerCapsule(request);
@@ -970,9 +977,10 @@ function inspectCapsuleJobs(request) {
   inspectCapsuleRuntime(request, "jobs.inspect", "Job");
 }
 function inspectCapsuleSchedules(request) {
-  inspectCapsuleRuntime(request, "schedules.inspect", "Schedule");
+  validateScheduleInspectionRequest(request);
+  inspectCapsuleRuntime(request, "schedules.inspect", "Schedule", sanitizeScheduleInspectionEnvelope);
 }
-function inspectCapsuleRuntime(request, action, label) {
+function inspectCapsuleRuntime(request, action, label, sanitize = (envelope) => envelope) {
   const containerName = createHostedContainerName(request.host.domain, request.capsule.subname);
   if (!checkContainerRunning(containerName)) {
     throw helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
@@ -984,8 +992,38 @@ function inspectCapsuleRuntime(request, action, label) {
   } catch {
     throw helperError(`Hosted ${label} inspection returned invalid JSON.`, "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
   }
-  if (!envelope.ok) throw helperError(envelope.error?.message ?? `Hosted ${label} inspection failed.`, envelope.error?.hint ?? "Inspect the Hosted Capsule and retry the command.", envelope.error);
-  writeEnvelope(envelope);
+  const bounded = sanitize(envelope);
+  if (!bounded.ok) throw helperError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
+  writeEnvelope(bounded);
+}
+function sanitizeScheduleInspectionEnvelope(envelope) {
+  if (envelope?.ok === false) {
+    const source = envelope.error;
+    const diagnostics = source?.code === "SCHEDULE_INSPECTION_INVALID_STATE" && typeof source.scheduleName === "string" && typeof source.field === "string" ? { code: source.code, scheduleName: source.scheduleName, field: source.field } : void 0;
+    return { ok: false, data: null, error: {
+      message: diagnostics ? "Persisted Schedule state is malformed." : "Hosted Schedule inspection failed.",
+      hint: diagnostics ? "Repair or remove the malformed Schedule before retrying inspection." : "Inspect the Hosted Capsule and retry the command.",
+      ...diagnostics ? { diagnostics } : {}
+    } };
+  }
+  if (envelope?.ok !== true || typeof envelope.data?.capsule?.name !== "string" || !Array.isArray(envelope.data?.schedules)) {
+    throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
+  }
+  const schedules = envelope.data.schedules.map((value) => {
+    if (!value || typeof value.name !== "string" || typeof value.expression !== "string" || typeof value.timezone !== "string" || !["skip", "latest"].includes(value.missedRun) || typeof value.enabled !== "boolean" || value.nextOccurrence !== null && typeof value.nextOccurrence !== "string") {
+      throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
+    }
+    let latestOccurrence = null;
+    if (value.latestOccurrence !== null) {
+      const latest = value.latestOccurrence;
+      if (!latest || typeof latest.scheduledFor !== "string" || !["enqueued", "payload-failed"].includes(latest.outcome)) throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
+      if (latest.outcome === "enqueued" && typeof latest.jobId === "string") latestOccurrence = { scheduledFor: latest.scheduledFor, outcome: latest.outcome, jobId: latest.jobId };
+      else if (latest.outcome === "payload-failed" && ["SCHEDULE_PAYLOAD_FAILED", "SCHEDULE_ENQUEUE_FAILED"].includes(latest.errorCode)) latestOccurrence = { scheduledFor: latest.scheduledFor, outcome: latest.outcome, errorCode: latest.errorCode };
+      else throw helperError("Hosted Schedule inspection returned an invalid response.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command.");
+    }
+    return { name: value.name, expression: value.expression, timezone: value.timezone, missedRun: value.missedRun, enabled: value.enabled, nextOccurrence: value.nextOccurrence, latestOccurrence };
+  });
+  return { ok: true, data: { capsule: { name: envelope.data.capsule.name }, schedules }, error: null };
 }
 function versionHost(request) {
   writeEnvelope({
