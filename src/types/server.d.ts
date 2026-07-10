@@ -334,6 +334,7 @@ export type PrivilegedContext<Schema extends SchemaDefinition = SchemaDefinition
   signal: AbortSignal;
   files: PrivilegedFileApi;
   jobs: JobApi;
+  schedules: ScheduleInspectionApi;
 };
 
 /**
@@ -500,6 +501,24 @@ export type JobApi = {
   list(options?: { limit?: number; cursor?: string }): Promise<{ jobs: JobSummary[]; nextCursor: string | null }>;
 };
 export type JobDefinition<Handler = (ctx: CapsuleContext, payload: JsonValue) => MaybePromise<JsonValue>> = { kind: "job"; handler: Handler };
+export type ScheduleLatestOccurrence =
+  | { scheduledFor: string; outcome: "enqueued"; jobId: string }
+  | { scheduledFor: string; outcome: "payload-failed"; errorCode: string };
+/** Bounded Privileged view of one currently declared Schedule. */
+export type ScheduleSummary = {
+  name: string;
+  expression: string;
+  timezone: string;
+  missedRun: "skip" | "latest";
+  enabled: boolean;
+  nextOccurrence: string | null;
+  latestOccurrence: ScheduleLatestOccurrence | null;
+};
+/** Server-only inspection available solely inside an active Privileged callback. */
+export type ScheduleInspectionApi = {
+  get(name: string): Promise<ScheduleSummary | null>;
+  list(): Promise<ScheduleSummary[]>;
+};
 export type ScheduleOccurrence = Readonly<{ scheduleName: string; scheduledFor: string }>;
 export type ScheduleContext<Schema extends SchemaDefinition = SchemaDefinition> = Readonly<{ signal: AbortSignal; privileged: PrivilegedApi<Schema> }>;
 /**
@@ -512,10 +531,12 @@ export type SchedulePayloadFactory<Schema extends SchemaDefinition = SchemaDefin
 export type ScheduleDefinition = {
   kind?: "schedule";
   expression: string;
+  timezone?: string;
   job: string;
   payload?: JsonValue | SchedulePayloadFactory;
   retry?: { maxAttempts: number; delayMs?: number };
   enabled?: boolean;
+  missedRun?: "skip" | "latest";
 };
 
 /**

@@ -4129,7 +4129,57 @@ function createPrivilegedHandlerContext(database, context, signal) {
   privilegedContext.files = createPrivilegedFileApi(database, () => holder.current);
   privilegedContext.privileged = createContextPrivilegedApi(database, () => holder.current);
   privilegedContext.jobs = createPrivilegedJobApi(database, () => holder.current);
+  privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
   return privilegedContext;
+}
+function createPrivilegedScheduleApi(database, contextGetter) {
+  const sqlite = () => (database.__rootDatabase ?? database).sqlite;
+  return {
+    async get(name) {
+      assertActivePrivilegedJobAccess(contextGetter);
+      if (typeof name !== "string" || !name) throw jobError("INVALID_SCHEDULE_NAME", "Invalid Schedule name.", "Pass a non-empty declared Schedule name.");
+      const row = await sqlite().prepare("SELECT * FROM sporades_schedules WHERE name=?").get(name);
+      return row ? scheduleSummary(row) : null;
+    },
+    async list() {
+      assertActivePrivilegedJobAccess(contextGetter);
+      const rows = await sqlite().prepare("SELECT * FROM sporades_schedules ORDER BY name ASC").all();
+      return rows.map(scheduleSummary);
+    }
+  };
+}
+function scheduleSummary(row) {
+  const invalid = (field) => {
+    const error = jobError("SCHEDULE_INSPECTION_INVALID_STATE", "Stored Schedule state is invalid.", "Repair or remove the malformed Schedule before retrying inspection.");
+    error.scheduleName = typeof row?.name === "string" ? row.name : null;
+    error.field = field;
+    return error;
+  };
+  if (typeof row.name !== "string" || !row.name) throw invalid("name");
+  if (typeof row.expression !== "string" || !row.expression) throw invalid("expression");
+  if (typeof row.effectiveTimezone !== "string" || !row.effectiveTimezone) throw invalid("timezone");
+  if (!["skip", "latest"].includes(row.missedRunPolicy)) throw invalid("missedRun");
+  if (![0, 1, false, true].includes(row.enabled)) throw invalid("enabled");
+  if (row.nextOccurrence != null && Number.isNaN(Date.parse(row.nextOccurrence))) throw invalid("nextOccurrence");
+  const latestOutcome = row.latestOutcome == null ? null : String(row.latestOutcome);
+  let latestOccurrence = null;
+  if (latestOutcome !== null && (typeof row.latestScheduledFor !== "string" || Number.isNaN(Date.parse(row.latestScheduledFor)))) throw invalid("latestOccurrence.scheduledFor");
+  if (latestOutcome === "enqueued") {
+    if (typeof row.latestJobId !== "string" || !row.latestJobId) throw invalid("latestOccurrence.jobId");
+    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "enqueued", jobId: row.latestJobId };
+  } else if (latestOutcome === "payload-failed") {
+    if (typeof row.latestErrorCode !== "string" || !row.latestErrorCode) throw invalid("latestOccurrence.errorCode");
+    latestOccurrence = { scheduledFor: row.latestScheduledFor, outcome: "payload-failed", errorCode: row.latestErrorCode.slice(0, 80) };
+  } else if (latestOutcome !== null) throw invalid("latestOccurrence.outcome");
+  return {
+    name: String(row.name),
+    expression: String(row.expression),
+    timezone: String(row.effectiveTimezone),
+    missedRun: String(row.missedRunPolicy),
+    enabled: Boolean(row.enabled),
+    nextOccurrence: row.nextOccurrence == null ? null : String(row.nextOccurrence),
+    latestOccurrence
+  };
 }
 function createPrivilegedFileApi(database, contextGetter) {
   return Object.freeze({
@@ -9107,7 +9157,7 @@ async function runCurrentUserJobWorker(database) {
         let result;
         if (row.actorUserId === privilegedAuthUserId()) {
           const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
-          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1 } }, (privilegedCtx) => handler.handler(privilegedCtx, JSON.parse(row.payload)));
+          result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {} } }, (privilegedCtx) => handler.handler(privilegedCtx, JSON.parse(row.payload)));
         } else {
           const user = await database.sqlite.prepare("SELECT * FROM sporades_auth_users WHERE id = ?").get(row.actorUserId);
           if (!user) throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");

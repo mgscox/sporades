@@ -147,6 +147,10 @@ const app = capsule({
         .limit(50)
         .all(),
     ),
+    noOrdinaryScheduleInspection: query((ctx) => {
+      // @ts-expect-error Schedule inspection is available only in an active Privileged callback.
+      return ctx.schedules.list();
+    }),
     asyncTodos: query(async (ctx) => {
       await Promise.resolve();
       return ctx.db.todos.where("ownerId", ctx.auth.userId).all();
@@ -161,6 +165,10 @@ const app = capsule({
         privilegedCtx.auth.userId satisfies "__privileged__";
         const allJobs = await privilegedCtx.jobs.list();
         allJobs.nextCursor?.toUpperCase();
+        const schedules = await privilegedCtx.schedules.list();
+        schedules[0]?.name.toUpperCase();
+        const oneSchedule = await privilegedCtx.schedules.get("dynamicSummary");
+        oneSchedule?.latestOccurrence?.scheduledFor.toUpperCase();
         const fileUrl = await privilegedCtx.files.url("/reports/private.txt");
         if (fileUrl.ok) {
           fileUrl.data.url.toUpperCase();

@@ -44,6 +44,66 @@ test("a matching static Schedule enqueues and runs one ordinary Privileged Job",
   }
 });
 
+test("Privileged Schedule inspection is bounded, ordered, correlated, and side-effect free", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-inspection-"));
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const audits = [];
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
+    jobs: { work: job(() => null) },
+    schedules: {
+      zeta: schedule({ expression: "*/5 * * * *", timezone: "UTC", job: "work", payload: { secret: "never-return-me" }, missedRun: "latest" }),
+      alpha: schedule({ expression: "0 9 * * *", timezone: "UTC", job: "work", enabled: false }),
+    },
+    mutations: {
+      inspect: mutation((ctx) => ctx.privileged.run({ operation: "test.inspect", targetResourceKind: "schedule-store" }, async (privilegedCtx) => ({
+        one: await privilegedCtx.schedules.get("zeta"),
+        missing: await privilegedCtx.schedules.get("missing"),
+        all: await privilegedCtx.schedules.list(),
+      }))),
+      inspectJob: mutation((ctx, id) => ctx.privileged.run({ operation: "test.inspect-job", targetResourceKind: "job-queue" }, (privilegedCtx) => privilegedCtx.jobs.get(id))),
+      ordinaryJob: mutation((ctx, id) => ctx.jobs.get(id)),
+    },
+  }, { clock });
+  try {
+    await database.init();
+    const originalEmit = database.audit.emit.bind(database.audit);
+    database.audit.emit = async (details) => { audits.push(details); return originalEmit(details); };
+    const beforeJobs = database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count;
+    const result = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
+    assert.equal(result.ok, true);
+    assert.deepEqual(result.data.all.map((entry) => entry.name), ["alpha", "zeta"]);
+    assert.deepEqual(result.data.one, {
+      name: "zeta", expression: "*/5 * * * *", timezone: "UTC", missedRun: "latest", enabled: true,
+      nextOccurrence: "2030-01-01T00:05:00.000Z", latestOccurrence: null,
+    });
+    assert.deepEqual(result.data.all[0], {
+      name: "alpha", expression: "0 9 * * *", timezone: "UTC", missedRun: "skip", enabled: false,
+      nextOccurrence: null, latestOccurrence: null,
+    });
+    assert.equal(result.data.missing, null);
+    assert.doesNotMatch(JSON.stringify(result.data), /never-return-me|definitionFingerprint|claim|idempotency/i);
+    assert.equal(database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, beforeJobs);
+    assert.equal(audits.every((entry) => entry.operation === "test.inspect"), true);
+
+    database.sqlite.prepare("UPDATE sporades_schedules SET latestScheduledFor=?, latestOutcome='payload-failed', latestErrorCode=? WHERE name='zeta'").run("2030-01-01T00:00:00.000Z", "SCHEDULE_PAYLOAD_FACTORY_FAILED");
+    const failed = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
+    assert.deepEqual(failed.data.one.latestOccurrence, { scheduledFor: "2030-01-01T00:00:00.000Z", outcome: "payload-failed", errorCode: "SCHEDULE_PAYLOAD_FACTORY_FAILED" });
+
+    clock.advanceBy(270_000); await clock.runDueTimers();
+    const latest = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspect", []);
+    const jobId = database.sqlite.prepare("SELECT id FROM sporades_jobs").get().id;
+    assert.deepEqual(latest.data.one.latestOccurrence, { scheduledFor: "2030-01-01T00:05:00.000Z", outcome: "enqueued", jobId });
+    const correlated = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "inspectJob", [jobId]);
+    assert.deepEqual(correlated.data.enqueuedBy, { mode: "schedule", scheduleName: "zeta", scheduledFor: "2030-01-01T00:05:00.000Z" });
+    assert.equal("schedule" in correlated.data, false);
+    const ordinary = await runMutation(database, { userId: "operator", displayName: "operator", email: null, picture: null, isAuthenticated: true, isGuest: false, provider: "test" }, "ordinaryJob", [jobId]);
+    assert.equal(ordinary.data, null);
+    const executionAudit = audits.find((entry) => entry.operation === "jobs.execute" && entry.outcome === "started");
+    assert.equal(executionAudit.metadata.scheduleName, "zeta");
+    assert.equal(executionAudit.metadata.scheduledFor, "2030-01-01T00:05:00.000Z");
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
 test("a Schedule matches wall-clock fields in its explicit IANA timezone", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-timezone-"));
   const clock = createControllableRuntimeClock("2030-01-01T16:59:30.000Z");
