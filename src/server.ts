@@ -33,6 +33,7 @@ export type JobDefinition<HandlerType extends Handler = Handler> = {
 
 export type ScheduleDefinition = {
   expression: string;
+  timezone?: string;
   job: string;
   payload?: unknown | SchedulePayloadFactory;
   retry?: { maxAttempts: number; delayMs?: number };

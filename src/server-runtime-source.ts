@@ -803,15 +803,16 @@ function scheduleDefinitionsFromCapsule(capsuleDefinition: any, jobs: any[]) {
   const schedules: any[] = [];
   for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {}) as [string, any][]) {
     if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name)) throw commandError(`Invalid Schedule name: ${name}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
-    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "job", "payload", "retry", "enabled"].includes(key))) throw commandError(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, job, payload?, retry?, enabled? }).");
+    if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "timezone", "job", "payload", "retry", "enabled"].includes(key))) throw commandError(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, timezone?, job, payload?, retry?, enabled? }).");
     if (schedules.some((candidate) => candidate.name === name)) throw commandError(`Duplicate Schedule declaration: ${name}`, "Use one unique Schedule name per Capsule.");
     if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job)) throw commandError(`Unknown Job handler for Schedule: ${name}`, "Reference a Job declared in the Capsule jobs map.");
     const expression = parseScheduleExpression(definition.expression);
+    const timezone = resolveScheduleTimezone(definition.timezone);
     const payload = definition.payload === undefined ? null : definition.payload;
     if (typeof payload !== "function") boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
     const retry = normalizeJobRetry(definition.retry);
     if (definition.enabled !== undefined && typeof definition.enabled !== "boolean") throw commandError(`Invalid enabled value for Schedule: ${name}`, "Pass true or false for enabled.");
-    schedules.push({ name, expression: definition.expression.trim().replace(/\s+/g, " "), fields: expression, job: definition.job, payload, retry, enabled: definition.enabled ?? true });
+    schedules.push({ name, expression: definition.expression.trim().replace(/\s+/g, " "), fields: expression, timezone, job: definition.job, payload, retry, enabled: definition.enabled ?? true });
   }
   return schedules;
 }
@@ -834,7 +835,7 @@ function parseScheduleExpression(value: any) {
   const parts = value.trim().split(/\s+/);
   if (parts.length !== 5) throw commandError(`Unsupported Schedule expression: ${value}`, "Use exactly five numeric cron fields; seconds, years, and nicknames are unsupported.");
   const ranges = [[0,59],[0,23],[1,31],[1,12],[0,7]];
-  return parts.map((part, index) => {
+  const fields: any = parts.map((part, index) => {
     const values = new Set<number>();
     for (const item of part.split(",")) {
       const [base, stepText] = item.split("/");
@@ -849,17 +850,40 @@ function parseScheduleExpression(value: any) {
     }
     return values;
   });
+  fields.restricted = parts.map((part) => part !== "*");
+  return fields;
 }
 
-function nextScheduleOccurrence(fields: Set<number>[], after: Date) {
+function resolveScheduleTimezone(value: any) {
+  if (value !== undefined && (typeof value !== "string" || value.trim() === "")) throw commandError("Invalid Schedule timezone.", "Pass an available IANA timezone name.");
+  const requested = value === undefined ? Intl.DateTimeFormat().resolvedOptions().timeZone : value.trim();
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: requested }).resolvedOptions().timeZone;
+  } catch {
+    throw commandError(`Invalid Schedule timezone: ${String(requested)}`, "Pass an available IANA timezone name from the runtime timezone database.");
+  }
+}
+
+const scheduleWeekdays: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+function scheduleWallClockParts(formatter: Intl.DateTimeFormat, instant: Date) {
+  const parts = Object.fromEntries(formatter.formatToParts(instant).map((part) => [part.type, part.value]));
+  return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday: scheduleWeekdays[parts.weekday] };
+}
+
+function nextScheduleOccurrence(fields: Set<number>[], after: Date, timezone: string) {
+  const formatter = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
+    timeZone: timezone, weekday: "short", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  });
   const candidate = new Date(after.getTime());
   candidate.setUTCSeconds(0, 0);
   candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
   for (let count=0; count < 366 * 24 * 60 * 5; count++, candidate.setUTCMinutes(candidate.getUTCMinutes()+1)) {
-    const dom = fields[2].has(candidate.getUTCDate()); const dow = fields[4].has(candidate.getUTCDay());
-    const domRestricted = fields[2].size !== 31; const dowRestricted = fields[4].size !== 7;
+    const local = scheduleWallClockParts(formatter, candidate);
+    const dom = fields[2].has(local.day); const dow = fields[4].has(local.weekday);
+    const domRestricted = (fields as any).restricted?.[2] ?? fields[2].size !== 31; const dowRestricted = (fields as any).restricted?.[4] ?? fields[4].size !== 7;
     const dayMatches = domRestricted && dowRestricted ? dom || dow : dom && dow;
-    if (fields[0].has(candidate.getUTCMinutes()) && fields[1].has(candidate.getUTCHours()) && dayMatches && fields[3].has(candidate.getUTCMonth()+1)) return new Date(candidate);
+    if (fields[0].has(local.minute) && fields[1].has(local.hour) && dayMatches && fields[3].has(local.month)) return new Date(candidate);
   }
   throw commandError("Schedule has no future occurrence.", "Check the Schedule cron expression.");
 }
@@ -871,7 +895,7 @@ function startStaticSchedules(database: LooseRecord) {
     if (!definition.enabled) continue;
     const arm = () => {
       if (database.__scheduleStopped) return;
-      const occurrence = nextScheduleOccurrence(definition.fields, database.clock.now());
+      const occurrence = nextScheduleOccurrence(definition.fields, database.clock.now(), definition.timezone);
       const timer = database.clock.setTimer(() => {
         database.__scheduleTimers.delete(timer);
         const active = enqueueScheduledOccurrence(database, definition, occurrence).catch((error: any) => {

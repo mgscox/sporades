@@ -42,6 +42,100 @@ test("a matching static Schedule enqueues and runs one ordinary Privileged Job",
   }
 });
 
+test("a Schedule matches wall-clock fields in its explicit IANA timezone", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-timezone-"));
+  const clock = createControllableRuntimeClock("2030-01-01T16:59:30.000Z");
+  const seen = [];
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
+    jobs: { record: job((_ctx, payload) => { seen.push(payload); return null; }) },
+    schedules: { localMorning: schedule({ expression: "0 9 * * *", timezone: "America/Los_Angeles", job: "record" }) },
+  }, { clock });
+  try {
+    await database.init();
+    assert.equal(database.schedules[0].timezone, "America/Los_Angeles");
+    clock.advanceBy(30_000);
+    await clock.runDueTimers();
+    assert.deepEqual(seen, [null]);
+    assert.equal(database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, "2030-01-01T17:00:00.000Z");
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("Schedule timezone evaluation covers offsets and calendar boundaries", async () => {
+  const cases = [
+    ["normal offset", "2030-01-15T07:59:30.000Z", "0 9 * * *", "Europe/Berlin", "2030-01-15T08:00:00.000Z"],
+    ["non-hour offset", "2030-01-15T03:14:30.000Z", "0 9 * * *", "Asia/Kathmandu", "2030-01-15T03:15:00.000Z"],
+    ["month boundary", "2030-01-31T23:59:30.000Z", "0 0 1 * *", "UTC", "2030-02-01T00:00:00.000Z"],
+    ["leap day", "2032-02-28T23:59:30.000Z", "0 0 29 2 *", "UTC", "2032-02-29T00:00:00.000Z"],
+  ];
+  for (const [label, start, expression, timezone, expected] of cases) {
+    const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-calendar-"));
+    const clock = createControllableRuntimeClock(start);
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
+      jobs: { record: job(() => null) }, schedules: { calendar: schedule({ expression, timezone, job: "record" }) },
+    }, { clock });
+    try {
+      await database.init(); clock.advanceBy(30_000); await clock.runDueTimers();
+      assert.equal(database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, expected, label);
+    } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
+  }
+});
+
+test("cron day-of-month and day-of-week use OR when both are restricted", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-day-or-"));
+  const clock = createControllableRuntimeClock("2030-06-02T23:59:30.000Z"); // Monday follows; not the first of the month.
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
+    jobs: { record: job(() => null) }, schedules: { dayOr: schedule({ expression: "0 0 1 * 1", timezone: "UTC", job: "record" }) },
+  }, { clock });
+  try {
+    await database.init(); clock.advanceBy(30_000); await clock.runDueTimers();
+    assert.equal(database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, "2030-06-03T00:00:00.000Z");
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("spring-forward nonexistent wall time is skipped", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-spring-"));
+  const clock = createControllableRuntimeClock("2024-03-10T06:59:30.000Z");
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
+    jobs: { record: job(() => null) }, schedules: { twoThirty: schedule({ expression: "30 2 * * *", timezone: "America/New_York", job: "record" }) },
+  }, { clock });
+  try {
+    await database.init(); clock.advanceBy((23 * 60 + 30) * 60 * 1000 + 30_000); await clock.runDueTimers();
+    assert.equal(database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs").get().scheduledFor, "2024-03-11T06:30:00.000Z");
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("fall-back repeated wall time produces two distinct UTC occurrences", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-fall-"));
+  const clock = createControllableRuntimeClock("2024-11-03T05:29:30.000Z");
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
+    jobs: { record: job(() => null) }, schedules: { oneThirty: schedule({ expression: "30 1 * * *", timezone: "America/New_York", job: "record" }) },
+  }, { clock });
+  try {
+    await database.init(); clock.advanceBy(30_000); await clock.runDueTimers();
+    clock.advanceBy(60 * 60 * 1000); await clock.runDueTimers();
+    const occurrences = database.sqlite.prepare("SELECT scheduledFor FROM sporades_jobs ORDER BY scheduledFor").all().map((row) => row.scheduledFor);
+    assert.deepEqual(occurrences, ["2024-11-03T05:30:00.000Z", "2024-11-03T06:30:00.000Z"]);
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("omitted timezone resolves from the runtime and invalid timezones reject startup", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-default-timezone-"));
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
+    jobs: { record: job(() => null) }, schedules: { serverLocal: schedule({ expression: "* * * * *", job: "record" }) },
+  });
+  try {
+    assert.equal(database.schedules[0].timezone, Intl.DateTimeFormat().resolvedOptions().timeZone);
+  } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
+
+  for (const timezone of ["Not/A_Timezone", "", 42]) {
+    const invalidDir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-invalid-timezone-"));
+    await assert.rejects(openDevDatabase(path.join(invalidDir, "data.db"), "", {}, { name: "scheduled" }, {
+      jobs: { record: job(() => null) }, schedules: { invalid: schedule({ expression: "* * * * *", timezone, job: "record" }) },
+    }), /Invalid Schedule timezone/);
+    await rm(invalidDir, { recursive: true, force: true });
+  }
+});
+
 test("Schedule payload factories receive immutable occurrence input and resolve ordinary Job payloads", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-factory-"));
   const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
