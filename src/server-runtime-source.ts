@@ -86,6 +86,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   jobSummary,
   createCurrentUserJobApi,
   createPrivilegedJobApi,
+  assertJobScheduleProvenance,
   assertActivePrivilegedJobAccess,
   encodeJobCursor,
   decodeJobCursor,
@@ -730,6 +731,7 @@ export async function openDevDatabase(
     contextMiddleware,
     mutationHooks,
     lifecycleHooks,
+    jobScheduleProvenanceByContext: new WeakMap(),
     rowCache,
     serverEnv,
     authConfig: authStatus(config, serverEnv),
@@ -866,7 +868,7 @@ async function enqueueScheduledOccurrence(database: LooseRecord, definition: any
   const scheduledFor = occurrence.toISOString();
   const provenance = `schedule:${definition.name}:${scheduledFor}`;
   const context: LooseRecord = createMutationContext(database, { userId: provenance, displayName: "Schedule", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "schedule" });
-  context.__jobScheduleProvenance = { scheduleName: definition.name, scheduledFor };
+  database.jobScheduleProvenanceByContext.set(context, { scheduleName: definition.name, scheduledFor });
   const state = await context.privileged.run({ operation: "schedules.enqueue", targetResourceKind: "job-queue", metadata: { scheduleName: definition.name, scheduledFor } },
     (privilegedContext: any) => privilegedContext.jobs.enqueue(definition.job, definition.payload, { retry: definition.retry, idempotencyKey: provenance }));
   return state;
@@ -3511,6 +3513,9 @@ function createPrivilegedHandlerContext(database: LooseRecord, context: LooseRec
       provider: "privileged-server-role",
     },
   };
+  const provenanceStore = (database.__rootDatabase ?? database).jobScheduleProvenanceByContext;
+  const scheduleProvenance = provenanceStore?.get(context);
+  if (scheduleProvenance) provenanceStore.set(privilegedContext, scheduleProvenance);
   grantPrivilegedDbAccess(privilegedContext);
   const holder = createContextHolder(privilegedContext);
   privilegedContext.db = createEndpointDatabaseApi(database, () => holder.current);
@@ -8810,6 +8815,7 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
     async enqueue(handlerName: any, payload: any, options: LooseRecord = {}) {
       const context = contextGetter();
       const queueDatabase = database.__rootDatabase ?? database;
+      const scheduleProvenance = queueDatabase.jobScheduleProvenanceByContext?.get(context);
       const handler = database.jobs?.find((candidate: any) => candidate.name === handlerName);
       if (!handler) {
         throw jobError("UNKNOWN_JOB_HANDLER", `Unknown Job handler: ${String(handlerName)}`, "Declare the named handler in capsule({ jobs }) before enqueueing it.");
@@ -8824,18 +8830,17 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       }
       if (idempotencyKey) {
         const existing = await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
-        if (existing) return jobState(existing, true);
+        if (existing) { assertJobScheduleProvenance(existing, scheduleProvenance); return jobState(existing, true); }
         const pending = (context.__jobParentContext ?? context).__pendingJobEnqueues?.find((candidate: any) =>
           candidate.handler === handlerName && candidate.actorUserId === context.auth.userId && candidate.idempotencyKey === idempotencyKey,
         );
-        if (pending) return jobState(pending, true);
+        if (pending) { assertJobScheduleProvenance(pending, scheduleProvenance); return jobState(pending, true); }
       }
       const id = crypto.randomUUID();
       const now = queueDatabase.clock.now().toISOString();
       const availableAt = options.availableAt === undefined ? now : new Date(options.availableAt).toISOString();
       if (Number.isNaN(Date.parse(availableAt))) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an ISO 8601 availableAt value.");
       const retry = normalizeJobRetry(options.retry);
-      const scheduleProvenance = context.__jobScheduleProvenance;
       const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
       if (database.__transactionActive) {
         const pendingContext = context.__jobParentContext ?? context;
@@ -8849,7 +8854,7 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       } catch (error: any) {
         if (idempotencyKey) {
           const existing = await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
-          if (existing) return jobState(existing, true);
+          if (existing) { assertJobScheduleProvenance(existing, scheduleProvenance); return jobState(existing, true); }
         }
         throw error;
       }
@@ -8874,6 +8879,13 @@ function createCurrentUserJobApi(database: LooseRecord, contextGetter: () => Loo
       return { jobs: page.map((row: any) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     },
   };
+}
+
+function assertJobScheduleProvenance(row: any, expected: any) {
+  if (!expected) return;
+  if (row?.scheduleName !== expected.scheduleName || row?.scheduledFor !== expected.scheduledFor) {
+    throw jobError("JOB_IDEMPOTENCY_CONFLICT", "Scheduled occurrence idempotency conflicts with existing Job provenance.", "Inspect the existing Job and retry after resolving the conflicting internal idempotency key.");
+  }
 }
 
 function jobError(code: string, message: string, hint: string) {

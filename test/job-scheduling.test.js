@@ -5,7 +5,8 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { createControllableRuntimeClock, openDevDatabase } from "../dist/server-runtime-source.js";
-import { job, schedule } from "../dist/server.js";
+import { job, mutation, schedule } from "../dist/server.js";
+import { runMutation } from "../dist/server-runtime-source.js";
 
 test("a matching static Schedule enqueues and runs one ordinary Privileged Job", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-"));
@@ -80,6 +81,49 @@ test("Scheduled provenance is present at the atomic enqueue boundary", async () 
     clock.advanceBy(30_000);
     await clock.runDueTimers();
     assert.deepEqual({ ...observed }, { scheduleName: "atomic", scheduledFor: "2030-01-01T00:01:00.000Z" });
+  } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("Capsule code cannot forge Schedule provenance through context properties", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-forgery-"));
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
+    jobs: { work: job(() => null) },
+    mutations: {
+      forge: mutation((ctx) => {
+        ctx.__jobScheduleProvenance = { scheduleName: "forged", scheduledFor: "2030-01-01T00:01:00.000Z" };
+        return ctx.privileged.run({ operation: "test.forge", targetResourceKind: "job-queue" },
+          (privilegedCtx) => privilegedCtx.jobs.enqueue("work", null));
+      }),
+    },
+  }, { clock });
+  try {
+    const result = await runMutation(database, { userId: "attacker", displayName: "attacker", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" }, "forge", []);
+    assert.equal(result.ok, true);
+    const row = database.sqlite.prepare("SELECT scheduleName, scheduledFor FROM sporades_jobs WHERE id=?").get(result.data.id);
+    assert.deepEqual({ ...row }, { scheduleName: null, scheduledFor: null });
+    assert.deepEqual(result.data.enqueuedBy, { mode: "user", userId: "attacker" });
+  } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("Scheduled idempotent returns reject an existing Job without matching private provenance", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-idempotency-conflict-"));
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:30.000Z");
+  const occurrenceKey = "schedule:collision:2030-01-01T00:01:00.000Z";
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
+    jobs: { work: job(() => null) },
+    schedules: { collision: schedule({ expression: "* * * * *", job: "work" }) },
+    mutations: { reserve: mutation((ctx) => ctx.privileged.run({ operation: "test.reserve", targetResourceKind: "job-queue" }, (privilegedCtx) => privilegedCtx.jobs.enqueue("work", null, { idempotencyKey: occurrenceKey }))) },
+  }, { clock });
+  try {
+    await runMutation(database, { userId: "attacker", displayName: "attacker", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "anonymous" }, "reserve", []);
+    await database.init();
+    clock.advanceBy(30_000);
+    await clock.runDueTimers();
+    const rows = database.sqlite.prepare("SELECT scheduleName, scheduledFor FROM sporades_jobs").all();
+    assert.deepEqual(rows.map((row) => ({ ...row })), [{ scheduleName: null, scheduledFor: null }]);
+    const logs = await database.sqlite.readRecentLogEvents(20);
+    assert.equal(logs.some((entry) => entry.event === "schedule.occurrence.enqueue_failed"), true);
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
