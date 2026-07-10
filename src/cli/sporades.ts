@@ -1456,7 +1456,7 @@ async function inspectDevJobs(options: LooseRecord) {
   const bundle = path.join(options.projectDir, ".sporades", "build", "server.mjs");
   const result = spawnSync(process.execPath, [bundle, "--sporades-action", "jobs.inspect"], {
     cwd: options.projectDir, encoding: "utf8",
-    env: { ...process.env, SPORADES_DATABASE_PATH: path.join(options.projectDir, ".sporades", "data.db") },
+    env: { ...process.env, ...(session.serviceEnv ?? {}), SPORADES_DATABASE_PATH: path.join(options.projectDir, ".sporades", "data.db") },
   });
   parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades jobs`.");
 }
@@ -1686,6 +1686,7 @@ async function startDevSession(options: LooseRecord) {
         inspectionToken,
         publicDev: security.cors.publicDev,
         security,
+        serviceEnv: runtimeServiceEnv,
       },
       null,
       2,

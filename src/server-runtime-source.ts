@@ -8724,7 +8724,9 @@ export async function inspectRuntimeJobs(adapter: LooseRecord) {
       availableAt: row.availableAt ?? null, createdAt: row.createdAt ?? null, startedAt: row.startedAt ?? null,
       completedAt: row.completedAt ?? null, failedAt: row.failedAt ?? null, cancelRequestedAt: row.cancelRequestedAt ?? null,
       leaseExpiresAt: row.leaseExpiresAt ?? null, attemptHistory: decode(row, "attemptHistory", row.attemptHistory, []),
-      result: decode(row, "result", row.result, null), failure: decode(row, "failure", row.failure, null),
+      // Job results are arbitrary Capsule JSON. Validate storage but never disclose the payload
+      // until the runtime has a separate safe-result metadata classifier.
+      result: (decode(row, "result", row.result, null), null), failure: decode(row, "failure", row.failure, null),
     }));
   };
   return adapter.withTransaction ? await adapter.withTransaction(read) : await read(adapter);

@@ -8450,7 +8450,9 @@ async function inspectRuntimeJobs(adapter) {
       cancelRequestedAt: row.cancelRequestedAt ?? null,
       leaseExpiresAt: row.leaseExpiresAt ?? null,
       attemptHistory: decode(row, "attemptHistory", row.attemptHistory, []),
-      result: decode(row, "result", row.result, null),
+      // Job results are arbitrary Capsule JSON. Validate storage but never disclose the payload
+      // until the runtime has a separate safe-result metadata classifier.
+      result: (decode(row, "result", row.result, null), null),
       failure: decode(row, "failure", row.failure, null)
     }));
   };
@@ -14593,7 +14595,7 @@ async function inspectDevJobs(options) {
   const result = spawnSync2(process.execPath, [bundle, "--sporades-action", "jobs.inspect"], {
     cwd: options.projectDir,
     encoding: "utf8",
-    env: { ...process.env, SPORADES_DATABASE_PATH: path6.join(options.projectDir, ".sporades", "data.db") }
+    env: { ...process.env, ...session.serviceEnv ?? {}, SPORADES_DATABASE_PATH: path6.join(options.projectDir, ".sporades", "data.db") }
   });
   parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades jobs`.");
 }
@@ -14803,7 +14805,8 @@ async function startDevSession(options) {
         session,
         inspectionToken,
         publicDev: security.cors.publicDev,
-        security
+        security,
+        serviceEnv: runtimeServiceEnv
       },
       null,
       2

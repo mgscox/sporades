@@ -4,8 +4,9 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createSqliteDatabaseAdapter, inspectRuntimeJobs } from "../dist/server-runtime-source.js";
+import { createLibsqlDatabaseAdapter, createSqliteDatabaseAdapter, inspectRuntimeJobs } from "../dist/server-runtime-source.js";
 import { createServerBundleSource } from "../dist/templates/server-bundle-template.js";
+import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
 test("operator Job inspection returns one deterministic bounded snapshot", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-operator-"));
@@ -23,10 +24,22 @@ test("operator Job inspection returns one deterministic bounded snapshot", async
     assert.equal("payload" in jobs[1], false);
     assert.equal("idempotencyKey" in jobs[1], false);
     assert.equal(jobs[1].idempotencyKeyPresent, true);
+    assert.equal(jobs[1].result, null, "operator inspection must not disclose arbitrary Capsule result JSON");
   } finally {
     await adapter.close();
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+test("operator Job inspection reads through the configured libSQL adapter", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-libsql-"));
+  try {
+    await withFakeLibsqlService(path.join(dir, "remote.db"), async ({ url }) => {
+      const adapter = await createLibsqlDatabaseAdapter({ url });
+      try { assert.deepEqual(await inspectRuntimeJobs(adapter), []); }
+      finally { await adapter.close(); }
+    });
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test("one-shot Bundle action does not evaluate Capsule code", async () => {
