@@ -73,6 +73,11 @@ The repository currently includes:
   expiry and restart recovery with at-least-once delivery. Administrators can
   inspect all bounded Job state through deterministic JSON-only commands for
   active Dev sessions, local Container sessions, and Hosted Capsules.
+- Runtime-owned Job scheduling through named server-only `schedule()`
+  declarations. Schedules use numeric five-field cron expressions and IANA
+  timezones, persist occurrence state, apply bounded missed-run recovery, create
+  duplicate-protected ordinary Privileged Jobs, and expose deterministic
+  JSON-only inspection across Dev, Container, and Hosted Capsules.
 - Practical Docker hardening defaults for local and hosted Container sessions:
   the thin Sporades-owned Base image runs Node 22, local Container sessions use
   the invoking host UID/GID when available, Hosted Capsules use the Base image
@@ -129,13 +134,8 @@ The following work is intentionally deferred:
   rules over one Capsule's DB, files, and storage resources; they are not the
   Privileged server role and must not become a global role on runtime-owned
   Sporades auth users.
-- Vector storage and remaining Job scheduling work:
-  `.scratch/post-v2-platform-hardening-and-ops/issues/07-evaluate-vector-storage-extension.md`
-  and the promoted `.scratch/job-scheduling/PRD.md`. Static Schedule declaration,
-  five-field cron evaluation, and timezone/daylight-saving semantics are
-  implemented. Durable persistence, missed-run recovery, reconciliation, and
-  operator inspection remain pending and build on the implemented Job Queue
-  state, retry, inspection, and explicit actor semantics.
+- Vector storage:
+  `.scratch/post-v2-platform-hardening-and-ops/issues/07-evaluate-vector-storage-extension.md`.
 - Broader production platform work, multi-node hosting, DNS automation,
   dashboards, rollback commands, external database support, and managed
   external storage backends such as AWS S3. Future AWS S3 support should reuse
@@ -661,6 +661,48 @@ day-of-month and day-of-week fields use conventional OR behavior. A nonexistent
 spring-forward local time creates no occurrence, while both UTC instants in a
 repeated fall-back hour are eligible with distinct identities. Authors who need
 invariant recurrence without daylight-saving skips or repeats should use `UTC`.
+
+## Job Scheduling
+
+Job scheduling is implemented as a runtime-owned, server-only layer above the
+Job Queue. Capsule authors declare named Schedules with `schedule()` alongside
+named `job()` handlers. A declaration contains a numeric five-field cron
+expression (minute, hour, day-of-month, month, day-of-week), an optional IANA
+timezone, JSON-safe payload or bounded async payload factory, ordinary enqueue
+retry options, an enabled state, and a `skip` or `latest` missed-run policy.
+Seconds, years, cron nicknames, browser declarations, Sessions, captured users,
+and dynamically created Schedules are unsupported.
+
+Cron uses numeric lists, ranges, and positive steps; restricted day-of-month and
+day-of-week fields use conventional OR behavior. Matching uses local wall-clock
+fields in the effective timezone. A nonexistent daylight-saving time creates no
+occurrence, while both real UTC instants in a repeated hour are eligible. Omitted
+timezones use the server timezone at startup, so portable definitions should pin
+an IANA timezone.
+
+`skip` is the default and ignores missed occurrences before resuming with the
+next future one. `latest` creates at most the most recent missed occurrence and
+then resumes. Runtime state survives restarts through the configured Database
+adapter. Declaration changes affect only future occurrences; removal forgets
+Schedule state without deleting historical Jobs, and later reuse of the name is
+a fresh identity. Deterministic occurrence identity and durable reconciliation
+prevent duplicate Job creation across overlapping starts and crashes.
+
+A successful occurrence enqueues one ordinary Job under Schedule provenance and
+the Privileged server role execution actor. The scheduler passes only the
+declared payload and retry policy. Payload factories may run more than once
+during recovery and must tolerate repeated side effects. After enqueue, the Job
+Queue exclusively owns execution, retries, cancellation, leases, and results.
+Delivery remains **at least once**, so duplicate-safe occurrence creation is not
+an exactly-once execution promise. One-time `availableAt` remains Job Queue
+behavior and is not recurring scheduling.
+
+Administrators inspect bounded read-only state using JSON-only `sporades
+schedules`, `sporades deploy schedules`, and `sporades host schedules` commands
+for Dev, local Container, and Hosted targets. Inspection omits payloads and
+secrets, does not evaluate Schedules, and returns `schedules: []` for Capsules
+without scheduling state. Source planning remains in
+`.scratch/job-scheduling/PRD.md` and its issue files for traceability.
 
 ## Configuration
 

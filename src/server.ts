@@ -31,6 +31,10 @@ export type JobDefinition<HandlerType extends Handler = Handler> = {
   handler: HandlerType;
 };
 
+/**
+ * A server-only recurring Job declaration using numeric five-field cron.
+ * Payloads must be JSON-safe; retry is the ordinary Job Queue retry policy.
+ */
 export type ScheduleDefinition = {
   expression: string;
   timezone?: string;
@@ -170,7 +174,13 @@ export function job<const HandlerType extends Handler>(handler: HandlerType): Jo
   return { kind: "job", handler };
 }
 
-/** Declare a named, server-only recurring Privileged Job in `capsule({ schedules })`. */
+/**
+ * Declare a named, server-only recurring Privileged Job in
+ * `capsule({ schedules })`. The map key is its durable identity. Expressions use
+ * numeric five-field cron; `missedRun` defaults to `skip` and `latest` catches
+ * up at most one occurrence. Scheduled Jobs retain Job Queue at-least-once
+ * attempt semantics.
+ */
 export function schedule<const Definition extends ScheduleDefinition>(definition: Definition): Definition & { kind: "schedule" } {
   return { kind: "schedule", ...definition };
 }

@@ -528,6 +528,10 @@ export type ScheduleContext<Schema extends SchemaDefinition = SchemaDefinition> 
  * Timeout cancellation is cooperative and cannot undo completed side effects.
  */
 export type SchedulePayloadFactory<Schema extends SchemaDefinition = SchemaDefinition> = (occurrence: ScheduleOccurrence, ctx: ScheduleContext<Schema>) => MaybePromise<JsonValue>;
+/**
+ * A server-only recurring Job declaration using numeric five-field cron.
+ * Payloads must be JSON-safe; retry is the ordinary Job Queue retry policy.
+ */
 export type ScheduleDefinition = {
   kind?: "schedule";
   expression: string;
@@ -595,7 +599,13 @@ export function message<Handler extends MessageHandler>(handler: Handler): Messa
 export function job<Payload extends JsonValue, Result extends JsonValue>(
   handler: (ctx: CapsuleContext, payload: Payload) => MaybePromise<Result>,
 ): JobDefinition<(ctx: CapsuleContext, payload: Payload) => MaybePromise<Result>>;
-/** Declare a named server-only recurring Privileged Job in `capsule({ schedules })`. */
+/**
+ * Declare a named server-only recurring Privileged Job in
+ * `capsule({ schedules })`. The map key is its durable identity. Expressions use
+ * numeric five-field cron; `missedRun` defaults to `skip` and `latest` catches
+ * up at most one occurrence. Scheduled Jobs retain Job Queue at-least-once
+ * attempt semantics.
+ */
 export function schedule<const Definition extends ScheduleDefinition>(definition: Definition): Definition & { kind: "schedule" };
 /** Define a Capsule table from field builders. */
 export function table<const Fields extends Record<string, AnyFieldDefinition>>(fields: Fields): TableDefinition<Fields>;

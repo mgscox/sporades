@@ -56,7 +56,13 @@ export function message(handler) {
 export function job(handler) {
     return { kind: "job", handler };
 }
-/** Declare a named, server-only recurring Privileged Job in `capsule({ schedules })`. */
+/**
+ * Declare a named, server-only recurring Privileged Job in
+ * `capsule({ schedules })`. The map key is its durable identity. Expressions use
+ * numeric five-field cron; `missedRun` defaults to `skip` and `latest` catches
+ * up at most one occurrence. Scheduled Jobs retain Job Queue at-least-once
+ * attempt semantics.
+ */
 export function schedule(definition) {
     return { kind: "schedule", ...definition };
 }

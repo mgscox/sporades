@@ -210,6 +210,55 @@ both matching UTC instants are eligible and have distinct occurrence identities.
 Use `UTC` when recurrence must not skip or repeat because of daylight-saving
 transitions.
 
+The five fields are minute, hour, day-of-month, month, and day-of-week. Numeric
+lists, ranges, and positive steps are supported; seconds, years, nicknames such
+as `@daily`, and implementation-specific extensions are rejected. Schedule
+declarations are server-only: browser code cannot create or invoke recurring
+Privileged work. `payload` is either a JSON-safe value (defaulting to `null`) or
+an async-capable payload factory evaluated for each occurrence. Payload
+factories may run more than once during crash recovery, so any explicitly
+privileged side effects must tolerate repetition. `retry` is the ordinary Job
+Queue retry policy applied after enqueue; a failed payload factory is skipped
+and is not retried as a Job.
+
+The default missed-run policy is `skip`, which resumes at the next future
+occurrence after downtime. `latest` enqueues at most the most recent missed
+occurrence, then resumes normal recurrence; it never replays an unbounded
+backlog. Schedule state and pending occurrences survive runtime restarts through
+the configured Database adapter. A deterministic identity based on Capsule,
+Schedule name, and scheduled UTC instant prevents overlapping starts or crash
+recovery from creating duplicate Jobs for one occurrence.
+
+Changing an expression, timezone, payload, retry policy, or enabled state affects
+future occurrences only and does not rewrite historical Jobs. Removing a
+Schedule forgets its runtime state while retaining its Jobs; adding the same name
+again or renaming a Schedule creates a fresh identity. Disabling or cancelling a
+created Job does not disable its Schedule.
+
+Every successfully created Scheduled occurrence becomes an ordinary Job that
+executes as the Privileged server role. It retains Job Queue **at least once**
+attempt semantics: retries and lease recovery can repeat the same Job attempt,
+so handlers must remain duplicate-safe. Schedule duplicate protection prevents
+two Job records for one occurrence; it does not promise exactly-once execution.
+
+### Inspect Schedules from the CLI
+
+Administrators inspect bounded, read-only Schedule state with the JSON-only
+command for the target runtime:
+
+```sh
+sporades schedules
+sporades deploy schedules
+sporades host schedules --host <alias> --subname <name>
+```
+
+These commands target an active Dev session, running local Container session,
+or running Hosted Capsule. They return schedules ordered by name, including the
+effective timezone, policy, next occurrence, and latest safe outcome and Job
+correlation. They omit payloads and secrets, do not evaluate or advance a
+Schedule, and return `schedules: []` when no schedules exist. V1 has no human
+renderer, filters, pagination, or offline inspection.
+
 ### Inspect Jobs from the CLI
 
 Administrators can inspect all Jobs for an active Capsule with one explicit

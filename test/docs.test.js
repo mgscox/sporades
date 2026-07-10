@@ -117,6 +117,50 @@ test("canonical docs describe the implemented platform scope", async () => {
   assert.match(scaffoldTemplate, /Use endpoints only for HTTP integrations/i);
 });
 
+test("published docs describe the complete Job scheduling contract", async () => {
+  const [prd, context, guide, roadmap, serverSource, serverDeclarations, apiSchedule, apiDefinition] = await Promise.all([
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("CONTEXT.md"),
+    readProjectFile("docs/user-guide.md"),
+    readProjectFile("docs/ROADMAP.md"),
+    readProjectFile("src/server.ts"),
+    readProjectFile("src/types/server.d.ts"),
+    readProjectFile("docs/api/functions/server.schedule.html"),
+    readProjectFile("docs/api/types/server.ScheduleDefinition.html"),
+  ]);
+
+  for (const published of [prd, guide]) {
+    assert.match(published, /five-field cron/i);
+    assert.match(published, /IANA timezone/i);
+    assert.match(published, /`skip`[\s\S]*`latest`/i);
+    assert.match(published, /at least once/i);
+    assert.match(published, /Privileged server role/i);
+    assert.match(published, /duplicate/i);
+    assert.match(published, /sporades\s+schedules/);
+    assert.match(published, /sporades\s+deploy schedules/);
+    assert.match(published, /sporades\s+host schedules/);
+    assert.match(published, /JSON-only/i);
+  }
+
+  assert.match(guide, /payload factor(?:y|ies)[\s\S]*may run more than once/i);
+  assert.match(guide, /remov(?:e|ing)[\s\S]*fresh identity/i);
+  assert.match(guide, /`availableAt`[\s\S]*not recurring/i);
+  assert.match(context, /\*\*Schedule\*\*:/);
+  assert.match(context, /\*\*Scheduled occurrence\*\*:/);
+  assert.match(roadmap, /\| Job scheduling \| implemented \|/);
+  assert.match(prd, /\.scratch\/job-scheduling\/PRD\.md/);
+
+  for (const api of [serverSource, serverDeclarations]) {
+    assert.match(api, /export (?:declare )?function schedule/);
+    assert.match(api, /numeric five-field cron/i);
+    assert.match(api, /server-only/i);
+    assert.match(api, /missedRun\?: "skip" \| "latest"/);
+  }
+  assert.match(apiSchedule, /numeric five-field cron/i);
+  assert.match(apiSchedule, /at-least-once/i);
+  assert.match(apiDefinition, /server-only recurring Job declaration/i);
+});
+
 test("Hetzner provisioning script reuses an existing SSH key with the local fingerprint", async () => {
   const hostProvisioning = await readProjectFile("docs/agents/host-provisioning.md");
   const script = extractShellBlockAfter(hostProvisioning, "## Provider script: Hetzner Cloud");
@@ -442,9 +486,10 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.match(roadmap, /Planning remains in `\.scratch\/privileged-server-role\/PRD\.md`/);
   assert.match(roadmap, /Job queue \| implemented[\s\S]*current-user and Privileged server role actors/);
   assert.doesNotMatch(roadmap, /\| Job queue \| ready \|/);
-  assert.match(roadmap, /Job scheduling \| ready[\s\S]*depends on the implemented Job Queue/);
-  assert.match(prd, /Static Schedule declaration,[\s\S]*timezone\/daylight-saving semantics are[\s\S]*implemented/);
-  assert.match(prd, /Durable persistence, missed-run recovery, reconciliation, and[\s\S]*operator inspection remain pending/);
+  assert.match(roadmap, /Job scheduling \| implemented[\s\S]*duplicate-protected occurrence creation/);
+  assert.doesNotMatch(roadmap, /\| Job scheduling \| ready \|/);
+  assert.match(prd, /Runtime-owned Job scheduling through named server-only `schedule\(\)`/);
+  assert.doesNotMatch(prd, /Durable persistence, missed-run recovery, reconciliation, and[\s\S]*operator inspection remain pending/);
   assert.doesNotMatch(prd, /Recurring Job scheduling remains future work/);
 
   const implementedScope = prd.slice(prd.indexOf("### Implemented scope"), prd.indexOf("### Future scope"));
@@ -456,10 +501,11 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.match(implementedScope, /retry/);
   assert.match(implementedScope, /cancellation/);
   assert.match(implementedScope, /restart recovery/);
+  assert.match(implementedScope, /Runtime-owned Job scheduling/);
   assert.doesNotMatch(futureScope, /- Privileged server role:/);
   assert.doesNotMatch(futureScope, /trusted userless work inside a Capsule/);
   assert.doesNotMatch(futureScope, /Vector storage, Job Queue, and Job scheduling/);
-  assert.match(futureScope, /Job scheduling/);
+  assert.doesNotMatch(futureScope, /Job scheduling/);
 
   assert.match(prd, /Privileged server role is implemented/);
   assert.match(prd, /`ctx\.privileged\.run\(\.\.\.\)`/);
