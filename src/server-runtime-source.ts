@@ -76,6 +76,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   parseScheduleExpression,
   nextScheduleOccurrence,
   startStaticSchedules,
+  acquireSchedulePayloadFactoryLane,
   acquireSchedulePayloadFactorySlot,
   resolveSchedulePayload,
   enqueueScheduledOccurrence,
@@ -735,6 +736,7 @@ export async function openDevDatabase(
     schedulePayloadFactoryTimeoutMs,
     schedulePayloadFactoryActive: 0,
     schedulePayloadFactoryWaiters: [],
+    schedulePayloadFactoryLanes: new Map(),
     contextMiddleware,
     mutationHooks,
     lifecycleHooks,
@@ -908,14 +910,31 @@ async function acquireSchedulePayloadFactorySlot(database: LooseRecord) {
   };
 }
 
+async function acquireSchedulePayloadFactoryLane(database: LooseRecord, scheduleName: string) {
+  const previous = database.schedulePayloadFactoryLanes.get(scheduleName);
+  let unlock: () => void = () => {};
+  const current = new Promise<void>((resolve) => { unlock = resolve; });
+  database.schedulePayloadFactoryLanes.set(scheduleName, current);
+  if (previous) await previous;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    unlock();
+    if (database.schedulePayloadFactoryLanes.get(scheduleName) === current) database.schedulePayloadFactoryLanes.delete(scheduleName);
+  };
+}
+
 async function resolveSchedulePayload(database: LooseRecord, definition: any, scheduledFor: string, context: LooseRecord) {
   if (typeof definition.payload !== "function") return { ok: true, value: definition.payload };
-  const release = await acquireSchedulePayloadFactorySlot(database);
+  const releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
+  let releaseSlot: (() => void) | undefined;
   const controller = new AbortController();
   const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
   const factoryContext = Object.freeze({ signal: controller.signal, privileged: context.privileged });
   let timeout: any;
   try {
+    releaseSlot = await acquireSchedulePayloadFactorySlot(database);
     const timeoutFailure = new Promise((_resolve, reject) => {
       timeout = database.clock.setTimer(() => {
         controller.abort();
@@ -936,7 +955,8 @@ async function resolveSchedulePayload(database: LooseRecord, definition: any, sc
     await database.log.emit({ category: "platform", event: "schedule.occurrence.payload_failed", level: "error", message: "Scheduled occurrence payload creation failed", data: { scheduleName: definition.name, scheduledFor, code } });
     return { ok: false };
   } finally {
-    release();
+    releaseSlot?.();
+    releaseLane();
   }
 }
 

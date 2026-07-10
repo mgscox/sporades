@@ -118,6 +118,7 @@ test("payload factory failures skip one occurrence safely and re-arm the Schedul
     const failure = logs.find((entry) => entry.event === "schedule.occurrence.payload_failed");
     assert.deepEqual(failure.data, { scheduleName: "resilient", scheduledFor: "2030-01-01T00:01:00.000Z", code: "SCHEDULE_PAYLOAD_FACTORY_FAILED" });
     assert.equal(JSON.stringify(failure).includes("secret detail"), false);
+    assert.equal(database.schedulePayloadFactoryLanes.size, 0);
   } finally { await database.shutdown(); database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 
@@ -134,6 +135,7 @@ test("rejected and invalid resolved factory payloads create no Job", async () =>
   try {
     await Promise.all(database.schedules.map((definition) => enqueueScheduledOccurrence(database, definition, new Date("2030-01-01T00:01:00.000Z"))));
     assert.equal(database.sqlite.prepare("SELECT count(*) AS count FROM sporades_jobs").get().count, 0);
+    assert.equal(database.schedulePayloadFactoryLanes.size, 0);
     const failures = (await database.sqlite.readRecentLogEvents(20)).filter((entry) => entry.event === "schedule.occurrence.payload_failed");
     assert.deepEqual(failures.map((entry) => entry.data.code).sort(), ["SCHEDULE_PAYLOAD_FACTORY_FAILED", "SCHEDULE_PAYLOAD_INVALID_JOB_PAYLOAD"]);
     assert.equal(JSON.stringify(failures).includes("private rejection"), false);
@@ -187,6 +189,38 @@ test("payload factories use four FIFO Capsule-wide slots", async () => {
     while (started.length < 6) await Promise.resolve();
     for (const release of releases.splice(0)) release();
     await Promise.all(pending);
+  } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
+});
+
+test("concurrent occurrences of one Schedule serialize payload factory evaluation", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-schedule-factory-lane-"));
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  let active = 0;
+  let maxActive = 0;
+  const releases = [];
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "scheduled" }, {
+    jobs: { record: job(() => null) },
+    schedules: { serial: schedule({ expression: "* * * * *", job: "record", payload: () => new Promise((resolve) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      releases.push(() => { active -= 1; resolve(null); });
+    }) }) },
+  }, { clock });
+  try {
+    const definition = database.schedules[0];
+    const pending = [
+      enqueueScheduledOccurrence(database, definition, new Date("2030-01-01T00:01:00.000Z")),
+      enqueueScheduledOccurrence(database, definition, new Date("2030-01-01T00:02:00.000Z")),
+    ];
+    while (releases.length < 1) await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(releases.length, 1);
+    releases.shift()();
+    while (releases.length < 1) await Promise.resolve();
+    releases.shift()();
+    await Promise.all(pending);
+    assert.equal(maxActive, 1);
+    assert.equal(database.schedulePayloadFactoryLanes.size, 0);
   } finally { database.close(); await rm(dir, { recursive: true, force: true }); }
 });
 

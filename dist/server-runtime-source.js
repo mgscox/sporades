@@ -34,6 +34,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     parseScheduleExpression,
     nextScheduleOccurrence,
     startStaticSchedules,
+    acquireSchedulePayloadFactoryLane,
     acquireSchedulePayloadFactorySlot,
     resolveSchedulePayload,
     enqueueScheduledOccurrence,
@@ -661,6 +662,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         schedulePayloadFactoryTimeoutMs,
         schedulePayloadFactoryActive: 0,
         schedulePayloadFactoryWaiters: [],
+        schedulePayloadFactoryLanes: new Map(),
         contextMiddleware,
         mutationHooks,
         lifecycleHooks,
@@ -860,15 +862,34 @@ async function acquireSchedulePayloadFactorySlot(database) {
         database.schedulePayloadFactoryWaiters.shift()?.();
     };
 }
+async function acquireSchedulePayloadFactoryLane(database, scheduleName) {
+    const previous = database.schedulePayloadFactoryLanes.get(scheduleName);
+    let unlock = () => { };
+    const current = new Promise((resolve) => { unlock = resolve; });
+    database.schedulePayloadFactoryLanes.set(scheduleName, current);
+    if (previous)
+        await previous;
+    let released = false;
+    return () => {
+        if (released)
+            return;
+        released = true;
+        unlock();
+        if (database.schedulePayloadFactoryLanes.get(scheduleName) === current)
+            database.schedulePayloadFactoryLanes.delete(scheduleName);
+    };
+}
 async function resolveSchedulePayload(database, definition, scheduledFor, context) {
     if (typeof definition.payload !== "function")
         return { ok: true, value: definition.payload };
-    const release = await acquireSchedulePayloadFactorySlot(database);
+    const releaseLane = await acquireSchedulePayloadFactoryLane(database, definition.name);
+    let releaseSlot;
     const controller = new AbortController();
     const occurrence = Object.freeze({ scheduleName: definition.name, scheduledFor });
     const factoryContext = Object.freeze({ signal: controller.signal, privileged: context.privileged });
     let timeout;
     try {
+        releaseSlot = await acquireSchedulePayloadFactorySlot(database);
         const timeoutFailure = new Promise((_resolve, reject) => {
             timeout = database.clock.setTimer(() => {
                 controller.abort();
@@ -891,7 +912,8 @@ async function resolveSchedulePayload(database, definition, scheduledFor, contex
         return { ok: false };
     }
     finally {
-        release();
+        releaseSlot?.();
+        releaseLane();
     }
 }
 async function recoverExpiredJobLeases(database) {
