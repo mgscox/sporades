@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createLibsqlDatabaseAdapter, createSqliteDatabaseAdapter, inspectRuntimeJobs } from "../dist/server-runtime-source.js";
+import { createLibsqlDatabaseAdapter, createPostgresDatabaseAdapter, createSqliteDatabaseAdapter, inspectRuntimeJobs } from "../dist/server-runtime-source.js";
 import { createServerBundleSource } from "../dist/templates/server-bundle-template.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
@@ -40,6 +40,16 @@ test("operator Job inspection reads through the configured libSQL adapter", asyn
       finally { await adapter.close(); }
     });
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("operator Job inspection reads sporades_jobs through Postgres", { skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the Postgres adapter integration test." }, async () => {
+  const adapter = await createPostgresDatabaseAdapter({ url: process.env.SPORADES_POSTGRES_TEST_URL });
+  try {
+    await adapter.exec("DROP TABLE IF EXISTS sporades_jobs");
+    await adapter.exec("CREATE TABLE sporades_jobs (id TEXT, handler TEXT, enqueuedByUserId TEXT, actorUserId TEXT, payload TEXT, status TEXT, availableAt TEXT, attempts INTEGER, idempotencyKey TEXT, result TEXT, failure TEXT, createdAt TEXT, startedAt TEXT, completedAt TEXT, failedAt TEXT, retryJson TEXT, attemptHistory TEXT, cancelRequestedAt TEXT, leaseExpiresAt TEXT)");
+    await adapter.prepare("INSERT INTO sporades_jobs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run("pg-1", "work", "u", "u", "{}", "queued", "2026-01-01T00:00:00.000Z", 0, null, null, null, "2026-01-01T00:00:00.000Z", null, null, null, '{"maxAttempts":1,"delayMs":0}', "[]", null, null);
+    assert.deepEqual((await inspectRuntimeJobs(adapter)).map((job) => job.id), ["pg-1"]);
+  } finally { await adapter.exec("DROP TABLE IF EXISTS sporades_jobs"); await adapter.close(); }
 });
 
 test("one-shot Bundle action does not evaluate Capsule code", async () => {

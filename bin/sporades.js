@@ -13420,6 +13420,7 @@ var CLI_VERSION = "0.3.0";
 var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact"]);
 var SUPPORTED_TEMPLATES = /* @__PURE__ */ new Set(["blank", "todo", "guestbook", "photo-library"]);
 var DEV_SESSION_FILE = path6.join(".sporades", "dev-session.json");
+var DEV_DATABASE_ENV_FILE = path6.join(".sporades", "dev-database-env.json");
 var DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";
 var CONTAINER_BINDING_FILE = path6.join(".sporades", "binding.json");
 var REMOTE_BINDING_FILE = path6.join(".sporades", "remote-binding.json");
@@ -14591,13 +14592,34 @@ async function inspectDevJobs(options) {
   } catch {
     throw commandError4("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades jobs`.");
   }
+  const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir);
   const bundle = path6.join(options.projectDir, ".sporades", "build", "server.mjs");
   const result = spawnSync2(process.execPath, [bundle, "--sporades-action", "jobs.inspect"], {
     cwd: options.projectDir,
     encoding: "utf8",
-    env: { ...process.env, ...session.serviceEnv ?? {}, SPORADES_DATABASE_PATH: path6.join(options.projectDir, ".sporades", "data.db") }
+    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path6.join(options.projectDir, ".sporades", "data.db") }
   });
   parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades jobs`.");
+}
+async function readActiveDevDatabaseServiceEnv(projectDir) {
+  try {
+    return JSON.parse(await readFile6(path6.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
+  } catch (error) {
+    if (errorDetails2(error).code !== "ENOENT") throw commandError4("Invalid active Dev database adapter metadata.", "Restart `sporades dev`, then retry `sporades jobs`.");
+  }
+  const config = await readProjectConfig(projectDir);
+  const capsuleServices = localCapsuleServicesFromConfig2(config, projectDir);
+  const database = capsuleServices?.services?.database;
+  if (!database) return {};
+  const connection = await waitForCapsuleService(capsuleServices, projectDir, "database", database, "local");
+  return capsuleServicesLocalEnv({ ...capsuleServices, services: { database } }, { database: connection });
+}
+async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
+  const databaseEnv = Object.fromEntries(Object.entries(serviceEnv).filter(([key, value]) => key.startsWith("SPORADES_SERVICE_DATABASE_") && typeof value === "string"));
+  const filePath = path6.join(projectDir, DEV_DATABASE_ENV_FILE);
+  await mkdir5(path6.dirname(filePath), { recursive: true });
+  await writeFile5(filePath, `${JSON.stringify(databaseEnv)}
+`, { mode: 384 });
 }
 async function inspectContainerJobs(options) {
   const { binding } = await requireLocalContainerBinding(options, "jobs");
@@ -14635,6 +14657,7 @@ async function startDevSession(options) {
     capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
     config: withRuntimeSecuritySession(config, session)
   });
+  await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
   runtime.database.log.emit({
     category: "platform",
     event: "dev.session.started",
@@ -14805,8 +14828,7 @@ async function startDevSession(options) {
         session,
         inspectionToken,
         publicDev: security.cors.publicDev,
-        security,
-        serviceEnv: runtimeServiceEnv
+        security
       },
       null,
       2
@@ -14951,6 +14973,7 @@ async function startDevSession(options) {
         );
         bundle = rebuild;
         runtimeServiceEnv = nextCapsuleServiceEnv;
+        await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
         fatalRestartAttempts = 0;
         websocketHub.disconnectAll();
       }
@@ -14992,6 +15015,8 @@ async function startDevSession(options) {
     for (const watcher of watchers) {
       watcher.close();
     }
+    rm2(path6.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
+    });
     websocketHub.disconnectAll();
     server.close(async () => {
       await rm2(sessionFilePath, { force: true });

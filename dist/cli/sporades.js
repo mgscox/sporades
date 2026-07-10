@@ -23,6 +23,7 @@ import { CLI_VERSION } from "./cli-version.js";
 const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
 const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
+const DEV_DATABASE_ENV_FILE = path.join(".sporades", "dev-database-env.json");
 const DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";
 const CONTAINER_BINDING_FILE = path.join(".sporades", "binding.json");
 const REMOTE_BINDING_FILE = path.join(".sporades", "remote-binding.json");
@@ -1135,12 +1136,35 @@ async function inspectDevJobs(options) {
     catch {
         throw commandError("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades jobs`.");
     }
+    const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir);
     const bundle = path.join(options.projectDir, ".sporades", "build", "server.mjs");
     const result = spawnSync(process.execPath, [bundle, "--sporades-action", "jobs.inspect"], {
         cwd: options.projectDir, encoding: "utf8",
-        env: { ...process.env, ...(session.serviceEnv ?? {}), SPORADES_DATABASE_PATH: path.join(options.projectDir, ".sporades", "data.db") },
+        env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path.join(options.projectDir, ".sporades", "data.db") },
     });
     parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades jobs`.");
+}
+async function readActiveDevDatabaseServiceEnv(projectDir) {
+    try {
+        return JSON.parse(await readFile(path.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
+    }
+    catch (error) {
+        if (errorDetails(error).code !== "ENOENT")
+            throw commandError("Invalid active Dev database adapter metadata.", "Restart `sporades dev`, then retry `sporades jobs`.");
+    }
+    const config = await readProjectConfig(projectDir);
+    const capsuleServices = localCapsuleServicesFromConfig(config, projectDir);
+    const database = capsuleServices?.services?.database;
+    if (!database)
+        return {};
+    const connection = await waitForCapsuleService(capsuleServices, projectDir, "database", database, "local");
+    return capsuleServicesLocalEnv({ ...capsuleServices, services: { database } }, { database: connection });
+}
+async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
+    const databaseEnv = Object.fromEntries(Object.entries(serviceEnv).filter(([key, value]) => key.startsWith("SPORADES_SERVICE_DATABASE_") && typeof value === "string"));
+    const filePath = path.join(projectDir, DEV_DATABASE_ENV_FILE);
+    await mkdir(path.dirname(filePath), { recursive: true });
+    await writeFile(filePath, `${JSON.stringify(databaseEnv)}\n`, { mode: 0o600 });
 }
 async function inspectContainerJobs(options) {
     const { binding } = await requireLocalContainerBinding(options, "jobs");
@@ -1174,6 +1198,7 @@ async function startDevSession(options) {
         capsuleModuleSource: bundle.serverRuntime.capsuleModuleSource,
         config: withRuntimeSecuritySession(config, session),
     });
+    await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
     runtime.database.log.emit({
         category: "platform",
         event: "dev.session.started",
@@ -1345,7 +1370,6 @@ async function startDevSession(options) {
         inspectionToken,
         publicDev: security.cors.publicDev,
         security,
-        serviceEnv: runtimeServiceEnv,
     }, null, 2)}\n`);
     let fatalRestartAttempts = 0;
     let fatalRestartInFlight = false;
@@ -1467,6 +1491,7 @@ async function startDevSession(options) {
                 await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, nextCapsuleServiceEnv, rebuild.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(nextConfig, session));
                 bundle = rebuild;
                 runtimeServiceEnv = nextCapsuleServiceEnv;
+                await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
                 fatalRestartAttempts = 0;
                 websocketHub.disconnectAll();
             }
@@ -1505,6 +1530,7 @@ async function startDevSession(options) {
         for (const watcher of watchers) {
             watcher.close();
         }
+        rm(path.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => { });
         websocketHub.disconnectAll();
         server.close(async () => {
             await rm(sessionFilePath, { force: true });
