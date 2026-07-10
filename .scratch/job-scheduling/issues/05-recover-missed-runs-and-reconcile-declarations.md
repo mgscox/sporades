@@ -10,8 +10,7 @@ Status: ready-for-agent
 
 ## Blocked by
 
-- .scratch/job-scheduling/issues/03-add-dynamic-schedule-payload-factories.md
-- .scratch/job-scheduling/issues/04-apply-timezone-and-daylight-saving-semantics.md
+.scratch/job-scheduling/issues/03-add-dynamic-schedule-payload-factories.md; .scratch/job-scheduling/issues/04-apply-timezone-and-daylight-saving-semantics.md
 
 - [ ] Schedule state survives Dev, local Container, and Hosted Capsule runtime restarts through the configured Database adapter.
 - [ ] The default `skip` policy creates no Jobs for missed occurrences and resumes at the next future occurrence.
