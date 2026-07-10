@@ -64,8 +64,15 @@ The repository currently includes:
   for system-owned execution, not a Capsule role, app admin, Teams membership,
   user, session, service account, or browser credential. It emits Privileged
   audit lifecycle events, exposes narrow DB and File access through existing
-  runtime boundaries, and provides the actor boundary needed by future Job Queue
-  and Job scheduling work without implementing Jobs.
+  runtime boundaries, and provides the actor boundary used by Privileged Jobs
+  and future Job scheduling work.
+- A runtime-owned Job Queue for durable server-only work declared with `job()`.
+  Capsule server code enqueues Jobs to run as either the captured current
+  Sporades user or the Privileged server role. The runtime persists lifecycle
+  state, applies bounded retry and cancellation behavior, and performs lease
+  expiry and restart recovery with at-least-once delivery. Administrators can
+  inspect all bounded Job state through deterministic JSON-only commands for
+  active Dev sessions, local Container sessions, and Hosted Capsules.
 - Practical Docker hardening defaults for local and hosted Container sessions:
   the thin Sporades-owned Base image runs Node 22, local Container sessions use
   the invoking host UID/GID when available, Hosted Capsules use the Base image
@@ -122,10 +129,11 @@ The following work is intentionally deferred:
   rules over one Capsule's DB, files, and storage resources; they are not the
   Privileged server role and must not become a global role on runtime-owned
   Sporades auth users.
-- Vector storage, Job Queue, and Job scheduling:
-  `.scratch/post-v2-platform-hardening-and-ops/issues/07-evaluate-vector-storage-extension.md`,
-  `.scratch/post-v2-platform-hardening-and-ops/issues/08-add-job-queue.md`, and
-  `.scratch/post-v2-platform-hardening-and-ops/issues/09-add-job-scheduling.md`.
+- Vector storage and Job scheduling:
+  `.scratch/post-v2-platform-hardening-and-ops/issues/07-evaluate-vector-storage-extension.md`
+  and `.scratch/post-v2-platform-hardening-and-ops/issues/09-add-job-scheduling.md`.
+  Recurring Job scheduling remains future work and depends on the implemented
+  Job Queue state, retry, inspection, and explicit actor semantics.
 - Broader production platform work, multi-node hosting, DNS automation,
   dashboards, rollback commands, external database support, and managed
   external storage backends such as AWS S3. Future AWS S3 support should reuse
@@ -517,7 +525,7 @@ data to a browser or external caller remains responsible for shaping that
 response safely.
 Privileged runs do not introduce new runtime timeout, retry, or cancellation
 policy. They should accept a caller-supplied `AbortSignal` so surrounding server
-code, lifecycle code, and future Job execution can propagate cancellation
+code, lifecycle code, and Job execution can propagate cancellation
 deliberately while preserving the existing handler or lifecycle semantics. The
 derived privileged context exposes the same signal as `privilegedCtx.signal` so
 privileged helper code can pass cancellation deeper without capturing outer
@@ -583,12 +591,13 @@ narrow approved File API, `privilegedCtx.signal`, and
 `privilegedCtx.auth.userId === "__privileged__"`.
 
 Use the current user identity when work should be authorized as the live
-Sporades user represented by `ctx.auth`. Future captured user identity is for
-background Jobs that should remain accountable to the user who authorized them,
-even after the original request has ended. Use Privileged server role only for
-system-owned work that intentionally has no Sporades user identity, such as
-future scheduled maintenance or recurring Jobs that may run without a live user
-session.
+Sporades user represented by `ctx.auth`. The Job Queue uses a captured user
+identity when background work should remain accountable to the user who
+authorized it after the original request has ended. Privileged Jobs use the
+Privileged server role for system-owned work that intentionally has no Sporades
+user identity. This authority remains distinct from Capsule roles and cannot be
+carried by browser credentials. Future scheduled maintenance or recurring Jobs
+use the same explicit actor distinction rather than borrowing a live session.
 
 Privileged server role is not a Capsule role, app admin, Teams membership, user,
 session, service account, browser credential, Host profile, or platform operator

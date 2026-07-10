@@ -167,6 +167,28 @@ Job delivery is **at least once**, not exactly once: an interrupted leased
 attempt can be recovered and run again under the same Job ID. Make handlers
 duplicate-safe and use idempotency keys for cross-boundary caller retries.
 
+### Inspect Jobs from the CLI
+
+Administrators can inspect all Jobs for an active Capsule with one explicit
+JSON-only command for each runtime location:
+
+```sh
+sporades jobs
+sporades deploy jobs
+sporades host jobs --host <alias> --subname <name>
+```
+
+The commands target an active Dev session, running local Container session, or
+running Hosted Capsule respectively. Each returns the same structured JSON
+envelope with the Capsule name and all Jobs ordered newest first. The bounded
+operational state includes handler, status, actor, provenance, attempts, retry
+policy, lifecycle timestamps, and safe result or failure metadata. Input
+payloads and idempotency-key values are omitted.
+
+This first operator surface intentionally has no filters, cursor, pagination,
+human renderer, or offline inspection. Pipe the JSON through tools such as
+`jq` when you need to filter or reshape it.
+
 ### 4. Make Your First Client Change
 
 Open `client/index.tsx`. The scaffold wires the framework primitives into
@@ -784,9 +806,9 @@ is the live Sporades session behind the request or App message, including
 Anonymous sessions before sign-up. Use it for ordinary per-user reads, writes,
 file ownership, and authorization checks.
 
-future captured user identity may come from Job Queue and Job scheduling work for
-background work that should stay accountable to the user who authorized it after
-the original request ends. That is different from system-owned work.
+The Job Queue uses a captured user identity for background work that should stay
+accountable to the user who authorized it after the original request ends. That
+is different from system-owned work.
 
 Use the Privileged server role only for trusted userless work that must run
 inside the Capsule without pretending to be a Sporades user:
@@ -820,6 +842,11 @@ callback finishes. Table ACL rules and `sporades/client` cannot call it.
 Every privileged run emits Privileged audit events with `started`, `completed`
 or `errored`, and `finished` outcomes. If the signal is already aborted, the
 callback does not run and the runtime reports `Privileged run aborted`.
+
+Jobs may also execute as the Privileged server role when trusted server code
+explicitly enqueues system-owned work. That does not turn the Job into a Capsule
+role, app admin, user session, or browser authority; the Job records its
+Privileged server role actor separately from who enqueued it.
 
 ## Building the Client Side
 

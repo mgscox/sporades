@@ -425,7 +425,7 @@ test("docs describe the implemented Privileged audit event contract", async () =
   assert.match(context, /Capsule app `ctx\.log` cannot emit Privileged audit events/);
 });
 
-test("docs describe the implemented Privileged server role contract", async () => {
+test("docs describe the implemented Privileged server role and Job Queue contracts", async () => {
   const [roadmap, prd, userGuide, apiServer, apiPrivileged] = await Promise.all([
     readProjectFile("docs/ROADMAP.md"),
     readProjectFile("docs/PRD.md"),
@@ -437,21 +437,29 @@ test("docs describe the implemented Privileged server role contract", async () =
   assert.match(roadmap, /Privileged server role \| implemented/);
   assert.doesNotMatch(roadmap, /\| Privileged server role \| design \|/);
   assert.match(roadmap, /Planning remains in `\.scratch\/privileged-server-role\/PRD\.md`/);
-  assert.match(roadmap, /Job queue \| design[\s\S]*depends on the implemented Privileged server role actor boundary/);
-  assert.match(roadmap, /Job scheduling \| design[\s\S]*depends on the implemented Privileged server role actor boundary/);
+  assert.match(roadmap, /Job queue \| ready[\s\S]*depends on the implemented Privileged server role actor boundary/);
+  assert.doesNotMatch(roadmap, /\| Job queue \| implemented \|/);
+  assert.match(roadmap, /Job scheduling \| design[\s\S]*depends on[\s\S]*Job Queue state, retry, inspection/);
 
   const implementedScope = prd.slice(prd.indexOf("### Implemented scope"), prd.indexOf("### Future scope"));
   const futureScope = prd.slice(prd.indexOf("### Future scope"), prd.indexOf("## Product Principles"));
   assert.match(implementedScope, /Privileged server role/);
   assert.match(implementedScope, /`ctx\.privileged\.run\(\.\.\.\)`/);
+  assert.match(implementedScope, /runtime-owned Job Queue/);
+  assert.match(implementedScope, /current\s+Sporades user or the Privileged server role/);
+  assert.match(implementedScope, /retry/);
+  assert.match(implementedScope, /cancellation/);
+  assert.match(implementedScope, /restart recovery/);
   assert.doesNotMatch(futureScope, /- Privileged server role:/);
   assert.doesNotMatch(futureScope, /trusted userless work inside a Capsule/);
+  assert.doesNotMatch(futureScope, /Vector storage, Job Queue, and Job scheduling/);
+  assert.match(futureScope, /Job scheduling/);
 
   assert.match(prd, /Privileged server role is implemented/);
   assert.match(prd, /`ctx\.privileged\.run\(\.\.\.\)`/);
   assert.match(prd, /query, mutation, Custom endpoint,\s+App message, context middleware, and supported mutation hook/);
   assert.match(prd, /current user identity/);
-  assert.match(prd, /captured user identity/);
+  assert.match(prd, /captured user\s+identity/);
   assert.match(prd, /Privileged server role/);
   for (const notA of ["Capsule role", "app admin", "Teams", "user", "session", "browser credential", "service account"]) {
     assert.match(prd, new RegExp(notA));
@@ -464,7 +472,7 @@ test("docs describe the implemented Privileged server role contract", async () =
 
   assert.match(userGuide, /Choosing a server actor/);
   assert.match(userGuide, /current user/);
-  assert.match(userGuide, /future captured user identity/);
+  assert.match(userGuide, /captured user\s+identity/);
   assert.match(userGuide, /Privileged server role/);
   assert.match(userGuide, /`ctx\.privileged\.run\(\.\.\.\)`/);
   assert.match(userGuide, /not a Capsule role, app admin, Team, user, session,\s+service account, or browser credential/);
@@ -473,6 +481,17 @@ test("docs describe the implemented Privileged server role contract", async () =
   assert.match(apiServer, /PrivilegedContext/);
   assert.match(apiPrivileged, /ctx\.privileged\.run/);
   assert.match(apiPrivileged, /server-only/);
+
+  for (const command of ["sporades jobs", "sporades deploy jobs", "sporades host jobs"]) {
+    assert.match(userGuide, new RegExp(command));
+  }
+  assert.match(userGuide, /JSON-only/);
+  assert.match(userGuide, /all Jobs/);
+  assert.match(userGuide, /payloads/);
+  assert.match(userGuide, /idempotency-key values/);
+  for (const excluded of ["filters", "cursor", "pagination", "human renderer", "offline inspection"]) {
+    assert.match(userGuide, new RegExp(excluded));
+  }
 });
 
 test("docs describe doctor diagnostics as read-only coordination", async () => {
