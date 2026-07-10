@@ -1891,15 +1891,18 @@ async function startDevSession(options: LooseRecord) {
   });
   emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev") });
 
-  const shutdown = () => {
+  let shutdownStarted = false;
+  const shutdown = async () => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     for (const watcher of watchers) {
       watcher.close();
     }
     rm(path.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {});
     websocketHub.disconnectAll();
+    await runtime.shutdown();
     server.close(async () => {
       await rm(sessionFilePath, { force: true });
-      await runtime.shutdown();
       process.off("unhandledRejection", onUnhandledRejection);
       process.off("uncaughtException", onUncaughtException);
       process.exit(0);
@@ -1918,6 +1921,7 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
     await importCapsuleDefinition(options.capsuleModuleSource),
     { serviceEnv: options.serviceEnv },
   );
+  await database.init();
 
   return {
     get database() {
@@ -1932,10 +1936,13 @@ async function createDevRuntime(options: LooseRecord): Promise<any> {
         await importCapsuleDefinition(capsuleModuleSource),
         { serviceEnv },
       );
+      await nextDatabase.init();
+      await database.shutdown();
       database.close();
       database = nextDatabase;
     },
     async shutdown() {
+      await database.shutdown();
       database.close();
     },
   };

@@ -48,6 +48,7 @@ if (sporadesAction) {
 const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
   serviceEnv: runtimeServiceEnv,
 });
+await database.init();
 database.log.emit({
   category: "platform",
   event: "runtime.started",
@@ -114,8 +115,12 @@ await new Promise((resolve, reject) => {
   server.listen(port, "0.0.0.0", resolve);
 });
 
-const shutdown = () => {
+let shutdownStarted = false;
+const shutdown = async () => {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   websocketHub.disconnectAll();
+  await database.shutdown();
   server.close(() => {
     database.close();
     process.exit(0);

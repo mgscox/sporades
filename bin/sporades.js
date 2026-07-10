@@ -1409,6 +1409,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   const clock = createRuntimeClock(options?.clock);
   const contextMiddleware = extractContextMiddleware(serverSource);
   const mutationHooks = extractMutationHooks(serverSource);
+  const lifecycleHooks = { init: capsuleDefinition?.hooks?.init, shutdown: capsuleDefinition?.hooks?.shutdown };
   const rowCache = /* @__PURE__ */ new Map();
   const database = {
     adapter: sqlite,
@@ -1423,6 +1424,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     clock,
     contextMiddleware,
     mutationHooks,
+    lifecycleHooks,
     rowCache,
     serverEnv,
     authConfig: authStatus(config, serverEnv),
@@ -1433,7 +1435,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     close: () => {
       database.__scheduleStopped = true;
       for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
-      database.__scheduleTimers = [];
+      database.__scheduleTimers?.clear?.();
       if (database.__jobWakeTimer) {
         database.clock.clearTimer(database.__jobWakeTimer);
         database.__jobWakeTimer = null;
@@ -1442,6 +1444,27 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
       const storageResult = database.fileStorage.close();
       return storageResult ?? sqliteResult;
     }
+  };
+  database.init = async () => {
+    if (database.__runtimeInitialized) return;
+    if (database.lifecycleHooks.init !== void 0) {
+      if (typeof database.lifecycleHooks.init !== "function") throw commandError("Invalid Capsule init hook.", "Declare hooks.init as a function.");
+      await database.lifecycleHooks.init(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+    }
+    database.__scheduleStopped = false;
+    startStaticSchedules(database);
+    database.__runtimeInitialized = true;
+  };
+  database.shutdown = async () => {
+    database.__scheduleStopped = true;
+    for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
+    database.__scheduleTimers?.clear?.();
+    await Promise.allSettled([...database.__activeScheduleOccurrences ?? []]);
+    if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== void 0) {
+      if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
+      await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+    }
+    database.__runtimeInitialized = false;
   };
   database.log = createRuntimeLogSink({
     database: sqlite,
@@ -1459,7 +1482,6 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   await recoverExpiredJobLeases(database);
   assertValidReferenceTargets(schema);
   await sqlite.migrateAppSchema(schema);
-  startStaticSchedules(database);
   return database;
 }
 function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
@@ -1519,16 +1541,25 @@ function nextScheduleOccurrence(fields, after) {
   throw commandError("Schedule has no future occurrence.", "Check the Schedule cron expression.");
 }
 function startStaticSchedules(database) {
-  database.__scheduleTimers = [];
+  database.__scheduleTimers = /* @__PURE__ */ new Set();
+  database.__activeScheduleOccurrences = /* @__PURE__ */ new Set();
   for (const definition of database.schedules) {
     if (!definition.enabled) continue;
     const arm = () => {
+      if (database.__scheduleStopped) return;
       const occurrence = nextScheduleOccurrence(definition.fields, database.clock.now());
-      const timer = database.clock.setTimer(async () => {
-        await enqueueScheduledOccurrence(database, definition, occurrence);
-        if (!database.__scheduleStopped) arm();
+      const timer = database.clock.setTimer(() => {
+        database.__scheduleTimers.delete(timer);
+        const active = enqueueScheduledOccurrence(database, definition, occurrence).catch((error) => {
+          database.log.emit({ category: "platform", event: "schedule.occurrence.enqueue_failed", level: "error", message: "Scheduled occurrence could not enqueue its Job", data: { scheduleName: definition.name, scheduledFor: occurrence.toISOString(), code: String(error?.code ?? "SCHEDULE_ENQUEUE_FAILED").slice(0, 80) } });
+        }).finally(() => {
+          database.__activeScheduleOccurrences.delete(active);
+          arm();
+        });
+        database.__activeScheduleOccurrences.add(active);
+        return active;
       }, Math.max(0, occurrence.getTime() - database.clock.now().getTime()));
-      database.__scheduleTimers.push(timer);
+      database.__scheduleTimers.add(timer);
     };
     arm();
   }
@@ -1537,11 +1568,12 @@ async function enqueueScheduledOccurrence(database, definition, occurrence) {
   const scheduledFor = occurrence.toISOString();
   const provenance = `schedule:${definition.name}:${scheduledFor}`;
   const context = createMutationContext(database, { userId: provenance, displayName: "Schedule", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "schedule" });
+  context.__jobScheduleProvenance = { scheduleName: definition.name, scheduledFor };
   const state = await context.privileged.run(
     { operation: "schedules.enqueue", targetResourceKind: "job-queue", metadata: { scheduleName: definition.name, scheduledFor } },
     (privilegedContext) => privilegedContext.jobs.enqueue(definition.job, definition.payload, { retry: definition.retry, idempotencyKey: provenance })
   );
-  await database.sqlite.prepare("UPDATE sporades_jobs SET scheduleName=?, scheduledFor=? WHERE id=?").run(definition.name, scheduledFor, state.id);
+  return state;
 }
 async function recoverExpiredJobLeases(database) {
   const recoveredAt = database.clock.now();
@@ -8489,7 +8521,8 @@ function createCurrentUserJobApi(database, contextGetter) {
       const availableAt = options.availableAt === void 0 ? now : new Date(options.availableAt).toISOString();
       if (Number.isNaN(Date.parse(availableAt))) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an ISO 8601 availableAt value.");
       const retry = normalizeJobRetry(options.retry);
-      const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]" };
+      const scheduleProvenance = context.__jobScheduleProvenance;
+      const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
       if (database.__transactionActive) {
         const pendingContext = context.__jobParentContext ?? context;
         pendingContext.__pendingJobEnqueues ??= [];
@@ -8498,7 +8531,7 @@ function createCurrentUserJobApi(database, contextGetter) {
         return jobState(row, true);
       }
       try {
-        await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)").run(id, handlerName, row.enqueuedByUserId, row.actorUserId, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory);
+        await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)").run(id, handlerName, row.enqueuedByUserId, row.actorUserId, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
       } catch (error) {
         if (idempotencyKey) {
           const existing = await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
@@ -8722,7 +8755,7 @@ async function flushPendingJobEnqueues(context) {
   context.__pendingJobsFlushed = true;
   const queueDatabase = context.__jobQueueDatabase;
   for (const row of context.__pendingJobEnqueues) {
-    await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory);
+    await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory, row.scheduleName ?? null, row.scheduledFor ?? null);
   }
   scheduleCurrentUserJobWorker(queueDatabase);
 }
@@ -9176,6 +9209,7 @@ if (sporadesAction) {
 const database = await openDevDatabase(databasePath, sporadesServerSource, runtimeServerEnv, runtimeConfig, sporadesCapsuleDefinition, {
   serviceEnv: runtimeServiceEnv,
 });
+await database.init();
 database.log.emit({
   category: "platform",
   event: "runtime.started",
@@ -9242,8 +9276,12 @@ await new Promise((resolve, reject) => {
   server.listen(port, "0.0.0.0", resolve);
 });
 
-const shutdown = () => {
+let shutdownStarted = false;
+const shutdown = async () => {
+  if (shutdownStarted) return;
+  shutdownStarted = true;
   websocketHub.disconnectAll();
+  await database.shutdown();
   server.close(() => {
     database.close();
     process.exit(0);
@@ -15181,16 +15219,19 @@ async function startDevSession(options) {
     }
   });
   emitDevEvent(options, { event: "started", url, port: actualPort, security, restartPolicy: restartPolicyStatus("dev") });
-  const shutdown = () => {
+  let shutdownStarted = false;
+  const shutdown = async () => {
+    if (shutdownStarted) return;
+    shutdownStarted = true;
     for (const watcher of watchers) {
       watcher.close();
     }
     rm2(path6.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
     });
     websocketHub.disconnectAll();
+    await runtime.shutdown();
     server.close(async () => {
       await rm2(sessionFilePath, { force: true });
-      await runtime.shutdown();
       process.off("unhandledRejection", onUnhandledRejection);
       process.off("uncaughtException", onUncaughtException);
       process.exit(0);
@@ -15208,6 +15249,7 @@ async function createDevRuntime(options) {
     await importCapsuleDefinition(options.capsuleModuleSource),
     { serviceEnv: options.serviceEnv }
   );
+  await database.init();
   return {
     get database() {
       return database;
@@ -15221,10 +15263,13 @@ async function createDevRuntime(options) {
         await importCapsuleDefinition(capsuleModuleSource),
         { serviceEnv }
       );
+      await nextDatabase.init();
+      await database.shutdown();
       database.close();
       database = nextDatabase;
     },
     async shutdown() {
+      await database.shutdown();
       database.close();
     }
   };
