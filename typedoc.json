@@ -10,5 +10,6 @@
   "out": "docs/api",
   "readme": "none",
   "cleanOutputDir": true,
-  "hideGenerator": true
+  "hideGenerator": true,
+  "gitRevision": "main"
 }
