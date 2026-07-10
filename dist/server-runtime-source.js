@@ -29,6 +29,11 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     createPostgresDatabaseAdapter,
     createRuntimeDatabaseAdapter,
     createRuntimeClock,
+    scheduleDefinitionsFromCapsule,
+    parseScheduleExpression,
+    nextScheduleOccurrence,
+    startStaticSchedules,
+    enqueueScheduledOccurrence,
     createRuntimeInspectionAdapter,
     inspectRuntimeJobs,
     jobError,
@@ -631,6 +636,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         : extractMutationHandlers(serverSource));
     const messages = extractMessageHandlers(serverSource);
     const jobs = jobHandlersFromCapsuleDefinition(capsuleDefinition);
+    const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
     const clock = createRuntimeClock(options?.clock);
     const contextMiddleware = extractContextMiddleware(serverSource);
     const mutationHooks = extractMutationHooks(serverSource);
@@ -644,6 +650,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         mutations,
         messages,
         jobs,
+        schedules,
         clock,
         contextMiddleware,
         mutationHooks,
@@ -655,6 +662,10 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
         httpMaxBodyBytes: resolveHttpMaxBodyBytes(config),
         close: () => {
+            database.__scheduleStopped = true;
+            for (const timer of database.__scheduleTimers ?? [])
+                database.clock.clearTimer(timer);
+            database.__scheduleTimers = [];
             if (database.__jobWakeTimer) {
                 database.clock.clearTimer(database.__jobWakeTimer);
                 database.__jobWakeTimer = null;
@@ -680,7 +691,99 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     await recoverExpiredJobLeases(database);
     assertValidReferenceTargets(schema);
     await sqlite.migrateAppSchema(schema);
+    startStaticSchedules(database);
     return database;
+}
+function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
+    const schedules = [];
+    for (const [name, definition] of Object.entries(capsuleDefinition?.schedules ?? {})) {
+        if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(name))
+            throw commandError(`Invalid Schedule name: ${name}`, "Begin Schedule names with a letter and use only letters, numbers, underscores, or hyphens.");
+        if (!definition || definition.kind !== "schedule" || Object.keys(definition).some((key) => !["kind", "expression", "job", "payload", "retry", "enabled"].includes(key)))
+            throw commandError(`Invalid Schedule declaration: ${name}`, "Declare each Schedule with schedule({ expression, job, payload?, retry?, enabled? }).");
+        if (schedules.some((candidate) => candidate.name === name))
+            throw commandError(`Duplicate Schedule declaration: ${name}`, "Use one unique Schedule name per Capsule.");
+        if (typeof definition.job !== "string" || !jobs.some((candidate) => candidate.name === definition.job))
+            throw commandError(`Unknown Job handler for Schedule: ${name}`, "Reference a Job declared in the Capsule jobs map.");
+        const expression = parseScheduleExpression(definition.expression);
+        const payload = definition.payload === undefined ? null : definition.payload;
+        boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Schedule payload");
+        const retry = normalizeJobRetry(definition.retry);
+        if (definition.enabled !== undefined && typeof definition.enabled !== "boolean")
+            throw commandError(`Invalid enabled value for Schedule: ${name}`, "Pass true or false for enabled.");
+        schedules.push({ name, expression: definition.expression.trim().replace(/\s+/g, " "), fields: expression, job: definition.job, payload, retry, enabled: definition.enabled ?? true });
+    }
+    return schedules;
+}
+function parseScheduleExpression(value) {
+    if (typeof value !== "string")
+        throw commandError("Invalid Schedule expression.", "Pass a numeric five-field cron expression.");
+    const parts = value.trim().split(/\s+/);
+    if (parts.length !== 5)
+        throw commandError(`Unsupported Schedule expression: ${value}`, "Use exactly five numeric cron fields; seconds, years, and nicknames are unsupported.");
+    const ranges = [[0, 59], [0, 23], [1, 31], [1, 12], [0, 7]];
+    return parts.map((part, index) => {
+        const values = new Set();
+        for (const item of part.split(",")) {
+            const [base, stepText] = item.split("/");
+            if (item.split("/").length > 2 || (stepText !== undefined && (!/^\d+$/.test(stepText) || Number(stepText) < 1)))
+                throw commandError(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and positive steps.");
+            const step = stepText === undefined ? 1 : Number(stepText);
+            let start, end;
+            if (base === "*")
+                [start, end] = ranges[index];
+            else if (/^\d+$/.test(base))
+                start = end = Number(base);
+            else {
+                const match = /^(\d+)-(\d+)$/.exec(base);
+                if (!match)
+                    throw commandError(`Unsupported Schedule expression: ${value}`, "Use numeric cron fields with lists, ranges, and steps.");
+                start = Number(match[1]);
+                end = Number(match[2]);
+            }
+            if (start < ranges[index][0] || end > ranges[index][1] || start > end)
+                throw commandError(`Invalid Schedule expression: ${value}`, "Keep each cron value inside its field range.");
+            for (let current = start; current <= end; current += step)
+                values.add(index === 4 && current === 7 ? 0 : current);
+        }
+        return values;
+    });
+}
+function nextScheduleOccurrence(fields, after) {
+    const candidate = new Date(after.getTime());
+    candidate.setUTCSeconds(0, 0);
+    candidate.setUTCMinutes(candidate.getUTCMinutes() + 1);
+    for (let count = 0; count < 366 * 24 * 60 * 5; count++, candidate.setUTCMinutes(candidate.getUTCMinutes() + 1)) {
+        const dom = fields[2].has(candidate.getUTCDate());
+        const dow = fields[4].has(candidate.getUTCDay());
+        const domRestricted = fields[2].size !== 31;
+        const dowRestricted = fields[4].size !== 7;
+        const dayMatches = domRestricted && dowRestricted ? dom || dow : dom && dow;
+        if (fields[0].has(candidate.getUTCMinutes()) && fields[1].has(candidate.getUTCHours()) && dayMatches && fields[3].has(candidate.getUTCMonth() + 1))
+            return new Date(candidate);
+    }
+    throw commandError("Schedule has no future occurrence.", "Check the Schedule cron expression.");
+}
+function startStaticSchedules(database) {
+    database.__scheduleTimers = [];
+    for (const definition of database.schedules) {
+        if (!definition.enabled)
+            continue;
+        const arm = () => {
+            const occurrence = nextScheduleOccurrence(definition.fields, database.clock.now());
+            const timer = database.clock.setTimer(async () => { await enqueueScheduledOccurrence(database, definition, occurrence); if (!database.__scheduleStopped)
+                arm(); }, Math.max(0, occurrence.getTime() - database.clock.now().getTime()));
+            database.__scheduleTimers.push(timer);
+        };
+        arm();
+    }
+}
+async function enqueueScheduledOccurrence(database, definition, occurrence) {
+    const scheduledFor = occurrence.toISOString();
+    const provenance = `schedule:${definition.name}:${scheduledFor}`;
+    const context = createMutationContext(database, { userId: provenance, displayName: "Schedule", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "schedule" });
+    const state = await context.privileged.run({ operation: "schedules.enqueue", targetResourceKind: "job-queue", metadata: { scheduleName: definition.name, scheduledFor } }, (privilegedContext) => privilegedContext.jobs.enqueue(definition.job, definition.payload, { retry: definition.retry, idempotencyKey: provenance }));
+    await database.sqlite.prepare("UPDATE sporades_jobs SET scheduleName=?, scheduledFor=? WHERE id=?").run(definition.name, scheduledFor, state.id);
 }
 async function recoverExpiredJobLeases(database) {
     const recoveredAt = database.clock.now();
@@ -769,7 +872,7 @@ async function ensureJobStorage(sqlite) {
     await sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_jobs_idempotency ON sporades_jobs(handler, actorUserId, idempotencyKey) WHERE idempotencyKey IS NOT NULL");
     await sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_jobs_runnable ON sporades_jobs(status, availableAt, id)");
     const columns = await sqlite.prepare("PRAGMA table_info(sporades_jobs)").all();
-    for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"]])
+    for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"]])
         if (!columns.some((column) => column.name === name))
             await sqlite.exec(`ALTER TABLE sporades_jobs ADD COLUMN ${name} ${type}`);
 }
@@ -7819,7 +7922,8 @@ function boundedJobJson(value, limit, code, label) {
 }
 function jobState(row, includeDetail) {
     const actor = row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: row.actorUserId };
-    const state = { id: row.id, handler: row.handler, status: row.status, enqueuedBy: { userId: row.enqueuedByUserId }, actor, attempts: Number(row.attempts) };
+    const enqueuedBy = row.scheduleName ? { mode: "schedule", scheduleName: row.scheduleName, scheduledFor: row.scheduledFor } : { mode: "user", userId: row.enqueuedByUserId };
+    const state = { id: row.id, handler: row.handler, status: row.status, enqueuedBy, actor, attempts: Number(row.attempts) };
     if (includeDetail && row.result)
         state.result = JSON.parse(row.result);
     if (includeDetail && row.failure)
@@ -7858,7 +7962,7 @@ export async function inspectRuntimeJobs(adapter) {
         }
         return rows.map((row) => ({
             id: String(row.id), handler: String(row.handler), status: String(row.status),
-            enqueuedBy: { userId: String(row.enqueuedByUserId) },
+            enqueuedBy: row.scheduleName ? { mode: "schedule", scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : { mode: "user", userId: String(row.enqueuedByUserId) },
             actor: row.actorUserId === privilegedAuthUserId() ? { mode: "privileged-server-role" } : { mode: "current-user", userId: String(row.actorUserId) },
             attempts: Number(row.attempts), retry: decode(row, "retry", row.retryJson, { maxAttempts: 1, delayMs: 0 }),
             idempotencyKeyPresent: row.idempotencyKey !== null && row.idempotencyKey !== undefined,

@@ -56,6 +56,10 @@ export function message(handler) {
 export function job(handler) {
     return { kind: "job", handler };
 }
+/** Declare a named, server-only recurring Privileged Job in `capsule({ schedules })`. */
+export function schedule(definition) {
+    return { kind: "schedule", ...definition };
+}
 export function table(fields) {
     return tableDefinition(fields);
 }
@@ -174,6 +178,10 @@ export function job(handler) {
     kind: "job",
     handler,
   };
+}
+
+export function schedule(definition) {
+  return { kind: "schedule", ...definition };
 }
 
 export function table(fields) {

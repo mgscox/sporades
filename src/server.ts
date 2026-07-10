@@ -31,6 +31,14 @@ export type JobDefinition<HandlerType extends Handler = Handler> = {
   handler: HandlerType;
 };
 
+export type ScheduleDefinition = {
+  expression: string;
+  job: string;
+  payload?: unknown;
+  retry?: { maxAttempts: number; delayMs?: number };
+  enabled?: boolean;
+};
+
 export type FieldDefinition<Value = unknown> = {
   kind: FieldKind;
   defaultValue?: Value;
@@ -149,6 +157,11 @@ export function message<const HandlerType extends Handler>(
 /** Declare a named, server-only durable Job handler in `capsule({ jobs })`. */
 export function job<const HandlerType extends Handler>(handler: HandlerType): JobDefinition<HandlerType> {
   return { kind: "job", handler };
+}
+
+/** Declare a named, server-only recurring Privileged Job in `capsule({ schedules })`. */
+export function schedule<const Definition extends ScheduleDefinition>(definition: Definition): Definition & { kind: "schedule" } {
+  return { kind: "schedule", ...definition };
 }
 
 export function table<const Fields extends UnknownRecord>(fields: Fields): TableDefinition<Fields> {
@@ -278,6 +291,10 @@ export function job(handler) {
     kind: "job",
     handler,
   };
+}
+
+export function schedule(definition) {
+  return { kind: "schedule", ...definition };
 }
 
 export function table(fields) {

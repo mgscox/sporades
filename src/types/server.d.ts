@@ -479,7 +479,7 @@ export type JobStatus = "queued" | "delayed" | "running" | "succeeded" | "failed
 export type JobSummary = { id: string; handler: string; status: JobStatus; attempts: number };
 /** Server-only state for a known Job, including provenance and execution actor. */
 export type JobState = JobSummary & {
-  enqueuedBy: { userId: string };
+  enqueuedBy: { mode: "user"; userId: string } | { mode: "schedule"; scheduleName: string; scheduledFor: string };
   actor: { mode: "current-user"; userId: string } | { mode: "privileged-server-role" };
   result?: JsonValue;
   failure?: { code: string; message: string };
@@ -498,6 +498,14 @@ export type JobApi = {
   list(options?: { limit?: number; cursor?: string }): Promise<{ jobs: JobSummary[]; nextCursor: string | null }>;
 };
 export type JobDefinition<Handler = (ctx: CapsuleContext, payload: JsonValue) => MaybePromise<JsonValue>> = { kind: "job"; handler: Handler };
+export type ScheduleDefinition = {
+  kind?: "schedule";
+  expression: string;
+  job: string;
+  payload?: JsonValue;
+  retry?: { maxAttempts: number; delayMs?: number };
+  enabled?: boolean;
+};
 
 /**
  * Top-level Capsule definition passed to `capsule()`.
@@ -513,6 +521,7 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   endpoints?: Record<string, EndpointDefinition<EndpointHandler<Schema>>>;
   messages?: Record<string, MessageDefinition<MessageHandler<Schema>>>;
   jobs?: Record<string, JobDefinition>;
+  schedules?: Record<string, ScheduleDefinition>;
   middleware?: ContextMiddleware<Schema>[];
   hooks?: CapsuleHooks<Schema>;
 };
@@ -554,6 +563,8 @@ export function message<Handler extends MessageHandler>(handler: Handler): Messa
 export function job<Payload extends JsonValue, Result extends JsonValue>(
   handler: (ctx: CapsuleContext, payload: Payload) => MaybePromise<Result>,
 ): JobDefinition<(ctx: CapsuleContext, payload: Payload) => MaybePromise<Result>>;
+/** Declare a named server-only recurring Privileged Job in `capsule({ schedules })`. */
+export function schedule<const Definition extends ScheduleDefinition>(definition: Definition): Definition & { kind: "schedule" };
 /** Define a Capsule table from field builders. */
 export function table<const Fields extends Record<string, AnyFieldDefinition>>(fields: Fields): TableDefinition<Fields>;
 

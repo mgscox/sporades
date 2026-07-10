@@ -5819,6 +5819,8 @@ test("sporades db dump returns structured table data from the running dev sessio
                 "attemptHistory",
                 "cancelRequestedAt",
                 "leaseExpiresAt",
+                "scheduleName",
+                "scheduledFor",
               ],
               rows: [],
             },
