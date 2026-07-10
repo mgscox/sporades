@@ -2,7 +2,7 @@
 
 **What to build:** Let a Schedule calculate an ordinary JSON-safe Job payload at occurrence time through a bounded synchronous or asynchronous factory with immutable occurrence metadata, cooperative cancellation, and optional explicit Privileged server role access.
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
