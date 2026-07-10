@@ -129,11 +129,13 @@ The following work is intentionally deferred:
   rules over one Capsule's DB, files, and storage resources; they are not the
   Privileged server role and must not become a global role on runtime-owned
   Sporades auth users.
-- Vector storage and Job scheduling:
+- Vector storage and remaining Job scheduling work:
   `.scratch/post-v2-platform-hardening-and-ops/issues/07-evaluate-vector-storage-extension.md`
-  and `.scratch/post-v2-platform-hardening-and-ops/issues/09-add-job-scheduling.md`.
-  Recurring Job scheduling remains future work and depends on the implemented
-  Job Queue state, retry, inspection, and explicit actor semantics.
+  and the promoted `.scratch/job-scheduling/PRD.md`. Static Schedule declaration,
+  five-field cron evaluation, and timezone/daylight-saving semantics are
+  implemented. Durable persistence, missed-run recovery, reconciliation, and
+  operator inspection remain pending and build on the implemented Job Queue
+  state, retry, inspection, and explicit actor semantics.
 - Broader production platform work, multi-node hosting, DNS automation,
   dashboards, rollback commands, external database support, and managed
   external storage backends such as AWS S3. Future AWS S3 support should reuse

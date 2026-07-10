@@ -443,6 +443,9 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   assert.match(roadmap, /Job queue \| implemented[\s\S]*current-user and Privileged server role actors/);
   assert.doesNotMatch(roadmap, /\| Job queue \| ready \|/);
   assert.match(roadmap, /Job scheduling \| ready[\s\S]*depends on the implemented Job Queue/);
+  assert.match(prd, /Static Schedule declaration,[\s\S]*timezone\/daylight-saving semantics are[\s\S]*implemented/);
+  assert.match(prd, /Durable persistence, missed-run recovery, reconciliation, and[\s\S]*operator inspection remain pending/);
+  assert.doesNotMatch(prd, /Recurring Job scheduling remains future work/);
 
   const implementedScope = prd.slice(prd.indexOf("### Implemented scope"), prd.indexOf("### Future scope"));
   const futureScope = prd.slice(prd.indexOf("### Future scope"), prd.indexOf("## Product Principles"));
