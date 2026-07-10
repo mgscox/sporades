@@ -303,7 +303,7 @@ function parseDevArgs(args) {
     };
 }
 function parseDeployArgs(args) {
-    const lifecycleCommands = new Set(["status", "stop", "restart", "remove", "reset", "ssh", "jobs"]);
+    const lifecycleCommands = new Set(["status", "stop", "restart", "remove", "reset", "ssh", "jobs", "schedules"]);
     const subcommand = lifecycleCommands.has(args[0]) ? args[0] : "start";
     const rest = subcommand === "start" ? args : args.slice(1);
     let port = null;
@@ -760,6 +760,16 @@ function parseHostArgs(args) {
             validateHostAlias(hostAlias);
             validateCapsuleSubname(subname);
             return { subcommand, subname, hostAlias, json: true, projectDir: process.cwd() };
+        case "schedules":
+            if (positional.length > 0)
+                throw commandError("Too many positional arguments.", "Use `sporades host schedules --host <alias> --subname <name>`.");
+            if (!hostAlias)
+                throw commandError("Missing Host profile alias.", "Pass `--host <alias>`.");
+            if (!subname)
+                throw commandError("Missing Capsule subname.", "Pass `--subname <name>`.");
+            validateHostAlias(hostAlias);
+            validateCapsuleSubname(subname);
+            return { subcommand, subname, hostAlias, json: true, projectDir: process.cwd() };
         case "ssh": {
             const [positionalSubname, ...extra] = positional;
             if (extra.length > 0) {
@@ -1093,6 +1103,11 @@ async function manageLocalLifecycle(surface, options) {
                 throw commandError("Unsupported lifecycle command: jobs", "Use `sporades deploy jobs`.");
             await inspectContainerJobs(options);
             return;
+        case "schedules":
+            if (surface !== "deploy")
+                throw commandError("Unsupported lifecycle command: schedules", "Use `sporades deploy schedules`.");
+            await inspectContainerSchedules(options);
+            return;
         case "remove":
             if (surface !== "deploy") {
                 throw commandError("Unsupported lifecycle command: remove", "Use `sporades deploy remove`.");
@@ -1194,6 +1209,14 @@ async function inspectContainerJobs(options) {
         throw commandError("The local Container session is not running.", "Run `sporades deploy restart`, then retry `sporades deploy jobs`.");
     const result = spawnSync("docker", ["exec", binding.containerId, "node", "/app/server.mjs", "--sporades-action", "jobs.inspect"], { cwd: options.projectDir, encoding: "utf8" });
     parseInspectionProcess(result, "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy jobs`.");
+}
+async function inspectContainerSchedules(options) {
+    const { binding } = await requireLocalContainerBinding(options, "schedules");
+    const running = runDocker(["inspect", "--format", "{{.State.Running}}", binding.containerId], options.projectDir, "Unable to inspect the local Container session.", "Check Docker and retry `sporades deploy schedules`.");
+    if (running !== "true")
+        throw commandError("The local Container session is not running.", "Run `sporades deploy restart`, then retry `sporades deploy schedules`.");
+    const result = spawnSync("docker", ["exec", binding.containerId, "node", "/app/server.mjs", "--sporades-action", "schedules.inspect"], { cwd: options.projectDir, encoding: "utf8" });
+    parseInspectionProcess(result, "Redeploy the Capsule with the current Sporades CLI, then retry `sporades deploy schedules`.");
 }
 async function startDevSession(options) {
     let config = await readProjectConfig(options.projectDir);
@@ -2023,6 +2046,17 @@ async function ensureHostProfileEnvKey(config, alias) {
 }
 async function manageHost(options) {
     switch (options.subcommand) {
+        case "schedules": {
+            const config = await readHostConfig();
+            const resolved = resolveHostProfile(config, options.hostAlias);
+            const result = invokeRemoteHostHelper({ alias: resolved.alias, profile: resolved.profile, action: "schedules.inspect", subname: options.subname, projectDir: options.projectDir });
+            if (!result.ok && /Unsupported Host helper action/i.test(result.error.message)) {
+                writeResult({ ok: false, data: null, error: { code: "HOST_HELPER_UPGRADE_REQUIRED", message: "The Host server CLI does not support Schedule inspection.", hint: `Run \`sporades host upgrade --host ${resolved.alias}\`, then retry the command.` } }, true);
+                return;
+            }
+            writeResult(result, !result.ok);
+            return;
+        }
         case "jobs": {
             const config = await readHostConfig();
             const resolved = resolveHostProfile(config, options.hostAlias);

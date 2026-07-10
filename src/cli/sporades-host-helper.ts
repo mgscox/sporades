@@ -160,6 +160,10 @@ async function main() {
     inspectCapsuleJobs(request);
     return;
   }
+  if (request.action === "schedules.inspect") {
+    inspectCapsuleSchedules(request);
+    return;
+  }
   if (request.action === "host.stats") {
     await statsHost(request);
     return;
@@ -185,15 +189,23 @@ async function main() {
 }
 
 function inspectCapsuleJobs(request: HostHelperRequest) {
+  inspectCapsuleRuntime(request, "jobs.inspect", "Job");
+}
+
+function inspectCapsuleSchedules(request: HostHelperRequest) {
+  inspectCapsuleRuntime(request, "schedules.inspect", "Schedule");
+}
+
+function inspectCapsuleRuntime(request: HostHelperRequest, action: "jobs.inspect" | "schedules.inspect", label: string) {
   const containerName = createHostedContainerName(request.host.domain, request.capsule.subname);
   if (!checkContainerRunning(containerName)) {
     throw helperError("The Hosted Capsule is not running.", `Run \`sporades host start ${request.capsule.subname} --host ${request.host.alias}\`, then retry the command.`);
   }
-  const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", "jobs.inspect"]);
+  const result = runDocker(["exec", containerName, "node", "/app/server.mjs", "--sporades-action", action]);
   let envelope: LooseRecord;
   try { envelope = JSON.parse(result.stdout.trim()); }
-  catch { throw helperError("Hosted Job inspection returned invalid JSON.", "Run `sporades host upgrade`, redeploy the Capsule, and retry the command."); }
-  if (!envelope.ok) throw helperError(envelope.error?.message ?? "Hosted Job inspection failed.", envelope.error?.hint ?? "Inspect the Hosted Capsule and retry the command.", envelope.error);
+  catch { throw helperError(`Hosted ${label} inspection returned invalid JSON.`, "Run `sporades host upgrade`, redeploy the Capsule, and retry the command."); }
+  if (!envelope.ok) throw helperError(envelope.error?.message ?? `Hosted ${label} inspection failed.`, envelope.error?.hint ?? "Inspect the Hosted Capsule and retry the command.", envelope.error);
   writeEnvelope(envelope);
 }
 

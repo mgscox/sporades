@@ -1,6 +1,6 @@
 import type { JsonObject, JsonValue } from "./host-helper-json.js";
 import type { HostHelperCapsuleTarget, HostHelperHost, HostHelperSealedServerEnv, HostLifecycleOptions, HostedCapsuleBaseImage, HostTlsMode } from "./hosted-capsule-contract.js";
-export type HostHelperAction = "capsule.register" | "capsule.sealed-env.rotate-key" | "capsule.unregister" | "capsule.delete" | "capsule.release.install" | "capsule.release.list" | "capsule.release.rollback" | "capsule.start" | "capsule.stop" | "capsule.restart" | "capsule.stats" | "capsule.ssh" | "capsule.health" | "jobs.inspect" | "capsule.list" | "host.stats" | "host.logs" | "host.version" | "host.bootstrap";
+export type HostHelperAction = "capsule.register" | "capsule.sealed-env.rotate-key" | "capsule.unregister" | "capsule.delete" | "capsule.release.install" | "capsule.release.list" | "capsule.release.rollback" | "capsule.start" | "capsule.stop" | "capsule.restart" | "capsule.stats" | "capsule.ssh" | "capsule.health" | "jobs.inspect" | "schedules.inspect" | "capsule.list" | "host.stats" | "host.logs" | "host.version" | "host.bootstrap";
 export type HostHelperVerification = JsonObject & {
     enabled?: boolean;
     fallbackToPreviousRelease?: boolean;
@@ -162,7 +162,11 @@ export type HostJobsInspectRequest = HostHelperRequestBase & {
     action: "jobs.inspect";
     capsule: HostHelperCapsuleTarget;
 };
-export type HostHelperRequest = HostBootstrapRequest | HostRegistrationRequest | HostSealedEnvRotationRequest | HostUnregisterRequest | HostDeleteRequest | HostReleaseInstallRequest | HostReleaseListRequest | HostReleaseRollbackRequest | HostLifecycleRequest | HostStatsRequest | HostSshRequest | HostHealthRequest | HostLogsRequest | HostCapsuleListRequest | HostVersionRequest | HostJobsInspectRequest;
+export type HostSchedulesInspectRequest = HostHelperRequestBase & {
+    action: "schedules.inspect";
+    capsule: HostHelperCapsuleTarget;
+};
+export type HostHelperRequest = HostBootstrapRequest | HostRegistrationRequest | HostSealedEnvRotationRequest | HostUnregisterRequest | HostDeleteRequest | HostReleaseInstallRequest | HostReleaseListRequest | HostReleaseRollbackRequest | HostLifecycleRequest | HostStatsRequest | HostSshRequest | HostHealthRequest | HostLogsRequest | HostCapsuleListRequest | HostVersionRequest | HostJobsInspectRequest | HostSchedulesInspectRequest;
 export type HostHelperErrorBody = JsonObject & {
     message: string;
     hint: string;
