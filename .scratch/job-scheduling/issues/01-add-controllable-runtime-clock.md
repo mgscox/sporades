@@ -2,7 +2,7 @@
 
 **What to build:** Add an internal runtime clock and timer boundary so scheduling behavior can be exercised deterministically without changing the production-time behavior of existing runtime features.
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
