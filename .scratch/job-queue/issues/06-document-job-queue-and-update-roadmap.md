@@ -3,7 +3,7 @@
 # Document Job Queue And Update Roadmap
 
 Category: enhancement
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
@@ -43,3 +43,8 @@ relationship with recurring Job scheduling.
 - Issue 07 is integrated and integration-green. This final documentation slice
   is now ready, but should follow Issue 08 to avoid overlapping canonical docs
   and documentation tests.
+- Integrated from reviewed worker tip `2faa48bc372f1db006a20a146de7a0c938ef7722`
+  in merge commit `7dfa6d6f4f41660a5d510b2e7d23f23f6deac028` after independent review returned
+  `ACCEPT` for base `ac4d85ea309ef993090c9bdb30ab4a826fd983d8`.
+- Integration gate: all 15 documentation tests passed, typecheck passed, and
+  diff hygiene was clean.
