@@ -14,7 +14,7 @@ Validated swarm base: `4377ca26858dfbc9c61e9f9660c3e1ed79b6c0d8`
 | 07 | done | 06 | `413b1220d47a5ed7183b9d1218b84edc30840888` | `codex/job-scheduling-07-inspection` / removed worktree | `job_scheduling_07` | `169ef50de5307f8714a96483f3cd28517f660ebd` | `job_scheduling_07_review` | ACCEPT | `28abf9dc46989ee4f8e108507ce47e6f614b32ec` | Review 3 rounds; integration build/type/generated + inspection green | worktree removed; branch retained |
 | 08 | done | 07 | `37334f02b999edd64d24c60dd1e8d3f580581237` | `codex/job-scheduling-08-dev-cli` / removed worktree | `job_scheduling_08` | `04bb45b69047a64fadde9d740f792936b1f58547` | `job_scheduling_08_review` | ACCEPT | `915610191a7da50f0d971e877d72b5b0d0018e44` | Review focused 8 pass/1 PG skip; integration CLI 10/10 + generated | worktree removed; branch retained |
 | 09 | done | 08 | `8816c9788fc987c22183ca98e8ec9fe05cd0001c` | `codex/job-scheduling-09-remote-cli` / removed worktree | `job_scheduling_09` | `68a625e18c47204de85b5c038fc787863bdeb8fa` | `job_scheduling_09_review` | ACCEPT | `09fc9bd9d3e1ae1a432c1033ec57ad2c51ac6eb7` | Review 3 rounds; integration CLI 16/16 + build/type/generated | worktree removed; branch retained |
-| 10 | done | 09 | `c3b4ec2b69fa5227d828b5139c23fe6f3d8e2049` | `codex/job-scheduling-10-docs` / `/Users/mattcox/.codex/worktrees/job-scheduling-10` | `job_scheduling_10` | `011f4f61145fc943eb6be6c12395c121cfd29d59` | `job_scheduling_10_review` | ACCEPT | `3c6f411c7c3bdfbc73cd23f442062c9e2c0ab2c7` | Review 2 rounds; integration docs/types 17/17 + TypeDoc/generated | cleanup pending |
+| 10 | done | 09 | `c3b4ec2b69fa5227d828b5139c23fe6f3d8e2049` | `codex/job-scheduling-10-docs` / removed worktree | `job_scheduling_10` | `011f4f61145fc943eb6be6c12395c121cfd29d59` | `job_scheduling_10_review` | ACCEPT | `3c6f411c7c3bdfbc73cd23f442062c9e2c0ab2c7` | Review 2 rounds; integration docs/types 17/17 + TypeDoc/generated | worktree removed; branch retained |
 
 ## Baseline
 
@@ -22,3 +22,10 @@ Validated swarm base: `4377ca26858dfbc9c61e9f9660c3e1ed79b6c0d8`
 - Dependencies: `node_modules` present.
 - Graph: validated with exact parent and blocker paths; blocker counts `0,1,1,1,2,1,1,1,1,1`.
 - Broad suite: `npm test` passed with 533 tests passing and 7 environment-gated tests skipped.
+
+## Final Verification
+
+- Final generated-runtime repair: `9294ee37fe939152f8fb347944d0fbe5be6011dc`, independently reviewed `ACCEPT`.
+- Stable TypeDoc source-link generation: `7965ff7`, integration review `ACCEPT`; a second `npm run docs:api` left the worktree clean.
+- Final `npm test`: 589 tests, 581 passed, 0 failed, 8 environment-gated skips.
+- Final graph validation: all ten issues are `done`, with the authoritative dependency edges present in `HEAD`.
