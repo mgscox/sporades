@@ -2,9 +2,15 @@
 
 **What to build:** Let Capsule server code declare a named enabled Schedule that binds a valid five-field cron expression and static JSON-safe payload to an existing Job handler, then enqueues one due Privileged Job for the Job Queue to manage and execute.
 
-Blocked by: 01 — Add A Controllable Runtime Clock.
-
 Status: ready-for-agent
+
+## Parent
+
+.scratch/job-scheduling/PRD.md
+
+## Blocked by
+
+.scratch/job-scheduling/issues/01-add-controllable-runtime-clock.md
 
 - [ ] Capsule server code declares Schedules in a named map alongside named Jobs, using a server-only declaration whose map key is the stable Schedule identity.
 - [ ] Schedule names begin with a letter and then allow letters, numbers, underscores, or hyphens, so integer-like object-key enumeration cannot change declaration order.

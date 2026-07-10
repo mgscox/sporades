@@ -2,9 +2,15 @@
 
 **What to build:** Give trusted server code bounded schedule inspection through the Privileged server role and correlate each scheduled Job and privileged attempt with its originating schedule and occurrence.
 
-Blocked by: 06 — Make Occurrence Creation Crash-Safe And Duplicate-Resistant.
-
 Status: ready-for-agent
+
+## Parent
+
+.scratch/job-scheduling/PRD.md
+
+## Blocked by
+
+.scratch/job-scheduling/issues/06-make-occurrence-creation-crash-safe.md
 
 - [ ] Privileged server context can get and list schedule summaries; ordinary current-user contexts have no schedule inspection authority.
 - [ ] Each summary includes stable schedule name, normalized expression, timezone, missed-run policy, enabled state, next occurrence, and the latest occurrence summary.

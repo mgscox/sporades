@@ -2,9 +2,15 @@
 
 **What to build:** Let a Schedule calculate an ordinary JSON-safe Job payload at occurrence time through a bounded synchronous or asynchronous factory with immutable occurrence metadata, cooperative cancellation, and optional explicit Privileged server role access.
 
-Blocked by: 02 — Declare And Run A Static Recurring Privileged Job.
-
 Status: ready-for-agent
+
+## Parent
+
+.scratch/job-scheduling/PRD.md
+
+## Blocked by
+
+.scratch/job-scheduling/issues/02-declare-and-run-static-recurring-privileged-job.md
 
 - [ ] A Schedule payload factory may return synchronously or asynchronously; Sporades awaits and validates the resolved JSON-safe value before ordinary enqueue.
 - [ ] The factory receives only `{ scheduleName, scheduledFor }` plus scheduling context containing `signal` and the lazy `privileged` accessor, without internal occurrence IDs, claims, or queue state.

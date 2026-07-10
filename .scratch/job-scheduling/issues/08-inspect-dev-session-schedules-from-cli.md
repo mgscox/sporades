@@ -2,9 +2,15 @@
 
 **What to build:** Let an administrator inspect all bounded schedule state for the active Dev session through the JSON-only `sporades schedules` command backed by a read-only one-shot generated-Bundle action.
 
-Blocked by: 07 — Inspect Schedules And Correlate Their Jobs.
-
 Status: ready-for-agent
+
+## Parent
+
+.scratch/job-scheduling/PRD.md
+
+## Blocked by
+
+.scratch/job-scheduling/issues/07-inspect-schedules-and-correlate-jobs.md
 
 - [ ] The Dev schedule command returns the standard structured JSON envelope with Capsule identity and schedules ordered by name.
 - [ ] A Capsule with no schedules or no schedule store succeeds with `schedules: []` without creating or migrating storage.

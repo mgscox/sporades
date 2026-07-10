@@ -2,9 +2,15 @@
 
 **What to build:** Expose the same bounded schedule inspection contract through `sporades deploy schedules` for a bound local Container session and `sporades host schedules --host <alias> --subname <name>` for one Hosted Capsule using the existing Docker and Host-helper transports.
 
-Blocked by: 08 — Inspect Dev-Session Schedules From The CLI.
-
 Status: ready-for-agent
+
+## Parent
+
+.scratch/job-scheduling/PRD.md
+
+## Blocked by
+
+.scratch/job-scheduling/issues/08-inspect-dev-session-schedules-from-cli.md
 
 - [ ] Local Container and Hosted commands return the same schedule JSON schema and structured envelope as Dev inspection.
 - [ ] Each command targets its explicit runtime location and never guesses between Dev, local Container, and Hosted state.

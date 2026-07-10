@@ -2,9 +2,15 @@
 
 **What to build:** Publish one consistent Capsule-author, operator, and maintainer contract for recurring Job scheduling and mark the roadmap feature implemented once every prior slice is complete.
 
-Blocked by: 09 — Extend Schedule Inspection To Container And Hosted Capsules.
-
 Status: ready-for-agent
+
+## Parent
+
+.scratch/job-scheduling/PRD.md
+
+## Blocked by
+
+.scratch/job-scheduling/issues/09-extend-inspection-to-container-and-hosted-capsules.md
 
 - [ ] Public server API docs and generated declarations describe schedule authoring, five-field cron restrictions, payload and retry behavior, and server-only authority.
 - [ ] User guidance explains IANA timezone and daylight-saving behavior, `skip` and `latest` missed-run policies, restart recovery, declaration changes, and duplicate protection.

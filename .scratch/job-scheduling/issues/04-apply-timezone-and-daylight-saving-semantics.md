@@ -2,9 +2,15 @@
 
 **What to build:** Let each recurring Schedule use an explicit IANA timezone or the runtime server timezone by default, then calculate matching UTC occurrence instants from the effective local wall-clock fields with deterministic daylight-saving behavior.
 
-Blocked by: 02 — Declare And Run A Static Recurring Privileged Job.
-
 Status: ready-for-agent
+
+## Parent
+
+.scratch/job-scheduling/PRD.md
+
+## Blocked by
+
+.scratch/job-scheduling/issues/02-declare-and-run-static-recurring-privileged-job.md
 
 - [ ] An explicit timezone must be a valid available IANA timezone; when omitted, Sporades uses the runtime server timezone resolved through Node `Intl` APIs.
 - [ ] Schedule inspection exposes the effective timezone, and docs warn that Dev, Container, and Hosted server defaults may differ unless the author pins one.

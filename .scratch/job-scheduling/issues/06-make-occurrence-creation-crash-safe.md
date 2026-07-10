@@ -2,9 +2,15 @@
 
 **What to build:** Ensure repeated evaluation, overlapping runtime starts, and crashes on either side of Job creation converge on one durable Job identity for each scheduled UTC occurrence.
 
-Blocked by: 05 — Recover Missed Runs And Reconcile Declarations.
-
 Status: ready-for-agent
+
+## Parent
+
+.scratch/job-scheduling/PRD.md
+
+## Blocked by
+
+.scratch/job-scheduling/issues/05-recover-missed-runs-and-reconcile-declarations.md
 
 - [ ] Each occurrence has a deterministic identity derived from Capsule identity, schedule name, and scheduled UTC instant.
 - [ ] Conditional persistent evaluation claims allow only one active evaluator for a due occurrence and expired claims recover safely.
