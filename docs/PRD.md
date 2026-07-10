@@ -621,6 +621,35 @@ the source runtime code. `npm run build` regenerates the bundled `bin/` and
 such as `SERVER_RUNTIME_SOURCE_FUNCTIONS` so Dev sessions, Container sessions,
 and Hosted Capsules do not drift from source behavior.
 
+## Job Queue
+
+The Job Queue is implemented as a runtime-owned, server-only surface. Capsule
+authors declare handlers with `job()` and enqueue them through `ctx.jobs` from
+trusted server contexts. Enqueue is a durable runtime side effect outside the
+Capsule app mutation Transaction boundary, so callers that may retry a
+cross-boundary workflow should supply an idempotency key.
+
+Jobs run as either the captured current Sporades user or, when explicitly
+enqueued inside `ctx.privileged.run(...)`, the Privileged server role.
+`enqueuedBy` records provenance and does not replace that execution actor.
+Current-user `get` and `list` inspection is actor-scoped; Privileged inspection
+can enumerate Jobs across actors.
+
+The lifecycle states are `delayed`, `queued`, `running`, `succeeded`, `failed`,
+and `cancelled`; only `queued` means ready to run. V1 uses a single worker,
+bounded retry, cooperative cancellation, leases, and restart recovery. Delivery
+is at least once rather than exactly once, so handlers must be idempotent and
+safe to repeat after lease recovery.
+
+Administrators inspect all bounded Job state using the JSON-only `sporades
+jobs`, `sporades deploy jobs`, and `sporades host jobs` commands. This operator
+action is separate from actor-scoped Capsule APIs and omits payloads and
+idempotency-key values.
+
+A one-time future `availableAt` belongs to the Job Queue. Recurring Job
+scheduling remains future work, including cron syntax, timezone handling,
+missed-run handling, and duplicate recurring-run protection.
+
 ## Configuration
 
 `sporades.json` is read by the CLI and passed into the runtime. The runtime

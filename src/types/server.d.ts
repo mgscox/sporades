@@ -473,8 +473,11 @@ export type MessageDefinition<Handler = MessageHandler> = {
   handler: Handler;
 };
 
+/** Runtime-owned Job lifecycle state. Only `queued` is ready to run. */
 export type JobStatus = "queued" | "delayed" | "running" | "succeeded" | "failed" | "cancelled";
+/** Bounded server-only Job state returned from actor-scoped inspection. */
 export type JobSummary = { id: string; handler: string; status: JobStatus; attempts: number };
+/** Server-only state for a known Job, including provenance and execution actor. */
 export type JobState = JobSummary & {
   enqueuedBy: { userId: string };
   actor: { mode: "current-user"; userId: string } | { mode: "privileged-server-role" };
@@ -482,6 +485,12 @@ export type JobState = JobSummary & {
   failure?: { code: string; message: string };
   attemptHistory?: Array<{ attempt: number; startedAt: string; outcome: string; completedAt: string; code?: string }>;
 };
+/**
+ * Server-only runtime-owned Job Queue API.
+ *
+ * Current-user access is scoped to the captured execution actor. Privileged
+ * access may inspect all Jobs when used explicitly through `ctx.privileged`.
+ */
 export type JobApi = {
   enqueue(handler: string, payload: JsonValue, options?: { idempotencyKey?: string; availableAt?: string | Date; retry?: { maxAttempts: number; delayMs?: number } }): Promise<JobState>;
   cancel(id: string): Promise<JobState | null>;

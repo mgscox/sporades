@@ -426,20 +426,23 @@ test("docs describe the implemented Privileged audit event contract", async () =
 });
 
 test("docs describe the implemented Privileged server role and Job Queue contracts", async () => {
-  const [roadmap, prd, userGuide, apiServer, apiPrivileged] = await Promise.all([
+  const [roadmap, prd, userGuide, apiServer, apiPrivileged, apiJob, apiJobApi, apiClient] = await Promise.all([
     readProjectFile("docs/ROADMAP.md"),
     readProjectFile("docs/PRD.md"),
     readProjectFile("docs/user-guide.md"),
     readProjectFile("docs/api/modules/server.html"),
     readProjectFile("docs/api/types/server.PrivilegedApi.html"),
+    readProjectFile("docs/api/functions/server.job.html"),
+    readProjectFile("docs/api/types/server.JobApi.html"),
+    readProjectFile("docs/api/modules/client.html"),
   ]);
 
   assert.match(roadmap, /Privileged server role \| implemented/);
   assert.doesNotMatch(roadmap, /\| Privileged server role \| design \|/);
   assert.match(roadmap, /Planning remains in `\.scratch\/privileged-server-role\/PRD\.md`/);
-  assert.match(roadmap, /Job queue \| ready[\s\S]*depends on the implemented Privileged server role actor boundary/);
-  assert.doesNotMatch(roadmap, /\| Job queue \| implemented \|/);
-  assert.match(roadmap, /Job scheduling \| design[\s\S]*depends on[\s\S]*Job Queue state, retry, inspection/);
+  assert.match(roadmap, /Job queue \| implemented[\s\S]*current-user and Privileged server role actors/);
+  assert.doesNotMatch(roadmap, /\| Job queue \| ready \|/);
+  assert.match(roadmap, /Job scheduling \| design[\s\S]*depends on the implemented Job Queue/);
 
   const implementedScope = prd.slice(prd.indexOf("### Implemented scope"), prd.indexOf("### Future scope"));
   const futureScope = prd.slice(prd.indexOf("### Future scope"), prd.indexOf("## Product Principles"));
@@ -492,6 +495,24 @@ test("docs describe the implemented Privileged server role and Job Queue contrac
   for (const excluded of ["filters", "cursor", "pagination", "human renderer", "offline inspection"]) {
     assert.match(userGuide, new RegExp(excluded));
   }
+  for (const status of ["delayed", "queued", "running", "succeeded", "failed", "cancelled"]) {
+    assert.match(userGuide, new RegExp(`\\b${status}\\b`));
+  }
+  assert.match(userGuide, /Only `queued` Jobs are ready to run/);
+  assert.match(userGuide, /single worker/);
+  assert.match(userGuide, /lease recovery/);
+  assert.match(userGuide, /current-user inspection[\s\S]*captured execution actor/i);
+  assert.match(userGuide, /Privileged inspection[\s\S]*all Jobs/);
+  assert.match(userGuide, /`enqueuedBy`[\s\S]*provenance/);
+  assert.match(userGuide, /cron syntax[\s\S]*timezone handling[\s\S]*missed-run handling[\s\S]*duplicate\s+recurring-run protection/i);
+
+  assert.match(apiServer, /JobApi/);
+  assert.match(apiServer, /JobState/);
+  assert.match(apiJob, /server-only Job handler/);
+  assert.match(apiJobApi, /enqueue/);
+  assert.match(apiJobApi, /get/);
+  assert.match(apiJobApi, /list/);
+  assert.doesNotMatch(apiClient, /JobApi/);
 });
 
 test("docs describe doctor diagnostics as read-only coordination", async () => {

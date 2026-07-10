@@ -163,9 +163,27 @@ this is not recurring scheduling. A bounded `retry` policy records attempts and
 uses a deterministic delay. `ctx.jobs.cancel(id)` cancels queued or delayed
 work, or cooperatively requests cancellation of running work through its signal.
 
+The lifecycle states are `delayed`, `queued`, `running`, `succeeded`, `failed`,
+and `cancelled`. Only `queued` Jobs are ready to run; `delayed` Jobs wait until
+their `availableAt` time. The initial runtime uses a single worker. A running
+attempt holds a lease, and lease recovery after interruption may execute that
+attempt again.
+
 Job delivery is **at least once**, not exactly once: an interrupted leased
 attempt can be recovered and run again under the same Job ID. Make handlers
 duplicate-safe and use idempotency keys for cross-boundary caller retries.
+
+`ctx.jobs.get(id)` reads one known Job. `ctx.jobs.list(...)` supports bounded,
+cursor-based listing by actor. Current-user inspection sees only Jobs for its
+captured execution actor. Privileged inspection through an explicit
+`ctx.privileged.run(...)` may see all Jobs. In either view, `enqueuedBy` is
+provenance—the user who caused the Job to be created—and is distinct from the
+captured current-user or Privileged server role actor under which the handler
+executes.
+
+One-time delayed availability is Job Queue behavior, not recurring Job
+scheduling. Cron syntax, timezone handling, missed-run handling, and duplicate
+recurring-run protection remain future Job scheduling work.
 
 ### Inspect Jobs from the CLI
 
