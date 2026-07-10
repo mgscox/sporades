@@ -2,7 +2,7 @@
 
 **What to build:** Persist schedule evaluation state across runtime restarts, apply bounded missed-run behavior, and reconcile deployed declaration changes without rewriting history or producing surprise backfills.
 
-Status: ready-for-agent
+Status: done
 
 ## Parent
 
