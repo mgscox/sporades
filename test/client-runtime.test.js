@@ -102,11 +102,33 @@ test("Journey subscriptions deliver platform events and unsubscribe without enab
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.deepEqual(events, [{ type: "snapshot", states: [] }]);
     assert.deepEqual(calls.map(({ type }) => type), ["journey.subscribe"]);
-    browser.sockets[0].emit("message", { data: JSON.stringify({ type: "journey.event", data: { type: "added", state: { sessionId: "j1" } }, error: null }) });
+    const subscriptionId = calls[0].id;
+    browser.sockets[0].emit("message", { data: JSON.stringify({ id: subscriptionId, type: "journey.event", data: { type: "added", state: { sessionId: "j1" } }, error: null }) });
     assert.equal(events.length, 2);
     subscription.unsubscribe();
-    browser.sockets[0].emit("message", { data: JSON.stringify({ type: "journey.event", data: { type: "removed", state: { sessionId: "j1" } }, error: null }) });
+    browser.sockets[0].emit("message", { data: JSON.stringify({ id: subscriptionId, type: "journey.event", data: { type: "removed", state: { sessionId: "j1" } }, error: null }) });
     assert.equal(events.length, 2);
+  } finally { browser.cleanup(); }
+});
+
+test("each local Journey subscriber starts with one snapshot and reconnect converges through changes", async () => {
+  const calls = [];
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "journey.subscribe": async (message) => { calls.push(message); return { type: message.resume ? "journey.sync" : "journey.event", data: { type: "snapshot", states: message.resume ? [{ sessionId: "j2", userId: "u", status: "reviewing", updatedAt: "2", expiresAt: "3" }] : [] }, error: null }; },
+  }});
+  try {
+    const runtime = await importClientRuntime();
+    const first = []; const second = [];
+    runtime.journey.subscribe((event) => first.push(event));
+    runtime.journey.subscribe((event) => second.push(event));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(first, [{ type: "snapshot", states: [] }]);
+    assert.deepEqual(second, [{ type: "snapshot", states: [] }]);
+    browser.sockets[0].readyState = 3; browser.sockets[0].emit("close", {});
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    assert.deepEqual(first.map(({ type }) => type), ["snapshot", "added"]);
+    assert.deepEqual(second.map(({ type }) => type), ["snapshot", "added"]);
+    assert.equal(first.filter(({ type }) => type === "snapshot").length, 1);
   } finally { browser.cleanup(); }
 });
 

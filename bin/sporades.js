@@ -476,7 +476,7 @@ function createConnection() {
   let latestAuthMessage = null;
   let journeyResumeCredential = null;
   let journeyEnabledUserId = null;
-  const journeyListeners = new Set();
+  const journeySubscriptions = new Map();
   let latestAuthUserId = null;
 
   function syncSessionTokenFromStorage() {
@@ -505,7 +505,7 @@ function createConnection() {
       if (journeyResumeCredential) {
         request("journey.enable", { resumeCredential: journeyResumeCredential });
       }
-      if (journeyListeners.size > 0) send({ id: null, type: "journey.subscribe" });
+      for (const subscription of journeySubscriptions.values()) send({ id: subscription.id, type: "journey.subscribe", resume: subscription.started });
       for (const subscription of subscriptions.values()) {
         send({
           id: subscription.id,
@@ -525,7 +525,17 @@ function createConnection() {
         return;
       }
       if (message.type === "journey.event") {
-        for (const listener of journeyListeners) listener(message.data);
+        const subscription = journeySubscriptions.get(message.id);
+        if (subscription) {
+          subscription.started = true;
+          updateJourneySubscriptionState(subscription, message.data);
+          subscription.listener(message.data);
+        }
+        return;
+      }
+      if (message.type === "journey.sync") {
+        const subscription = journeySubscriptions.get(message.id);
+        if (subscription) reconcileJourneySubscription(subscription, message.data.states);
         return;
       }
       if (message.type === "query.result" && subscriptions.has(message.id)) {
@@ -575,6 +585,29 @@ function createConnection() {
       pending.set(id, resolve);
       send({ id, type, ...fields });
     });
+  }
+
+  function updateJourneySubscriptionState(subscription, event) {
+    if (event.type === "snapshot") {
+      subscription.states = new Map(event.states.map((state) => [state.sessionId, state]));
+    } else if (event.type === "removed") {
+      subscription.states.delete(event.state.sessionId);
+    } else {
+      subscription.states.set(event.state.sessionId, event.state);
+    }
+  }
+
+  function reconcileJourneySubscription(subscription, states) {
+    const next = new Map(states.map((state) => [state.sessionId, state]));
+    for (const [sessionId, previous] of subscription.states) {
+      if (!next.has(sessionId)) subscription.listener({ type: "removed", state: previous });
+    }
+    for (const state of states) {
+      const previous = subscription.states.get(state.sessionId);
+      if (!previous) subscription.listener({ type: "added", state });
+      else if (JSON.stringify(previous) !== JSON.stringify(state)) subscription.listener({ type: "updated", state });
+    }
+    subscription.states = next;
   }
 
   function storeAuthSession(message) {
@@ -721,12 +754,12 @@ function createConnection() {
     journeyList() { return request("journey.list"); },
     journeySubscribe(listener) {
       if (typeof listener !== "function") throw new TypeError("journey.subscribe requires a listener function.");
-      journeyListeners.add(listener);
-      if (journeyListeners.size === 1) {
-        const activeSocket = open();
-        if (activeSocket.readyState === WebSocket.OPEN) send({ id: null, type: "journey.subscribe" });
-      }
-      return { unsubscribe() { journeyListeners.delete(listener); } };
+      const id = nextId++;
+      const subscription = { id, listener, started: false, states: new Map() };
+      journeySubscriptions.set(id, subscription);
+      const activeSocket = open();
+      if (activeSocket.readyState === WebSocket.OPEN) send({ id, type: "journey.subscribe" });
+      return { unsubscribe() { if (journeySubscriptions.delete(id)) send({ id: nextId++, type: "journey.unsubscribe", subscriptionId: id }); } };
     },
     journeyDisable() { return request("journey.disable").then((result) => { if (!result.error) { journeyResumeCredential = null; journeyEnabledUserId = null; } return result; }); },
     sendMessage(type, data) {
@@ -7456,7 +7489,7 @@ function createWebSocketHub(getDatabase) {
         connectedAt: now,
         lastSeenAt: now,
         journey: null,
-        journeySubscribed: false
+        journeySubscriptions: /* @__PURE__ */ new Set()
       };
       clients.add(client);
       socket.on("data", (chunk) => {
@@ -7546,7 +7579,9 @@ function createWebSocketHub(getDatabase) {
   }
   function broadcastJourneyEvent(event) {
     for (const recipient of clients) {
-      if (recipient.journeySubscribed) sendJson(recipient, { id: null, type: "journey.event", data: event, error: null });
+      for (const subscriptionId of recipient.journeySubscriptions) {
+        sendJson(recipient, { id: subscriptionId, type: "journey.event", data: event, error: null });
+      }
     }
   }
   function validateConnectionToken(token) {
@@ -7803,8 +7838,13 @@ function createWebSocketHub(getDatabase) {
         sendJson(client, journeyError(message.id));
         return;
       }
-      client.journeySubscribed = true;
-      sendJson(client, { id: null, type: "journey.event", data: { type: "snapshot", states: activeJourneys() }, error: null });
+      client.journeySubscriptions.add(message.id);
+      sendJson(client, { id: message.id, type: message.resume === true ? "journey.sync" : "journey.event", data: { type: "snapshot", states: activeJourneys() }, error: null });
+      return;
+    }
+    if (message.type === "journey.unsubscribe") {
+      client.journeySubscriptions.delete(message.subscriptionId);
+      sendJson(client, { id: message.id ?? null, type: "journey.unsubscribe.result", data: { ok: true }, error: null });
       return;
     }
     if (message.type === "journey.disable") {

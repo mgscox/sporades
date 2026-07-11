@@ -6784,7 +6784,7 @@ export function createWebSocketHub(getDatabase) {
                 connectedAt: now,
                 lastSeenAt: now,
                 journey: null,
-                journeySubscribed: false,
+                journeySubscriptions: new Set(),
             };
             clients.add(client);
             socket.on("data", (chunk) => {
@@ -6876,8 +6876,9 @@ export function createWebSocketHub(getDatabase) {
     }
     function broadcastJourneyEvent(event) {
         for (const recipient of clients) {
-            if (recipient.journeySubscribed)
-                sendJson(recipient, { id: null, type: "journey.event", data: event, error: null });
+            for (const subscriptionId of recipient.journeySubscriptions) {
+                sendJson(recipient, { id: subscriptionId, type: "journey.event", data: event, error: null });
+            }
         }
     }
     function validateConnectionToken(token) {
@@ -7146,8 +7147,13 @@ export function createWebSocketHub(getDatabase) {
                 sendJson(client, journeyError(message.id));
                 return;
             }
-            client.journeySubscribed = true;
-            sendJson(client, { id: null, type: "journey.event", data: { type: "snapshot", states: activeJourneys() }, error: null });
+            client.journeySubscriptions.add(message.id);
+            sendJson(client, { id: message.id, type: message.resume === true ? "journey.sync" : "journey.event", data: { type: "snapshot", states: activeJourneys() }, error: null });
+            return;
+        }
+        if (message.type === "journey.unsubscribe") {
+            client.journeySubscriptions.delete(message.subscriptionId);
+            sendJson(client, { id: message.id ?? null, type: "journey.unsubscribe.result", data: { ok: true }, error: null });
             return;
         }
         if (message.type === "journey.disable") {

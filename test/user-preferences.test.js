@@ -104,6 +104,8 @@ test("Journey subscribers receive a Capsule-wide snapshot before complete realti
       assert.equal(sameUserEnabled.data.userId, enabled.data.userId);
       const second = await sendAndWait(sameUserPublisher, { id: "second", type: "journey.set", state: { status: "comparing" } });
       observer = await openSocket(started.data.url);
+      const observerAuth = await sendAndWait(observer, { id: "observer-auth", type: "auth.get" });
+      assert.notEqual(observerAuth.data.auth.userId, enabled.data.userId, "an Anonymous observer must see the same Capsule-wide state as other users");
       const events = [];
       observer.addEventListener("message", (event) => { const message = JSON.parse(event.data); if (message.type === "journey.event") events.push(message.data); });
       observer.send(JSON.stringify({ id: "subscription", type: "journey.subscribe" }));
@@ -117,6 +119,14 @@ test("Journey subscribers receive a Capsule-wide snapshot before complete realti
       await waitFor(() => events.length === 3);
       assert.deepEqual(events[2], { type: "removed", state: updated.data.journey });
       assert.deepEqual(Object.keys(events[2].state).sort(), ["expiresAt", "metadata", "sessionId", "status", "updatedAt", "userId"].filter((key) => key !== "metadata"));
+      assert.equal((await sendAndWait(observer, { id: "unsubscribe", type: "journey.unsubscribe", subscriptionId: "subscription" })).error, null);
+      await sendAndWait(sameUserPublisher, { id: "after-unsubscribe", type: "journey.set", state: { status: "done" } });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(events.length, 3, "unsubscribed clients must receive no further Journey delivery");
+
+      const forged = await sendAndWait(observer, { id: "forged", type: "app.send", message: "journey.event", data: { type: "removed", state: second.data.journey } });
+      assert.match(forged.error.message, /Invalid app message type/);
+      assert.equal(events.length, 3, "App messages cannot forge reserved Journey transport events");
     } finally { publisher?.close(); sameUserPublisher?.close(); observer?.close(); await stopDevSession(child); }
   });
 });
