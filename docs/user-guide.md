@@ -24,6 +24,141 @@ bundled code.
 
 ## Quick Start
 
+## User Journey Tracker
+
+The User journey tracker is opt-in, transient current state for answering “what
+are consenting users doing now?” It is not analytics, an audit log, an App
+message stream, a Capsule app table, or durable current-user preferences.
+
+First declare the expandable Capsule-wide feature and its safe automatic
+capture ceiling:
+
+```ts
+export default capsule({
+  name: "support",
+  journey: {
+    enabled: true,
+    ttlSeconds: 30,
+    capture: { navigation: true, focus: true, interactions: true },
+  },
+});
+```
+
+All three capture sources default on when omitted. A page may narrow them in
+`journey.enable({ capture: ... })`, including turning all three off for
+manual-only use, but may not broaden the Capsule policy. Declaration permits
+the feature; it does not publish anything. Reading or subscribing never enables
+the caller.
+
+```ts
+import { journey } from "sporades/client";
+
+const enabled = await journey.enable({ capture: { interactions: false } });
+const saved = await journey.set({
+  status: "reviewing-order",
+  metadata: { section: "delivery" },
+  ttlSeconds: 60,
+});
+const current = await journey.list();
+const subscription = journey.subscribe((event) => {
+  if (event.type === "snapshot") console.log(event.states);
+  else console.log(event.type, event.state);
+});
+subscription.unsubscribe();
+await journey.disable();
+```
+
+`journey.enable()` establishes page-runtime consent and returns the enabled
+user and effective capture policy; it does not return a `sessionId` or create a
+server session. With navigation capture active it immediately samples and
+publishes the current page. `journey.set(...)` publishes a bounded semantic
+status and optional JSON metadata, replacing rather than merging the current
+record. `journey.disable()` clears consent and immediately removes the current
+connection's live state. `journey.list()` returns all live records. A
+subscription receives a snapshot first, then `added`, `updated`, and `removed`
+events; removal includes the complete last state. Unsubscribe stops delivery.
+
+Consent belongs to the page runtime, not a Journey session. An ordinary
+transport reconnect automatically re-enables with the retained narrowed policy,
+but a new transport connection always gets a new server-owned Journey session
+on its first accepted publication. Explicit disablement, an authentication
+transition, or page reload/replacement clears consent. Apps that want a durable
+user choice may store that choice separately in current-user preferences and
+call `journey.enable()` in each new page runtime.
+
+Sessions are created lazily and only accepted manual or automatic publications
+count as activity. A publication after the configured inactivity boundary also
+starts a new session. Configure segmentation in `sporades.json`:
+
+```json
+{ "journey": { "sessionInactivityMinutes": 30 } }
+```
+
+The default is 30 minutes. Numeric values are rounded and clamped to 1–1,440
+minutes; missing or malformed values fall back to 30. This session boundary is
+independent of Journey state TTL. The public `sessionId` groups records; it is
+not a bearer credential. Journey has no private resume credential, durable
+capability registry, or retirement tombstone.
+
+Automatic capture publishes `viewing` for navigation, `focused` or `away` for
+focus/visibility changes, and the semantic status on the nearest annotated
+interaction:
+
+```html
+<meta name="sporades-journey" content="checkout">
+<button data-sporades-journey="confirming-order">Confirm</button>
+```
+
+Navigation captures only a normalized pathname—never origin, query, or raw
+hash. Use the single semantic page-name meta override for sensitive or
+identifier-rich routes. Browser-level History and meta observation samples
+after a render frame, is idempotent across HMR/runtime setup, and is independent
+of React or Preact adapters. Publish manually for locationless view changes.
+
+`data-sporades-journey` contains one semantic status, not JSON. Delegated
+capture handles annotated click and submit, including keyboard-triggered native
+events, without preventing defaults. It follows the nearest match once, does
+not cross closed Shadow DOM boundaries, and requires manual publication for
+other event types. Use typed manual updates for richer metadata. Raw clicks,
+DOM content, form values, query strings, session replay, and arbitrary browser
+telemetry are deliberately excluded.
+
+Statuses and annotation values are at most 256 characters. Metadata is JSON-safe
+and bounded to 8 KiB, depth 8, 64 object keys, and 64 array items; unsupported,
+cyclic, non-finite, prototype-sensitive, or otherwise invalid values receive a
+structured validation error. Keep even accepted metadata privacy-safe.
+
+Journey state defaults to a Capsule-wide 30-second TTL. The declaration accepts
+1–300 seconds, and manual updates may choose an override in the same range;
+automatic signals use the Capsule default. The caller renews state by publishing.
+Disconnect leaves the last state buffered only until its existing expiry, so a
+late subscriber can still receive it. Expiry means derived `inactive`; it is not
+a publishable status. Disablement and authentication transitions remove current
+state immediately. Server replacement clears every buffered record and session;
+a still-consenting page reconnects and publishes only fresh state under a new ID.
+There is no permanent Journey state.
+
+Records have the flat shape
+`{ sessionId, userId, status, metadata, updatedAt, expiresAt }`. Lists and
+snapshots are deterministically ordered by `(userId, sessionId)`; group them on
+the client when presenting users. One user may have multiple live sessions,
+just like multiple tabs, browsers, or devices.
+
+Immediate `set` results and `list()` reflect accepted state. Realtime delivery
+coalesces each session to its latest state over 100 milliseconds while
+preserving coherent change order; intermediate states are not guaranteed.
+Capacity is 32 live states per user and 1,000 live states per Capsule. Expired
+records are pruned before admission, replacement remains allowed at capacity,
+and a new over-capacity record receives a structured rejection without evicting
+live state.
+
+Every connected Capsule client receives Journey snapshots and changes in V1.
+Publisher-selected record permissions do not exist; future shared-Team
+receiver-side filtering is deferred. Publication, reads, and subscriptions are
+client-only. Capsule server handlers and the Privileged server role cannot
+impersonate user activity, and transient client claims must not become
+authoritative server business-logic inputs.
+
 ### 1. Create a Capsule
 
 ```sh

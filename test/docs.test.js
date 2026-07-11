@@ -117,6 +117,32 @@ test("canonical docs describe the implemented platform scope", async () => {
   assert.match(scaffoldTemplate, /Use endpoints only for HTTP integrations/i);
 });
 
+test("docs publish the implemented User journey tracker contract", async () => {
+  const [guide, roadmap, clientTypes, serverTypes] = await Promise.all([
+    readProjectFile("docs/user-guide.md"),
+    readProjectFile("docs/ROADMAP.md"),
+    readProjectFile("src/types/client.d.ts"),
+    readProjectFile("src/types/server.d.ts"),
+  ]);
+
+  for (const required of [
+    "journey.enable()", "journey.set", "journey.disable()", "journey.list()", "journey.subscribe",
+    "page-runtime consent", "new transport connection", "sessionInactivityMinutes", "30 minutes",
+    "1–1,440", "1–300 seconds", "data-sporades-journey", "normalized pathname", "100 milliseconds",
+    "32 live", "1,000 live", "snapshot", "inactive", "Privileged server role",
+  ]) assert.match(guide, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+
+  assert.match(guide, /does not return a `sessionId`/i);
+  assert.match(guide, /query|origin/i);
+  assert.match(guide, /8 KiB/i);
+  assert.match(guide, /no private resume credential/i);
+  assert.match(roadmap, /Recently Implemented[\s\S]*User journey tracker \| implemented/i);
+  assert.doesNotMatch(roadmap.match(/## Recommended Next Features[\s\S]*?## Recently Implemented/)?.[0] ?? "", /User journey tracker/i);
+  assert.doesNotMatch(roadmap.match(/## Data And Auth Helpers[\s\S]*?## Storage/)?.[0] ?? "", /User journey tracker/i);
+  assert.match(clientTypes, /page-runtime User journey publication lifecycle/i);
+  assert.match(serverTypes, /Journey tracker/i);
+});
+
 test("published docs describe the complete Job scheduling contract", async () => {
   const [prd, context, guide, roadmap, serverSource, serverDeclarations, apiSchedule, apiDefinition] = await Promise.all([
     readProjectFile("docs/PRD.md"),

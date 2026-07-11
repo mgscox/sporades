@@ -20,13 +20,21 @@ export type SporadesResult<Data = unknown> = {
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
+/** Automatic Journey sources a page may narrow below the Capsule declaration. */
 export type JourneyCapture = { navigation?: boolean; focus?: boolean; interactions?: boolean };
+/** Page-runtime consent options. Enabling does not create a Journey session. */
 export type JourneyEnableOptions = { capture?: JourneyCapture };
+/** A semantic latest-state replacement; metadata and TTL are bounded by the runtime. */
 export type JourneySetInput = { status: string; metadata?: JsonObject; ttlSeconds?: number };
+/** One TTL-buffered, server-owned connection/activity segment. */
 export type JourneyRecord = { sessionId: string; userId: string; status: string; metadata: JsonObject | null; updatedAt: string; expiresAt: string };
+/** Effective page consent. Session identity is created lazily on publication. */
 export type JourneyEnableResult = { enabled: true; userId: string; capture: Required<JourneyCapture> };
+/** Snapshot-first realtime Journey delivery. Removal carries the complete last record. */
 export type JourneyEvent = { type: "snapshot"; states: JourneyRecord[] } | { type: "added" | "updated" | "removed"; state: JourneyRecord };
+/** A Journey listener lifetime owned by the subscribing page. */
 export type JourneySubscription = { unsubscribe(): void };
+/** Client-only API for consent, publication, observation, and retirement of transient Journey state. */
 export type JourneyApi = {
   enable(options?: JourneyEnableOptions): Promise<SporadesResult<JourneyEnableResult>>;
   set(state: JourneySetInput): Promise<SporadesResult<{ journey: JourneyRecord }>>;
@@ -261,7 +269,7 @@ export const auth: AuthApi;
 export const files: FilesApi;
 /** Runtime-owned current-user preferences commands. */
 export const preferences: PreferencesApi;
-/** Explicit, page-runtime User journey publication lifecycle. */
+/** Explicit, page-runtime User journey publication lifecycle; server sessions are created lazily by accepted publications. */
 export const journey: JourneyApi;
 
 /** Return whether the current browser session is authenticated. */
