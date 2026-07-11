@@ -799,14 +799,23 @@ test("sporades create admits the complete Svelte Vite template set while rejecti
       assert.equal(packageJson.dependencies.react, undefined);
       assert.equal(packageJson.dependencies.vue, undefined);
       assert.equal((await readdir(path.join(project, "client"), { recursive: true })).some((file) => String(file).endsWith(".tsx")), false);
-      if (template === "guestbook") assert.match(app, /queryStore\("entries"\).*mutationStore\("sign"\)/s);
-      if (template === "photo-library") assert.match(app, /files\.upload.*files\.publicUrl.*files\.revokePublicUrl/s);
+      assert.doesNotMatch(app, /\$[A-Za-z][A-Za-z0-9]*\.run\(/);
+      if (template === "guestbook") {
+        assert.match(app, /queryStore\("entries"\).*mutationStore\("sign"\)/s);
+        assert.match(app, /sign\.run\(message\)/);
+      }
+      if (template === "photo-library") {
+        assert.match(app, /files\.upload.*files\.publicUrl.*files\.revokePublicUrl/s);
+        assert.match(app, /recordPhoto\.run\(/);
+        for (const mutation of ["updatePhotoIsPublic", "updatePhotoImageUrl", "updatePhotoPublicUrlId"]) assert.match(app, new RegExp(`requireMutation\\(${mutation},`));
+      }
       if (template === "campfire") {
         assert.match(app, /preferences\.get.*preferences\.update/s);
         assert.match(app, /journey\.enable/);
         assert.match(app, /journey\.set/);
         assert.match(app, /journey\.disable/);
         assert.match(app, /seedCampfire.*registerFixture/s);
+        for (const mutation of ["sendMessage", "toggleReaction", "seedCampfire", "registerFixture"]) assert.match(app, new RegExp(`${mutation}\\.run\\(`));
         assert.doesNotMatch(html, /tailwindcss/);
       }
     }

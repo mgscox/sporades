@@ -72,9 +72,9 @@ globalThis.__SPORADES_SVELTE_TEMPLATE_UNMOUNT__ = () => unmount(app);
     text: () => window.document.body.textContent ?? "",
     find: (selector) => window.document.querySelector(selector),
     findAll: (selector) => [...window.document.querySelectorAll(selector)],
-    setSession(value) { state.stores.session.set(value); },
-    setQuery(name, value) { state.stores.queries[name].set(value); },
-    setMutation(name, value) { state.stores.mutations[name].set(value); },
+    setSession(value) { state.controls.session.set(value); },
+    setQuery(name, value) { state.controls.queries[name].set(value); },
+    setMutation(name, value) { state.controls.mutations[name].set(value); },
     async setValue(node, value, event = "input") {
       node.value = value;
       node.dispatchEvent(new window.Event(event, { bubbles: true }));
@@ -99,7 +99,7 @@ globalThis.__SPORADES_SVELTE_TEMPLATE_UNMOUNT__ = () => unmount(app);
 
 function createHarnessState(initial) {
   const counts = { session: storeCount(), queries: {}, mutations: {} };
-  const stores = {
+  const controls = {
     session: writable(initial.session, counts.session),
     queries: Object.fromEntries(Object.entries(initial.queries ?? {}).map(([name, value]) => {
       counts.queries[name] = storeCount();
@@ -107,14 +107,44 @@ function createHarnessState(initial) {
     })),
     mutations: Object.fromEntries(Object.entries(initial.mutations ?? {}).map(([name, value]) => {
       counts.mutations[name] = storeCount();
-      return [name, writable(value, counts.mutations[name])];
+      return [name, writable({ data: value.data ?? null, error: value.error ?? null, loading: value.loading ?? false }, counts.mutations[name])];
     })),
   };
-  return { ...initial, stores, counts };
+  const stores = {
+    session: readable(controls.session),
+    queries: Object.fromEntries(Object.entries(controls.queries).map(([name, control]) => [name, readable(control)])),
+    mutations: Object.fromEntries(Object.entries(controls.mutations).map(([name, control]) => {
+      let pending = 0;
+      const implementation = initial.mutations[name].run;
+      return [name, {
+        subscribe: control.subscribe,
+        async run(...args) {
+          counts.mutations[name].runs += 1;
+          pending += 1;
+          control.set({ data: null, error: null, loading: true });
+          try {
+            const result = await implementation(...args);
+            control.set({ data: result.error ? null : result.data ?? null, error: result.error ?? null, loading: pending > 1 });
+            return result;
+          } catch (error) {
+            control.set({ data: null, error, loading: pending > 1 });
+            throw error;
+          } finally {
+            pending -= 1;
+            control.update((state) => ({ ...state, loading: pending > 0 }));
+          }
+        },
+      }];
+    })),
+  };
+  return { ...initial, stores, controls, counts };
 }
+
+function readable(control) { return { subscribe: control.subscribe }; }
 
 function writable(initial, counts) {
   let value = initial;
+  counts.last = initial;
   const subscribers = new Set();
   return {
     subscribe(callback) {
@@ -130,6 +160,7 @@ function writable(initial, counts) {
     },
     set(next) {
       value = next;
+      counts.last = next;
       for (const subscriber of subscribers) subscriber(value);
     },
     get() { return value; },
@@ -137,7 +168,7 @@ function writable(initial, counts) {
   };
 }
 
-function storeCount() { return { started: 0, active: 0, stopped: 0 }; }
+function storeCount() { return { started: 0, active: 0, stopped: 0, runs: 0, last: null }; }
 
 function installWindowGlobals(window) {
   const names = ["window", "document", "navigator", "Node", "Element", "HTMLElement", "HTMLInputElement", "HTMLFormElement", "HTMLMediaElement", "SVGElement", "Event", "CustomEvent", "Text", "Comment", "Document", "DocumentFragment", "ShadowRoot", "MutationObserver", "requestAnimationFrame", "cancelAnimationFrame", "getComputedStyle"];

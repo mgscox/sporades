@@ -251,6 +251,64 @@ async function waitForJsonEvent(child, predicate) {
   });
 }
 
+function captureJsonEvents(child) {
+  let buffer = "";
+  let stderr = "";
+  const events = [];
+  const waiters = new Set();
+  const onStdout = (chunk) => {
+    buffer += chunk;
+    const lines = buffer.split("\n");
+    buffer = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line);
+      events.push(event);
+      for (const waiter of [...waiters]) {
+        if (!waiter.predicate(event)) continue;
+        waiters.delete(waiter);
+        events.splice(events.indexOf(event), 1);
+        clearTimeout(waiter.timeout);
+        waiter.resolve(event);
+        break;
+      }
+    }
+  };
+  const onStderr = (chunk) => { stderr += chunk; };
+  const onExit = (code) => {
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timeout);
+      waiter.reject(new Error(`Process exited with ${code} before JSON event.\nstderr:\n${stderr}`));
+    }
+    waiters.clear();
+  };
+  child.stdout.on("data", onStdout);
+  child.stderr.on("data", onStderr);
+  child.on("exit", onExit);
+  return {
+    events,
+    next(predicate) {
+      const existingIndex = events.findIndex(predicate);
+      if (existingIndex >= 0) return Promise.resolve(events.splice(existingIndex, 1)[0]);
+      return new Promise((resolve, reject) => {
+        const waiter = { predicate, resolve, reject, timeout: null };
+        waiter.timeout = setTimeout(() => {
+          waiters.delete(waiter);
+          reject(new Error(`Timed out waiting for captured JSON event.\nstderr:\n${stderr}`));
+        }, TEST_PROCESS_EVENT_TIMEOUT_MS);
+        waiters.add(waiter);
+      });
+    },
+    dispose() {
+      child.stdout.off("data", onStdout);
+      child.stderr.off("data", onStderr);
+      child.off("exit", onExit);
+      for (const waiter of waiters) clearTimeout(waiter.timeout);
+      waiters.clear();
+    },
+  };
+}
+
 async function waitForStdoutLine(child, predicate) {
   return new Promise((resolve, reject) => {
     let stdout = "";
@@ -1311,10 +1369,7 @@ test("Svelte Guestbook renders query state and drives mutation loading, errors, 
     const signCalls = [];
     const sign = { loading: false, error: null, async run(body) {
       signCalls.push(body);
-      globalThis.__SPORADES_SVELTE_TEMPLATE_HARNESS__.stores.mutations.sign.set({ ...sign, loading: true });
       const result = await new Promise((resolve) => { finishSign = resolve; });
-      sign.error = result.error;
-      globalThis.__SPORADES_SVELTE_TEMPLATE_HARNESS__.stores.mutations.sign.set({ ...sign, loading: false });
       return result;
     } };
     const harness = await mountSvelteTemplate(projectDir, {
@@ -1322,6 +1377,8 @@ test("Svelte Guestbook renders query state and drives mutation loading, errors, 
       auth: authStub(), files: {}, journey: {}, preferences: {},
     });
     try {
+      assert.deepEqual(Object.keys(harness.state.stores.mutations.sign).sort(), ["run", "subscribe"]);
+      assert.deepEqual(Object.keys(harness.state.counts.mutations.sign.last).sort(), ["data", "error", "loading"]);
       assert.match(harness.text(), /Loading/);
       harness.setQuery("entries", { loading: false, data: null, error: new Error("Guestbook unavailable") });
       await harness.settle();
@@ -1334,6 +1391,7 @@ test("Svelte Guestbook renders query state and drives mutation loading, errors, 
       await harness.setValue(textarea, "  One for all  ");
       await harness.trigger(harness.find("form"), "submit");
       assert.deepEqual(signCalls, ["One for all"]);
+      assert.equal(harness.state.counts.mutations.sign.runs, 1, "component invokes the external mutation-store run method");
       assert.equal(harness.find("form button").disabled, true);
       finishSign({ data: null, error: new Error("Signing failed") });
       await harness.settle();
@@ -1357,14 +1415,16 @@ test("Svelte Photo Library keeps authenticated uploads private and drives explic
   await withTempDir(async (dir) => {
     const projectDir = await createSvelteTemplate(dir, "svelte-photo-behavior", "photo-library");
     const calls = [];
+    let failPhotoMutation = null;
     const photo = { id: "photo-private", title: "Secret crown", status: "private", fileId: "file-private", imageUrl: "", publicUrlId: "", isPublic: false };
     const personal = { loading: false, data: [photo], error: null };
     const mutation = (name) => ({ loading: false, error: null, async run(...args) {
       calls.push([name, ...args]);
+      if (name === failPhotoMutation) return { data: null, error: new Error("Photo mutation failed") };
       if (name === "updatePhotoIsPublic") photo.isPublic = args[1];
       if (name === "updatePhotoPublicUrlId") photo.publicUrlId = args[1];
       if (name === "updatePhotoImageUrl") photo.imageUrl = args[1];
-      globalThis.__SPORADES_SVELTE_TEMPLATE_HARNESS__.stores.queries.personalPhotos.set({ ...personal, data: [{ ...photo }] });
+      globalThis.__SPORADES_SVELTE_TEMPLATE_HARNESS__.controls.queries.personalPhotos.set({ ...personal, data: [{ ...photo }] });
       return { data: null, error: null };
     } });
     const mutations = Object.fromEntries(["recordPhoto", "updatePhotoIsPublic", "updatePhotoImageUrl", "updatePhotoPublicUrlId"].map((name) => [name, mutation(name)]));
@@ -1398,6 +1458,10 @@ test("Svelte Photo Library keeps authenticated uploads private and drives explic
       calls.length = 0;
       await harness.trigger([...harness.findAll("button")].find((button) => button.textContent === "Make private"), "click");
       assert.deepEqual(calls.map(([name]) => name), ["revokePublicUrl", "updatePhotoIsPublic", "updatePhotoImageUrl", "updatePhotoPublicUrlId"]);
+      calls.length = 0;
+      failPhotoMutation = "updatePhotoImageUrl";
+      await harness.trigger([...harness.findAll("button")].find((button) => button.textContent === "Make public"), "click");
+      assert.match(harness.text(), /Photo mutation failed/, "structured publication errors render instead of being ignored");
       assert.doesNotMatch(harness.text(), /dummy-secret|GOOGLE_CLIENT_SECRET|credential/i);
     } finally { await harness.unmount(); }
   });
@@ -1409,6 +1473,11 @@ test("Svelte Campfire executes messages, preferences, consented TTL activity, an
     const calls = [];
     let journeySubscriber = () => {};
     const state = campfireHarnessState(calls, { subscribe(callback) { journeySubscriber = callback; return { unsubscribe() { calls.push(["unsubscribe"]); } }; } });
+    let finishSend;
+    state.mutations.sendMessage.run = async (input) => {
+      calls.push(["sendMessage", input]);
+      return await new Promise((resolve) => { finishSend = resolve; });
+    };
     state.session.auth = { userId: "athos-user", provider: "email", displayName: "Athos", isGuest: false };
     const harness = await mountSvelteTemplate(projectDir, state);
     try {
@@ -1424,7 +1493,15 @@ test("Svelte Campfire executes messages, preferences, consented TTL activity, an
       assert(calls.some(([name, value]) => name === "journey.set" && value.status === "typing" && value.ttlSeconds === 4));
       await harness.trigger(harness.find("form"), "submit");
       assert(calls.some(([name, input]) => name === "sendMessage" && input.body === "Protect the crown"));
+      assert.equal(harness.find("form button").disabled, true, "mutation loading state disables duplicate sends");
+      finishSend({ data: null, error: null });
+      await harness.settle();
       assert(calls.some(([name, value]) => name === "journey.set" && value.status === "posted" && value.ttlSeconds === 8));
+      await harness.setValue(harness.find("#message"), "Fail safely");
+      await harness.trigger(harness.find("form"), "submit");
+      finishSend({ data: null, error: new Error("Message rejected") });
+      await harness.settle();
+      assert.match(harness.text(), /Message rejected/, "structured mutation errors render through the component");
       const share = harness.find('input[type="checkbox"]');
       await harness.trigger(share, "change", { checked: false });
       assert(calls.some(([name, value]) => name === "preferences.update" && value.campfireShareActivity === false));
@@ -1448,7 +1525,7 @@ test("Svelte Campfire serializes direct consent against an auth successor", asyn
     const enableStarted = new Promise((resolve) => { markEnableStarted = resolve; });
     const state = campfireHarnessState(calls, {
       async enable(options) {
-        const userId = globalThis.__SPORADES_SVELTE_TEMPLATE_HARNESS__.stores.session.get().auth?.userId;
+        const userId = globalThis.__SPORADES_SVELTE_TEMPLATE_HARNESS__.controls.session.get().auth?.userId;
         calls.push(["journey.enable", options, userId]);
         markEnableStarted();
         await new Promise((resolve) => { releaseEnable = resolve; });
@@ -2059,34 +2136,55 @@ for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire
     if (template === "photo-library") await writeFile(path.join(projectDir, ".env.sporades.server"), "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n");
     const appPath = path.join(projectDir, "client", "App.svelte");
     const original = await readFile(appPath, "utf8");
-    const marker = { blank: "Blank Sporades Capsule", todo: "Sporades Todos", guestbook: "Leave a note from this island", "photo-library": "Photo Library", campfire: "Campfire" }[template];
     const child = startCli(["dev", "--json"], { cwd: projectDir });
+    const events = captureJsonEvents(child);
     let socket;
+    let messages;
     try {
-      const started = await waitForJsonLine(child);
-      assert.equal(started.ok, true, JSON.stringify(started));
-      socket = await openSocket(started.data.url);
-      const refresh = readSocketMessage(socket);
-      await writeFile(appPath, original.replace(marker, "Svelte rebuilt"));
-      const rebuilt = await waitForJsonEvent(child, (event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
-      assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "svelte", toolchain: "vite" });
-      assert.equal((await refresh).type, "refresh");
       const scrub = (html) => html.replace(/window\.__SPORADES_CONNECTION_TOKEN="[^"]+"/, 'window.__SPORADES_CONNECTION_TOKEN="<token>"');
+      const started = await events.next((event) => event.ok && event.data?.event === "started");
+      assert.equal(started.ok, true, JSON.stringify(started));
+      const initialResponse = await fetch(started.data.url);
+      assert.equal(initialResponse.status, 200, "started follows the initial successful build and HTTP listen");
+      const initialHtml = scrub(await initialResponse.text());
+      socket = await openSocket(started.data.url);
+      messages = captureSocketMessages(socket);
+      socket.send(JSON.stringify({ id: "svelte-dev-ready", type: "auth.get" }));
+      const ready = await messages.next((message) => message.id === "svelte-dev-ready" && message.type === "auth.result");
+      assert.equal(ready.error, null, "WebSocket request/response proves the server subscribed before the edit");
+
+      const rebuiltSource = original.replace("</main>", '<p data-dev-probe="rebuilt">Svelte rebuilt</p></main>');
+      assert.notEqual(rebuiltSource, original, `${template} edit must change generated output`);
+      const refresh = messages.next((message) => message.type === "refresh");
+      await writeFile(appPath, rebuiltSource);
+      const rebuilt = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "svelte", toolchain: "vite" });
+      assert.deepEqual(await refresh, { id: null, type: "refresh", data: { mode: "full-page" }, error: null });
+      assert.equal(messages.history.filter((message) => message.type === "refresh").length, 1, "one successful edit emits exactly one full-page refresh");
       const lastGood = scrub(await (await fetch(started.data.url)).text());
+      assert.notEqual(lastGood, initialHtml, "the successful edit changes the served Vite output tree");
       await writeFile(appPath, '<script lang="ts">const broken = </script><main>{broken}</main>\n');
-      const failed = await waitForJsonEvent(child, (event) => !event.ok && event.data?.event === "rebuild");
+      const failed = await events.next((event) => !event.ok && event.data?.event === "rebuild");
       assert.deepEqual(failed.data.build, { phase: "client", framework: "svelte", toolchain: "vite" });
       assert.match(failed.error.hint, /Svelte\/Vite client source/);
       assert(JSON.stringify(failed).length < 4096);
       assert.doesNotMatch(JSON.stringify(failed), new RegExp(projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
       assert.equal(scrub(await (await fetch(started.data.url)).text()), lastGood);
-      const recoveredRefresh = readSocketMessage(socket);
-      await writeFile(appPath, original.replace(marker, "Svelte recovered"));
-      const recovered = await waitForJsonEvent(child, (event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assert.equal(messages.history.filter((message) => message.type === "refresh").length, 1, "failed builds preserve last-good output without refresh");
+      const recoveredRefresh = messages.next((message) => message.type === "refresh");
+      const recoveredSource = original.replace("</main>", '<p data-dev-probe="recovered">Svelte recovered</p></main>');
+      assert.notEqual(recoveredSource, original);
+      await writeFile(appPath, recoveredSource);
+      const recovered = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
       assert.deepEqual(recovered.data.build, { phase: "client", framework: "svelte", toolchain: "vite" });
-      assert.equal((await recoveredRefresh).type, "refresh");
+      assert.deepEqual(await recoveredRefresh, { id: null, type: "refresh", data: { mode: "full-page" }, error: null });
+      assert.equal(messages.history.filter((message) => message.type === "refresh").length, 2, "recovery emits one additional full-page refresh");
     } finally {
-      socket?.close(); child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve));
+      messages?.dispose();
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+      events.dispose();
     }
   });
 });
@@ -11065,6 +11163,55 @@ function readSocketMessage(socket) {
     socket.addEventListener("message", onMessage);
     socket.addEventListener("error", onError);
   });
+}
+
+function captureSocketMessages(socket) {
+  const messages = [];
+  const history = [];
+  const waiters = new Set();
+  const onMessage = (event) => {
+    const message = JSON.parse(event.data);
+    history.push(message);
+    messages.push(message);
+    for (const waiter of [...waiters]) {
+      if (!waiter.predicate(message)) continue;
+      waiters.delete(waiter);
+      messages.splice(messages.indexOf(message), 1);
+      clearTimeout(waiter.timeout);
+      waiter.resolve(message);
+      break;
+    }
+  };
+  const onError = (event) => {
+    for (const waiter of waiters) {
+      clearTimeout(waiter.timeout);
+      waiter.reject(event.error ?? new Error("WebSocket failed."));
+    }
+    waiters.clear();
+  };
+  socket.addEventListener("message", onMessage);
+  socket.addEventListener("error", onError);
+  return {
+    history,
+    next(predicate) {
+      const existingIndex = messages.findIndex(predicate);
+      if (existingIndex >= 0) return Promise.resolve(messages.splice(existingIndex, 1)[0]);
+      return new Promise((resolve, reject) => {
+        const waiter = { predicate, resolve, reject, timeout: null };
+        waiter.timeout = setTimeout(() => {
+          waiters.delete(waiter);
+          reject(new Error(`Timed out waiting for captured WebSocket message. History: ${JSON.stringify(history)}`));
+        }, TEST_WEBSOCKET_TIMEOUT_MS);
+        waiters.add(waiter);
+      });
+    },
+    dispose() {
+      socket.removeEventListener("message", onMessage);
+      socket.removeEventListener("error", onError);
+      for (const waiter of waiters) clearTimeout(waiter.timeout);
+      waiters.clear();
+    },
+  };
 }
 
 function waitForSocketClose(socket) {
