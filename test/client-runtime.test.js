@@ -32,6 +32,35 @@ test("Journey declaration rejects non-plain capture policy shapes", () => {
   }
 });
 
+test("client clears private Journey consent on same-token auth identity replacement", async () => {
+  const calls = [];
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "journey.enable": async (message) => { calls.push(message); return { type: "journey.enable.result", data: { sessionId: "j1", userId: anonymousAuth.userId, capture: {}, resumeCredential: "resume-1" }, error: null }; },
+  }});
+  try {
+    const runtime = await importClientRuntime();
+    await runtime.journey.enable();
+    browser.sockets[0].emit("message", { data: JSON.stringify({ type: "auth.session.replace", data: { sessionToken: "session-token", auth: { ...anonymousAuth, userId: "replacement-user" } }, error: null }) });
+    browser.sockets[0].readyState = 3; browser.sockets[0].emit("close", {});
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    assert.equal(calls.length, 1, "reconnect must not resume Journey consent for the replacement identity");
+  } finally { browser.cleanup(); }
+});
+
+test("failed auth transition preserves private Journey consent for reconnect", async () => {
+  const calls = [];
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "journey.enable": async (message) => { calls.push(message); return { type: "journey.enable.result", data: { sessionId: "j1", userId: anonymousAuth.userId, capture: {}, resumeCredential: "resume-1" }, error: null }; },
+    "auth.signOut": async () => ({ type: "error", data: null, error: { message: "nope" } }),
+  }});
+  try {
+    const runtime = await importClientRuntime(); await runtime.journey.enable(); await runtime.auth.signOut();
+    browser.sockets[0].readyState = 3; browser.sockets[0].emit("close", {});
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    assert.equal(calls.at(-1).resumeCredential, "resume-1");
+  } finally { browser.cleanup(); }
+});
+
 test("browser client runtime exposes the explicit Journey session lifecycle over transport", async () => {
   const calls = [];
   const browser = installBrowserFakes(anonymousAuth, {

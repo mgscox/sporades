@@ -157,6 +157,8 @@ function createConnection() {
   const authStateListeners = new Set();
   let latestAuthMessage = null;
   let journeyResumeCredential = null;
+  let journeyEnabledUserId = null;
+  let latestAuthUserId = null;
 
   function syncSessionTokenFromStorage() {
     const storedToken = localStorage.getItem("sporades.sessionToken");
@@ -196,6 +198,11 @@ function createConnection() {
       const message = JSON.parse(event.data);
       if (message.type === "auth.result" || message.type === "auth.session.replace") {
         storeAuthSession(message);
+      }
+      if (message.type === "journey.retired") {
+        journeyResumeCredential = null;
+        journeyEnabledUserId = null;
+        return;
       }
       if (message.type === "query.result" && subscriptions.has(message.id)) {
         subscriptions.get(message.id).listener(message);
@@ -248,6 +255,12 @@ function createConnection() {
 
   function storeAuthSession(message) {
     const token = message.data?.sessionToken;
+    const nextAuthUserId = message.data?.auth?.userId ?? null;
+    if ((latestAuthUserId && nextAuthUserId && latestAuthUserId !== nextAuthUserId) || (journeyEnabledUserId && nextAuthUserId && journeyEnabledUserId !== nextAuthUserId)) {
+      journeyResumeCredential = null;
+      journeyEnabledUserId = null;
+    }
+    if (nextAuthUserId) latestAuthUserId = nextAuthUserId;
     if (token) {
       if (sessionToken && token !== sessionToken) journeyResumeCredential = null;
       sessionToken = token;
@@ -343,6 +356,7 @@ function createConnection() {
       return request("auth.signOut").then(async (result) => {
         if (!result.error && result.data?.ok === true) {
           journeyResumeCredential = null;
+          journeyEnabledUserId = null;
           sessionToken = null;
           localStorage.removeItem("sporades.sessionToken");
           await request("auth.get");
@@ -373,6 +387,7 @@ function createConnection() {
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
         if (result.data?.resumeCredential) journeyResumeCredential = result.data.resumeCredential;
+        if (result.data?.userId) journeyEnabledUserId = result.data.userId;
         if (!result.data) return result;
         const { resumeCredential, ...data } = result.data;
         return { ...result, data };
@@ -380,7 +395,7 @@ function createConnection() {
     },
     journeySet(state) { return request("journey.set", { state }); },
     journeyList() { return request("journey.list"); },
-    journeyDisable() { return request("journey.disable").then((result) => { if (!result.error) journeyResumeCredential = null; return result; }); },
+    journeyDisable() { return request("journey.disable").then((result) => { if (!result.error) { journeyResumeCredential = null; journeyEnabledUserId = null; } return result; }); },
     sendMessage(type, data) {
       return request("app.send", { message: type, data });
     },

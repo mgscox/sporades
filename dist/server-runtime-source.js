@@ -6861,6 +6861,7 @@ export function createWebSocketHub(getDatabase) {
         journeys.delete(client.journey.sessionId);
         journeySessions.delete(client.journey.resumeCredential);
         client.journey = null;
+        sendJson(client, { id: null, type: "journey.retired", data: { retired: true }, error: null });
     }
     function validateConnectionToken(token) {
         pruneConnectionTokens();

@@ -26,13 +26,13 @@ test("User journey lifecycle is declaration-gated and bound to the enabling iden
     assert.equal(created.code, 0, created.stderr);
     const projectDir = path.join(dir, "journey-island");
     const configPath = path.join(projectDir, "sporades.json");
-    const config = JSON.parse(await readFile(configPath, "utf8")); config.dev.port = 0;
+    const config = JSON.parse(await readFile(configPath, "utf8")); config.dev.port = 0; config.auth = { providers: { anonymous: true, email: true } };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     await installFakeReact(projectDir);
     const serverPath = path.join(projectDir, "server", "index.ts");
     await writeFile(serverPath, `import { capsule } from "sporades/server"; export default capsule({ name: "journey-island" });\n`);
     let child = startCli(["dev", "--json"], { cwd: projectDir });
-    let socket;
+    let socket; let otherSocket;
     try {
       let started = await waitForJsonLine(child); socket = await openSocket(started.data.url);
       const gated = await sendAndWait(socket, { id: "gated", type: "journey.list" });
@@ -56,9 +56,27 @@ test("User journey lifecycle is declaration-gated and bound to the enabling iden
       const reenabled = await sendAndWait(socket, { id: "reenable", type: "journey.enable", options: {} });
       assert.notEqual(reenabled.data.sessionId, enabled.data.sessionId);
       assert.notEqual(reenabled.data.userId, enabled.data.userId);
+      const signedUp = await sendAndWait(socket, { id: "signup", type: "auth.signUp", provider: "email", credentials: { email: "journey@example.com", password: "password-123", name: "Journey" } });
+      assert.equal(signedUp.error, null);
+      assert.deepEqual((await sendAndWait(socket, { id: "after-signup", type: "journey.list" })).data.journeys, []);
+      const linkedEnable = await sendAndWait(socket, { id: "linked-enable", type: "journey.enable", options: {} });
+      assert.notEqual(linkedEnable.data.sessionId, reenabled.data.sessionId);
+      await sendAndWait(socket, { id: "linked-signout", type: "auth.signOut" });
+      const anonymousEnable = await sendAndWait(socket, { id: "anonymous-enable", type: "journey.enable", options: {} });
+      const signedIn = await sendAndWait(socket, { id: "signin", type: "auth.signIn", provider: "email", credentials: { email: "journey@example.com", password: "password-123" } });
+      assert.equal(signedIn.error, null);
+      assert.deepEqual((await sendAndWait(socket, { id: "after-signin", type: "journey.list" })).data.journeys, []);
+      const signedInEnable = await sendAndWait(socket, { id: "signedin-enable", type: "journey.enable", options: {} });
+      assert.notEqual(signedInEnable.data.sessionId, anonymousEnable.data.sessionId);
+      otherSocket = await openSocket(started.data.url);
+      const otherAuth = await sendAndWait(otherSocket, { id: "other-auth", type: "auth.get" });
+      await sendAndWait(socket, { id: "message-token-replace", type: "journey.list", sessionToken: otherAuth.data.sessionToken });
+      const tokenReplacedEnable = await sendAndWait(socket, { id: "token-replaced-enable", type: "journey.enable", options: {}, sessionToken: otherAuth.data.sessionToken });
+      assert.notEqual(tokenReplacedEnable.data.sessionId, signedInEnable.data.sessionId);
+      assert.equal(tokenReplacedEnable.data.userId, otherAuth.data.auth.userId);
       assert.deepEqual((await sendAndWait(socket, { id: "disable", type: "journey.disable" })).data, { ok: true });
       assert.deepEqual((await sendAndWait(socket, { id: "empty", type: "journey.list" })).data.journeys, []);
-    } finally { socket?.close(); await stopDevSession(child); }
+    } finally { socket?.close(); otherSocket?.close(); await stopDevSession(child); }
   });
 });
 
