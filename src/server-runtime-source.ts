@@ -7470,6 +7470,7 @@ function validateJourneyJson(value: any, depth: number, seen: Set<any>) {
   if (typeof value === "number") { if (Number.isFinite(value)) return; throw { code: "INVALID_JOURNEY_METADATA", message: "Journey metadata contains a non-finite number.", hint: "Use finite JSON numbers." }; }
   if (typeof value !== "object" || depth >= 8 || seen.has(value)) throw { code: "INVALID_JOURNEY_METADATA", message: "Journey metadata is not JSON-safe.", hint: "Use bounded plain JSON values without cycles, binary values, or custom prototypes." };
   if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype) throw { code: "INVALID_JOURNEY_METADATA", message: "Journey metadata is not a plain JSON object.", hint: "Use plain JSON objects and arrays." };
+  if (!Array.isArray(value) && Reflect.ownKeys(value).some((key) => typeof key === "symbol")) throw { code: "INVALID_JOURNEY_METADATA", message: "Journey metadata contains symbol keys.", hint: "Use string-keyed plain JSON objects." };
   const entries = Array.isArray(value) ? value : Object.values(value);
   if (entries.length > 64) throw { code: "INVALID_JOURNEY_METADATA", message: "Journey metadata has too many entries.", hint: "Keep each object or array at 64 entries or fewer." };
   seen.add(value); try { for (const item of entries) validateJourneyJson(item, depth + 1, seen); } finally { seen.delete(value); }
@@ -7482,6 +7483,7 @@ function journeyError(id: any, code = "JOURNEY_NOT_ENABLED", message = "User jou
 export function createWebSocketHub(getDatabase: () => any) {
   const clients = new Set<any>();
   const journeys = new Map<string, any>();
+  const journeySessions = new Map<string, any>();
   const connectionTokens = new Map<string, number>();
   let nextClientId = 1;
   const connectionTokenTtlMs = 4 * 60 * 60 * 1000;
@@ -7544,7 +7546,7 @@ export function createWebSocketHub(getDatabase: () => any) {
         client.buffer = Buffer.concat([client.buffer, chunk]);
         drainWebSocketFrames(client, (message: any) => enqueueClientMessage(client, message));
       });
-      const removeClient = () => { clients.delete(client); if (client.journey) journeys.delete(client.journey.sessionId); };
+      const removeClient = () => { clients.delete(client); };
       socket.on("close", removeClient);
       socket.on("error", removeClient);
     },
@@ -7820,19 +7822,28 @@ export function createWebSocketHub(getDatabase: () => any) {
     if (message.type === "journey.enable") {
       const policy = database.journeyPolicy;
       if (!policy) { sendJson(client, journeyError(message.id)); return; }
+      if (typeof message.resumeCredential === "string") {
+        const resumed = journeySessions.get(message.resumeCredential);
+        if (resumed && resumed.userId === client.session.auth.userId) client.journey = resumed;
+      }
       if (!client.journey) {
         const requested = message.options?.capture;
         const capture: any = {};
         for (const key of ["navigation", "focus", "interactions"]) capture[key] = policy.capture[key] && requested?.[key] !== false;
         client.journey = { sessionId: randomBytes(24).toString("base64url"), resumeCredential: randomBytes(32).toString("base64url"), userId: client.session.auth.userId, capture };
+        journeySessions.set(client.journey.resumeCredential, client.journey);
       }
-      sendJson(client, { id: message.id ?? null, type: "journey.enable.result", data: { sessionId: client.journey.sessionId, userId: client.journey.userId, capture: client.journey.capture }, error: null });
+      sendJson(client, { id: message.id ?? null, type: "journey.enable.result", data: { sessionId: client.journey.sessionId, userId: client.journey.userId, capture: client.journey.capture, resumeCredential: client.journey.resumeCredential }, error: null });
       return;
     }
 
     if (message.type === "journey.set") {
       if (!database.journeyPolicy) { sendJson(client, journeyError(message.id)); return; }
       if (!client.journey) { sendJson(client, journeyError(message.id, "JOURNEY_NOT_ENABLED", "Journey publication is not enabled for this page.", "Call journey.enable() before journey.set().")); return; }
+      if (client.journey.userId !== client.session.auth.userId) {
+        journeys.delete(client.journey.sessionId); journeySessions.delete(client.journey.resumeCredential); client.journey = null;
+        sendJson(client, journeyError(message.id, "JOURNEY_IDENTITY_CHANGED", "Journey session identity changed.", "Call journey.enable() again for the current authenticated user.")); return;
+      }
       try {
         const state = normalizeJourneyState(message.state, database.journeyPolicy.ttlSeconds);
         const now = new Date().toISOString();
@@ -7856,6 +7867,7 @@ export function createWebSocketHub(getDatabase: () => any) {
     if (message.type === "journey.disable") {
       if (!database.journeyPolicy) { sendJson(client, journeyError(message.id)); return; }
       if (client.journey) journeys.delete(client.journey.sessionId);
+      if (client.journey) journeySessions.delete(client.journey.resumeCredential);
       client.journey = null;
       sendJson(client, { id: message.id ?? null, type: "journey.disable.result", data: { ok: true }, error: null });
       return;

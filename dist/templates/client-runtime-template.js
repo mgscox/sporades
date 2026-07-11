@@ -156,6 +156,7 @@ function createConnection() {
   const appMessageListeners = new Set();
   const authStateListeners = new Set();
   let latestAuthMessage = null;
+  let journeyResumeCredential = null;
 
   function syncSessionTokenFromStorage() {
     const storedToken = localStorage.getItem("sporades.sessionToken");
@@ -180,6 +181,9 @@ function createConnection() {
     socket = new WebSocket(url);
     socket.addEventListener("open", () => {
       request("auth.get");
+      if (journeyResumeCredential) {
+        request("journey.enable", { resumeCredential: journeyResumeCredential });
+      }
       for (const subscription of subscriptions.values()) {
         send({
           id: subscription.id,
@@ -364,10 +368,17 @@ function createConnection() {
     updatePreferences(patch) {
       return request("preferences.update", { patch });
     },
-    journeyEnable(options = {}) { return request("journey.enable", { options }); },
+    journeyEnable(options = {}) {
+      return request("journey.enable", { options }).then((result) => {
+        if (result.data?.resumeCredential) journeyResumeCredential = result.data.resumeCredential;
+        if (!result.data) return result;
+        const { resumeCredential, ...data } = result.data;
+        return { ...result, data };
+      });
+    },
     journeySet(state) { return request("journey.set", { state }); },
     journeyList() { return request("journey.list"); },
-    journeyDisable() { return request("journey.disable"); },
+    journeyDisable() { return request("journey.disable").then((result) => { if (!result.error) journeyResumeCredential = null; return result; }); },
     sendMessage(type, data) {
       return request("app.send", { message: type, data });
     },

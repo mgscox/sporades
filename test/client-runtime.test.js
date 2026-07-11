@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { createClientRuntimeSource } from "../dist/templates/client-runtime-template.js";
+import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
 
 async function importClientRuntime() {
   const source = createClientRuntimeSource();
@@ -18,23 +19,36 @@ test("browser client runtime exposes no Privileged server role authority", async
   assert.equal(Object.hasOwn(runtime.auth, "asPrivileged"), false);
 });
 
+test("Journey metadata rejects symbol-keyed objects before publication", () => {
+  const normalize = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "normalizeJourneyState");
+  const metadata = { visible: true, [Symbol("private")]: "lost" };
+  assert.throws(() => normalize({ status: "editing", metadata }, 30), (error) => error.code === "INVALID_JOURNEY_METADATA");
+});
+
 test("browser client runtime exposes the explicit Journey session lifecycle over transport", async () => {
   const calls = [];
   const browser = installBrowserFakes(anonymousAuth, {
     handlers: Object.fromEntries(["journey.enable", "journey.set", "journey.list", "journey.disable"].map((type) => [type, async (message) => {
       calls.push(message);
-      return { type: `${type}.result`, data: { ok: true }, error: null };
+      return { type: `${type}.result`, data: type === "journey.enable" ? { sessionId: "journey-1", userId: anonymousAuth.userId, capture: { navigation: true, focus: false, interactions: true }, resumeCredential: "private-resume" } : { ok: true }, error: null };
     }])),
   });
   try {
     const runtime = await importClientRuntime();
-    await runtime.journey.enable({ capture: { focus: false } });
+    const enabled = await runtime.journey.enable({ capture: { focus: false } });
+    assert.equal(Object.hasOwn(enabled.data, "resumeCredential"), false);
     await runtime.journey.set({ status: "editing", metadata: { document: "roadmap" }, ttlSeconds: 20 });
     await runtime.journey.list();
-    await runtime.journey.disable();
-    assert.deepEqual(calls.map(({ type }) => type), ["journey.enable", "journey.set", "journey.list", "journey.disable"]);
+    assert.deepEqual(calls.map(({ type }) => type), ["journey.enable", "journey.set", "journey.list"]);
     assert.deepEqual(calls[0].options, { capture: { focus: false } });
     assert.deepEqual(calls[1].state, { status: "editing", metadata: { document: "roadmap" }, ttlSeconds: 20 });
+    browser.sockets[0].readyState = 3;
+    browser.sockets[0].emit("close", {});
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(calls.at(-1).type, "journey.enable");
+    assert.equal(calls.at(-1).resumeCredential, "private-resume");
+    await runtime.journey.disable();
   } finally {
     browser.cleanup();
   }

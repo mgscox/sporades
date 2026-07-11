@@ -20,6 +20,47 @@ async function withTempDir(fn) {
   }
 }
 
+test("User journey lifecycle is declaration-gated and bound to the enabling identity over the real transport", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "journey-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "journey-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8")); config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    const serverPath = path.join(projectDir, "server", "index.ts");
+    await writeFile(serverPath, `import { capsule } from "sporades/server"; export default capsule({ name: "journey-island" });\n`);
+    let child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      let started = await waitForJsonLine(child); socket = await openSocket(started.data.url);
+      const gated = await sendAndWait(socket, { id: "gated", type: "journey.list" });
+      assert.equal(gated.error.code, "JOURNEY_NOT_ENABLED");
+      socket.close(); await stopDevSession(child);
+      await writeFile(serverPath, `import { capsule } from "sporades/server"; export default capsule({ name: "journey-island", journey: { enabled: true, ttlSeconds: 30 } });\n`);
+      child = startCli(["dev", "--json"], { cwd: projectDir }); started = await waitForJsonLine(child); socket = await openSocket(started.data.url);
+      const auth = await sendAndWait(socket, { id: "auth", type: "auth.get" });
+      const enabled = await sendAndWait(socket, { id: "enable", type: "journey.enable", options: {} });
+      assert.equal(enabled.data.userId, auth.data.auth.userId); assert.equal(typeof enabled.data.sessionId, "string");
+      const set = await sendAndWait(socket, { id: "set", type: "journey.set", state: { status: " editing ", metadata: { step: 1 }, ttlSeconds: 20 } });
+      assert.deepEqual(Object.keys(set.data.journey).sort(), ["createdAt", "expiresAt", "metadata", "sessionId", "status", "updatedAt", "userId"]);
+      assert.equal(set.data.journey.status, "editing"); assert.equal(set.data.journey.userId, auth.data.auth.userId);
+      const listed = await sendAndWait(socket, { id: "list", type: "journey.list" });
+      assert.deepEqual(listed.data.journeys, [set.data.journey]);
+      const invalid = await sendAndWait(socket, { id: "invalid", type: "journey.set", state: { status: "inactive" } });
+      assert.equal(invalid.error.code, "INVALID_JOURNEY_STATUS");
+      assert.deepEqual((await sendAndWait(socket, { id: "unchanged", type: "journey.list" })).data.journeys, [set.data.journey]);
+      assert.equal((await sendAndWait(socket, { id: "signout", type: "auth.signOut" })).error, null);
+      const identityChanged = await sendAndWait(socket, { id: "identity-changed", type: "journey.set", state: { status: "editing" } });
+      assert.equal(identityChanged.error.code, "JOURNEY_IDENTITY_CHANGED");
+      assert.deepEqual((await sendAndWait(socket, { id: "retired", type: "journey.list" })).data.journeys, []);
+      assert.deepEqual((await sendAndWait(socket, { id: "disable", type: "journey.disable" })).data, { ok: true });
+      assert.deepEqual((await sendAndWait(socket, { id: "empty", type: "journey.list" })).data.journeys, []);
+    } finally { socket?.close(); await stopDevSession(child); }
+  });
+});
+
 function runCli(args, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
