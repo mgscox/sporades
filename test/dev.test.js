@@ -6390,6 +6390,125 @@ test("a scaffolded guestbook trims, validates, and reads shared entries over Web
   });
 });
 
+test("a scaffolded Campfire proves fixtures, chat, reactions, and consented Journey over public WebSocket behavior", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "campfire-island", "--template", "campfire", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "campfire-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    const sockets = [];
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      const athos = await openSocket(started.data.url);
+      const porthos = await openSocket(started.data.url);
+      const aramis = await openSocket(started.data.url);
+      const dartagnan = await openSocket(started.data.url);
+      sockets.push(athos, porthos, aramis, dartagnan);
+
+      async function request(socket, message) {
+        const response = waitForSocketMessage(socket, (candidate) => candidate.id === message.id);
+        socket.send(JSON.stringify(message));
+        return response;
+      }
+
+      const emptyChannels = await request(athos, { id: "channels-empty", type: "query.subscribe", query: "channels" });
+      assert.deepEqual(emptyChannels.data, [], "starting Campfire must not seed demo fixtures implicitly");
+
+      const athosSignup = await request(athos, { id: "athos-signup", type: "auth.signUp", provider: "email", credentials: { email: "athos@campfire.example", password: "all-for-one-campfire", name: "Athos" } });
+      const porthosSignup = await request(porthos, { id: "porthos-signup", type: "auth.signUp", provider: "email", credentials: { email: "porthos@campfire.example", password: "all-for-one-campfire", name: "Porthos" } });
+      const aramisSignup = await request(aramis, { id: "aramis-signup", type: "auth.signUp", provider: "email", credentials: { email: "aramis@campfire.example", password: "all-for-one-campfire", name: "Aramis" } });
+      const dartagnanSignup = await request(dartagnan, { id: "dartagnan-signup", type: "auth.signUp", provider: "email", credentials: { email: "dartagnan@campfire.example", password: "all-for-one-campfire", name: "d'Artagnan" } });
+      assert.equal(athosSignup.error, null);
+      assert.equal(porthosSignup.error, null);
+      assert.equal(aramisSignup.error, null);
+      assert.equal(dartagnanSignup.error, null);
+      await request(athos, { id: "register-athos", type: "mutation.run", mutation: "registerFixture", args: ["athos"] });
+      await request(porthos, { id: "register-porthos", type: "mutation.run", mutation: "registerFixture", args: ["porthos"] });
+      await request(aramis, { id: "register-aramis", type: "mutation.run", mutation: "registerFixture", args: ["aramis"] });
+      await request(dartagnan, { id: "register-dartagnan", type: "mutation.run", mutation: "registerFixture", args: ["dartagnan"] });
+      assert.equal((await request(athos, { id: "seed-first", type: "mutation.run", mutation: "seedCampfire", args: [] })).error, null);
+      assert.equal((await request(athos, { id: "seed-second", type: "mutation.run", mutation: "seedCampfire", args: [] })).error, null);
+      const dump = JSON.parse((await runCli(["db", "dump", "--json"], { cwd: projectDir })).stdout).data.tables;
+      assert.equal(dump.find((table) => table.name === "channels").rows.length, 4);
+      assert.equal(dump.find((table) => table.name === "messages").rows.length, 4);
+      assert.equal(dump.find((table) => table.name === "profiles").rows.length, 4);
+
+      await request(athos, { id: "messages-athos", type: "query.subscribe", query: "messages" });
+      await request(porthos, { id: "messages-porthos", type: "query.subscribe", query: "messages" });
+      const porthosRefresh = waitForSocketMessage(porthos, (message) => message.query === "messages" && message.data?.some((row) => row.body === "Hold the western gate."));
+      const sent = await request(athos, { id: "send-message", type: "mutation.run", mutation: "sendMessage", args: [{ channel: "protect-the-crown", body: "  Hold the western gate.  ", authorId: porthosSignup.data.auth.userId }] });
+      assert.equal(sent.error, null);
+      const porthosMessages = await porthosRefresh;
+      const durableMessage = porthosMessages.data.find((row) => row.body === "Hold the western gate.");
+      assert.equal(durableMessage.authorId, athosSignup.data.auth.userId, "server must ignore attempted client authorship");
+      assert.equal(porthosMessages.data.find((row) => row.id === durableMessage.id).authorName, "Athos");
+      assert.equal((await request(athos, { id: "empty-message", type: "mutation.run", mutation: "sendMessage", args: [{ channel: "general", body: "  " }] })).error.message, "Write a message before sending.");
+      assert.equal((await request(athos, { id: "long-message", type: "mutation.run", mutation: "sendMessage", args: [{ channel: "general", body: "x".repeat(501) }] })).error.message, "Messages must be 500 characters or fewer.");
+
+      await request(athos, { id: "reactions-athos", type: "query.subscribe", query: "reactions" });
+      await request(porthos, { id: "reactions-porthos", type: "query.subscribe", query: "reactions" });
+      async function toggle(socket, id, kind) {
+        const refreshA = waitForSocketMessage(athos, (message) => message.query === "reactions");
+        const refreshP = waitForSocketMessage(porthos, (message) => message.query === "reactions");
+        const result = await request(socket, { id, type: "mutation.run", mutation: "toggleReaction", args: [{ messageId: durableMessage.id, kind, userId: "forged-user" }] });
+        const refreshed = await Promise.all([refreshA, refreshP]);
+        return { result, rows: refreshed[0].data };
+      }
+      assert.equal((await toggle(athos, "up-on", "up")).result.data.active, true);
+      const withBoth = await toggle(athos, "down-on", "down");
+      assert.deepEqual(withBoth.rows.map((row) => row.kind).sort(), ["down", "up"]);
+      assert.ok(withBoth.rows.every((row) => row.userId === athosSignup.data.auth.userId));
+      const removedUp = await toggle(athos, "up-off", "up");
+      assert.equal(removedUp.result.data.active, false);
+      assert.deepEqual(removedUp.rows.map((row) => row.kind), ["down"]);
+      const porthosUp = await toggle(porthos, "porthos-up", "up");
+      assert.equal(porthosUp.rows.filter((row) => row.kind === "up").length, 1);
+      assert.equal(porthosUp.rows.find((row) => row.kind === "up").userId, porthosSignup.data.auth.userId);
+
+      const gated = await request(athos, { id: "journey-gated", type: "journey.set", state: { status: "typing", metadata: { channel: "general" }, ttlSeconds: 1 } });
+      assert.equal(gated.error.code, "JOURNEY_NOT_ENABLED");
+      assert.equal((await request(athos, { id: "journey-enable", type: "journey.enable", options: { capture: { navigation: false, focus: false, interactions: false } } })).error, null);
+      await request(porthos, { id: "journey-subscribe", type: "journey.subscribe" });
+      const typingEvent = waitForSocketMessage(porthos, (message) => message.type === "journey.event" && message.data?.state?.status === "typing");
+      const typing = await request(athos, { id: "journey-typing", type: "journey.set", state: { status: "typing", metadata: { channel: "general" }, ttlSeconds: 1 } });
+      assert.equal(typing.error, null);
+      const published = (await typingEvent).data.state;
+      assert.deepEqual(published.metadata, { channel: "general" });
+      assert.doesNotMatch(JSON.stringify(published), /athos@|all-for-one|Hold the western|messageId|https?:|\?/i);
+      const late = await openSocket(started.data.url);
+      sockets.push(late);
+      const lateSnapshot = await request(late, { id: "late-subscribe", type: "journey.subscribe" });
+      assert.equal(lateSnapshot.data.type, "snapshot");
+      assert.ok(lateSnapshot.data.states.some((state) => state.sessionId === published.sessionId));
+      const expired = await waitForSocketMessage(porthos, (message) => message.type === "journey.event" && message.data?.type === "removed" && message.data?.state?.sessionId === published.sessionId);
+      assert.equal(expired.data.state.status, "typing");
+
+      const readingEvent = waitForSocketMessage(porthos, (message) => message.type === "journey.event" && message.data?.state?.status === "reading");
+      await request(athos, { id: "journey-reading", type: "journey.set", state: { status: "reading", metadata: { channel: "ideas" }, ttlSeconds: 12 } });
+      await readingEvent;
+      const removed = waitForSocketMessage(porthos, (message) => message.type === "journey.event" && message.data?.type === "removed");
+      await request(athos, { id: "journey-disable", type: "journey.disable" });
+      await removed;
+      assert.equal((await request(athos, { id: "journey-after-disable", type: "journey.set", state: { status: "reading" } })).error.code, "JOURNEY_NOT_ENABLED");
+      await request(athos, { id: "journey-enable-again", type: "journey.enable", options: {} });
+      await request(athos, { id: "journey-before-signout", type: "journey.set", state: { status: "reading", metadata: { channel: "random" }, ttlSeconds: 12 } });
+      await request(athos, { id: "athos-signout", type: "auth.signOut" });
+      assert.equal((await request(athos, { id: "journey-after-auth", type: "journey.set", state: { status: "reading" } })).error.code, "JOURNEY_NOT_ENABLED");
+    } finally {
+      for (const socket of sockets) socket.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("a scaffolded guestbook stores Google-linked author metadata from ctx.auth", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "guest-island", "--template", "guestbook", "--no-install", "--no-git", "--json"], {

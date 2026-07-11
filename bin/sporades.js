@@ -8054,9 +8054,6 @@ function createWebSocketHub(getDatabase) {
       if (result.ok) {
         setTimeout(() => {
           for (const subscribedClient of clients) {
-            if (subscribedClient.session.auth.userId !== client.session.auth.userId) {
-              continue;
-            }
             for (const subscription of subscribedClient.subscriptions.values()) {
               sendQueryResult(subscribedClient, subscription).catch((error) => {
                 sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error);
