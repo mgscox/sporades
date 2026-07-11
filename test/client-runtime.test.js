@@ -132,6 +132,47 @@ test("each local Journey subscriber starts with one snapshot and reconnect conve
   } finally { browser.cleanup(); }
 });
 
+test("Journey capture publishes only safe browser signals after consent and tears down on disable", async () => {
+  const calls = [];
+  const browser = installBrowserFakes(anonymousAuth, { href: "https://capsule.test/orders/42?token=secret#private", handlers: {
+    "journey.enable": async () => ({ type: "journey.enable.result", data: { sessionId: "j1", userId: anonymousAuth.userId, capture: { navigation: true, focus: true, interactions: true }, resumeCredential: "resume" }, error: null }),
+    "journey.set": async (message) => { calls.push(message.state); return { type: "journey.set.result", data: { journey: message.state }, error: null }; },
+    "journey.disable": async () => ({ type: "journey.disable.result", data: { ok: true }, error: null }),
+  }});
+  const listeners = new Map();
+  const add = (type, listener) => listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+  const remove = (type, listener) => listeners.set(type, (listeners.get(type) ?? []).filter((item) => item !== listener));
+  globalThis.document = { hidden: false, documentElement: {}, querySelector: () => null, addEventListener: add, removeEventListener: remove };
+  window.addEventListener = add; window.removeEventListener = remove;
+  window.requestAnimationFrame = (callback) => { queueMicrotask(callback); return 1; };
+  window.cancelAnimationFrame = () => {};
+  window.history = {
+    pushState(_state, _unused, url) { window.location.href = new URL(url, window.location.href).href; return "native-return"; },
+    replaceState() { throw new Error("native-error"); },
+  };
+  try {
+    const runtime = await importClientRuntime();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(calls, [], "capture must not publish before explicit consent");
+    await runtime.journey.enable(); await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(calls[0], { status: "viewing", metadata: { page: "/orders/42" } });
+    assert.equal(window.history.pushState({}, "", "/checkout?card=4111#raw"), "native-return");
+    assert.throws(() => window.history.replaceState({}, "", "/nope"), /native-error/);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(calls.at(-1), { status: "viewing", metadata: { page: "/checkout" } });
+    const annotation = { getAttribute: (name) => name === "data-sporades-journey" ? "checkout.started" : null };
+    for (const listener of listeners.get("click") ?? []) listener({ composedPath: () => [annotation], defaultPrevented: false, secret: "never publish" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(calls.at(-1), { status: "checkout.started", metadata: { page: "/checkout" } });
+    const beforePrevented = calls.length;
+    for (const listener of listeners.get("click") ?? []) listener({ composedPath: () => [annotation], defaultPrevented: true });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(calls.length, beforePrevented);
+    await runtime.journey.disable();
+    assert.equal((listeners.get("click") ?? []).length, 0);
+  } finally { delete globalThis.document; browser.cleanup(); }
+});
+
 function installBrowserFakes(auth, options = {}) {
   const storage = new Map();
   const sockets = [];

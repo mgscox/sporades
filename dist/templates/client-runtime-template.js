@@ -159,6 +159,8 @@ function createConnection() {
   let latestAuthMessage = null;
   let journeyResumeCredential = null;
   let journeyEnabledUserId = null;
+  let journeyCapture = null;
+  let journeyCaptureTeardown = null;
   const journeySubscriptions = new Map();
   let latestAuthUserId = null;
 
@@ -186,7 +188,9 @@ function createConnection() {
     socket.addEventListener("open", () => {
       request("auth.get");
       if (journeyResumeCredential) {
-        request("journey.enable", { resumeCredential: journeyResumeCredential });
+        request("journey.enable", { resumeCredential: journeyResumeCredential }).then((result) => {
+          if (!result.error && result.data?.capture) startJourneyCapture(result.data.capture);
+        });
       }
       for (const subscription of journeySubscriptions.values()) send({ id: subscription.id, type: "journey.subscribe", resume: subscription.started });
       for (const subscription of subscriptions.values()) {
@@ -203,6 +207,8 @@ function createConnection() {
         storeAuthSession(message);
       }
       if (message.type === "journey.retired") {
+        stopJourneyCapture();
+        journeyCapture = null;
         journeyResumeCredential = null;
         journeyEnabledUserId = null;
         return;
@@ -238,6 +244,7 @@ function createConnection() {
       }
     });
     socket.addEventListener("close", () => {
+      stopJourneyCapture();
       setTimeout(open, 500);
     });
     return socket;
@@ -297,12 +304,14 @@ function createConnection() {
     const token = message.data?.sessionToken;
     const nextAuthUserId = message.data?.auth?.userId ?? null;
     if ((latestAuthUserId && nextAuthUserId && latestAuthUserId !== nextAuthUserId) || (journeyEnabledUserId && nextAuthUserId && journeyEnabledUserId !== nextAuthUserId)) {
+      stopJourneyCapture();
+      journeyCapture = null;
       journeyResumeCredential = null;
       journeyEnabledUserId = null;
     }
     if (nextAuthUserId) latestAuthUserId = nextAuthUserId;
     if (token) {
-      if (sessionToken && token !== sessionToken) journeyResumeCredential = null;
+      if (sessionToken && token !== sessionToken) { stopJourneyCapture(); journeyCapture = null; journeyResumeCredential = null; }
       sessionToken = token;
       localStorage.setItem("sporades.sessionToken", token);
     }
@@ -321,6 +330,85 @@ function createConnection() {
     for (const listener of appMessageListeners) {
       listener(appMessage);
     }
+  }
+
+  function stopJourneyCapture() {
+    if (journeyCaptureTeardown) journeyCaptureTeardown();
+    journeyCaptureTeardown = null;
+  }
+
+  function startJourneyCapture(capture) {
+    stopJourneyCapture();
+    journeyCapture = capture;
+    if (typeof window === "undefined" || typeof document === "undefined") return;
+    const ownerKey = Symbol.for("sporades.journey.capture.teardown");
+    if (typeof window[ownerKey] === "function") window[ownerKey]();
+    if (!capture?.navigation && !capture?.focus && !capture?.interactions) return;
+    const cleanups = [];
+    let routeFrame = null;
+    const safePage = () => {
+      const semantic = document.querySelector?.('meta[name="sporades-journey"]')?.getAttribute?.("content")?.trim();
+      if (semantic && new TextEncoder().encode(semantic).length <= 256) return semantic;
+      try { return "/" + new URL(window.location.href).pathname.split("/").filter(Boolean).join("/"); }
+      catch { return "/"; }
+    };
+    const publish = (status) => request("journey.set", { state: { status, metadata: { page: safePage() } } }).catch?.(() => {});
+    const listen = (target, type, listener, options) => {
+      target.addEventListener?.(type, listener, options);
+      cleanups.push(() => target.removeEventListener?.(type, listener, options));
+    };
+    const scheduleRoute = () => {
+      if (!capture.navigation || routeFrame !== null) return;
+      const raf = window.requestAnimationFrame ?? ((callback) => setTimeout(callback, 0));
+      const cancel = window.cancelAnimationFrame ?? clearTimeout;
+      routeFrame = raf(() => { routeFrame = null; publish("viewing"); });
+      cleanups.push(() => { if (routeFrame !== null) cancel(routeFrame); routeFrame = null; });
+    };
+    if (capture.navigation) {
+      for (const name of ["pushState", "replaceState"]) {
+        const original = window.history?.[name];
+        if (typeof original !== "function") continue;
+        const wrapped = function(...args) { const result = Reflect.apply(original, this, args); scheduleRoute(); return result; };
+        window.history[name] = wrapped;
+        cleanups.push(() => { if (window.history[name] === wrapped) window.history[name] = original; });
+      }
+      listen(window, "popstate", scheduleRoute);
+      listen(window, "hashchange", scheduleRoute);
+      if (typeof MutationObserver === "function" && document.documentElement) {
+        const observer = new MutationObserver((records) => {
+          if (records.some((record) => {
+            const nodes = [record.target, ...(record.addedNodes ?? []), ...(record.removedNodes ?? [])];
+            return nodes.some((node) => node?.matches?.('meta[name="sporades-journey"]') || node?.querySelector?.('meta[name="sporades-journey"]'));
+          })) scheduleRoute();
+        });
+        observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["content"] });
+        cleanups.push(() => observer.disconnect());
+      }
+      scheduleRoute();
+    }
+    if (capture.focus) {
+      listen(window, "focus", () => publish(document.hidden ? "away" : "focused"));
+      listen(window, "blur", () => publish("away"));
+      listen(document, "visibilitychange", () => publish(document.hidden ? "away" : "focused"));
+    }
+    if (capture.interactions) {
+      const observeInteraction = (event) => {
+        const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+        const candidates = event.type === "submit" && event.submitter ? [event.submitter, ...path] : path;
+        const annotated = candidates.find((node) => node?.getAttribute?.("data-sporades-journey") != null);
+        const status = annotated?.getAttribute?.("data-sporades-journey")?.trim();
+        if (!status) return;
+        queueMicrotask(() => {
+          if (event.defaultPrevented || status === "inactive" || new TextEncoder().encode(status).length > 256) return;
+          publish(status);
+        });
+      };
+      listen(document, "click", observeInteraction, true);
+      listen(document, "submit", observeInteraction, true);
+    }
+    let stopped = false;
+    journeyCaptureTeardown = () => { if (stopped) return; stopped = true; for (const cleanup of cleanups.splice(0).reverse()) cleanup(); if (window[ownerKey] === journeyCaptureTeardown) delete window[ownerKey]; };
+    window[ownerKey] = journeyCaptureTeardown;
   }
 
   function createAppMessageStream(predicate = () => true) {
@@ -397,6 +485,8 @@ function createConnection() {
         if (!result.error && result.data?.ok === true) {
           journeyResumeCredential = null;
           journeyEnabledUserId = null;
+          stopJourneyCapture();
+          journeyCapture = null;
           sessionToken = null;
           localStorage.removeItem("sporades.sessionToken");
           await request("auth.get");
@@ -428,6 +518,7 @@ function createConnection() {
       return request("journey.enable", { options }).then((result) => {
         if (result.data?.resumeCredential) journeyResumeCredential = result.data.resumeCredential;
         if (result.data?.userId) journeyEnabledUserId = result.data.userId;
+        if (!result.error && result.data?.capture) startJourneyCapture(result.data.capture);
         if (!result.data) return result;
         const { resumeCredential, ...data } = result.data;
         return { ...result, data };
@@ -444,7 +535,7 @@ function createConnection() {
       if (activeSocket.readyState === WebSocket.OPEN) send({ id, type: "journey.subscribe" });
       return { unsubscribe() { if (journeySubscriptions.delete(id)) send({ id: nextId++, type: "journey.unsubscribe", subscriptionId: id }); } };
     },
-    journeyDisable() { return request("journey.disable").then((result) => { if (!result.error) { journeyResumeCredential = null; journeyEnabledUserId = null; } return result; }); },
+    journeyDisable() { return request("journey.disable").then((result) => { if (!result.error) { stopJourneyCapture(); journeyCapture = null; journeyResumeCredential = null; journeyEnabledUserId = null; } return result; }); },
     sendMessage(type, data) {
       return request("app.send", { message: type, data });
     },
