@@ -7488,6 +7488,7 @@ export function createWebSocketHub(getDatabase: () => any) {
   const connectionTokens = new Map<string, number>();
   let nextClientId = 1;
   const connectionTokenTtlMs = 4 * 60 * 60 * 1000;
+  let journeyExpiryTimer: any = null;
 
   return {
     createConnectionToken() {
@@ -7553,6 +7554,8 @@ export function createWebSocketHub(getDatabase: () => any) {
       socket.on("error", removeClient);
     },
     disconnectAll() {
+      if (journeyExpiryTimer !== null) getDatabase().clock.clearTimer(journeyExpiryTimer);
+      journeyExpiryTimer = null;
       for (const client of clients) {
         closeWebSocketClient(client);
       }
@@ -7621,13 +7624,40 @@ export function createWebSocketHub(getDatabase: () => any) {
     journeySessions.delete(client.journey.resumeCredential);
     client.journey = null;
     if (removed) broadcastJourneyEvent({ type: "removed", state: removed });
+    scheduleJourneyExpiry();
     sendJson(client, { id: null, type: "journey.retired", data: { retired: true }, error: null });
   }
 
   function activeJourneys() {
-    const now = Date.now();
-    for (const [id, record] of journeys) if (Date.parse(record.expiresAt) <= now) journeys.delete(id);
+    pruneExpiredJourneys();
     return [...journeys.values()].sort((a, b) => a.userId.localeCompare(b.userId) || a.sessionId.localeCompare(b.sessionId));
+  }
+
+  function pruneExpiredJourneys() {
+    const now = getDatabase().clock.now().getTime();
+    const expired = [...journeys.values()]
+      .filter((record) => Date.parse(record.expiresAt) <= now)
+      .sort((a, b) => Date.parse(a.expiresAt) - Date.parse(b.expiresAt) || a.sessionId.localeCompare(b.sessionId));
+    for (const record of expired) {
+      if (journeys.get(record.sessionId) !== record) continue;
+      journeys.delete(record.sessionId);
+      broadcastJourneyEvent({ type: "removed", state: record });
+    }
+    return expired.length;
+  }
+
+  function scheduleJourneyExpiry() {
+    const database = getDatabase();
+    if (journeyExpiryTimer !== null) database.clock.clearTimer(journeyExpiryTimer);
+    journeyExpiryTimer = null;
+    let earliest = Infinity;
+    for (const record of journeys.values()) earliest = Math.min(earliest, Date.parse(record.expiresAt));
+    if (!Number.isFinite(earliest)) return;
+    journeyExpiryTimer = database.clock.setTimer(() => {
+      journeyExpiryTimer = null;
+      pruneExpiredJourneys();
+      scheduleJourneyExpiry();
+    }, Math.max(0, earliest - database.clock.now().getTime()));
   }
 
   function broadcastJourneyEvent(event: any) {
@@ -7878,10 +7908,18 @@ export function createWebSocketHub(getDatabase: () => any) {
       }
       try {
         const state = normalizeJourneyState(message.state, database.journeyPolicy.ttlSeconds);
-        const now = new Date().toISOString();
+        pruneExpiredJourneys();
         const previous = journeys.get(client.journey.sessionId);
-        const record = { sessionId: client.journey.sessionId, userId: client.session.auth.userId, status: state.status, ...(state.metadata === undefined ? {} : { metadata: state.metadata }), updatedAt: now, expiresAt: new Date(Date.now() + state.ttlSeconds * 1000).toISOString() };
+        if (!previous) {
+          const userCount = [...journeys.values()].filter((record) => record.userId === client.session.auth.userId).length;
+          if (userCount >= 32) throw { code: "JOURNEY_USER_CAPACITY", message: "Journey user capacity reached.", hint: "Wait for an existing Journey state to expire or disable one before publishing another." };
+          if (journeys.size >= 1000) throw { code: "JOURNEY_CAPSULE_CAPACITY", message: "Journey Capsule capacity reached.", hint: "Wait for an existing Journey state to expire or be disabled before publishing another." };
+        }
+        const nowDate = database.clock.now();
+        const now = nowDate.toISOString();
+        const record = { sessionId: client.journey.sessionId, userId: client.session.auth.userId, status: state.status, ...(state.metadata === undefined ? {} : { metadata: state.metadata }), updatedAt: now, expiresAt: new Date(nowDate.getTime() + state.ttlSeconds * 1000).toISOString() };
         journeys.set(record.sessionId, record);
+        scheduleJourneyExpiry();
         sendJson(client, { id: message.id ?? null, type: "journey.set.result", data: { journey: record }, error: null });
         broadcastJourneyEvent({ type: previous ? "updated" : "added", state: record });
       } catch (error: any) { sendJson(client, { id: message.id ?? null, type: "error", data: null, error }); }
@@ -7896,8 +7934,9 @@ export function createWebSocketHub(getDatabase: () => any) {
 
     if (message.type === "journey.subscribe") {
       if (!database.journeyPolicy) { sendJson(client, journeyError(message.id)); return; }
+      const snapshot = activeJourneys();
       client.journeySubscriptions.add(message.id);
-      sendJson(client, { id: message.id, type: message.resume === true ? "journey.sync" : "journey.event", data: { type: "snapshot", states: activeJourneys() }, error: null });
+      sendJson(client, { id: message.id, type: message.resume === true ? "journey.sync" : "journey.event", data: { type: "snapshot", states: snapshot }, error: null });
       return;
     }
 
@@ -7913,6 +7952,7 @@ export function createWebSocketHub(getDatabase: () => any) {
       if (client.journey) journeys.delete(client.journey.sessionId);
       if (client.journey) journeySessions.delete(client.journey.resumeCredential);
       client.journey = null;
+      scheduleJourneyExpiry();
       sendJson(client, { id: message.id ?? null, type: "journey.disable.result", data: { ok: true }, error: null });
       if (removed) broadcastJourneyEvent({ type: "removed", state: removed });
       return;
