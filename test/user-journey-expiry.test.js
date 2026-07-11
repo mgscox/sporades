@@ -69,6 +69,37 @@ test("Journey enforces per-user capacity without evicting live state and permits
   });
 });
 
+test("Journey enforces Capsule capacity, permits replacement, and prunes expiry before admission", async () => {
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  await withJourneyRuntime(clock, async ({ open }) => {
+    const clients = [];
+    try {
+      for (let index = 0; index < 1_000; index += 1) {
+        const client = await open(); clients.push(client);
+        await send(client, { id: `enable-${index}`, type: "journey.enable", options: {} });
+        const accepted = await send(client, { id: `set-${index}`, type: "journey.set", state: { status: `state-${index}`, ttlSeconds: 1 } });
+        assert.equal(accepted.error, null);
+      }
+
+      const overflow = await open(); clients.push(overflow);
+      await send(overflow, { id: "enable-overflow", type: "journey.enable", options: {} });
+      const rejected = await send(overflow, { id: "set-overflow", type: "journey.set", state: { status: "overflow", ttlSeconds: 1 } });
+      assert.equal(rejected.error.code, "JOURNEY_CAPSULE_CAPACITY");
+      assert.equal((await send(overflow, { id: "full-list", type: "journey.list" })).data.journeys.length, 1_000, "capacity rejection must not evict live state");
+
+      const replacement = await send(clients[0], { id: "replacement", type: "journey.set", state: { status: "replacement", ttlSeconds: 1 } });
+      assert.equal(replacement.error, null, "an existing session may replace state at Capsule capacity");
+      assert.equal((await send(overflow, { id: "still-full", type: "journey.list" })).data.journeys.length, 1_000);
+
+      clock.advanceBy(1_000);
+      const admitted = await send(overflow, { id: "admitted", type: "journey.set", state: { status: "admitted", ttlSeconds: 1 } });
+      assert.equal(admitted.error, null, "expired state is pruned before Capsule cap enforcement");
+      assert.deepEqual((await send(overflow, { id: "pruned-list", type: "journey.list" })).data.journeys, [admitted.data.journey]);
+      await clock.runDueTimers();
+    } finally { for (const client of clients) client.close(); }
+  });
+});
+
 async function withJourneyRuntime(clock, fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-journey-expiry-"));
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "journey-expiry" }, {
