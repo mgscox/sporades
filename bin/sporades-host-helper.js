@@ -378,9 +378,22 @@ import { spawnSync } from "node:child_process";
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 
+// src/public-tree.ts
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+var PUBLIC_TREE_LIMITS = {
+  files: 512,
+  fileBytes: 16 * 1024 * 1024,
+  totalBytes: 64 * 1024 * 1024,
+  pathBytes: 240
+};
+var execFileAsync = promisify(execFile);
+
 // src/cli/host-helper-release-files.ts
 function expectedReleaseFiles(release) {
-  const files = ["server.mjs", "client.js", "index.html", "sporades.json"];
+  const publicFiles = Array.isArray(release.files) ? release.files.filter((file) => typeof file === "string" && file.startsWith("public/")) : [];
+  const legacyFiles = publicFiles.length === 0 ? ["client.js", "index.html"] : [];
+  const files = ["server.mjs", "sporades.json", ...legacyFiles, ...publicFiles];
   if (release.serverEnvIncluded) {
     files.push(".env.sporades.server");
   }
@@ -393,7 +406,7 @@ function expectedReleaseFiles(release) {
   return files;
 }
 function isExpectedClaimedReleaseFile(file) {
-  return [
+  return typeof file === "string" && (file.startsWith("public/") || [
     "server.mjs",
     "client.js",
     "index.html",
@@ -401,7 +414,7 @@ function isExpectedClaimedReleaseFile(file) {
     ".env.sporades.server",
     ".sporades/sealed-server-env/server-env.sealed.json",
     ".sporades/ssh/authorized_keys"
-  ].includes(file);
+  ].includes(file));
 }
 
 // src/cli/host-helper-archive.ts
@@ -411,8 +424,7 @@ function validateReleaseArchive(request) {
   const expectedFiles = expectedReleaseFiles(release);
   const allNames = entries.map((entry) => normaliseArchiveEntryName(entry.name));
   const runtimeEntries = entries.filter((entry) => !isDiscardableArchiveMetadata(entry.name));
-  const actualNames = runtimeEntries.map((entry) => normaliseArchiveEntryName(entry.name));
-  if (entries.some((entry) => !isSafeArchiveEntryType(entry))) {
+  if (entries.some((entry) => !isSafeArchiveEntryType(entry, expectedFiles))) {
     throw helperError(
       "Hosted Capsule release archive contains unsafe entries.",
       "Push again so Sporades can package regular runtime files only."
@@ -424,7 +436,25 @@ function validateReleaseArchive(request) {
       "Push again so Sporades can package runtime files without absolute or parent-relative paths."
     );
   }
-  const actual = [...actualNames].sort();
+  const canonicalNames = /* @__PURE__ */ new Set();
+  for (const entry of runtimeEntries) {
+    const name = normaliseArchiveEntryName(entry.name);
+    const canonical = name.normalize("NFC");
+    if (canonicalNames.has(canonical)) {
+      throw helperError("Hosted Capsule release archive contains duplicate paths.", "Push again so every runtime path is unique after Unicode normalization.");
+    }
+    canonicalNames.add(canonical);
+  }
+  const unexpectedEntry = runtimeEntries.find((entry) => {
+    const name = normaliseArchiveEntryName(entry.name);
+    if (entry.type === "-") return !expectedFiles.includes(name);
+    return !expectedFiles.some((file) => file.startsWith(`${name}/`));
+  });
+  if (unexpectedEntry) {
+    throw helperError("Hosted Capsule release archive contains unexpected files.", "Push again so Sporades can package only runtime files.");
+  }
+  validatePublicArchiveBounds(runtimeEntries);
+  const actual = runtimeEntries.filter((entry) => entry.type === "-").map((entry) => normaliseArchiveEntryName(entry.name)).sort();
   const expected = [...expectedFiles].sort();
   if (actual.length !== expected.length || actual.some((name, index) => name !== expected[index])) {
     throw helperError(
@@ -464,8 +494,14 @@ function listArchiveEntries(archivePath) {
   }
   return names.map((name, index) => ({
     name,
-    type: verboseLines[index]?.[0]
+    type: verboseLines[index]?.[0],
+    size: archiveEntrySize(verboseLines[index] ?? "")
   }));
+}
+function archiveEntrySize(line) {
+  const bsd = line.match(/^\S+\s+\d+\s+\S+\s+\S+\s+(\d+)\s+/);
+  const gnu = line.match(/^\S+\s+\S+\/\S+\s+(\d+)\s+/);
+  return Number((bsd ?? gnu)?.[1] ?? NaN);
 }
 function normaliseArchiveEntryName(name) {
   return String(name).replace(/^\.\//, "").replace(/\/+$/, "");
@@ -474,17 +510,39 @@ function isDiscardableArchiveMetadata(name) {
   const normalisedName = normaliseArchiveEntryName(name);
   return normalisedName === "__MACOSX" || normalisedName.startsWith("__MACOSX/") || normalisedName.split("/").some((segment) => segment.startsWith("._"));
 }
-function isSafeArchiveEntryType(entry) {
+function isSafeArchiveEntryType(entry, expectedFiles) {
   if (entry.type === "-") {
     return true;
   }
-  return entry.type === "d" && isDiscardableArchiveMetadata(entry.name);
+  if (entry.type !== "d") return false;
+  const name = normaliseArchiveEntryName(entry.name);
+  return isDiscardableArchiveMetadata(entry.name) || expectedFiles.some((file) => file.startsWith(`${name}/`));
 }
 function isSafeArchiveEntryName(name) {
-  if (!name || name.startsWith("/") || name.includes("\0")) {
+  if (!name || name.startsWith("/") || name.includes("\\") || name.includes("\0") || /[\r\n]/.test(name)) {
     return false;
   }
   return name.split("/").every((segment) => segment && segment !== "." && segment !== "..");
+}
+function validatePublicArchiveBounds(entries) {
+  const files = entries.filter((entry) => entry.type === "-" && normaliseArchiveEntryName(entry.name).startsWith("public/"));
+  if (files.length > PUBLIC_TREE_LIMITS.files) {
+    throw helperError("Hosted Capsule public tree exceeds release bounds.", "Reduce the number of public files and push again.");
+  }
+  let totalBytes = 0;
+  for (const entry of files) {
+    const relative = normaliseArchiveEntryName(entry.name).slice("public/".length);
+    if (Buffer.byteLength(relative, "utf8") > PUBLIC_TREE_LIMITS.pathBytes || !Number.isSafeInteger(entry.size) || entry.size < 0) {
+      throw helperError("Hosted Capsule public tree exceeds release bounds.", "Use bounded public paths and regular files, then push again.");
+    }
+    if (entry.size > PUBLIC_TREE_LIMITS.fileBytes) {
+      throw helperError("Hosted Capsule public tree exceeds release bounds.", "Reduce oversized public files and push again.");
+    }
+    totalBytes += entry.size;
+  }
+  if (totalBytes > PUBLIC_TREE_LIMITS.totalBytes) {
+    throw helperError("Hosted Capsule public tree exceeds release bounds.", "Reduce the total public output size and push again.");
+  }
 }
 
 // src/cli/host-helper-config.ts
@@ -880,6 +938,7 @@ function validateInstallRequest(request) {
   if (!Array.isArray(release.files) || release.files.some((file) => !isExpectedClaimedReleaseFile(file))) {
     throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
   }
+  validateClaimedReleaseFiles(release.files);
   const expectedFiles = expectedReleaseFiles(release);
   const claimedFiles = [...release.files].sort();
   const sortedExpectedFiles = [...expectedFiles].sort();
@@ -893,6 +952,26 @@ function validateInstallRequest(request) {
   const expectedReleaseDirectory = path3.join(directories.releases, release.id);
   if (path3.resolve(directories.release) !== path3.resolve(expectedReleaseDirectory)) {
     throw helperError("Invalid Hosted Capsule release directory.", "Update the Sporades CLI and retry `sporades host push`.");
+  }
+}
+function validateClaimedReleaseFiles(files) {
+  if (new Set(files).size !== files.length) {
+    throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
+  }
+  const publicFiles = files.filter((file) => file.startsWith("public/"));
+  if (publicFiles.length === 0) return;
+  if (publicFiles.length > PUBLIC_TREE_LIMITS.files || !publicFiles.includes("public/index.html")) {
+    throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
+  }
+  const canonical = /* @__PURE__ */ new Set();
+  for (const file of publicFiles) {
+    const relative = file.slice("public/".length);
+    const normalized = relative.normalize("NFC");
+    const safe = relative.length > 0 && !relative.startsWith("/") && !relative.includes("\\") && !relative.includes("\0") && path3.posix.normalize(relative) === relative && relative.split("/").every((segment) => segment && segment !== "." && segment !== "..") && Buffer.byteLength(relative, "utf8") <= PUBLIC_TREE_LIMITS.pathBytes;
+    if (!safe || canonical.has(normalized)) {
+      throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
+    }
+    canonical.add(normalized);
   }
 }
 
@@ -1357,9 +1436,25 @@ async function verifyInstalledRelease(request, release, installData, previousCur
       restartError?.message ?? "Hosted Capsule restart failed."
     );
   }
-  const healthResult = await evaluateCapsuleHealth(request, {
-    timeoutMs: readVerificationHealthTimeoutMs(request)
-  });
+  const timeoutMs = readVerificationHealthTimeoutMs(request);
+  const publicResult = await verifyInstalledPublicTree(request, timeoutMs);
+  if (!publicResult.ok) {
+    const publicFailure = publicResult.error?.message ?? "Hosted Capsule installed public tree verification failed.";
+    await routeVerifiedFailureToUnavailable(request, release.id, publicFailure);
+    const fallback = await maybeFallbackToPreviousRelease(request, release.id, previousCurrentRelease, publicFailure);
+    return verificationFailureResult(
+      request,
+      release.id,
+      {
+        ...baseData,
+        verified: false,
+        verification: { state: "failed", health: { public: publicResult.data, route: { url: publicResult.data.url, responding: false }, runtime: null, failure: "route-failure" } },
+        fallback
+      },
+      publicFailure
+    );
+  }
+  const healthResult = await evaluateCapsuleHealth(request, { timeoutMs });
   if (!healthResult.ok) {
     await routeVerifiedFailureToUnavailable(request, release.id, healthResult.error?.message ?? "Hosted Capsule release verification failed.");
     const fallback = await maybeFallbackToPreviousRelease(
@@ -1376,7 +1471,7 @@ async function verifyInstalledRelease(request, release, installData, previousCur
         verified: false,
         verification: {
           state: "failed",
-          health: verificationHealthSummary(healthResult)
+          health: { ...verificationHealthSummary(healthResult), public: publicResult.data }
         },
         fallback
       },
@@ -1391,11 +1486,33 @@ async function verifyInstalledRelease(request, release, installData, previousCur
       verified: true,
       verification: {
         state: "verified",
-        health: verificationHealthSummary(healthResult)
+        health: { ...verificationHealthSummary(healthResult), public: publicResult.data }
       }
     },
     error: null
   };
+}
+async function verifyInstalledPublicTree(request, timeoutMs) {
+  const url = new URL("/", `${request.host.scheme ?? "https"}://${request.capsule.subname}.${request.host.domain}`).toString();
+  try {
+    const response = await fetch(url, { headers: { accept: "text/html" }, signal: AbortSignal.timeout(timeoutMs) });
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!response.ok || !contentType.toLowerCase().startsWith("text/html")) {
+      return {
+        ok: false,
+        data: { url, path: "/", responding: response.ok, statusCode: response.status, html: false },
+        error: { message: "Hosted Capsule installed public tree did not serve its HTML entry." }
+      };
+    }
+    await response.body?.cancel();
+    return { ok: true, data: { url, path: "/", responding: true, statusCode: response.status, html: true } };
+  } catch {
+    return {
+      ok: false,
+      data: { url, path: "/", responding: false, statusCode: null, html: false },
+      error: { message: "Hosted Capsule installed public tree did not respond." }
+    };
+  }
 }
 function readVerificationHealthTimeoutMs(request) {
   const value = Number(request.verification?.healthTimeoutMs ?? 1e4);
@@ -2295,8 +2412,9 @@ function normaliseLifecycle(request, registryRecord = null) {
   const defaultMounts = {
     files: [
       { host: path4.join(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
-      { host: path4.join(currentLink, "client.js"), container: "/app/client.js", mode: "ro" },
-      { host: path4.join(currentLink, "index.html"), container: "/app/index.html", mode: "ro" },
+      { host: path4.join(currentLink, "public"), container: "/app/public", mode: "ro", optional: true },
+      { host: path4.join(currentLink, "client.js"), container: "/app/client.js", mode: "ro", optional: true },
+      { host: path4.join(currentLink, "index.html"), container: "/app/index.html", mode: "ro", optional: true },
       { host: path4.join(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
       { host: path4.join(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
       {
@@ -4505,7 +4623,10 @@ function defaultCapsuleHttpLogPath(remoteRoot, domain, subname) {
   return path4.join(remoteRoot, "hosts", domain, "capsules", subname, "logs", "http.log");
 }
 async function assertRollbackReleaseFiles(request, releaseDirectory) {
-  const requiredFiles = ["server.mjs", "client.js", "index.html", "sporades.json"];
+  const publicIndex = path4.join(releaseDirectory, "public", "index.html");
+  const legacyIndex = path4.join(releaseDirectory, "index.html");
+  const legacyClient = path4.join(releaseDirectory, "client.js");
+  const requiredFiles = ["server.mjs", "sporades.json"];
   for (const file of requiredFiles) {
     if (!await pathReadable(path4.join(releaseDirectory, file))) {
       throw helperError(
@@ -4513,6 +4634,12 @@ async function assertRollbackReleaseFiles(request, releaseDirectory) {
         `The recorded release cannot be started from ${releaseDirectory}. Push a new release or choose another release from \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\`.`
       );
     }
+  }
+  if (!await pathReadable(publicIndex) && (!await pathReadable(legacyIndex) || !await pathReadable(legacyClient))) {
+    throw helperError(
+      "Hosted Capsule release files are missing.",
+      `The recorded release cannot be started from ${releaseDirectory}. Push a new release or choose another release from \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\`.`
+    );
   }
 }
 async function verifyRegisteredCapsule(request, purpose = "push") {

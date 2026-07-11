@@ -459,9 +459,20 @@ async function verifyInstalledRelease(request, release, installData, previousCur
             fallback,
         }, restartError?.message ?? "Hosted Capsule restart failed.");
     }
-    const healthResult = await evaluateCapsuleHealth(request, {
-        timeoutMs: readVerificationHealthTimeoutMs(request),
-    });
+    const timeoutMs = readVerificationHealthTimeoutMs(request);
+    const publicResult = await verifyInstalledPublicTree(request, timeoutMs);
+    if (!publicResult.ok) {
+        const publicFailure = publicResult.error?.message ?? "Hosted Capsule installed public tree verification failed.";
+        await routeVerifiedFailureToUnavailable(request, release.id, publicFailure);
+        const fallback = await maybeFallbackToPreviousRelease(request, release.id, previousCurrentRelease, publicFailure);
+        return verificationFailureResult(request, release.id, {
+            ...baseData,
+            verified: false,
+            verification: { state: "failed", health: { public: publicResult.data, route: { url: publicResult.data.url, responding: false }, runtime: null, failure: "route-failure" } },
+            fallback,
+        }, publicFailure);
+    }
+    const healthResult = await evaluateCapsuleHealth(request, { timeoutMs });
     if (!healthResult.ok) {
         await routeVerifiedFailureToUnavailable(request, release.id, healthResult.error?.message ?? "Hosted Capsule release verification failed.");
         const fallback = await maybeFallbackToPreviousRelease(request, release.id, previousCurrentRelease, healthResult.error?.message ?? "Hosted Capsule release verification failed.");
@@ -470,7 +481,7 @@ async function verifyInstalledRelease(request, release, installData, previousCur
             verified: false,
             verification: {
                 state: "failed",
-                health: verificationHealthSummary(healthResult),
+                health: { ...verificationHealthSummary(healthResult), public: publicResult.data },
             },
             fallback,
         }, healthResult.error?.message ?? "Hosted Capsule release verification failed.");
@@ -483,11 +494,34 @@ async function verifyInstalledRelease(request, release, installData, previousCur
             verified: true,
             verification: {
                 state: "verified",
-                health: verificationHealthSummary(healthResult),
+                health: { ...verificationHealthSummary(healthResult), public: publicResult.data },
             },
         },
         error: null,
     };
+}
+async function verifyInstalledPublicTree(request, timeoutMs) {
+    const url = new URL("/", `${request.host.scheme ?? "https"}://${request.capsule.subname}.${request.host.domain}`).toString();
+    try {
+        const response = await fetch(url, { headers: { accept: "text/html" }, signal: AbortSignal.timeout(timeoutMs) });
+        const contentType = response.headers.get("content-type") ?? "";
+        if (!response.ok || !contentType.toLowerCase().startsWith("text/html")) {
+            return {
+                ok: false,
+                data: { url, path: "/", responding: response.ok, statusCode: response.status, html: false },
+                error: { message: "Hosted Capsule installed public tree did not serve its HTML entry." },
+            };
+        }
+        await response.body?.cancel();
+        return { ok: true, data: { url, path: "/", responding: true, statusCode: response.status, html: true } };
+    }
+    catch {
+        return {
+            ok: false,
+            data: { url, path: "/", responding: false, statusCode: null, html: false },
+            error: { message: "Hosted Capsule installed public tree did not respond." },
+        };
+    }
 }
 function readVerificationHealthTimeoutMs(request) {
     const value = Number(request.verification?.healthTimeoutMs ?? 10_000);
@@ -1305,8 +1339,9 @@ function normaliseLifecycle(request, registryRecord = null) {
     const defaultMounts = {
         files: [
             { host: path.join(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
-            { host: path.join(currentLink, "client.js"), container: "/app/client.js", mode: "ro" },
-            { host: path.join(currentLink, "index.html"), container: "/app/index.html", mode: "ro" },
+            { host: path.join(currentLink, "public"), container: "/app/public", mode: "ro", optional: true },
+            { host: path.join(currentLink, "client.js"), container: "/app/client.js", mode: "ro", optional: true },
+            { host: path.join(currentLink, "index.html"), container: "/app/index.html", mode: "ro", optional: true },
             { host: path.join(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
             { host: path.join(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
             {
@@ -3397,11 +3432,17 @@ function defaultCapsuleHttpLogPath(remoteRoot, domain, subname) {
     return path.join(remoteRoot, "hosts", domain, "capsules", subname, "logs", "http.log");
 }
 async function assertRollbackReleaseFiles(request, releaseDirectory) {
-    const requiredFiles = ["server.mjs", "client.js", "index.html", "sporades.json"];
+    const publicIndex = path.join(releaseDirectory, "public", "index.html");
+    const legacyIndex = path.join(releaseDirectory, "index.html");
+    const legacyClient = path.join(releaseDirectory, "client.js");
+    const requiredFiles = ["server.mjs", "sporades.json"];
     for (const file of requiredFiles) {
         if (!(await pathReadable(path.join(releaseDirectory, file)))) {
             throw helperError("Hosted Capsule release files are missing.", `The recorded release cannot be started from ${releaseDirectory}. Push a new release or choose another release from \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\`.`);
         }
+    }
+    if (!(await pathReadable(publicIndex)) && (!(await pathReadable(legacyIndex)) || !(await pathReadable(legacyClient)))) {
+        throw helperError("Hosted Capsule release files are missing.", `The recorded release cannot be started from ${releaseDirectory}. Push a new release or choose another release from \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\`.`);
     }
 }
 async function verifyRegisteredCapsule(request, purpose = "push") {

@@ -5,7 +5,7 @@ const CAPSULE_RUNTIME_HEALTH_PATH = "/__sporades/health/runtime";
 export function createHostReleaseRequest(options) {
     const registration = createHostRegistrationRequest(options.alias, options.profile, options.subname);
     const releaseDirectory = posixJoin(registration.directories.releases, options.releaseId);
-    const files = ["server.mjs", "client.js", "index.html", "sporades.json"];
+    const files = ["server.mjs", "sporades.json", ...options.publicFiles];
     if (options.bundle.containerMounts.serverEnv) {
         files.push(".env.sporades.server");
     }
@@ -66,8 +66,9 @@ export function createHostLifecycleRequest(alias, profile, subname, options = {}
         mounts: {
             files: [
                 { host: posixJoin(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
-                { host: posixJoin(currentLink, "client.js"), container: "/app/client.js", mode: "ro" },
-                { host: posixJoin(currentLink, "index.html"), container: "/app/index.html", mode: "ro" },
+                { host: posixJoin(currentLink, "public"), container: "/app/public", mode: "ro", optional: true },
+                { host: posixJoin(currentLink, "client.js"), container: "/app/client.js", mode: "ro", optional: true },
+                { host: posixJoin(currentLink, "index.html"), container: "/app/index.html", mode: "ro", optional: true },
                 { host: posixJoin(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
                 { host: posixJoin(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
                 {

@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
 import { readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { appendFile, chmod, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -4480,6 +4480,7 @@ async function createHostReleaseArchive(options: LooseRecord) {
   const packageDir = path.join(hostPushDir, `${releaseId}-files`);
   const remoteArchive = posixJoin(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
   const sealedServerEnv = await createHostReleaseSealedServerEnv(options);
+  const publicFiles = await listHostedPublicFiles(options.bundle.staticFiles.publicDir);
   const releaseRequest = createHostReleaseRequest({
     alias: options.alias,
     profile: options.profile,
@@ -4492,15 +4493,15 @@ async function createHostReleaseArchive(options: LooseRecord) {
     sealedServerEnv,
     sshAccess: options.sshAccess,
     updatePolicyMode: readBaseImageUpdatePolicy(options.projectConfig),
+    publicFiles,
   });
   await rm(packageDir, { recursive: true, force: true });
   await mkdir(path.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
   await mkdir(path.join(packageDir, ".sporades", "ssh"), { recursive: true });
+  await cp(options.bundle.staticFiles.publicDir, path.join(packageDir, "public"), { recursive: true, errorOnExist: true });
   const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
   await Promise.all([
     writeFile(path.join(packageDir, "server.mjs"), await readFile(path.join(options.bundle.buildDir, "server.mjs"), "utf8")),
-    writeFile(path.join(packageDir, "client.js"), await readFile(path.join(options.bundle.buildDir, "client.js"), "utf8")),
-    writeFile(path.join(packageDir, "index.html"), await readFile(path.join(options.projectDir, "index.html"), "utf8")),
     writeFile(path.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}\n`),
   ]);
   if (options.bundle.containerMounts.serverEnv) {
@@ -4521,9 +4522,8 @@ async function createHostReleaseArchive(options: LooseRecord) {
     "-czf",
     localArchive,
     "server.mjs",
-    "client.js",
-    "index.html",
     "sporades.json",
+    ...publicFiles,
   ];
   if (options.bundle.containerMounts.serverEnv) {
     tarArgs.push(".env.sporades.server");
@@ -4551,6 +4551,17 @@ async function createHostReleaseArchive(options: LooseRecord) {
     remoteArchive,
     request: releaseRequest,
   };
+}
+
+async function listHostedPublicFiles(root: string, directory = root): Promise<string[]> {
+  const files: string[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await listHostedPublicFiles(root, entryPath));
+    else if (entry.isFile()) files.push(`public/${path.relative(root, entryPath).split(path.sep).join("/")}`);
+    else throw commandError("Invalid Hosted Capsule public tree.", "Rebuild a normalized public tree containing regular files only.");
+  }
+  return files.sort();
 }
 
 async function resolveHostedCapsuleSshAccess(config: LooseRecord, projectDir: string) {

@@ -945,6 +945,90 @@ async function createTarGz(archivePath, sourceDir, entries) {
   assert.equal(result.code, 0, result.stderr);
 }
 
+async function createTarGzWithTransforms(archivePath, sourceDir, transforms, entries) {
+  const args = ["-czf", archivePath, "-C", sourceDir, ...transforms.flatMap((rule) => ["-s", rule]), ...entries];
+  const result = await new Promise((resolve) => {
+    const child = spawn("tar", args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("close", (code) => resolve({ code, stderr }));
+  });
+  assert.equal(result.code, 0, result.stderr);
+}
+
+async function writeArchiveSecurityFixture(dir, mode) {
+  const remoteRoot = path.join(dir, mode, "remote-root");
+  const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
+  const runtimeDir = path.join(dir, mode, "runtime");
+  const archivePath = path.join(remoteRoot, "incoming", "20260630T221500Z-feedface.tar.gz");
+  await mkdir(path.join(runtimeDir, "public"), { recursive: true });
+  await mkdir(path.dirname(archivePath), { recursive: true });
+  await writeFile(path.join(runtimeDir, "server.mjs"), "export default {};\n");
+  await writeFile(path.join(runtimeDir, "sporades.json"), "{}\n");
+  await writeFile(path.join(runtimeDir, "public", "index.html"), "<div></div>\n");
+  let files = ["server.mjs", "sporades.json", "public/index.html"];
+  let entries = [...files];
+  if (mode === "duplicate") {
+    entries.push("public/index.html");
+  } else if (mode === "absolute") {
+    await writeFile(path.join(runtimeDir, "absolute"), "absolute");
+    await createTarGzWithTransforms(archivePath, runtimeDir, ["|^absolute$|/absolute.js|"], [...entries, "absolute"]);
+  } else if (mode === "overlong") {
+    const relative = `${"p".repeat(241)}.js`;
+    await writeFile(path.join(runtimeDir, "public", relative), "x");
+    files.push(`public/${relative}`);
+    entries.push(`public/${relative}`);
+  } else if (mode === "oversized") {
+    await writeFile(path.join(runtimeDir, "public", "oversized.bin"), Buffer.alloc(16 * 1024 * 1024 + 1));
+    files.push("public/oversized.bin");
+    entries.push("public/oversized.bin");
+  } else if (mode === "excess-files") {
+    const excess = Array.from({ length: 512 }, (_, index) => `asset-${String(index).padStart(3, "0")}.js`);
+    await Promise.all(excess.map((file) => writeFile(path.join(runtimeDir, "public", file), "x")));
+    files.push(...excess.map((file) => `public/${file}`));
+    entries.push(...excess.map((file) => `public/${file}`));
+  } else if (mode === "normalization-collision") {
+    await writeFile(path.join(runtimeDir, "one"), "one");
+    await writeFile(path.join(runtimeDir, "two"), "two");
+    const composed = "café.js".normalize("NFC");
+    const decomposed = "café.js".normalize("NFD");
+    await createTarGzWithTransforms(
+      archivePath,
+      runtimeDir,
+      [`|^one$|public/${composed}|`, `|^two$|public/${decomposed}|`],
+      [...entries, "one", "two"],
+    );
+  }
+  if (!["absolute", "normalization-collision"].includes(mode)) await createTarGz(archivePath, runtimeDir, entries);
+  const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
+  await mkdir(path.dirname(registryRecordPath), { recursive: true });
+  await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev", remoteCapsuleId: "capsules.example.dev/team-notes" })}\n`);
+  return {
+    capsuleDir,
+    request: {
+      action: "capsule.release.install",
+      host: { alias: "personal", domain: "capsules.example.dev", scheme: "https", remoteRoot },
+      capsule: { subname: "team-notes" },
+      release: {
+        id: "20260630T221500Z-feedface",
+        hostedUrl: "https://team-notes.capsules.example.dev",
+        remoteCapsuleId: "capsules.example.dev/team-notes",
+        remoteArchive: archivePath,
+        restart: false,
+        serverEnvIncluded: false,
+        files,
+        directories: {
+          capsule: capsuleDir,
+          releases: path.join(capsuleDir, "releases"),
+          release: path.join(capsuleDir, "releases", "20260630T221500Z-feedface"),
+          data: path.join(capsuleDir, "data"),
+        },
+        currentLink: path.join(capsuleDir, "current"),
+      },
+    },
+  };
+}
+
 async function writeHostedCapsuleInstallFixture(dir, options = {}) {
   const remoteRoot = path.join(dir, options.rootName ?? "remote-root");
   const domain = options.domain ?? "capsules.example.dev";
@@ -957,13 +1041,26 @@ async function writeHostedCapsuleInstallFixture(dir, options = {}) {
   const archivePath = path.join(incomingDir, `${releaseId}.tar.gz`);
   const registryRecordPath = path.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`);
   await mkdir(incomingDir, { recursive: true });
-  await mkdir(runtimeDir, { recursive: true });
+  await mkdir(path.join(runtimeDir, "public", "assets", "fonts"), { recursive: true });
+  await mkdir(path.join(runtimeDir, "public", "assets", "images"), { recursive: true });
   await mkdir(path.dirname(registryRecordPath), { recursive: true });
   await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-  await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-  await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
   await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
-  await createTarGz(archivePath, runtimeDir, ["server.mjs", "client.js", "index.html", "sporades.json"]);
+  await writeFile(path.join(runtimeDir, "public", "index.html"), '<link rel="stylesheet" href="/assets/app-a1b2.css"><script type="module" src="/assets/app-a1b2.js"></script>\n');
+  await writeFile(path.join(runtimeDir, "public", "assets", "app-a1b2.js"), "console.log('client bundle');\n//# sourceMappingURL=app-a1b2.js.map\n");
+  await writeFile(path.join(runtimeDir, "public", "assets", "app-a1b2.js.map"), '{"version":3,"sources":[]}\n');
+  await writeFile(path.join(runtimeDir, "public", "assets", "app-a1b2.css"), "body{background:url('./images/logo-a1b2.png')}\n");
+  await writeFile(path.join(runtimeDir, "public", "assets", "images", "logo-a1b2.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+  await writeFile(path.join(runtimeDir, "public", "assets", "fonts", "app-a1b2.woff2"), Buffer.from("wOF2fixture"));
+  const publicFiles = [
+    "public/index.html",
+    "public/assets/app-a1b2.js",
+    "public/assets/app-a1b2.js.map",
+    "public/assets/app-a1b2.css",
+    "public/assets/images/logo-a1b2.png",
+    "public/assets/fonts/app-a1b2.woff2",
+  ];
+  await createTarGz(archivePath, runtimeDir, ["server.mjs", "sporades.json", ...publicFiles]);
   await writeFile(
     registryRecordPath,
     `${JSON.stringify({
@@ -1004,7 +1101,7 @@ async function writeHostedCapsuleInstallFixture(dir, options = {}) {
       remoteArchive: archivePath,
       restart: true,
       serverEnvIncluded: false,
-      files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+      files: ["server.mjs", "sporades.json", ...publicFiles],
       directories: {
         capsule: capsuleDir,
         releases: path.join(capsuleDir, "releases"),
@@ -1028,8 +1125,7 @@ async function writeHostedCapsuleInstallFixture(dir, options = {}) {
       mounts: {
         files: [
           { host: path.join(capsuleDir, "current", "server.mjs"), container: "/app/server.mjs", mode: "ro" },
-          { host: path.join(capsuleDir, "current", "client.js"), container: "/app/client.js", mode: "ro" },
-          { host: path.join(capsuleDir, "current", "index.html"), container: "/app/index.html", mode: "ro" },
+          { host: path.join(capsuleDir, "current", "public"), container: "/app/public", mode: "ro" },
           { host: path.join(capsuleDir, "current", "sporades.json"), container: "/app/sporades.json", mode: "ro" },
         ],
         data: { host: path.join(capsuleDir, "data"), container: "/app/data", mode: "rw" },
@@ -3273,9 +3369,10 @@ process.exit(0);
     assert.equal(output.data.release.currentLink, "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current");
     assert.deepEqual(output.data.release.files, [
       "server.mjs",
-      "client.js",
-      "index.html",
       "sporades.json",
+      "public/client.js",
+      "public/client.js.map",
+      "public/index.html",
     ]);
 
     const [scpCall] = await readJsonl(fakeScp.logPath);
@@ -3285,8 +3382,9 @@ process.exit(0);
     assert.deepEqual(uploadedArchives, [`${output.data.release.id}.tar.gz`]);
     const entries = await listArchiveEntries(path.join(fakeScp.uploadDir, uploadedArchives[0]), projectDir);
     assert.deepEqual(entries, [
-      "client.js",
-      "index.html",
+      "public/client.js",
+      "public/client.js.map",
+      "public/index.html",
       "server.mjs",
       "sporades.json",
     ]);
@@ -3391,9 +3489,10 @@ process.exit(0);
     assert.doesNotMatch(push.stdout, /auditEvents|ssh\.access\.enabled|ssh\.hosted-capsule\.start|SHA256:/);
     assert.deepEqual(output.data.release.files, [
       "server.mjs",
-      "client.js",
-      "index.html",
       "sporades.json",
+      "public/client.js",
+      "public/client.js.map",
+      "public/index.html",
     ]);
     assert.doesNotMatch(push.stdout, /\.sporades\/ssh\/authorized_keys/);
     assert.doesNotMatch(push.stdout, /operator\.keys/);
@@ -3402,8 +3501,9 @@ process.exit(0);
     const entries = await listArchiveEntries(scpCall.copiedTo, projectDir);
     assert.deepEqual(entries, [
       ".sporades/ssh/authorized_keys",
-      "client.js",
-      "index.html",
+      "public/client.js",
+      "public/client.js.map",
+      "public/index.html",
       "server.mjs",
       "sporades.json",
     ]);
@@ -3418,9 +3518,10 @@ process.exit(0);
     const request = JSON.parse(sshCall.stdin);
     assert.deepEqual(request.release.files, [
       "server.mjs",
-      "client.js",
-      "index.html",
       "sporades.json",
+      "public/client.js",
+      "public/client.js.map",
+      "public/index.html",
       ".sporades/ssh/authorized_keys",
     ]);
     assert.equal(request.release.ssh.enabled, true);
@@ -3513,8 +3614,9 @@ process.exit(0);
     const [scpCall] = await readJsonl(fakeScp.logPath);
     const entries = await listArchiveEntries(scpCall.copiedTo, projectDir);
     assert.deepEqual(entries, [
-      "client.js",
-      "index.html",
+      "public/client.js",
+      "public/client.js.map",
+      "public/index.html",
       "server.mjs",
       "sporades.json",
     ]);
@@ -3527,9 +3629,10 @@ process.exit(0);
     assert.equal(request.release.ssh, null);
     assert.deepEqual(request.release.files, [
       "server.mjs",
-      "client.js",
-      "index.html",
       "sporades.json",
+      "public/client.js",
+      "public/client.js.map",
+      "public/index.html",
     ]);
     const auditEvents = await readProjectAuditEvents(projectDir);
     assert.deepEqual(
@@ -3831,9 +3934,10 @@ process.exit(0);
     assert.equal(output.data.release.sealedServerEnv.privateKeyPath, undefined);
     assert.deepEqual(output.data.release.files, [
       "server.mjs",
-      "client.js",
-      "index.html",
       "sporades.json",
+      "public/client.js",
+      "public/client.js.map",
+      "public/index.html",
       ".sporades/sealed-server-env/server-env.sealed.json",
     ]);
 
@@ -3841,8 +3945,9 @@ process.exit(0);
     const entries = await listArchiveEntries(scpCall.copiedTo, projectDir);
     assert.deepEqual(entries, [
       ".sporades/sealed-server-env/server-env.sealed.json",
-      "client.js",
-      "index.html",
+      "public/client.js",
+      "public/client.js.map",
+      "public/index.html",
       "server.mjs",
       "sporades.json",
     ]);
@@ -4034,14 +4139,14 @@ process.exit(0);
     assert.equal(output.data.restartRequested, true);
     assert.equal(output.data.restarted, false);
     assert.equal(output.data.release.serverEnvIncluded, false);
-    assert.deepEqual(output.data.release.files, ["server.mjs", "client.js", "index.html", "sporades.json"]);
+    assert.deepEqual(output.data.release.files, ["server.mjs", "sporades.json", "public/client.js", "public/client.js.map", "public/index.html"]);
     assert.equal(output.data.capsule.hostedUrl, "https://field-notes.apps.work.test");
     await assert.rejects(readFile(path.join(projectDir, ".sporades", "remote-binding.json"), "utf8"), { code: "ENOENT" });
 
     const [scpCall] = await readJsonl(fakeScp.logPath);
     assert.equal(scpCall.target, `deploy@example.test:/srv/sporades/incoming/${output.data.release.id}.tar.gz`);
     const entries = await listArchiveEntries(scpCall.copiedTo, projectDir);
-    assert.deepEqual(entries, ["client.js", "index.html", "server.mjs", "sporades.json"]);
+    assert.deepEqual(entries, ["public/client.js", "public/client.js.map", "public/index.html", "server.mjs", "sporades.json"]);
 
     const [sshCall] = await readJsonl(fakeSsh.logPath);
     const request = JSON.parse(sshCall.stdin);
@@ -4238,8 +4343,9 @@ process.exit(0);
     assert.equal(startRequest.lifecycle.currentLink, "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current");
     assert.deepEqual(startRequest.lifecycle.mounts.files, [
       { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/server.mjs", container: "/app/server.mjs", mode: "ro" },
-      { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/client.js", container: "/app/client.js", mode: "ro" },
-      { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/index.html", container: "/app/index.html", mode: "ro" },
+      { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/public", container: "/app/public", mode: "ro", optional: true },
+      { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/client.js", container: "/app/client.js", mode: "ro", optional: true },
+      { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/index.html", container: "/app/index.html", mode: "ro", optional: true },
       { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/sporades.json", container: "/app/sporades.json", mode: "ro" },
       {
         host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/.env.sporades.server",
@@ -7067,7 +7173,7 @@ test("sporades host helper fails start when Docker does not report a usable loop
         ["stop", "sporades-capsules-example-dev-team-notes"],
         ["rm", "sporades-capsules-example-dev-team-notes"],
         ["image", "inspect", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"],
-        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.1.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "client.js")}:/app/client.js:ro`, "--volume", `${path.join(capsuleDir, "current", "index.html")}:/app/index.html:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", "SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine", "node", "/app/server.mjs"],
+        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.1.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", "SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine", "node", "/app/server.mjs"],
         ["inspect", "-f", "{{.State.Running}}", "sporades-capsules-example-dev-team-notes"],
         ["inspect", "-f", "{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostIp}}:{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostPort}}", "sporades-capsules-example-dev-team-notes"],
         ["stop", "sporades-capsules-example-dev-team-notes"],
@@ -7968,6 +8074,23 @@ test("sporades host helper rejects release archives with parent-relative paths",
   });
 });
 
+test("sporades host helper rejects duplicate, normalization-colliding, and bounded-public-tree archive abuse", async (t) => {
+  for (const mode of ["absolute", "duplicate", "normalization-collision", "overlong", "oversized", "excess-files"]) {
+    await t.test(mode, async () => {
+      await withTempDir(async (dir) => {
+        const fixture = await writeArchiveSecurityFixture(dir, mode);
+        const install = await runHostHelper(fixture.request, { cwd: dir });
+        assert.equal(install.code, 0, install.stderr);
+        const output = JSON.parse(install.stdout);
+        assert.equal(output.ok, false, `${mode}: ${install.stdout}`);
+        assert.match(output.error.message, /unsafe paths|unexpected files|duplicate paths|file list|exceeds release bounds/);
+        await assert.rejects(stat(path.join(fixture.capsuleDir, "releases", "20260630T221500Z-feedface")), { code: "ENOENT" });
+        await assert.rejects(stat(path.join(fixture.capsuleDir, "data")), { code: "ENOENT" });
+      });
+    });
+  }
+});
+
 test("sporades host helper restarts the current release after install when requested", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -8156,6 +8279,12 @@ test("sporades host helper verifies a pushed Hosted Capsule release after restar
   await withTempDir(async (dir) => {
     let probeToken = null;
     await withHttpServer((request, response) => {
+      if (request.url === "/") {
+        assert.equal(request.headers["x-sporades-host-probe"], undefined);
+        response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        response.end('<script type="module" src="/assets/app-a1b2.js"></script>');
+        return;
+      }
       assert.equal(request.url, "/__sporades/health/runtime");
       probeToken = request.headers["x-sporades-host-probe"];
       assert.equal(typeof probeToken, "string");
@@ -8209,7 +8338,23 @@ test("sporades host helper verifies a pushed Hosted Capsule release after restar
       assert.equal(output.data.verification.state, "verified");
       assert.equal(output.data.verification.health.route.responding, true);
       assert.equal(output.data.verification.health.runtime.ready, true);
+      assert.deepEqual(output.data.verification.health.public, {
+        url: `http://${fixture.subname}.${fixture.domain}/`,
+        path: "/",
+        responding: true,
+        statusCode: 200,
+        html: true,
+      });
       assert.equal(install.stdout.includes(probeToken), false);
+      const installedPublic = path.join(fixture.capsuleDir, "releases", fixture.releaseId, "public");
+      assert.match(await readFile(path.join(installedPublic, "index.html"), "utf8"), /app-a1b2\.js/);
+      assert.equal(await readFile(path.join(installedPublic, "assets", "app-a1b2.css"), "utf8"), "body{background:url('./images/logo-a1b2.png')}\n");
+      assert.deepEqual(await readFile(path.join(installedPublic, "assets", "images", "logo-a1b2.png")), Buffer.from([0x89, 0x50, 0x4e, 0x47]));
+      assert.equal(await readFile(path.join(installedPublic, "assets", "fonts", "app-a1b2.woff2"), "utf8"), "wOF2fixture");
+      await assert.rejects(stat(path.join(fixture.capsuleDir, "releases", fixture.releaseId, "client.js")), { code: "ENOENT" });
+      const runCall = (await docker.calls()).find((call) => call.args[0] === "run");
+      assert(runCall.args.includes(`${path.join(fixture.capsuleDir, "current", "public")}:/app/public:ro`));
+      assert.equal(runCall.args.some((arg) => arg.endsWith(":/app/client.js:ro") || arg.endsWith(":/app/index.html:ro")), false);
 
       const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
       const release = record.releases.find((entry) => entry.id === fixture.releaseId);
@@ -8270,9 +8415,9 @@ test("sporades host helper marks verified push failed when the Capsule route doe
     assert.equal(record.status, "failed");
     assert.equal(release.state, "failed");
     assert.equal(release.current, true);
-    assert.equal(release.failure.message, "Hosted Capsule route did not respond to runtime health.");
+    assert.equal(release.failure.message, "Hosted Capsule installed public tree did not respond.");
     assert.equal(release.verificationAttempts.length, 1);
-    assert.equal(release.verificationAttempts[0].failure.message, "Hosted Capsule route did not respond to runtime health.");
+    assert.equal(release.verificationAttempts[0].failure.message, "Hosted Capsule installed public tree did not respond.");
   });
 });
 
@@ -8285,11 +8430,11 @@ test("sporades host helper applies verification fallback only after the previous
       scheme: "http",
     });
     const previousReleaseDir = path.join(fixture.capsuleDir, "releases", fixture.previousReleaseId);
-    await mkdir(previousReleaseDir, { recursive: true });
+    await mkdir(path.join(previousReleaseDir, "public", "assets"), { recursive: true });
     await writeFile(path.join(previousReleaseDir, "server.mjs"), "export default 'previous';\n");
-    await writeFile(path.join(previousReleaseDir, "client.js"), "console.log('previous');\n");
-    await writeFile(path.join(previousReleaseDir, "index.html"), "<div></div>\n");
     await writeFile(path.join(previousReleaseDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
+    await writeFile(path.join(previousReleaseDir, "public", "index.html"), '<script type="module" src="/assets/previous-deadbeef.js"></script>\n');
+    await writeFile(path.join(previousReleaseDir, "public", "assets", "previous-deadbeef.js"), "console.log('previous complete release');\n");
     const docker = await installFakeDocker(path.join(dir, "verify-fallback-success-docker"));
 
     const install = await runHostHelper(
@@ -8315,6 +8460,9 @@ test("sporades host helper applies verification fallback only after the previous
     assert.equal(output.data.fallback.release.id, fixture.previousReleaseId);
     assert.equal(output.data.fallback.lifecycle.release.id, fixture.previousReleaseId);
     assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), previousReleaseDir);
+    assert.match(await readFile(path.join(fixture.capsuleDir, "current", "public", "index.html"), "utf8"), /previous-deadbeef\.js/);
+    assert.match(await readFile(path.join(fixture.capsuleDir, "current", "public", "assets", "previous-deadbeef.js"), "utf8"), /previous complete release/);
+    await assert.rejects(stat(path.join(fixture.capsuleDir, "current", "public", "assets", "app-a1b2.js")), { code: "ENOENT" });
 
     const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
     const failedRelease = record.releases.find((entry) => entry.id === fixture.releaseId);
@@ -8384,6 +8532,12 @@ test("sporades host helper marks verified push failed when runtime health checks
   await withTempDir(async (dir) => {
     let probeToken = null;
     await withHttpServer((request, response) => {
+      if (request.url === "/") {
+        assert.equal(request.headers["x-sporades-host-probe"], undefined);
+        response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        response.end("<div>installed public tree</div>");
+        return;
+      }
       assert.equal(request.url, "/__sporades/health/runtime");
       probeToken = request.headers["x-sporades-host-probe"];
       assert.equal(typeof probeToken, "string");
@@ -9609,8 +9763,9 @@ process.exit(0);
         mounts: {
           files: [
             { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/server.mjs", container: "/app/server.mjs", mode: "ro" },
-            { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/client.js", container: "/app/client.js", mode: "ro" },
-            { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/index.html", container: "/app/index.html", mode: "ro" },
+            { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/public", container: "/app/public", mode: "ro", optional: true },
+            { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/client.js", container: "/app/client.js", mode: "ro", optional: true },
+            { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/index.html", container: "/app/index.html", mode: "ro", optional: true },
             { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/sporades.json", container: "/app/sporades.json", mode: "ro" },
             { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/.env.sporades.server", container: "/app/.env.sporades.server", mode: "ro", optional: true },
             {

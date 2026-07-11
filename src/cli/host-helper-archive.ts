@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readdir, rm } from "node:fs/promises";
 import path from "node:path";
 
+import { PUBLIC_TREE_LIMITS } from "../public-tree.js";
 import { helperError } from "./cli-support.js";
 import type { HostHelperRelease, HostHelperRequest as HostHelperContractRequest, HostHelperCapsuleTarget } from "./host-helper-contract.js";
 import { expectedReleaseFiles } from "./host-helper-release-files.js";
@@ -17,9 +18,7 @@ export function validateReleaseArchive(request: HostHelperRequest) {
   const expectedFiles = expectedReleaseFiles(release);
   const allNames = entries.map((entry) => normaliseArchiveEntryName(entry.name));
   const runtimeEntries = entries.filter((entry) => !isDiscardableArchiveMetadata(entry.name));
-  const actualNames = runtimeEntries.map((entry) => normaliseArchiveEntryName(entry.name));
-
-  if (entries.some((entry) => !isSafeArchiveEntryType(entry))) {
+  if (entries.some((entry) => !isSafeArchiveEntryType(entry, expectedFiles))) {
     throw helperError(
       "Hosted Capsule release archive contains unsafe entries.",
       "Push again so Sporades can package regular runtime files only.",
@@ -32,7 +31,28 @@ export function validateReleaseArchive(request: HostHelperRequest) {
     );
   }
 
-  const actual = [...actualNames].sort();
+  const canonicalNames = new Set<string>();
+  for (const entry of runtimeEntries) {
+    const name = normaliseArchiveEntryName(entry.name);
+    const canonical = name.normalize("NFC");
+    if (canonicalNames.has(canonical)) {
+      throw helperError("Hosted Capsule release archive contains duplicate paths.", "Push again so every runtime path is unique after Unicode normalization.");
+    }
+    canonicalNames.add(canonical);
+  }
+
+  const unexpectedEntry = runtimeEntries.find((entry) => {
+    const name = normaliseArchiveEntryName(entry.name);
+    if (entry.type === "-") return !expectedFiles.includes(name);
+    return !expectedFiles.some((file) => file.startsWith(`${name}/`));
+  });
+  if (unexpectedEntry) {
+    throw helperError("Hosted Capsule release archive contains unexpected files.", "Push again so Sporades can package only runtime files.");
+  }
+
+  validatePublicArchiveBounds(runtimeEntries);
+
+  const actual = runtimeEntries.filter((entry) => entry.type === "-").map((entry) => normaliseArchiveEntryName(entry.name)).sort();
   const expected = [...expectedFiles].sort();
   if (actual.length !== expected.length || actual.some((name, index) => name !== expected[index])) {
     throw helperError(
@@ -76,7 +96,14 @@ function listArchiveEntries(archivePath: string) {
   return names.map((name, index) => ({
     name,
     type: verboseLines[index]?.[0],
+    size: archiveEntrySize(verboseLines[index] ?? ""),
   }));
+}
+
+function archiveEntrySize(line: string) {
+  const bsd = line.match(/^\S+\s+\d+\s+\S+\s+\S+\s+(\d+)\s+/);
+  const gnu = line.match(/^\S+\s+\S+\/\S+\s+(\d+)\s+/);
+  return Number((bsd ?? gnu)?.[1] ?? NaN);
 }
 
 function normaliseArchiveEntryName(name: unknown) {
@@ -92,16 +119,39 @@ function isDiscardableArchiveMetadata(name: unknown) {
   );
 }
 
-function isSafeArchiveEntryType(entry: { type?: string; name: string }) {
+function isSafeArchiveEntryType(entry: { type?: string; name: string }, expectedFiles: string[]) {
   if (entry.type === "-") {
     return true;
   }
-  return entry.type === "d" && isDiscardableArchiveMetadata(entry.name);
+  if (entry.type !== "d") return false;
+  const name = normaliseArchiveEntryName(entry.name);
+  return isDiscardableArchiveMetadata(entry.name) || expectedFiles.some((file) => file.startsWith(`${name}/`));
 }
 
 function isSafeArchiveEntryName(name: string) {
-  if (!name || name.startsWith("/") || name.includes("\0")) {
+  if (!name || name.startsWith("/") || name.includes("\\") || name.includes("\0") || /[\r\n]/.test(name)) {
     return false;
   }
   return name.split("/").every((segment) => segment && segment !== "." && segment !== "..");
+}
+
+function validatePublicArchiveBounds(entries: Array<{ name: string; type?: string; size: number }>) {
+  const files = entries.filter((entry) => entry.type === "-" && normaliseArchiveEntryName(entry.name).startsWith("public/"));
+  if (files.length > PUBLIC_TREE_LIMITS.files) {
+    throw helperError("Hosted Capsule public tree exceeds release bounds.", "Reduce the number of public files and push again.");
+  }
+  let totalBytes = 0;
+  for (const entry of files) {
+    const relative = normaliseArchiveEntryName(entry.name).slice("public/".length);
+    if (Buffer.byteLength(relative, "utf8") > PUBLIC_TREE_LIMITS.pathBytes || !Number.isSafeInteger(entry.size) || entry.size < 0) {
+      throw helperError("Hosted Capsule public tree exceeds release bounds.", "Use bounded public paths and regular files, then push again.");
+    }
+    if (entry.size > PUBLIC_TREE_LIMITS.fileBytes) {
+      throw helperError("Hosted Capsule public tree exceeds release bounds.", "Reduce oversized public files and push again.");
+    }
+    totalBytes += entry.size;
+  }
+  if (totalBytes > PUBLIC_TREE_LIMITS.totalBytes) {
+    throw helperError("Hosted Capsule public tree exceeds release bounds.", "Reduce the total public output size and push again.");
+  }
 }

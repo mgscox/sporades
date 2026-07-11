@@ -1,4 +1,5 @@
 import path from "node:path";
+import { PUBLIC_TREE_LIMITS } from "../public-tree.js";
 import { helperError } from "./cli-support.js";
 import { expectedReleaseFiles, isExpectedClaimedReleaseFile } from "./host-helper-release-files.js";
 export function missingCapsuleHint(request, purpose) {
@@ -244,6 +245,7 @@ export function validateInstallRequest(request) {
     if (!Array.isArray(release.files) || release.files.some((file) => !isExpectedClaimedReleaseFile(file))) {
         throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
     }
+    validateClaimedReleaseFiles(release.files);
     const expectedFiles = expectedReleaseFiles(release);
     const claimedFiles = [...release.files].sort();
     const sortedExpectedFiles = [...expectedFiles].sort();
@@ -257,6 +259,33 @@ export function validateInstallRequest(request) {
     const expectedReleaseDirectory = path.join(directories.releases, release.id);
     if (path.resolve(directories.release) !== path.resolve(expectedReleaseDirectory)) {
         throw helperError("Invalid Hosted Capsule release directory.", "Update the Sporades CLI and retry `sporades host push`.");
+    }
+}
+function validateClaimedReleaseFiles(files) {
+    if (new Set(files).size !== files.length) {
+        throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
+    }
+    const publicFiles = files.filter((file) => file.startsWith("public/"));
+    if (publicFiles.length === 0)
+        return;
+    if (publicFiles.length > PUBLIC_TREE_LIMITS.files || !publicFiles.includes("public/index.html")) {
+        throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
+    }
+    const canonical = new Set();
+    for (const file of publicFiles) {
+        const relative = file.slice("public/".length);
+        const normalized = relative.normalize("NFC");
+        const safe = relative.length > 0
+            && !relative.startsWith("/")
+            && !relative.includes("\\")
+            && !relative.includes("\0")
+            && path.posix.normalize(relative) === relative
+            && relative.split("/").every((segment) => segment && segment !== "." && segment !== "..")
+            && Buffer.byteLength(relative, "utf8") <= PUBLIC_TREE_LIMITS.pathBytes;
+        if (!safe || canonical.has(normalized)) {
+            throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
+        }
+        canonical.add(normalized);
     }
 }
 //# sourceMappingURL=host-helper-validation.js.map
