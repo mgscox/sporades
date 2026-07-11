@@ -14,13 +14,13 @@
 - [ ] The Journey declaration is one expandable Capsule-wide policy object with optional `capture.navigation`, `capture.focus`, and `capture.interactions` booleans that default to `true`, rather than a boolean, named handler map, or standalone server declaration.
 - [ ] Without the Capsule declaration, reads, subscriptions, publication, and disablement return a bounded structured not-enabled error and create no Journey state.
 - [ ] Within an enabled Capsule, publication remains disabled until client code explicitly enables it; reading active state does not implicitly publish the caller.
-- [ ] `journey.enable()` creates a page-runtime Journey session and returns its session ID and runtime-attached Sporades user ID before any automatic state is published.
+- [ ] `journey.enable()` establishes page-runtime consent and returns enabled state plus the runtime-attached Sporades user ID without creating or returning a Journey session ID.
 - [ ] `journey.enable({ capture })` may narrow automatic sources for that connection but cannot enable a source disabled by Capsule policy; omitted options use Capsule defaults.
 - [ ] `journey.set({ status, metadata, ttlSeconds })` is rejected until the client enables a Journey session, then publishes or atomically replaces that session's buffered state.
 - [ ] `journey.disable()` removes buffered state immediately, ends the Journey session, is idempotent, and causes a later enable to create a new session ID.
 - [ ] `journey.list()` reads the current buffered snapshot without enabling the caller.
-- [ ] Each enablement creates a cryptographically opaque Journey session ID distinct from the WebSocket client ID, Session token, and Sporades user ID.
-- [ ] The SDK retains a private page-runtime resume credential that never appears in public results, Journey state, list snapshots, or realtime events; public session ID alone cannot claim or mutate a session.
+- [ ] The first accepted publication lazily creates a cryptographically opaque Journey session ID distinct from the WebSocket client ID, Session token, and Sporades user ID.
+- [ ] The SDK retains page-runtime consent and capture policy, not a private resume credential; public session ID alone cannot claim or mutate a session.
 - [ ] Repeated updates during one enabled browser session preserve its Journey session ID and atomically replace, rather than shallow-merge, status and metadata.
 - [ ] Published status and semantic annotations are trimmed strings from 1 through 256 UTF-8 characters.
 - [ ] Metadata is an optional plain JSON object capped at 8 KiB serialized, depth 8, 64 keys per object, and 64 items per array.

@@ -3,17 +3,33 @@
 Sporades models a User journey as explicitly consented current activity rather
 than ordinary durable Presence, analytics, or an event history. A Capsule must
 declare `journey: { enabled: true }`, and each browser page runtime must call
-`journey.enable()` before the client runtime maps its Journey session ID to the
-authenticated Sporades user ID and publishes manual or automatically captured
-state.
+`journey.enable()` before publishing manual or automatically captured state.
+Enablement establishes page-runtime consent and capture policy but does not
+create or return a Journey session ID. The server lazily creates a session on
+the first accepted publication and attaches it to the authenticated Sporades
+user ID.
 
 Journey state is client-only, latest-only, TTL-buffered, and non-durable. Safe
 navigation, focus/visibility, and explicitly annotated semantic interactions may
 replace the current state, while arbitrary clicks, URL query/raw fragment data,
-form values, raw DOM, and session replay are excluded. Same-user transport
-reconnect preserves the page-runtime Journey session through a private resume
-capability, but server restart clears buffered state and auth transition or
-explicit disablement ends consent.
+form values, raw DOM, and session replay are excluded. An ordinary transport
+reconnect preserves page-runtime consent and capture policy but creates a new
+server-side Journey session on first publication. Server restart clears
+buffered state and session identity; auth transition or explicit disablement
+ends consent.
+
+Journey sessions are server-owned activity segments, not browser identities. A
+new transport connection always starts a new session on first publication. On
+one connection, an accepted publication after the configured inactivity gap
+starts another session. `sporades.json` configures
+`journey.sessionInactivityMinutes`, defaulting to 30; numeric input is rounded
+and clamped to 1 through 1,440 minutes, while missing or malformed input falls
+back to 30. Only accepted Journey publications count as activity.
+
+Sporades uses no private resume credential, durable capability registry, or
+retirement tombstone. Public session IDs are correlation identifiers, not
+authority. The source client retains consent and capture policy but does not
+manage server session lifecycle.
 
 Navigation capture belongs to the framework-neutral browser client runtime, not
 to React hooks or future Vue, Svelte, SolidJS, Lit, or Inferno adapters. It
@@ -48,6 +64,9 @@ state because transient client activity is not authoritative business input.
 
 - Consumers group flat live records by `userId` and derive `inactive` when that
   user has no unexpired Journey state.
+- A disconnected record may remain until its original state TTL while the new
+  connection publishes under another session ID, just as two tabs or devices
+  may publish simultaneously.
 - The tracker provides current collaborative context but cannot reconstruct a
   user's historical journey or guarantee every intermediate signal.
 - Broader delivery policy waits for Teams rather than embedding a temporary

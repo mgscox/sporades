@@ -11,7 +11,7 @@
 .scratch/user-journey-tracker/PRD.md
 
 - [ ] Public client API documentation describes `journey.enable()`, `journey.set(...)`, `journey.disable()`, `journey.list()`, subscription and unsubscribe behavior.
-- [ ] Consent guidance explains page-runtime scope, same-user automatic transport reconnect, disable/auth/page-reload clearing, immediate current-page publication when navigation capture is active, and optional separate preference storage.
+- [ ] Consent guidance explains page-runtime scope, automatic re-enablement with retained capture policy on ordinary transport reconnect, disable/auth/page-reload clearing, immediate current-page publication when navigation capture is active, and optional separate preference storage.
 - [ ] User guidance documents automatic navigation/focus/visibility capture, semantic interaction annotations, manual Journey updates, and the excluded raw click/DOM/form/session-replay data.
 - [ ] Annotation guidance states that `data-sporades-journey` carries one semantic status only and directs richer metadata to typed manual updates.
 - [ ] Navigation guidance documents normalized-pathname capture, excluded origin/query/raw hash data, and the semantic page-name override for sensitive or identifier-rich routes.
@@ -23,7 +23,7 @@
 - [ ] Server API documentation presents `journey: { enabled: true }` as the expandable Capsule-wide declaration and does not imply named Journey handlers.
 - [ ] Capture-policy guidance documents the three default-on Capsule sources, per-connection narrowing, prohibition on broadening policy, and manual-only operation.
 - [ ] TTL guidance documents the Capsule-wide 30-second default, the 1–300 second bounds, automatic-signal behavior, manual per-update override, and the absence of permanent state.
-- [ ] User guidance distinguishes the enabled Journey session from its TTL-buffered Journey state, explains one session per client connection and multiple simultaneous sessions per user, and derives inactivity when none of a user's sessions has live state.
+- [ ] User guidance distinguishes page-runtime consent, server-owned Journey sessions, and TTL-buffered Journey state; explains lazy session creation, one session per connection/activity segment, multiple simultaneous sessions per user, and derived inactivity.
 - [ ] API guidance documents flat `{ sessionId, userId, status, metadata, updatedAt, expiresAt }` records and client-side grouping rather than a server-produced user aggregate.
 - [ ] API guidance documents deterministic `(userId, sessionId)` ordering for list and snapshot arrays.
 - [ ] Realtime guidance documents 100-millisecond per-session latest-state coalescing, immediate caller/list visibility, coherent change ordering, and non-guaranteed intermediate delivery.
@@ -31,13 +31,14 @@
 - [ ] Capacity guidance documents the 32-live-state per-user and 1,000-live-state per-Capsule caps, expiry pruning, replacement-at-capacity behavior, and structured rejection without eviction.
 - [ ] Documentation states that every connected Capsule client receives Journey updates in V1 and identifies future shared-Team delivery filtering as deferred receiver-side authorization rather than publisher-selected record permissions.
 - [ ] User guidance documents bounded status and metadata, privacy-safe metadata practices, structured validation errors, and replacement rather than merge semantics.
-- [ ] Caller-controlled renewal, bounded TTL, buffered late-join snapshots, disconnect buffering until expiry, immediate explicit/auth cleanup, reconnect behavior, and explicit re-enablement are documented as one lifecycle contract.
-- [ ] Restart guidance explains that server replacement clears buffered state while a still-consenting same-user page resumes its session identity and publishes only fresh state after reconnect.
-- [ ] Security guidance explains that public session ID is not a bearer credential and that the private page-runtime resume capability is never exposed in Journey records or SDK results.
+- [ ] Session guidance documents `sporades.json` `journey.sessionInactivityMinutes`, its 30-minute default, rounding/clamping/fallback behavior, lazy creation, accepted-publication activity, and new IDs at the inactivity boundary or every new connection.
+- [ ] Caller-controlled renewal, bounded state TTL, buffered late-join snapshots, disconnect buffering until expiry, immediate explicit/auth cleanup, retained reconnect consent, and new-connection session identity are documented as one lifecycle contract.
+- [ ] Restart guidance explains that server replacement clears buffered state and session identity while a still-consenting page retains consent/capture policy and publishes only fresh state under a new session ID after reconnect.
+- [ ] Security guidance explains that public session ID is not a bearer credential and that Journey uses no private resume credential, durable capability registry, or retirement tombstone.
 - [ ] Documentation clearly distinguishes transient Journey state from durable current-user preferences, arbitrary App messages, analytics, audit logs, and Capsule app tables.
 - [ ] Authority guidance states that V1 publication is client-only and that Capsule server handlers and the Privileged server role cannot impersonate user activity.
 - [ ] Authority guidance states that reads/subscriptions are client-only and must not become authoritative server business-logic inputs.
-- [ ] The domain glossary defines User journey tracker and Journey session using accepted Sporades vocabulary without exposing implementation details.
+- [ ] The domain glossary defines User journey tracker, Journey consent, and server-owned Journey session using accepted Sporades vocabulary without exposing implementation details.
 - [ ] Public types and generated API references expose the complete supported Journey SDK, record, event, result, and subscription shapes.
 - [ ] The PRD and source-planning link remain available for traceability.
 - [ ] Documentation and implementation remain consistent with ADR 0031's consented, session-scoped, latest-state boundary.

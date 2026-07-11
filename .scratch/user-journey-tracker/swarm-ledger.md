@@ -6,7 +6,7 @@ Baseline at `5bd74f6`: `npm test` passed 596, failed 0, skipped 8.
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 05 | external-blocked | 04 done | `af51482` | `codex/user-journey-05-replacement` / `/tmp/sporades-user-journey-swarm/issue-05` | `/root/journey_issue_05` | `7e416fa` | `/root/journey_fix_02` | REQUEST_CHANGES; no accepted SHA | none | contract decision required for bounded revocation versus indefinite resume; persistence-failure atomicity remains after decision | retained clean worktree and branch as unintegrated evidence |
+| 05 | ready | 04 done | pending refreshed base | pending replacement worktree | pending | prior `7e416fa` obsolete | pending | none | none | blocker resolved: sessions rotate on connection/inactivity and resume capabilities were removed | obsolete evidence worktree/branch retained until replacement dispatch |
 | 06 | blocked | 05 must be merged and integration-green | pending | pending | pending | pending | pending | pending | pending | not run | not dispatched |
 
 ## Preserved abandoned attempt

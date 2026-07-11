@@ -30,10 +30,11 @@ by hand.
 
 Sporades provides a runtime-owned User journey tracker that Capsule server code
 must explicitly declare before its operations are available through
-`sporades/client`. Within an enabled Capsule, a client explicitly enables its
-own Journey session before publishing a status and optional bounded JSON
-metadata. Sporades assigns a Journey session ID for that client-transport
-connection and maps it to the authenticated Sporades user. Each caller update
+`sporades/client`. Within an enabled Capsule, a client explicitly enables
+page-runtime Journey consent before publishing a status and optional bounded
+JSON metadata. The server lazily assigns a Journey session ID on the first
+accepted publication for that transport connection and maps it to the
+authenticated Sporades user. Each caller update
 sets a bounded TTL; the runtime buffers that session's latest Journey state
 until expiry so clients that join later receive it while live.
 
@@ -46,13 +47,15 @@ payloads. Capsule code may still call `journey.set(...)` for typing, workflow
 progress, or non-DOM activity.
 
 Each app-visible Journey state identifies both the originating Sporades user and
-one enabled Journey session. Multiple Journey sessions may therefore describe
+one server-owned Journey session. Multiple Journey sessions may therefore describe
 simultaneous activity for one user without overwriting each other. Disabling
 tracking ends the session and removes its current state. Ordinary connection
 loss ends the session's ability to publish but leaves its last state buffered
 until TTL expiry. If a connected caller does not renew or replace its state
-before expiry, only that state expires; the enabled session remains able to
-publish again under the same session ID. A user is derived as inactive when none
+before expiry, only that state expires. The next accepted publication reuses the
+session ID only while it is on the same connection and less than the configured
+inactivity interval follows the prior publication; a new connection or longer
+gap creates a new session ID. A user is derived as inactive when none
 of their sessions has unexpired state.
 
 The public API supports publishing the current client's journey state,
@@ -72,7 +75,7 @@ visibility is enabled for that Team.
 1. As a Capsule author, I want a built-in User journey tracker, so that I do not need to build presence infrastructure for common collaborative cues.
 2. As a Capsule author, I want journey tracking disabled by default, so that merely using a Capsule does not publish behavioral state.
 3. As a Capsule author, I want to declare journey tracking before its client operations become available, so that my Capsule does not silently expose an activity surface.
-4. As a Capsule visitor, I want tracking to begin only after client code explicitly enables my Journey session, so that publication is deliberate and inspectable.
+4. As a Capsule visitor, I want tracking to begin only after client code explicitly enables page-runtime consent, so that publication is deliberate and inspectable.
 5. As a Capsule author, I want each Journey session to include its authenticated Sporades user ID, so that I can tell what a known user is doing.
 6. As a Capsule visitor, I want each browser session to receive a distinct Journey session ID, so that my simultaneous activity in separate tabs or devices is not overwritten.
 7. As a Capsule author, I want to publish a short status such as `online`, `viewing`, or `typing`, so that other clients can show useful current activity.
@@ -80,22 +83,22 @@ visibility is enabled for that Team.
 9. As a Capsule author, I want status and metadata to be bounded and JSON-safe, so that one client cannot create an unbounded realtime payload.
 10. As a Capsule visitor, I want only my Sporades user ID, status, metadata, and Journey lifecycle fields exposed, so that provider profile data and credentials are not disclosed.
 11. As a Capsule author, I want publishing invalid or oversized state to return a structured error, so that client failures are deterministic and actionable.
-12. As a Capsule author, I want enabling the tracker to return the current Journey session and user IDs before publication, so that the UI can reflect consent state without inventing identity.
+12. As a Capsule author, I want enabling the tracker to return enabled state and the attached user ID without exposing a misleading pre-publication session ID.
 13. As a Capsule author, I want updating a journey to replace the current session's status and metadata atomically, so that observers never receive a half-updated record.
-14. As a Capsule author, I want repeated updates from one browser session to preserve its Journey session ID, so that observers see one participant changing state rather than new participants appearing.
+14. As a Capsule author, I want accepted publications on one connection within the configured inactivity interval to preserve their Journey session ID, while a new connection or longer gap starts a new session.
 15. As a Capsule author, I want active journey records to include bounded timestamps and expiry information, so that clients can display freshness without guessing.
 16. As a Capsule author, I want to subscribe to an initial snapshot of active journey records, so that a newly connected UI starts from current state.
 17. As a Capsule author, I want journey additions, updates, removals, and expirations delivered over the existing client transport, so that the UI can remain current without polling.
 18. As a Capsule author, I want events to carry complete safe journey records, so that consumers can converge without reading runtime internals.
 19. As a Capsule author, I want each Journey update to have a bounded TTL, so that transient states naturally disappear unless my app renews them.
 20. As a Capsule author, I want repeating an update to renew or replace the current Journey session state, so that I control how long `online`, `typing`, or other statuses remain live.
-21. As a Capsule visitor, I want my Journey state to expire when the caller stops renewing it while my enabled session remains reusable, so that stale activity disappears without inventing a new session for later activity.
+21. As a Capsule visitor, I want my Journey state to expire when the caller stops renewing it, independently of the longer inactivity interval that segments later activity into a new session.
 22. As a Capsule author, I want expired records removed from active snapshots and announced to subscribers, so that all connected clients converge on the same active set.
 23. As a Capsule author, I want a user with no unexpired Journey state to be derived as inactive, so that inactivity does not require a synthetic durable record.
 24. As a Capsule visitor, I want connection loss to leave my last state buffered only until its existing TTL, so that brief disconnects do not create inconsistent lifecycle rules.
 25. As a Capsule visitor, I want an explicit disable operation to delete my current Journey session immediately, so that I can leave the tracker cleanly before TTL expiry.
 26. As a Capsule visitor, I want disabling an already-disabled tracker to be safe and idempotent, so that UI cleanup does not need fragile local bookkeeping.
-27. As a Capsule visitor, I want same-user transport reconnects during the current page lifetime to resume the same Journey session under my existing in-memory consent, so that a network interruption neither duplicates nor disables tracking.
+27. As a Capsule visitor, I want ordinary transport reconnects to retain page-runtime consent and capture policy while the new connection starts a new Journey session on its first publication.
 28. As a Capsule visitor, I want authentication changes to retire the old client journey before any new identity association is used, so that one browser session does not bridge user boundaries invisibly.
 29. As a Capsule visitor, I want another user to be unable to update or delete my Journey session, so that public identifiers are not bearer credentials.
 30. As a Capsule author, I want all active clients in the same Capsule to observe the same app-visible journey set, so that collaborative state is Capsule-scoped rather than publisher-selected.
@@ -103,7 +106,7 @@ visibility is enabled for that Team.
 32. As a Capsule author, I want journey tracking separate from App messages, so that I get a consistent lifecycle and expiry contract instead of rebuilding it from ephemeral messages.
 33. As a Capsule author, I want journey tracking separate from current-user preferences, so that transient browser state is not persisted as durable user settings.
 34. As a Capsule author, I want journey records kept outside Capsule app schema and `ctx.db`, so that app migrations cannot corrupt runtime-owned lifecycle state.
-35. As a Capsule visitor, I want a server runtime restart to clear old Journey state while my still-live consenting page resumes its Journey session and publishes fresh state after reconnect, so that dead state does not reappear and consent is not needlessly repeated.
+35. As a Capsule visitor, I want a server runtime restart to clear old Journey state while my still-live consenting page reconnects under its existing consent and publishes fresh state in a new Journey session.
 36. As a runtime maintainer, I want journey expiry to use one deterministic runtime clock boundary, so that cleanup, snapshots, and notifications agree.
 37. As an AFK agent, I want journey behavior exposed through the public client SDK and structured transport messages, so that I can verify it without scraping logs or private tables.
 38. As a Capsule author, I want TypeScript types for journey status, metadata, records, events, and subscriptions, so that misuse is caught during development.
@@ -134,17 +137,19 @@ visibility is enabled for that Team.
 - Within an enabled Capsule, client publication remains disabled by default.
   Reading or subscribing to active journey state does not implicitly publish
   the current client.
-- `journey.enable()` is the explicit client consent boundary. It creates an
-  Journey session for the current connection and returns its session ID and
-  runtime-attached Sporades user ID before any automatic state is published.
+- `journey.enable()` is the explicit client consent boundary. It records enabled
+  state and the narrowed capture policy for the page runtime and returns the
+  runtime-attached Sporades user ID. It does not create or return a Journey
+  session before publication.
 - `journey.enable({ capture })` may disable automatic capture sources for that
   connection but cannot enable a source disabled by Capsule policy. Omitted
   connection options use the Capsule capture policy.
 - `journey.set({ status, metadata, ttlSeconds })` publishes or replaces the
-  enabled session's TTL-buffered Journey state and is rejected until the client
-  explicitly enables a Journey session.
-- `journey.disable()` removes any buffered state immediately, ends the Journey
-  session, and is idempotent. A later enable creates a new Journey session ID.
+  consented connection's TTL-buffered Journey state and is rejected until the
+  client explicitly establishes page-runtime consent with `journey.enable()`.
+- `journey.disable()` removes any buffered state immediately, clears page
+  consent, and is idempotent. A later accepted publication after re-enablement
+  creates a new Journey session ID.
 - `journey.list()` returns the current buffered snapshot, while
   `journey.subscribe(listener)` delivers an initial snapshot followed by
   Journey changes without enabling the observing client.
@@ -152,18 +157,17 @@ visibility is enabled for that Team.
   is never written to storage by the tracker. A Capsule that remembers a user's
   choice across page reloads may store that separately through current-user
   preferences and explicitly call `journey.enable()` in the new page runtime.
-- A same-user transport reconnect during the current page lifetime preserves the
-  Journey session ID and resumes the previously narrowed capture policy without
-  another enable call. It does not restore expired state.
-- The SDK retains a private resume credential for the page runtime. That
-  credential never appears in public SDK results, Journey state, list results,
-  or realtime events; the public session ID alone cannot claim or mutate a
-  Journey session.
+- An ordinary transport reconnect during the current page lifetime preserves
+  only in-memory consent and the previously narrowed capture policy. The SDK
+  automatically restores enablement on the new connection; its first accepted
+  publication creates a new Journey session ID. No private resume credential,
+  durable capability registry, or retirement tombstone exists.
 - Disablement, page reload/client-runtime replacement, or an auth identity
   transition clears in-memory consent and requires explicit enablement again.
-- Automatic capture starts only after `journey.enable()` succeeds and stops
-  immediately on `journey.disable()`, disconnect, auth transition, or runtime
-  replacement.
+- Automatic capture starts only after `journey.enable()` succeeds. It pauses
+  during disconnect, resumes for an ordinary reconnect under the same
+  page-runtime consent, and stops on `journey.disable()`, auth transition, or
+  page/client-runtime replacement.
 - When navigation capture is enabled, the client publishes the current page as
   the first `viewing` state immediately after successful enablement. A
   connection that narrows every automatic source off remains invisible until an
@@ -246,9 +250,9 @@ visibility is enabled for that Team.
   another user's unexpired state.
 - `journey.set(...)` remains available for typing, workflow progress,
   non-DOM activity, and explicit overrides of automatically captured state.
-- Enabling creates one cryptographically opaque Journey session ID for the
-  current browser connection lifecycle. The identifier is distinct from the
-  WebSocket client ID, Session token, and Sporades user ID.
+- The first accepted publication on a consented connection lazily creates one
+  cryptographically opaque Journey session ID. The identifier is distinct from
+  the WebSocket client ID, auth Session token, and Sporades user ID.
 - App-visible records contain the Journey session ID, authenticated Sporades
   user ID, status, optional metadata, and bounded lifecycle timestamps. They
   never contain a Session token, provider identity, email, display name, picture,
@@ -286,6 +290,18 @@ visibility is enabled for that Team.
   limits as manual metadata.
 - Updating a Journey session replaces its published status and metadata as one
   accepted state transition; metadata does not shallow-merge implicitly.
+- Only accepted manual or automatic Journey publications count as Journey
+  session activity. Enablement, reads, subscriptions, and reconnects neither
+  create nor extend a Journey session.
+- `sporades.json` may set `journey.sessionInactivityMinutes`. It defaults to 30.
+  Finite numeric input is rounded to the nearest whole minute and clamped to 1
+  through 1,440; missing or malformed input falls back to 30. Structured
+  diagnostics expose the effective normalized value.
+- An accepted publication on a new transport connection always creates a new
+  Journey session ID. On one connection, an accepted publication at or beyond
+  the configured inactivity interval after the previous accepted publication
+  also creates a new Journey session ID. The source client does not manage or
+  receive Journey-session lifecycle notifications.
 - Capsule `journey.ttlSeconds` is an optional integer from 1 through 300 and
   defaults to 30. Automatic signals use this Capsule default.
 - `journey.set(...)` accepts an optional per-update integer `ttlSeconds` from 1
@@ -297,12 +313,16 @@ visibility is enabled for that Team.
   repeats updates when it wants a status to remain live.
 - No status is permanent. Any state that should remain current must be renewed
   deliberately before its accepted TTL expires.
-- Explicit disablement deletes the current Journey session immediately and is
-  idempotent.
+- Explicit disablement clears page-runtime consent and deletes current buffered
+  state immediately and idempotently.
 - Clean and abrupt WebSocket disconnects end the Journey session's ability to
   publish but do not remove its buffered Journey state early. The state remains
   visible until its existing TTL expires, giving all connection-loss paths the
   same externally observable behavior.
+- A reconnect creates a distinct connection and therefore a distinct Journey
+  session on first publication. The disconnected record may coexist until its
+  original TTL expires, exactly like records from another tab or device; the
+  runtime does not deduplicate one user's records.
 - An auth Session replacement, sign-in, sign-out, or equivalent user transition
   retires the existing Journey session and removes its buffered state
   immediately. Tracking remains disabled until client code explicitly enables
@@ -343,13 +363,12 @@ visibility is enabled for that Team.
 - Journey events use Sporades-reserved platform message types over the existing
   client transport. They are not app-defined messages under ADR 0014 and cannot
   be forged through `sendMessage()` or Capsule message handlers.
-- Journey state is runtime-owned transient state scoped to the live server
-  runtime, while Journey session identity and private resume capability are held
-  by the consenting browser page runtime. Neither is stored through the Database
-  adapter.
-- Server runtime restart clears every buffered Journey state. A still-consenting
-  same-user page runtime may resume its existing Journey session identity after
-  reconnect and publish only fresh automatic or manual state.
+- Journey state and Journey session identity are runtime-owned transient state
+  scoped to the live server runtime. Neither is stored through the Database
+  adapter; the browser page runtime retains only consent and capture policy.
+- Server runtime restart clears every buffered Journey state and every Journey
+  session identity. A still-consenting page reconnects and publishes only fresh
+  automatic or manual state under a new server-assigned session ID.
 - A published state transition is atomic within the runtime; failed transitions
   are not broadcast as accepted state.
 - Cleanup is bounded and deterministic. Expired state may be removed lazily at
@@ -388,9 +407,9 @@ visibility is enabled for that Team.
   behavior.
 - TTL, renewal, buffering, and expiry tests use the controllable runtime clock at
   the runtime boundary. Tests must not wait for wall-clock timeout intervals.
-- Restart tests prove that no buffered Journey state survives server runtime
-  replacement, while a still-consenting same-user page runtime resumes the same
-  session ID after reconnect and publishes only fresh automatic/manual state.
+- Restart tests prove that no buffered Journey state or Journey session identity
+  survives server runtime replacement, while a still-consenting page retains
+  consent/capture policy and publishes fresh state under a new session ID.
 - Lower-level tests are limited to atomic state replacement, private ownership
   checks, and timer behavior that cannot be demonstrated clearly through the
   client transport seam.
@@ -422,8 +441,9 @@ visibility is enabled for that Team.
   automatic PII enrichment.
 - Tracking without initial explicit client enablement or restoring consent after
   auth transition, disablement, page reload, or client-runtime replacement.
-- Persisting Journey sessions across runtime restart or treating transient
-  Journey state as recoverable durable data.
+- Persisting Journey sessions, resume credentials, or retirement tombstones
+  across runtime restart, or treating transient Journey state as recoverable
+  durable data.
 - Capsule-defined schemas, arbitrary indexes, query languages, aggregation, or
   ACL rules over Journey records.
 - Cross-Capsule, Host-wide, or organization-wide journey visibility.

@@ -244,12 +244,16 @@ _Avoid_: raw WebSocket message, custom socket packet, transport frame
 An opt-in Capsule-wide view of what enabled Sporades users, including Anonymous users, are doing across their live client connections. It converts safe navigation and focus signals, explicitly annotated semantic interactions, and manual updates into short-lived Journey state; all connected Capsule clients receive live updates until future Team-based delivery filtering exists.
 _Avoid_: presence tracker, user analytics, activity log
 
+**Journey consent**:
+The page-runtime decision established by `journey.enable()` that permits manual and automatic Journey publication under a narrowed capture policy. Consent survives an ordinary transport reconnect in the same page runtime, but disablement, auth transition, page reload, or client-runtime replacement clears it. Consent is not a Journey session and creates no session ID by itself.
+_Avoid_: Journey session, resume credential, durable consent record
+
 **Journey session**:
-One enabled browser page runtime operating under explicit Journey consent, identified by a Journey session ID and attached to its Sporades user ID. A user may have multiple simultaneous Journey sessions; same-user transport reconnect preserves the session, while disablement, page reload, or reauthentication ends it.
-_Avoid_: auth session, browser identity, durable activity record
+One server-owned segment of accepted Journey publication activity, identified by a Journey session ID and attached to its Sporades user ID. It is created lazily on first publication; every new transport connection or configured inactivity gap produces a new session. A user may have multiple simultaneous Journey sessions.
+_Avoid_: auth session, browser identity, page consent, durable activity record
 
 **Journey state**:
-The latest bounded status and metadata published by one Journey session, buffered until its server-calculated expiry. Expiry removes the state; while its Journey session remains connected and enabled, that session can publish again under the same session ID.
+The latest bounded status and metadata published by one Journey session, buffered until its server-calculated expiry. Expiry removes the state; a later accepted publication reuses the session ID only when it remains on the same connection and inside the configured inactivity interval.
 _Avoid_: journey event, durable presence, session record
 
 **Journey signal**:

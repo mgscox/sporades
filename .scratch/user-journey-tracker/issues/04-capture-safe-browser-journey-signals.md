@@ -41,7 +41,7 @@
 - [ ] Manual updates remain available when one or every automatic capture source is disabled.
 - [ ] `inactive` is rejected as a published status; `viewing`, `focused`, and `away` are the stable automatic status vocabulary.
 - [ ] `journey.disable()` immediately stops automatic capture and removes its listeners without preventing normal navigation or interaction behavior.
-- [ ] A same-user transport reconnect during the consenting page lifetime preserves the Journey session ID and resumes the previously narrowed capture policy; disablement, auth transition, or page/client-runtime replacement requires explicit enablement again.
+- [ ] An ordinary transport reconnect during the consenting page lifetime preserves consent and the previously narrowed capture policy but creates a new Journey session ID on first publication; disablement, auth transition, or page/client-runtime replacement requires explicit enablement again.
 - [ ] Browser-runtime tests cover navigation APIs, back/forward and hash changes, focus/visibility, click/submit, keyboard activation, default prevention, stopped propagation, nested/duplicate annotations, open/closed Shadow DOM boundaries, manual override, excluded data, and listener teardown.
 - [ ] Interaction tests prove delegated capture works without React, Preact, Vue, Svelte, SolidJS, Lit, or Inferno event APIs.
 - [ ] Tests prove the same observer works independently of React, Preact, Vue, Svelte, SolidJS, Lit, or Inferno lifecycle APIs, with explicit `journey.set(...)` documented for routers that change view state without browser location or semantic-meta changes.
