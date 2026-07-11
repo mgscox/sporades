@@ -11081,6 +11081,12 @@ Tailwind is loaded from its browser CDN under Sporades' current fixed client-Bun
   };
 }
 `,
+    "client/journey-lifecycle.ts": `export async function retireJourneyConsent({ typingPublisher, journey, setSharing }) {
+  typingPublisher.dispose();
+  await journey.disable();
+  setSharing(false);
+}
+`,
     "client/components/ui/button.tsx": `export function Button({ className = "", ...props }) {
   return <button className={\`rounded-md px-3 py-2 font-semibold focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-50 \${className}\`} {...props} />;
 }
@@ -11105,7 +11111,7 @@ export type CampfireChannel = "general" | "ideas" | "random" | "protect-the-crow
   };
 }
 function campfireServerTemplate(name) {
-  return `import { capsule, mutation, query, String, table } from "sporades/server";
+  return `import { capsule, Json, mutation, query, String, table } from "sporades/server";
 
 const channels = ["general", "ideas", "random", "protect-the-crown"];
 const fixtureNames = { athos: "Athos", porthos: "Porthos", aramis: "Aramis", dartagnan: "d'Artagnan" };
@@ -11116,8 +11122,7 @@ export default capsule({
   schema: {
     channels: table({ slug: String(), name: String() }),
     profiles: table({ userId: String(), key: String(), name: String() }),
-    messages: table({ channel: String(), body: String(), authorId: String(), authorName: String() }),
-    reactions: table({ identity: String(), messageId: String(), userId: String(), kind: String() }),
+    messages: table({ channel: String(), body: String(), authorId: String(), authorName: String(), seedKey: String().default(""), reactions: Json().default({}) }),
   },
   queries: {
     channels: query((ctx) => ctx.db.channels.orderBy("createdAt", "asc").all()),
@@ -11125,7 +11130,6 @@ export default capsule({
     messagesIdeas: query((ctx) => ctx.db.messages.where("channel", "ideas").orderBy("createdAt", "asc").limit(100).all()),
     messagesRandom: query((ctx) => ctx.db.messages.where("channel", "random").orderBy("createdAt", "asc").limit(100).all()),
     messagesProtectTheCrown: query((ctx) => ctx.db.messages.where("channel", "protect-the-crown").orderBy("createdAt", "asc").limit(100).all()),
-    reactions: query((ctx) => ctx.db.reactions.all()),
     profiles: query((ctx) => ctx.db.profiles.all()),
   },
   mutations: {
@@ -11133,10 +11137,10 @@ export default capsule({
       const created = [], alreadyPresent = [], failed = [];
       const ensure = (type, key, exists, create) => { try { if (exists()) alreadyPresent.push({ type, key }); else { create(); created.push({ type, key }); } } catch (error) { failed.push({ type, key, message: error instanceof Error ? error.message : "Unknown seed failure." }); } };
       for (const slug of channels) ensure("channel", slug, () => ctx.db.channels.where("slug", slug).all().length > 0, () => ctx.db.channels.insert({ slug, name: slug }));
-      ensure("message", "general-welcome", () => ctx.db.messages.where("channel", "general").all().length > 0, () => ctx.db.messages.insert({ channel: "general", body: "The Queen requires discretion.", authorId: "fixture:athos", authorName: fixtureNames.athos }));
-      ensure("message", "ideas-welcome", () => ctx.db.messages.where("channel", "ideas").all().length > 0, () => ctx.db.messages.insert({ channel: "ideas", body: "And refreshments.", authorId: "fixture:porthos", authorName: fixtureNames.porthos }));
-      ensure("message", "random-welcome", () => ctx.db.messages.where("channel", "random").all().length > 0, () => ctx.db.messages.insert({ channel: "random", body: "Mostly discretion.", authorId: "fixture:aramis", authorName: fixtureNames.aramis }));
-      ensure("message", "crown-prompt", () => ctx.db.messages.where("channel", "protect-the-crown").all().length > 0, () => ctx.db.messages.insert({ channel: "protect-the-crown", body: "Is the crown adequately protected? \u{1F44D} All for one \xB7 \u{1F44E} One more guard, perhaps", authorId: "fixture:dartagnan", authorName: fixtureNames.dartagnan }));
+      ensure("message", "general-welcome", () => ctx.db.messages.where("seedKey", "general-welcome").all().length > 0, () => ctx.db.messages.insert({ channel: "general", body: "The Queen requires discretion.", authorId: "fixture:athos", authorName: fixtureNames.athos, seedKey: "general-welcome", reactions: {} }));
+      ensure("message", "ideas-welcome", () => ctx.db.messages.where("seedKey", "ideas-welcome").all().length > 0, () => ctx.db.messages.insert({ channel: "ideas", body: "And refreshments.", authorId: "fixture:porthos", authorName: fixtureNames.porthos, seedKey: "ideas-welcome", reactions: {} }));
+      ensure("message", "random-welcome", () => ctx.db.messages.where("seedKey", "random-welcome").all().length > 0, () => ctx.db.messages.insert({ channel: "random", body: "Mostly discretion.", authorId: "fixture:aramis", authorName: fixtureNames.aramis, seedKey: "random-welcome", reactions: {} }));
+      ensure("message", "crown-prompt", () => ctx.db.messages.where("seedKey", "crown-prompt").all().length > 0, () => ctx.db.messages.insert({ channel: "protect-the-crown", body: "Is the crown adequately protected? \u{1F44D} All for one \xB7 \u{1F44E} One more guard, perhaps", authorId: "fixture:dartagnan", authorName: fixtureNames.dartagnan, seedKey: "crown-prompt", reactions: {} }));
       return { created, alreadyPresent, failed };
     }),
     registerFixture: mutation((ctx, key: any) => {
@@ -11149,16 +11153,18 @@ export default capsule({
       if (!channels.includes(channel)) throw new Error("Choose a Campfire channel.");
       if (!body) throw new Error("Write a message before sending.");
       if (body.length > 500) throw new Error("Messages must be 500 characters or fewer.");
-      return ctx.db.messages.insert({ channel, body, authorId: ctx.auth.userId, authorName: ctx.auth.displayName });
+      return ctx.db.messages.insert({ channel, body, authorId: ctx.auth.userId, authorName: ctx.auth.displayName, seedKey: "", reactions: {} });
     }),
     toggleReaction: mutation((ctx, input: any) => {
       const kind = input?.kind;
       if (kind !== "up" && kind !== "down") throw new Error("Choose thumbs up or thumbs down.");
-      if (!ctx.db.messages.where("id", input?.messageId).all().length) throw new Error("Message not found.");
-      const identity = input.messageId + ":" + ctx.auth.userId + ":" + kind;
-      const existing = ctx.db.reactions.where("identity", identity).all()[0];
-      if (existing) { ctx.db.reactions.delete(existing.id); return { active: false }; }
-      ctx.db.reactions.insert({ identity, messageId: input.messageId, userId: ctx.auth.userId, kind });
+      const message = ctx.db.messages.where("id", input?.messageId).all()[0];
+      if (!message) throw new Error("Message not found.");
+      const identity = ctx.auth.userId + ":" + kind;
+      const reactions = { ...(message.reactions ?? {}) };
+      if (reactions[identity]) { delete reactions[identity]; ctx.db.messages.update(message.id, { reactions }); return { active: false }; }
+      reactions[identity] = true;
+      ctx.db.messages.update(message.id, { reactions });
       return { active: true };
     }),
   },
@@ -11184,6 +11190,7 @@ import { Input } from "./components/ui/input";
 import { Separator } from "./components/ui/separator";
 import { ScrollArea } from "./components/ui/scroll-area";
 import { createTypingPublisher } from "./journey-typing";
+import { retireJourneyConsent } from "./journey-lifecycle";
 
 const { useAuth, useMutation, useQuery } = createHooks({ useState, useEffect });
 const musketeers = [
@@ -11205,7 +11212,6 @@ function App() {
   const [typingPublisher] = useState(() => createTypingPublisher((state) => journey.set(state)));
   const messageQuery = { general: "messagesGeneral", ideas: "messagesIdeas", random: "messagesRandom", "protect-the-crown": "messagesProtectTheCrown" }[channel];
   const messages = useQuery(messageQuery);
-  const reactions = useQuery("reactions");
   const profiles = useQuery("profiles");
   const sendMessage = useMutation("sendMessage");
   const toggleReaction = useMutation("toggleReaction");
@@ -11218,6 +11224,7 @@ function App() {
   useEffect(() => () => typingPublisher.dispose(), []);
 
   async function prepareFixtures() {
+    await retireJourneyConsent({ typingPublisher, journey, setSharing });
     setNotice("Preparing development-only fixtures\u2026");
     for (const person of musketeers) {
       const result = await auth.signUp("email", { email: person.email, password: demoPassword, name: person.name });
@@ -11230,7 +11237,7 @@ function App() {
   }
 
   async function switchTo(person) {
-    if (sharing) { await journey.disable(); setSharing(false); }
+    await retireJourneyConsent({ typingPublisher, journey, setSharing });
     await auth.signOut();
     const result = await auth.signIn("email", { email: person.email, password: demoPassword });
     setNotice(result.error ? result.error.message : \`Signed in as \${person.name}. Activity sharing remains off.\`);
@@ -11271,7 +11278,7 @@ function App() {
       <Separator ${klass}="my-8"/><div><Button ${klass}="w-full bg-amber-700" type="button" onClick={prepareFixtures}>Prepare demo fixtures</Button><p ${klass}="mt-2 text-xs text-amber-200/70">Development-only. Never enable known credentials publicly.</p></div>
     </aside>
     <section ${klass}="flex min-h-screen flex-col"><header ${klass}="border-b border-amber-900/40 p-5"><h2 ${klass}="text-xl font-bold"># {channel}</h2><p role="status" ${klass}="text-sm text-amber-300">{notice}</p></header>
-      <ScrollArea ${klass}="flex-1 space-y-4 p-5">{(messages.data ?? []).map((message) => <Message key={message.id} message={message} session={session} toggle={toggleReaction} reactions={reactions.data ?? []} />)}</ScrollArea>
+      <ScrollArea ${klass}="flex-1 space-y-4 p-5">{(messages.data ?? []).map((message) => <Message key={message.id} message={message} session={session} toggle={toggleReaction} />)}</ScrollArea>
       <form ${klass}="border-t border-amber-900/40 p-5" onSubmit={submit}><label ${klass}="sr-only" htmlFor="message">Message</label><div ${klass}="flex gap-2"><Input id="message" maxLength={500} ${klass}="min-w-0 flex-1" value={draft} placeholder={\`Message #\${channel}\`} ${change}={(event) => compose(event.currentTarget.value)} /><Button ${klass}="bg-amber-700" type="submit">Send</Button></div></form>
     </section>
     <aside ${klass}="border-l border-amber-900/40 bg-[#1b120d] p-5"><h2 ${klass}="text-lg font-bold">What's happening</h2><div ${klass}="mt-4"><Switch label="Share my activity" checked={sharing} onChange={(event) => setShare(event.currentTarget.checked)} /></div><p ${klass}="mt-2 text-xs text-amber-200/70">Shares only reading/typing and channel. Never drafts, messages, URLs, query strings, emails, passwords, message IDs, or keystrokes.</p>
@@ -11281,9 +11288,9 @@ function App() {
   </main>;
 }
 
-function Message({ message, session, toggle, reactions }) {
-  const rows = reactions.filter((row) => row.messageId === message.id);
-  return <Card ${klass}="p-4"><div ${klass}="flex items-baseline gap-3"><Avatar label={message.authorName}/><strong>{message.authorName}</strong><time ${klass}="text-xs text-amber-300/60">{new Date(message.createdAt).toLocaleString()}</time></div><p ${klass}="my-3 whitespace-pre-wrap">{message.body}</p><div ${klass}="flex gap-2">{[["up", "\u{1F44D}"], ["down", "\u{1F44E}"]].map(([kind, emoji]) => { const mine = rows.some((row) => row.kind === kind && row.userId === session.auth?.userId); const total = rows.filter((row) => row.kind === kind).length; return <button type="button" aria-label={\`\${kind === "up" ? "Thumbs up" : "Thumbs down"}: \${total}; \${mine ? "active" : "inactive"}\`} aria-pressed={mine} ${klass}="rounded-full border border-amber-800 px-3 py-1" onClick={() => toggle.run({ messageId: message.id, kind })}>{emoji} {total}</button>; })}</div></Card>;
+function Message({ message, session, toggle }) {
+  const reactionKeys = Object.keys(message.reactions ?? {});
+  return <Card ${klass}="p-4"><div ${klass}="flex items-baseline gap-3"><Avatar label={message.authorName}/><strong>{message.authorName}</strong><time ${klass}="text-xs text-amber-300/60">{new Date(message.createdAt).toLocaleString()}</time></div><p ${klass}="my-3 whitespace-pre-wrap">{message.body}</p><div ${klass}="flex gap-2">{[["up", "\u{1F44D}"], ["down", "\u{1F44E}"]].map(([kind, emoji]) => { const mine = reactionKeys.includes(\`\${session.auth?.userId}:\${kind}\`); const total = reactionKeys.filter((key) => key.endsWith(\`:\${kind}\`)).length; return <button type="button" aria-label={\`\${kind === "up" ? "Thumbs up" : "Thumbs down"}: \${total}; \${mine ? "active" : "inactive"}\`} aria-pressed={mine} ${klass}="rounded-full border border-amber-800 px-3 py-1" onClick={() => toggle.run({ messageId: message.id, kind })}>{emoji} {total}</button>; })}</div></Card>;
 }
 
 function applyJourneyEvent(current, event) {

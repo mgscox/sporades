@@ -379,6 +379,24 @@ test("Campfire typing publication is throttled and renewed while input remains a
   });
 });
 
+test("Campfire auth transitions retire Journey consent and typing timers", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "lifecycle-campfire", "--template", "campfire", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr);
+    const source = await readFile(path.join(dir, "lifecycle-campfire", "client/journey-lifecycle.ts"), "utf8");
+    const client = await readFile(path.join(dir, "lifecycle-campfire", "client/index.tsx"), "utf8");
+    const { retireJourneyConsent } = await import(`data:text/javascript,${encodeURIComponent(source)}`);
+    const calls = [];
+    await retireJourneyConsent({
+      typingPublisher: { dispose: () => calls.push("dispose") },
+      journey: { disable: async () => calls.push("disable") },
+      setSharing: (value) => calls.push(`sharing:${value}`),
+    });
+    assert.deepEqual(calls, ["dispose", "disable", "sharing:false"]);
+    assert.equal((client.match(/await retireJourneyConsent/g) ?? []).length, 2, "fixture preparation and identity switching share retirement cleanup");
+  });
+});
+
 test("sporades create writes a minimal React photo library scaffold when requested", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(
