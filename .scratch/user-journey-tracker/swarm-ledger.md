@@ -6,7 +6,7 @@ Baseline at `5bd74f6`: `npm test` passed 596, failed 0, skipped 8.
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 05 | review | 04 done | `af51482` | `codex/user-journey-05-replacement` / `/tmp/sporades-user-journey-swarm/issue-05` | `/root/journey_issue_05` | `7e416fa` | `/root/journey_fix_02` | pending fourth review; all prior SHAs void | pending | RED full DB reopen rejected active consent; focused 44/44; full 602 pass, 0 fail, 8 skipped | pending |
+| 05 | rework | 04 done | `af51482` | `codex/user-journey-05-replacement` / `/tmp/sporades-user-journey-swarm/issue-05` | `/root/journey_issue_05` | `7e416fa` | `/root/journey_fix_02` | REQUEST_CHANGES: permanent capacity exhaustion and non-atomic persistence failure | pending | happy-path restart fixed; reclamation contract and failure-path RED tests required | pending |
 | 06 | blocked | 05 must be merged and integration-green | pending | pending | pending | pending | pending | pending | pending | pending | pending |
 
 ## Preserved abandoned attempt
