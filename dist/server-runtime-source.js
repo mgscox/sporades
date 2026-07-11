@@ -6825,7 +6825,7 @@ export function createWebSocketHub(getDatabase) {
                 auth: summarizeAuthForClientList(client.session.auth),
             }));
         },
-        journeyDiagnostics() { return { disableRequests: journeyDisableRequests }; },
+        journeyDiagnostics() { return { disableRequests: journeyDisableRequests, activeStates: journeys.size }; },
         notifyFileEvent(userId, event) {
             for (const client of clients) {
                 if (client.session.auth.userId !== userId) {

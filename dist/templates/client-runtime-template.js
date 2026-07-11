@@ -167,7 +167,12 @@ function createConnection() {
   const journeySubscriptions = new Map();
   let latestAuthUserId = null;
   let pageRetired = false;
-  window.addEventListener?.("pagehide", () => { pageRetired = true; socket?.close(); }, { once: true });
+  let journeyRetireOwner = null;
+  window.addEventListener?.("pagehide", () => {
+    pageRetired = true;
+    journeyRetireOwner?.();
+    socket?.close();
+  }, { once: true });
 
   function syncSessionTokenFromStorage() {
     const storedToken = localStorage.getItem("sporades.sessionToken");
@@ -338,9 +343,22 @@ function createConnection() {
   function startJourneyCapture(capture) {
     stopJourneyCapture();
     journeyCapture = capture;
-    if (typeof window === "undefined" || typeof document === "undefined") return;
     const ownerKey = Symbol.for("sporades.journey.capture.teardown");
     if (typeof window[ownerKey] === "function" && window[ownerKey].ownerId !== journeyRuntimeOwnerId) window[ownerKey]();
+    const retireOwner = () => {
+      journeyCaptureTeardown?.();
+      journeyCaptureTeardown = null;
+      if (journeyConsentOptions) request("journey.disable").catch?.(() => {});
+      journeyConsentOptions = null;
+      journeyEnabledUserId = null;
+      journeyCapture = null;
+      if (window[ownerKey] === retireOwner) delete window[ownerKey];
+      if (journeyRetireOwner === retireOwner) journeyRetireOwner = null;
+    };
+    retireOwner.ownerId = journeyRuntimeOwnerId;
+    window[ownerKey] = retireOwner;
+    journeyRetireOwner = retireOwner;
+    if (typeof document === "undefined") return;
     const cleanups = [];
     let routeFrame = null;
     const safePage = () => {
@@ -425,17 +443,6 @@ function createConnection() {
     }
     let stopped = false;
     journeyCaptureTeardown = () => { if (stopped) return; stopped = true; for (const cleanup of cleanups.splice(0).reverse()) cleanup(); };
-    const retireOwner = () => {
-      journeyCaptureTeardown?.();
-      journeyCaptureTeardown = null;
-      if (journeyConsentOptions) request("journey.disable").catch?.(() => {});
-      journeyConsentOptions = null;
-      journeyEnabledUserId = null;
-      journeyCapture = null;
-      if (window[ownerKey] === retireOwner) delete window[ownerKey];
-    };
-    retireOwner.ownerId = journeyRuntimeOwnerId;
-    window[ownerKey] = retireOwner;
   }
 
   function createAppMessageStream(predicate = () => true) {

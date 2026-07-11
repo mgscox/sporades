@@ -140,7 +140,13 @@ test("browser SDK automatic reconnect preserves consent but publishes under a ne
       sockets[1].close(); await new Promise((resolve) => setTimeout(resolve, 600)); await eventually(() => sockets.length === 3 && sockets[2].readyState === NativeWebSocket.OPEN);
       assert.equal((await runtime.journey.set({ status: "second-reconnect" })).error, null, "narrowed consent survives a second reconnect");
       assert.equal(journeyDiagnostics().disableRequests, 0, "same-runtime reconnect never sends journey.disable");
-      windowListeners.get("pagehide")?.(); await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(typeof window[Symbol.for("sporades.journey.capture.teardown")], "function");
+      assert.equal(typeof windowListeners.get("pagehide"), "function");
+      windowListeners.get("pagehide")?.(); await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.deepEqual(journeyDiagnostics(), { disableRequests: 1, activeStates: 2 }, "pagehide immediately retires the current connection while prior disconnect buffers keep their TTL");
+      assert.equal(window[Symbol.for("sporades.journey.capture.teardown")], undefined, "page retirement clears local ownership");
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      assert.equal(sockets.length, 3, "page retirement does not reconnect");
     } finally { globalThis.WebSocket = NativeWebSocket; delete globalThis.window; delete globalThis.localStorage; }
   });
 });

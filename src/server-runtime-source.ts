@@ -7580,7 +7580,7 @@ export function createWebSocketHub(getDatabase: () => any) {
         auth: summarizeAuthForClientList(client.session.auth),
       }));
     },
-    journeyDiagnostics() { return { disableRequests: journeyDisableRequests }; },
+    journeyDiagnostics() { return { disableRequests: journeyDisableRequests, activeStates: journeys.size }; },
     notifyFileEvent(userId: any, event: any) {
       for (const client of clients) {
         if (client.session.auth.userId !== userId) {

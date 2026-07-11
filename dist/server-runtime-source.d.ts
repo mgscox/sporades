@@ -1329,6 +1329,7 @@ export declare function createWebSocketHub(getDatabase: () => any): {
     }[];
     journeyDiagnostics(): {
         disableRequests: number;
+        activeStates: number;
     };
     notifyFileEvent(userId: any, event: any): void;
     deliverAuthSession(target: any, sessionData: {
