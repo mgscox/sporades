@@ -256,9 +256,25 @@ transport remain the default application path.
 
 ## Client API
 
-`sporades/client` exports a framework-neutral transport layer, auth,
-current-user preferences and file APIs, app-message helpers, and a `createHooks`
-factory:
+`sporades/client` exports framework-neutral query, mutation, auth, current-user
+preferences and file APIs, app-message helpers, and a `createHooks` factory.
+Vanilla TypeScript clients can use the transport primitives directly:
+
+```ts
+import { auth, mutations, queries } from "sporades/client";
+
+const notes = queries.subscribe("notes", (state) => render(state));
+await mutations.run("addNote", "Ship it");
+const current = await auth.get();
+const authState = auth.subscribe((state) => renderAuth(state));
+
+notes.unsubscribe();
+authState.unsubscribe();
+```
+
+Subscriptions immediately deliver their latest complete state, resubscribe
+after reconnect, and may be unsubscribed more than once safely. React and
+Preact clients can adapt those same primitives with `createHooks`:
 
 ```tsx
 import { useEffect, useState } from "react";

@@ -123,7 +123,7 @@ type StartCapsuleServicesOptions = {
   wait?: boolean;
 };
 
-const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
+const SUPPORTED_FRAMEWORKS = new Set(["react", "preact", "vanilla"]);
 const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
 const DEV_DATABASE_ENV_FILE = path.join(".sporades", "dev-database-env.json");
@@ -384,7 +384,7 @@ function parseCreateArgs(args: string[]): LooseRecord {
     throw commandError("Missing scaffold name.", "Use `sporades create <name>`.");
   }
   if (framework !== null && !SUPPORTED_FRAMEWORKS.has(framework)) {
-    throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact.");
+    throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, vanilla.");
   }
   if (!SUPPORTED_TEMPLATES.has(template)) {
     throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");

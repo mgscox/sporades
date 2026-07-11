@@ -7,6 +7,7 @@ import { validateCapsuleServicesConfig } from "../capsule-services.js";
 import { commandError, errorDetails, type LooseRecord } from "./cli-support.js";
 
 export const SECURITY_SESSIONS = new Set(["dev", "public-dev", "container", "hosted"]);
+const CLIENT_FRAMEWORKS = new Set(["react", "preact", "vanilla"]);
 
 const DEFAULT_CSP_DIRECTIVES = {
   "default-src": ["'self'"],
@@ -54,9 +55,23 @@ export async function readProjectConfig(projectDir: string) {
     throw commandError("Invalid project configuration: sporades.json", "Fix the JSON syntax in sporades.json.");
   }
   validateSecurityConfig(config.security);
+  validateClientConfig(config.client);
   validateSchedulingConfig(config.scheduling);
   validateCapsuleServicesConfig(config.services);
   return config;
+}
+
+export function validateClientConfig(client: LooseRecord) {
+  if (client === undefined) return;
+  if (!client || typeof client !== "object" || Array.isArray(client) || Object.keys(client).some((key) => key !== "framework" && key !== "toolchain")) {
+    throw commandError("Invalid client configuration.", "Set `client.framework` and optional `client.toolchain` in sporades.json.");
+  }
+  if (client.framework !== undefined && !CLIENT_FRAMEWORKS.has(client.framework)) {
+    throw commandError(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, vanilla.");
+  }
+  if (client.toolchain !== undefined && client.toolchain !== "esbuild") {
+    throw commandError(`Unsupported client toolchain: ${client.toolchain}`, "Use `client.toolchain` of `esbuild`.");
+  }
 }
 
 export function validateSchedulingConfig(scheduling: LooseRecord) {

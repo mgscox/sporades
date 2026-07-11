@@ -22,7 +22,7 @@ import { createGithubAutodeployWorkflow } from "./github-autodeploy-workflow.js"
 import { SECURITY_SESSIONS, authorizedKeyFingerprint, readBaseImageUpdatePolicy, readOptionalProjectSecurity, readProjectConfig, resolveAuthorizedKeyLines, resolveEffectiveSecurityPolicy, resolveLocalContainerSshAccess, withRuntimeSecuritySession, } from "./project-config.js";
 import { commandError, errorDetails, writeResult } from "./cli-support.js";
 import { CLI_VERSION } from "./cli-version.js";
-const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
+const SUPPORTED_FRAMEWORKS = new Set(["react", "preact", "vanilla"]);
 const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
 const DEV_DATABASE_ENV_FILE = path.join(".sporades", "dev-database-env.json");
@@ -247,7 +247,7 @@ function parseCreateArgs(args) {
         throw commandError("Missing scaffold name.", "Use `sporades create <name>`.");
     }
     if (framework !== null && !SUPPORTED_FRAMEWORKS.has(framework)) {
-        throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact.");
+        throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, vanilla.");
     }
     if (!SUPPORTED_TEMPLATES.has(template)) {
         throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");

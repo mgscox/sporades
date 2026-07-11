@@ -9,21 +9,21 @@ export function scaffoldFiles(options) {
             react: "^19.0.0",
             "react-dom": "^19.0.0",
         }
-        : {
+        : framework === "preact" ? {
             preact: "^10.25.0",
-        };
+        } : {};
     const frameworkDevDependencies = framework === "react"
         ? {
             "@types/react": "^19.0.0",
             "@types/react-dom": "^19.0.0",
         }
         : {};
-    const templateFiles = templateOptions.files(renderOptions);
+    const templateFiles = framework === "vanilla" ? vanillaTemplateFiles(renderOptions) : templateOptions.files(renderOptions);
     return {
         "sporades.json": `${JSON.stringify({
             name: options.name,
             template: options.template,
-            client: { framework },
+            client: { framework, toolchain: "esbuild" },
             auth: templateOptions.auth,
             security: {
                 cors: {
@@ -51,8 +51,8 @@ export function scaffoldFiles(options) {
                 typescript: "^5.8.0",
             },
         }, null, 2)}\n`,
-        "AGENTS.md": agentsTemplate(options.template),
-        "CLAUDE.md": agentsTemplate(options.template),
+        "AGENTS.md": agentsTemplate(options.template, framework),
+        "CLAUDE.md": agentsTemplate(options.template, framework),
         ".gitignore": "node_modules/\n.sporades/\n.env*.local\n",
         ".env.sporades.server": templateOptions.serverEnv,
         "index.html": `<!doctype html>
@@ -71,6 +71,51 @@ export function scaffoldFiles(options) {
 `,
         ...templateFiles,
     };
+}
+function vanillaTemplateFiles(options) {
+    return {
+        "README.md": `# ${options.name}\n\nA framework-neutral Vanilla TypeScript Sporades capsule.\n`,
+        "server/index.ts": `import { capsule, message, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: ${JSON.stringify(options.name)},
+  journey: { enabled: true },
+  schema: { notes: table({ text: String(), ownerId: String() }) },
+  queries: { notes: query((ctx) => ctx.db.notes.where("ownerId", ctx.auth.userId).orderBy("createdAt", "desc").all()) },
+  mutations: { addNote: mutation((ctx, text: string) => ctx.db.notes.insert({ text: text.trim(), ownerId: ctx.auth.userId })) },
+  messages: { ping: message((ctx, data) => {
+    const sentToClients = ctx.messages.send({ type: "pong", data, scope: "currentUser" });
+    return { pong: data ?? null, sentToClients };
+  }) },
+});
+`,
+        "client/index.ts": vanillaClientTemplate(),
+        "shared/types.ts": `export type Note = { id: string; text: string; createdAt: string };\n`,
+    };
+}
+function vanillaClientTemplate() {
+    return `import { auth, files, journey, mutations, onMessage, preferences, queries, sendMessage } from "sporades/client";
+import type { Note } from "../shared/types";
+
+const app = document.querySelector<HTMLElement>("#app")!;
+app.innerHTML = \`<main><h1>Vanilla Sporades</h1><p id="auth">Loading auth…</p><form id="notes"><input name="text" required /><button>Add note</button></form><ul id="list"></ul><label>Theme <select id="theme"><option>system</option><option>dark</option></select></label><input id="file" type="file" /><button id="ping">Ping app message</button><button id="journey">Share activity</button><pre id="status"></pre></main>\`;
+
+const status = document.querySelector<HTMLElement>("#status")!;
+const notes = queries.subscribe<Note[]>("notes", (state) => {
+  document.querySelector<HTMLElement>("#list")!.innerHTML = state.loading ? "<li>Loading…</li>" : state.error ? \`<li>\${state.error.message}</li>\` : (state.data ?? []).map((note) => \`<li>\${note.text}</li>\`).join("");
+});
+auth.get().then((result) => { if (result.error) status.textContent = result.error.message; });
+const authState = auth.subscribe((state) => { document.querySelector<HTMLElement>("#auth")!.textContent = state.loading ? "Loading auth…" : \`\${state.auth?.displayName ?? "Anonymous"} · \${state.auth?.provider ?? "anonymous"}\`; });
+document.querySelector<HTMLFormElement>("#notes")!.addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await mutations.run("addNote", globalThis.String(form.get("text") ?? "")); event.currentTarget.reset(); });
+preferences.get().then((result) => { if (result.data?.preferences.theme) (document.querySelector("#theme") as HTMLSelectElement).value = globalThis.String(result.data.preferences.theme); });
+document.querySelector<HTMLSelectElement>("#theme")!.addEventListener("change", (event) => { preferences.update({ theme: (event.currentTarget as HTMLSelectElement).value }); });
+document.querySelector<HTMLInputElement>("#file")!.addEventListener("change", async (event) => { const file = (event.currentTarget as HTMLInputElement).files?.[0]; if (file) status.textContent = \`Uploaded \${(await files.upload(file)).name}\`; });
+const messages = onMessage((message) => { status.textContent = \`Message: \${message.type}\`; });
+document.querySelector("#ping")!.addEventListener("click", () => sendMessage("ping", { from: "vanilla" }));
+const journeyEvents = journey.subscribe((event) => { status.textContent = \`Journey: \${event.type}\`; });
+document.querySelector("#journey")!.addEventListener("click", async () => { await journey.enable(); await journey.set({ status: "exploring-vanilla" }); });
+window.addEventListener("pagehide", () => { notes.unsubscribe(); authState.unsubscribe(); messages.unsubscribe(); journeyEvents.unsubscribe(); journey.disable(); }, { once: true });
+`;
 }
 function resolveTemplateOptions(template) {
     switch (template) {
@@ -1512,24 +1557,26 @@ const styles = \`
 \`;
 `;
 }
-function agentsTemplate(template) {
+function agentsTemplate(template, framework) {
+    const vanilla = framework === "vanilla";
     return `# Sporades App Instructions
 
 This directory is for a Sporades app. Sporades is a CLI-first tool for building and running full-stack web apps.
 
 Template: ${template}
+Client framework: ${framework}
 
 ## Rules
 
 - Server code goes in \`server/\`, client code in \`client/\`, shared code in \`shared/\`.
 - Use \`sporades/server\` only from \`server/*.ts\`.
-- Use \`sporades/client\` only from \`client/*.tsx\`.
+- Use \`sporades/client\` only from \`client/*.${vanilla ? "ts" : "tsx"}\`.
 - Data is accessed through queries. Changes go through mutations.
 - Use endpoints only for HTTP integrations that cannot use queries, mutations, or app messages.
 - No file-based routing. Use the router included in the scaffold template.
 - All imports must be from Sporades, the configured framework, or relative paths.
 - Do not use Node built-ins in client code.
-- Auth is available via \`ctx.auth\` on the server, \`useAuth()\` on the client.
+- Auth is available via \`ctx.auth\` on the server, ${vanilla ? "`auth.get()` and `auth.subscribe()` in the framework-neutral client" : "`useAuth()` on the client"}.
 - Server env vars: define in \`.env.sporades.server\`, access via \`ctx.env\`.
 - Keep \`shared/\` free of DOM, Node, env, and Sporades runtime imports.
 
@@ -1546,7 +1593,7 @@ sporades db dump
 ## Structure
 
 - \`server/index.ts\` - schema, queries, mutations
-- \`client/index.tsx\` - UI entrypoint
+- \`client/index.${vanilla ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : "UI entrypoint"}
 - \`shared/\` - pure TypeScript shared by client and server
 - \`index.html\` - HTML shell (user-owned)
 - \`sporades.json\` - project configuration

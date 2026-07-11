@@ -2708,6 +2708,54 @@ test("sporades dev streams rebuild success events and serves the rebuilt client 
   });
 });
 
+test("sporades dev builds and rebuilds the Vanilla TypeScript client without framework dependencies", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(
+      ["create", "vanilla-island", "--template", "blank", "--framework", "vanilla", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "vanilla-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      const firstBundle = await (await fetch(`${started.data.url}/client.js`)).text();
+      assert.match(firstBundle, /Vanilla Sporades/);
+      assert.doesNotMatch(firstBundle, /react-dom|preact\/hooks/);
+
+      const clientPath = path.join(projectDir, "client", "index.ts");
+      const originalClient = await readFile(clientPath, "utf8");
+      await writeFile(clientPath, originalClient.replace("Vanilla Sporades", "Rebuilt Vanilla Sporades"));
+      const rebuilt = await waitForJsonEvent(
+        child,
+        (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success",
+      );
+      assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "vanilla", toolchain: "esbuild" });
+      assert.match(await (await fetch(`${started.data.url}/client.js`)).text(), /Rebuilt Vanilla Sporades/);
+
+      await rm(clientPath);
+      const failed = await waitForJsonEvent(
+        child,
+        (event) => !event.ok && event.data.event === "rebuild" && event.data.status === "failed",
+      );
+      assert.match(failed.error.message, /Missing client entry: client\/index\.ts/);
+      assert.deepEqual(failed.data.build, { phase: "client", framework: "vanilla", toolchain: "esbuild" });
+      assert.doesNotMatch(JSON.stringify(failed), /SECRET_TOKEN|server-only/);
+      assert.match(await (await fetch(`${started.data.url}/client.js`)).text(), /Rebuilt Vanilla Sporades/);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev keeps existing WebSocket clients connected across client-only rebuilds", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

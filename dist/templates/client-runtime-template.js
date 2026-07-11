@@ -14,6 +14,18 @@ export function onMessage(listener) {
   return connect().onMessage(listener);
 }
 
+export const queries = {
+  subscribe(name, listener) {
+    return connect().subscribeQuery(name, listener);
+  },
+};
+
+export const mutations = {
+  run(name, ...args) {
+    return connect().mutate(name, args);
+  },
+};
+
 export const preferences = {
   get() {
     return connect().getPreferences();
@@ -32,6 +44,12 @@ export const journey = {
 };
 
 export const auth = {
+  get() {
+    return connect().auth();
+  },
+  subscribe(listener) {
+    return connect().subscribeAuth(listener);
+  },
   signUp(provider, credentials) {
     return connect().signUp(provider, credentials);
   },
@@ -71,13 +89,7 @@ export function createHooks(primitives) {
     const [state, setState] = useState({ data: null, error: null, loading: true });
 
     useEffect(() => {
-      const subscription = connect().subscribe(name, (message) => {
-        setState({
-          data: message.data ?? null,
-          error: message.error ?? null,
-          loading: false,
-        });
-      });
+      const subscription = queries.subscribe(name, setState);
       return () => subscription.unsubscribe();
     }, [name]);
 
@@ -91,7 +103,7 @@ export function createHooks(primitives) {
       ...state,
       async run(...args) {
         setState({ error: null, loading: true });
-        const result = await connect().mutate(name, args);
+        const result = await mutations.run(name, ...args);
         setState({ error: result.error ?? null, loading: false });
         return result;
       },
@@ -103,15 +115,9 @@ export function createHooks(primitives) {
 
     useEffect(() => {
       let active = true;
-      const connection = connect();
-      const subscription = connection.onAuthState((result) => {
-        if (!active) return;
-        setState({
-          auth: result.data?.auth ?? null,
-          providers: result.data?.providers ?? {},
-          loading: false,
-          error: result.error ?? null,
-        });
+      const subscription = auth.subscribe((result) => {
+        if (!active || result.loading) return;
+        setState(result);
       });
       return () => {
         active = false;
@@ -157,6 +163,7 @@ function createConnection() {
   let sessionToken = localStorage.getItem("sporades.sessionToken");
   const pending = new Map();
   const subscriptions = new Map();
+  const queryChannels = new Map();
   const appMessageListeners = new Set();
   const authStateListeners = new Set();
   let latestAuthMessage = null;
@@ -231,7 +238,13 @@ function createConnection() {
         return;
       }
       if (message.type === "query.result" && subscriptions.has(message.id)) {
-        subscriptions.get(message.id).listener(message);
+        const subscription = subscriptions.get(message.id);
+        subscription.latest = {
+          data: message.data ?? null,
+          error: message.error ?? null,
+          loading: false,
+        };
+        for (const listener of subscription.listeners) listener(subscription.latest);
         return;
       }
       if (message.type === "app.message") {
@@ -488,6 +501,20 @@ function createConnection() {
         },
       };
     },
+    subscribeAuth(listener) {
+      if (typeof listener !== "function") throw new TypeError("auth.subscribe requires a listener function.");
+      const wrapped = (message) => listener({
+        auth: message.data?.auth ?? null,
+        providers: message.data?.providers ?? {},
+        loading: false,
+        error: message.error ?? null,
+      });
+      authStateListeners.add(wrapped);
+      if (latestAuthMessage) wrapped(latestAuthMessage);
+      else listener({ auth: null, providers: {}, loading: true, error: null });
+      let active = true;
+      return { unsubscribe() { if (!active) return; active = false; authStateListeners.delete(wrapped); } };
+    },
     signUp(provider, credentials) {
       return request("auth.signUp", { provider, credentials }).then((result) => {
         if (result.data?.sessionToken) {
@@ -528,16 +555,30 @@ function createConnection() {
         return result;
       });
     },
-    subscribe(name, listener) {
-      const id = nextId++;
-      const subscription = { id, name, listener };
-      subscriptions.set(id, subscription);
-      send({ id, type: "query.subscribe", query: name });
-      return {
-        unsubscribe() {
-          subscriptions.delete(id);
-        },
-      };
+    subscribeQuery(name, listener) {
+      if (typeof name !== "string" || !name) throw new TypeError("queries.subscribe requires a query name.");
+      if (typeof listener !== "function") throw new TypeError("queries.subscribe requires a listener function.");
+      let subscription = queryChannels.get(name);
+      if (!subscription) {
+        const id = nextId++;
+        subscription = { id, name, listeners: new Set(), latest: null };
+        queryChannels.set(name, subscription);
+        subscriptions.set(id, subscription);
+        const activeSocket = open();
+        if (activeSocket.readyState === WebSocket.OPEN) send({ id, type: "query.subscribe", query: name });
+      }
+      subscription.listeners.add(listener);
+      listener(subscription.latest ?? { data: null, error: null, loading: true });
+      let active = true;
+      return { unsubscribe() {
+        if (!active) return;
+        active = false;
+        subscription.listeners.delete(listener);
+        if (subscription.listeners.size === 0) {
+          queryChannels.delete(name);
+          subscriptions.delete(subscription.id);
+        }
+      } };
     },
     mutate(name, args) {
       return request("mutation.run", { mutation: name, args });

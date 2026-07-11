@@ -4,7 +4,7 @@ const HELP_TEXT = {
 Scaffold a new Capsule.
 
 Options:
-  --framework <name>  Client framework: react or preact
+  --framework <name>  Client framework: react, preact, or vanilla
   --template <name>   Template: blank, todo, guestbook, photo-library, or campfire
   --no-install        Skip npm install
   --no-git            Skip git initialization

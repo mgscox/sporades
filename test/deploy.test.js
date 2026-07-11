@@ -733,6 +733,30 @@ test("sporades deploy --json bundles and starts a container session", async () =
   });
 });
 
+test("sporades deploy assembles a Vanilla TypeScript release without leaking Server env", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(
+      ["create", "vanilla-release", "--template", "blank", "--framework", "vanilla", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "vanilla-release"));
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "SECRET_TOKEN=vanilla-server-only\n");
+    const docker = await installFakeDocker(dir, "vanilla-container");
+    const deployResult = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+
+    const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
+    assert.equal(binding.clientRelease.framework, "vanilla");
+    assert.equal(binding.clientRelease.toolchain, "esbuild");
+    assert.deepEqual(binding.clientRelease.paths, ["client.js", "client.js.map", "index.html"]);
+    const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
+    assert.match(clientBundle, /Vanilla Sporades/);
+    assert.doesNotMatch(clientBundle, /vanilla-server-only|SECRET_TOKEN/);
+  });
+});
+
 test("sporades deploy does not require changing local runtime data ownership", async (t) => {
   if (process.getuid?.() === 0) {
     t.skip("root does not exercise the normal local non-root container user");

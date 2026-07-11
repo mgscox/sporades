@@ -331,6 +331,18 @@ export function onMessage(listener) {
   return connect().onMessage(listener);
 }
 
+export const queries = {
+  subscribe(name, listener) {
+    return connect().subscribeQuery(name, listener);
+  },
+};
+
+export const mutations = {
+  run(name, ...args) {
+    return connect().mutate(name, args);
+  },
+};
+
 export const preferences = {
   get() {
     return connect().getPreferences();
@@ -349,6 +361,12 @@ export const journey = {
 };
 
 export const auth = {
+  get() {
+    return connect().auth();
+  },
+  subscribe(listener) {
+    return connect().subscribeAuth(listener);
+  },
   signUp(provider, credentials) {
     return connect().signUp(provider, credentials);
   },
@@ -388,13 +406,7 @@ export function createHooks(primitives) {
     const [state, setState] = useState({ data: null, error: null, loading: true });
 
     useEffect(() => {
-      const subscription = connect().subscribe(name, (message) => {
-        setState({
-          data: message.data ?? null,
-          error: message.error ?? null,
-          loading: false,
-        });
-      });
+      const subscription = queries.subscribe(name, setState);
       return () => subscription.unsubscribe();
     }, [name]);
 
@@ -408,7 +420,7 @@ export function createHooks(primitives) {
       ...state,
       async run(...args) {
         setState({ error: null, loading: true });
-        const result = await connect().mutate(name, args);
+        const result = await mutations.run(name, ...args);
         setState({ error: result.error ?? null, loading: false });
         return result;
       },
@@ -420,15 +432,9 @@ export function createHooks(primitives) {
 
     useEffect(() => {
       let active = true;
-      const connection = connect();
-      const subscription = connection.onAuthState((result) => {
-        if (!active) return;
-        setState({
-          auth: result.data?.auth ?? null,
-          providers: result.data?.providers ?? {},
-          loading: false,
-          error: result.error ?? null,
-        });
+      const subscription = auth.subscribe((result) => {
+        if (!active || result.loading) return;
+        setState(result);
       });
       return () => {
         active = false;
@@ -474,6 +480,7 @@ function createConnection() {
   let sessionToken = localStorage.getItem("sporades.sessionToken");
   const pending = new Map();
   const subscriptions = new Map();
+  const queryChannels = new Map();
   const appMessageListeners = new Set();
   const authStateListeners = new Set();
   let latestAuthMessage = null;
@@ -548,7 +555,13 @@ function createConnection() {
         return;
       }
       if (message.type === "query.result" && subscriptions.has(message.id)) {
-        subscriptions.get(message.id).listener(message);
+        const subscription = subscriptions.get(message.id);
+        subscription.latest = {
+          data: message.data ?? null,
+          error: message.error ?? null,
+          loading: false,
+        };
+        for (const listener of subscription.listeners) listener(subscription.latest);
         return;
       }
       if (message.type === "app.message") {
@@ -805,6 +818,20 @@ function createConnection() {
         },
       };
     },
+    subscribeAuth(listener) {
+      if (typeof listener !== "function") throw new TypeError("auth.subscribe requires a listener function.");
+      const wrapped = (message) => listener({
+        auth: message.data?.auth ?? null,
+        providers: message.data?.providers ?? {},
+        loading: false,
+        error: message.error ?? null,
+      });
+      authStateListeners.add(wrapped);
+      if (latestAuthMessage) wrapped(latestAuthMessage);
+      else listener({ auth: null, providers: {}, loading: true, error: null });
+      let active = true;
+      return { unsubscribe() { if (!active) return; active = false; authStateListeners.delete(wrapped); } };
+    },
     signUp(provider, credentials) {
       return request("auth.signUp", { provider, credentials }).then((result) => {
         if (result.data?.sessionToken) {
@@ -845,16 +872,30 @@ function createConnection() {
         return result;
       });
     },
-    subscribe(name, listener) {
-      const id = nextId++;
-      const subscription = { id, name, listener };
-      subscriptions.set(id, subscription);
-      send({ id, type: "query.subscribe", query: name });
-      return {
-        unsubscribe() {
-          subscriptions.delete(id);
-        },
-      };
+    subscribeQuery(name, listener) {
+      if (typeof name !== "string" || !name) throw new TypeError("queries.subscribe requires a query name.");
+      if (typeof listener !== "function") throw new TypeError("queries.subscribe requires a listener function.");
+      let subscription = queryChannels.get(name);
+      if (!subscription) {
+        const id = nextId++;
+        subscription = { id, name, listeners: new Set(), latest: null };
+        queryChannels.set(name, subscription);
+        subscriptions.set(id, subscription);
+        const activeSocket = open();
+        if (activeSocket.readyState === WebSocket.OPEN) send({ id, type: "query.subscribe", query: name });
+      }
+      subscription.listeners.add(listener);
+      listener(subscription.latest ?? { data: null, error: null, loading: true });
+      let active = true;
+      return { unsubscribe() {
+        if (!active) return;
+        active = false;
+        subscription.listeners.delete(listener);
+        if (subscription.listeners.size === 0) {
+          queryChannels.delete(name);
+          subscriptions.delete(subscription.id);
+        }
+      } };
     },
     mutate(name, args) {
       return request("mutation.run", { mutation: name, args });
@@ -10975,23 +11016,39 @@ function publicTreeError(message, hint, diagnostics) {
 // src/bundle-pipeline.ts
 var FRAMEWORK_BUNDLE_CONFIG = {
   react: {
+    framework: "react",
+    entry: "index.tsx",
+    loader: "tsx",
     jsxImportSource: "react",
     jsxRuntimeImport: "react/jsx-runtime"
   },
   preact: {
+    framework: "preact",
+    entry: "index.tsx",
+    loader: "tsx",
     jsxImportSource: "preact",
     jsxRuntimeImport: "preact/jsx-runtime"
+  },
+  vanilla: {
+    framework: "vanilla",
+    entry: "index.ts",
+    loader: "ts",
+    jsxImportSource: null,
+    jsxRuntimeImport: null
   }
 };
 var SUPPORTED_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "google", "email"]);
 async function createBundle(projectDir, config, options = {}) {
+  if ((config.client?.toolchain ?? "esbuild") !== "esbuild") {
+    throw commandError2(`Unsupported client toolchain: ${config.client?.toolchain}`, "Use `client.toolchain` of `esbuild`.");
+  }
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
   const buildDir = path3.join(projectDir, ".sporades", "build");
   await mkdir3(buildDir, { recursive: true });
   const paths = {
     config: path3.join(projectDir, "sporades.json"),
     serverEntry: path3.join(projectDir, "server", "index.ts"),
-    clientEntry: path3.join(projectDir, "client", "index.tsx"),
+    clientEntry: path3.join(projectDir, "client", frameworkBundleConfig.entry),
     indexHtml: path3.join(projectDir, "index.html"),
     serverEnv: path3.join(projectDir, ".env.sporades.server"),
     serverBundle: path3.join(buildDir, "server.mjs"),
@@ -11004,26 +11061,26 @@ async function createBundle(projectDir, config, options = {}) {
   validateAuthConfig(config, serverEnv);
   const [serverSource, clientSource, indexHtml] = await Promise.all([
     readRequiredFile(paths.serverEntry, "Missing capsule entry: server/index.ts", "Run `sporades create` to scaffold a new project.").catch((error) => {
-      throw tagBuildError(error, "server", frameworkBundleConfig.jsxImportSource);
+      throw tagBuildError(error, "server", frameworkBundleConfig.framework);
     }),
-    readRequiredFile(paths.clientEntry, "Missing client entry: client/index.tsx", "Run `sporades create` to scaffold a new project.").catch((error) => {
-      throw tagBuildError(error, "client", frameworkBundleConfig.jsxImportSource);
+    readRequiredFile(paths.clientEntry, `Missing client entry: client/${frameworkBundleConfig.entry}`, "Run `sporades create` to scaffold a new project.").catch((error) => {
+      throw tagBuildError(error, "client", frameworkBundleConfig.framework);
     }),
     readRequiredFile(paths.indexHtml, "Missing HTML shell: index.html", "Restore index.html or run `sporades create`.").catch((error) => {
-      throw tagBuildError(error, "client", frameworkBundleConfig.jsxImportSource);
+      throw tagBuildError(error, "client", frameworkBundleConfig.framework);
     })
   ]);
   const serverCapsuleModule = await bundleServerCapsuleModule({
     serverSource,
     serverSourcePath: paths.serverEntry
   }).catch((error) => {
-    throw tagBuildError(error, "server", frameworkBundleConfig.jsxImportSource);
+    throw tagBuildError(error, "server", frameworkBundleConfig.framework);
   });
   const clientOutput = await bundleClientSource(clientSource, {
     clientSourcePath: paths.clientEntry,
     frameworkBundleConfig
   }).catch((error) => {
-    throw tagBuildError(error, "client", frameworkBundleConfig.jsxImportSource);
+    throw tagBuildError(error, "client", frameworkBundleConfig.framework);
   });
   const clientBundle = clientOutput.clientBundle;
   const serverBundle = createServerBundleSource({
@@ -11037,7 +11094,7 @@ async function createBundle(projectDir, config, options = {}) {
     { path: "index.html", contents: indexHtml },
     ...clientOutput.publicFiles
   ]).catch((error) => {
-    throw tagBuildError(error, "public", frameworkBundleConfig.jsxImportSource);
+    throw tagBuildError(error, "public", frameworkBundleConfig.framework);
   });
   const legacyFiles = [
     { target: paths.serverBundle, contents: serverBundle },
@@ -11046,7 +11103,7 @@ async function createBundle(projectDir, config, options = {}) {
   let legacyPublished = false;
   const publishLegacy = async () => {
     if (legacyPublished) {
-      throw tagBuildError(new Error("Legacy Bundles are already published."), "publish", frameworkBundleConfig.jsxImportSource);
+      throw tagBuildError(new Error("Legacy Bundles are already published."), "publish", frameworkBundleConfig.framework);
     }
     let previous;
     const activeTreePath = path3.join(buildDir, ".public-trees", "active.json");
@@ -11079,7 +11136,7 @@ async function createBundle(projectDir, config, options = {}) {
       }
       legacyPublished = true;
     } catch (error) {
-      throw tagBuildError(error, "publish", frameworkBundleConfig.jsxImportSource);
+      throw tagBuildError(error, "publish", frameworkBundleConfig.framework);
     }
     return async () => {
       try {
@@ -11428,7 +11485,7 @@ async function readRequiredFile(filePath, message, hint) {
 }
 function readFrameworkBundleConfig(framework) {
   if (typeof framework !== "string" || !(framework in FRAMEWORK_BUNDLE_CONFIG)) {
-    throw commandError2(`Unsupported framework: ${framework}`, "Use one of: react, preact.");
+    throw commandError2(`Unsupported framework: ${framework}`, "Use one of: react, preact, vanilla.");
   }
   return FRAMEWORK_BUNDLE_CONFIG[framework];
 }
@@ -11460,24 +11517,27 @@ async function bundleClientSource(clientSource, options) {
         ".woff2": "file"
       },
       jsx: "automatic",
-      jsxImportSource: options.frameworkBundleConfig.jsxImportSource,
+      ...options.frameworkBundleConfig.jsxImportSource ? { jsxImportSource: options.frameworkBundleConfig.jsxImportSource } : {},
       stdin: {
         contents: clientSource,
         sourcefile: options.clientSourcePath,
         resolveDir: path3.dirname(options.clientSourcePath),
-        loader: "tsx"
+        loader: options.frameworkBundleConfig.loader
       },
       plugins: [sporadesClientPlugin()]
     });
     const outputs = result.outputFiles ?? [];
     const clientOutput = outputs.find((output) => path3.relative(outputDir, output.path) === "client.js");
     if (!clientOutput) {
-      throw commandError2("Client bundle failed: esbuild returned no output.", "Fix client/index.tsx and save again.");
+      throw commandError2("Client bundle failed: esbuild returned no output.", `Fix client/${options.frameworkBundleConfig.entry} and save again.`);
     }
     const clientBundle = [
       "// Sporades client bundle",
-      `// JSX import source: ${options.frameworkBundleConfig.jsxImportSource}`,
-      `// JSX runtime import: ${options.frameworkBundleConfig.jsxRuntimeImport}`,
+      `// Client framework: ${options.frameworkBundleConfig.framework}`,
+      ...options.frameworkBundleConfig.jsxImportSource ? [
+        `// JSX import source: ${options.frameworkBundleConfig.jsxImportSource}`,
+        `// JSX runtime import: ${options.frameworkBundleConfig.jsxRuntimeImport}`
+      ] : [],
       'console.log("Sporades client bundle loaded");',
       "",
       clientOutput.text
@@ -11492,7 +11552,7 @@ async function bundleClientSource(clientSource, options) {
     };
   } catch (error) {
     const message = bundleErrorMessage(error);
-    throw commandError2(`Client bundle failed: ${message}`, "Fix client/index.tsx and save again.");
+    throw commandError2(`Client bundle failed: ${message}`, `Fix client/${options.frameworkBundleConfig.entry} and save again.`);
   }
 }
 function sporadesClientPlugin() {
@@ -11674,20 +11734,20 @@ function scaffoldFiles(options) {
   const frameworkDependencies = framework === "react" ? {
     react: "^19.0.0",
     "react-dom": "^19.0.0"
-  } : {
+  } : framework === "preact" ? {
     preact: "^10.25.0"
-  };
+  } : {};
   const frameworkDevDependencies = framework === "react" ? {
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0"
   } : {};
-  const templateFiles = templateOptions.files(renderOptions);
+  const templateFiles = framework === "vanilla" ? vanillaTemplateFiles(renderOptions) : templateOptions.files(renderOptions);
   return {
     "sporades.json": `${JSON.stringify(
       {
         name: options.name,
         template: options.template,
-        client: { framework },
+        client: { framework, toolchain: "esbuild" },
         auth: templateOptions.auth,
         security: {
           cors: {
@@ -11724,8 +11784,8 @@ function scaffoldFiles(options) {
       2
     )}
 `,
-    "AGENTS.md": agentsTemplate(options.template),
-    "CLAUDE.md": agentsTemplate(options.template),
+    "AGENTS.md": agentsTemplate(options.template, framework),
+    "CLAUDE.md": agentsTemplate(options.template, framework),
     ".gitignore": "node_modules/\n.sporades/\n.env*.local\n",
     ".env.sporades.server": templateOptions.serverEnv,
     "index.html": `<!doctype html>
@@ -11744,6 +11804,55 @@ function scaffoldFiles(options) {
 `,
     ...templateFiles
   };
+}
+function vanillaTemplateFiles(options) {
+  return {
+    "README.md": `# ${options.name}
+
+A framework-neutral Vanilla TypeScript Sporades capsule.
+`,
+    "server/index.ts": `import { capsule, message, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: ${JSON.stringify(options.name)},
+  journey: { enabled: true },
+  schema: { notes: table({ text: String(), ownerId: String() }) },
+  queries: { notes: query((ctx) => ctx.db.notes.where("ownerId", ctx.auth.userId).orderBy("createdAt", "desc").all()) },
+  mutations: { addNote: mutation((ctx, text: string) => ctx.db.notes.insert({ text: text.trim(), ownerId: ctx.auth.userId })) },
+  messages: { ping: message((ctx, data) => {
+    const sentToClients = ctx.messages.send({ type: "pong", data, scope: "currentUser" });
+    return { pong: data ?? null, sentToClients };
+  }) },
+});
+`,
+    "client/index.ts": vanillaClientTemplate(),
+    "shared/types.ts": `export type Note = { id: string; text: string; createdAt: string };
+`
+  };
+}
+function vanillaClientTemplate() {
+  return `import { auth, files, journey, mutations, onMessage, preferences, queries, sendMessage } from "sporades/client";
+import type { Note } from "../shared/types";
+
+const app = document.querySelector<HTMLElement>("#app")!;
+app.innerHTML = \`<main><h1>Vanilla Sporades</h1><p id="auth">Loading auth\u2026</p><form id="notes"><input name="text" required /><button>Add note</button></form><ul id="list"></ul><label>Theme <select id="theme"><option>system</option><option>dark</option></select></label><input id="file" type="file" /><button id="ping">Ping app message</button><button id="journey">Share activity</button><pre id="status"></pre></main>\`;
+
+const status = document.querySelector<HTMLElement>("#status")!;
+const notes = queries.subscribe<Note[]>("notes", (state) => {
+  document.querySelector<HTMLElement>("#list")!.innerHTML = state.loading ? "<li>Loading\u2026</li>" : state.error ? \`<li>\${state.error.message}</li>\` : (state.data ?? []).map((note) => \`<li>\${note.text}</li>\`).join("");
+});
+auth.get().then((result) => { if (result.error) status.textContent = result.error.message; });
+const authState = auth.subscribe((state) => { document.querySelector<HTMLElement>("#auth")!.textContent = state.loading ? "Loading auth\u2026" : \`\${state.auth?.displayName ?? "Anonymous"} \xB7 \${state.auth?.provider ?? "anonymous"}\`; });
+document.querySelector<HTMLFormElement>("#notes")!.addEventListener("submit", async (event) => { event.preventDefault(); const form = new FormData(event.currentTarget); await mutations.run("addNote", globalThis.String(form.get("text") ?? "")); event.currentTarget.reset(); });
+preferences.get().then((result) => { if (result.data?.preferences.theme) (document.querySelector("#theme") as HTMLSelectElement).value = globalThis.String(result.data.preferences.theme); });
+document.querySelector<HTMLSelectElement>("#theme")!.addEventListener("change", (event) => { preferences.update({ theme: (event.currentTarget as HTMLSelectElement).value }); });
+document.querySelector<HTMLInputElement>("#file")!.addEventListener("change", async (event) => { const file = (event.currentTarget as HTMLInputElement).files?.[0]; if (file) status.textContent = \`Uploaded \${(await files.upload(file)).name}\`; });
+const messages = onMessage((message) => { status.textContent = \`Message: \${message.type}\`; });
+document.querySelector("#ping")!.addEventListener("click", () => sendMessage("ping", { from: "vanilla" }));
+const journeyEvents = journey.subscribe((event) => { status.textContent = \`Journey: \${event.type}\`; });
+document.querySelector("#journey")!.addEventListener("click", async () => { await journey.enable(); await journey.set({ status: "exploring-vanilla" }); });
+window.addEventListener("pagehide", () => { notes.unsubscribe(); authState.unsubscribe(); messages.unsubscribe(); journeyEvents.unsubscribe(); journey.disable(); }, { once: true });
+`;
 }
 function resolveTemplateOptions(template) {
   switch (template) {
@@ -13191,24 +13300,26 @@ const styles = \`
 \`;
 `;
 }
-function agentsTemplate(template) {
+function agentsTemplate(template, framework) {
+  const vanilla = framework === "vanilla";
   return `# Sporades App Instructions
 
 This directory is for a Sporades app. Sporades is a CLI-first tool for building and running full-stack web apps.
 
 Template: ${template}
+Client framework: ${framework}
 
 ## Rules
 
 - Server code goes in \`server/\`, client code in \`client/\`, shared code in \`shared/\`.
 - Use \`sporades/server\` only from \`server/*.ts\`.
-- Use \`sporades/client\` only from \`client/*.tsx\`.
+- Use \`sporades/client\` only from \`client/*.${vanilla ? "ts" : "tsx"}\`.
 - Data is accessed through queries. Changes go through mutations.
 - Use endpoints only for HTTP integrations that cannot use queries, mutations, or app messages.
 - No file-based routing. Use the router included in the scaffold template.
 - All imports must be from Sporades, the configured framework, or relative paths.
 - Do not use Node built-ins in client code.
-- Auth is available via \`ctx.auth\` on the server, \`useAuth()\` on the client.
+- Auth is available via \`ctx.auth\` on the server, ${vanilla ? "`auth.get()` and `auth.subscribe()` in the framework-neutral client" : "`useAuth()` on the client"}.
 - Server env vars: define in \`.env.sporades.server\`, access via \`ctx.env\`.
 - Keep \`shared/\` free of DOM, Node, env, and Sporades runtime imports.
 
@@ -13225,7 +13336,7 @@ sporades db dump
 ## Structure
 
 - \`server/index.ts\` - schema, queries, mutations
-- \`client/index.tsx\` - UI entrypoint
+- \`client/index.${vanilla ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : "UI entrypoint"}
 - \`shared/\` - pure TypeScript shared by client and server
 - \`index.html\` - HTML shell (user-owned)
 - \`sporades.json\` - project configuration
@@ -13830,7 +13941,7 @@ var HELP_TEXT = {
 Scaffold a new Capsule.
 
 Options:
-  --framework <name>  Client framework: react or preact
+  --framework <name>  Client framework: react, preact, or vanilla
   --template <name>   Template: blank, todo, guestbook, photo-library, or campfire
   --no-install        Skip npm install
   --no-git            Skip git initialization
@@ -14105,6 +14216,7 @@ import { createHash as createHash3 } from "node:crypto";
 import { chmod, mkdir as mkdir5, readFile as readFile5, writeFile as writeFile5 } from "node:fs/promises";
 import path5 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
+var CLIENT_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "vanilla"]);
 var DEFAULT_CSP_DIRECTIVES = {
   "default-src": ["'self'"],
   "script-src": ["'self'", "'unsafe-inline'"],
@@ -14149,9 +14261,22 @@ async function readProjectConfig(projectDir) {
     throw commandError4("Invalid project configuration: sporades.json", "Fix the JSON syntax in sporades.json.");
   }
   validateSecurityConfig(config.security);
+  validateClientConfig(config.client);
   validateSchedulingConfig(config.scheduling);
   validateCapsuleServicesConfig(config.services);
   return config;
+}
+function validateClientConfig(client) {
+  if (client === void 0) return;
+  if (!client || typeof client !== "object" || Array.isArray(client) || Object.keys(client).some((key) => key !== "framework" && key !== "toolchain")) {
+    throw commandError4("Invalid client configuration.", "Set `client.framework` and optional `client.toolchain` in sporades.json.");
+  }
+  if (client.framework !== void 0 && !CLIENT_FRAMEWORKS.has(client.framework)) {
+    throw commandError4(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, vanilla.");
+  }
+  if (client.toolchain !== void 0 && client.toolchain !== "esbuild") {
+    throw commandError4(`Unsupported client toolchain: ${client.toolchain}`, "Use `client.toolchain` of `esbuild`.");
+  }
 }
 function validateSchedulingConfig(scheduling) {
   if (scheduling === void 0) return;
@@ -15964,7 +16089,7 @@ jobs:
 var CLI_VERSION = "0.3.0";
 
 // src/cli/sporades.ts
-var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact"]);
+var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "vanilla"]);
 var SUPPORTED_TEMPLATES = /* @__PURE__ */ new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
 var DEV_SESSION_FILE = path7.join(".sporades", "dev-session.json");
 var DEV_DATABASE_ENV_FILE = path7.join(".sporades", "dev-database-env.json");
@@ -16191,7 +16316,7 @@ function parseCreateArgs(args) {
     throw commandError4("Missing scaffold name.", "Use `sporades create <name>`.");
   }
   if (framework !== null && !SUPPORTED_FRAMEWORKS.has(framework)) {
-    throw commandError4(`Unsupported framework: ${framework}`, "Use one of: react, preact.");
+    throw commandError4(`Unsupported framework: ${framework}`, "Use one of: react, preact, vanilla.");
   }
   if (!SUPPORTED_TEMPLATES.has(template)) {
     throw commandError4(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");

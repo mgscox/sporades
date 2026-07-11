@@ -10,6 +10,7 @@ export type ProjectConfig = JsonRecord & {
     auth?: AuthConfig;
     client?: {
         framework?: unknown;
+        toolchain?: unknown;
     };
 };
 export type AuthConfig = JsonRecord & {
@@ -35,8 +36,11 @@ export type NormalizedAuthConfig = {
     };
 };
 export type FrameworkBundleConfig = {
-    jsxImportSource: string;
-    jsxRuntimeImport: string;
+    framework: string;
+    entry: string;
+    loader: "ts" | "tsx";
+    jsxImportSource: string | null;
+    jsxRuntimeImport: string | null;
 };
 export declare function createBundle(projectDir: string, config: ProjectConfig, options?: {
     publishLegacy?: boolean;

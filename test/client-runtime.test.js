@@ -507,6 +507,77 @@ const anonymousAuth = {
   provider: "anonymous",
 };
 
+test("framework-neutral query mutation and auth primitives share reconnecting state", async () => {
+  let queryVersion = 0;
+  const queryCalls = [];
+  const mutationCalls = [];
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "query.subscribe": async (message) => {
+      queryCalls.push(message);
+      queryVersion += 1;
+      return { type: "query.result", data: [{ id: queryVersion, text: `note ${queryVersion}` }], error: null };
+    },
+    "mutation.run": async (message) => {
+      mutationCalls.push(message);
+      return { type: "mutation.result", data: { created: message.args[0] }, error: null };
+    },
+  }});
+  try {
+    const runtime = await importClientRuntime();
+    assert.equal(typeof runtime.queries.subscribe, "function");
+    assert.equal(typeof runtime.mutations.run, "function");
+    assert.equal(typeof runtime.auth.get, "function");
+    assert.equal(typeof runtime.auth.subscribe, "function");
+
+    const queryStates = [];
+    const querySubscription = runtime.queries.subscribe("notes", (state) => queryStates.push(state));
+    const authStates = [];
+    const authSubscription = runtime.auth.subscribe((state) => authStates.push(state));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    assert.deepEqual(queryStates, [
+      { data: null, error: null, loading: true },
+      { data: [{ id: 1, text: "note 1" }], error: null, loading: false },
+    ]);
+    assert.equal(authStates[0].loading, true);
+    assert.deepEqual(authStates.at(-1), { auth: anonymousAuth, providers: {}, loading: false, error: null });
+    assert.equal(browser.sockets.length, 1, "all primitives share one page connection");
+
+    const latestQueries = [];
+    const secondQuery = runtime.queries.subscribe("notes", (state) => latestQueries.push(state));
+    const latestAuth = [];
+    const secondAuth = runtime.auth.subscribe((state) => latestAuth.push(state));
+    assert.deepEqual(latestQueries, [{ data: [{ id: 1, text: "note 1" }], error: null, loading: false }]);
+    assert.deepEqual(latestAuth, [{ auth: anonymousAuth, providers: {}, loading: false, error: null }]);
+    assert.equal(queryCalls.length, 1, "same-name subscribers share one wire subscription");
+
+    assert.deepEqual(await runtime.mutations.run("addNote", "hello"), {
+      id: mutationCalls[0]?.id,
+      type: "mutation.result",
+      data: { created: "hello" },
+      error: null,
+    });
+    assert.deepEqual(mutationCalls[0].args, ["hello"]);
+    assert.equal((await runtime.auth.get()).data.auth.userId, anonymousAuth.userId);
+
+    browser.sockets[0].readyState = 3;
+    browser.sockets[0].emit("close", {});
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(queryCalls.length, 2);
+    assert.deepEqual(queryStates.at(-1), { data: [{ id: 2, text: "note 2" }], error: null, loading: false });
+
+    querySubscription.unsubscribe(); querySubscription.unsubscribe();
+    secondQuery.unsubscribe(); secondQuery.unsubscribe();
+    authSubscription.unsubscribe(); authSubscription.unsubscribe();
+    secondAuth.unsubscribe(); secondAuth.unsubscribe();
+    browser.sockets.at(-1).readyState = 3;
+    browser.sockets.at(-1).emit("close", {});
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    assert.equal(queryCalls.length, 2, "unsubscribed queries do not resubscribe");
+  } finally { browser.cleanup(); }
+});
+
 test("client isAuthenticated returns false for anonymous auth", async () => {
   const browser = installBrowserFakes(anonymousAuth);
   try {

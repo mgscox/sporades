@@ -77,6 +77,17 @@ export type EmailCredentials = {
   name?: string;
 };
 
+/** Complete current browser auth replacement delivered by `auth.subscribe()`. */
+export type AuthObserverState = {
+  auth: AuthState | null;
+  providers: AuthProviders;
+  loading: boolean;
+  error: SporadesError | null;
+};
+
+/** Current auth data returned by `auth.get()`. */
+export type AuthResult = { auth: AuthState; providers: AuthProviders };
+
 /**
  * Browser auth API.
  *
@@ -84,6 +95,8 @@ export type EmailCredentials = {
  * the same-origin client transport. Provider SDKs are not exposed to app code.
  */
 export type AuthApi = {
+  get(): Promise<SporadesResult<AuthResult>>;
+  subscribe(listener: (state: AuthObserverState) => void): Subscription;
   signUp(provider: "email", credentials: EmailCredentials): Promise<SporadesResult>;
   signUp(provider: string, credentials?: unknown): Promise<SporadesResult>;
   signIn(provider: "email", credentials: EmailCredentials): Promise<SporadesResult>;
@@ -226,6 +239,16 @@ export type QueryState<Data = unknown> = {
   loading: boolean;
 };
 
+/** Framework-neutral realtime query subscriptions. */
+export type QueriesApi = {
+  subscribe<Data = unknown>(name: string, listener: (state: QueryState<Data>) => void): Subscription;
+};
+
+/** Framework-neutral mutation execution using the standard Sporades result envelope. */
+export type MutationsApi = {
+  run<Result = unknown>(name: string, ...args: unknown[]): Promise<SporadesResult<Result>>;
+};
+
 /** Hook state returned by `useMutation()`. */
 export type MutationState<Result = unknown> = {
   error: SporadesError | null;
@@ -271,6 +294,10 @@ export const files: FilesApi;
 export const preferences: PreferencesApi;
 /** Explicit, page-runtime User journey publication lifecycle; server sessions are created lazily by accepted publications. */
 export const journey: JourneyApi;
+/** Framework-neutral query state subscriptions. */
+export const queries: QueriesApi;
+/** Framework-neutral mutation execution. */
+export const mutations: MutationsApi;
 
 /** Return whether the current browser session is authenticated. */
 export function isAuthenticated(): Promise<boolean>;

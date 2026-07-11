@@ -68,7 +68,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, endpoint, job, message, mutation, query, requireAuth, schedule, table } from "sporades/server";
-import { auth, createHooks, files, isAuthenticated, journey, onMessage, preferences, sendMessage, type JourneyRecord } from "sporades/client";
+import { auth, createHooks, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, type JourneyRecord } from "sporades/client";
 
 const app = capsule({
   name: "typed island",
@@ -246,6 +246,19 @@ const todos = hooks.useQuery<Array<{ id: string; text: string }>>("todos");
 todos.data?.map((todo) => todo.text.toUpperCase());
 hooks.useMutation("addTodo").run("Ship the types");
 hooks.useAuth().signIn("google");
+const querySubscription = queries.subscribe<Array<{ id: string; text: string }>>("todos", (state) => {
+  state.data?.map((todo) => todo.text.toUpperCase());
+  state.error?.message.toUpperCase();
+  state.loading.valueOf();
+});
+querySubscription.unsubscribe();
+mutations.run("addTodo", "Ship the framework-neutral types").then((result) => result.error?.message);
+auth.get().then((result) => result.data?.auth?.userId);
+const authSubscription = auth.subscribe((state) => {
+  state.auth?.userId.toUpperCase();
+  Object.values(state.providers).forEach((provider) => provider?.enabled.valueOf());
+});
+authSubscription.unsubscribe();
 auth.signUp("email", { email: "a@example.com", password: "secret", name: "Ada" });
 // @ts-expect-error browser auth API does not expose privileged server-role authority.
 auth.privileged;

@@ -574,6 +574,40 @@ test("sporades create --template blank preserves framework selection", async () 
   });
 });
 
+test("sporades create writes a runnable framework-neutral Vanilla TypeScript scaffold", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "vanilla-island", "--framework", "vanilla", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr);
+    const projectDir = path.join(dir, "vanilla-island");
+    const [config, packageJson, client, server, agents] = await Promise.all([
+      readFile(path.join(projectDir, "sporades.json"), "utf8").then(JSON.parse),
+      readFile(path.join(projectDir, "package.json"), "utf8").then(JSON.parse),
+      readFile(path.join(projectDir, "client", "index.ts"), "utf8"),
+      readFile(path.join(projectDir, "server", "index.ts"), "utf8"),
+      readFile(path.join(projectDir, "AGENTS.md"), "utf8"),
+    ]);
+    assert.deepEqual(config.client, { framework: "vanilla", toolchain: "esbuild" });
+    assert.deepEqual(packageJson.dependencies, {});
+    assert.equal(packageJson.devDependencies.react, undefined);
+    assert.equal(packageJson.devDependencies.preact, undefined);
+    assert.match(client, /queries\.subscribe(?:<[^>]+>)?\(/);
+    assert.match(client, /mutations\.run\(/);
+    assert.match(client, /auth\.get\(\)/);
+    assert.match(client, /auth\.subscribe\(/);
+    assert.match(client, /preferences\.(get|update)\(/);
+    assert.match(client, /files\.upload\(/);
+    assert.match(client, /onMessage\(/);
+    assert.match(client, /sendMessage\(/);
+    assert.match(client, /journey\.(enable|subscribe)\(/);
+    assert.doesNotMatch(client, /from ["'](?:react|preact)/);
+    assert.match(server, /notes: query/);
+    assert.match(server, /addNote: mutation/);
+    assert.match(agents, /client\/index\.ts/);
+    assert.match(agents, /framework-neutral/i);
+    assert.doesNotMatch(agents, /useAuth\(\)/);
+  });
+});
+
 test("sporades/server exports the endpoint builder", async () => {
   const runtime = await import("sporades/server");
   const handler = () => "pong";
@@ -775,7 +809,7 @@ test("sporades create rejects unsupported framework values with structured JSON"
       data: null,
       error: {
         message: "Unsupported framework: angular",
-        hint: "Use one of: react, preact.",
+        hint: "Use one of: react, preact, vanilla.",
       },
     });
   });

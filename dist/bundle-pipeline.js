@@ -7,23 +7,39 @@ import { createServerBundleSource } from "./templates/server-bundle-template.js"
 import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateActivePublicTreeReference } from "./public-tree.js";
 const FRAMEWORK_BUNDLE_CONFIG = {
     react: {
+        framework: "react",
+        entry: "index.tsx",
+        loader: "tsx",
         jsxImportSource: "react",
         jsxRuntimeImport: "react/jsx-runtime",
     },
     preact: {
+        framework: "preact",
+        entry: "index.tsx",
+        loader: "tsx",
         jsxImportSource: "preact",
         jsxRuntimeImport: "preact/jsx-runtime",
+    },
+    vanilla: {
+        framework: "vanilla",
+        entry: "index.ts",
+        loader: "ts",
+        jsxImportSource: null,
+        jsxRuntimeImport: null,
     },
 };
 const SUPPORTED_AUTH_PROVIDERS = new Set(["anonymous", "google", "email"]);
 export async function createBundle(projectDir, config, options = {}) {
+    if ((config.client?.toolchain ?? "esbuild") !== "esbuild") {
+        throw commandError(`Unsupported client toolchain: ${config.client?.toolchain}`, "Use `client.toolchain` of `esbuild`.");
+    }
     const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
     const buildDir = path.join(projectDir, ".sporades", "build");
     await mkdir(buildDir, { recursive: true });
     const paths = {
         config: path.join(projectDir, "sporades.json"),
         serverEntry: path.join(projectDir, "server", "index.ts"),
-        clientEntry: path.join(projectDir, "client", "index.tsx"),
+        clientEntry: path.join(projectDir, "client", frameworkBundleConfig.entry),
         indexHtml: path.join(projectDir, "index.html"),
         serverEnv: path.join(projectDir, ".env.sporades.server"),
         serverBundle: path.join(buildDir, "server.mjs"),
@@ -38,20 +54,20 @@ export async function createBundle(projectDir, config, options = {}) {
     validateAuthConfig(config, serverEnv);
     const [serverSource, clientSource, indexHtml] = await Promise.all([
         readRequiredFile(paths.serverEntry, "Missing capsule entry: server/index.ts", "Run `sporades create` to scaffold a new project.")
-            .catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.jsxImportSource); }),
-        readRequiredFile(paths.clientEntry, "Missing client entry: client/index.tsx", "Run `sporades create` to scaffold a new project.")
-            .catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.jsxImportSource); }),
+            .catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.framework); }),
+        readRequiredFile(paths.clientEntry, `Missing client entry: client/${frameworkBundleConfig.entry}`, "Run `sporades create` to scaffold a new project.")
+            .catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework); }),
         readRequiredFile(paths.indexHtml, "Missing HTML shell: index.html", "Restore index.html or run `sporades create`.")
-            .catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.jsxImportSource); }),
+            .catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework); }),
     ]);
     const serverCapsuleModule = await bundleServerCapsuleModule({
         serverSource,
         serverSourcePath: paths.serverEntry,
-    }).catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.jsxImportSource); });
+    }).catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.framework); });
     const clientOutput = await bundleClientSource(clientSource, {
         clientSourcePath: paths.clientEntry,
         frameworkBundleConfig,
-    }).catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.jsxImportSource); });
+    }).catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework); });
     const clientBundle = clientOutput.clientBundle;
     const serverBundle = createServerBundleSource({
         config,
@@ -63,7 +79,7 @@ export async function createBundle(projectDir, config, options = {}) {
     const publicTree = await createPublicTree(buildDir, [
         { path: "index.html", contents: indexHtml },
         ...clientOutput.publicFiles,
-    ]).catch((error) => { throw tagBuildError(error, "public", frameworkBundleConfig.jsxImportSource); });
+    ]).catch((error) => { throw tagBuildError(error, "public", frameworkBundleConfig.framework); });
     const legacyFiles = [
         { target: paths.serverBundle, contents: serverBundle },
         { target: paths.clientBundle, contents: clientBundle },
@@ -71,7 +87,7 @@ export async function createBundle(projectDir, config, options = {}) {
     let legacyPublished = false;
     const publishLegacy = async () => {
         if (legacyPublished) {
-            throw tagBuildError(new Error("Legacy Bundles are already published."), "publish", frameworkBundleConfig.jsxImportSource);
+            throw tagBuildError(new Error("Legacy Bundles are already published."), "publish", frameworkBundleConfig.framework);
         }
         let previous;
         const activeTreePath = path.join(buildDir, ".public-trees", "active.json");
@@ -110,7 +126,7 @@ export async function createBundle(projectDir, config, options = {}) {
             legacyPublished = true;
         }
         catch (error) {
-            throw tagBuildError(error, "publish", frameworkBundleConfig.jsxImportSource);
+            throw tagBuildError(error, "publish", frameworkBundleConfig.framework);
         }
         return async () => {
             try {
@@ -473,7 +489,7 @@ async function readRequiredFile(filePath, message, hint) {
 }
 function readFrameworkBundleConfig(framework) {
     if (typeof framework !== "string" || !(framework in FRAMEWORK_BUNDLE_CONFIG)) {
-        throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact.");
+        throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, vanilla.");
     }
     return FRAMEWORK_BUNDLE_CONFIG[framework];
 }
@@ -505,24 +521,27 @@ async function bundleClientSource(clientSource, options) {
                 ".woff2": "file",
             },
             jsx: "automatic",
-            jsxImportSource: options.frameworkBundleConfig.jsxImportSource,
+            ...(options.frameworkBundleConfig.jsxImportSource ? { jsxImportSource: options.frameworkBundleConfig.jsxImportSource } : {}),
             stdin: {
                 contents: clientSource,
                 sourcefile: options.clientSourcePath,
                 resolveDir: path.dirname(options.clientSourcePath),
-                loader: "tsx",
+                loader: options.frameworkBundleConfig.loader,
             },
             plugins: [sporadesClientPlugin()],
         });
         const outputs = result.outputFiles ?? [];
         const clientOutput = outputs.find((output) => path.relative(outputDir, output.path) === "client.js");
         if (!clientOutput) {
-            throw commandError("Client bundle failed: esbuild returned no output.", "Fix client/index.tsx and save again.");
+            throw commandError("Client bundle failed: esbuild returned no output.", `Fix client/${options.frameworkBundleConfig.entry} and save again.`);
         }
         const clientBundle = [
             "// Sporades client bundle",
-            `// JSX import source: ${options.frameworkBundleConfig.jsxImportSource}`,
-            `// JSX runtime import: ${options.frameworkBundleConfig.jsxRuntimeImport}`,
+            `// Client framework: ${options.frameworkBundleConfig.framework}`,
+            ...(options.frameworkBundleConfig.jsxImportSource ? [
+                `// JSX import source: ${options.frameworkBundleConfig.jsxImportSource}`,
+                `// JSX runtime import: ${options.frameworkBundleConfig.jsxRuntimeImport}`,
+            ] : []),
             'console.log("Sporades client bundle loaded");',
             "",
             clientOutput.text,
@@ -540,7 +559,7 @@ async function bundleClientSource(clientSource, options) {
     }
     catch (error) {
         const message = bundleErrorMessage(error);
-        throw commandError(`Client bundle failed: ${message}`, "Fix client/index.tsx and save again.");
+        throw commandError(`Client bundle failed: ${message}`, `Fix client/${options.frameworkBundleConfig.entry} and save again.`);
     }
 }
 function sporadesClientPlugin() {

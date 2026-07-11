@@ -4097,7 +4097,7 @@ test("sporades host push reports a structured recovery hint when local sealed so
   });
 });
 
-test("sporades host push can target an explicit Hosted Capsule and request restart", async () => {
+test("sporades host push can publish a Vanilla TypeScript Capsule and request restart", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
@@ -4125,12 +4125,11 @@ process.exit(0);
 `,
     );
     const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
-    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+    const createResult = await runCli(["create", "vanilla-island", "--template", "blank", "--framework", "vanilla", "--no-install", "--no-git", "--json"], {
       cwd: dir,
     });
     assert.equal(createResult.code, 0, createResult.stderr);
-    const projectDir = path.join(dir, "todo-island");
-    await installFakeReact(projectDir);
+    const projectDir = path.join(dir, "vanilla-island");
     await rm(path.join(projectDir, ".env.sporades.server"), { force: true });
 
     const env = {
@@ -4164,6 +4163,9 @@ process.exit(0);
     assert.equal(scpCall.target, `deploy@example.test:/srv/sporades/incoming/${output.data.release.id}.tar.gz`);
     const entries = await listArchiveEntries(scpCall.copiedTo, projectDir);
     assert.deepEqual(entries, ["public/client.js", "public/client.js.map", "public/index.html", "server.mjs", "sporades.json"]);
+    const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
+    assert.match(clientBundle, /Vanilla Sporades/);
+    assert.doesNotMatch(clientBundle, /react-dom|preact\/hooks/);
 
     const [sshCall] = await readJsonl(fakeSsh.logPath);
     const request = JSON.parse(sshCall.stdin);

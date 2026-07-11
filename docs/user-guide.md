@@ -179,7 +179,7 @@ sporades.json
 index.html
 .env.sporades.server
 server/index.ts
-client/index.tsx
+client/index.tsx (or client/index.ts for Vanilla TypeScript)
 shared/types.ts
 AGENTS.md
 README.md
@@ -194,13 +194,15 @@ sporades create guestbook --template guestbook
 sporades create gallery --template photo-library
 sporades create campfire --template campfire
 sporades create tiny --framework preact
+sporades create framework-free --framework vanilla
 sporades create no-install-yet --no-install --no-git
 ```
 
 Available templates are `blank`, `todo`, `guestbook`, `photo-library`, and
 `campfire`. Campfire demonstrates realtime messaging, durable reactions, email
 fixture identities, and explicitly consented ephemeral Journey activity.
-Available client frameworks are `react` and `preact`.
+Available client frameworks are `react`, `preact`, and framework-neutral
+Vanilla TypeScript. All use the built-in esbuild toolchain.
 
 ### 2. Start a Dev Session
 
@@ -463,6 +465,21 @@ await addTodo.run("Buy coffee");
 
 Queries stay subscribed over the Sporades client transport, so successful
 mutations refresh connected clients without you writing manual fetch code.
+
+For Vanilla TypeScript, open `client/index.ts` and use the same transport
+without a UI framework:
+
+```ts
+import { auth, mutations, queries } from "sporades/client";
+
+const subscription = queries.subscribe("todos", (state) => render(state));
+await mutations.run("addTodo", "Buy coffee");
+const current = await auth.get();
+const authSubscription = auth.subscribe((state) => renderAuth(state));
+```
+
+Both subscriptions deliver their latest state immediately, reconnect and
+resubscribe automatically, and expose an idempotent `unsubscribe()` method.
 
 ### 5. Inspect Logs and Data
 
