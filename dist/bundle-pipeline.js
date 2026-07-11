@@ -48,10 +48,11 @@ export async function createBundle(projectDir, config, options = {}) {
         serverSource,
         serverSourcePath: paths.serverEntry,
     }).catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.jsxImportSource); });
-    const clientBundle = await bundleClientSource(clientSource, {
+    const clientOutput = await bundleClientSource(clientSource, {
         clientSourcePath: paths.clientEntry,
         frameworkBundleConfig,
     }).catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.jsxImportSource); });
+    const clientBundle = clientOutput.clientBundle;
     const serverBundle = createServerBundleSource({
         config,
         serverEnv: sealedEnvelope ? {} : serverEnv,
@@ -61,7 +62,7 @@ export async function createBundle(projectDir, config, options = {}) {
     });
     const publicTree = await createPublicTree(buildDir, [
         { path: "index.html", contents: indexHtml },
-        { path: "client.js", contents: clientBundle },
+        ...clientOutput.publicFiles,
     ]).catch((error) => { throw tagBuildError(error, "public", frameworkBundleConfig.jsxImportSource); });
     const legacyFiles = [
         { target: paths.serverBundle, contents: serverBundle },
@@ -73,6 +74,8 @@ export async function createBundle(projectDir, config, options = {}) {
             throw tagBuildError(new Error("Legacy Bundles are already published."), "publish", frameworkBundleConfig.jsxImportSource);
         }
         let previous;
+        const activeTreePath = path.join(buildDir, ".public-trees", "active.json");
+        let previousActiveTree;
         try {
             previous = await Promise.all(legacyFiles.map(async (file) => ({
                 target: file.target,
@@ -82,7 +85,20 @@ export async function createBundle(projectDir, config, options = {}) {
                     throw error;
                 }),
             })));
+            previousActiveTree = await readFile(activeTreePath).catch((error) => {
+                if (errorDetails(error).code === "ENOENT")
+                    return null;
+                throw error;
+            });
             await publishLegacyBundles(buildDir, legacyFiles);
+            try {
+                await replaceBundleStateFile(activeTreePath, `${JSON.stringify({ tree: path.basename(publicTree.root) })}\n`);
+            }
+            catch (error) {
+                await publishLegacyBundles(buildDir, previous.filter((file) => file.contents !== null));
+                await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm(file.target, { force: true })));
+                throw error;
+            }
             legacyPublished = true;
         }
         catch (error) {
@@ -92,6 +108,10 @@ export async function createBundle(projectDir, config, options = {}) {
             const existing = previous.filter((file) => file.contents !== null);
             await publishLegacyBundles(buildDir, existing);
             await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm(file.target, { force: true })));
+            if (previousActiveTree === null)
+                await rm(activeTreePath, { force: true });
+            else
+                await replaceBundleStateFile(activeTreePath, previousActiveTree);
             legacyPublished = false;
         };
     };
@@ -138,10 +158,21 @@ export async function createBundle(projectDir, config, options = {}) {
         },
     };
 }
-async function publishLegacyBundles(buildDir, files) {
+async function replaceBundleStateFile(filePath, contents) {
+    const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    try {
+        await writeFile(temporaryPath, contents);
+        await rename(temporaryPath, filePath);
+    }
+    finally {
+        await rm(temporaryPath, { force: true });
+    }
+}
+export async function publishLegacyBundles(buildDir, files, options = {}) {
     const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const stagingDir = path.join(buildDir, `.legacy-staging-${nonce}`);
     const states = [];
+    let preserveStaging = false;
     await mkdir(stagingDir, { recursive: false });
     try {
         for (const [index, file] of files.entries()) {
@@ -168,23 +199,36 @@ async function publishLegacyBundles(buildDir, files) {
                         throw error;
                 }
             }
-            for (const state of states) {
+            for (const [index, state] of states.entries()) {
+                options.fault?.("before-publish", index);
                 await rename(state.candidate, state.target);
                 state.published = true;
             }
         }
         catch (error) {
-            for (const state of [...states].reverse()) {
-                if (state.published)
-                    await rm(state.target, { force: true });
-                if (state.moved)
-                    await rename(state.backup, state.target);
+            const recoveryFailures = [];
+            for (const [index, state] of [...states.entries()].reverse()) {
+                try {
+                    options.fault?.("before-restore", index);
+                    if (state.moved)
+                        await rename(state.backup, state.target);
+                    else if (state.published)
+                        await rm(state.target, { force: true });
+                }
+                catch {
+                    recoveryFailures.push(index);
+                }
+            }
+            if (recoveryFailures.length > 0) {
+                preserveStaging = true;
+                throw commandError("Legacy Bundle recovery is incomplete.", `Preserved ${recoveryFailures.length} recovery backup${recoveryFailures.length === 1 ? "" : "s"} in ${path.basename(stagingDir)}.`, { failedFiles: recoveryFailures.length, recoveryDirectory: path.basename(stagingDir) });
             }
             throw error;
         }
     }
     finally {
-        await rm(stagingDir, { recursive: true, force: true });
+        if (!preserveStaging)
+            await rm(stagingDir, { recursive: true, force: true });
     }
 }
 async function readRequiredSealedPrivateKey(paths) {
@@ -377,6 +421,7 @@ function readFrameworkBundleConfig(framework) {
 async function bundleClientSource(clientSource, options) {
     const { build } = await import("esbuild");
     try {
+        const outputDir = path.join(path.dirname(options.clientSourcePath), ".sporades-esbuild-public");
         const result = await build({
             bundle: true,
             format: "esm",
@@ -384,6 +429,20 @@ async function bundleClientSource(clientSource, options) {
             write: false,
             logLevel: "silent",
             sourcemap: "inline",
+            outdir: outputDir,
+            entryNames: "client",
+            assetNames: "assets/[name]-[hash]",
+            loader: {
+                ".svg": "file",
+                ".png": "file",
+                ".jpg": "file",
+                ".jpeg": "file",
+                ".gif": "file",
+                ".webp": "file",
+                ".ico": "file",
+                ".woff": "file",
+                ".woff2": "file",
+            },
             jsx: "automatic",
             jsxImportSource: options.frameworkBundleConfig.jsxImportSource,
             stdin: {
@@ -394,18 +453,26 @@ async function bundleClientSource(clientSource, options) {
             },
             plugins: [sporadesClientPlugin()],
         });
-        const output = result.outputFiles?.[0];
-        if (!output) {
+        const outputs = result.outputFiles ?? [];
+        const clientOutput = outputs.find((output) => path.relative(outputDir, output.path) === "client.js");
+        if (!clientOutput) {
             throw commandError("Client bundle failed: esbuild returned no output.", "Fix client/index.tsx and save again.");
         }
-        return [
+        const clientBundle = [
             "// Sporades client bundle",
             `// JSX import source: ${options.frameworkBundleConfig.jsxImportSource}`,
             `// JSX runtime import: ${options.frameworkBundleConfig.jsxRuntimeImport}`,
             'console.log("Sporades client bundle loaded");',
             "",
-            output.text,
+            clientOutput.text,
         ].join("\n");
+        return {
+            clientBundle,
+            publicFiles: outputs.map((output) => {
+                const relativePath = path.relative(outputDir, output.path).split(path.sep).join("/");
+                return { path: relativePath, contents: relativePath === "client.js" ? clientBundle : output.contents };
+            }),
+        };
     }
     catch (error) {
         const message = bundleErrorMessage(error);
@@ -459,9 +526,11 @@ function bundleErrorMessage(error) {
     }
     return typeof details.message === "string" ? details.message : "unknown error";
 }
-function commandError(message, hint) {
+function commandError(message, hint, diagnostics) {
     const error = new Error(message);
     error.hint = hint;
+    if (diagnostics !== undefined)
+        error.diagnostics = diagnostics;
     return error;
 }
 function tagBuildError(error, phase, framework) {

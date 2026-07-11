@@ -3,7 +3,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, generateKeyPairSync, randomBytes, timingSafeEqual } from "node:crypto";
 import { readdirSync, readFileSync, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { appendFile, chmod, lstat, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../bundle-pipeline.js";
@@ -1202,7 +1202,28 @@ async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
     const databaseEnv = Object.fromEntries(Object.entries(serviceEnv).filter(([key, value]) => key.startsWith("SPORADES_SERVICE_DATABASE_") && typeof value === "string"));
     const filePath = path.join(projectDir, DEV_DATABASE_ENV_FILE);
     await mkdir(path.dirname(filePath), { recursive: true });
-    await writeFile(filePath, `${JSON.stringify(databaseEnv)}\n`, { mode: 0o600 });
+    const previous = await readFile(filePath).catch((error) => {
+        if (errorDetails(error).code === "ENOENT")
+            return null;
+        throw error;
+    });
+    await replaceFileAtomically(filePath, `${JSON.stringify(databaseEnv)}\n`);
+    return async () => {
+        if (previous === null)
+            await rm(filePath, { force: true });
+        else
+            await replaceFileAtomically(filePath, previous);
+    };
+}
+async function replaceFileAtomically(filePath, contents) {
+    const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    try {
+        await writeFile(temporaryPath, contents, { mode: 0o600 });
+        await rename(temporaryPath, filePath);
+    }
+    finally {
+        await rm(temporaryPath, { force: true });
+    }
 }
 async function inspectContainerJobs(options) {
     const { binding } = await requireLocalContainerBinding(options, "jobs");
@@ -1534,6 +1555,7 @@ async function startDevSession(options) {
     const watchers = watchDevInputs(options.projectDir, async (change) => {
         let rebuild = null;
         let rollbackLegacy = null;
+        let rollbackServiceEnv = null;
         try {
             const nextConfig = await readProjectConfig(options.projectDir);
             const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
@@ -1544,17 +1566,22 @@ async function startDevSession(options) {
                 emit: (data, error) => emitDevEvent(options, data, error),
             }).catch((error) => { throw tagDevRebuildError(error, "services", nextConfig); });
             const affectsServerRuntime = change.affectsServerRuntime || (change.configChanged && configChangeAffectsServerRuntime(config, nextConfig));
+            if (affectsServerRuntime) {
+                rollbackServiceEnv = await writeActiveDevDatabaseServiceEnv(options.projectDir, nextCapsuleServiceEnv)
+                    .catch((error) => { throw tagDevRebuildError(error, "runtime", nextConfig); });
+            }
             rollbackLegacy = await rebuild.publishLegacy();
             if (affectsServerRuntime) {
                 await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, nextCapsuleServiceEnv, rebuild.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(nextConfig, session)).catch((error) => { throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true }); });
                 runtimeServiceEnv = nextCapsuleServiceEnv;
-                await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
                 fatalRestartAttempts = 0;
                 websocketHub.disconnectAll();
             }
             const previousBundle = bundle;
             bundle = rebuild;
-            discardPublicTree(previousBundle.staticFiles.publicTree).catch(() => { });
+            discardPublicTree(previousBundle.staticFiles.publicTree).catch((error) => {
+                reportDevPublicCleanupDegradation(options, runtime, url, actualPort, nextConfig, error);
+            });
             config = nextConfig;
             security = nextSecurity;
             emitDevEvent(options, {
@@ -1580,8 +1607,18 @@ async function startDevSession(options) {
                     rebuildError = tagDevRebuildError(rollbackError, "publish", config);
                 }
             }
+            if (rollbackServiceEnv) {
+                try {
+                    await rollbackServiceEnv();
+                }
+                catch (rollbackError) {
+                    rebuildError = tagDevRebuildError(rollbackError, "runtime", config);
+                }
+            }
             if (rebuild && rebuild !== bundle) {
-                await discardPublicTree(rebuild.staticFiles.publicTree).catch(() => { });
+                await discardPublicTree(rebuild.staticFiles.publicTree).catch((cleanupError) => {
+                    reportDevPublicCleanupDegradation(options, runtime, url, actualPort, config, cleanupError);
+                });
             }
             const details = errorDetails(rebuildError);
             runtime.database.log.emit({
@@ -1606,6 +1643,7 @@ async function startDevSession(options) {
             }, {
                 message: details.message,
                 hint: details.hint ?? "Fix the build error and save again.",
+                ...(details.diagnostics ? { diagnostics: details.diagnostics } : {}),
             });
         }
     });
@@ -1643,6 +1681,25 @@ function tagDevRebuildError(error, phase, config, options = {}) {
     tagged.framework = config.client?.framework ?? "react";
     tagged.toolchain = "esbuild";
     return tagged;
+}
+function reportDevPublicCleanupDegradation(options, runtime, url, port, config, error) {
+    runtime.database.log.emit({
+        category: "platform",
+        event: "dev.public-tree.cleanup.degraded",
+        level: "warn",
+        message: "Public tree cleanup degraded",
+        data: { message: errorDetails(error).message },
+    });
+    emitDevEvent(options, {
+        event: "cleanup",
+        status: "degraded",
+        url,
+        port,
+        build: { phase: "public", framework: config.client?.framework ?? "react", toolchain: "esbuild" },
+    }, {
+        message: "Public tree cleanup degraded.",
+        hint: "A later rebuild will retry bounded cleanup while preserving the active public tree.",
+    });
 }
 async function createDevRuntime(options) {
     let database = await openDevDatabase(options.databasePath, options.serverSource, options.serverEnv, options.config, await importCapsuleDefinition(options.capsuleModuleSource), { serviceEnv: options.serviceEnv });

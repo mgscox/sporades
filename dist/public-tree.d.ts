@@ -14,19 +14,31 @@ export type PublicTree = {
     root: string;
     assets: ReadonlyMap<string, PublicAsset>;
 };
-export declare function createPublicTree(buildDir: string, files: ReadonlyArray<{
+type PublicFile = {
     path: string;
     contents: string | Uint8Array;
-}>): Promise<{
+};
+type CleanupFault = (event: "before-remove", entryPath: string) => void;
+export declare function createPublicTree(buildDir: string, files: ReadonlyArray<PublicFile>, options?: {
+    cleanupFault?: CleanupFault;
+}): Promise<{
     root: string;
-    assets: ReadonlyMap<string, PublicAsset>;
+    assets: Map<string, PublicAsset>;
 }>;
 export declare function discardPublicTree(tree: PublicTree): Promise<void>;
 export declare function validatePublicTree(root: string): Promise<{
     fileCount: number;
     totalBytes: number;
 }>;
-export declare function snapshotPublicTree(root: string): Promise<PublicTree>;
+export declare function validatePublicFiles(files: ReadonlyArray<PublicFile>): {
+    fileCount: number;
+    totalBytes: number;
+};
+export declare function cleanupPublicTrees(buildDir: string, options?: {
+    keepRoots?: string[];
+    maxCompleted?: number;
+    fault?: CleanupFault;
+}): Promise<void>;
 export declare function readPublicAsset(tree: PublicTree, rawPathname: string): Promise<PublicAsset | null>;
 export {};
 //# sourceMappingURL=public-tree.d.ts.map

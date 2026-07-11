@@ -60,7 +60,7 @@ export declare function createBundle(projectDir: string, config: ProjectConfig, 
     staticFiles: {
         publicTree: {
             root: string;
-            assets: ReadonlyMap<string, {
+            assets: Map<string, {
                 body: Buffer;
                 contentType: string;
                 relativePath: string;
@@ -96,6 +96,12 @@ export declare function createBundle(projectDir: string, config: ProjectConfig, 
         } | null;
     };
 }>;
+export declare function publishLegacyBundles(buildDir: string, files: ReadonlyArray<{
+    target: string;
+    contents: string | Uint8Array;
+}>, options?: {
+    fault?: (event: "before-publish" | "before-restore", index: number) => void;
+}): Promise<void>;
 export declare function bundleServerCapsuleModule(options: {
     serverSource: string;
     serverSourcePath: string;

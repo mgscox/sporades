@@ -6,7 +6,7 @@ import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes4, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { appendFile, chmod as chmod2, lstat as lstat4, mkdir as mkdir6, readdir as readdir2, readFile as readFile7, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
+import { appendFile, chmod as chmod2, lstat as lstat4, mkdir as mkdir6, readdir as readdir2, readFile as readFile7, rename as rename3, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
 import path7 from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -10173,33 +10173,33 @@ var PUBLIC_TREE_LIMITS = {
   totalBytes: 64 * 1024 * 1024,
   pathBytes: 240
 };
-async function createPublicTree(buildDir, files) {
+async function createPublicTree(buildDir, files, options = {}) {
   const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const treesDir = path2.join(buildDir, ".public-trees");
   const stagingDir = path2.join(treesDir, `.staging-${nonce}`);
   const publicDir = path2.join(treesDir, nonce);
-  const inputPaths = /* @__PURE__ */ new Map();
+  const normalizedFiles = normalizePublicFiles(files);
   await mkdir2(treesDir, { recursive: true });
+  await cleanupPublicTrees(buildDir, { maxCompleted: 2, fault: options.cleanupFault });
   await mkdir2(stagingDir, { recursive: false });
+  let published = false;
   try {
-    for (const file of files) {
-      const relativePath = validateRelativePublicPath(file.path);
-      const canonicalPath = relativePath.normalize("NFC");
-      const collision = inputPaths.get(canonicalPath);
-      if (collision) {
-        throw publicTreeError(
-          "Invalid public tree.",
-          `Remove the normalization collision between ${collision} and ${relativePath}.`
-        );
-      }
-      inputPaths.set(canonicalPath, relativePath);
-      const destination = path2.join(stagingDir, ...relativePath.split("/"));
+    for (const file of normalizedFiles) {
+      const destination = path2.join(stagingDir, ...file.path.split("/"));
       await mkdir2(path2.dirname(destination), { recursive: true });
       await writeFile2(destination, file.contents);
     }
-    const tree = await snapshotPublicTree(stagingDir);
+    await validatePublicTree(stagingDir);
     await rename(stagingDir, publicDir);
-    return { ...tree, root: publicDir };
+    published = true;
+    await cleanupPublicTrees(buildDir, { keepRoots: [publicDir], maxCompleted: 2, fault: options.cleanupFault });
+    return {
+      root: publicDir,
+      assets: new Map(normalizedFiles.map((file) => [file.path, publicAsset(file.path, file.contents)]))
+    };
+  } catch (error) {
+    if (published) await rm(publicDir, { recursive: true, force: true });
+    throw error;
   } finally {
     await rm(stagingDir, { recursive: true, force: true });
   }
@@ -10261,26 +10261,60 @@ async function validatePublicTree(root) {
   }
   return { fileCount, totalBytes };
 }
-async function snapshotPublicTree(root) {
-  await validatePublicTree(root);
-  const assets = /* @__PURE__ */ new Map();
-  async function visit(directory, prefix = "") {
-    for (const entry of await readdir(directory, { withFileTypes: true })) {
-      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) {
-        await visit(path2.join(directory, entry.name), relativePath);
-      } else {
-        assets.set(relativePath, {
-          body: await readFile2(path2.join(directory, entry.name)),
-          contentType: publicContentType(relativePath),
-          relativePath,
-          html: relativePath === "index.html"
-        });
-      }
+async function cleanupPublicTrees(buildDir, options = {}) {
+  const treesDir = path2.join(buildDir, ".public-trees");
+  const entries = await readdir(treesDir, { withFileTypes: true }).catch((error) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
+    throw error;
+  });
+  const keepNames = new Set((options.keepRoots ?? []).filter((root) => path2.dirname(root) === treesDir).map((root) => path2.basename(root)));
+  let activeReference = null;
+  let activeReferenceExists = false;
+  try {
+    const activeReferenceRaw = await readFile2(path2.join(treesDir, "active.json"), "utf8");
+    activeReferenceExists = true;
+    activeReference = JSON.parse(activeReferenceRaw)?.tree;
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
+      throw publicTreeError(
+        "Public tree cleanup degraded.",
+        "The active public tree reference could not be read safely; no completed public trees were removed."
+      );
     }
   }
-  await visit(root);
-  return { root, assets };
+  if (activeReferenceExists && !(typeof activeReference === "string" && !activeReference.includes("/") && !activeReference.includes("\\"))) {
+    throw publicTreeError(
+      "Public tree cleanup degraded.",
+      "The active public tree reference is invalid; no completed public trees were removed."
+    );
+  }
+  if (typeof activeReference === "string") {
+    keepNames.add(activeReference);
+  }
+  const completed = await Promise.all(entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".staging-")).map(async (entry) => ({ entry, modifiedAt: (await lstat(path2.join(treesDir, entry.name))).mtimeMs })));
+  completed.sort((left, right) => right.modifiedAt - left.modifiedAt);
+  for (const item of completed) {
+    if (keepNames.size >= (options.maxCompleted ?? 2)) break;
+    keepNames.add(item.entry.name);
+  }
+  const failures = [];
+  for (const entry of entries) {
+    if (entry.name === "active.json") continue;
+    if (keepNames.has(entry.name)) continue;
+    const entryPath = path2.join(treesDir, entry.name);
+    try {
+      options.fault?.("before-remove", entryPath);
+      await rm(entryPath, { recursive: true, force: true });
+    } catch {
+      failures.push(entry.name);
+    }
+  }
+  if (failures.length > 0) {
+    throw publicTreeError(
+      "Public tree cleanup degraded.",
+      `Could not remove ${failures.length} stale public tree entr${failures.length === 1 ? "y" : "ies"}; the active and recoverable trees were preserved.`
+    );
+  }
 }
 async function readPublicAsset(tree, rawPathname) {
   const relativePath = publicPathFromRequest(rawPathname);
@@ -10315,6 +10349,43 @@ function validateRelativePublicPath(value) {
     throw publicTreeError("Invalid public path.", "Public paths cannot be empty, current-directory, or parent-directory paths.");
   }
   return segments.join("/");
+}
+function normalizePublicFiles(files) {
+  const paths = /* @__PURE__ */ new Map();
+  let totalBytes = 0;
+  const normalized = files.map((file) => {
+    const relativePath = validateRelativePublicPath(file.path);
+    const canonicalPath = relativePath.normalize("NFC");
+    const collision = paths.get(canonicalPath);
+    if (collision) {
+      throw publicTreeError("Invalid public tree.", `Remove the normalization collision between ${collision} and ${relativePath}.`);
+    }
+    paths.set(canonicalPath, relativePath);
+    const contents = Buffer.from(typeof file.contents === "string" ? file.contents : file.contents);
+    if (contents.byteLength > PUBLIC_TREE_LIMITS.fileBytes) {
+      throw publicTreeError("Invalid public tree.", `${relativePath} exceeds the per-file public output limit.`);
+    }
+    totalBytes += contents.byteLength;
+    return { path: relativePath, contents };
+  });
+  if (normalized.length > PUBLIC_TREE_LIMITS.files) {
+    throw publicTreeError("Invalid public tree.", `Public output may contain at most ${PUBLIC_TREE_LIMITS.files} files.`);
+  }
+  if (totalBytes > PUBLIC_TREE_LIMITS.totalBytes) {
+    throw publicTreeError("Invalid public tree.", "Public output exceeds the aggregate size limit.");
+  }
+  if (!paths.has("index.html")) {
+    throw publicTreeError("Invalid public tree.", "Client output must contain a regular index.html file.");
+  }
+  return normalized;
+}
+function publicAsset(relativePath, contents) {
+  return {
+    body: Buffer.from(contents),
+    contentType: publicContentType(relativePath),
+    relativePath,
+    html: relativePath === "index.html"
+  };
 }
 function publicContentType(relativePath) {
   switch (path2.extname(relativePath).toLowerCase()) {
@@ -10402,12 +10473,13 @@ async function createBundle(projectDir, config, options = {}) {
   }).catch((error) => {
     throw tagBuildError(error, "server", frameworkBundleConfig.jsxImportSource);
   });
-  const clientBundle = await bundleClientSource(clientSource, {
+  const clientOutput = await bundleClientSource(clientSource, {
     clientSourcePath: paths.clientEntry,
     frameworkBundleConfig
   }).catch((error) => {
     throw tagBuildError(error, "client", frameworkBundleConfig.jsxImportSource);
   });
+  const clientBundle = clientOutput.clientBundle;
   const serverBundle = createServerBundleSource({
     config,
     serverEnv: sealedEnvelope ? {} : serverEnv,
@@ -10417,7 +10489,7 @@ async function createBundle(projectDir, config, options = {}) {
   });
   const publicTree = await createPublicTree(buildDir, [
     { path: "index.html", contents: indexHtml },
-    { path: "client.js", contents: clientBundle }
+    ...clientOutput.publicFiles
   ]).catch((error) => {
     throw tagBuildError(error, "public", frameworkBundleConfig.jsxImportSource);
   });
@@ -10431,6 +10503,8 @@ async function createBundle(projectDir, config, options = {}) {
       throw tagBuildError(new Error("Legacy Bundles are already published."), "publish", frameworkBundleConfig.jsxImportSource);
     }
     let previous;
+    const activeTreePath = path3.join(buildDir, ".public-trees", "active.json");
+    let previousActiveTree;
     try {
       previous = await Promise.all(legacyFiles.map(async (file) => ({
         target: file.target,
@@ -10439,7 +10513,19 @@ async function createBundle(projectDir, config, options = {}) {
           throw error;
         })
       })));
+      previousActiveTree = await readFile3(activeTreePath).catch((error) => {
+        if (errorDetails(error).code === "ENOENT") return null;
+        throw error;
+      });
       await publishLegacyBundles(buildDir, legacyFiles);
+      try {
+        await replaceBundleStateFile(activeTreePath, `${JSON.stringify({ tree: path3.basename(publicTree.root) })}
+`);
+      } catch (error) {
+        await publishLegacyBundles(buildDir, previous.filter((file) => file.contents !== null));
+        await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm2(file.target, { force: true })));
+        throw error;
+      }
       legacyPublished = true;
     } catch (error) {
       throw tagBuildError(error, "publish", frameworkBundleConfig.jsxImportSource);
@@ -10448,6 +10534,8 @@ async function createBundle(projectDir, config, options = {}) {
       const existing = previous.filter((file) => file.contents !== null);
       await publishLegacyBundles(buildDir, existing);
       await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm2(file.target, { force: true })));
+      if (previousActiveTree === null) await rm2(activeTreePath, { force: true });
+      else await replaceBundleStateFile(activeTreePath, previousActiveTree);
       legacyPublished = false;
     };
   };
@@ -10489,10 +10577,20 @@ async function createBundle(projectDir, config, options = {}) {
     }
   };
 }
-async function publishLegacyBundles(buildDir, files) {
+async function replaceBundleStateFile(filePath, contents) {
+  const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    await writeFile3(temporaryPath, contents);
+    await rename2(temporaryPath, filePath);
+  } finally {
+    await rm2(temporaryPath, { force: true });
+  }
+}
+async function publishLegacyBundles(buildDir, files, options = {}) {
   const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const stagingDir = path3.join(buildDir, `.legacy-staging-${nonce}`);
   const states = [];
+  let preserveStaging = false;
   await mkdir3(stagingDir, { recursive: false });
   try {
     for (const [index, file] of files.entries()) {
@@ -10516,19 +10614,34 @@ async function publishLegacyBundles(buildDir, files) {
           if (errorDetails(error).code !== "ENOENT") throw error;
         }
       }
-      for (const state of states) {
+      for (const [index, state] of states.entries()) {
+        options.fault?.("before-publish", index);
         await rename2(state.candidate, state.target);
         state.published = true;
       }
     } catch (error) {
-      for (const state of [...states].reverse()) {
-        if (state.published) await rm2(state.target, { force: true });
-        if (state.moved) await rename2(state.backup, state.target);
+      const recoveryFailures = [];
+      for (const [index, state] of [...states.entries()].reverse()) {
+        try {
+          options.fault?.("before-restore", index);
+          if (state.moved) await rename2(state.backup, state.target);
+          else if (state.published) await rm2(state.target, { force: true });
+        } catch {
+          recoveryFailures.push(index);
+        }
+      }
+      if (recoveryFailures.length > 0) {
+        preserveStaging = true;
+        throw commandError2(
+          "Legacy Bundle recovery is incomplete.",
+          `Preserved ${recoveryFailures.length} recovery backup${recoveryFailures.length === 1 ? "" : "s"} in ${path3.basename(stagingDir)}.`,
+          { failedFiles: recoveryFailures.length, recoveryDirectory: path3.basename(stagingDir) }
+        );
       }
       throw error;
     }
   } finally {
-    await rm2(stagingDir, { recursive: true, force: true });
+    if (!preserveStaging) await rm2(stagingDir, { recursive: true, force: true });
   }
 }
 async function readRequiredSealedPrivateKey(paths) {
@@ -10726,6 +10839,7 @@ function readFrameworkBundleConfig(framework) {
 async function bundleClientSource(clientSource, options) {
   const { build } = await import("esbuild");
   try {
+    const outputDir = path3.join(path3.dirname(options.clientSourcePath), ".sporades-esbuild-public");
     const result = await build({
       bundle: true,
       format: "esm",
@@ -10733,6 +10847,20 @@ async function bundleClientSource(clientSource, options) {
       write: false,
       logLevel: "silent",
       sourcemap: "inline",
+      outdir: outputDir,
+      entryNames: "client",
+      assetNames: "assets/[name]-[hash]",
+      loader: {
+        ".svg": "file",
+        ".png": "file",
+        ".jpg": "file",
+        ".jpeg": "file",
+        ".gif": "file",
+        ".webp": "file",
+        ".ico": "file",
+        ".woff": "file",
+        ".woff2": "file"
+      },
       jsx: "automatic",
       jsxImportSource: options.frameworkBundleConfig.jsxImportSource,
       stdin: {
@@ -10743,18 +10871,26 @@ async function bundleClientSource(clientSource, options) {
       },
       plugins: [sporadesClientPlugin()]
     });
-    const output = result.outputFiles?.[0];
-    if (!output) {
+    const outputs = result.outputFiles ?? [];
+    const clientOutput = outputs.find((output) => path3.relative(outputDir, output.path) === "client.js");
+    if (!clientOutput) {
       throw commandError2("Client bundle failed: esbuild returned no output.", "Fix client/index.tsx and save again.");
     }
-    return [
+    const clientBundle = [
       "// Sporades client bundle",
       `// JSX import source: ${options.frameworkBundleConfig.jsxImportSource}`,
       `// JSX runtime import: ${options.frameworkBundleConfig.jsxRuntimeImport}`,
       'console.log("Sporades client bundle loaded");',
       "",
-      output.text
+      clientOutput.text
     ].join("\n");
+    return {
+      clientBundle,
+      publicFiles: outputs.map((output) => {
+        const relativePath = path3.relative(outputDir, output.path).split(path3.sep).join("/");
+        return { path: relativePath, contents: relativePath === "client.js" ? clientBundle : output.contents };
+      })
+    };
   } catch (error) {
     const message = bundleErrorMessage(error);
     throw commandError2(`Client bundle failed: ${message}`, "Fix client/index.tsx and save again.");
@@ -10807,9 +10943,10 @@ function bundleErrorMessage(error) {
   }
   return typeof details.message === "string" ? details.message : "unknown error";
 }
-function commandError2(message, hint) {
+function commandError2(message, hint, diagnostics) {
   const error = new Error(message);
   error.hint = hint;
+  if (diagnostics !== void 0) error.diagnostics = diagnostics;
   return error;
 }
 function tagBuildError(error, phase, framework) {
@@ -16369,8 +16506,25 @@ async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
   const databaseEnv = Object.fromEntries(Object.entries(serviceEnv).filter(([key, value]) => key.startsWith("SPORADES_SERVICE_DATABASE_") && typeof value === "string"));
   const filePath = path7.join(projectDir, DEV_DATABASE_ENV_FILE);
   await mkdir6(path7.dirname(filePath), { recursive: true });
-  await writeFile6(filePath, `${JSON.stringify(databaseEnv)}
-`, { mode: 384 });
+  const previous = await readFile7(filePath).catch((error) => {
+    if (errorDetails2(error).code === "ENOENT") return null;
+    throw error;
+  });
+  await replaceFileAtomically(filePath, `${JSON.stringify(databaseEnv)}
+`);
+  return async () => {
+    if (previous === null) await rm4(filePath, { force: true });
+    else await replaceFileAtomically(filePath, previous);
+  };
+}
+async function replaceFileAtomically(filePath, contents) {
+  const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    await writeFile6(temporaryPath, contents, { mode: 384 });
+    await rename3(temporaryPath, filePath);
+  } finally {
+    await rm4(temporaryPath, { force: true });
+  }
 }
 async function inspectContainerJobs(options) {
   const { binding } = await requireLocalContainerBinding(options, "jobs");
@@ -16559,10 +16713,10 @@ async function startDevSession(options) {
         return;
       }
       const rawPublicPathname = (request.url ?? "/").split("?", 1)[0];
-      const publicAsset = await readPublicAsset(bundle.staticFiles.publicTree, rawPublicPathname);
-      if (publicAsset) {
-        response.writeHead(200, { "content-type": publicAsset.contentType });
-        response.end(publicAsset.html ? injectPageConnectionToken(publicAsset.body.toString("utf8"), websocketHub.createConnectionToken()) : publicAsset.body);
+      const publicAsset2 = await readPublicAsset(bundle.staticFiles.publicTree, rawPublicPathname);
+      if (publicAsset2) {
+        response.writeHead(200, { "content-type": publicAsset2.contentType });
+        response.end(publicAsset2.html ? injectPageConnectionToken(publicAsset2.body.toString("utf8"), websocketHub.createConnectionToken()) : publicAsset2.body);
         return;
       }
       response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
@@ -16723,6 +16877,7 @@ async function startDevSession(options) {
   const watchers = watchDevInputs(options.projectDir, async (change) => {
     let rebuild = null;
     let rollbackLegacy = null;
+    let rollbackServiceEnv = null;
     try {
       const nextConfig = await readProjectConfig(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
@@ -16735,6 +16890,11 @@ async function startDevSession(options) {
         throw tagDevRebuildError(error, "services", nextConfig);
       });
       const affectsServerRuntime = change.affectsServerRuntime || change.configChanged && configChangeAffectsServerRuntime(config, nextConfig);
+      if (affectsServerRuntime) {
+        rollbackServiceEnv = await writeActiveDevDatabaseServiceEnv(options.projectDir, nextCapsuleServiceEnv).catch((error) => {
+          throw tagDevRebuildError(error, "runtime", nextConfig);
+        });
+      }
       rollbackLegacy = await rebuild.publishLegacy();
       if (affectsServerRuntime) {
         await runtime.restart(
@@ -16747,13 +16907,13 @@ async function startDevSession(options) {
           throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });
         });
         runtimeServiceEnv = nextCapsuleServiceEnv;
-        await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
         fatalRestartAttempts = 0;
         websocketHub.disconnectAll();
       }
       const previousBundle = bundle;
       bundle = rebuild;
-      discardPublicTree(previousBundle.staticFiles.publicTree).catch(() => {
+      discardPublicTree(previousBundle.staticFiles.publicTree).catch((error) => {
+        reportDevPublicCleanupDegradation(options, runtime, url, actualPort, nextConfig, error);
       });
       config = nextConfig;
       security = nextSecurity;
@@ -16778,8 +16938,16 @@ async function startDevSession(options) {
           rebuildError = tagDevRebuildError(rollbackError, "publish", config);
         }
       }
+      if (rollbackServiceEnv) {
+        try {
+          await rollbackServiceEnv();
+        } catch (rollbackError) {
+          rebuildError = tagDevRebuildError(rollbackError, "runtime", config);
+        }
+      }
       if (rebuild && rebuild !== bundle) {
-        await discardPublicTree(rebuild.staticFiles.publicTree).catch(() => {
+        await discardPublicTree(rebuild.staticFiles.publicTree).catch((cleanupError) => {
+          reportDevPublicCleanupDegradation(options, runtime, url, actualPort, config, cleanupError);
         });
       }
       const details = errorDetails2(rebuildError);
@@ -16807,7 +16975,8 @@ async function startDevSession(options) {
         },
         {
           message: details.message,
-          hint: details.hint ?? "Fix the build error and save again."
+          hint: details.hint ?? "Fix the build error and save again.",
+          ...details.diagnostics ? { diagnostics: details.diagnostics } : {}
         }
       );
     }
@@ -16844,6 +17013,29 @@ function tagDevRebuildError(error, phase, config, options = {}) {
   tagged.framework = config.client?.framework ?? "react";
   tagged.toolchain = "esbuild";
   return tagged;
+}
+function reportDevPublicCleanupDegradation(options, runtime, url, port, config, error) {
+  runtime.database.log.emit({
+    category: "platform",
+    event: "dev.public-tree.cleanup.degraded",
+    level: "warn",
+    message: "Public tree cleanup degraded",
+    data: { message: errorDetails2(error).message }
+  });
+  emitDevEvent(
+    options,
+    {
+      event: "cleanup",
+      status: "degraded",
+      url,
+      port,
+      build: { phase: "public", framework: config.client?.framework ?? "react", toolchain: "esbuild" }
+    },
+    {
+      message: "Public tree cleanup degraded.",
+      hint: "A later rebuild will retry bounded cleanup while preserving the active public tree."
+    }
+  );
 }
 async function createDevRuntime(options) {
   let database = await openDevDatabase(

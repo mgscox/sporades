@@ -1,10 +1,18 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { createPublicTree, readPublicAsset, validatePublicTree } from "../dist/public-tree.js";
+import { publishLegacyBundles } from "../dist/bundle-pipeline.js";
+import {
+  PUBLIC_TREE_LIMITS,
+  cleanupPublicTrees,
+  createPublicTree,
+  readPublicAsset,
+  validatePublicFiles,
+  validatePublicTree,
+} from "../dist/public-tree.js";
 
 async function withTempDir(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-public-tree-"));
@@ -74,6 +82,98 @@ test("the validated asset snapshot is race-safe when an output path becomes a sy
       assert.equal((await readPublicAsset(tree, "/client.js")).body.toString("utf8"), "safe client");
     }
     await assert.rejects(validatePublicTree(tree.root), /Invalid public tree/);
+  });
+});
+
+test("public snapshots copy validated inputs and ignore later file growth", async () => {
+  await withTempDir(async (buildDir) => {
+    const mutableClient = Buffer.from("bounded client");
+    const tree = await createPublicTree(buildDir, [
+      { path: "index.html", contents: "safe html" },
+      { path: "client.js", contents: mutableClient },
+    ]);
+    mutableClient.fill("x");
+    await writeFile(path.join(tree.root, "client.js"), Buffer.alloc(PUBLIC_TREE_LIMITS.fileBytes + 1, 1));
+    assert.equal((await readPublicAsset(tree, "/client.js")).body.toString("utf8"), "bounded client");
+
+    const fullSized = Buffer.alloc(PUBLIC_TREE_LIMITS.fileBytes);
+    assert.throws(
+      () => validatePublicFiles([
+        { path: "index.html", contents: "x" },
+        { path: "assets/one.bin", contents: fullSized },
+        { path: "assets/two.bin", contents: fullSized },
+        { path: "assets/three.bin", contents: fullSized },
+        { path: "assets/four.bin", contents: fullSized },
+      ]),
+      (error) => /aggregate size limit/.test(error.hint),
+    );
+  });
+});
+
+test("public tree cleanup stays bounded and preserves the newest recoverable trees", async () => {
+  await withTempDir(async (buildDir) => {
+    const active = await createPublicTree(buildDir, [
+      { path: "index.html", contents: "active tree" },
+      { path: "client.js", contents: "active client" },
+    ]);
+    const treesDir = path.join(buildDir, ".public-trees");
+    await writeFile(path.join(treesDir, "active.json"), `${JSON.stringify({ tree: path.basename(active.root) })}\n`);
+    let newest = active;
+    for (let index = 0; index < 5; index += 1) {
+      newest = await createPublicTree(buildDir, [
+        { path: "index.html", contents: `tree ${index}` },
+        { path: "client.js", contents: `client ${index}` },
+      ]);
+    }
+    const completed = (await readdir(treesDir)).filter((name) => !name.startsWith(".staging-") && name !== "active.json");
+    assert.equal(completed.length, 2);
+    await access(active.root);
+    await access(newest.root);
+
+    const staleStaging = path.join(treesDir, ".staging-stale");
+    await mkdir(staleStaging);
+    await assert.rejects(
+      cleanupPublicTrees(buildDir, {
+        keepRoots: [newest.root],
+        fault: (_event, entryPath) => {
+          if (entryPath === staleStaging) throw new Error("injected cleanup failure");
+        },
+      }),
+      (error) => error.message === "Public tree cleanup degraded." && /active and recoverable trees were preserved/.test(error.hint),
+    );
+    await access(newest.root);
+    await access(staleStaging);
+  });
+});
+
+test("legacy Bundle rollback restores every recoverable file and preserves failed backups", async () => {
+  await withTempDir(async (buildDir) => {
+    const server = path.join(buildDir, "server.mjs");
+    const client = path.join(buildDir, "client.js");
+    await writeFile(server, "old server");
+    await writeFile(client, "old client");
+
+    await assert.rejects(
+      publishLegacyBundles(
+        buildDir,
+        [
+          { target: server, contents: "new server" },
+          { target: client, contents: "new client" },
+        ],
+        {
+          fault: (event, index) => {
+            if (event === "before-publish" && index === 1) throw new Error("injected publish failure");
+            if (event === "before-restore" && index === 0) throw new Error("injected restore failure");
+          },
+        },
+      ),
+      (error) => error.message === "Legacy Bundle recovery is incomplete." && error.diagnostics.failedFiles === 1,
+    );
+
+    assert.equal(await readFile(client, "utf8"), "old client");
+    const recoveryDirName = (await readdir(buildDir)).find((name) => name.startsWith(".legacy-staging-"));
+    assert.ok(recoveryDirName);
+    assert.equal(await readFile(path.join(buildDir, recoveryDirName, "backup-0"), "utf8"), "old server");
   });
 });
 

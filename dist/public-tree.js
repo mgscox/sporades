@@ -6,30 +6,35 @@ export const PUBLIC_TREE_LIMITS = {
     totalBytes: 64 * 1024 * 1024,
     pathBytes: 240,
 };
-export async function createPublicTree(buildDir, files) {
+export async function createPublicTree(buildDir, files, options = {}) {
     const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const treesDir = path.join(buildDir, ".public-trees");
     const stagingDir = path.join(treesDir, `.staging-${nonce}`);
     const publicDir = path.join(treesDir, nonce);
-    const inputPaths = new Map();
+    const normalizedFiles = normalizePublicFiles(files);
     await mkdir(treesDir, { recursive: true });
+    await cleanupPublicTrees(buildDir, { maxCompleted: 2, fault: options.cleanupFault });
     await mkdir(stagingDir, { recursive: false });
+    let published = false;
     try {
-        for (const file of files) {
-            const relativePath = validateRelativePublicPath(file.path);
-            const canonicalPath = relativePath.normalize("NFC");
-            const collision = inputPaths.get(canonicalPath);
-            if (collision) {
-                throw publicTreeError("Invalid public tree.", `Remove the normalization collision between ${collision} and ${relativePath}.`);
-            }
-            inputPaths.set(canonicalPath, relativePath);
-            const destination = path.join(stagingDir, ...relativePath.split("/"));
+        for (const file of normalizedFiles) {
+            const destination = path.join(stagingDir, ...file.path.split("/"));
             await mkdir(path.dirname(destination), { recursive: true });
             await writeFile(destination, file.contents);
         }
-        const tree = await snapshotPublicTree(stagingDir);
+        await validatePublicTree(stagingDir);
         await rename(stagingDir, publicDir);
-        return { ...tree, root: publicDir };
+        published = true;
+        await cleanupPublicTrees(buildDir, { keepRoots: [publicDir], maxCompleted: 2, fault: options.cleanupFault });
+        return {
+            root: publicDir,
+            assets: new Map(normalizedFiles.map((file) => [file.path, publicAsset(file.path, file.contents)])),
+        };
+    }
+    catch (error) {
+        if (published)
+            await rm(publicDir, { recursive: true, force: true });
+        throw error;
     }
     finally {
         await rm(stagingDir, { recursive: true, force: true });
@@ -89,27 +94,66 @@ export async function validatePublicTree(root) {
     }
     return { fileCount, totalBytes };
 }
-export async function snapshotPublicTree(root) {
-    await validatePublicTree(root);
-    const assets = new Map();
-    async function visit(directory, prefix = "") {
-        for (const entry of await readdir(directory, { withFileTypes: true })) {
-            const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-            if (entry.isDirectory()) {
-                await visit(path.join(directory, entry.name), relativePath);
-            }
-            else {
-                assets.set(relativePath, {
-                    body: await readFile(path.join(directory, entry.name)),
-                    contentType: publicContentType(relativePath),
-                    relativePath,
-                    html: relativePath === "index.html",
-                });
-            }
+export function validatePublicFiles(files) {
+    const normalized = normalizePublicFiles(files);
+    return {
+        fileCount: normalized.length,
+        totalBytes: normalized.reduce((total, file) => total + file.contents.byteLength, 0),
+    };
+}
+export async function cleanupPublicTrees(buildDir, options = {}) {
+    const treesDir = path.join(buildDir, ".public-trees");
+    const entries = await readdir(treesDir, { withFileTypes: true }).catch((error) => {
+        if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
+            return [];
+        throw error;
+    });
+    const keepNames = new Set((options.keepRoots ?? []).filter((root) => path.dirname(root) === treesDir).map((root) => path.basename(root)));
+    let activeReference = null;
+    let activeReferenceExists = false;
+    try {
+        const activeReferenceRaw = await readFile(path.join(treesDir, "active.json"), "utf8");
+        activeReferenceExists = true;
+        activeReference = JSON.parse(activeReferenceRaw)?.tree;
+    }
+    catch (error) {
+        if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
+            throw publicTreeError("Public tree cleanup degraded.", "The active public tree reference could not be read safely; no completed public trees were removed.");
         }
     }
-    await visit(root);
-    return { root, assets };
+    if (activeReferenceExists && !(typeof activeReference === "string" && !activeReference.includes("/") && !activeReference.includes("\\"))) {
+        throw publicTreeError("Public tree cleanup degraded.", "The active public tree reference is invalid; no completed public trees were removed.");
+    }
+    if (typeof activeReference === "string") {
+        keepNames.add(activeReference);
+    }
+    const completed = await Promise.all(entries
+        .filter((entry) => entry.isDirectory() && !entry.name.startsWith(".staging-"))
+        .map(async (entry) => ({ entry, modifiedAt: (await lstat(path.join(treesDir, entry.name))).mtimeMs })));
+    completed.sort((left, right) => right.modifiedAt - left.modifiedAt);
+    for (const item of completed) {
+        if (keepNames.size >= (options.maxCompleted ?? 2))
+            break;
+        keepNames.add(item.entry.name);
+    }
+    const failures = [];
+    for (const entry of entries) {
+        if (entry.name === "active.json")
+            continue;
+        if (keepNames.has(entry.name))
+            continue;
+        const entryPath = path.join(treesDir, entry.name);
+        try {
+            options.fault?.("before-remove", entryPath);
+            await rm(entryPath, { recursive: true, force: true });
+        }
+        catch {
+            failures.push(entry.name);
+        }
+    }
+    if (failures.length > 0) {
+        throw publicTreeError("Public tree cleanup degraded.", `Could not remove ${failures.length} stale public tree entr${failures.length === 1 ? "y" : "ies"}; the active and recoverable trees were preserved.`);
+    }
 }
 export async function readPublicAsset(tree, rawPathname) {
     const relativePath = publicPathFromRequest(rawPathname);
@@ -150,6 +194,43 @@ function validateRelativePublicPath(value) {
         throw publicTreeError("Invalid public path.", "Public paths cannot be empty, current-directory, or parent-directory paths.");
     }
     return segments.join("/");
+}
+function normalizePublicFiles(files) {
+    const paths = new Map();
+    let totalBytes = 0;
+    const normalized = files.map((file) => {
+        const relativePath = validateRelativePublicPath(file.path);
+        const canonicalPath = relativePath.normalize("NFC");
+        const collision = paths.get(canonicalPath);
+        if (collision) {
+            throw publicTreeError("Invalid public tree.", `Remove the normalization collision between ${collision} and ${relativePath}.`);
+        }
+        paths.set(canonicalPath, relativePath);
+        const contents = Buffer.from(typeof file.contents === "string" ? file.contents : file.contents);
+        if (contents.byteLength > PUBLIC_TREE_LIMITS.fileBytes) {
+            throw publicTreeError("Invalid public tree.", `${relativePath} exceeds the per-file public output limit.`);
+        }
+        totalBytes += contents.byteLength;
+        return { path: relativePath, contents };
+    });
+    if (normalized.length > PUBLIC_TREE_LIMITS.files) {
+        throw publicTreeError("Invalid public tree.", `Public output may contain at most ${PUBLIC_TREE_LIMITS.files} files.`);
+    }
+    if (totalBytes > PUBLIC_TREE_LIMITS.totalBytes) {
+        throw publicTreeError("Invalid public tree.", "Public output exceeds the aggregate size limit.");
+    }
+    if (!paths.has("index.html")) {
+        throw publicTreeError("Invalid public tree.", "Client output must contain a regular index.html file.");
+    }
+    return normalized;
+}
+function publicAsset(relativePath, contents) {
+    return {
+        body: Buffer.from(contents),
+        contentType: publicContentType(relativePath),
+        relativePath,
+        html: relativePath === "index.html",
+    };
 }
 function publicContentType(relativePath) {
     switch (path.extname(relativePath).toLowerCase()) {
