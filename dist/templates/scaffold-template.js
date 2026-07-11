@@ -21,6 +21,7 @@ export function scaffoldFiles(options) {
             "@types/react-dom": "^19.0.0",
         }
         : framework === "vue" ? {
+            "@vitejs/plugin-vue": "^5.2.4",
             "@vue/compiler-sfc": "^3.5.13",
         } : {};
     const baseTemplateFiles = framework === "vanilla" ? vanillaTemplateFiles(renderOptions) : templateOptions.files(renderOptions);

@@ -66,7 +66,7 @@ for (const { framework, template } of [
       "--no-install", "--no-git", "--json",
     ], root);
     assert.equal(created.code, 0, created.stderr);
-    await execFileAsync("npm", ["install", "--omit=dev", "--ignore-scripts", "--package-lock=false"], {
+    await execFileAsync("npm", ["install", ...(framework === "vue" ? [] : ["--omit=dev"]), "--ignore-scripts", "--package-lock=false"], {
       cwd: projectDir,
       timeout: 120_000,
       maxBuffer: 10 * 1024 * 1024,
@@ -79,6 +79,14 @@ for (const { framework, template } of [
       if (framework === "vue") assert.equal(packageJson.devDependencies["@vue/compiler-sfc"], "^3.5.13");
       assert.equal(packageJson.dependencies.react, undefined);
       assert.equal(packageJson.dependencies["react-dom"], undefined);
+      if (framework === "vue") {
+        assert.equal(packageJson.devDependencies["@vitejs/plugin-vue"], "^5.2.4");
+        await access(path.join(projectDir, "node_modules", "@vitejs", "plugin-vue", "package.json"));
+        await access(path.join(projectDir, "node_modules", "@vue", "compiler-sfc", "package.json"));
+        const sporadesPackage = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
+        assert.equal(sporadesPackage.dependencies["@vitejs/plugin-vue"], undefined);
+        assert.equal(sporadesPackage.dependencies["@vue/compiler-sfc"], undefined);
+      }
     }
     await writeFile(path.join(projectDir, ".env"), "VITE_REAL_CONTAINER_LEAK=browser-secret-must-not-ship\n");
     await writeFile(path.join(projectDir, ".env.sporades.server"), "SERVER_REAL_CONTAINER_LEAK=server-secret-must-not-ship\n");

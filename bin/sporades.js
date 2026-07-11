@@ -6,17 +6,19 @@ import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes5, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { appendFile, chmod as chmod2, cp, lstat as lstat4, mkdir as mkdir6, readdir as readdir2, readFile as readFile7, rename as rename3, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
+import { appendFile, chmod as chmod2, cp, lstat as lstat4, mkdir as mkdir6, readdir as readdir2, readFile as readFile8, rename as rename3, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
 import path8 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/bundle-pipeline.ts
-import { lstat as lstat2, mkdir as mkdir3, readFile as readFile3, rename as rename2, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
+import { lstat as lstat2, mkdir as mkdir3, readFile as readFile4, rename as rename2, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
 import path4 from "node:path";
 
 // src/client-toolchain.ts
 import path from "node:path";
-import { realpath } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 
 // src/templates/client-runtime-template.ts
 function createClientRuntimeSource() {
@@ -177,14 +179,32 @@ export function createVueComposables(primitives) {
   }
 
   function useMutation(name) {
-    const state = reactive({ error: null, loading: false });
+    const state = reactive({ data: null, error: null, loading: false });
+    let pending = 0;
+    let latestInvocation = 0;
     state.run = async (...args) => {
+      const invocation = ++latestInvocation;
+      pending += 1;
+      state.data = null;
       state.error = null;
       state.loading = true;
-      const result = await mutations.run(name, ...args);
-      state.error = result.error ?? null;
-      state.loading = false;
-      return result;
+      try {
+        const result = await mutations.run(name, ...args);
+        if (invocation === latestInvocation) {
+          state.data = result.error ? null : result.data ?? null;
+          state.error = result.error ?? null;
+        }
+        return result;
+      } catch (error) {
+        if (invocation === latestInvocation) {
+          state.data = null;
+          state.error = normalizeVueMutationError(error);
+        }
+        throw error;
+      } finally {
+        pending -= 1;
+        state.loading = pending > 0;
+      }
     };
     return state;
   }
@@ -201,6 +221,13 @@ export function createVueComposables(primitives) {
   }
 
   return { useQuery, useMutation, useAuth };
+}
+
+function normalizeVueMutationError(error) {
+  if (error && typeof error === "object" && typeof error.message === "string") {
+    return { message: error.message, ...(typeof error.hint === "string" ? { hint: error.hint } : {}) };
+  }
+  return { message: typeof error === "string" && error ? error : "Mutation failed." };
 }
 
 let connection;
@@ -892,13 +919,13 @@ async function buildEsbuild(options) {
 async function buildVite(options) {
   const { build } = await import("vite");
   const frameworkPlugins = [];
-  if (options.frameworkConfig.framework === "vue") {
-    const { default: vue } = await import("@vitejs/plugin-vue");
-    frameworkPlugins.push(vue());
-  }
   let projectRoot = path.resolve(options.projectDir);
   try {
     projectRoot = await realpath(options.projectDir);
+    if (options.frameworkConfig.framework === "vue") {
+      const { plugin, compiler } = await loadProjectVueToolchain(projectRoot);
+      frameworkPlugins.push(plugin({ compiler }));
+    }
     const result = await build({
       root: projectRoot,
       base: "/",
@@ -953,6 +980,70 @@ async function buildVite(options) {
     if (hasHint(error)) throw error;
     throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
   }
+}
+async function loadProjectVueToolchain(projectRoot) {
+  const requiredPackages = [
+    { name: "@vitejs/plugin-vue", major: 5 },
+    { name: "@vue/compiler-sfc", major: 3 }
+  ];
+  let projectManifest;
+  try {
+    projectManifest = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
+  } catch {
+    throw vueProjectToolchainError("Vue/Vite could not read the Capsule package.json.");
+  }
+  const declared = { ...projectManifest.dependencies ?? {}, ...projectManifest.devDependencies ?? {} };
+  const projectRequire = createRequire(path.join(projectRoot, "package.json"));
+  const loaded = /* @__PURE__ */ new Map();
+  for (const required of requiredPackages) {
+    if (typeof declared[required.name] !== "string") {
+      throw vueProjectToolchainError(`Vue/Vite requires the Capsule to declare ${required.name}.`);
+    }
+    const packageDir = path.join(projectRoot, "node_modules", ...required.name.split("/"));
+    let installedManifest;
+    let resolved;
+    try {
+      installedManifest = JSON.parse(await readFile(path.join(packageDir, "package.json"), "utf8"));
+      resolved = projectRequire.resolve(required.name);
+      const canonicalPackageDir = await realpath(packageDir);
+      const canonicalResolved = await realpath(resolved);
+      const relativeResolved = path.relative(canonicalPackageDir, canonicalResolved);
+      if (!relativeResolved || relativeResolved.startsWith("..") || path.isAbsolute(relativeResolved)) throw new Error("package entry escaped its project-owned package root");
+      resolved = canonicalResolved;
+    } catch {
+      throw vueProjectToolchainError(`Vue/Vite could not resolve project-owned ${required.name}.`);
+    }
+    const installedMajor = Number.parseInt(String(installedManifest.version).split(".")[0] ?? "", 10);
+    if (installedMajor !== required.major) {
+      throw vueProjectToolchainError(
+        `Vue/Vite does not support the installed ${required.name} version.`,
+        { package: required.name, installedVersion: String(installedManifest.version).slice(0, 40), supportedMajor: required.major }
+      );
+    }
+    try {
+      loaded.set(required.name, await import(pathToFileURL(resolved).href));
+    } catch (error) {
+      throw vueProjectToolchainError(
+        `Vue/Vite could not load project-owned ${required.name}: ${boundedBuildMessage(error, [projectRoot])}`,
+        { package: required.name }
+      );
+    }
+  }
+  const pluginModule = loaded.get("@vitejs/plugin-vue");
+  const compilerModule = loaded.get("@vue/compiler-sfc");
+  const plugin = pluginModule?.default?.default ?? pluginModule?.default ?? pluginModule;
+  const compiler = compilerModule?.default ?? compilerModule;
+  if (typeof plugin !== "function" || typeof compiler?.parse !== "function") {
+    throw vueProjectToolchainError("Vue/Vite project compiler packages have incompatible exports.");
+  }
+  return { plugin, compiler };
+}
+function vueProjectToolchainError(message, diagnostics) {
+  return clientToolchainError(
+    message,
+    "Run `npm install` in the Vue Capsule to install its declared @vitejs/plugin-vue and @vue/compiler-sfc versions.",
+    diagnostics
+  );
 }
 function sporadesEsbuildClientPlugin() {
   return {
@@ -1042,7 +1133,7 @@ function hasHint(error) {
 
 // src/sealed-server-env.ts
 import { createCipheriv, createDecipheriv, createHash, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes } from "node:crypto";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { readFile as readFile2, writeFile, mkdir } from "node:fs/promises";
 import path2 from "node:path";
 var ENVELOPE_VERSION = 1;
 var KEY_ALGORITHM = "rsa";
@@ -1079,8 +1170,8 @@ async function ensureSealedServerEnvKeyPair(paths = sealedServerEnvPaths(process
 async function readKeyPair(paths) {
   try {
     const [publicKey, privateKey] = await Promise.all([
-      readFile(paths.publicKey, "utf8"),
-      readFile(paths.privateKey, "utf8")
+      readFile2(paths.publicKey, "utf8"),
+      readFile2(paths.privateKey, "utf8")
     ]);
     return {
       publicKey,
@@ -1134,7 +1225,7 @@ function unsealServerEnv(envelope, privateKey) {
 }
 async function readSealedServerEnv(paths) {
   try {
-    const envelope = JSON.parse(await readFile(paths.envelope, "utf8"));
+    const envelope = JSON.parse(await readFile2(paths.envelope, "utf8"));
     validateEnvelope(envelope);
     return envelope;
   } catch (error) {
@@ -2553,8 +2644,8 @@ function createLocalFileStorageAdapter({ storagePath }) {
       await writeFile7(localFileVersionPath(storagePath, fileId, version), bytes);
     },
     async readFileVersion({ fileId, version }) {
-      const { readFile: readFile8 } = await import("node:fs/promises");
-      return await readFile8(localFileVersionPath(storagePath, fileId, version));
+      const { readFile: readFile9 } = await import("node:fs/promises");
+      return await readFile9(localFileVersionPath(storagePath, fileId, version));
     },
     async deleteFileVersion({ fileId, version }) {
       const { rm: rm5 } = await import("node:fs/promises");
@@ -10688,7 +10779,7 @@ function unsealRuntimeServerEnv(envelope, privateKey) {
 }
 
 // src/public-tree.ts
-import { lstat, mkdir as mkdir2, readdir, readFile as readFile2, rename, rm, writeFile as writeFile2 } from "node:fs/promises";
+import { lstat, mkdir as mkdir2, readdir, readFile as readFile3, rename, rm, writeFile as writeFile2 } from "node:fs/promises";
 import { randomBytes as randomBytes3 } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -10768,7 +10859,7 @@ async function releasePublicTreeLease(tree) {
 async function readPublicTreeConsumer(buildDir, consumer) {
   validateConsumerName(consumer);
   const recordPath = path3.join(buildDir, ".public-trees", ".consumers", `${consumer}.json`);
-  const record = await readFile2(recordPath, "utf8").then(JSON.parse).catch((error) => {
+  const record = await readFile3(recordPath, "utf8").then(JSON.parse).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw error;
   });
@@ -10840,7 +10931,7 @@ async function removePublicTreeConsumer(buildDir, consumer, expectedCurrent) {
   }
 }
 async function verifyConsumerExpectation(recordPath, consumer, expected) {
-  const raw = await readFile2(recordPath, "utf8").catch((error) => {
+  const raw = await readFile3(recordPath, "utf8").catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw error;
   });
@@ -11081,7 +11172,7 @@ async function createPublicTreeLease(treesDir, treeName) {
 }
 async function removePublicTreeLease(lease) {
   await stopOwnerHeartbeat(lease.token);
-  const record = await readFile2(lease.path, "utf8").then(JSON.parse).catch((error) => {
+  const record = await readFile3(lease.path, "utf8").then(JSON.parse).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw error;
   });
@@ -11102,7 +11193,7 @@ async function publicTreeLeaseStates(treesDir, now) {
   const stale = /* @__PURE__ */ new Set();
   for (const entry of entries) {
     try {
-      const lease = JSON.parse(await readFile2(path3.join(leasesDir, entry), "utf8"));
+      const lease = JSON.parse(await readFile3(path3.join(leasesDir, entry), "utf8"));
       if (validLeaseRecord(lease)) {
         if (await leaseIsLive(lease, path3.join(leasesDir, entry), now)) live.add(lease.tree);
         else stale.add(lease.tree);
@@ -11123,7 +11214,7 @@ async function removeStalePublicTreeLeases(treesDir, completedNames, now) {
     const leasePath = path3.join(leasesDir, entry);
     let lease = null;
     try {
-      lease = JSON.parse(await readFile2(leasePath, "utf8"));
+      lease = JSON.parse(await readFile3(leasePath, "utf8"));
     } catch {
     }
     if (!validLeaseRecord(lease) || !completedNames.has(lease.tree) || !await leaseIsLive(lease, leasePath, now)) {
@@ -11146,7 +11237,7 @@ async function leaseIsLive(lease, recordPath, now) {
 }
 async function readActivePublicTreeReference(treesDir) {
   try {
-    return await validateActivePublicTreeReference(treesDir, await readFile2(path3.join(treesDir, "active.json"), "utf8"));
+    return await validateActivePublicTreeReference(treesDir, await readFile3(path3.join(treesDir, "active.json"), "utf8"));
   } catch (error) {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw publicTreeError(
@@ -11179,7 +11270,7 @@ async function acquirePublicTreeLock(treesDir) {
       if (processStart === null) startOwnerHeartbeat(ownerPath, owner);
       return async () => {
         await stopOwnerHeartbeat(token);
-        const currentOwner = await readFile2(ownerPath, "utf8").then(JSON.parse).catch((error) => {
+        const currentOwner = await readFile3(ownerPath, "utf8").then(JSON.parse).catch((error) => {
           if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
           throw error;
         });
@@ -11191,7 +11282,7 @@ async function acquirePublicTreeLock(treesDir) {
       };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
-      const owner = await readFile2(path3.join(lockDir, "owner.json"), "utf8").then((raw) => JSON.parse(raw)).catch(() => null);
+      const owner = await readFile3(path3.join(lockDir, "owner.json"), "utf8").then((raw) => JSON.parse(raw)).catch(() => null);
       if (owner !== null && !await ownerIdentityIsLive(owner, path3.join(lockDir, "owner.json"))) {
         await rm(lockDir, { recursive: true, force: true });
         continue;
@@ -11225,7 +11316,7 @@ function startOwnerHeartbeat(recordPath, record) {
   let inFlight = Promise.resolve();
   const heartbeatPath = ownerHeartbeatPath(recordPath, record.token);
   const refresh = async () => {
-    const current = await readFile2(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    const current = await readFile3(recordPath, "utf8").then(JSON.parse).catch(() => null);
     if (!validOwnerRecord(current) || current.token !== record.token) {
       stopped = true;
       clearInterval(timer);
@@ -11255,7 +11346,7 @@ async function publishOwnerHeartbeat(recordPath, token, heartbeatAt, options = {
     await writeFile2(temporaryPath, `${JSON.stringify({ token, heartbeatAt })}
 `, { flag: "wx" });
     await options.afterTempWrite?.();
-    const currentOwner = await readFile2(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    const currentOwner = await readFile3(recordPath, "utf8").then(JSON.parse).catch(() => null);
     if (!validOwnerRecord(currentOwner) || currentOwner.token !== token) {
       throw publicTreeError("Public tree ownership changed.", "Discard the obsolete heartbeat without replacing its successor.");
     }
@@ -11271,7 +11362,7 @@ function ownerHeartbeatPath(recordPath, token) {
 }
 async function readOwnerHeartbeat(recordPath, owner) {
   try {
-    const heartbeat = JSON.parse(await readFile2(ownerHeartbeatPath(recordPath, owner.token), "utf8"));
+    const heartbeat = JSON.parse(await readFile3(ownerHeartbeatPath(recordPath, owner.token), "utf8"));
     if (!(heartbeat && heartbeat.token === owner.token && Number.isFinite(heartbeat.heartbeatAt))) return Number.NaN;
     return heartbeat.heartbeatAt;
   } catch (error) {
@@ -11288,10 +11379,10 @@ async function removeOrphanedOwnerHeartbeats(treesDir) {
   const retained = /* @__PURE__ */ new Set();
   const leaseFiles = await readdir(path3.join(treesDir, ".leases")).catch(() => []);
   for (const entry of leaseFiles) {
-    const lease = await readFile2(path3.join(treesDir, ".leases", entry), "utf8").then(JSON.parse).catch(() => null);
+    const lease = await readFile3(path3.join(treesDir, ".leases", entry), "utf8").then(JSON.parse).catch(() => null);
     if (validLeaseRecord(lease)) retained.add(lease.token);
   }
-  const lock = await readFile2(path3.join(treesDir, ".lifecycle-lock", "owner.json"), "utf8").then(JSON.parse).catch(() => null);
+  const lock = await readFile3(path3.join(treesDir, ".lifecycle-lock", "owner.json"), "utf8").then(JSON.parse).catch(() => null);
   if (validOwnerRecord(lock)) retained.add(lock.token);
   const heartbeatDir = path3.join(treesDir, ".owner-heartbeats");
   const heartbeatFiles = await readdir(heartbeatDir).catch(() => []);
@@ -11315,7 +11406,7 @@ async function publicTreeConsumerNames(treesDir) {
   for (const entry of entries) {
     const recordPath = path3.join(consumersDir, entry);
     const consumer = entry.endsWith(".json") ? entry.slice(0, -5) : "";
-    const record = await readFile2(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    const record = await readFile3(recordPath, "utf8").then(JSON.parse).catch(() => null);
     if (!validConsumerRecord(record, consumer)) {
       await rm(recordPath, { recursive: true, force: true });
       continue;
@@ -11354,7 +11445,7 @@ async function getProcessStartIdentity(pid, options = {}) {
   const platform = options.platform ?? process.platform;
   if (platform === "linux") {
     try {
-      const stat = await readFile2(`/proc/${pid}/stat`, "utf8");
+      const stat = await readFile3(`/proc/${pid}/stat`, "utf8");
       const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
       return fields[19] ? `linux:${fields[19]}` : null;
     } catch {
@@ -11501,12 +11592,12 @@ async function createBundle(projectDir, config, options = {}) {
     try {
       previous = await Promise.all(legacyFiles.map(async (file) => ({
         target: file.target,
-        contents: await readFile3(file.target).catch((error) => {
+        contents: await readFile4(file.target).catch((error) => {
           if (errorDetails2(error).code === "ENOENT") return null;
           throw error;
         })
       })));
-      previousActiveTree = await readFile3(activeTreePath).catch((error) => {
+      previousActiveTree = await readFile4(activeTreePath).catch((error) => {
         if (errorDetails2(error).code === "ENOENT") return null;
         throw error;
       });
@@ -11596,7 +11687,7 @@ async function restoreLegacyBundleFiles(buildDir, previous) {
 }
 async function inspectActiveTreeState(filePath) {
   try {
-    return await parseActiveTreeState(await readFile3(filePath, "utf8"), path4.dirname(filePath));
+    return await parseActiveTreeState(await readFile4(filePath, "utf8"), path4.dirname(filePath));
   } catch (error) {
     if (errorDetails2(error).code === "ENOENT") return { kind: "missing" };
     return { kind: "invalid" };
@@ -11727,7 +11818,7 @@ async function bundleServerCapsuleModule(options) {
 }
 async function readServerEnvFile(envPath) {
   try {
-    const raw = await readFile3(envPath, "utf8");
+    const raw = await readFile4(envPath, "utf8");
     if (Buffer.byteLength(raw, "utf8") > 64 * 1024) {
       throw commandError2("Invalid server env file.", ".env.sporades.server must be 64KB or smaller.");
     }
@@ -11865,7 +11956,7 @@ function validateAuthConfig(config, serverEnv) {
 }
 async function readRequiredFile(filePath, message, hint) {
   try {
-    return await readFile3(filePath, "utf8");
+    return await readFile4(filePath, "utf8");
   } catch (error) {
     if (errorDetails2(error).code === "ENOENT") {
       throw commandError2(message, hint);
@@ -12068,6 +12159,7 @@ function scaffoldFiles(options) {
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0"
   } : framework === "vue" ? {
+    "@vitejs/plugin-vue": "^5.2.4",
     "@vue/compiler-sfc": "^3.5.13"
   } : {};
   const baseTemplateFiles = framework === "vanilla" ? vanillaTemplateFiles(renderOptions) : templateOptions.files(renderOptions);
@@ -13804,7 +13896,7 @@ function escapeHtml(value) {
 
 // src/capsule-services.ts
 import { randomBytes as randomBytes4 } from "node:crypto";
-import { mkdir as mkdir4, readFile as readFile4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir4, readFile as readFile5, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
 import path5 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
 var SUPPORTED_DATABASE_ENGINES = /* @__PURE__ */ new Set(["libsql", "postgres"]);
@@ -13869,7 +13961,7 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
   const credentialsPath = path5.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
   let existing = {};
   try {
-    const parsed = JSON.parse(await readFile4(credentialsPath, "utf8"));
+    const parsed = JSON.parse(await readFile5(credentialsPath, "utf8"));
     if (isRecord3(parsed)) {
       existing = parsed;
     }
@@ -14634,7 +14726,7 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
 
 // src/cli/doctor.ts
 import { spawn, spawnSync } from "node:child_process";
-import { lstat as lstat3, readFile as readFile6, realpath as realpath2 } from "node:fs/promises";
+import { lstat as lstat3, readFile as readFile7, realpath as realpath2 } from "node:fs/promises";
 import { connect } from "node:net";
 import path7 from "node:path";
 
@@ -14663,7 +14755,7 @@ function writeResult(result, failed = false) {
 
 // src/cli/project-config.ts
 import { createHash as createHash3 } from "node:crypto";
-import { chmod, mkdir as mkdir5, readFile as readFile5, writeFile as writeFile5 } from "node:fs/promises";
+import { chmod, mkdir as mkdir5, readFile as readFile6, writeFile as writeFile5 } from "node:fs/promises";
 import path6 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
 var CLIENT_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "vue", "vanilla"]);
@@ -14905,7 +14997,7 @@ function readBaseImageUpdatePolicy(config) {
 }
 async function readRequiredFile2(filePath, message, hint) {
   try {
-    return await readFile5(filePath, "utf8");
+    return await readFile6(filePath, "utf8");
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       throw commandError4(message, hint);
@@ -14915,7 +15007,7 @@ async function readRequiredFile2(filePath, message, hint) {
 }
 async function readAuthorizedKeysFile(filePath, index) {
   try {
-    return await readFile5(filePath, "utf8");
+    return await readFile6(filePath, "utf8");
   } catch {
     throw commandError4(
       `Unable to read SSH authorized key file at ssh.authorizedKeys[${index}].`,
@@ -15191,7 +15283,7 @@ async function publicDevPostureCheck(options) {
 }
 async function readRunningPublicDevSession(projectDir) {
   try {
-    const session = JSON.parse(await readFile6(path7.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+    const session = JSON.parse(await readFile7(path7.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
     return Boolean(session.publicDev || session.public || session.security?.cors?.publicDev);
   } catch {
     return false;
@@ -15249,7 +15341,7 @@ async function capsuleAuthoringAclPostureCheck(options) {
   const projectDir = typeof options.projectDir === "string" ? options.projectDir : process.cwd();
   const serverEntry = path7.join(projectDir, "server", "index.ts");
   try {
-    const serverSource = await readFile6(serverEntry, "utf8");
+    const serverSource = await readFile7(serverEntry, "utf8");
     const serverModuleSource = await bundleServerCapsuleModule({
       serverSource,
       serverSourcePath: serverEntry
@@ -15439,7 +15531,7 @@ async function resolveHostedDoctorTarget(options) {
 }
 async function readDoctorRemoteBinding(projectDir) {
   try {
-    const binding = JSON.parse(await readFile6(path7.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
+    const binding = JSON.parse(await readFile7(path7.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
     return binding && typeof binding === "object" && !Array.isArray(binding) ? binding : null;
   } catch {
     return null;
@@ -16081,7 +16173,7 @@ async function generatedComposeCheck(capsuleServices, projectDir, scope) {
   const composePath = path7.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   let raw = "";
   try {
-    raw = await readFile6(composePath, "utf8");
+    raw = await readFile7(composePath, "utf8");
   } catch (error) {
     if (errorDetails3(error).code !== "ENOENT") {
       throw error;
@@ -16231,7 +16323,7 @@ function dockerStatus(args, cwd) {
 }
 async function readOptionalJsonFile(filePath) {
   try {
-    return JSON.parse(await readFile6(filePath, "utf8"));
+    return JSON.parse(await readFile7(filePath, "utf8"));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       return null;
@@ -17803,7 +17895,7 @@ async function inspectDevSchedules(options) {
 }
 async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
   try {
-    return JSON.parse(await readFile7(path8.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
+    return JSON.parse(await readFile8(path8.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
   } catch (error) {
     if (errorDetails3(error).code !== "ENOENT") throw commandError4("Invalid active Dev database adapter metadata.", `Restart \`sporades dev\`, then retry \`sporades ${command}\`.`);
   }
@@ -17818,7 +17910,7 @@ async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
   const databaseEnv = Object.fromEntries(Object.entries(serviceEnv).filter(([key, value]) => key.startsWith("SPORADES_SERVICE_DATABASE_") && typeof value === "string"));
   const filePath = path8.join(projectDir, DEV_DATABASE_ENV_FILE);
   await mkdir6(path8.dirname(filePath), { recursive: true });
-  const previous = await readFile7(filePath).catch((error) => {
+  const previous = await readFile8(filePath).catch((error) => {
     if (errorDetails3(error).code === "ENOENT") return null;
     throw error;
   });
@@ -18798,7 +18890,7 @@ async function manageEnv(options) {
 async function readPortableSealedServerEnvEnvelope(filePath) {
   let envelope;
   try {
-    envelope = JSON.parse(await readFile7(filePath, "utf8"));
+    envelope = JSON.parse(await readFile8(filePath, "utf8"));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       throw commandError4(
@@ -20262,7 +20354,7 @@ async function upsertServerEnvValues(envPath, values) {
 }
 async function readRequiredFile3(filePath, message, hint) {
   try {
-    return await readFile7(filePath, "utf8");
+    return await readFile8(filePath, "utf8");
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       throw commandError4(message, hint);
@@ -20272,7 +20364,7 @@ async function readRequiredFile3(filePath, message, hint) {
 }
 async function readContainerBinding(bindingPath) {
   try {
-    return JSON.parse(await readFile7(bindingPath, "utf8"));
+    return JSON.parse(await readFile8(bindingPath, "utf8"));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       return null;
@@ -20288,7 +20380,7 @@ async function readContainerBinding(bindingPath) {
 }
 async function readRemoteBinding(projectDir) {
   try {
-    return JSON.parse(await readFile7(path8.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
+    return JSON.parse(await readFile8(path8.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       return null;
@@ -20318,7 +20410,7 @@ async function resolveHostPushTarget(config, options) {
 }
 async function readHostConfig() {
   try {
-    const parsed = JSON.parse(await readFile7(hostConfigPath(), "utf8"));
+    const parsed = JSON.parse(await readFile8(hostConfigPath(), "utf8"));
     return normaliseHostConfig(parsed);
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
@@ -20594,12 +20686,12 @@ async function createHostReleaseArchive(options) {
   await cp(options.bundle.staticFiles.publicDir, path8.join(packageDir, "public"), { recursive: true, errorOnExist: true });
   const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
   await Promise.all([
-    writeFile6(path8.join(packageDir, "server.mjs"), await readFile7(path8.join(options.bundle.buildDir, "server.mjs"), "utf8")),
+    writeFile6(path8.join(packageDir, "server.mjs"), await readFile8(path8.join(options.bundle.buildDir, "server.mjs"), "utf8")),
     writeFile6(path8.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
 `)
   ]);
   if (options.bundle.containerMounts.serverEnv) {
-    await writeFile6(path8.join(packageDir, ".env.sporades.server"), await readFile7(options.bundle.containerMounts.serverEnv.host, "utf8"));
+    await writeFile6(path8.join(packageDir, ".env.sporades.server"), await readFile8(options.bundle.containerMounts.serverEnv.host, "utf8"));
   }
   if (sealedServerEnv) {
     await writeFile6(
@@ -21039,7 +21131,7 @@ async function writeGithubAutodeployWorkflow(options) {
     };
   }
   try {
-    await readFile7(outputPath, "utf8");
+    await readFile8(outputPath, "utf8");
     if (!options.force) {
       throw commandError4(
         "GitHub Actions workflow already exists.",
@@ -21944,13 +22036,13 @@ async function acquireContainerLifecycleLock(projectDir) {
       await writeFile6(ownerPath, `${JSON.stringify({ pid: process.pid, processStart: await getProcessStartIdentity(process.pid), token })}
 `);
       return async () => {
-        const owner = await readFile7(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+        const owner = await readFile8(ownerPath, "utf8").then(JSON.parse).catch(() => null);
         if (owner?.token !== token) throw commandError4("Container lifecycle lock ownership changed.", "Preserve the successor lifecycle lock.");
         await rm4(lockDir, { recursive: true, force: true });
       };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
-      const owner = await readFile7(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+      const owner = await readFile8(ownerPath, "utf8").then(JSON.parse).catch(() => null);
       if (owner === null) {
         const age = Date.now() - await lstat4(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
         if (age <= 1e3) {

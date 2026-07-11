@@ -333,8 +333,11 @@ async function installFakePreact(projectDir) {
 }
 
 async function installVue(projectDir) {
-  await mkdir(path.join(projectDir, "node_modules"), { recursive: true });
-  await symlink(path.join(repoRoot, "node_modules", "vue"), path.join(projectDir, "node_modules", "vue"));
+  for (const packageName of ["vue", "@vitejs/plugin-vue", "@vue/compiler-sfc"]) {
+    const target = path.join(projectDir, "node_modules", ...packageName.split("/"));
+    await mkdir(path.dirname(target), { recursive: true });
+    await symlink(path.join(repoRoot, "node_modules", ...packageName.split("/")), target);
+  }
 }
 
 async function writePackage(projectDir, packageName, exports, files) {
@@ -1140,6 +1143,39 @@ test("Vue Vite compiles native SFCs into an isolated normalized public tree", as
       await discardPublicTree(bundle.staticFiles.publicTree);
     }
   });
+});
+
+test("Vue Vite fails closed for missing, unsupported, and unloadable project compiler packages", async () => {
+  for (const scenario of ["missing", "version", "load"]) {
+    await withTempDir(async (dir) => {
+      const created = await runCli(["create", `vue-compiler-${scenario}`, "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(created.code, 0, created.stderr);
+      const projectDir = path.join(dir, `vue-compiler-${scenario}`);
+      if (scenario !== "missing") {
+        const pluginDir = path.join(projectDir, "node_modules", "@vitejs", "plugin-vue");
+        await mkdir(pluginDir, { recursive: true });
+        await writeFile(path.join(pluginDir, "package.json"), `${JSON.stringify({
+          name: "@vitejs/plugin-vue",
+          version: scenario === "version" ? "6.0.0" : "5.2.4",
+          type: "module",
+          main: "./index.js",
+        })}\n`);
+        await writeFile(path.join(pluginDir, "index.js"), 'throw new Error("project-plugin-load-failure");\n');
+      }
+      const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+      await assert.rejects(createBundle(projectDir, config), (error) => {
+        assert.equal(error.phase, "client");
+        assert.equal(error.framework, "vue");
+        assert.equal(error.toolchain, "vite");
+        assert.match(error.hint, /npm install.*@vitejs\/plugin-vue.*@vue\/compiler-sfc/i);
+        if (scenario === "missing") assert.match(error.message, /could not resolve project-owned @vitejs\/plugin-vue/i);
+        if (scenario === "version") assert.match(error.message, /does not support.*@vitejs\/plugin-vue version/i);
+        if (scenario === "load") assert.match(error.message, /could not load project-owned @vitejs\/plugin-vue.*project-plugin-load-failure/i);
+        assert.doesNotMatch(JSON.stringify({ message: error.message, diagnostics: error.diagnostics, stack: error.stack }), new RegExp(projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        return true;
+      });
+    });
+  }
 });
 
 test("sporades dev owns React Vite rebuilds, preserves last-good output, and requests full-page refresh", async () => {

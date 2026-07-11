@@ -693,6 +693,7 @@ test("sporades create scaffolds an idiomatic Vue/Vite blank Capsule by default",
     assert.match(app, /<style scoped>/);
     assert.match(client, /createVueComposables/);
     assert.equal(packageJson.dependencies.vue, "^3.5.13");
+    assert.equal(packageJson.devDependencies["@vitejs/plugin-vue"], "^5.2.4");
     assert.equal(packageJson.devDependencies["@vue/compiler-sfc"], "^3.5.13");
     assert.equal(packageJson.dependencies.react, undefined);
     assert.equal(packageJson.dependencies.preact, undefined);

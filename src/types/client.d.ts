@@ -295,8 +295,13 @@ export type VueComposablePrimitives = {
 /** Vue-native Sporades composables over the shared framework-neutral client connection. */
 export type SporadesVueComposables = {
   useQuery<Data = unknown>(name: string): QueryState<Data>;
-  useMutation<Result = unknown>(name: string): MutationState<Result>;
+  useMutation<Result = unknown>(name: string): VueMutationState<Result>;
   useAuth(): UseAuthState;
+};
+
+/** Vue mutation state follows the latest invocation while `loading` covers every pending call. */
+export type VueMutationState<Result = unknown> = MutationState<Result> & {
+  data: Result | null;
 };
 
 /** Auth commands for the current browser session. */

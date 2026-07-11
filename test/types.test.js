@@ -251,7 +251,9 @@ const vue = createVueComposables({
   onScopeDispose(cleanup) { void cleanup; },
 });
 vue.useQuery<Array<{ id: string; text: string }>>("todos").data?.map((todo) => todo.text.toUpperCase());
-vue.useMutation("addTodo").run("Ship Vue types");
+const vueMutation = vue.useMutation<{ id: string }>("addTodo");
+vueMutation.run("Ship Vue types");
+vueMutation.data?.id.toUpperCase();
 vue.useAuth().signOut();
 const querySubscription = queries.subscribe<Array<{ id: string; text: string }>>("todos", (state) => {
   state.data?.map((todo) => todo.text.toUpperCase());

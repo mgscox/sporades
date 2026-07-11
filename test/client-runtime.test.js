@@ -36,8 +36,7 @@ test("Vue composables expose complete reactive state and dispose shared subscrip
     const mutation = composables.useMutation("addTodo");
     const auth = composables.useAuth();
     assert.deepEqual(query, { data: null, error: null, loading: true });
-    assert.equal(mutation.loading, false);
-    assert.equal(mutation.error, null);
+    assert.deepEqual({ data: mutation.data, error: mutation.error, loading: mutation.loading }, { data: null, error: null, loading: false });
     assert.equal(typeof mutation.run, "function");
     assert.equal(auth.loading, true);
     assert.equal(auth.error, null);
@@ -56,6 +55,57 @@ test("Vue composables expose complete reactive state and dispose shared subscrip
     disposals.forEach((dispose) => dispose());
     await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(unsubscribes.length, 1);
+  } finally { browser.cleanup(); }
+});
+
+test("Vue mutation state is pending-counted and latest-invocation deterministic", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  const deferred = () => {
+    let resolve;
+    let reject;
+    const promise = new Promise((resolvePromise, rejectPromise) => { resolve = resolvePromise; reject = rejectPromise; });
+    return { promise, resolve, reject };
+  };
+  try {
+    const runtime = await importClientRuntime();
+    const calls = [];
+    runtime.mutations.run = (_name, value) => {
+      const call = deferred();
+      calls.push({ value, ...call });
+      return call.promise;
+    };
+    const vue = runtime.createVueComposables({ reactive: (value) => value, onScopeDispose() {} });
+    const mutation = vue.useMutation("save");
+
+    const first = mutation.run("A");
+    const second = mutation.run("B");
+    assert.equal(mutation.loading, true);
+    calls[1].resolve({ data: { value: "B" }, error: null });
+    assert.deepEqual(await second, { data: { value: "B" }, error: null });
+    assert.equal(mutation.loading, true, "older A remains pending");
+    assert.deepEqual(mutation.data, { value: "B" });
+    calls[0].resolve({ data: { value: "A" }, error: null });
+    assert.deepEqual(await first, { data: { value: "A" }, error: null });
+    assert.equal(mutation.loading, false);
+    assert.deepEqual(mutation.data, { value: "B" }, "older completion cannot overwrite latest invocation B");
+
+    const older = mutation.run("older-success");
+    const latest = mutation.run("latest-error");
+    const structured = { message: "Latest failed", hint: "Fix latest" };
+    calls[3].resolve({ data: null, error: structured });
+    await latest;
+    calls[2].resolve({ data: { value: "stale" }, error: null });
+    await older;
+    assert.deepEqual(mutation.error, structured);
+    assert.equal(mutation.data, null);
+    assert.equal(mutation.loading, false);
+
+    const thrown = new Error("Transport rejected");
+    const rejected = mutation.run("throws");
+    calls[4].reject(thrown);
+    await assert.rejects(rejected, (error) => error === thrown);
+    assert.deepEqual(mutation.error, { message: "Transport rejected" });
+    assert.equal(mutation.loading, false, "rejection decrements pending in finally");
   } finally { browser.cleanup(); }
 });
 

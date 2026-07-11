@@ -39,13 +39,13 @@
     "node": ">=22"
   },
   "dependencies": {
-    "@vitejs/plugin-vue": "^5.2.4",
-    "@vue/compiler-sfc": "^3.5.39",
     "esbuild": "^0.25.12",
     "vite": "^6.4.3"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@vitejs/plugin-vue": "^5.2.4",
+    "@vue/compiler-sfc": "^3.5.39",
     "typedoc": "^0.28.20",
     "typescript": "^5.9.3"
   },

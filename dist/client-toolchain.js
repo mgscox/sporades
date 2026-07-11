@@ -1,5 +1,7 @@
 import path from "node:path";
-import { realpath } from "node:fs/promises";
+import { readFile, realpath } from "node:fs/promises";
+import { createRequire } from "node:module";
+import { pathToFileURL } from "node:url";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 export async function buildClientToolchain(options) {
     validateClientToolchainInput(options);
@@ -88,13 +90,13 @@ async function buildEsbuild(options) {
 async function buildVite(options) {
     const { build } = await import("vite");
     const frameworkPlugins = [];
-    if (options.frameworkConfig.framework === "vue") {
-        const { default: vue } = await import("@vitejs/plugin-vue");
-        frameworkPlugins.push(vue());
-    }
     let projectRoot = path.resolve(options.projectDir);
     try {
         projectRoot = await realpath(options.projectDir);
+        if (options.frameworkConfig.framework === "vue") {
+            const { plugin, compiler } = await loadProjectVueToolchain(projectRoot);
+            frameworkPlugins.push(plugin({ compiler }));
+        }
         const result = await build({
             root: projectRoot,
             base: "/",
@@ -154,6 +156,64 @@ async function buildVite(options) {
             throw error;
         throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
     }
+}
+async function loadProjectVueToolchain(projectRoot) {
+    const requiredPackages = [
+        { name: "@vitejs/plugin-vue", major: 5 },
+        { name: "@vue/compiler-sfc", major: 3 },
+    ];
+    let projectManifest;
+    try {
+        projectManifest = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
+    }
+    catch {
+        throw vueProjectToolchainError("Vue/Vite could not read the Capsule package.json.");
+    }
+    const declared = { ...(projectManifest.dependencies ?? {}), ...(projectManifest.devDependencies ?? {}) };
+    const projectRequire = createRequire(path.join(projectRoot, "package.json"));
+    const loaded = new Map();
+    for (const required of requiredPackages) {
+        if (typeof declared[required.name] !== "string") {
+            throw vueProjectToolchainError(`Vue/Vite requires the Capsule to declare ${required.name}.`);
+        }
+        const packageDir = path.join(projectRoot, "node_modules", ...required.name.split("/"));
+        let installedManifest;
+        let resolved;
+        try {
+            installedManifest = JSON.parse(await readFile(path.join(packageDir, "package.json"), "utf8"));
+            resolved = projectRequire.resolve(required.name);
+            const canonicalPackageDir = await realpath(packageDir);
+            const canonicalResolved = await realpath(resolved);
+            const relativeResolved = path.relative(canonicalPackageDir, canonicalResolved);
+            if (!relativeResolved || relativeResolved.startsWith("..") || path.isAbsolute(relativeResolved))
+                throw new Error("package entry escaped its project-owned package root");
+            resolved = canonicalResolved;
+        }
+        catch {
+            throw vueProjectToolchainError(`Vue/Vite could not resolve project-owned ${required.name}.`);
+        }
+        const installedMajor = Number.parseInt(String(installedManifest.version).split(".")[0] ?? "", 10);
+        if (installedMajor !== required.major) {
+            throw vueProjectToolchainError(`Vue/Vite does not support the installed ${required.name} version.`, { package: required.name, installedVersion: String(installedManifest.version).slice(0, 40), supportedMajor: required.major });
+        }
+        try {
+            loaded.set(required.name, await import(pathToFileURL(resolved).href));
+        }
+        catch (error) {
+            throw vueProjectToolchainError(`Vue/Vite could not load project-owned ${required.name}: ${boundedBuildMessage(error, [projectRoot])}`, { package: required.name });
+        }
+    }
+    const pluginModule = loaded.get("@vitejs/plugin-vue");
+    const compilerModule = loaded.get("@vue/compiler-sfc");
+    const plugin = pluginModule?.default?.default ?? pluginModule?.default ?? pluginModule;
+    const compiler = compilerModule?.default ?? compilerModule;
+    if (typeof plugin !== "function" || typeof compiler?.parse !== "function") {
+        throw vueProjectToolchainError("Vue/Vite project compiler packages have incompatible exports.");
+    }
+    return { plugin, compiler };
+}
+function vueProjectToolchainError(message, diagnostics) {
+    return clientToolchainError(message, "Run `npm install` in the Vue Capsule to install its declared @vitejs/plugin-vue and @vue/compiler-sfc versions.", diagnostics);
 }
 function sporadesEsbuildClientPlugin() {
     return {

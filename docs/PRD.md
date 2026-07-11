@@ -301,6 +301,11 @@ import { createVueComposables } from "sporades/client";
 const { useAuth, useMutation, useQuery } = createVueComposables({ reactive, onScopeDispose });
 ```
 
+Vue mutation state keeps `loading` true while any invocation is pending. Its
+reactive `data` and `error` belong to the latest invocation; an older call that
+settles later cannot overwrite them, while every returned promise still
+resolves or rejects for its own invocation.
+
 The browser connects to `/__sporades/ws` on the same origin. The transport
 carries:
 

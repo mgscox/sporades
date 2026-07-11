@@ -491,6 +491,11 @@ import { createVueComposables } from "sporades/client";
 export const { useAuth, useMutation, useQuery } = createVueComposables({ reactive, onScopeDispose });
 ```
 
+Vue mutation composables keep `loading` true until every concurrent invocation
+settles. Reactive `data` and `error` follow the latest invocation, so an older
+completion cannot overwrite newer state; each `run()` promise still resolves
+or rejects with its own outcome.
+
 Queries stay subscribed over the Sporades client transport, so successful
 mutations refresh connected clients without you writing manual fetch code.
 

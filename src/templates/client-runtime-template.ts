@@ -156,14 +156,32 @@ export function createVueComposables(primitives) {
   }
 
   function useMutation(name) {
-    const state = reactive({ error: null, loading: false });
+    const state = reactive({ data: null, error: null, loading: false });
+    let pending = 0;
+    let latestInvocation = 0;
     state.run = async (...args) => {
+      const invocation = ++latestInvocation;
+      pending += 1;
+      state.data = null;
       state.error = null;
       state.loading = true;
-      const result = await mutations.run(name, ...args);
-      state.error = result.error ?? null;
-      state.loading = false;
-      return result;
+      try {
+        const result = await mutations.run(name, ...args);
+        if (invocation === latestInvocation) {
+          state.data = result.error ? null : result.data ?? null;
+          state.error = result.error ?? null;
+        }
+        return result;
+      } catch (error) {
+        if (invocation === latestInvocation) {
+          state.data = null;
+          state.error = normalizeVueMutationError(error);
+        }
+        throw error;
+      } finally {
+        pending -= 1;
+        state.loading = pending > 0;
+      }
     };
     return state;
   }
@@ -180,6 +198,13 @@ export function createVueComposables(primitives) {
   }
 
   return { useQuery, useMutation, useAuth };
+}
+
+function normalizeVueMutationError(error) {
+  if (error && typeof error === "object" && typeof error.message === "string") {
+    return { message: error.message, ...(typeof error.hint === "string" ? { hint: error.hint } : {}) };
+  }
+  return { message: typeof error === "string" && error ? error : "Mutation failed." };
 }
 
 let connection;

@@ -425,8 +425,11 @@ async function installFakePreact(projectDir) {
 }
 
 async function installVue(projectDir) {
-  await mkdir(path.join(projectDir, "node_modules"), { recursive: true });
-  await symlink(path.join(repoRoot, "node_modules", "vue"), path.join(projectDir, "node_modules", "vue"));
+  for (const packageName of ["vue", "@vitejs/plugin-vue", "@vue/compiler-sfc"]) {
+    const target = path.join(projectDir, "node_modules", ...packageName.split("/"));
+    await mkdir(path.dirname(target), { recursive: true });
+    await symlink(path.join(repoRoot, "node_modules", ...packageName.split("/")), target);
+  }
 }
 
 async function writePackage(projectDir, packageName, exports, files) {
