@@ -5,6 +5,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
+import { transform } from "esbuild";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -599,12 +600,93 @@ test("sporades create writes a runnable framework-neutral Vanilla TypeScript sca
     assert.match(client, /onMessage\(/);
     assert.match(client, /sendMessage\(/);
     assert.match(client, /journey\.(enable|subscribe)\(/);
+    assert.match(client, /createElement\(/);
+    assert.match(client, /textContent/);
+    assert.match(client, /replaceChildren\(/);
+    assert.doesNotMatch(client, /innerHTML|insertAdjacentHTML/);
+    assert.doesNotMatch(client, /`<li>\$\{|\.map\([^\n]+<li>/);
     assert.doesNotMatch(client, /from ["'](?:react|preact)/);
     assert.match(server, /notes: query/);
     assert.match(server, /addNote: mutation/);
     assert.match(agents, /client\/index\.ts/);
     assert.match(agents, /framework-neutral/i);
     assert.doesNotMatch(agents, /useAuth\(\)/);
+  });
+});
+
+test("the Vanilla scaffold renders persisted text and runtime errors as inert DOM text", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "safe-vanilla", "--framework", "vanilla", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr);
+    const source = await readFile(path.join(dir, "safe-vanilla", "client", "index.ts"), "utf8");
+    const maliciousNote = '<img src=x onerror="globalThis.pwned=true">';
+    const maliciousError = '<svg onload="globalThis.pwned=true">failed</svg>';
+    const createdElements = [];
+    let queryListener;
+
+    class FakeElement {
+      constructor(tagName) {
+        this.tagName = tagName;
+        this.children = [];
+        this.listeners = new Map();
+        this._textContent = "";
+        this.value = "";
+        this.files = [];
+      }
+      set textContent(value) { this._textContent = String(value); this.children = []; }
+      get textContent() { return this._textContent || this.children.map((child) => typeof child === "string" ? child : child.textContent).join(""); }
+      set innerHTML(_value) { throw new Error("The Vanilla scaffold must not use HTML parsing."); }
+      append(...children) { this.children.push(...children); }
+      replaceChildren(...children) { this.children = children; this._textContent = ""; }
+      addEventListener(type, listener) { this.listeners.set(type, listener); }
+      reset() {}
+    }
+
+    const app = new FakeElement("div");
+    globalThis.document = {
+      querySelector(selector) { assert.equal(selector, "#app"); return app; },
+      createElement(tagName) { const node = new FakeElement(tagName); createdElements.push(node); return node; },
+    };
+    globalThis.window = { addEventListener() {} };
+    globalThis.__vanillaSdk = {
+      queries: { subscribe(_name, listener) { queryListener = listener; listener({ data: [{ id: "unsafe", text: maliciousNote }], error: null, loading: false }); return { unsubscribe() {} }; } },
+      mutations: { run: async () => ({ data: null, error: null }) },
+      auth: {
+        get: async () => ({ data: null, error: { message: maliciousError } }),
+        subscribe(listener) { listener({ auth: null, providers: {}, loading: false, error: null }); return { unsubscribe() {} }; },
+      },
+      preferences: { get: async () => ({ data: { preferences: {} }, error: null }), update: async () => ({ data: null, error: null }) },
+      files: { upload: async () => ({ name: "file" }) },
+      onMessage: () => ({ unsubscribe() {} }),
+      sendMessage() {},
+      journey: { subscribe: () => ({ unsubscribe() {} }), enable: async () => ({ data: null, error: null }), set: async () => ({ data: null, error: null }), disable() {} },
+    };
+    try {
+      const executableSource = source
+        .replace(/import \{([^}]+)\} from "sporades\/client";/, "const {$1} = globalThis.__vanillaSdk;")
+        .replace(/^import type .*;\n/m, "");
+      const compiled = await transform(executableSource, { loader: "ts", format: "esm", target: "es2022" });
+      await import(`data:text/javascript;base64,${Buffer.from(compiled.code).toString("base64")}#${Date.now()}`);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      const list = createdElements.find((node) => node.tagName === "ul");
+      const status = createdElements.find((node) => node.tagName === "pre");
+      assert.equal(list.children.length, 1);
+      assert.equal(list.children[0].tagName, "li");
+      assert.equal(list.children[0].textContent, maliciousNote);
+      assert.equal(status.textContent, maliciousError);
+      assert.equal(createdElements.some((node) => node.tagName === "img" || node.tagName === "svg"), false);
+      assert.equal(globalThis.pwned, undefined);
+
+      queryListener({ data: null, error: { message: maliciousError }, loading: false });
+      assert.equal(list.children[0].textContent, maliciousError);
+      assert.equal(createdElements.some((node) => node.tagName === "img" || node.tagName === "svg"), false);
+    } finally {
+      delete globalThis.document;
+      delete globalThis.window;
+      delete globalThis.__vanillaSdk;
+      delete globalThis.pwned;
+    }
   });
 });
 

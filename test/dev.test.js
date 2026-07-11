@@ -6577,6 +6577,82 @@ test("a scaffolded capsule can add and read todos over WebSocket", async () => {
   });
 });
 
+test("query unsubscribe is connection-owned, idempotent, validated, and prevents accumulated mutation refreshes", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "unsubscribe-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "unsubscribe-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let owner;
+    let other;
+    try {
+      const started = await waitForJsonLine(child);
+      owner = await openSocket(started.data.url);
+      other = await openSocket(started.data.url);
+
+      owner.send(JSON.stringify({ id: "owned", type: "query.subscribe", query: "todos" }));
+      assert.equal((await readSocketMessage(owner)).id, "owned");
+
+      other.send(JSON.stringify({ id: "foreign", type: "query.unsubscribe", subscriptionId: "owned" }));
+      assert.deepEqual(await readSocketMessage(other), {
+        id: "foreign",
+        type: "query.unsubscribe.result",
+        data: { removed: false },
+        error: null,
+      });
+
+      for (let index = 0; index < 3; index += 1) {
+        const subscriptionId = `cycle-${index}`;
+        owner.send(JSON.stringify({ id: subscriptionId, type: "query.subscribe", query: "todos" }));
+        assert.equal((await readSocketMessage(owner)).id, subscriptionId);
+        owner.send(JSON.stringify({ id: `remove-${index}`, type: "query.unsubscribe", subscriptionId }));
+        assert.deepEqual(await readSocketMessage(owner), {
+          id: `remove-${index}`,
+          type: "query.unsubscribe.result",
+          data: { removed: true },
+          error: null,
+        });
+      }
+
+      owner.send(JSON.stringify({ id: "duplicate", type: "query.unsubscribe", subscriptionId: "cycle-0" }));
+      assert.deepEqual((await readSocketMessage(owner)).data, { removed: false });
+      owner.send(JSON.stringify({ id: "malformed", type: "query.unsubscribe", subscriptionId: { nope: true } }));
+      assert.deepEqual(await readSocketMessage(owner), {
+        id: "malformed",
+        type: "error",
+        data: null,
+        error: {
+          message: "Invalid query unsubscribe request.",
+          hint: "Use the string or numeric subscription ID returned by query.subscribe.",
+        },
+      });
+
+      other.send(JSON.stringify({ id: "add", type: "mutation.run", mutation: "addTodo", args: ["one refresh"] }));
+      assert.equal((await readSocketMessage(other)).id, "add");
+      assert.equal((await readSocketMessage(owner)).id, "owned");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      owner.send(JSON.stringify({ id: "after-refresh", type: "auth.get" }));
+      assert.equal((await readSocketMessage(owner)).id, "after-refresh", "removed subscriptions leave no queued duplicate refreshes");
+
+      owner.send(JSON.stringify({ id: "remove-owned", type: "query.unsubscribe", subscriptionId: "owned" }));
+      assert.deepEqual((await readSocketMessage(owner)).data, { removed: true });
+      owner.send(JSON.stringify({ id: "remove-owned-again", type: "query.unsubscribe", subscriptionId: "owned" }));
+      assert.deepEqual((await readSocketMessage(owner)).data, { removed: false });
+    } finally {
+      owner?.close();
+      other?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev runs query handlers from the bundled Capsule module", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "query-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

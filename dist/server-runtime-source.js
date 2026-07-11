@@ -7110,8 +7110,46 @@ export function createWebSocketHub(getDatabase) {
         }
         if (message.type === "query.subscribe") {
             const queryName = message.query ?? message.name;
+            const validId = (typeof message.id === "string" && message.id.length > 0) || (typeof message.id === "number" && Number.isFinite(message.id));
+            if (!validId || typeof queryName !== "string" || queryName.length === 0) {
+                sendJson(client, {
+                    id: message.id ?? null,
+                    type: "error",
+                    data: null,
+                    error: {
+                        message: "Invalid query subscribe request.",
+                        hint: "Use a string or numeric subscription ID and a non-empty query name.",
+                    },
+                });
+                return;
+            }
             client.subscriptions.set(message.id, { id: message.id, name: queryName, style: message.query ? "direct" : "rows" });
             await sendQueryResult(client, client.subscriptions.get(message.id));
+            return;
+        }
+        if (message.type === "query.unsubscribe") {
+            const subscriptionId = message.subscriptionId;
+            const validId = (typeof subscriptionId === "string" && subscriptionId.length > 0)
+                || (typeof subscriptionId === "number" && Number.isFinite(subscriptionId));
+            if (!validId) {
+                sendJson(client, {
+                    id: message.id ?? null,
+                    type: "error",
+                    data: null,
+                    error: {
+                        message: "Invalid query unsubscribe request.",
+                        hint: "Use the string or numeric subscription ID returned by query.subscribe.",
+                    },
+                });
+                return;
+            }
+            const removed = client.subscriptions.delete(subscriptionId);
+            sendJson(client, {
+                id: message.id ?? null,
+                type: "query.unsubscribe.result",
+                data: { removed },
+                error: null,
+            });
             return;
         }
         if (message.type === "preferences.get") {
@@ -7326,7 +7364,7 @@ export function createWebSocketHub(getDatabase) {
             type: "error",
             error: {
                 message: `Unsupported WebSocket message: ${message.type ?? ""}`.trim(),
-                hint: "Use auth.get, auth.signIn, auth.signOut, query.subscribe, mutation.run, app messages, or files.* through the Sporades client SDK.",
+                hint: "Use auth.get, auth.signIn, auth.signOut, query.subscribe, query.unsubscribe, mutation.run, app messages, or files.* through the Sporades client SDK.",
             },
         });
     }
@@ -7336,6 +7374,8 @@ export function createWebSocketHub(getDatabase) {
         const data = subscription.style === "direct"
             ? (result.data ?? result.rows)
             : { rows: result.data ?? result.rows };
+        if (client.subscriptions.get(subscription.id) !== subscription)
+            return;
         sendJson(client, {
             id: subscription.id,
             type: "query.result",

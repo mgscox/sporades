@@ -285,6 +285,18 @@ function createConnection() {
     );
   }
 
+  function sendIfOpen(message) {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return false;
+    const currentSessionToken = syncSessionTokenFromStorage();
+    const outboundMessage = currentSessionToken ? { ...message, sessionToken: currentSessionToken } : message;
+    try {
+      socket.send(JSON.stringify(outboundMessage));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   function request(type, fields = {}) {
     const id = nextId++;
     return new Promise((resolve) => {
@@ -334,6 +346,16 @@ function createConnection() {
     latestAuthMessage = message;
     notifyAuthStateListeners(message);
     return message;
+  }
+
+  function publicAuthResult(message) {
+    return {
+      data: message.data ? {
+        auth: message.data.auth ?? null,
+        providers: message.data.providers ?? {},
+      } : null,
+      error: message.error ?? null,
+    };
   }
 
   function notifyAuthStateListeners(message) {
@@ -484,7 +506,7 @@ function createConnection() {
 
   return {
     auth() {
-      return request("auth.get");
+      return request("auth.get").then(publicAuthResult);
     },
     isAuthenticated() {
       return request("auth.get")
@@ -577,6 +599,7 @@ function createConnection() {
         if (subscription.listeners.size === 0) {
           queryChannels.delete(name);
           subscriptions.delete(subscription.id);
+          sendIfOpen({ id: nextId++, type: "query.unsubscribe", subscriptionId: subscription.id });
         }
       } };
     },

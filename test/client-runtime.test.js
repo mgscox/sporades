@@ -510,6 +510,8 @@ const anonymousAuth = {
 test("framework-neutral query mutation and auth primitives share reconnecting state", async () => {
   let queryVersion = 0;
   const queryCalls = [];
+  const unsubscribeCalls = [];
+  const authCalls = [];
   const mutationCalls = [];
   const browser = installBrowserFakes(anonymousAuth, { handlers: {
     "query.subscribe": async (message) => {
@@ -520,6 +522,18 @@ test("framework-neutral query mutation and auth primitives share reconnecting st
     "mutation.run": async (message) => {
       mutationCalls.push(message);
       return { type: "mutation.result", data: { created: message.args[0] }, error: null };
+    },
+    "query.unsubscribe": async (message) => {
+      unsubscribeCalls.push(message);
+      return { type: "query.unsubscribe.result", data: { removed: true }, error: null };
+    },
+    "auth.get": async (message) => {
+      authCalls.push(message);
+      return {
+        type: "auth.result",
+        data: { sessionToken: `secret-${authCalls.length}`, transportCredential: "never-public", auth: anonymousAuth, providers: {} },
+        error: null,
+      };
     },
   }});
   try {
@@ -558,7 +572,8 @@ test("framework-neutral query mutation and auth primitives share reconnecting st
       error: null,
     });
     assert.deepEqual(mutationCalls[0].args, ["hello"]);
-    assert.equal((await runtime.auth.get()).data.auth.userId, anonymousAuth.userId);
+    assert.deepEqual(await runtime.auth.get(), { data: { auth: anonymousAuth, providers: {} }, error: null });
+    assert.doesNotMatch(JSON.stringify(authStates), /secret-|transportCredential|sessionToken/);
 
     browser.sockets[0].readyState = 3;
     browser.sockets[0].emit("close", {});
@@ -568,13 +583,29 @@ test("framework-neutral query mutation and auth primitives share reconnecting st
     assert.deepEqual(queryStates.at(-1), { data: [{ id: 2, text: "note 2" }], error: null, loading: false });
 
     querySubscription.unsubscribe(); querySubscription.unsubscribe();
+    assert.equal(unsubscribeCalls.length, 0, "the shared wire subscription remains while one listener is active");
     secondQuery.unsubscribe(); secondQuery.unsubscribe();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(unsubscribeCalls.length, 1, "last-listener teardown sends one idempotent wire unsubscribe");
+    assert.equal(unsubscribeCalls[0].subscriptionId, queryCalls[0].id);
     authSubscription.unsubscribe(); authSubscription.unsubscribe();
     secondAuth.unsubscribe(); secondAuth.unsubscribe();
     browser.sockets.at(-1).readyState = 3;
     browser.sockets.at(-1).emit("close", {});
     await new Promise((resolve) => setTimeout(resolve, 550));
     assert.equal(queryCalls.length, 2, "unsubscribed queries do not resubscribe");
+    assert.doesNotMatch(JSON.stringify(authStates), /secret-|transportCredential|sessionToken/);
+
+    const disconnectedStates = [];
+    const disconnected = runtime.queries.subscribe("disconnected", (state) => disconnectedStates.push(state));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const latestSocket = browser.sockets.at(-1);
+    latestSocket.send = () => { throw new Error("transport closed during unsubscribe"); };
+    disconnected.unsubscribe(); disconnected.unsubscribe();
+    latestSocket.readyState = 3;
+    latestSocket.emit("close", {});
+    await new Promise((resolve) => setTimeout(resolve, 550));
+    assert.equal(queryCalls.filter((message) => message.query === "disconnected").length, 1, "failed best-effort unsubscribe cannot resurrect on reconnect");
   } finally { browser.cleanup(); }
 });
 
