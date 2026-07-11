@@ -7559,7 +7559,12 @@ export function createWebSocketHub(getDatabase: () => any) {
         client.buffer = Buffer.concat([client.buffer, chunk]);
         drainWebSocketFrames(client, (message: any) => enqueueClientMessage(client, message));
       });
-      const removeClient = () => { clients.delete(client); client.journey = null; };
+      const removeClient = () => {
+        clients.delete(client);
+        client.subscriptions.clear();
+        client.journeySubscriptions.clear();
+        client.journey = null;
+      };
       socket.on("close", removeClient);
       socket.on("error", removeClient);
     },
@@ -7888,8 +7893,9 @@ export function createWebSocketHub(getDatabase: () => any) {
         });
         return;
       }
-      client.subscriptions.set(message.id, { id: message.id, name: queryName, style: message.query ? "direct" : "rows" });
-      await sendQueryResult(client, client.subscriptions.get(message.id));
+      const subscription = { id: message.id, name: queryName, style: message.query ? "direct" : "rows", generation: 0 };
+      client.subscriptions.set(message.id, subscription);
+      void sendQueryResult(client, subscription, (error: any) => sendUnhandledMessageError(client, rawMessage, error));
       return;
     }
 
@@ -8033,9 +8039,11 @@ export function createWebSocketHub(getDatabase: () => any) {
         setTimeout(() => {
           for (const subscribedClient of clients) {
             for (const subscription of subscribedClient.subscriptions.values()) {
-              sendQueryResult(subscribedClient, subscription).catch((error) => {
-                sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error);
-              });
+              void sendQueryResult(
+                subscribedClient,
+                subscription,
+                (error: any) => sendUnhandledMessageError(subscribedClient, JSON.stringify({ id: subscription.id }), error),
+              );
             }
           }
         }, 0);
@@ -8123,21 +8131,28 @@ export function createWebSocketHub(getDatabase: () => any) {
     });
   }
 
-  async function sendQueryResult(client: LooseRecord, subscription: LooseRecord) {
-    const database = getDatabase();
-    const result: any = await runQuery(database, client.session.auth, subscription.name);
-    const data =
-      subscription.style === "direct"
-        ? (result.data ?? result.rows)
-        : { rows: result.data ?? result.rows };
-    if (client.subscriptions.get(subscription.id) !== subscription) return;
-    sendJson(client, {
-      id: subscription.id,
-      type: "query.result",
-      query: subscription.name,
-      data,
-      error: result.error,
-    });
+  async function sendQueryResult(client: LooseRecord, subscription: LooseRecord, onError: (error: any) => void) {
+    const generation = (subscription.generation ?? 0) + 1;
+    subscription.generation = generation;
+    try {
+      const database = getDatabase();
+      const result: any = await runQuery(database, client.session.auth, subscription.name);
+      const data =
+        subscription.style === "direct"
+          ? (result.data ?? result.rows)
+          : { rows: result.data ?? result.rows };
+      if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
+      sendJson(client, {
+        id: subscription.id,
+        type: "query.result",
+        query: subscription.name,
+        data,
+        error: result.error,
+      });
+    } catch (error) {
+      if (client.subscriptions.get(subscription.id) !== subscription || subscription.generation !== generation) return;
+      try { onError(error); } catch { /* A closed transport already owns cleanup. */ }
+    }
   }
 
   async function sendAuthResult(client: LooseRecord, id: any) {

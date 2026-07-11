@@ -6653,6 +6653,134 @@ test("query unsubscribe is connection-owned, idempotent, validated, and prevents
   });
 });
 
+test("query unsubscribe overtakes delayed initial success and rejection without stale results or reruns", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "delayed-query-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "delayed-query-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(path.join(projectDir, "server", "index.ts"), `import { capsule, message, mutation, query } from "sporades/server";
+
+export default capsule({
+  name: "delayed-query-island",
+  queries: {
+    normal: query(() => [{ complete: true }]),
+    delayedSuccess: query(async () => {
+      let state = Reflect.get(globalThis, "__sporadesDelayedQueryTest");
+      if (!state) { state = { successStarts: 0, failureStarts: 0 }; Reflect.set(globalThis, "__sporadesDelayedQueryTest", state); }
+      state.successStarts += 1;
+      await new Promise<void>((resolve) => { state.resolveSuccess = resolve; });
+      return [{ complete: true }];
+    }),
+    delayedFailure: query(async () => {
+      let state = Reflect.get(globalThis, "__sporadesDelayedQueryTest");
+      if (!state) { state = { successStarts: 0, failureStarts: 0 }; Reflect.set(globalThis, "__sporadesDelayedQueryTest", state); }
+      state.failureStarts += 1;
+      await new Promise<void>((_resolve, reject) => { state.rejectFailure = reject; });
+      return [];
+    }),
+  },
+  mutations: { touch: mutation(() => ({ ok: true })) },
+  messages: {
+    queryStatus: message(() => {
+      const state = Reflect.get(globalThis, "__sporadesDelayedQueryTest") ?? { successStarts: 0, failureStarts: 0 };
+      return { successStarts: state.successStarts, failureStarts: state.failureStarts };
+    }),
+    releaseSuccess: message(() => {
+      Reflect.get(globalThis, "__sporadesDelayedQueryTest").resolveSuccess();
+      return { released: true };
+    }),
+    rejectFailure: message(() => {
+      Reflect.get(globalThis, "__sporadesDelayedQueryTest").rejectFailure(new Error("delayed query exploded"));
+      return { rejected: true };
+    }),
+  },
+});
+`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    let control;
+    try {
+      const started = await waitForJsonLine(child);
+      socket = await openSocket(started.data.url);
+      control = await openSocket(started.data.url);
+      let controlId = 0;
+      const sendControl = async (name) => {
+        const id = `control-${controlId++}`;
+        control.send(JSON.stringify({ id, type: "app.send", message: name, data: null }));
+        const response = await readSocketMessage(control);
+        assert.equal(response.id, id);
+        assert.equal(response.error, null, JSON.stringify(response.error));
+        return response.data;
+      };
+      const waitForStarts = async (field) => {
+        const deadline = Date.now() + 3000;
+        let lastStatus = null;
+        while (Date.now() < deadline) {
+          const status = await sendControl("queryStatus");
+          lastStatus = status;
+          if (status[field] === 1) return status;
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        throw new Error(`Timed out waiting for ${field}: ${JSON.stringify(lastStatus)}`);
+      };
+      const assertNoStaleQueryBeforeAuth = async (id) => {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        socket.send(JSON.stringify({ id, type: "auth.get" }));
+        const next = await readSocketMessage(socket);
+        assert.equal(next.id, id, "a stale delayed query result or error reached the connection");
+        assert.equal(next.type, "auth.result");
+      };
+
+      socket.send(JSON.stringify({ id: "normal", type: "query.subscribe", query: "normal" }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "normal",
+        type: "query.result",
+        query: "normal",
+        data: [{ complete: true }],
+        error: null,
+      });
+      socket.send(JSON.stringify({ id: "remove-normal", type: "query.unsubscribe", subscriptionId: "normal" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, { removed: true });
+
+      socket.send(JSON.stringify({ id: "slow-success", type: "query.subscribe", query: "delayedSuccess" }));
+      await waitForStarts("successStarts");
+      socket.send(JSON.stringify({ id: "remove-success", type: "query.unsubscribe", subscriptionId: "slow-success" }));
+      assert.deepEqual(await readSocketMessage(socket), {
+        id: "remove-success",
+        type: "query.unsubscribe.result",
+        data: { removed: true },
+        error: null,
+      });
+      assert.deepEqual(await sendControl("releaseSuccess"), { released: true });
+      await assertNoStaleQueryBeforeAuth("after-success");
+
+      socket.send(JSON.stringify({ id: "slow-failure", type: "query.subscribe", query: "delayedFailure" }));
+      await waitForStarts("failureStarts");
+      socket.send(JSON.stringify({ id: "remove-failure", type: "query.unsubscribe", subscriptionId: "slow-failure" }));
+      assert.deepEqual((await readSocketMessage(socket)).data, { removed: true });
+      assert.deepEqual(await sendControl("rejectFailure"), { rejected: true });
+      await assertNoStaleQueryBeforeAuth("after-failure");
+
+      socket.send(JSON.stringify({ id: "touch", type: "mutation.run", mutation: "touch", args: [] }));
+      assert.equal((await readSocketMessage(socket)).id, "touch");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.deepEqual(await sendControl("queryStatus"), { successStarts: 1, failureStarts: 1 });
+      await assertNoStaleQueryBeforeAuth("after-mutation");
+    } finally {
+      socket?.close();
+      control?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
 test("sporades dev runs query handlers from the bundled Capsule module", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "query-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
