@@ -71,12 +71,35 @@ async function installFakeReact(projectDir) {
 async function installFakeDocker(dir) {
   const fakeBinDir = path.join(dir, "fake-bin");
   const dockerPath = path.join(fakeBinDir, "docker");
+  const logPath = path.join(dir, "docker-calls.jsonl");
   await mkdir(fakeBinDir, { recursive: true });
   await writeFile(
     dockerPath,
     `#!/usr/bin/env node
-if (process.argv[2] === "run") {
+const { appendFileSync, readFileSync } = require("node:fs");
+const args = process.argv.slice(2);
+appendFileSync(process.env.FAKE_DOCKER_LOG, JSON.stringify({ args }) + "\\n");
+const calls = readFileSync(process.env.FAKE_DOCKER_LOG, "utf8").trim().split("\\n").map(JSON.parse);
+if (args[0] === "run") {
   process.stdout.write("sealed-container\\n");
+  process.exit(0);
+}
+if (args[0] === "inspect" && args.includes("{{json .}}")) {
+  const run = calls.filter((call) => call.args[0] === "run").at(-1);
+  const labels = {};
+  for (let index = 0; index < (run?.args.length ?? 0); index += 1) {
+    if (run.args[index] !== "--label") continue;
+    const [key, ...value] = run.args[index + 1].split("=");
+    labels[key] = value.join("=");
+  }
+  process.stdout.write(JSON.stringify({
+    Id: args.at(-1),
+    Name: "/" + run.args[run.args.indexOf("--name") + 1],
+    State: { Running: true },
+    Config: { User: "10001:10001", Labels: labels },
+    NetworkSettings: { Ports: {} }
+  }) + "\\n");
+  process.exit(0);
 }
 `,
   );
@@ -84,6 +107,7 @@ if (process.argv[2] === "run") {
   return {
     env: {
       PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
+      FAKE_DOCKER_LOG: logPath,
     },
   };
 }
@@ -252,7 +276,8 @@ export default capsule({
 `,
     );
     const docker = await installFakeDocker(dir);
-    assert.equal((await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env })).code, 0);
+    const deploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deploy.code, 0, `${deploy.stderr}\n${deploy.stdout}`);
 
     const port = await getAvailablePort();
     const child = spawn(process.execPath, [path.join(projectDir, ".sporades", "build", "server.mjs")], {
@@ -417,7 +442,7 @@ export default capsule({
     assert.equal((await runCli(["env", "import", "--json"], { cwd: projectDir })).code, 0);
     const docker = await installFakeDocker(dir);
     const deploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
-    assert.equal(deploy.code, 0, deploy.stderr);
+    assert.equal(deploy.code, 0, `${deploy.stderr}\n${deploy.stdout}`);
 
     const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
     assert.doesNotMatch(serverBundle, /swordfish/);

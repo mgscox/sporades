@@ -9971,6 +9971,52 @@ function quoteIdentifier(identifier) {
   return `"${String(identifier).replaceAll('"', '""')}"`;
 }
 
+// src/public-tree-contract.ts
+var PUBLIC_TREE_LIMITS = {
+  files: 512,
+  fileBytes: 16 * 1024 * 1024,
+  totalBytes: 64 * 1024 * 1024,
+  pathBytes: 240
+};
+function normalizePublicTreePath(value) {
+  if (!value || value.startsWith("/") || value.includes("\\") || value.includes("\0")) return null;
+  if (Buffer.byteLength(value, "utf8") > PUBLIC_TREE_LIMITS.pathBytes) return null;
+  const segments = value.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return null;
+  return segments.join("/");
+}
+function publicTreePathFromRequest(rawPathname) {
+  if (/%2f|%5c/i.test(rawPathname)) return null;
+  let decoded;
+  try {
+    decoded = decodeURIComponent(rawPathname);
+  } catch {
+    return null;
+  }
+  if (decoded === "/") return "index.html";
+  if (!decoded.startsWith("/") || /%[0-9a-f]{2}/i.test(decoded)) return null;
+  return normalizePublicTreePath(decoded.slice(1));
+}
+function validatePublicTreeFileSet(files) {
+  if (files.length > PUBLIC_TREE_LIMITS.files) return { ok: false, reason: "files" };
+  const canonicalPaths = /* @__PURE__ */ new Set();
+  let totalBytes = 0;
+  let hasIndex = false;
+  for (const file of files) {
+    const normalized = normalizePublicTreePath(file.path);
+    if (normalized === null || !Number.isSafeInteger(file.size) || file.size < 0) return { ok: false, reason: "path" };
+    const canonical = normalized.normalize("NFC");
+    if (canonicalPaths.has(canonical)) return { ok: false, reason: "collision" };
+    canonicalPaths.add(canonical);
+    if (file.size > PUBLIC_TREE_LIMITS.fileBytes) return { ok: false, reason: "file-bytes", path: normalized };
+    totalBytes += file.size;
+    if (totalBytes > PUBLIC_TREE_LIMITS.totalBytes) return { ok: false, reason: "total-bytes" };
+    if (normalized === "index.html") hasIndex = true;
+  }
+  if (!hasIndex) return { ok: false, reason: "index" };
+  return { ok: true, fileCount: files.length, totalBytes };
+}
+
 // src/templates/server-bundle-template.ts
 function createServerBundleSource({
   config,
@@ -9980,6 +10026,11 @@ function createServerBundleSource({
   serverModuleSource
 }) {
   const runtimeFunctions = SERVER_RUNTIME_SOURCE_FUNCTIONS.map((fn) => fn.toString()).join("\n\n");
+  const publicTreeContract = [
+    `const PUBLIC_TREE_LIMITS = ${JSON.stringify(PUBLIC_TREE_LIMITS)};`,
+    normalizePublicTreePath.toString(),
+    publicTreePathFromRequest.toString()
+  ].join("\n\n");
   const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
   return `// Sporades server bundle
 import { createDecipheriv, createHash, createHash as createHash2, createHmac, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
@@ -9997,6 +10048,7 @@ const sporadesAction = sporadesActionIndex < 0 ? null : process.argv[sporadesAct
 const sporadesCapsuleModule = sporadesAction ? null : await import(${JSON.stringify(serverModuleDataUrl)});
 const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
 ${runtimeFunctions}
+${publicTreeContract}
 
 const port = Number(process.env.PORT ?? sporadesConfig.deploy?.port ?? 4000);
 const databasePath = process.env.SPORADES_DATABASE_PATH ?? path.join(process.cwd(), "data", "data.db");
@@ -10037,7 +10089,6 @@ database.log.emit({
 });
 const websocketHub = createWebSocketHub(() => database);
 const runtimePublicRoot = resolveRuntimePublicRoot();
-const runtimeUsesLegacyPublicFiles = !existsSync(path.join(runtimePublicRoot, "index.html"));
 
 const server = createServer(async (request, response) => {
   try {
@@ -10062,20 +10113,6 @@ const server = createServer(async (request, response) => {
     }
 
     if (await routePublicAsset(request, response, runtimePublicRoot, websocketHub)) {
-      return;
-    }
-
-    if (runtimeUsesLegacyPublicFiles && (request.url === "/" || request.url === "/index.html")) {
-      const html = await readFile(path.join(process.cwd(), "index.html"), "utf8");
-      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(injectPageConnectionToken(html, websocketHub.createConnectionToken()));
-      return;
-    }
-
-    if (runtimeUsesLegacyPublicFiles && request.url === "/client.js") {
-      const client = await readFile(path.join(process.cwd(), "client.js"));
-      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
-      response.end(client);
       return;
     }
 
@@ -10116,7 +10153,7 @@ process.on("SIGINT", shutdown);
 
 function resolveRuntimePublicRoot() {
   const mounted = path.join(process.cwd(), "public");
-  if (existsSync(path.join(mounted, "index.html"))) return mounted;
+  if (existsSync(mounted)) return mounted;
   try {
     const treesDir = path.join(process.cwd(), ".sporades", "build", ".public-trees");
     const tree = JSON.parse(readFileSync(path.join(treesDir, "active.json"), "utf8"))?.tree;
@@ -10127,14 +10164,9 @@ function resolveRuntimePublicRoot() {
 
 async function routePublicAsset(request, response, publicRoot, hub) {
   const rawPathname = String(request.url ?? "/").split("?", 1)[0];
-  if (/%2f|%5c/i.test(rawPathname)) return false;
-  let decoded;
-  try { decoded = decodeURIComponent(rawPathname); } catch { return false; }
-  if (!decoded.startsWith("/") || decoded.includes("\\\\") || decoded.includes("\\0")) return false;
-  const relativePath = decoded === "/" ? "index.html" : decoded.slice(1);
-  const segments = relativePath.split("/");
-  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return false;
-  const filePath = path.join(publicRoot, ...segments);
+  const relativePath = publicTreePathFromRequest(rawPathname);
+  if (relativePath === null) return false;
+  const filePath = path.join(publicRoot, ...relativePath.split("/"));
   const stats = await lstat(filePath).catch(() => null);
   if (!stats?.isFile() || stats.isSymbolicLink()) return false;
   const body = await readFile(filePath);
@@ -10214,12 +10246,6 @@ import { randomBytes as randomBytes3 } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path2 from "node:path";
-var PUBLIC_TREE_LIMITS = {
-  files: 512,
-  fileBytes: 16 * 1024 * 1024,
-  totalBytes: 64 * 1024 * 1024,
-  pathBytes: 240
-};
 var LIVE_PUBLIC_TREE_LEASES = /* @__PURE__ */ new Set();
 var OWNER_HEARTBEATS = /* @__PURE__ */ new Map();
 var execFileAsync = promisify(execFile);
@@ -10515,65 +10541,31 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
   await removeOrphanedOwnerHeartbeats(treesDir);
 }
 async function readPublicAsset(tree, rawPathname) {
-  const relativePath = publicPathFromRequest(rawPathname);
+  const relativePath = publicTreePathFromRequest(rawPathname);
   return relativePath ? tree.assets.get(relativePath) ?? null : null;
 }
-function publicPathFromRequest(rawPathname) {
-  if (/%2f|%5c/i.test(rawPathname)) return null;
-  let decoded;
-  try {
-    decoded = decodeURIComponent(rawPathname);
-  } catch {
-    return null;
-  }
-  if (decoded === "/") return "index.html";
-  if (!decoded.startsWith("/") || decoded.includes("\\") || decoded.includes("\0")) return null;
-  if (/%[0-9a-f]{2}/i.test(decoded)) return null;
-  try {
-    return validateRelativePublicPath(decoded.slice(1));
-  } catch {
-    return null;
-  }
-}
 function validateRelativePublicPath(value) {
-  if (!value || value.startsWith("/") || value.includes("\\") || value.includes("\0")) {
-    throw publicTreeError("Invalid public path.", "Public paths must be safe relative POSIX paths.");
-  }
-  if (Buffer.byteLength(value, "utf8") > PUBLIC_TREE_LIMITS.pathBytes) {
-    throw publicTreeError("Invalid public path.", `Public paths may be at most ${PUBLIC_TREE_LIMITS.pathBytes} bytes.`);
-  }
-  const segments = value.split("/");
-  if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
-    throw publicTreeError("Invalid public path.", "Public paths cannot be empty, current-directory, or parent-directory paths.");
-  }
-  return segments.join("/");
+  const normalized = normalizePublicTreePath(value);
+  if (normalized === null) throw publicTreeError("Invalid public path.", "Public paths must be bounded safe relative POSIX paths.");
+  return normalized;
 }
 function normalizePublicFiles(files) {
-  const paths = /* @__PURE__ */ new Map();
-  let totalBytes = 0;
   const normalized = files.map((file) => {
     const relativePath = validateRelativePublicPath(file.path);
-    const canonicalPath = relativePath.normalize("NFC");
-    const collision = paths.get(canonicalPath);
-    if (collision) {
-      throw publicTreeError("Invalid public tree.", `Remove the normalization collision between ${collision} and ${relativePath}.`);
-    }
-    paths.set(canonicalPath, relativePath);
     const contents = Buffer.from(typeof file.contents === "string" ? file.contents : file.contents);
-    if (contents.byteLength > PUBLIC_TREE_LIMITS.fileBytes) {
-      throw publicTreeError("Invalid public tree.", `${relativePath} exceeds the per-file public output limit.`);
-    }
-    totalBytes += contents.byteLength;
     return { path: relativePath, contents };
   });
-  if (normalized.length > PUBLIC_TREE_LIMITS.files) {
-    throw publicTreeError("Invalid public tree.", `Public output may contain at most ${PUBLIC_TREE_LIMITS.files} files.`);
-  }
-  if (totalBytes > PUBLIC_TREE_LIMITS.totalBytes) {
-    throw publicTreeError("Invalid public tree.", "Public output exceeds the aggregate size limit.");
-  }
-  if (!paths.has("index.html")) {
-    throw publicTreeError("Invalid public tree.", "Client output must contain a regular index.html file.");
+  const validation = validatePublicTreeFileSet(normalized.map((file) => ({ path: file.path, size: file.contents.byteLength })));
+  if (!validation.ok) {
+    const hints = {
+      path: "Public paths must be bounded safe relative POSIX paths.",
+      collision: "Remove Unicode normalization collisions from public output.",
+      files: `Public output may contain at most ${PUBLIC_TREE_LIMITS.files} files.`,
+      "file-bytes": validation.reason === "file-bytes" ? `${validation.path} exceeds the per-file public output limit.` : "A public output file exceeds the per-file limit.",
+      "total-bytes": "Public output exceeds the aggregate size limit.",
+      index: "Client output must contain a regular index.html file."
+    };
+    throw publicTreeError("Invalid public tree.", hints[validation.reason]);
   }
   return normalized;
 }
@@ -13597,9 +13589,7 @@ function createHostLifecycleRequest(alias, profile, subname, options = {}) {
     mounts: {
       files: [
         { host: posixJoin(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
-        { host: posixJoin(currentLink, "public"), container: "/app/public", mode: "ro", optional: true },
-        { host: posixJoin(currentLink, "client.js"), container: "/app/client.js", mode: "ro", optional: true },
-        { host: posixJoin(currentLink, "index.html"), container: "/app/index.html", mode: "ro", optional: true },
+        { host: posixJoin(currentLink, "public"), container: "/app/public", mode: "ro" },
         { host: posixJoin(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
         { host: posixJoin(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
         {

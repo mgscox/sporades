@@ -550,7 +550,7 @@ async function getAvailablePort() {
   return port;
 }
 
-async function waitForHttp(url, child) {
+async function waitForHttp(url, child, expectedStatus = null) {
   const deadline = Date.now() + 5000;
   let lastError;
   let childStderr = "";
@@ -563,7 +563,7 @@ async function waitForHttp(url, child) {
 
     try {
       const response = await fetch(url);
-      if (response.ok) {
+      if (expectedStatus === null ? response.ok : response.status === expectedStatus) {
         return response;
       }
       lastError = new Error(`Unexpected status ${response.status}`);
@@ -1536,7 +1536,7 @@ test("sporades deploy writes a server bundle that serves the capsule", async () 
   });
 });
 
-test("generated runtime preserves current Hosted index.html and client.js mount fallback", async () => {
+test("generated runtime does not serve fixed root client files outside the public tree", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", "hosted-legacy-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(created.code, 0, created.stderr);
@@ -1557,14 +1557,12 @@ test("generated runtime preserves current Hosted index.html and client.js mount 
       stdio: ["ignore", "pipe", "pipe"],
     });
     try {
-      const root = await waitForHttp(`http://127.0.0.1:${port}/`, child);
-      const html = await root.text();
-      assert.match(html, /legacy hosted html/);
-      assert.match(html, /window\.__SPORADES_CONNECTION_TOKEN=/);
-      const client = await waitForHttp(`http://127.0.0.1:${port}/client.js`, child);
-      const javascript = await client.text();
-      assert.equal(javascript, "console.log('legacy hosted client');\n");
-      assert.doesNotMatch(javascript, /SPORADES_CONNECTION_TOKEN/);
+      const root = await waitForHttp(`http://127.0.0.1:${port}/`, child, 404);
+      assert.equal(root.status, 404);
+      assert.equal(await root.text(), "Not found");
+      const client = await waitForHttp(`http://127.0.0.1:${port}/client.js`, child, 404);
+      assert.equal(client.status, 404);
+      assert.equal(await client.text(), "Not found");
     } finally {
       await stopChild(child);
     }

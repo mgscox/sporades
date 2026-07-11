@@ -43,8 +43,7 @@ flowchart LR
   author["Developer or agent"] --> cli["Sporades CLI"]
   cli --> bundle["Bundle pipeline"]
   bundle --> serverBundle["server.mjs"]
-  bundle --> clientBundle["client.js"]
-  bundle --> staticHtml["index.html"]
+  bundle --> publicTree["normalized public tree"]
 
   cli --> dev["Dev session"]
   cli --> localContainer["Local Container session"]
@@ -72,8 +71,9 @@ describes how those pieces relate.
 Conceptually, each runtime contains:
 
 - `server.mjs`: the bundled server runtime and Capsule definition.
-- `client.js`: the bundled browser client.
-- `index.html`: user-owned HTML shell.
+- `public/`: the normalized bounded client tree, including required built
+  `index.html` plus toolchain-selected nested assets. Esbuild adapters emit
+  `public/client.js`; other adapters may emit hashed chunks instead.
 - `sporades.json`: project configuration read by the CLI and passed into the
   runtime.
 - Sealed Server env: encrypted server-only values mounted or loaded outside the
@@ -394,8 +394,9 @@ call sites, the `files` SDK, or app/client APIs.
 
 The Capsule HTTP server handles:
 
-- `/`: serves `index.html`.
-- `/client.js`: serves the client Bundle.
+- `/` and safe nested asset paths from the normalized public tree. Existing
+  esbuild Capsules expose `/client.js` because that adapter emits
+  `public/client.js`; serving has no filename-specific compatibility branch.
 - `/__sporades/auth/...`: handles server-owned auth flows.
 - `/__sporades/uploads/<id>`: receives upload bytes.
 - `/__sporades/files/private/<id>`: serves private file reads.

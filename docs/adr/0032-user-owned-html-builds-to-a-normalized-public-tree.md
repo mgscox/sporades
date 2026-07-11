@@ -1,5 +1,7 @@
 # User-owned HTML builds to a normalized public tree
 
+Status: Accepted.
+
 Sporades treats `index.html` in the Capsule project as author-owned source and
 the validated public asset tree in the Runtime directory as executable release
 output. Every client toolchain must emit a required `public/index.html` and may

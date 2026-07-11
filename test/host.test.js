@@ -675,13 +675,15 @@ async function writeHostedCapsuleRollbackFixture(dir, options = {}) {
     await mkdir(releaseDir, { recursive: true });
     const files = {
       "server.mjs": `export default ${JSON.stringify(releaseId)};\n`,
-      "client.js": "console.log('client bundle');\n",
-      "index.html": "<div id=\"root\"></div>\n",
+      "public/client.js": "console.log('client bundle');\n",
+      "public/index.html": "<div id=\"root\"></div>\n",
       "sporades.json": "{\"name\":\"team-notes\"}\n",
     };
     for (const [file, contents] of Object.entries(files)) {
       if (!missingFiles.has(`${releaseId}/${file}`) && !missingFiles.has(file)) {
-        await writeFile(path.join(releaseDir, file), contents);
+        const target = path.join(releaseDir, ...file.split("/"));
+        await mkdir(path.dirname(target), { recursive: true });
+        await writeFile(target, contents);
       }
     }
     const fingerprint = sealedReleaseFingerprints[releaseId];
@@ -716,8 +718,8 @@ async function writeHostedCapsuleRollbackFixture(dir, options = {}) {
           remoteCapsuleId: `${domain}/${subname}`,
           files: [
             "server.mjs",
-            "client.js",
-            "index.html",
+            "public/client.js",
+            "public/index.html",
             "sporades.json",
             ...(sealedReleaseFingerprints[releaseId] ? [".sporades/sealed-server-env/server-env.sealed.json"] : []),
           ],
@@ -925,6 +927,12 @@ function withCacheBust(url) {
   const parsed = new URL(url);
   parsed.searchParams.set("sporades-smoke", String(Date.now()));
   return parsed.toString();
+}
+
+async function writePublicRuntimeFiles(runtimeDir) {
+  await mkdir(path.join(runtimeDir, "public"), { recursive: true });
+  await writeFile(path.join(runtimeDir, "public", "index.html"), '<div id="root"></div>\n');
+  await writeFile(path.join(runtimeDir, "public", "client.js"), "console.log('client bundle');\n");
 }
 
 async function createTarGz(archivePath, sourceDir, entries) {
@@ -4350,9 +4358,7 @@ process.exit(0);
     assert.equal(startRequest.lifecycle.currentLink, "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current");
     assert.deepEqual(startRequest.lifecycle.mounts.files, [
       { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/server.mjs", container: "/app/server.mjs", mode: "ro" },
-      { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/public", container: "/app/public", mode: "ro", optional: true },
-      { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/client.js", container: "/app/client.js", mode: "ro", optional: true },
-      { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/index.html", container: "/app/index.html", mode: "ro", optional: true },
+      { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/public", container: "/app/public", mode: "ro" },
       { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/sporades.json", container: "/app/sporades.json", mode: "ro" },
       {
         host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/.env.sporades.server",
@@ -4400,16 +4406,14 @@ test("sporades host helper installs a release atomically and updates the current
     const runtimeDir = path.join(dir, "runtime-files");
     const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
     await mkdir(incomingDir, { recursive: true });
-    await mkdir(runtimeDir, { recursive: true });
+    await writePublicRuntimeFiles(runtimeDir);
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     await writeFile(path.join(runtimeDir, ".env.sporades.server"), "SECRET_TOKEN=swordfish\n");
     await createTarGz(archivePath, runtimeDir, [
       "server.mjs",
-      "client.js",
-      "index.html",
+      "public/client.js",
+      "public/index.html",
       "sporades.json",
       ".env.sporades.server",
     ]);
@@ -4446,7 +4450,7 @@ test("sporades host helper installs a release atomically and updates the current
         remoteArchive: archivePath,
         restart: false,
         serverEnvIncluded: true,
-        files: ["server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"],
+        files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json", ".env.sporades.server"],
         directories: {
           capsule: capsuleDir,
           releases: path.join(capsuleDir, "releases"),
@@ -4474,7 +4478,7 @@ test("sporades host helper installs a release atomically and updates the current
           id: "20260630T221500Z-feedface",
           directory: path.join(capsuleDir, "releases", "20260630T221500Z-feedface"),
           currentLink: path.join(capsuleDir, "current"),
-          files: ["server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json", ".env.sporades.server"],
           serverEnvIncluded: true,
         },
       },
@@ -4498,7 +4502,7 @@ test("sporades host helper installs a release atomically and updates the current
     assert.equal(record.releases[0].current, true);
     assert.equal(record.releases[0].source.hostedUrl, "https://team-notes.capsules.example.dev");
     assert.equal(record.releases[0].source.serverEnvIncluded, true);
-    assert.deepEqual(record.releases[0].source.files, ["server.mjs", "client.js", "index.html", "sporades.json", ".env.sporades.server"]);
+    assert.deepEqual(record.releases[0].source.files, ["server.mjs", "public/client.js", "public/index.html", "sporades.json", ".env.sporades.server"]);
     assert.match(record.releases[0].createdAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.equal(record.releases[0].uploadedAt, record.releases[0].createdAt);
   });
@@ -4548,15 +4552,14 @@ test("sporades host helper rejects non-canonical Sealed Server env private key p
     const escapedPrivateKeyPath = path.join(dir, "escaped-private.pem");
     await mkdir(path.join(runtimeDir, ".sporades", "sealed-server-env"), { recursive: true });
     await mkdir(incomingDir, { recursive: true });
+    await writePublicRuntimeFiles(runtimeDir);
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     await writeFile(path.join(runtimeDir, ".sporades", "sealed-server-env", "server-env.sealed.json"), "{\"version\":1,\"valueAlgorithm\":\"aes-256-gcm\",\"entries\":{}}\n");
     await createTarGz(archivePath, runtimeDir, [
       "server.mjs",
-      "client.js",
-      "index.html",
+      "public/client.js",
+      "public/index.html",
       "sporades.json",
       ".sporades/sealed-server-env/server-env.sealed.json",
     ]);
@@ -4588,7 +4591,7 @@ test("sporades host helper rejects non-canonical Sealed Server env private key p
             privateKey: "-----BEGIN PRIVATE KEY-----\\nnot-real\\n-----END PRIVATE KEY-----\\n",
             privateKeyPath: escapedPrivateKeyPath,
           },
-          files: ["server.mjs", "client.js", "index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
           directories: {
             capsule: capsuleDir,
             releases: path.join(capsuleDir, "releases"),
@@ -4624,9 +4627,8 @@ test("sporades host helper rejects nested macOS archive metadata entries", async
     const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
     await mkdir(path.join(runtimeDir, ".sporades", "sealed-server-env"), { recursive: true });
     await mkdir(incomingDir, { recursive: true });
+    await writePublicRuntimeFiles(runtimeDir);
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     await writeFile(path.join(runtimeDir, ".sporades", "sealed-server-env", "server-env.sealed.json"), "{\"version\":1,\"valueAlgorithm\":\"aes-256-gcm\",\"entries\":{}}\n");
     await writeFile(path.join(runtimeDir, "metadata-server"), "discard me\n");
@@ -4637,8 +4639,8 @@ test("sporades host helper rejects nested macOS archive metadata entries", async
     ], [
       "metadata-server",
       "server.mjs",
-      "client.js",
-      "index.html",
+      "public/client.js",
+      "public/index.html",
       "sporades.json",
       "metadata-envelope",
       ".sporades/sealed-server-env/server-env.sealed.json",
@@ -4698,7 +4700,7 @@ test("sporades host helper rejects nested macOS archive metadata entries", async
             publicKeyFingerprint: "0123456789abcdef",
             publicKeyPath: path.join(keysDir, "0123456789abcdef.public.pem"),
           },
-          files: ["server.mjs", "client.js", "index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
           directories: {
             capsule: capsuleDir,
             releases: path.join(capsuleDir, "releases"),
@@ -4736,9 +4738,8 @@ test("sporades host helper starts public-key-only sealed releases with the relea
     const currentRegistryFingerprint = "fedcba9876543210";
     await mkdir(path.join(runtimeDir, ".sporades", "sealed-server-env"), { recursive: true });
     await mkdir(incomingDir, { recursive: true });
+    await writePublicRuntimeFiles(runtimeDir);
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     await writeFile(
       path.join(runtimeDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
@@ -4746,8 +4747,8 @@ test("sporades host helper starts public-key-only sealed releases with the relea
     );
     await createTarGz(archivePath, runtimeDir, [
       "server.mjs",
-      "client.js",
-      "index.html",
+      "public/client.js",
+      "public/index.html",
       "sporades.json",
       ".sporades/sealed-server-env/server-env.sealed.json",
     ]);
@@ -4783,7 +4784,7 @@ test("sporades host helper starts public-key-only sealed releases with the relea
             publicKeyFingerprint: fingerprint,
             publicKeyPath: path.join(capsuleDir, "data", "sealed-server-env", "keys", `${fingerprint}.public.pem`),
           },
-          files: ["server.mjs", "client.js", "index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
           baseImage: {
             name: "sporades-base",
             image: "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine",
@@ -4865,7 +4866,7 @@ test("sporades host helper rejects sealed release start when the manifest finger
             current: true,
             source: {
               hostedUrl: "https://team-notes.capsules.example.dev",
-              files: ["server.mjs", "client.js", "index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
+              files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
               sealedServerEnvIncluded: true,
               sealedServerEnv: { publicKeyFingerprint: fingerprint },
             },
@@ -4922,11 +4923,10 @@ test("sporades host helper reports remediation when data ownership cannot be pre
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     await mkdir(path.dirname(archivePath), { recursive: true });
     await mkdir(runtimeDir, { recursive: true });
+    await writePublicRuntimeFiles(runtimeDir);
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
-    await createTarGz(archivePath, runtimeDir, ["server.mjs", "client.js", "index.html", "sporades.json"]);
+    await createTarGz(archivePath, runtimeDir, ["server.mjs", "public/client.js", "public/index.html", "sporades.json"]);
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     await writeFile(
       registryRecordPath,
@@ -4949,7 +4949,7 @@ test("sporades host helper reports remediation when data ownership cannot be pre
           remoteArchive: archivePath,
           restart: false,
           serverEnvIncluded: false,
-          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json"],
           directories: {
             capsule: capsuleDir,
             releases: path.join(capsuleDir, "releases"),
@@ -5884,7 +5884,7 @@ test("sporades host helper lists registry records enriched with Docker container
             current: true,
             source: {
               hostedUrl: "https://notes.capsules.example.dev",
-              files: ["server.mjs", "client.js", "index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
+              files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json", ".sporades/sealed-server-env/server-env.sealed.json"],
               sealedServerEnvIncluded: true,
               sealedServerEnv: { publicKeyFingerprint: "0123456789abcdef" },
             },
@@ -7223,7 +7223,7 @@ test("sporades host helper fails start when Docker does not report a usable loop
         ["stop", "sporades-capsules-example-dev-team-notes"],
         ["rm", "sporades-capsules-example-dev-team-notes"],
         ["image", "inspect", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"],
-        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.1.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", "SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine", "node", "/app/server.mjs"],
+        ["run", "--detach", "--name", "sporades-capsules-example-dev-team-notes", "--network", "sporades-hosted-capsules", "--restart", "on-failure:3", "--read-only", "--tmpfs", "/tmp:rw,nosuid,nodev,noexec", "--cap-drop", "ALL", "--security-opt", "no-new-privileges", "--user", "10001:10001", "--log-driver", "json-file", "--log-opt", "max-size=10m", "--log-opt", "max-file=5", "--label", "com.sporades.managed=true", "--label", "com.sporades.hosted-domain=capsules.example.dev", "--label", "com.sporades.capsule-subname=team-notes", "--label", "com.sporades.capsule-id=capsules.example.dev/team-notes", "--label", "com.sporades.base-image.name=sporades-base", "--label", "com.sporades.base-image.version=0.1.0-node22-alpine", "--label", "com.sporades.base-image.update-policy=host-managed", "--label", "com.sporades.release-id=20260630T221500Z-feedface", "--volume", `${path.join(capsuleDir, "current", "server.mjs")}:/app/server.mjs:ro`, "--volume", `${path.join(capsuleDir, "current", "public")}:/app/public:ro`, "--volume", `${path.join(capsuleDir, "current", "sporades.json")}:/app/sporades.json:ro`, "--volume", `${path.join(capsuleDir, "data")}:/app/data:rw`, "--workdir", "/app", "--env", "PORT=4000", "--env", "SPORADES_LOG_STDOUT=1", "--env", "SPORADES_SECURITY_SESSION=hosted", "--env", "SPORADES_PUBLIC_ORIGIN=https://team-notes.capsules.example.dev", "--env", "SPORADES_RELEASE_ID=20260630T221500Z-feedface", "--publish", "127.0.0.1::4000", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine", "node", "/app/server.mjs"],
         ["inspect", "-f", "{{.State.Running}}", "sporades-capsules-example-dev-team-notes"],
         ["inspect", "-f", "{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostIp}}:{{(index (index .NetworkSettings.Ports \"4000/tcp\") 0).HostPort}}", "sporades-capsules-example-dev-team-notes"],
         ["stop", "sporades-capsules-example-dev-team-notes"],
@@ -7241,12 +7241,10 @@ test("sporades host helper refuses to install a release for an unregistered Host
     const runtimeDir = path.join(dir, "runtime-files");
     const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
     await mkdir(incomingDir, { recursive: true });
-    await mkdir(runtimeDir, { recursive: true });
+    await writePublicRuntimeFiles(runtimeDir);
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
-    await createTarGz(archivePath, runtimeDir, ["server.mjs", "client.js", "index.html", "sporades.json"]);
+    await createTarGz(archivePath, runtimeDir, ["server.mjs", "public/client.js", "public/index.html", "sporades.json"]);
 
     const install = await runHostHelper(
       {
@@ -7267,7 +7265,7 @@ test("sporades host helper refuses to install a release for an unregistered Host
           remoteArchive: archivePath,
           restart: false,
           serverEnvIncluded: false,
-          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json"],
           directories: {
             capsule: capsuleDir,
             releases: path.join(capsuleDir, "releases"),
@@ -7795,12 +7793,10 @@ test("sporades host helper derives install paths from Host state instead of requ
     const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
     const outsideDir = path.join(dir, "outside-target");
     await mkdir(incomingDir, { recursive: true });
-    await mkdir(runtimeDir, { recursive: true });
+    await writePublicRuntimeFiles(runtimeDir);
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
-    await createTarGz(archivePath, runtimeDir, ["server.mjs", "client.js", "index.html", "sporades.json"]);
+    await createTarGz(archivePath, runtimeDir, ["server.mjs", "public/client.js", "public/index.html", "sporades.json"]);
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     await writeFile(
@@ -7831,7 +7827,7 @@ test("sporades host helper derives install paths from Host state instead of requ
           remoteArchive: archivePath,
           restart: false,
           serverEnvIncluded: false,
-          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json"],
           directories: {
             capsule: outsideDir,
             releases: path.join(outsideDir, "releases"),
@@ -7864,10 +7860,9 @@ test("sporades host helper rejects known macOS archive metadata before release i
     const runtimeDir = path.join(dir, "runtime-files");
     const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
     await mkdir(incomingDir, { recursive: true });
+    await writePublicRuntimeFiles(runtimeDir);
     await mkdir(path.join(runtimeDir, "__MACOSX"), { recursive: true });
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     await writeFile(path.join(runtimeDir, "metadata-root"), "appledouble metadata\n");
     await writeFile(path.join(runtimeDir, "metadata-nested"), "appledouble metadata\n");
@@ -7876,8 +7871,8 @@ test("sporades host helper rejects known macOS archive metadata before release i
       "|^metadata-nested$|__MACOSX/._server.mjs|",
     ], [
       "server.mjs",
-      "client.js",
-      "index.html",
+      "public/client.js",
+      "public/index.html",
       "sporades.json",
       "metadata-root",
       "metadata-nested",
@@ -7912,7 +7907,7 @@ test("sporades host helper rejects known macOS archive metadata before release i
           remoteArchive: archivePath,
           restart: false,
           serverEnvIncluded: false,
-          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json"],
           directories: {
             capsule: capsuleDir,
             releases: path.join(capsuleDir, "releases"),
@@ -7941,17 +7936,15 @@ test("sporades host helper rejects unsafe or unexpected release archive entries 
     const runtimeDir = path.join(dir, "runtime-files");
     const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
     await mkdir(incomingDir, { recursive: true });
-    await mkdir(runtimeDir, { recursive: true });
+    await writePublicRuntimeFiles(runtimeDir);
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     await writeFile(path.join(runtimeDir, "source.ts"), "throw new Error('source must not upload');\n");
     await symlink("server.mjs", path.join(runtimeDir, "linked-server.mjs"));
     await createTarGz(archivePath, runtimeDir, [
       "server.mjs",
-      "client.js",
-      "index.html",
+      "public/client.js",
+      "public/index.html",
       "sporades.json",
       "source.ts",
       "linked-server.mjs",
@@ -7986,7 +7979,7 @@ test("sporades host helper rejects unsafe or unexpected release archive entries 
           remoteArchive: archivePath,
           restart: false,
           serverEnvIncluded: false,
-          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json"],
           directories: {
             capsule: capsuleDir,
             releases: path.join(capsuleDir, "releases"),
@@ -8021,12 +8014,10 @@ test("sporades host helper rejects archives with unexpected or missing runtime f
     const runtimeDir = path.join(dir, "runtime-files");
     const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
     await mkdir(incomingDir, { recursive: true });
-    await mkdir(runtimeDir, { recursive: true });
+    await writePublicRuntimeFiles(runtimeDir);
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "source.ts"), "throw new Error('source must not upload');\n");
-    await createTarGz(archivePath, runtimeDir, ["server.mjs", "client.js", "index.html", "source.ts"]);
+    await createTarGz(archivePath, runtimeDir, ["server.mjs", "public/client.js", "public/index.html", "source.ts"]);
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
@@ -8043,7 +8034,7 @@ test("sporades host helper rejects archives with unexpected or missing runtime f
           remoteArchive: archivePath,
           restart: false,
           serverEnvIncluded: false,
-          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json"],
           directories: {
             capsule: capsuleDir,
             releases: path.join(capsuleDir, "releases"),
@@ -8077,13 +8068,11 @@ test("sporades host helper rejects release archives with parent-relative paths",
     const runtimeDir = path.join(dir, "runtime-files");
     const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
     await mkdir(incomingDir, { recursive: true });
-    await mkdir(runtimeDir, { recursive: true });
+    await writePublicRuntimeFiles(runtimeDir);
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     await writeFile(path.join(dir, "outside.txt"), "must not extract outside release\n");
-    await createTarGz(archivePath, runtimeDir, ["server.mjs", "client.js", "index.html", "sporades.json", "../outside.txt"]);
+    await createTarGz(archivePath, runtimeDir, ["server.mjs", "public/client.js", "public/index.html", "sporades.json", "../outside.txt"]);
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
@@ -8100,7 +8089,7 @@ test("sporades host helper rejects release archives with parent-relative paths",
           remoteArchive: archivePath,
           restart: false,
           serverEnvIncluded: false,
-          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json"],
           directories: {
             capsule: capsuleDir,
             releases: path.join(capsuleDir, "releases"),
@@ -8151,12 +8140,10 @@ test("sporades host helper restarts the current release after install when reque
     const runtimeDir = path.join(dir, "runtime-files");
     const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
     await mkdir(incomingDir, { recursive: true });
-    await mkdir(runtimeDir, { recursive: true });
+    await writePublicRuntimeFiles(runtimeDir);
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
-    await createTarGz(archivePath, runtimeDir, ["server.mjs", "client.js", "index.html", "sporades.json"]);
+    await createTarGz(archivePath, runtimeDir, ["server.mjs", "public/client.js", "public/index.html", "sporades.json"]);
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
@@ -8174,7 +8161,7 @@ test("sporades host helper restarts the current release after install when reque
           remoteArchive: archivePath,
           restart: true,
           serverEnvIncluded: false,
-          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json"],
           directories: {
             capsule: capsuleDir,
             releases: path.join(capsuleDir, "releases"),
@@ -8226,16 +8213,15 @@ test("sporades host helper starts SSH-enabled Hosted Capsules through the Base s
     const runtimeDir = path.join(dir, "runtime-files");
     const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
     await mkdir(incomingDir, { recursive: true });
+    await writePublicRuntimeFiles(runtimeDir);
     await mkdir(path.join(runtimeDir, ".sporades", "ssh"), { recursive: true });
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     await writeFile(path.join(runtimeDir, ".sporades", "ssh", "authorized_keys"), `${TEST_PUBLIC_KEY}\n`);
     await createTarGz(archivePath, runtimeDir, [
       "server.mjs",
-      "client.js",
-      "index.html",
+      "public/client.js",
+      "public/index.html",
       "sporades.json",
       ".sporades/ssh/authorized_keys",
     ]);
@@ -8256,7 +8242,7 @@ test("sporades host helper starts SSH-enabled Hosted Capsules through the Base s
           remoteArchive: archivePath,
           restart: true,
           serverEnvIncluded: false,
-          files: ["server.mjs", "client.js", "index.html", "sporades.json", ".sporades/ssh/authorized_keys"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json", ".sporades/ssh/authorized_keys"],
           ssh: {
             enabled: true,
             authorizedKeysPath: ".sporades/ssh/authorized_keys",
@@ -8581,9 +8567,8 @@ test("sporades host helper keeps failed release current when verification fallba
     });
     const previousReleaseDir = path.join(fixture.capsuleDir, "releases", fixture.previousReleaseId);
     await mkdir(previousReleaseDir, { recursive: true });
+    await writePublicRuntimeFiles(previousReleaseDir);
     await writeFile(path.join(previousReleaseDir, "server.mjs"), "export default 'previous';\n");
-    await writeFile(path.join(previousReleaseDir, "client.js"), "console.log('previous');\n");
-    await writeFile(path.join(previousReleaseDir, "index.html"), "<div></div>\n");
     await writeFile(path.join(previousReleaseDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     const docker = await installFakeDocker(path.join(dir, "verify-fallback-restart-failure-docker"), {
       env: { FAKE_DOCKER_RUNNING: "false" },
@@ -8703,12 +8688,10 @@ test("sporades host helper reports push restart failure after installing the rel
     const runtimeDir = path.join(dir, "runtime-files");
     const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
     await mkdir(incomingDir, { recursive: true });
-    await mkdir(runtimeDir, { recursive: true });
+    await writePublicRuntimeFiles(runtimeDir);
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
-    await createTarGz(archivePath, runtimeDir, ["server.mjs", "client.js", "index.html", "sporades.json"]);
+    await createTarGz(archivePath, runtimeDir, ["server.mjs", "public/client.js", "public/index.html", "sporades.json"]);
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
@@ -8726,7 +8709,7 @@ test("sporades host helper reports push restart failure after installing the rel
           remoteArchive: archivePath,
           restart: true,
           serverEnvIncluded: false,
-          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json"],
           directories: {
             capsule: capsuleDir,
             releases: path.join(capsuleDir, "releases"),
@@ -8755,7 +8738,7 @@ test("sporades host helper reports push restart failure after installing the rel
           id: "20260630T221500Z-feedface",
           directory: path.join(capsuleDir, "releases", "20260630T221500Z-feedface"),
           currentLink: path.join(capsuleDir, "current"),
-          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json"],
           serverEnvIncluded: false,
         },
       },
@@ -8776,12 +8759,10 @@ test("sporades host helper preserves install metadata when push restart route re
     const runtimeDir = path.join(dir, "runtime-files");
     const archivePath = path.join(incomingDir, "20260630T221500Z-feedface.tar.gz");
     await mkdir(incomingDir, { recursive: true });
-    await mkdir(runtimeDir, { recursive: true });
+    await writePublicRuntimeFiles(runtimeDir);
     await writeFile(path.join(runtimeDir, "server.mjs"), "export default 'server bundle';\n");
-    await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
-    await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
-    await createTarGz(archivePath, runtimeDir, ["server.mjs", "client.js", "index.html", "sporades.json"]);
+    await createTarGz(archivePath, runtimeDir, ["server.mjs", "public/client.js", "public/index.html", "sporades.json"]);
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev" })}\n`);
@@ -8799,7 +8780,7 @@ test("sporades host helper preserves install metadata when push restart route re
           remoteArchive: archivePath,
           restart: true,
           serverEnvIncluded: false,
-          files: ["server.mjs", "client.js", "index.html", "sporades.json"],
+          files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json"],
           directories: {
             capsule: capsuleDir,
             releases: path.join(capsuleDir, "releases"),
@@ -8847,9 +8828,8 @@ test("sporades host helper rolls back to a recorded release and preserves persis
     await mkdir(path.join(dataDir, "uploads"), { recursive: true });
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
     for (const releaseDir of [currentReleaseDir, rollbackReleaseDir]) {
+      await writePublicRuntimeFiles(releaseDir);
       await writeFile(path.join(releaseDir, "server.mjs"), `export default ${JSON.stringify(path.basename(releaseDir))};\n`);
-      await writeFile(path.join(releaseDir, "client.js"), "console.log('client bundle');\n");
-      await writeFile(path.join(releaseDir, "index.html"), "<div id=\"root\"></div>\n");
       await writeFile(path.join(releaseDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     }
     await symlink(currentReleaseDir, path.join(capsuleDir, "current"));
@@ -8871,7 +8851,7 @@ test("sporades host helper rolls back to a recorded release and preserves persis
             uploadedAt: "2026-06-30T22:15:00.000Z",
             state: "started",
             current: true,
-            source: { hostedUrl: "https://team-notes.capsules.example.dev", files: ["server.mjs", "client.js", "index.html", "sporades.json"] },
+            source: { hostedUrl: "https://team-notes.capsules.example.dev", files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json"] },
             startAttempts: [{ startedAt: "2026-06-30T22:16:00.000Z" }],
           },
           {
@@ -8880,7 +8860,7 @@ test("sporades host helper rolls back to a recorded release and preserves persis
             uploadedAt: "2026-06-29T12:00:00.000Z",
             state: "verified",
             current: false,
-            source: { hostedUrl: "https://team-notes.capsules.example.dev", files: ["server.mjs", "client.js", "index.html", "sporades.json"] },
+            source: { hostedUrl: "https://team-notes.capsules.example.dev", files: ["server.mjs", "public/client.js", "public/index.html", "sporades.json"] },
             startAttempts: [],
             verificationAttempts: [{ verifiedAt: "2026-06-29T12:02:00.000Z" }],
           },
@@ -9917,9 +9897,7 @@ process.exit(0);
         mounts: {
           files: [
             { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/server.mjs", container: "/app/server.mjs", mode: "ro" },
-            { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/public", container: "/app/public", mode: "ro", optional: true },
-            { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/client.js", container: "/app/client.js", mode: "ro", optional: true },
-            { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/index.html", container: "/app/index.html", mode: "ro", optional: true },
+            { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/public", container: "/app/public", mode: "ro" },
             { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/sporades.json", container: "/app/sporades.json", mode: "ro" },
             { host: "/opt/sporades/hosts/capsules.example.dev/capsules/team-notes/current/.env.sporades.server", container: "/app/.env.sporades.server", mode: "ro", optional: true },
             {

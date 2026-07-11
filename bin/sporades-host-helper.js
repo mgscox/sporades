@@ -113,16 +113,39 @@ function restartPolicyStatus(mode, overrides = {}) {
   };
 }
 
-// src/public-tree.ts
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
+// src/public-tree-contract.ts
 var PUBLIC_TREE_LIMITS = {
   files: 512,
   fileBytes: 16 * 1024 * 1024,
   totalBytes: 64 * 1024 * 1024,
   pathBytes: 240
 };
-var execFileAsync = promisify(execFile);
+function normalizePublicTreePath(value) {
+  if (!value || value.startsWith("/") || value.includes("\\") || value.includes("\0")) return null;
+  if (Buffer.byteLength(value, "utf8") > PUBLIC_TREE_LIMITS.pathBytes) return null;
+  const segments = value.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return null;
+  return segments.join("/");
+}
+function validatePublicTreeFileSet(files) {
+  if (files.length > PUBLIC_TREE_LIMITS.files) return { ok: false, reason: "files" };
+  const canonicalPaths = /* @__PURE__ */ new Set();
+  let totalBytes = 0;
+  let hasIndex = false;
+  for (const file of files) {
+    const normalized = normalizePublicTreePath(file.path);
+    if (normalized === null || !Number.isSafeInteger(file.size) || file.size < 0) return { ok: false, reason: "path" };
+    const canonical = normalized.normalize("NFC");
+    if (canonicalPaths.has(canonical)) return { ok: false, reason: "collision" };
+    canonicalPaths.add(canonical);
+    if (file.size > PUBLIC_TREE_LIMITS.fileBytes) return { ok: false, reason: "file-bytes", path: normalized };
+    totalBytes += file.size;
+    if (totalBytes > PUBLIC_TREE_LIMITS.totalBytes) return { ok: false, reason: "total-bytes" };
+    if (normalized === "index.html") hasIndex = true;
+  }
+  if (!hasIndex) return { ok: false, reason: "index" };
+  return { ok: true, fileCount: files.length, totalBytes };
+}
 
 // src/server-runtime-source.ts
 import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
@@ -390,8 +413,7 @@ import { spawnSync } from "node:child_process";
 // src/cli/host-helper-release-files.ts
 function expectedReleaseFiles(release) {
   const publicFiles = Array.isArray(release.files) ? release.files.filter((file) => typeof file === "string" && file.startsWith("public/")) : [];
-  const legacyFiles = publicFiles.length === 0 ? ["client.js", "index.html"] : [];
-  const files = ["server.mjs", "sporades.json", ...legacyFiles, ...publicFiles];
+  const files = ["server.mjs", "sporades.json", ...publicFiles];
   if (release.serverEnvIncluded) {
     files.push(".env.sporades.server");
   }
@@ -406,8 +428,6 @@ function expectedReleaseFiles(release) {
 function isExpectedClaimedReleaseFile(file) {
   return typeof file === "string" && (file.startsWith("public/") || [
     "server.mjs",
-    "client.js",
-    "index.html",
     "sporades.json",
     ".env.sporades.server",
     ".sporades/sealed-server-env/server-env.sealed.json",
@@ -548,22 +568,12 @@ function isSafeArchiveEntryName(name) {
 }
 function validatePublicArchiveBounds(entries) {
   const files = entries.filter((entry) => entry.type === "-" && normaliseArchiveEntryName(entry.name).startsWith("public/"));
-  if (files.length > PUBLIC_TREE_LIMITS.files) {
-    throw helperError("Hosted Capsule public tree exceeds release bounds.", "Reduce the number of public files and push again.");
-  }
-  let totalBytes = 0;
-  for (const entry of files) {
-    const relative = normaliseArchiveEntryName(entry.name).slice("public/".length);
-    if (Buffer.byteLength(relative, "utf8") > PUBLIC_TREE_LIMITS.pathBytes || !Number.isSafeInteger(entry.size) || entry.size < 0) {
-      throw helperError("Hosted Capsule public tree exceeds release bounds.", "Use bounded public paths and regular files, then push again.");
-    }
-    if (entry.size > PUBLIC_TREE_LIMITS.fileBytes) {
-      throw helperError("Hosted Capsule public tree exceeds release bounds.", "Reduce oversized public files and push again.");
-    }
-    totalBytes += entry.size;
-  }
-  if (totalBytes > PUBLIC_TREE_LIMITS.totalBytes) {
-    throw helperError("Hosted Capsule public tree exceeds release bounds.", "Reduce the total public output size and push again.");
+  const result = validatePublicTreeFileSet(files.map((entry) => ({
+    path: normaliseArchiveEntryName(entry.name).slice("public/".length),
+    size: entry.size
+  })));
+  if (!result.ok) {
+    throw helperError("Hosted Capsule public tree exceeds release bounds.", "Use one normalized public tree with safe unique bounded files and a root index.html, then push again.");
   }
 }
 
@@ -981,19 +991,9 @@ function validateClaimedReleaseFiles(files) {
     throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
   }
   const publicFiles = files.filter((file) => file.startsWith("public/"));
-  if (publicFiles.length === 0) return;
-  if (publicFiles.length > PUBLIC_TREE_LIMITS.files || !publicFiles.includes("public/index.html")) {
+  const validation = validatePublicTreeFileSet(publicFiles.map((file) => ({ path: file.slice("public/".length), size: 0 })));
+  if (!validation.ok) {
     throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
-  }
-  const canonical = /* @__PURE__ */ new Set();
-  for (const file of publicFiles) {
-    const relative = file.slice("public/".length);
-    const normalized = relative.normalize("NFC");
-    const safe = relative.length > 0 && !relative.startsWith("/") && !relative.includes("\\") && !relative.includes("\0") && path2.posix.normalize(relative) === relative && relative.split("/").every((segment) => segment && segment !== "." && segment !== "..") && Buffer.byteLength(relative, "utf8") <= PUBLIC_TREE_LIMITS.pathBytes;
-    if (!safe || canonical.has(normalized)) {
-      throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
-    }
-    canonical.add(normalized);
   }
 }
 
@@ -1498,8 +1498,7 @@ async function validateExtractedReleaseTree(root, expectedFiles) {
   const canonical = /* @__PURE__ */ new Set();
   const actual = [];
   let totalBytes = 0;
-  let publicFiles = 0;
-  let publicBytes = 0;
+  const publicClaims = [];
   async function visit(directory, prefix = "") {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
@@ -1534,17 +1533,17 @@ async function validateExtractedReleaseTree(root, expectedFiles) {
       totalBytes += stats.size;
       if (relative.startsWith("public/")) {
         const publicPath = relative.slice("public/".length);
-        publicFiles += 1;
-        publicBytes += stats.size;
-        if (Buffer.byteLength(publicPath, "utf8") > PUBLIC_TREE_LIMITS.pathBytes || stats.size > PUBLIC_TREE_LIMITS.fileBytes) {
+        if (normalizePublicTreePath(publicPath) === null) {
           throw helperError("Extracted Hosted Capsule public tree exceeds bounds.", "Reduce public paths and files, then push again.");
         }
+        publicClaims.push({ path: publicPath, size: stats.size });
       }
       actual.push({ path: relative, size: stats.size, sha256: createHash2("sha256").update(await readFile2(entryPath)).digest("hex") });
     }
   }
   await visit(root);
-  if (actual.length !== expected.size || actual.length > HOST_RELEASE_ARCHIVE_LIMITS.entries || totalBytes > HOST_RELEASE_ARCHIVE_LIMITS.totalBytes || publicFiles > PUBLIC_TREE_LIMITS.files || publicBytes > PUBLIC_TREE_LIMITS.totalBytes) {
+  const publicValidation = validatePublicTreeFileSet(publicClaims);
+  if (actual.length !== expected.size || actual.length > HOST_RELEASE_ARCHIVE_LIMITS.entries || totalBytes > HOST_RELEASE_ARCHIVE_LIMITS.totalBytes || !publicValidation.ok) {
     throw helperError("Extracted Hosted Capsule release does not match its bounded archive.", "Upload the release again from a clean normalized Bundle.");
   }
   return actual.sort((left, right) => left.path.localeCompare(right.path));
@@ -2554,9 +2553,7 @@ function normaliseLifecycle(request, registryRecord = null) {
   const defaultMounts = {
     files: [
       { host: path3.join(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
-      { host: path3.join(currentLink, "public"), container: "/app/public", mode: "ro", optional: true },
-      { host: path3.join(currentLink, "client.js"), container: "/app/client.js", mode: "ro", optional: true },
-      { host: path3.join(currentLink, "index.html"), container: "/app/index.html", mode: "ro", optional: true },
+      { host: path3.join(currentLink, "public"), container: "/app/public", mode: "ro" },
       { host: path3.join(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
       { host: path3.join(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
       {
@@ -4854,7 +4851,7 @@ async function deriveReleaseFileClaims(root) {
   }
   await visit(root);
   const paths = new Set(claims.map((file) => file.path));
-  const complete = paths.has("server.mjs") && paths.has("sporades.json") && (paths.has("public/index.html") || paths.has("index.html") && paths.has("client.js"));
+  const complete = paths.has("server.mjs") && paths.has("sporades.json") && paths.has("public/index.html");
   if (!complete) throw helperError("Hosted Capsule release files are missing.", "Choose another complete immutable release.");
   return claims;
 }

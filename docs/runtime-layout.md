@@ -13,7 +13,11 @@ by Sporades.
 .sporades/
   build/
     server.mjs
-    client.js
+    .public-trees/
+      active.json
+      <immutable-tree>/
+        index.html
+        <toolchain assets...>
   data.db
   files/
   services/
@@ -35,7 +39,8 @@ by Sporades.
 Common entries:
 
 - `build/server.mjs`: bundled server runtime and Capsule definition.
-- `build/client.js`: bundled browser client.
+- `build/.public-trees/`: bounded immutable client outputs. `active.json`
+  selects the last successful normalized public tree.
 - `data.db`: SQLite database for Dev sessions.
 - `files/`: uploaded file bytes for the default local filesystem Storage
   adapter in Dev sessions.
@@ -78,9 +83,10 @@ A runnable Capsule release contains:
 
 ```text
 server.mjs
-client.js
-index.html
 sporades.json
+public/
+  index.html
+  <toolchain assets...>
 .sporades/sealed-server-env/server-env.sealed.json
 .env.sporades.server
 .sporades/ssh/authorized_keys
@@ -89,7 +95,7 @@ sporades.json
 Sealed Server env is optional but is the long-term default for server-only
 values. `.env.sporades.server` is still supported as a legacy/import-friendly
 source when no sealed envelope exists. Server-only values must not be bundled
-into `client.js`.
+into any public asset.
 
 `.sporades/ssh/authorized_keys` is optional generated public authorized-key
 material. It is present only when `ssh.authorizedKeys` resolves to at least one
@@ -120,8 +126,7 @@ Container
   Base image: ghcr.io/sporades/sporades-base:0.1.0-node22-alpine
   Runtime user: invoking host UID/GID when available, or 10001:10001 when SSH is enabled
   /app/server.mjs              read-only
-  /app/client.js               read-only
-  /app/index.html              read-only
+  /app/public/                 read-only normalized public tree
   /app/sporades.json           read-only
   /app/.sporades/sealed-server-env/server-env.sealed.json  read-only, optional
   /app/.sporades/sealed-server-env/server-env.private.pem   read-only, optional

@@ -1,9 +1,4 @@
-export declare const PUBLIC_TREE_LIMITS: {
-    readonly files: 512;
-    readonly fileBytes: number;
-    readonly totalBytes: number;
-    readonly pathBytes: 240;
-};
+export { PUBLIC_TREE_LIMITS } from "./public-tree-contract.js";
 type PublicAsset = {
     body: Buffer;
     contentType: string;
@@ -86,5 +81,4 @@ export declare function getProcessStartIdentity(pid: number, options?: {
     platform?: NodeJS.Platform;
     execFile?: ProcessIdentityExec;
 }): Promise<string | null>;
-export {};
 //# sourceMappingURL=public-tree.d.ts.map

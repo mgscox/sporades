@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { PUBLIC_TREE_LIMITS } from "../public-tree.js";
+import { PUBLIC_TREE_LIMITS, validatePublicTreeFileSet } from "../public-tree-contract.js";
 import { helperError } from "./cli-support.js";
 import { expectedReleaseFiles } from "./host-helper-release-files.js";
 export const HOST_RELEASE_ARCHIVE_LIMITS = {
@@ -124,22 +124,12 @@ function isSafeArchiveEntryName(name) {
 }
 function validatePublicArchiveBounds(entries) {
     const files = entries.filter((entry) => entry.type === "-" && normaliseArchiveEntryName(entry.name).startsWith("public/"));
-    if (files.length > PUBLIC_TREE_LIMITS.files) {
-        throw helperError("Hosted Capsule public tree exceeds release bounds.", "Reduce the number of public files and push again.");
-    }
-    let totalBytes = 0;
-    for (const entry of files) {
-        const relative = normaliseArchiveEntryName(entry.name).slice("public/".length);
-        if (Buffer.byteLength(relative, "utf8") > PUBLIC_TREE_LIMITS.pathBytes || !Number.isSafeInteger(entry.size) || entry.size < 0) {
-            throw helperError("Hosted Capsule public tree exceeds release bounds.", "Use bounded public paths and regular files, then push again.");
-        }
-        if (entry.size > PUBLIC_TREE_LIMITS.fileBytes) {
-            throw helperError("Hosted Capsule public tree exceeds release bounds.", "Reduce oversized public files and push again.");
-        }
-        totalBytes += entry.size;
-    }
-    if (totalBytes > PUBLIC_TREE_LIMITS.totalBytes) {
-        throw helperError("Hosted Capsule public tree exceeds release bounds.", "Reduce the total public output size and push again.");
+    const result = validatePublicTreeFileSet(files.map((entry) => ({
+        path: normaliseArchiveEntryName(entry.name).slice("public/".length),
+        size: entry.size,
+    })));
+    if (!result.ok) {
+        throw helperError("Hosted Capsule public tree exceeds release bounds.", "Use one normalized public tree with safe unique bounded files and a root index.html, then push again.");
     }
 }
 //# sourceMappingURL=host-helper-archive.js.map

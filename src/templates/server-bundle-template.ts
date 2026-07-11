@@ -1,4 +1,5 @@
 import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../server-runtime-source.js";
+import { PUBLIC_TREE_LIMITS, normalizePublicTreePath, publicTreePathFromRequest } from "../public-tree-contract.js";
 
 export function createServerBundleSource({
   config, 
@@ -16,6 +17,11 @@ export function createServerBundleSource({
   const runtimeFunctions = SERVER_RUNTIME_SOURCE_FUNCTIONS
     .map((fn) => fn.toString())
     .join("\n\n");
+  const publicTreeContract = [
+    `const PUBLIC_TREE_LIMITS = ${JSON.stringify(PUBLIC_TREE_LIMITS)};`,
+    normalizePublicTreePath.toString(),
+    publicTreePathFromRequest.toString(),
+  ].join("\n\n");
   const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
 
 return `// Sporades server bundle
@@ -34,6 +40,7 @@ const sporadesAction = sporadesActionIndex < 0 ? null : process.argv[sporadesAct
 const sporadesCapsuleModule = sporadesAction ? null : await import(${JSON.stringify(serverModuleDataUrl)});
 const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
 ${runtimeFunctions}
+${publicTreeContract}
 
 const port = Number(process.env.PORT ?? sporadesConfig.deploy?.port ?? 4000);
 const databasePath = process.env.SPORADES_DATABASE_PATH ?? path.join(process.cwd(), "data", "data.db");
@@ -74,7 +81,6 @@ database.log.emit({
 });
 const websocketHub = createWebSocketHub(() => database);
 const runtimePublicRoot = resolveRuntimePublicRoot();
-const runtimeUsesLegacyPublicFiles = !existsSync(path.join(runtimePublicRoot, "index.html"));
 
 const server = createServer(async (request, response) => {
   try {
@@ -99,20 +105,6 @@ const server = createServer(async (request, response) => {
     }
 
     if (await routePublicAsset(request, response, runtimePublicRoot, websocketHub)) {
-      return;
-    }
-
-    if (runtimeUsesLegacyPublicFiles && (request.url === "/" || request.url === "/index.html")) {
-      const html = await readFile(path.join(process.cwd(), "index.html"), "utf8");
-      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(injectPageConnectionToken(html, websocketHub.createConnectionToken()));
-      return;
-    }
-
-    if (runtimeUsesLegacyPublicFiles && request.url === "/client.js") {
-      const client = await readFile(path.join(process.cwd(), "client.js"));
-      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
-      response.end(client);
       return;
     }
 
@@ -153,7 +145,7 @@ process.on("SIGINT", shutdown);
 
 function resolveRuntimePublicRoot() {
   const mounted = path.join(process.cwd(), "public");
-  if (existsSync(path.join(mounted, "index.html"))) return mounted;
+  if (existsSync(mounted)) return mounted;
   try {
     const treesDir = path.join(process.cwd(), ".sporades", "build", ".public-trees");
     const tree = JSON.parse(readFileSync(path.join(treesDir, "active.json"), "utf8"))?.tree;
@@ -164,14 +156,9 @@ function resolveRuntimePublicRoot() {
 
 async function routePublicAsset(request, response, publicRoot, hub) {
   const rawPathname = String(request.url ?? "/").split("?", 1)[0];
-  if (/%2f|%5c/i.test(rawPathname)) return false;
-  let decoded;
-  try { decoded = decodeURIComponent(rawPathname); } catch { return false; }
-  if (!decoded.startsWith("/") || decoded.includes("\\\\") || decoded.includes("\\0")) return false;
-  const relativePath = decoded === "/" ? "index.html" : decoded.slice(1);
-  const segments = relativePath.split("/");
-  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return false;
-  const filePath = path.join(publicRoot, ...segments);
+  const relativePath = publicTreePathFromRequest(rawPathname);
+  if (relativePath === null) return false;
+  const filePath = path.join(publicRoot, ...relativePath.split("/"));
   const stats = await lstat(filePath).catch(() => null);
   if (!stats?.isFile() || stats.isSymbolicLink()) return false;
   const body = await readFile(filePath);

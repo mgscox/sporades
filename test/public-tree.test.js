@@ -8,6 +8,11 @@ import { test } from "node:test";
 
 import { publishLegacyBundles } from "../dist/bundle-pipeline.js";
 import {
+  normalizePublicTreePath,
+  publicTreePathFromRequest,
+  validatePublicTreeFileSet,
+} from "../dist/public-tree-contract.js";
+import {
   PUBLIC_TREE_LIMITS,
   cleanupPublicTrees,
   createPublicTree,
@@ -618,4 +623,50 @@ test("normalized public trees reject symlinks and Unicode normalization collisio
       (error) => /normalization collision/.test(error.hint),
     );
   });
+});
+
+test("runtime infrastructure consumes only the normalized public tree contract", async () => {
+  const infrastructureFiles = [
+    "src/templates/server-bundle-template.ts",
+    "src/cli/host-request-builders.ts",
+    "src/cli/sporades-host-helper.ts",
+    "src/cli/host-helper-release-files.ts",
+  ];
+  const infrastructure = await Promise.all(
+    infrastructureFiles.map(async (file) => [file, await readFile(path.resolve(file), "utf8")]),
+  );
+
+  for (const [file, source] of infrastructure) {
+    assert.equal(source.includes("runtimeUsesLegacyPublicFiles"), false, file);
+    assert.equal(source.includes('container: "/app/client.js"'), false, file);
+    assert.equal(source.includes('container: "/app/index.html"'), false, file);
+    assert.equal(source.includes('const legacyFiles = publicFiles.length === 0'), false, file);
+  }
+
+  const superseded = await readFile(path.resolve("docs/adr/0010-user-owned-index-html.md"), "utf8");
+  const active = await readFile(path.resolve("docs/adr/0032-user-owned-html-builds-to-a-normalized-public-tree.md"), "utf8");
+  assert.match(superseded, /^Status: Superseded by ADR-0032\.$/m);
+  assert.match(active, /^Status: Accepted\.$/m);
+});
+
+test("the shared public-tree contract admits nested assets and rejects ambiguous release paths", () => {
+  assert.equal(normalizePublicTreePath("assets/fonts/capsule.woff2"), "assets/fonts/capsule.woff2");
+  assert.equal(publicTreePathFromRequest("/assets/chunks/app.js"), "assets/chunks/app.js");
+  for (const unsafe of ["../escape.js", "assets/../escape.js", "/absolute.js", "assets\\escape.js", "assets//escape.js"]) {
+    assert.equal(normalizePublicTreePath(unsafe), null, unsafe);
+  }
+  for (const unsafe of ["/%2e%2e/escape.js", "/assets%2fescape.js", "/assets%5cescape.js", "/%252e%252e/escape.js"]) {
+    assert.equal(publicTreePathFromRequest(unsafe), null, unsafe);
+  }
+
+  assert.deepEqual(validatePublicTreeFileSet([
+    { path: "index.html", size: 128 },
+    { path: "assets/chunks/app.js", size: 256 },
+    { path: "assets/fonts/capsule.woff2", size: 512 },
+  ]), { ok: true, fileCount: 3, totalBytes: 896 });
+  assert.deepEqual(validatePublicTreeFileSet([
+    { path: "index.html", size: 1 },
+    { path: "assets/caf\u00e9.js", size: 1 },
+    { path: "assets/cafe\u0301.js", size: 1 },
+  ]), { ok: false, reason: "collision" });
 });

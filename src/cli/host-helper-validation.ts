@@ -1,6 +1,6 @@
 import path from "node:path";
 
-import { PUBLIC_TREE_LIMITS } from "../public-tree.js";
+import { validatePublicTreeFileSet } from "../public-tree-contract.js";
 import { helperError } from "./cli-support.js";
 import type { HostHelperRelease, HostHelperRequest as HostHelperContractRequest, HostHelperCapsuleTarget } from "./host-helper-contract.js";
 import { expectedReleaseFiles, isExpectedClaimedReleaseFile } from "./host-helper-release-files.js";
@@ -331,24 +331,8 @@ function validateClaimedReleaseFiles(files: string[]) {
     throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
   }
   const publicFiles = files.filter((file) => file.startsWith("public/"));
-  if (publicFiles.length === 0) return;
-  if (publicFiles.length > PUBLIC_TREE_LIMITS.files || !publicFiles.includes("public/index.html")) {
+  const validation = validatePublicTreeFileSet(publicFiles.map((file) => ({ path: file.slice("public/".length), size: 0 })));
+  if (!validation.ok) {
     throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
-  }
-  const canonical = new Set<string>();
-  for (const file of publicFiles) {
-    const relative = file.slice("public/".length);
-    const normalized = relative.normalize("NFC");
-    const safe = relative.length > 0
-      && !relative.startsWith("/")
-      && !relative.includes("\\")
-      && !relative.includes("\0")
-      && path.posix.normalize(relative) === relative
-      && relative.split("/").every((segment) => segment && segment !== "." && segment !== "..")
-      && Buffer.byteLength(relative, "utf8") <= PUBLIC_TREE_LIMITS.pathBytes;
-    if (!safe || canonical.has(normalized)) {
-      throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
-    }
-    canonical.add(normalized);
   }
 }

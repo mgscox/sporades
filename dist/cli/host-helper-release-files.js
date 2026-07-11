@@ -2,8 +2,7 @@ export function expectedReleaseFiles(release) {
     const publicFiles = Array.isArray(release.files)
         ? release.files.filter((file) => typeof file === "string" && file.startsWith("public/"))
         : [];
-    const legacyFiles = publicFiles.length === 0 ? ["client.js", "index.html"] : [];
-    const files = ["server.mjs", "sporades.json", ...legacyFiles, ...publicFiles];
+    const files = ["server.mjs", "sporades.json", ...publicFiles];
     if (release.serverEnvIncluded) {
         files.push(".env.sporades.server");
     }
@@ -18,8 +17,6 @@ export function expectedReleaseFiles(release) {
 export function isExpectedClaimedReleaseFile(file) {
     return typeof file === "string" && (file.startsWith("public/") || [
         "server.mjs",
-        "client.js",
-        "index.html",
         "sporades.json",
         ".env.sporades.server",
         ".sporades/sealed-server-env/server-env.sealed.json",

@@ -14,7 +14,7 @@ import {
 } from "../base-image.js";
 import type { DockerRestartPolcy } from "../runtime-restart-policy.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
-import { PUBLIC_TREE_LIMITS } from "../public-tree.js";
+import { normalizePublicTreePath, validatePublicTreeFileSet } from "../public-tree-contract.js";
 import type {
   CommandResult,
   DockerPsContainerRaw,
@@ -626,8 +626,7 @@ async function validateExtractedReleaseTree(root: string, expectedFiles: Release
   const canonical = new Set<string>();
   const actual: ReleaseFileIdentity[] = [];
   let totalBytes = 0;
-  let publicFiles = 0;
-  let publicBytes = 0;
+  const publicClaims: Array<{ path: string; size: number }> = [];
 
   async function visit(directory: string, prefix = "") {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
@@ -669,18 +668,18 @@ async function validateExtractedReleaseTree(root: string, expectedFiles: Release
       totalBytes += stats.size;
       if (relative.startsWith("public/")) {
         const publicPath = relative.slice("public/".length);
-        publicFiles += 1;
-        publicBytes += stats.size;
-        if (Buffer.byteLength(publicPath, "utf8") > PUBLIC_TREE_LIMITS.pathBytes || stats.size > PUBLIC_TREE_LIMITS.fileBytes) {
+        if (normalizePublicTreePath(publicPath) === null) {
           throw helperError("Extracted Hosted Capsule public tree exceeds bounds.", "Reduce public paths and files, then push again.");
         }
+        publicClaims.push({ path: publicPath, size: stats.size });
       }
       actual.push({ path: relative, size: stats.size, sha256: createHash("sha256").update(await readFile(entryPath)).digest("hex") });
     }
   }
 
   await visit(root);
-  if (actual.length !== expected.size || actual.length > HOST_RELEASE_ARCHIVE_LIMITS.entries || totalBytes > HOST_RELEASE_ARCHIVE_LIMITS.totalBytes || publicFiles > PUBLIC_TREE_LIMITS.files || publicBytes > PUBLIC_TREE_LIMITS.totalBytes) {
+  const publicValidation = validatePublicTreeFileSet(publicClaims);
+  if (actual.length !== expected.size || actual.length > HOST_RELEASE_ARCHIVE_LIMITS.entries || totalBytes > HOST_RELEASE_ARCHIVE_LIMITS.totalBytes || !publicValidation.ok) {
     throw helperError("Extracted Hosted Capsule release does not match its bounded archive.", "Upload the release again from a clean normalized Bundle.");
   }
   return actual.sort((left, right) => left.path.localeCompare(right.path));
@@ -1774,9 +1773,7 @@ function normaliseLifecycle(request: HostHelperRequest, registryRecord: any = nu
   const defaultMounts = {
     files: [
       { host: path.join(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
-      { host: path.join(currentLink, "public"), container: "/app/public", mode: "ro", optional: true },
-      { host: path.join(currentLink, "client.js"), container: "/app/client.js", mode: "ro", optional: true },
-      { host: path.join(currentLink, "index.html"), container: "/app/index.html", mode: "ro", optional: true },
+      { host: path.join(currentLink, "public"), container: "/app/public", mode: "ro" },
       { host: path.join(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
       { host: path.join(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
       {
@@ -4279,7 +4276,7 @@ async function deriveReleaseFileClaims(root: string) {
   const paths = new Set(claims.map((file) => file.path));
   const complete = paths.has("server.mjs")
     && paths.has("sporades.json")
-    && (paths.has("public/index.html") || (paths.has("index.html") && paths.has("client.js")));
+    && paths.has("public/index.html");
   if (!complete) throw helperError("Hosted Capsule release files are missing.", "Choose another complete immutable release.");
   return claims;
 }

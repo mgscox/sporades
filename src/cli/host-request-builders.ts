@@ -76,9 +76,7 @@ export function createHostLifecycleRequest(
     mounts: {
       files: [
         { host: posixJoin(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
-        { host: posixJoin(currentLink, "public"), container: "/app/public", mode: "ro", optional: true },
-        { host: posixJoin(currentLink, "client.js"), container: "/app/client.js", mode: "ro", optional: true },
-        { host: posixJoin(currentLink, "index.html"), container: "/app/index.html", mode: "ro", optional: true },
+        { host: posixJoin(currentLink, "public"), container: "/app/public", mode: "ro" },
         { host: posixJoin(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
         { host: posixJoin(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
         {

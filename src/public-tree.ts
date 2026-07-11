@@ -3,13 +3,14 @@ import { randomBytes } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
+import {
+  PUBLIC_TREE_LIMITS,
+  normalizePublicTreePath,
+  publicTreePathFromRequest,
+  validatePublicTreeFileSet,
+} from "./public-tree-contract.js";
 
-export const PUBLIC_TREE_LIMITS = {
-  files: 512,
-  fileBytes: 16 * 1024 * 1024,
-  totalBytes: 64 * 1024 * 1024,
-  pathBytes: 240,
-} as const;
+export { PUBLIC_TREE_LIMITS } from "./public-tree-contract.js";
 
 type PublicAsset = {
   body: Buffer;
@@ -394,68 +395,33 @@ async function cleanupPublicTreesUnlocked(
 }
 
 export async function readPublicAsset(tree: PublicTree, rawPathname: string): Promise<PublicAsset | null> {
-  const relativePath = publicPathFromRequest(rawPathname);
+  const relativePath = publicTreePathFromRequest(rawPathname);
   return relativePath ? tree.assets.get(relativePath) ?? null : null;
 }
 
-function publicPathFromRequest(rawPathname: string) {
-  if (/%2f|%5c/i.test(rawPathname)) return null;
-  let decoded: string;
-  try {
-    decoded = decodeURIComponent(rawPathname);
-  } catch {
-    return null;
-  }
-  if (decoded === "/") return "index.html";
-  if (!decoded.startsWith("/") || decoded.includes("\\") || decoded.includes("\0")) return null;
-  if (/%[0-9a-f]{2}/i.test(decoded)) return null;
-  try {
-    return validateRelativePublicPath(decoded.slice(1));
-  } catch {
-    return null;
-  }
-}
-
 function validateRelativePublicPath(value: string) {
-  if (!value || value.startsWith("/") || value.includes("\\") || value.includes("\0")) {
-    throw publicTreeError("Invalid public path.", "Public paths must be safe relative POSIX paths.");
-  }
-  if (Buffer.byteLength(value, "utf8") > PUBLIC_TREE_LIMITS.pathBytes) {
-    throw publicTreeError("Invalid public path.", `Public paths may be at most ${PUBLIC_TREE_LIMITS.pathBytes} bytes.`);
-  }
-  const segments = value.split("/");
-  if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
-    throw publicTreeError("Invalid public path.", "Public paths cannot be empty, current-directory, or parent-directory paths.");
-  }
-  return segments.join("/");
+  const normalized = normalizePublicTreePath(value);
+  if (normalized === null) throw publicTreeError("Invalid public path.", "Public paths must be bounded safe relative POSIX paths.");
+  return normalized;
 }
 
 function normalizePublicFiles(files: ReadonlyArray<PublicFile>) {
-  const paths = new Map<string, string>();
-  let totalBytes = 0;
   const normalized = files.map((file) => {
     const relativePath = validateRelativePublicPath(file.path);
-    const canonicalPath = relativePath.normalize("NFC");
-    const collision = paths.get(canonicalPath);
-    if (collision) {
-      throw publicTreeError("Invalid public tree.", `Remove the normalization collision between ${collision} and ${relativePath}.`);
-    }
-    paths.set(canonicalPath, relativePath);
     const contents = Buffer.from(typeof file.contents === "string" ? file.contents : file.contents);
-    if (contents.byteLength > PUBLIC_TREE_LIMITS.fileBytes) {
-      throw publicTreeError("Invalid public tree.", `${relativePath} exceeds the per-file public output limit.`);
-    }
-    totalBytes += contents.byteLength;
     return { path: relativePath, contents };
   });
-  if (normalized.length > PUBLIC_TREE_LIMITS.files) {
-    throw publicTreeError("Invalid public tree.", `Public output may contain at most ${PUBLIC_TREE_LIMITS.files} files.`);
-  }
-  if (totalBytes > PUBLIC_TREE_LIMITS.totalBytes) {
-    throw publicTreeError("Invalid public tree.", "Public output exceeds the aggregate size limit.");
-  }
-  if (!paths.has("index.html")) {
-    throw publicTreeError("Invalid public tree.", "Client output must contain a regular index.html file.");
+  const validation = validatePublicTreeFileSet(normalized.map((file) => ({ path: file.path, size: file.contents.byteLength })));
+  if (!validation.ok) {
+    const hints = {
+      path: "Public paths must be bounded safe relative POSIX paths.",
+      collision: "Remove Unicode normalization collisions from public output.",
+      files: `Public output may contain at most ${PUBLIC_TREE_LIMITS.files} files.`,
+      "file-bytes": validation.reason === "file-bytes" ? `${validation.path} exceeds the per-file public output limit.` : "A public output file exceeds the per-file limit.",
+      "total-bytes": "Public output exceeds the aggregate size limit.",
+      index: "Client output must contain a regular index.html file.",
+    };
+    throw publicTreeError("Invalid public tree.", hints[validation.reason]);
   }
   return normalized;
 }
