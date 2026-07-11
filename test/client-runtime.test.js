@@ -109,6 +109,71 @@ test("Vue mutation state is pending-counted and latest-invocation deterministic"
   } finally { browser.cleanup(); }
 });
 
+test("Solid primitives expose complete reactive state and release transport observation with their reactive root", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  try {
+    const [{ createRoot, createSignal, onCleanup }, runtime] = await Promise.all([import("solid-js"), importClientRuntime()]);
+    let queryStarts = 0, queryStops = 0, authStarts = 0, authStops = 0;
+    runtime.queries.subscribe = (name, publish) => {
+      queryStarts += 1;
+      publish({ data: [{ id: "solid-runtime", name }], error: null, loading: false });
+      return { unsubscribe() { queryStops += 1; } };
+    };
+    runtime.auth.subscribe = (publish) => {
+      authStarts += 1;
+      publish({ auth: anonymousAuth, providers: { anonymous: { enabled: true } }, error: null, loading: false });
+      return { unsubscribe() { authStops += 1; } };
+    };
+
+    let query, session, dispose;
+    createRoot((rootDispose) => {
+      dispose = rootDispose;
+      const solid = runtime.createSolidPrimitives({ createSignal, onCleanup });
+      assert.deepEqual([queryStarts, authStarts], [0, 0], "creating the adapter alone starts no transport observation");
+      query = solid.createQuery("todos");
+      session = solid.createAuth();
+    });
+
+    assert.deepEqual(query(), { data: [{ id: "solid-runtime", name: "todos" }], error: null, loading: false });
+    assert.deepEqual(session.state(), { auth: anonymousAuth, providers: { anonymous: { enabled: true } }, error: null, loading: false });
+    assert.equal(session.isAuthenticated(), false);
+    assert.deepEqual([queryStarts, authStarts], [1, 1]);
+    dispose();
+    dispose();
+    assert.deepEqual([queryStops, authStops], [1, 1], "Solid root disposal releases each owned observation exactly once");
+  } finally { browser.cleanup(); }
+});
+
+test("Solid mutation state is pending-counted and latest-invocation deterministic", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
+  try {
+    const [{ createRoot, createSignal, onCleanup }, runtime] = await Promise.all([import("solid-js"), importClientRuntime()]);
+    const calls = [];
+    runtime.mutations.run = (_name, value) => { const call = deferred(); calls.push({ value, ...call }); return call.promise; };
+    let mutation, dispose;
+    createRoot((rootDispose) => {
+      dispose = rootDispose;
+      mutation = runtime.createSolidPrimitives({ createSignal, onCleanup }).createMutation("save");
+    });
+    assert.deepEqual(mutation.state(), { data: null, error: null, loading: false });
+    const first = mutation.run("A");
+    const latest = mutation.run("B");
+    assert.equal(mutation.state().loading, true);
+    calls[1].resolve({ data: { value: "B" }, error: null });
+    await latest;
+    assert.deepEqual(mutation.state(), { data: { value: "B" }, error: null, loading: true });
+    calls[0].resolve({ data: { value: "A" }, error: null });
+    await first;
+    assert.deepEqual(mutation.state(), { data: { value: "B" }, error: null, loading: false });
+    const rejected = mutation.run("C");
+    calls[2].reject(new Error("Solid transport failed"));
+    await assert.rejects(rejected, /Solid transport failed/);
+    assert.deepEqual(mutation.state(), { data: null, error: { message: "Solid transport failed" }, loading: false });
+    dispose();
+  } finally { browser.cleanup(); }
+});
+
 test("Svelte stores lazily own one query and auth observation across subscribers and resubscribe deterministically", async () => {
   const browser = installBrowserFakes(anonymousAuth);
   try {

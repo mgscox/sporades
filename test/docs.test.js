@@ -117,6 +117,22 @@ test("canonical docs describe the implemented platform scope", async () => {
   assert.match(scaffoldTemplate, /Use endpoints only for HTTP integrations/i);
 });
 
+test("published docs and API reference describe the admitted SolidJS client contract", async () => {
+  const [readme, prd, guide, clientTypes, api] = await Promise.all([
+    readProjectFile("README.md"),
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/user-guide.md"),
+    readProjectFile("src/types/client.d.ts"),
+    readProjectFile("docs/api/functions/client.createSolidPrimitives.html"),
+  ]);
+  assert.match(readme, /SolidJS\/Vite `blank` and `todo`/);
+  assert.match(prd, /SolidJS\/Vite[\s\S]*`blank` and `todo`/);
+  assert.match(prd, /createSolidPrimitives/);
+  assert.match(guide, /`solid`[\s\S]*SolidJS selects Vite[\s\S]*`blank`[\s\S]*`todo`/);
+  assert.match(clientTypes, /createSolidPrimitives[\s\S]*SporadesSolidPrimitives/);
+  assert.match(api, /Bind root-owned SolidJS signals and cleanup/);
+});
+
 test("docs publish the implemented User journey tracker contract", async () => {
   const [guide, roadmap, clientTypes, serverTypes] = await Promise.all([
     readProjectFile("docs/user-guide.md"),

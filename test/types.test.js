@@ -68,7 +68,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, endpoint, job, message, mutation, query, requireAuth, schedule, table } from "sporades/server";
-import { auth, createHooks, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, type JourneyRecord } from "sporades/client";
+import { auth, createHooks, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, type JourneyRecord } from "sporades/client";
 
 const app = capsule({
   name: "typed island",
@@ -255,6 +255,18 @@ const vueMutation = vue.useMutation<{ id: string }>("addTodo");
 vueMutation.run("Ship Vue types");
 vueMutation.data?.id.toUpperCase();
 vue.useAuth().signOut();
+const solid = createSolidPrimitives({
+  createSignal<State>(initial: State): [() => State, (next: State | ((current: State) => State)) => State] {
+    let value = initial;
+    return [() => value, (next) => value = typeof next === "function" ? (next as (current: State) => State)(value) : next];
+  },
+  onCleanup(cleanup) { void cleanup; },
+});
+solid.createQuery<Array<{ id: string }>>("todos")().data?.map((todo) => todo.id);
+const solidMutation = solid.createMutation<{ id: string }>("addTodo");
+solidMutation.run("Ship Solid types");
+solidMutation.state().data?.id.toUpperCase();
+solid.createAuth().state().auth?.userId.toUpperCase();
 const svelte = createSvelteStores();
 const stopSvelteQuery = svelte.queryStore<Array<{ id: string }>>("todos").subscribe((state) => state.data?.map((todo) => todo.id));
 svelte.mutationStore<{ id: string }>("addTodo").run("Ship Svelte types");

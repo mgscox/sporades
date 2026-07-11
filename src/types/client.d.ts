@@ -304,6 +304,47 @@ export type VueMutationState<Result = unknown> = MutationState<Result> & {
   data: Result | null;
 };
 
+/** SolidJS-compatible reactive accessor. */
+export type SolidAccessor<State> = () => State;
+
+/** SolidJS-compatible signal setter. */
+export type SolidSignalSetter<State> = (next: State | ((current: State) => State)) => State;
+
+/** SolidJS lifecycle and signal primitives consumed by `createSolidPrimitives()`. */
+export type SolidPrimitiveInputs = {
+  createSignal<State>(initialState: State): [SolidAccessor<State>, SolidSignalSetter<State>];
+  onCleanup(cleanup: () => void): void;
+};
+
+/** SolidJS mutation state follows the latest invocation while loading covers every pending call. */
+export type SolidMutationState<Result = unknown> = {
+  data: Result | null;
+  error: SporadesError | null;
+  loading: boolean;
+};
+
+/** Root-owned SolidJS mutation primitive. */
+export type SolidMutation<Result = unknown> = {
+  state: SolidAccessor<SolidMutationState<Result>>;
+  run(...args: unknown[]): Promise<SporadesResult<Result>>;
+};
+
+/** Root-owned SolidJS auth primitive and direct auth commands. */
+export type SolidAuth = {
+  state: SolidAccessor<AuthObserverState>;
+  isAuthenticated(): boolean;
+  signUp: AuthApi["signUp"];
+  signIn: AuthApi["signIn"];
+  signOut: AuthApi["signOut"];
+};
+
+/** SolidJS-native Sporades primitives over the shared framework-neutral client connection. */
+export type SporadesSolidPrimitives = {
+  createQuery<Data = unknown>(name: string): SolidAccessor<QueryState<Data>>;
+  createMutation<Result = unknown>(name: string): SolidMutation<Result>;
+  createAuth(): SolidAuth;
+};
+
 /** Minimal Svelte-compatible readable store contract. */
 export type SvelteReadable<State> = {
   subscribe(listener: (state: State) => void): () => void;
@@ -369,5 +410,7 @@ export function createHooks(primitives: HookPrimitives): SporadesHooks;
 
 /** Bind reactive Sporades state and subscription cleanup to a Vue effect scope or component. */
 export function createVueComposables(primitives: VueComposablePrimitives): SporadesVueComposables;
+/** Bind root-owned SolidJS signals and cleanup to the shared Sporades client connection. */
+export function createSolidPrimitives(primitives: SolidPrimitiveInputs): SporadesSolidPrimitives;
 /** Create lazily observed Svelte-compatible stores for query, mutation, and auth state. */
 export function createSvelteStores(): SporadesSvelteStores;

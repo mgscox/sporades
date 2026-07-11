@@ -200,6 +200,57 @@ export function createVueComposables(primitives) {
   return { useQuery, useMutation, useAuth };
 }
 
+export function createSolidPrimitives(primitives) {
+  const { createSignal, onCleanup } = primitives;
+
+  function createQuery(name) {
+    const [state, setState] = createSignal({ data: null, error: null, loading: true });
+    const subscription = queries.subscribe(name, setState);
+    onCleanup(() => subscription.unsubscribe());
+    return state;
+  }
+
+  function createMutation(name) {
+    const [state, setState] = createSignal({ data: null, error: null, loading: false });
+    let pending = 0;
+    let latestInvocation = 0;
+    const run = async (...args) => {
+      const invocation = ++latestInvocation;
+      pending += 1;
+      setState({ data: null, error: null, loading: true });
+      try {
+        const result = await mutations.run(name, ...args);
+        if (invocation === latestInvocation) {
+          setState({ data: result.error ? null : result.data ?? null, error: result.error ?? null, loading: pending > 1 });
+        }
+        return result;
+      } catch (error) {
+        if (invocation === latestInvocation) setState({ data: null, error: normalizeMutationError(error), loading: pending > 1 });
+        throw error;
+      } finally {
+        pending -= 1;
+        setState((current) => ({ ...current, loading: pending > 0 }));
+      }
+    };
+    return { state, run };
+  }
+
+  function createAuth() {
+    const [state, setState] = createSignal({ auth: null, providers: {}, loading: true, error: null });
+    const subscription = auth.subscribe(setState);
+    onCleanup(() => subscription.unsubscribe());
+    return {
+      state,
+      isAuthenticated: () => Boolean(state().auth?.isAuthenticated),
+      signUp: (provider, credentials) => connect().signUp(provider, credentials),
+      signIn: (provider, credentials) => connect().signIn(provider, credentials),
+      signOut: () => connect().signOut(),
+    };
+  }
+
+  return { createQuery, createMutation, createAuth };
+}
+
 export function createSvelteStores() {
   function queryStore(name) {
     return createLazyStore(

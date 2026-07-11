@@ -672,6 +672,64 @@ test("sporades create explicitly scaffolds Preact with the Vite client toolchain
   });
 });
 
+test("sporades create scaffolds an idiomatic Solid/Vite blank Capsule by default", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "solid-blank", "--framework", "solid", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    const projectDir = path.join(dir, "solid-blank");
+    const [config, html, entry, app, client, tsconfig, packageJson] = await Promise.all([
+      readFile(path.join(projectDir, "sporades.json"), "utf8").then(JSON.parse),
+      readFile(path.join(projectDir, "index.html"), "utf8"),
+      readFile(path.join(projectDir, "client", "index.tsx"), "utf8"),
+      readFile(path.join(projectDir, "client", "App.tsx"), "utf8"),
+      readFile(path.join(projectDir, "client", "sporades.ts"), "utf8"),
+      readFile(path.join(projectDir, "tsconfig.json"), "utf8").then(JSON.parse),
+      readFile(path.join(projectDir, "package.json"), "utf8").then(JSON.parse),
+    ]);
+    assert.deepEqual(config.client, { framework: "solid", toolchain: "vite" });
+    assert.match(html, /src="\/client\/index\.tsx"/);
+    assert.match(entry, /render\(\(\) => <App \/>/);
+    assert.match(entry, /import "\.\/styles\.css"/);
+    assert.match(app, /createAuth\(\)/);
+    assert.match(client, /createSolidPrimitives/);
+    assert.equal(tsconfig.compilerOptions.jsx, "preserve");
+    assert.equal(tsconfig.compilerOptions.jsxImportSource, "solid-js");
+    assert.equal(tsconfig.compilerOptions.moduleResolution, "Bundler");
+    assert.equal(tsconfig.compilerOptions.strict, true);
+    assert.equal(packageJson.dependencies["solid-js"], "^1.9.0");
+    assert.equal(packageJson.devDependencies["vite-plugin-solid"], "^2.11.0");
+    assert.equal(packageJson.dependencies.react, undefined);
+    assert.equal(packageJson.dependencies["react-dom"], undefined);
+    assert.doesNotMatch(`${entry}\n${app}\n${client}`, /from "react|react-dom|createRoot/);
+  });
+});
+
+test("sporades create admits Solid/Vite todo and rejects unsupported Solid combinations structurally", async () => {
+  await withTempDir(async (dir) => {
+    const todo = await runCli(["create", "solid-todo", "--framework", "solid", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(todo.code, 0, todo.stderr || todo.stdout);
+    const app = await readFile(path.join(dir, "solid-todo", "client", "App.tsx"), "utf8");
+    assert.match(app, /createQuery<[^>]+>\("todos"\)/);
+    assert.match(app, /createMutation\("addTodo"\)/);
+    assert.match(app, /onInput=/);
+    assert.doesNotMatch(app, /createHooks|useState|useEffect|react-dom|from "react/);
+
+    const esbuild = await runCli(["create", "solid-esbuild", "--framework", "solid", "--toolchain", "esbuild", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(esbuild.code, 1);
+    assert.deepEqual(JSON.parse(esbuild.stdout).error, {
+      message: "Unsupported client framework/toolchain combination: solid/esbuild",
+      hint: "Use SolidJS with Vite.",
+    });
+
+    const richer = await runCli(["create", "solid-guestbook", "--framework", "solid", "--template", "guestbook", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(richer.code, 1);
+    assert.deepEqual(JSON.parse(richer.stdout).error, {
+      message: "Unsupported client template for SolidJS: guestbook",
+      hint: "Use SolidJS with the blank or todo template.",
+    });
+  });
+});
+
 test("sporades create scaffolds an idiomatic Vue/Vite blank Capsule by default", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(["create", "vue-blank", "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
@@ -1119,7 +1177,7 @@ test("sporades create rejects unsupported framework values with structured JSON"
       data: null,
       error: {
         message: "Unsupported framework: angular",
-        hint: "Use one of: react, preact, vue, svelte, vanilla.",
+        hint: "Use one of: react, preact, solid, vue, svelte, vanilla.",
       },
     });
   });

@@ -1,7 +1,7 @@
 export function scaffoldFiles(options: { sporadesDependency?: any; template?: any; framework?: any; toolchain?: any; name?: any; }) {
   const templateOptions = resolveTemplateOptions(options.template);
   const framework = options.framework ?? templateOptions.framework;
-  const toolchain = options.toolchain ?? (framework === "vue" || framework === "svelte" ? "vite" : "esbuild");
+  const toolchain = options.toolchain ?? (["solid", "vue", "svelte"].includes(framework) ? "vite" : "esbuild");
   const renderOptions = { ...options, name: options.name, framework, toolchain };
   const packageName = options.name;
   const sporadesDependency = options.sporadesDependency ?? "sporades";
@@ -17,6 +17,8 @@ export function scaffoldFiles(options: { sporadesDependency?: any; template?: an
           vue: "^3.5.13",
         } : framework === "svelte" ? {
           svelte: "^5.0.0",
+        } : framework === "solid" ? {
+          "solid-js": "^1.9.0",
         } : {};
   const frameworkDevDependencies =
     framework === "react"
@@ -29,12 +31,16 @@ export function scaffoldFiles(options: { sporadesDependency?: any; template?: an
           "@vue/compiler-sfc": "^3.5.13",
         } : framework === "svelte" ? {
           "@sveltejs/vite-plugin-svelte": "^5.1.1",
+        } : framework === "solid" ? {
+          "vite-plugin-solid": "^2.11.0",
         } : {};
   const baseTemplateFiles = framework === "vanilla" ? vanillaTemplateFiles(renderOptions) : templateOptions.files(renderOptions);
   const templateFiles = framework === "vue"
     ? vueTemplateFiles(renderOptions, baseTemplateFiles)
     : framework === "svelte"
     ? svelteTemplateFiles(renderOptions, baseTemplateFiles)
+    : framework === "solid"
+    ? solidTemplateFiles(renderOptions, baseTemplateFiles)
     : toolchain === "vite" && framework !== "vanilla"
     ? viteTemplateFiles(baseTemplateFiles, framework)
     : baseTemplateFiles;
@@ -99,6 +105,31 @@ export function scaffoldFiles(options: { sporadesDependency?: any; template?: an
 `,
     ...templateFiles,
   };
+}
+
+function solidTemplateFiles(options: { name: any; template?: any }, files: Record<string, string>) {
+  const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => file !== "client/index.tsx"));
+  return {
+    ...sharedFiles,
+    "README.md": `${sharedFiles["README.md"] ?? ""}\n## SolidJS client\n\nThe browser renders from \`client/index.tsx\`; author native Solid JSX in \`client/App.tsx\` and bind Sporades state through the Solid primitives in \`client/sporades.ts\`.\n`,
+    "tsconfig.json": `${JSON.stringify({ compilerOptions: {
+      target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true, noEmit: true,
+      jsx: "preserve", jsxImportSource: "solid-js", lib: ["ES2022", "DOM", "DOM.Iterable"], types: ["vite/client"], skipLibCheck: true,
+    } }, null, 2)}\n`,
+    "client/index.tsx": `import { render } from "solid-js/web";\nimport App from "./App";\nimport "./styles.css";\n\nrender(() => <App />, document.getElementById("app")!);\n`,
+    "client/sporades.ts": `import { createSignal, onCleanup } from "solid-js";\nimport { createSolidPrimitives } from "sporades/client";\n\nexport const { createAuth, createMutation, createQuery } = createSolidPrimitives({ createSignal, onCleanup });\n`,
+    "client/App.tsx": options.template === "todo" ? solidTodoAppTemplate() : solidBlankAppTemplate(),
+    "client/styles.css": `:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #15211d; background: #f2f7f4; }\nbody { margin: 0; }\nmain { width: min(42rem, calc(100% - 2rem)); margin: 5rem auto; }\n.mark { width: 2rem; height: 2rem; }\n`,
+    "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#2c8c69"/></svg>\n`,
+  };
+}
+
+function solidBlankAppTemplate() {
+  return `import { Show } from "solid-js";\nimport { createAuth } from "./sporades";\nimport mark from "./sporades-mark.svg";\n\nexport default function App() {\n  const session = createAuth();\n  return (\n    <main>\n      <img class="mark" src={mark} alt="" />\n      <h1>Blank Sporades Capsule</h1>\n      <Show when={!session.state().loading} fallback={<p>Connecting…</p>}>\n        <p>Start building in server/index.ts and client/App.tsx.</p>\n      </Show>\n    </main>\n  );\n}\n`;
+}
+
+function solidTodoAppTemplate() {
+  return `import { createSignal, For, Show } from "solid-js";\nimport { auth } from "sporades/client";\nimport type { Todo } from "../shared/types";\nimport { createAuth, createMutation, createQuery } from "./sporades";\nimport mark from "./sporades-mark.svg";\n\nexport default function App() {\n  const session = createAuth();\n  const todos = createQuery<Todo[]>("todos");\n  const addTodo = createMutation("addTodo");\n  const [text, setText] = createSignal("");\n\n  async function submit(event: SubmitEvent) {\n    event.preventDefault();\n    const value = text().trim();\n    if (!value) return;\n    const result = await addTodo.run(value);\n    if (!result.error) setText("");\n  }\n\n  return (\n    <main>\n      <header><img class="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>\n      <Show when={session.state().providers.google?.enabled && !session.isAuthenticated()}>\n        <button type="button" onClick={() => auth.signIn("google")}>Sign in with Google</button>\n      </Show>\n      <form onSubmit={submit}>\n        <input aria-label="Todo" value={text()} onInput={(event) => setText(event.currentTarget.value)} />\n        <button disabled={addTodo.state().loading}>Add</button>\n      </form>\n      <Show when={!todos().loading} fallback={<p>Loading…</p>}>\n        <Show when={!todos().error} fallback={<p role="alert">{todos().error?.message}</p>}>\n          <ul><For each={todos().data ?? []}>{(todo) => <li>{todo.text}</li>}</For></ul>\n        </Show>\n      </Show>\n    </main>\n  );\n}\n`;
 }
 
 function svelteTemplateFiles(options: { name: any; template?: any }, files: Record<string, string>) {
@@ -2270,6 +2301,7 @@ const styles = \`
 
 function agentsTemplate(template: any, framework: any, toolchain: any) {
   const vanilla = framework === "vanilla";
+  const solid = framework === "solid";
   const vue = framework === "vue";
   const svelte = framework === "svelte";
   const clientFiles = vue ? "client/*.vue and client/*.ts" : svelte ? "client/*.svelte and client/*.ts" : `client/*.${vanilla ? "ts" : "tsx"}`;
@@ -2291,7 +2323,7 @@ Client toolchain: ${toolchain}
 - No file-based routing. Use the router included in the scaffold template.
 - All imports must be from Sporades, the configured framework, or relative paths.
 - Do not use Node built-ins in client code.
-- Auth is available via \`ctx.auth\` on the server, ${vanilla ? "`auth.get()` and `auth.subscribe()` in the framework-neutral client" : "`useAuth()` on the client"}.
+- Auth is available via \`ctx.auth\` on the server, ${vanilla ? "`auth.get()` and `auth.subscribe()` in the framework-neutral client" : solid ? "`createAuth()` in the SolidJS client" : "`useAuth()` on the client"}.
 - Server env vars: define in \`.env.sporades.server\`, access via \`ctx.env\`.
 - Keep \`shared/\` free of DOM, Node, env, and Sporades runtime imports.
 
@@ -2308,8 +2340,8 @@ sporades db dump
 ## Structure
 
 - \`server/index.ts\` - schema, queries, mutations
-- \`client/index.${vanilla || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
-${vue ? "- `client/App.vue` - Vue Single-File Component UI\n" : ""}- \`shared/\` - pure TypeScript shared by client and server
+- \`client/index.${vanilla || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : solid ? "SolidJS render entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
+${solid ? "- `client/App.tsx` - native SolidJS component UI\n" : ""}${vue ? "- `client/App.vue` - Vue Single-File Component UI\n" : ""}- \`shared/\` - pure TypeScript shared by client and server
 ${svelte ? "- `client/App.svelte` - Svelte component UI\n" : ""}
 - \`index.html\` - HTML shell (user-owned)
 - \`sporades.json\` - project configuration

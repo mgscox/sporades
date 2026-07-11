@@ -58,6 +58,13 @@ const FRAMEWORK_BUNDLE_CONFIG = {
     jsxImportSource: "preact",
     jsxRuntimeImport: "preact/jsx-runtime",
   },
+  solid: {
+    framework: "solid",
+    entry: "index.tsx",
+    loader: "tsx",
+    jsxImportSource: "solid-js",
+    jsxRuntimeImport: "solid-js/jsx-runtime",
+  },
   vue: {
     framework: "vue",
     entry: "index.ts",
@@ -92,7 +99,7 @@ export async function createBundle(
   } = {},
 ) {
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
-  const toolchain = readClientToolchain(config.client?.toolchain ?? (["vue", "svelte"].includes(frameworkBundleConfig.framework) ? "vite" : "esbuild"), frameworkBundleConfig.framework);
+  const toolchain = readClientToolchain(config.client?.toolchain ?? (["solid", "vue", "svelte"].includes(frameworkBundleConfig.framework) ? "vite" : "esbuild"), frameworkBundleConfig.framework);
   const buildDir = path.join(projectDir, ".sporades", "build");
 
   const paths = {
@@ -589,7 +596,7 @@ async function readRequiredFile(filePath: PathLike | FileHandle, message: string
 
 function readFrameworkBundleConfig(framework: unknown): FrameworkBundleConfig {
   if (typeof framework !== "string" || !(framework in FRAMEWORK_BUNDLE_CONFIG)) {
-    throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, svelte, vanilla.");
+    throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, solid, vue, svelte, vanilla.");
   }
   return FRAMEWORK_BUNDLE_CONFIG[framework as keyof typeof FRAMEWORK_BUNDLE_CONFIG];
 }
@@ -609,6 +616,9 @@ function readClientToolchain(toolchain: unknown, framework: string): ClientToolc
   }
   if (framework === "svelte" && toolchain !== "vite") {
     throw commandError("Unsupported client framework/toolchain combination: svelte/esbuild", "Use Svelte with Vite.");
+  }
+  if (framework === "solid" && toolchain !== "vite") {
+    throw commandError("Unsupported client framework/toolchain combination: solid/esbuild", "Use SolidJS with Vite.");
   }
   return toolchain;
 }

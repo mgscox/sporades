@@ -13,6 +13,7 @@ import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-servic
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
+import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
 import { mountSvelteTemplate } from "./support/svelte-template-harness.js";
 import { mountVueTemplate } from "./support/vue-template-harness.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
@@ -1915,6 +1916,93 @@ test("Svelte Vite fails closed for missing, unsupported, unloadable, and externa
   }
 });
 
+test("Solid Vite fails closed when project compiler packages are not installed", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "solid-compiler-missing", "--framework", "solid", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "solid-compiler-missing");
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    await assert.rejects(createBundle(projectDir, config), (error) => {
+      assert.equal(error.phase, "client");
+      assert.equal(error.framework, "solid");
+      assert.equal(error.toolchain, "vite");
+      assert.match(error.message, /node_modules.*real directory.*Capsule project/i);
+      assert.match(error.hint, /npm install.*vite-plugin-solid.*solid-js/i);
+      assert.doesNotMatch(JSON.stringify({ message: error.message, diagnostics: error.diagnostics }), new RegExp(projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      return true;
+    });
+  });
+});
+
+for (const template of ["blank", "todo"]) test(`Solid Vite compiles the ${template} Capsule with project-owned compiler packages in an isolated normalized tree`, async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", `solid-${template}-build`, "--framework", "solid", "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, `solid-${template}-build`);
+    await installProjectSolidToolchain(projectDir, repoRoot);
+    await writeFile(path.join(projectDir, ".env"), "VITE_SOLID_LEAK=solid-browser-secret\n");
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "SOLID_SERVER_ONLY=solid-server-secret\n");
+    await writeFile(path.join(projectDir, "vite.config.ts"), 'throw new Error("solid-vite-config-loaded");\n');
+    await writeFile(path.join(projectDir, "postcss.config.cjs"), 'throw new Error("solid-postcss-config-loaded");\n');
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    const bundle = await createBundle(projectDir, config, { publishLegacy: false });
+    try {
+      const files = Object.keys(await snapshotProjectTree(bundle.staticFiles.publicDir)).filter((file) => !file.endsWith("/"));
+      assert(files.includes("index.html"), JSON.stringify(files));
+      assert(files.some((file) => /^assets\/index-[^/]+\.js$/.test(file)), JSON.stringify(files));
+      assert(files.some((file) => /^assets\/index-[^/]+\.css$/.test(file)), JSON.stringify(files));
+      assert(files.some((file) => /^assets\/sporades-mark-[^/]+\.svg$/.test(file)), JSON.stringify(files));
+      assert(files.some((file) => file.endsWith(".js.map")), JSON.stringify(files));
+      assert.equal(files.includes("client.js"), false);
+      const output = (await Promise.all(files.map((file) => readFile(path.join(bundle.staticFiles.publicDir, file), "utf8")))).join("\n");
+      assert.match(output, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+      assert.doesNotMatch(output, /solid-(?:browser|server)-secret|solid-(?:vite|postcss)-config-loaded|SOLID_SERVER_ONLY/);
+      assert.doesNotMatch(output, /react-dom|react\/jsx-runtime|\/@vite\/client|react-refresh|vite\/hmr/i);
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
+test("Solid Vite rejects unsupported, unloadable, and external project compiler packages", async () => {
+  for (const scenario of ["version", "load", "plugin-external", "runtime-external"]) {
+    await withTempDir(async (dir) => {
+      const created = await runCli(["create", `solid-compiler-${scenario}`, "--framework", "solid", "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(created.code, 0, created.stderr);
+      const projectDir = path.join(dir, `solid-compiler-${scenario}`);
+      await installProjectSolidToolchain(projectDir, repoRoot);
+      const pluginDir = path.join(projectDir, "node_modules", "vite-plugin-solid");
+      if (scenario === "version" || scenario === "load") {
+        await rm(pluginDir, { recursive: true, force: true });
+        await mkdir(pluginDir, { recursive: true });
+        await writeFile(path.join(pluginDir, "package.json"), `${JSON.stringify({
+          name: "vite-plugin-solid", version: scenario === "version" ? "3.0.0" : "2.11.0", type: "module", exports: "./index.js",
+        })}\n`);
+        await writeFile(path.join(pluginDir, "index.js"), 'throw new Error("solid-project-plugin-load-failure");\n');
+      } else {
+        const packageName = scenario === "plugin-external" ? "vite-plugin-solid" : "solid-js";
+        const packageDir = path.join(projectDir, "node_modules", packageName);
+        await rm(packageDir, { recursive: true, force: true });
+        await symlink(path.join(repoRoot, "node_modules", packageName), packageDir);
+      }
+      const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+      await assert.rejects(createBundle(projectDir, config), (error) => {
+        assert.equal(error.phase, "client");
+        assert.equal(error.framework, "solid");
+        assert.equal(error.toolchain, "vite");
+        assert.match(error.hint, /npm install.*vite-plugin-solid.*solid-js/i);
+        if (scenario === "version") assert.match(error.message, /does not support.*vite-plugin-solid version/i);
+        if (scenario === "load") assert.match(error.message, /could not load project-owned vite-plugin-solid.*solid-project-plugin-load-failure/i);
+        if (scenario.endsWith("external")) assert.match(error.message, new RegExp(`could not resolve project-owned ${scenario === "plugin-external" ? "vite-plugin-solid" : "solid-js"}`, "i"));
+        assert.doesNotMatch(JSON.stringify({ message: error.message, diagnostics: error.diagnostics }), new RegExp(repoRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        return true;
+      });
+      await assert.rejects(access(path.join(projectDir, ".sporades")), (error) => error.code === "ENOENT");
+    });
+  }
+});
+
 test("Vue Vite rejects external plugin and compiler package or scope symlinks before build output", async () => {
   for (const scenario of ["plugin-package", "compiler-package", "plugin-scope", "compiler-scope"]) {
     await withTempDir(async (dir) => {
@@ -2082,6 +2170,71 @@ test("sporades dev owns Preact Vite failure recovery and full-page refresh", asy
       socket?.close();
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good Solid ${template} output and recovers through acknowledged refresh`, async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", `solid-${template}-dev`, "--template", template, "--framework", "solid", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, `solid-${template}-dev`);
+    await installProjectSolidToolchain(projectDir, repoRoot);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const appPath = path.join(projectDir, "client", "App.tsx");
+    const original = await readFile(appPath, "utf8");
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    const events = captureJsonEvents(child);
+    let socket, messages;
+    try {
+      const scrub = (html) => html.replace(/window\.__SPORADES_CONNECTION_TOKEN="[^"]+"/, 'window.__SPORADES_CONNECTION_TOKEN="<token>"');
+      const started = await events.next((event) => event.ok && event.data?.event === "started");
+      const initialHtml = scrub(await (await fetch(started.data.url)).text());
+      socket = await openSocket(started.data.url);
+      messages = captureSocketMessages(socket);
+      socket.send(JSON.stringify({ id: "solid-dev-ready", type: "dev.refresh.subscribe" }));
+      assert.deepEqual(await messages.next((message) => message.id === "solid-dev-ready"), {
+        id: "solid-dev-ready", type: "dev.refresh.ready", data: { mode: "full-page", sequence: 0 }, error: null,
+      });
+
+      const rebuiltRefresh = messages.next((message) => message.type === "refresh");
+      await writeFile(appPath, original.replace("</main>", '<p data-dev-probe="rebuilt">Solid rebuilt</p></main>'));
+      const rebuiltMessage = await rebuiltRefresh;
+      assert.deepEqual(rebuiltMessage, { id: null, type: "refresh", data: { mode: "full-page", sequence: 1 }, error: null });
+      assert.equal(events.events.some((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success"), false);
+      socket.send(JSON.stringify({ id: null, type: "dev.refresh.received", sequence: 1 }));
+      const rebuilt = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "solid", toolchain: "vite" });
+      assertDevRefreshDelivery(rebuilt.data.refresh, 1);
+      const lastGood = scrub(await (await fetch(started.data.url)).text());
+      assert.notEqual(lastGood, initialHtml);
+
+      await writeFile(appPath, "export default function App() { return <main>{</main>; }\n");
+      const failed = await events.next((event) => !event.ok && event.data?.event === "rebuild");
+      assert.deepEqual(failed.data.build, { phase: "client", framework: "solid", toolchain: "vite" });
+      assert.match(failed.error.message, /Client bundle failed/);
+      assert.match(failed.error.hint, /SolidJS\/Vite client source/);
+      assert(JSON.stringify(failed).length < 4096);
+      assert.doesNotMatch(JSON.stringify(failed), new RegExp(projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.equal(scrub(await (await fetch(started.data.url)).text()), lastGood);
+
+      const recoveredRefresh = messages.next((message) => message.type === "refresh");
+      await writeFile(appPath, original.replace("</main>", '<p data-dev-probe="recovered">Solid recovered</p></main>'));
+      const recoveredMessage = await recoveredRefresh;
+      assert.equal(recoveredMessage.data.sequence, 2);
+      socket.send(JSON.stringify({ id: null, type: "dev.refresh.received", sequence: 2 }));
+      const recovered = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(recovered.data.build, { phase: "client", framework: "solid", toolchain: "vite" });
+      assertDevRefreshDelivery(recovered.data.refresh, 2);
+    } finally {
+      messages?.dispose();
+      await closeSocketGracefully(socket);
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+      events.dispose();
     }
   });
 });

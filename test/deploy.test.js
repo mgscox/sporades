@@ -13,6 +13,7 @@ import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-servic
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
+import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -779,6 +780,8 @@ test("sporades deploy assembles a Vanilla TypeScript release without leaking Ser
 for (const { framework, template } of [
   { framework: "react", template: "blank" },
   { framework: "preact", template: "blank" },
+  { framework: "solid", template: "blank" },
+  { framework: "solid", template: "todo" },
   { framework: "vue", template: "blank" },
   { framework: "vue", template: "todo" },
   { framework: "vue", template: "guestbook" },
@@ -797,7 +800,7 @@ for (const { framework, template } of [
     );
     assert.equal(createResult.code, 0, createResult.stderr);
     const projectDir = await realpath(path.join(dir, "vite-release"));
-    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : framework === "vue" ? installVue : (project) => installProjectSvelteToolchain(project, repoRoot))(projectDir);
+    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : framework === "solid" ? (project) => installProjectSolidToolchain(project, repoRoot) : framework === "vue" ? installVue : (project) => installProjectSvelteToolchain(project, repoRoot))(projectDir);
     await writeFile(path.join(projectDir, ".env.sporades.server"), `${template === "photo-library" ? "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n" : ""}SERVER_ONLY_TOKEN=vite-container-secret\n`);
     const docker = await installFakeDocker(dir, "vite-container");
     const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
@@ -821,6 +824,10 @@ for (const { framework, template } of [
     assert.doesNotMatch(serverBundle, /dev\.refresh\.(?:subscribe|ready|received)/, "Container server output omits Dev refresh capability and hints");
     assert.doesNotMatch(output, /vite-container-secret|SERVER_ONLY_TOKEN|\/@vite\/client|react-refresh|vite\/hmr/i);
     if (framework === "preact") assert.doesNotMatch(output, /node_modules\/react(?:-dom)?\/|from ["']react(?:-dom)?/);
+    if (framework === "solid") {
+      assert.match(output, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+      assert.doesNotMatch(output, /react-dom|react\/jsx-runtime/);
+    }
     if (framework === "vue") assert.match(output, {
       blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
       "photo-library": /Photo Library/, campfire: /Campfire/,

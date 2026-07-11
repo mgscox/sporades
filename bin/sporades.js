@@ -223,6 +223,57 @@ export function createVueComposables(primitives) {
   return { useQuery, useMutation, useAuth };
 }
 
+export function createSolidPrimitives(primitives) {
+  const { createSignal, onCleanup } = primitives;
+
+  function createQuery(name) {
+    const [state, setState] = createSignal({ data: null, error: null, loading: true });
+    const subscription = queries.subscribe(name, setState);
+    onCleanup(() => subscription.unsubscribe());
+    return state;
+  }
+
+  function createMutation(name) {
+    const [state, setState] = createSignal({ data: null, error: null, loading: false });
+    let pending = 0;
+    let latestInvocation = 0;
+    const run = async (...args) => {
+      const invocation = ++latestInvocation;
+      pending += 1;
+      setState({ data: null, error: null, loading: true });
+      try {
+        const result = await mutations.run(name, ...args);
+        if (invocation === latestInvocation) {
+          setState({ data: result.error ? null : result.data ?? null, error: result.error ?? null, loading: pending > 1 });
+        }
+        return result;
+      } catch (error) {
+        if (invocation === latestInvocation) setState({ data: null, error: normalizeMutationError(error), loading: pending > 1 });
+        throw error;
+      } finally {
+        pending -= 1;
+        setState((current) => ({ ...current, loading: pending > 0 }));
+      }
+    };
+    return { state, run };
+  }
+
+  function createAuth() {
+    const [state, setState] = createSignal({ auth: null, providers: {}, loading: true, error: null });
+    const subscription = auth.subscribe(setState);
+    onCleanup(() => subscription.unsubscribe());
+    return {
+      state,
+      isAuthenticated: () => Boolean(state().auth?.isAuthenticated),
+      signUp: (provider, credentials) => connect().signUp(provider, credentials),
+      signIn: (provider, credentials) => connect().signIn(provider, credentials),
+      signOut: () => connect().signOut(),
+    };
+  }
+
+  return { createQuery, createMutation, createAuth };
+}
+
 export function createSvelteStores() {
   function queryStore(name) {
     return createLazyStore(
@@ -933,11 +984,11 @@ async function buildClientToolchain(options) {
 }
 function validateClientToolchainInput(options) {
   if (options.toolchain !== "vite") return;
-  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "vue" ? "Vue" : options.frameworkConfig.framework === "svelte" ? "Svelte" : "React";
-  if (!(/* @__PURE__ */ new Set(["react", "preact", "vue", "svelte"])).has(options.frameworkConfig.framework)) {
+  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "solid" ? "SolidJS" : options.frameworkConfig.framework === "vue" ? "Vue" : options.frameworkConfig.framework === "svelte" ? "Svelte" : "React";
+  if (!(/* @__PURE__ */ new Set(["react", "preact", "solid", "vue", "svelte"])).has(options.frameworkConfig.framework)) {
     throw clientToolchainError(
       `Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`,
-      "Use React, Preact, Vue, or Svelte with Vite, or keep Vanilla TypeScript on esbuild."
+      "Use React, Preact, SolidJS, Vue, or Svelte with Vite, or keep Vanilla TypeScript on esbuild."
     );
   }
   if (referencesLegacyClientShell(options.indexHtml)) {
@@ -1033,6 +1084,9 @@ async function buildVite(options) {
     } else if (options.frameworkConfig.framework === "svelte") {
       const { plugin } = await loadProjectSvelteToolchain(projectRoot);
       frameworkPlugins.push(plugin());
+    } else if (options.frameworkConfig.framework === "solid") {
+      const { plugin } = await loadProjectSolidToolchain(projectRoot);
+      frameworkPlugins.push(plugin());
     }
     const result = await build({
       root: projectRoot,
@@ -1121,6 +1175,24 @@ async function loadProjectSvelteToolchain(projectRoot) {
   const compiler = compilerModule?.default ?? compilerModule;
   if (typeof plugin !== "function" || typeof compiler?.compile !== "function") throw projectToolchainError("Svelte", "Svelte/Vite project compiler packages have incompatible exports.", hint);
   return { plugin, compiler };
+}
+async function loadProjectSolidToolchain(projectRoot) {
+  const hint = "Run `npm install` in the SolidJS Capsule to install its declared vite-plugin-solid and solid-js versions.";
+  const loaded = await loadProjectCompilerToolchain(projectRoot, {
+    framework: "SolidJS",
+    requiredPackages: [
+      { declaration: "vite-plugin-solid", resolve: "vite-plugin-solid", major: 2 },
+      { declaration: "solid-js", resolve: "solid-js", major: 1 }
+    ],
+    installHint: hint
+  });
+  const pluginModule = loaded.get("vite-plugin-solid");
+  const solidModule = loaded.get("solid-js");
+  const plugin = pluginModule?.default?.default ?? pluginModule?.default ?? pluginModule;
+  if (typeof plugin !== "function" || typeof solidModule?.createSignal !== "function") {
+    throw projectToolchainError("SolidJS", "SolidJS/Vite project compiler packages have incompatible exports.", hint);
+  }
+  return { plugin };
 }
 async function loadProjectCompilerToolchain(projectRoot, spec) {
   let projectManifest;
@@ -1243,7 +1315,7 @@ function viteBuildError(error, projectRoots, framework) {
   const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectRoots, rawFile) : null;
   return clientToolchainError(
     `Client bundle failed: ${message}`,
-    `Fix the ${framework === "preact" ? "Preact" : framework === "vue" ? "Vue" : framework === "svelte" ? "Svelte" : "React"}/Vite client source and save again.`,
+    `Fix the ${framework === "preact" ? "Preact" : framework === "solid" ? "SolidJS" : framework === "vue" ? "Vue" : framework === "svelte" ? "Svelte" : "React"}/Vite client source and save again.`,
     {
       ...typeof details.code === "string" ? { code: details.code.slice(0, 80) } : {},
       ...relativeFile ? { file: relativeFile } : {},
@@ -11680,6 +11752,13 @@ var FRAMEWORK_BUNDLE_CONFIG = {
     jsxImportSource: "preact",
     jsxRuntimeImport: "preact/jsx-runtime"
   },
+  solid: {
+    framework: "solid",
+    entry: "index.tsx",
+    loader: "tsx",
+    jsxImportSource: "solid-js",
+    jsxRuntimeImport: "solid-js/jsx-runtime"
+  },
   vue: {
     framework: "vue",
     entry: "index.ts",
@@ -11705,7 +11784,7 @@ var FRAMEWORK_BUNDLE_CONFIG = {
 var SUPPORTED_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "google", "email"]);
 async function createBundle(projectDir, config, options = {}) {
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
-  const toolchain = readClientToolchain(config.client?.toolchain ?? (["vue", "svelte"].includes(frameworkBundleConfig.framework) ? "vite" : "esbuild"), frameworkBundleConfig.framework);
+  const toolchain = readClientToolchain(config.client?.toolchain ?? (["solid", "vue", "svelte"].includes(frameworkBundleConfig.framework) ? "vite" : "esbuild"), frameworkBundleConfig.framework);
   const buildDir = path4.join(projectDir, ".sporades", "build");
   const paths = {
     config: path4.join(projectDir, "sporades.json"),
@@ -12157,7 +12236,7 @@ async function readRequiredFile(filePath, message, hint) {
 }
 function readFrameworkBundleConfig(framework) {
   if (typeof framework !== "string" || !(framework in FRAMEWORK_BUNDLE_CONFIG)) {
-    throw commandError2(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, svelte, vanilla.");
+    throw commandError2(`Unsupported framework: ${framework}`, "Use one of: react, preact, solid, vue, svelte, vanilla.");
   }
   return FRAMEWORK_BUNDLE_CONFIG[framework];
 }
@@ -12176,6 +12255,9 @@ function readClientToolchain(toolchain, framework) {
   }
   if (framework === "svelte" && toolchain !== "vite") {
     throw commandError2("Unsupported client framework/toolchain combination: svelte/esbuild", "Use Svelte with Vite.");
+  }
+  if (framework === "solid" && toolchain !== "vite") {
+    throw commandError2("Unsupported client framework/toolchain combination: solid/esbuild", "Use SolidJS with Vite.");
   }
   return toolchain;
 }
@@ -12337,7 +12419,7 @@ function restartPolicyStatus(mode, overrides = {}) {
 function scaffoldFiles(options) {
   const templateOptions = resolveTemplateOptions(options.template);
   const framework = options.framework ?? templateOptions.framework;
-  const toolchain = options.toolchain ?? (framework === "vue" || framework === "svelte" ? "vite" : "esbuild");
+  const toolchain = options.toolchain ?? (["solid", "vue", "svelte"].includes(framework) ? "vite" : "esbuild");
   const renderOptions = { ...options, name: options.name, framework, toolchain };
   const packageName = options.name;
   const sporadesDependency = options.sporadesDependency ?? "sporades";
@@ -12350,6 +12432,8 @@ function scaffoldFiles(options) {
     vue: "^3.5.13"
   } : framework === "svelte" ? {
     svelte: "^5.0.0"
+  } : framework === "solid" ? {
+    "solid-js": "^1.9.0"
   } : {};
   const frameworkDevDependencies = framework === "react" ? {
     "@types/react": "^19.0.0",
@@ -12359,9 +12443,11 @@ function scaffoldFiles(options) {
     "@vue/compiler-sfc": "^3.5.13"
   } : framework === "svelte" ? {
     "@sveltejs/vite-plugin-svelte": "^5.1.1"
+  } : framework === "solid" ? {
+    "vite-plugin-solid": "^2.11.0"
   } : {};
   const baseTemplateFiles = framework === "vanilla" ? vanillaTemplateFiles(renderOptions) : templateOptions.files(renderOptions);
-  const templateFiles = framework === "vue" ? vueTemplateFiles(renderOptions, baseTemplateFiles) : framework === "svelte" ? svelteTemplateFiles(renderOptions, baseTemplateFiles) : toolchain === "vite" && framework !== "vanilla" ? viteTemplateFiles(baseTemplateFiles, framework) : baseTemplateFiles;
+  const templateFiles = framework === "vue" ? vueTemplateFiles(renderOptions, baseTemplateFiles) : framework === "svelte" ? svelteTemplateFiles(renderOptions, baseTemplateFiles) : framework === "solid" ? solidTemplateFiles(renderOptions, baseTemplateFiles) : toolchain === "vite" && framework !== "vanilla" ? viteTemplateFiles(baseTemplateFiles, framework) : baseTemplateFiles;
   return {
     "sporades.json": `${JSON.stringify(
       {
@@ -12424,6 +12510,109 @@ function scaffoldFiles(options) {
 `,
     ...templateFiles
   };
+}
+function solidTemplateFiles(options, files) {
+  const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => file !== "client/index.tsx"));
+  return {
+    ...sharedFiles,
+    "README.md": `${sharedFiles["README.md"] ?? ""}
+## SolidJS client
+
+The browser renders from \`client/index.tsx\`; author native Solid JSX in \`client/App.tsx\` and bind Sporades state through the Solid primitives in \`client/sporades.ts\`.
+`,
+    "tsconfig.json": `${JSON.stringify({ compilerOptions: {
+      target: "ES2022",
+      module: "ESNext",
+      moduleResolution: "Bundler",
+      strict: true,
+      noEmit: true,
+      jsx: "preserve",
+      jsxImportSource: "solid-js",
+      lib: ["ES2022", "DOM", "DOM.Iterable"],
+      types: ["vite/client"],
+      skipLibCheck: true
+    } }, null, 2)}
+`,
+    "client/index.tsx": `import { render } from "solid-js/web";
+import App from "./App";
+import "./styles.css";
+
+render(() => <App />, document.getElementById("app")!);
+`,
+    "client/sporades.ts": `import { createSignal, onCleanup } from "solid-js";
+import { createSolidPrimitives } from "sporades/client";
+
+export const { createAuth, createMutation, createQuery } = createSolidPrimitives({ createSignal, onCleanup });
+`,
+    "client/App.tsx": options.template === "todo" ? solidTodoAppTemplate() : solidBlankAppTemplate(),
+    "client/styles.css": `:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #15211d; background: #f2f7f4; }
+body { margin: 0; }
+main { width: min(42rem, calc(100% - 2rem)); margin: 5rem auto; }
+.mark { width: 2rem; height: 2rem; }
+`,
+    "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#2c8c69"/></svg>
+`
+  };
+}
+function solidBlankAppTemplate() {
+  return `import { Show } from "solid-js";
+import { createAuth } from "./sporades";
+import mark from "./sporades-mark.svg";
+
+export default function App() {
+  const session = createAuth();
+  return (
+    <main>
+      <img class="mark" src={mark} alt="" />
+      <h1>Blank Sporades Capsule</h1>
+      <Show when={!session.state().loading} fallback={<p>Connecting\u2026</p>}>
+        <p>Start building in server/index.ts and client/App.tsx.</p>
+      </Show>
+    </main>
+  );
+}
+`;
+}
+function solidTodoAppTemplate() {
+  return `import { createSignal, For, Show } from "solid-js";
+import { auth } from "sporades/client";
+import type { Todo } from "../shared/types";
+import { createAuth, createMutation, createQuery } from "./sporades";
+import mark from "./sporades-mark.svg";
+
+export default function App() {
+  const session = createAuth();
+  const todos = createQuery<Todo[]>("todos");
+  const addTodo = createMutation("addTodo");
+  const [text, setText] = createSignal("");
+
+  async function submit(event: SubmitEvent) {
+    event.preventDefault();
+    const value = text().trim();
+    if (!value) return;
+    const result = await addTodo.run(value);
+    if (!result.error) setText("");
+  }
+
+  return (
+    <main>
+      <header><img class="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>
+      <Show when={session.state().providers.google?.enabled && !session.isAuthenticated()}>
+        <button type="button" onClick={() => auth.signIn("google")}>Sign in with Google</button>
+      </Show>
+      <form onSubmit={submit}>
+        <input aria-label="Todo" value={text()} onInput={(event) => setText(event.currentTarget.value)} />
+        <button disabled={addTodo.state().loading}>Add</button>
+      </form>
+      <Show when={!todos().loading} fallback={<p>Loading\u2026</p>}>
+        <Show when={!todos().error} fallback={<p role="alert">{todos().error?.message}</p>}>
+          <ul><For each={todos().data ?? []}>{(todo) => <li>{todo.text}</li>}</For></ul>
+        </Show>
+      </Show>
+    </main>
+  );
+}
+`;
 }
 function svelteTemplateFiles(options, files) {
   const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));
@@ -14598,6 +14787,7 @@ const styles = \`
 }
 function agentsTemplate(template, framework, toolchain) {
   const vanilla = framework === "vanilla";
+  const solid = framework === "solid";
   const vue = framework === "vue";
   const svelte = framework === "svelte";
   const clientFiles = vue ? "client/*.vue and client/*.ts" : svelte ? "client/*.svelte and client/*.ts" : `client/*.${vanilla ? "ts" : "tsx"}`;
@@ -14619,7 +14809,7 @@ Client toolchain: ${toolchain}
 - No file-based routing. Use the router included in the scaffold template.
 - All imports must be from Sporades, the configured framework, or relative paths.
 - Do not use Node built-ins in client code.
-- Auth is available via \`ctx.auth\` on the server, ${vanilla ? "`auth.get()` and `auth.subscribe()` in the framework-neutral client" : "`useAuth()` on the client"}.
+- Auth is available via \`ctx.auth\` on the server, ${vanilla ? "`auth.get()` and `auth.subscribe()` in the framework-neutral client" : solid ? "`createAuth()` in the SolidJS client" : "`useAuth()` on the client"}.
 - Server env vars: define in \`.env.sporades.server\`, access via \`ctx.env\`.
 - Keep \`shared/\` free of DOM, Node, env, and Sporades runtime imports.
 
@@ -14636,8 +14826,8 @@ sporades db dump
 ## Structure
 
 - \`server/index.ts\` - schema, queries, mutations
-- \`client/index.${vanilla || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
-${vue ? "- `client/App.vue` - Vue Single-File Component UI\n" : ""}- \`shared/\` - pure TypeScript shared by client and server
+- \`client/index.${vanilla || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : solid ? "SolidJS render entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
+${solid ? "- `client/App.tsx` - native SolidJS component UI\n" : ""}${vue ? "- `client/App.vue` - Vue Single-File Component UI\n" : ""}- \`shared/\` - pure TypeScript shared by client and server
 ${svelte ? "- `client/App.svelte` - Svelte component UI\n" : ""}
 - \`index.html\` - HTML shell (user-owned)
 - \`sporades.json\` - project configuration
@@ -15242,7 +15432,7 @@ var HELP_TEXT = {
 Scaffold a new Capsule.
 
 Options:
-  --framework <name>  Client framework: react, preact, vue, svelte, or vanilla
+  --framework <name>  Client framework: react, preact, solid, vue, svelte, or vanilla
   --toolchain <name>  Client toolchain: esbuild (default) or vite (React only)
   --template <name>   Template: blank, todo, guestbook, photo-library, or campfire
   --no-install        Skip npm install
@@ -15518,7 +15708,7 @@ import { createHash as createHash3 } from "node:crypto";
 import { chmod, mkdir as mkdir5, readFile as readFile6, writeFile as writeFile5 } from "node:fs/promises";
 import path6 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
-var CLIENT_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "vue", "svelte", "vanilla"]);
+var CLIENT_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "solid", "vue", "svelte", "vanilla"]);
 var CLIENT_TOOLCHAINS = /* @__PURE__ */ new Set(["esbuild", "vite"]);
 var DEFAULT_CSP_DIRECTIVES = {
   "default-src": ["'self'"],
@@ -15575,7 +15765,7 @@ function validateClientConfig(client) {
     throw commandError4("Invalid client configuration.", "Set `client.framework` and optional `client.toolchain` in sporades.json.");
   }
   if (client.framework !== void 0 && !CLIENT_FRAMEWORKS.has(client.framework)) {
-    throw commandError4(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, vue, svelte, vanilla.");
+    throw commandError4(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, solid, vue, svelte, vanilla.");
   }
   if (client.toolchain !== void 0 && !CLIENT_TOOLCHAINS.has(client.toolchain)) {
     throw commandError4(`Unsupported client toolchain: ${client.toolchain}`, "Use one of: esbuild, vite.");
@@ -15591,6 +15781,9 @@ function validateClientConfig(client) {
   }
   if (client.framework === "svelte" && client.toolchain !== void 0 && client.toolchain !== "vite") {
     throw commandError4("Unsupported client framework/toolchain combination: svelte/esbuild", "Use Svelte with Vite.");
+  }
+  if (client.framework === "solid" && client.toolchain !== void 0 && client.toolchain !== "vite") {
+    throw commandError4("Unsupported client framework/toolchain combination: solid/esbuild", "Use SolidJS with Vite.");
   }
 }
 function validateSchedulingConfig(scheduling) {
@@ -17404,7 +17597,7 @@ jobs:
 var CLI_VERSION = "0.3.0";
 
 // src/cli/sporades.ts
-var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "vue", "svelte", "vanilla"]);
+var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "solid", "vue", "svelte", "vanilla"]);
 var SUPPORTED_CLIENT_TOOLCHAINS = /* @__PURE__ */ new Set(["esbuild", "vite"]);
 var SUPPORTED_TEMPLATES = /* @__PURE__ */ new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
 var DEV_SESSION_FILE = path8.join(".sporades", "dev-session.json");
@@ -17637,9 +17830,9 @@ function parseCreateArgs(args) {
     throw commandError4("Missing scaffold name.", "Use `sporades create <name>`.");
   }
   if (framework !== null && !SUPPORTED_FRAMEWORKS.has(framework)) {
-    throw commandError4(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, svelte, vanilla.");
+    throw commandError4(`Unsupported framework: ${framework}`, "Use one of: react, preact, solid, vue, svelte, vanilla.");
   }
-  toolchain ??= framework === "vue" || framework === "svelte" ? "vite" : "esbuild";
+  toolchain ??= framework === "solid" || framework === "vue" || framework === "svelte" ? "vite" : "esbuild";
   if (!SUPPORTED_CLIENT_TOOLCHAINS.has(toolchain)) {
     throw commandError4(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
   }
@@ -17657,6 +17850,12 @@ function parseCreateArgs(args) {
   }
   if (framework === "svelte" && toolchain !== "vite") {
     throw commandError4(`Unsupported client framework/toolchain combination: svelte/${toolchain}`, "Use Svelte with Vite.");
+  }
+  if (framework === "solid" && toolchain !== "vite") {
+    throw commandError4(`Unsupported client framework/toolchain combination: solid/${toolchain}`, "Use SolidJS with Vite.");
+  }
+  if (framework === "solid" && !["blank", "todo"].includes(template)) {
+    throw commandError4(`Unsupported client template for SolidJS: ${template}`, "Use SolidJS with the blank or todo template.");
   }
   if (!SUPPORTED_TEMPLATES.has(template)) {
     throw commandError4(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
@@ -19271,7 +19470,7 @@ function tagDevRebuildError(error, phase, config, options = {}) {
   return tagged;
 }
 function configuredClientToolchain(config) {
-  return config.client?.toolchain ?? (["vue", "svelte"].includes(config.client?.framework) ? "vite" : "esbuild");
+  return config.client?.toolchain ?? (["solid", "vue", "svelte"].includes(config.client?.framework) ? "vite" : "esbuild");
 }
 function reportDevPublicCleanupDegradation(options, runtime, url, port, config, error) {
   runtime.database.log.emit({

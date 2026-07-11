@@ -7,7 +7,7 @@ import { validateCapsuleServicesConfig } from "../capsule-services.js";
 import { commandError, errorDetails, type LooseRecord } from "./cli-support.js";
 
 export const SECURITY_SESSIONS = new Set(["dev", "public-dev", "container", "hosted"]);
-const CLIENT_FRAMEWORKS = new Set(["react", "preact", "vue", "svelte", "vanilla"]);
+const CLIENT_FRAMEWORKS = new Set(["react", "preact", "solid", "vue", "svelte", "vanilla"]);
 const CLIENT_TOOLCHAINS = new Set(["esbuild", "vite"]);
 
 const DEFAULT_CSP_DIRECTIVES = {
@@ -68,7 +68,7 @@ export function validateClientConfig(client: LooseRecord) {
     throw commandError("Invalid client configuration.", "Set `client.framework` and optional `client.toolchain` in sporades.json.");
   }
   if (client.framework !== undefined && !CLIENT_FRAMEWORKS.has(client.framework)) {
-    throw commandError(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, vue, svelte, vanilla.");
+    throw commandError(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, solid, vue, svelte, vanilla.");
   }
   if (client.toolchain !== undefined && !CLIENT_TOOLCHAINS.has(client.toolchain)) {
     throw commandError(`Unsupported client toolchain: ${client.toolchain}`, "Use one of: esbuild, vite.");
@@ -84,6 +84,9 @@ export function validateClientConfig(client: LooseRecord) {
   }
   if (client.framework === "svelte" && client.toolchain !== undefined && client.toolchain !== "vite") {
     throw commandError("Unsupported client framework/toolchain combination: svelte/esbuild", "Use Svelte with Vite.");
+  }
+  if (client.framework === "solid" && client.toolchain !== undefined && client.toolchain !== "vite") {
+    throw commandError("Unsupported client framework/toolchain combination: solid/esbuild", "Use SolidJS with Vite.");
   }
 }
 

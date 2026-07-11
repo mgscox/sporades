@@ -47,6 +47,8 @@ async function fetchEventually(url, timeoutMs = 10_000) {
 for (const { framework, template } of [
   { framework: "react", template: "blank" },
   { framework: "preact", template: "blank" },
+  { framework: "solid", template: "blank" },
+  { framework: "solid", template: "todo" },
   { framework: "vue", template: "blank" },
   { framework: "vue", template: "todo" },
   { framework: "vue", template: "guestbook" },
@@ -65,6 +67,7 @@ for (const { framework, template } of [
   const projectName = `real-${framework}-${template}-vite-container`;
   const projectDir = path.join(root, projectName);
   let deployAttempted = false;
+  let deploySucceeded = false;
   try {
     const docker = await execFileAsync("docker", ["info", "--format", "{{.ServerVersion}}"], { timeout: 30_000 });
     assert.match(docker.stdout.trim(), /^\d+\./, docker.stderr);
@@ -74,16 +77,16 @@ for (const { framework, template } of [
       "--no-install", "--no-git", "--json",
     ], root);
     assert.equal(created.code, 0, created.stderr);
-    await execFileAsync("npm", ["install", ...(["vue", "svelte"].includes(framework) ? [] : ["--omit=dev"]), "--ignore-scripts", "--package-lock=false"], {
+    await execFileAsync("npm", ["install", ...(["solid", "vue", "svelte"].includes(framework) ? [] : ["--omit=dev"]), "--ignore-scripts", "--package-lock=false"], {
       cwd: projectDir,
       timeout: 120_000,
       maxBuffer: 10 * 1024 * 1024,
     });
-    if (["preact", "vue", "svelte"].includes(framework)) {
+    if (["preact", "solid", "vue", "svelte"].includes(framework)) {
       await assert.rejects(access(path.join(projectDir, "node_modules", "react")), (error) => error.code === "ENOENT");
       await assert.rejects(access(path.join(projectDir, "node_modules", "react-dom")), (error) => error.code === "ENOENT");
       const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
-      assert.equal(packageJson.dependencies[framework], { preact: "^10.25.0", vue: "^3.5.13", svelte: "^5.0.0" }[framework]);
+      assert.equal(packageJson.dependencies[framework === "solid" ? "solid-js" : framework], { preact: "^10.25.0", solid: "^1.9.0", vue: "^3.5.13", svelte: "^5.0.0" }[framework]);
       if (framework === "vue") assert.equal(packageJson.devDependencies["@vue/compiler-sfc"], "^3.5.13");
       assert.equal(packageJson.dependencies.react, undefined);
       assert.equal(packageJson.dependencies["react-dom"], undefined);
@@ -102,6 +105,14 @@ for (const { framework, template } of [
         assert.equal(sporadesPackage.dependencies.svelte, undefined);
         assert.equal(sporadesPackage.dependencies["@sveltejs/vite-plugin-svelte"], undefined);
       }
+      if (framework === "solid") {
+        assert.equal(packageJson.devDependencies["vite-plugin-solid"], "^2.11.0");
+        await access(path.join(projectDir, "node_modules", "vite-plugin-solid", "package.json"));
+        await access(path.join(projectDir, "node_modules", "solid-js", "package.json"));
+        const sporadesPackage = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8"));
+        assert.equal(sporadesPackage.dependencies["solid-js"], undefined);
+        assert.equal(sporadesPackage.dependencies["vite-plugin-solid"], undefined);
+      }
     }
     await writeFile(path.join(projectDir, ".env"), "VITE_REAL_CONTAINER_LEAK=browser-secret-must-not-ship\n");
     await writeFile(path.join(projectDir, ".env.sporades.server"), `${template === "photo-library" ? "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n" : ""}SERVER_REAL_CONTAINER_LEAK=server-secret-must-not-ship\n`);
@@ -116,6 +127,7 @@ for (const { framework, template } of [
     assert.equal(deployed.code, 0, deployed.stderr);
     const deployment = lastJsonLine(deployed.stdout);
     assert.equal(deployment.ok, true, JSON.stringify(deployment));
+    deploySucceeded = true;
     const url = deployment.data.url;
     assert.match(url, /^http:\/\/(?:127\.0\.0\.1|localhost):\d+$/);
 
@@ -157,10 +169,18 @@ for (const { framework, template } of [
     }[template] : template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
     assert.doesNotMatch(output, /browser-secret-must-not-ship|server-secret-must-not-ship/);
     assert.doesNotMatch(output, /\/@vite\/client|react-refresh|vite\/hmr/i);
+    assert.doesNotMatch(output, /dev\.refresh\.(?:subscribe|ready|received)/, "Base-image client output omits Dev refresh protocol");
+    if (framework === "solid") assert.doesNotMatch(output, /react-dom|react\/jsx-runtime|node_modules\/react/);
     assert.equal((await fetchEventually(`${url}/client.js`)).status, 404);
     t.diagnostic(JSON.stringify({ framework, template, baseImage: inspectedImage.stdout.trim(), url, fetched, clientJsStatus: 404 }));
   } finally {
-    if (deployAttempted) await runCli(["deploy", "remove", "--json"], projectDir).catch(() => {});
+    if (deployAttempted) {
+      const removed = await runCli(["deploy", "remove", "--json"], projectDir).catch(() => null);
+      if (framework === "solid" && deploySucceeded) {
+        assert.equal(removed?.code, 0, removed?.stderr ?? "Solid Base-image cleanup did not complete.");
+        t.diagnostic(JSON.stringify({ framework, template, cleanup: "container-removed" }));
+      }
+    }
     await rm(root, { recursive: true, force: true });
   }
 });

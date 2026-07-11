@@ -12,6 +12,7 @@ import { connect } from "node:net";
 import { createWebSocketHub, openDevDatabase, prepareHttpSecurity, routeRuntimeHealth } from "../dist/server-runtime-source.js";
 import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
+import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -4199,6 +4200,8 @@ process.exit(0);
 for (const { framework, template } of [
   { framework: "react", template: "blank" },
   { framework: "preact", template: "blank" },
+  { framework: "solid", template: "blank" },
+  { framework: "solid", template: "todo" },
   { framework: "vue", template: "blank" },
   { framework: "vue", template: "todo" },
   { framework: "vue", template: "guestbook" },
@@ -4223,7 +4226,7 @@ for (const { framework, template } of [
     );
     assert.equal(created.code, 0, created.stderr);
     const projectDir = path.join(dir, "vite-hosted");
-    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : framework === "vue" ? installVue : (project) => installProjectSvelteToolchain(project, repoRoot))(projectDir);
+    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : framework === "solid" ? (project) => installProjectSolidToolchain(project, repoRoot) : framework === "vue" ? installVue : (project) => installProjectSvelteToolchain(project, repoRoot))(projectDir);
     if (template === "photo-library") {
       const configPath = path.join(projectDir, "sporades.json");
       const config = JSON.parse(await readFile(configPath, "utf8"));
@@ -4263,6 +4266,10 @@ for (const { framework, template } of [
     assert.doesNotMatch(serverBundle, /dev\.refresh\.(?:subscribe|ready|received)/, "Hosted server output omits Dev refresh capability and hints");
     assert.doesNotMatch(publicText, /\/@vite\/client|react-refresh|vite\/hmr|SERVER_ONLY/i);
     if (framework === "preact") assert.doesNotMatch(publicText, /node_modules\/react(?:-dom)?\/|from ["']react(?:-dom)?/);
+    if (framework === "solid") {
+      assert.match(publicText, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+      assert.doesNotMatch(publicText, /react-dom|react\/jsx-runtime/);
+    }
     if (framework === "vue") assert.match(publicText, {
       blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
       "photo-library": /Photo Library/, campfire: /Campfire/,

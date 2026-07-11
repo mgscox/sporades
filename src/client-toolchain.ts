@@ -49,11 +49,11 @@ export function validateClientToolchainInput(options: {
   indexHtml: string;
 }) {
   if (options.toolchain !== "vite") return;
-  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "vue" ? "Vue" : options.frameworkConfig.framework === "svelte" ? "Svelte" : "React";
-  if (!new Set(["react", "preact", "vue", "svelte"]).has(options.frameworkConfig.framework)) {
+  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "solid" ? "SolidJS" : options.frameworkConfig.framework === "vue" ? "Vue" : options.frameworkConfig.framework === "svelte" ? "Svelte" : "React";
+  if (!new Set(["react", "preact", "solid", "vue", "svelte"]).has(options.frameworkConfig.framework)) {
     throw clientToolchainError(
       `Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`,
-      "Use React, Preact, Vue, or Svelte with Vite, or keep Vanilla TypeScript on esbuild.",
+      "Use React, Preact, SolidJS, Vue, or Svelte with Vite, or keep Vanilla TypeScript on esbuild.",
     );
   }
   if (referencesLegacyClientShell(options.indexHtml)) {
@@ -156,6 +156,9 @@ async function buildVite(options: {
     } else if (options.frameworkConfig.framework === "svelte") {
       const { plugin } = await loadProjectSvelteToolchain(projectRoot);
       frameworkPlugins.push(plugin());
+    } else if (options.frameworkConfig.framework === "solid") {
+      const { plugin } = await loadProjectSolidToolchain(projectRoot);
+      frameworkPlugins.push(plugin());
     }
     const result = await build({
       root: projectRoot,
@@ -246,6 +249,25 @@ async function loadProjectSvelteToolchain(projectRoot: string) {
   const compiler = compilerModule?.default ?? compilerModule;
   if (typeof plugin !== "function" || typeof compiler?.compile !== "function") throw projectToolchainError("Svelte", "Svelte/Vite project compiler packages have incompatible exports.", hint);
   return { plugin, compiler };
+}
+
+async function loadProjectSolidToolchain(projectRoot: string) {
+  const hint = "Run `npm install` in the SolidJS Capsule to install its declared vite-plugin-solid and solid-js versions.";
+  const loaded = await loadProjectCompilerToolchain(projectRoot, {
+    framework: "SolidJS",
+    requiredPackages: [
+      { declaration: "vite-plugin-solid", resolve: "vite-plugin-solid", major: 2 },
+      { declaration: "solid-js", resolve: "solid-js", major: 1 },
+    ],
+    installHint: hint,
+  });
+  const pluginModule = loaded.get("vite-plugin-solid");
+  const solidModule = loaded.get("solid-js");
+  const plugin = pluginModule?.default?.default ?? pluginModule?.default ?? pluginModule;
+  if (typeof plugin !== "function" || typeof solidModule?.createSignal !== "function") {
+    throw projectToolchainError("SolidJS", "SolidJS/Vite project compiler packages have incompatible exports.", hint);
+  }
+  return { plugin };
 }
 
 async function loadProjectCompilerToolchain(projectRoot: string, spec: {
@@ -373,7 +395,7 @@ function viteBuildError(error: unknown, projectRoots: string[], framework: strin
   const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectRoots, rawFile) : null;
   return clientToolchainError(
     `Client bundle failed: ${message}`,
-    `Fix the ${framework === "preact" ? "Preact" : framework === "vue" ? "Vue" : framework === "svelte" ? "Svelte" : "React"}/Vite client source and save again.`,
+    `Fix the ${framework === "preact" ? "Preact" : framework === "solid" ? "SolidJS" : framework === "vue" ? "Vue" : framework === "svelte" ? "Svelte" : "React"}/Vite client source and save again.`,
     {
       ...(typeof details.code === "string" ? { code: details.code.slice(0, 80) } : {}),
       ...(relativeFile ? { file: relativeFile } : {}),

@@ -26,10 +26,11 @@ LLM systems that need a scriptable build, deploy, inspect, and repair loop.
 
 The repository currently includes:
 
-- `sporades create` scaffolding with template selection, React, Preact, and
+- `sporades create` scaffolding with template selection, React, Preact, SolidJS, and
   Vanilla TypeScript framework support, explicit React/Vite and Preact/Vite
   admission, and Vue/Vite admission across every supported template,
-  Svelte/Vite admission across every supported template,
+  Svelte/Vite admission across every supported template, plus SolidJS/Vite
+  admission for the native `blank` and `todo` templates,
   framework support, `AGENTS.md`, `CLAUDE.md`, `index.html`, `sporades.json`,
   Server env, and optional `npm install` / git initialization.
 - `sporades dev` for local Node execution with bundling, file watching,
@@ -262,8 +263,8 @@ transport remain the default application path.
 ## Client API
 
 `sporades/client` exports framework-neutral query, mutation, auth, current-user
-preferences and file APIs, app-message helpers, a `createHooks` factory, and
-Vue-native composables over the same connection.
+preferences and file APIs, app-message helpers, a `createHooks` factory,
+Vue-native composables, Svelte stores, and SolidJS signals over the same connection.
 Vanilla TypeScript clients can use the transport primitives directly:
 
 ```ts
@@ -306,6 +307,20 @@ Vue mutation state keeps `loading` true while any invocation is pending. Its
 reactive `data` and `error` belong to the latest invocation; an older call that
 settles later cannot overwrite them, while every returned promise still
 resolves or rejects for its own invocation.
+
+SolidJS clients bind complete query, mutation, and auth state to an owning
+reactive root. `onCleanup` releases query and auth observations, while mutation
+state remains pending-counted and latest-invocation deterministic:
+
+```tsx
+import { createSignal, onCleanup } from "solid-js";
+import { createSolidPrimitives } from "sporades/client";
+
+const { createAuth, createMutation, createQuery } = createSolidPrimitives({ createSignal, onCleanup });
+const todos = createQuery("todos");
+const addTodo = createMutation("addTodo");
+const session = createAuth();
+```
 
 The browser connects to `/__sporades/ws` on the same origin. The transport
 carries:
