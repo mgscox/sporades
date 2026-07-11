@@ -55,6 +55,7 @@ database.log.emit({
   event: "runtime.started",
   level: "info",
   message: "Capsule runtime started",
+  data: { diagnostics: database.runtimeDiagnostics },
   release: process.env.SPORADES_RELEASE_ID ? { id: process.env.SPORADES_RELEASE_ID } : null,
 });
 const websocketHub = createWebSocketHub(() => database);

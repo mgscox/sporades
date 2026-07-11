@@ -6814,6 +6814,7 @@ export function createWebSocketHub(getDatabase) {
                 closeWebSocketClient(client);
             }
             clients.clear();
+            journeys.clear();
         },
         listAuthClients() {
             return [...clients].map((client) => ({

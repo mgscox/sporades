@@ -7569,6 +7569,7 @@ export function createWebSocketHub(getDatabase: () => any) {
         closeWebSocketClient(client);
       }
       clients.clear();
+      journeys.clear();
     },
     listAuthClients() {
       return [...clients].map((client) => ({

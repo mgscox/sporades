@@ -90,6 +90,25 @@ test("browser client runtime exposes the explicit Journey session lifecycle over
   }
 });
 
+test("client-runtime replacement retires the old page consent exactly once", async () => {
+  const calls = [];
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "journey.enable": async (message) => { calls.push(message); return { type: "journey.enable.result", data: { enabled: true, userId: anonymousAuth.userId, capture: { navigation: true, focus: false, interactions: false } }, error: null }; },
+    "journey.set": async (message) => { calls.push(message); return { type: "journey.set.result", data: { journey: message.state }, error: null }; },
+    "journey.disable": async (message) => { calls.push(message); return { type: "journey.disable.result", data: { ok: true }, error: null }; },
+  }});
+  const listeners = new Map(); const add = (type, listener) => listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+  const remove = (type, listener) => listeners.set(type, (listeners.get(type) ?? []).filter((item) => item !== listener));
+  globalThis.document = { head: { querySelectorAll: () => [] }, documentElement: {}, querySelector: () => null, addEventListener: add, removeEventListener: remove };
+  window.addEventListener = add; window.removeEventListener = remove; window.history = { pushState() {}, replaceState() {} };
+  window.requestAnimationFrame = (callback) => { queueMicrotask(callback); return 1; }; window.cancelAnimationFrame = () => {};
+  try {
+    const oldRuntime = await importClientRuntime(); await oldRuntime.journey.enable(); await new Promise((resolve) => setTimeout(resolve, 0));
+    const replacement = await importClientRuntime(); replacement.journey.list(); await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(calls.filter(({ type }) => type === "journey.disable").length, 1);
+  } finally { delete globalThis.document; browser.cleanup(); }
+});
+
 test("Journey subscriptions deliver platform events and unsubscribe without enabling publication", async () => {
   const calls = [];
   const browser = installBrowserFakes(anonymousAuth, { handlers: {

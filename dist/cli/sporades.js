@@ -1261,6 +1261,7 @@ async function startDevSession(options) {
         event: "dev.session.started",
         level: "info",
         message: "Dev session started",
+        data: { diagnostics: runtime.database.runtimeDiagnostics },
     });
     const websocketHub = createWebSocketHub(() => runtime.database);
     const server = createServer(async (request, response) => {

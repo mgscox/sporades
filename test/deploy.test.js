@@ -1567,6 +1567,7 @@ test("generated server bundle emits JSON logs to stdout when requested", async (
       assert.equal(event.event, "runtime.started");
       assert.equal(event.level, "info");
       assert.equal(event.message, "Capsule runtime started");
+      assert.deepEqual(event.data.diagnostics.journey, { sessionInactivityMinutes: 30 });
       assert.equal(event.capsule.name, "todo-island");
       assert.deepEqual(event.release, { id: "20260630T221500Z-feedface" });
     } finally {

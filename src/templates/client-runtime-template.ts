@@ -149,6 +149,8 @@ function connect() {
 }
 
 function createConnection() {
+  const existingJourneyOwnerKey = Symbol.for("sporades.journey.capture.teardown");
+  if (typeof window !== "undefined" && typeof window[existingJourneyOwnerKey] === "function") window[existingJourneyOwnerKey]();
   let socket = null;
   let nextId = 1;
   let sessionToken = localStorage.getItem("sporades.sessionToken");
@@ -163,6 +165,8 @@ function createConnection() {
   let journeyCaptureTeardown = null;
   const journeySubscriptions = new Map();
   let latestAuthUserId = null;
+  let pageRetired = false;
+  window.addEventListener?.("pagehide", () => { pageRetired = true; socket?.close(); }, { once: true });
 
   function syncSessionTokenFromStorage() {
     const storedToken = localStorage.getItem("sporades.sessionToken");
@@ -238,7 +242,7 @@ function createConnection() {
     });
     socket.addEventListener("close", () => {
       stopJourneyCapture();
-      setTimeout(open, 500);
+      if (!pageRetired) setTimeout(open, 500);
     });
     return socket;
   }
@@ -420,8 +424,17 @@ function createConnection() {
       cleanups.push(() => { if (pendingClick) clearTimeout(pendingClick.timer); pendingClick = null; });
     }
     let stopped = false;
-    journeyCaptureTeardown = () => { if (stopped) return; stopped = true; for (const cleanup of cleanups.splice(0).reverse()) cleanup(); if (window[ownerKey] === journeyCaptureTeardown) delete window[ownerKey]; };
-    window[ownerKey] = journeyCaptureTeardown;
+    journeyCaptureTeardown = () => { if (stopped) return; stopped = true; for (const cleanup of cleanups.splice(0).reverse()) cleanup(); };
+    const retireOwner = () => {
+      journeyCaptureTeardown?.();
+      journeyCaptureTeardown = null;
+      if (journeyConsentOptions) request("journey.disable").catch?.(() => {});
+      journeyConsentOptions = null;
+      journeyEnabledUserId = null;
+      journeyCapture = null;
+      if (window[ownerKey] === retireOwner) delete window[ownerKey];
+    };
+    window[ownerKey] = retireOwner;
   }
 
   function createAppMessageStream(predicate = () => true) {

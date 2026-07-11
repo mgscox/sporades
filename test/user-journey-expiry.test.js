@@ -6,6 +6,7 @@ import path from "node:path";
 import { test } from "node:test";
 
 import { createControllableRuntimeClock, createWebSocketHub, openDevDatabase } from "../dist/server-runtime-source.js";
+import { createClientRuntimeSource } from "../dist/templates/client-runtime-template.js";
 
 test("Journey state expires and can be renewed under the enabled session using runtime time", async () => {
   const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
@@ -79,6 +80,66 @@ test("Journey inactivity configuration defaults, rounds, clamps, and reports its
   }
 });
 
+test("disconnect retains old state while a same-user connection publishes a new independent session", async () => {
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  await withJourneyRuntime(clock, async ({ open }) => {
+    const first = await open(); const observer = await open();
+    const auth = await send(first, { id: "auth", type: "auth.get" });
+    await send(first, { id: "enable-first", type: "journey.enable", options: {}, sessionToken: auth.data.sessionToken });
+    const old = await send(first, { id: "old", type: "journey.set", state: { status: "old", ttlSeconds: 300 }, sessionToken: auth.data.sessionToken });
+    first.close(); await eventually(() => first.readyState === WebSocket.CLOSED);
+    const second = await open();
+    const stale = await send(second, { id: "stale", type: "journey.set", sessionId: old.data.journey.sessionId, state: { status: "stale" }, sessionToken: auth.data.sessionToken });
+    assert.equal(stale.error.code, "JOURNEY_NOT_ENABLED", "a public old ID cannot claim a new connection");
+    await send(second, { id: "enable-second", type: "journey.enable", options: {}, sessionToken: auth.data.sessionToken });
+    const fresh = await send(second, { id: "fresh", type: "journey.set", state: { status: "fresh", ttlSeconds: 300 }, sessionToken: auth.data.sessionToken });
+    assert.notEqual(fresh.data.journey.sessionId, old.data.journey.sessionId);
+    const listed = await send(observer, { id: "list", type: "journey.list" });
+    assert.deepEqual(listed.data.journeys.map(({ sessionId }) => sessionId).sort(), [old.data.journey.sessionId, fresh.data.journey.sessionId].sort());
+    second.close(); observer.close();
+  });
+});
+
+test("server runtime restart clears buffered state and requires a fresh session", async () => {
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  await withJourneyRuntime(clock, async ({ open, restartHub }) => {
+    const first = await open();
+    await send(first, { id: "enable", type: "journey.enable", options: {} });
+    const old = await send(first, { id: "old", type: "journey.set", state: { status: "old", ttlSeconds: 300 } });
+    restartHub();
+    const next = await open();
+    assert.deepEqual((await send(next, { id: "empty", type: "journey.list" })).data.journeys, []);
+    assert.equal((await send(next, { id: "stale", type: "journey.set", sessionId: old.data.journey.sessionId, state: { status: "stale" } })).error.code, "JOURNEY_NOT_ENABLED");
+    await send(next, { id: "enable-next", type: "journey.enable", options: {} });
+    const fresh = await send(next, { id: "fresh", type: "journey.set", state: { status: "fresh" } });
+    assert.notEqual(fresh.data.journey.sessionId, old.data.journey.sessionId);
+    next.close();
+  });
+});
+
+test("browser SDK automatic reconnect preserves consent but publishes under a new server session", async () => {
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  await withJourneyRuntime(clock, async ({ browserUrl, connectionToken }) => {
+    const NativeWebSocket = globalThis.WebSocket; const sockets = [];
+    class TrackingWebSocket extends NativeWebSocket { constructor(url, protocols) { super(url, protocols); sockets.push(this); } }
+    const storage = new Map();
+    globalThis.WebSocket = TrackingWebSocket;
+    const windowListeners = new Map();
+    globalThis.window = { location: { href: browserUrl }, __SPORADES_CONNECTION_TOKEN: connectionToken, addEventListener: (type, listener) => windowListeners.set(type, listener) };
+    globalThis.localStorage = { getItem: (key) => storage.get(key) ?? null, setItem: (key, value) => storage.set(key, value), removeItem: (key) => storage.delete(key) };
+    try {
+      const source = createClientRuntimeSource();
+      const runtime = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}#real-reconnect-${Date.now()}`);
+      await runtime.journey.enable({ capture: { navigation: false, focus: false, interactions: false } });
+      const first = await runtime.journey.set({ status: "first", ttlSeconds: 300 });
+      sockets[0].close(); await new Promise((resolve) => setTimeout(resolve, 600)); await eventually(() => sockets.length === 2 && sockets[1].readyState === NativeWebSocket.OPEN);
+      const fresh = await runtime.journey.set({ status: "fresh", ttlSeconds: 300 });
+      assert.notEqual(fresh.data.journey.sessionId, first.data.journey.sessionId);
+      windowListeners.get("pagehide")?.(); await new Promise((resolve) => setTimeout(resolve, 0));
+    } finally { globalThis.WebSocket = NativeWebSocket; delete globalThis.window; delete globalThis.localStorage; }
+  });
+});
+
 test("Journey enforces per-user capacity without evicting live state and permits replacement", async () => {
   const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
   await withJourneyRuntime(clock, async ({ open }) => {
@@ -138,13 +199,13 @@ async function withJourneyRuntime(clock, fn, config = {}) {
   const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "journey-expiry", ...config }, {
     name: "journey-expiry", schema: {}, queries: {}, mutations: {}, endpoints: {}, messages: {}, journey: { enabled: true, ttlSeconds: 30 },
   }, { clock });
-  const hub = createWebSocketHub(() => database);
+  let hub = createWebSocketHub(() => database);
   const server = createServer();
   server.on("upgrade", (request, socket) => hub.accept(request, socket));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   try {
-    await fn({ database, open: () => new Promise((resolve, reject) => {
+    await fn({ database, browserUrl: `http://127.0.0.1:${port}/`, connectionToken: hub.createConnectionToken(), restartHub: () => { hub.disconnectAll(); hub = createWebSocketHub(() => database); }, open: () => new Promise((resolve, reject) => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/?connectionToken=${hub.createConnectionToken()}`);
       ws.addEventListener("open", () => resolve(ws), { once: true });
       ws.addEventListener("error", reject, { once: true });
