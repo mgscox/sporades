@@ -1,6 +1,4 @@
 import { spawnSync } from "node:child_process";
-import { readdir, rm } from "node:fs/promises";
-import path from "node:path";
 
 import { PUBLIC_TREE_LIMITS } from "../public-tree.js";
 import { helperError } from "./cli-support.js";
@@ -12,12 +10,28 @@ type HostHelperRequest = HostHelperContractRequest & {
   release: HostHelperRelease;
 };
 
-export function validateReleaseArchive(request: HostHelperRequest) {
+export const HOST_RELEASE_ARCHIVE_LIMITS = {
+  entries: 2048,
+  fileBytes: 64 * 1024 * 1024,
+  totalBytes: 128 * 1024 * 1024,
+  pathBytes: PUBLIC_TREE_LIMITS.pathBytes + Buffer.byteLength("public/", "utf8"),
+  compressedBytes: 128 * 1024 * 1024,
+} as const;
+
+export type ReleaseArchiveFile = { path: string; size: number };
+
+export function validateReleaseArchive(request: HostHelperRequest, archivePath = request.release.remoteArchive) {
   const release = request.release;
-  const entries = listArchiveEntries(release.remoteArchive);
+  const entries = listArchiveEntries(archivePath);
   const expectedFiles = expectedReleaseFiles(release);
   const allNames = entries.map((entry) => normaliseArchiveEntryName(entry.name));
-  const runtimeEntries = entries.filter((entry) => !isDiscardableArchiveMetadata(entry.name));
+  validateArchiveBounds(entries);
+  if (entries.some((entry) => isDiscardableArchiveMetadata(entry.name))) {
+    throw helperError(
+      "Hosted Capsule release archive contains unsupported metadata.",
+      "Push again without __MACOSX or AppleDouble metadata entries.",
+    );
+  }
   if (entries.some((entry) => !isSafeArchiveEntryType(entry, expectedFiles))) {
     throw helperError(
       "Hosted Capsule release archive contains unsafe entries.",
@@ -32,7 +46,7 @@ export function validateReleaseArchive(request: HostHelperRequest) {
   }
 
   const canonicalNames = new Set<string>();
-  for (const entry of runtimeEntries) {
+  for (const entry of entries) {
     const name = normaliseArchiveEntryName(entry.name);
     const canonical = name.normalize("NFC");
     if (canonicalNames.has(canonical)) {
@@ -41,7 +55,7 @@ export function validateReleaseArchive(request: HostHelperRequest) {
     canonicalNames.add(canonical);
   }
 
-  const unexpectedEntry = runtimeEntries.find((entry) => {
+  const unexpectedEntry = entries.find((entry) => {
     const name = normaliseArchiveEntryName(entry.name);
     if (entry.type === "-") return !expectedFiles.includes(name);
     return !expectedFiles.some((file) => file.startsWith(`${name}/`));
@@ -50,9 +64,9 @@ export function validateReleaseArchive(request: HostHelperRequest) {
     throw helperError("Hosted Capsule release archive contains unexpected files.", "Push again so Sporades can package only runtime files.");
   }
 
-  validatePublicArchiveBounds(runtimeEntries);
+  validatePublicArchiveBounds(entries);
 
-  const actual = runtimeEntries.filter((entry) => entry.type === "-").map((entry) => normaliseArchiveEntryName(entry.name)).sort();
+  const actual = entries.filter((entry) => entry.type === "-").map((entry) => normaliseArchiveEntryName(entry.name)).sort();
   const expected = [...expectedFiles].sort();
   if (actual.length !== expected.length || actual.some((name, index) => name !== expected[index])) {
     throw helperError(
@@ -60,19 +74,12 @@ export function validateReleaseArchive(request: HostHelperRequest) {
       "Push again so Sporades can package only runtime files.",
     );
   }
-}
-
-export async function removeDiscardedArchiveMetadata(directory: string) {
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const entryPath = path.join(directory, entry.name);
-    if (entry.name === "__MACOSX" || entry.name.startsWith("._")) {
-      await rm(entryPath, { recursive: entry.isDirectory(), force: true });
-      continue;
-    }
-    if (entry.isDirectory()) {
-      await removeDiscardedArchiveMetadata(entryPath);
-    }
-  }
+  return {
+    files: entries
+      .filter((entry) => entry.type === "-")
+      .map((entry) => ({ path: normaliseArchiveEntryName(entry.name), size: entry.size }))
+      .sort((left, right) => left.path.localeCompare(right.path)),
+  };
 }
 
 function listArchiveEntries(archivePath: string) {
@@ -125,7 +132,28 @@ function isSafeArchiveEntryType(entry: { type?: string; name: string }, expected
   }
   if (entry.type !== "d") return false;
   const name = normaliseArchiveEntryName(entry.name);
-  return isDiscardableArchiveMetadata(entry.name) || expectedFiles.some((file) => file.startsWith(`${name}/`));
+  return expectedFiles.some((file) => file.startsWith(`${name}/`));
+}
+
+function validateArchiveBounds(entries: Array<{ name: string; type?: string; size: number }>) {
+  if (entries.length > HOST_RELEASE_ARCHIVE_LIMITS.entries) {
+    throw helperError("Hosted Capsule release archive exceeds bounds.", "Reduce archive entries and push again.");
+  }
+  let totalBytes = 0;
+  for (const entry of entries) {
+    const name = normaliseArchiveEntryName(entry.name);
+    if (Buffer.byteLength(name, "utf8") > HOST_RELEASE_ARCHIVE_LIMITS.pathBytes) {
+      throw helperError("Hosted Capsule release archive exceeds bounds.", "Use shorter release paths and push again.");
+    }
+    if (entry.type !== "-") continue;
+    if (!Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > HOST_RELEASE_ARCHIVE_LIMITS.fileBytes) {
+      throw helperError("Hosted Capsule release archive exceeds bounds.", "Reduce oversized release files and push again.");
+    }
+    totalBytes += entry.size;
+  }
+  if (totalBytes > HOST_RELEASE_ARCHIVE_LIMITS.totalBytes) {
+    throw helperError("Hosted Capsule release archive exceeds bounds.", "Reduce total release bytes and push again.");
+  }
 }
 
 function isSafeArchiveEntryName(name: string) {

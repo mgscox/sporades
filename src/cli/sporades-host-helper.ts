@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { constants as fsConstants, statSync } from "node:fs";
+import { constants as fsConstants, createReadStream, statSync } from "node:fs";
 import { access, chmod, chown, lstat, mkdir, readdir, readFile, readlink, rename, rm, statfs, symlink, writeFile } from "node:fs/promises";
 import { createHash, generateKeyPairSync, randomBytes } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
@@ -14,6 +14,7 @@ import {
 } from "../base-image.js";
 import type { DockerRestartPolcy } from "../runtime-restart-policy.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
+import { PUBLIC_TREE_LIMITS } from "../public-tree.js";
 import type {
   CommandResult,
   DockerPsContainerRaw,
@@ -48,7 +49,7 @@ import {
 } from "./cli-support.js";
 import { CLI_VERSION } from "./cli-version.js";
 import { sanitizeScheduleInspectionEnvelope } from "./schedule-inspection-envelope.js";
-import { removeDiscardedArchiveMetadata, validateReleaseArchive } from "./host-helper-archive.js";
+import { HOST_RELEASE_ARCHIVE_LIMITS, validateReleaseArchive, type ReleaseArchiveFile } from "./host-helper-archive.js";
 import { defaultHostHelperConfig, loadHostHelperConfig, type HostHelperConfig } from "./host-helper-config.js";
 import {
   hostRegistryRetryCommand,
@@ -448,14 +449,28 @@ function deletionRequiresUnregisterError(request: HostHelperRequest) {
 }
 
 async function installRelease(request: HostHelperRequest) {
-  const release = request.release;
   validateInstallRequest(request);
   const previousRecord = await verifyRegisteredCapsule(request);
-  const previousCurrentRelease = previousRecord.currentRelease?.id ? { id: previousRecord.currentRelease.id } : null;
-  validateReleaseArchive(request);
   const paths = canonicalReleasePaths(request);
   if (!paths.release) {
     throw helperError("Invalid release install request.", "Update the Sporades CLI and retry `sporades host push`.");
+  }
+  const claimedArchive = await claimReleaseArchive(request);
+  try {
+    await installClaimedRelease(request, previousRecord, { ...paths, release: paths.release }, claimedArchive);
+  } finally {
+    await rm(claimedArchive.path, { force: true });
+    await rm(request.release.remoteArchive, { force: true });
+  }
+}
+
+async function installClaimedRelease(request: HostHelperRequest, previousRecord: any, paths: ReleasePaths & { release: string }, claimedArchive: { path: string; sha256: string }) {
+  const release = request.release;
+  const previousCurrentRelease = previousRecord.currentRelease?.id ? { id: previousRecord.currentRelease.id } : null;
+  const validatedArchive = validateReleaseArchive(request, claimedArchive.path);
+  await maybeSwapUnclaimedArchiveForTest(release);
+  if (await releaseArchiveSha256(claimedArchive.path) !== claimedArchive.sha256) {
+    throw helperError("Hosted Capsule release archive ownership changed.", "Upload the release again so the Host helper can claim immutable archive bytes.");
   }
   validateSealedServerEnvPrivateKeyPath(release, paths);
   await mkdir(paths.releases, { recursive: true });
@@ -469,7 +484,7 @@ async function installRelease(request: HostHelperRequest) {
   await rm(tempCurrentLink, { force: true });
   await mkdir(tempReleaseDirectory, { recursive: true });
 
-  const extract = spawnSync("tar", ["-xzf", release.remoteArchive, "-C", tempReleaseDirectory], {
+  const extract = spawnSync("tar", ["-xzf", claimedArchive.path, "-C", tempReleaseDirectory], {
     encoding: "utf8",
   });
   if (extract.error || extract.status !== 0) {
@@ -479,7 +494,16 @@ async function installRelease(request: HostHelperRequest) {
       "Upload the release again with `sporades host push` and check that tar is installed on the Host server.",
     );
   }
-  await removeDiscardedArchiveMetadata(tempReleaseDirectory);
+  let installedInventory: ReleaseFileIdentity[];
+  try {
+    installedInventory = await validateExtractedReleaseTree(tempReleaseDirectory, validatedArchive.files);
+    if (await releaseArchiveSha256(claimedArchive.path) !== claimedArchive.sha256) {
+      throw helperError("Hosted Capsule release archive ownership changed.", "Upload the release again so the Host helper can claim immutable archive bytes.");
+    }
+  } catch (error) {
+    await rm(tempReleaseDirectory, { recursive: true, force: true });
+    throw error;
+  }
 
   try {
     await rename(tempReleaseDirectory, paths.release);
@@ -498,7 +522,7 @@ async function installRelease(request: HostHelperRequest) {
   await symlink(paths.release, tempCurrentLink);
   await rename(tempCurrentLink, paths.currentLink);
   await installSealedServerEnvPrivateKey(release);
-  await recordReleaseUploaded(request, release);
+  await recordReleaseUploaded(request, release, installedInventory);
 
   let restartResult = null;
   let restartError = null;
@@ -550,6 +574,116 @@ async function installRelease(request: HostHelperRequest) {
     return;
   }
   writeEnvelope({ ok: true, data, error: null });
+}
+
+type ReleaseFileIdentity = ReleaseArchiveFile & { sha256: string };
+
+async function claimReleaseArchive(request: HostHelperRequest) {
+  const expectedIncoming = path.join(request.host.remoteRoot, "incoming", `${request.release.id}.tar.gz`);
+  if (path.resolve(request.release.remoteArchive) !== path.resolve(expectedIncoming)) {
+    throw helperError("Invalid release install request.", "Upload the release to the canonical Host incoming path and retry `sporades host push`.");
+  }
+  const claimsDirectory = path.join(request.host.remoteRoot, ".release-claims");
+  await mkdir(claimsDirectory, { recursive: true, mode: 0o700 });
+  const claimsStats = await lstat(claimsDirectory);
+  if (!claimsStats.isDirectory() || claimsStats.isSymbolicLink() || (typeof process.getuid === "function" && claimsStats.uid !== process.getuid())) {
+    throw helperError("Hosted Capsule release claim directory is unsafe.", "Repair Host helper ownership of the release claim directory and retry.");
+  }
+  await chmod(claimsDirectory, 0o700);
+  const claimedPath = path.join(claimsDirectory, `${request.release.id}-${process.pid}-${randomBytes(16).toString("hex")}.tar.gz`);
+  await rename(request.release.remoteArchive, claimedPath);
+  try {
+    const stats = await lstat(claimedPath);
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1 || stats.size > HOST_RELEASE_ARCHIVE_LIMITS.compressedBytes) {
+      throw helperError("Hosted Capsule release archive is unsafe.", "Upload one bounded regular archive file and retry `sporades host push`.");
+    }
+    await chmod(claimedPath, 0o600);
+    return { path: claimedPath, sha256: await releaseArchiveSha256(claimedPath) };
+  } catch (error) {
+    await rm(claimedPath, { force: true });
+    throw error;
+  }
+}
+
+async function releaseArchiveSha256(archivePath: string) {
+  return new Promise<string>((resolve, reject) => {
+    const hash = createHash("sha256");
+    const stream = createReadStream(archivePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
+}
+
+async function maybeSwapUnclaimedArchiveForTest(release: HostHelperRelease) {
+  const replacement = process.env.SPORADES_TEST_HOST_ARCHIVE_SWAP_PATH;
+  if (!replacement) return;
+  await rename(replacement, release.remoteArchive);
+}
+
+async function validateExtractedReleaseTree(root: string, expectedFiles: ReleaseArchiveFile[]) {
+  const expected = new Map(expectedFiles.map((file) => [file.path, file]));
+  const canonical = new Set<string>();
+  const actual: ReleaseFileIdentity[] = [];
+  let totalBytes = 0;
+  let publicFiles = 0;
+  let publicBytes = 0;
+
+  async function visit(directory: string, prefix = "") {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const normalized = relative.normalize("NFC");
+      const safe = relative.length > 0
+        && !relative.startsWith("/")
+        && !relative.includes("\\")
+        && !relative.includes("\0")
+        && path.posix.normalize(relative) === relative
+        && Buffer.byteLength(relative, "utf8") <= HOST_RELEASE_ARCHIVE_LIMITS.pathBytes
+        && relative.split("/").every((segment) => segment && segment !== "." && segment !== "..");
+      if (!safe || canonical.has(normalized)) {
+        throw helperError("Extracted Hosted Capsule release is unsafe.", "Upload a release with unique bounded relative paths.");
+      }
+      canonical.add(normalized);
+      const entryPath = path.join(directory, entry.name);
+      const stats = await lstat(entryPath);
+      if (stats.isSymbolicLink()) {
+        throw helperError("Extracted Hosted Capsule release is unsafe.", "Upload regular release files without symbolic links.");
+      }
+      if (stats.isDirectory()) {
+        if (![...expected.keys()].some((file) => file.startsWith(`${relative}/`))) {
+          throw helperError("Extracted Hosted Capsule release does not match its archive.", "Upload the release again from a clean normalized Bundle.");
+        }
+        await visit(entryPath, relative);
+        continue;
+      }
+      if (!stats.isFile() || stats.nlink !== 1) {
+        throw helperError("Extracted Hosted Capsule release is unsafe.", "Upload regular single-link release files only.");
+      }
+      if (stats.size > HOST_RELEASE_ARCHIVE_LIMITS.fileBytes) {
+        throw helperError("Extracted Hosted Capsule release exceeds bounds.", "Choose another bounded release or push a replacement.");
+      }
+      const claimed = expected.get(relative);
+      if (!claimed || claimed.size !== stats.size) {
+        throw helperError("Extracted Hosted Capsule release does not match its archive.", "Upload the release again from a clean normalized Bundle.");
+      }
+      totalBytes += stats.size;
+      if (relative.startsWith("public/")) {
+        const publicPath = relative.slice("public/".length);
+        publicFiles += 1;
+        publicBytes += stats.size;
+        if (Buffer.byteLength(publicPath, "utf8") > PUBLIC_TREE_LIMITS.pathBytes || stats.size > PUBLIC_TREE_LIMITS.fileBytes) {
+          throw helperError("Extracted Hosted Capsule public tree exceeds bounds.", "Reduce public paths and files, then push again.");
+        }
+      }
+      actual.push({ path: relative, size: stats.size, sha256: createHash("sha256").update(await readFile(entryPath)).digest("hex") });
+    }
+  }
+
+  await visit(root);
+  if (actual.length !== expected.size || actual.length > HOST_RELEASE_ARCHIVE_LIMITS.entries || totalBytes > HOST_RELEASE_ARCHIVE_LIMITS.totalBytes || publicFiles > PUBLIC_TREE_LIMITS.files || publicBytes > PUBLIC_TREE_LIMITS.totalBytes) {
+    throw helperError("Extracted Hosted Capsule release does not match its bounded archive.", "Upload the release again from a clean normalized Bundle.");
+  }
+  return actual.sort((left, right) => left.path.localeCompare(right.path));
 }
 
 function isVerificationRequested(request: HostHelperRequest) {
@@ -692,7 +826,9 @@ async function maybeFallbackToPreviousRelease(request: HostHelperRequest, failed
   const releaseId = previousCurrentRelease.id;
   const paths = canonicalRollbackPaths(request, releaseId);
   try {
-    await assertRollbackReleaseFiles(request, paths.release);
+    const record = await readRegistryRecordForCapsule(request, "rollback");
+    const recordedRelease = normaliseReleaseHistory(record).find((entry: HostHelperRelease) => entry.id === releaseId) ?? null;
+    await assertRollbackReleaseFiles(request, paths.release, recordedRelease);
     await switchCurrentReleaseLink(paths.currentLink, paths.release);
     let lifecycle = null;
     let restartError = null;
@@ -1356,7 +1492,7 @@ async function rollbackRelease(request: HostHelperRequest) {
   }
 
   const paths = canonicalRollbackPaths(request, releaseId);
-  await assertRollbackReleaseFiles(request, paths.release);
+  await assertRollbackReleaseFiles(request, paths.release, selectedRelease);
   const previousCurrentRelease = record.currentRelease ?? null;
   const tempCurrentLink = `${paths.currentLink}.tmp-${process.pid}`;
   await rm(tempCurrentLink, { force: true });
@@ -3371,7 +3507,7 @@ async function recordFailedStartAndUnavailableRoute(request: HostHelperRequest, 
   await recordReleaseFailure(request, releaseId, failureMessage);
 }
 
-async function recordReleaseUploaded(request: HostHelperRequest, release: HostHelperRelease) {
+async function recordReleaseUploaded(request: HostHelperRequest, release: HostHelperRelease, fileInventory: ReleaseFileIdentity[]) {
   await mutateRegistryRecord(request, (record: any) => {
     const now = new Date().toISOString();
     record.currentRelease = { ...(record.currentRelease ?? {}), id: release.id };
@@ -3390,6 +3526,7 @@ async function recordReleaseUploaded(request: HostHelperRequest, release: HostHe
         hostedUrl: release.hostedUrl ?? entry.source?.hostedUrl ?? null,
         remoteCapsuleId: release.remoteCapsuleId ?? entry.source?.remoteCapsuleId ?? null,
         files: Array.isArray(release.files) ? [...release.files] : [],
+        fileInventory: fileInventory.map((file) => ({ ...file })),
         serverEnvIncluded: Boolean(release.serverEnvIncluded),
         sealedServerEnvIncluded: Boolean(release.sealedServerEnvIncluded),
         sealedServerEnv: release.sealedServerEnv?.publicKeyFingerprint
@@ -4049,25 +4186,121 @@ function defaultCapsuleHttpLogPath(remoteRoot: any, domain: string, subname: any
   return path.join(remoteRoot, "hosts", domain, "capsules", subname, "logs", "http.log");
 }
 
-async function assertRollbackReleaseFiles(request: HostHelperRequest, releaseDirectory: string) {
-  const publicIndex = path.join(releaseDirectory, "public", "index.html");
-  const legacyIndex = path.join(releaseDirectory, "index.html");
-  const legacyClient = path.join(releaseDirectory, "client.js");
-  const requiredFiles = ["server.mjs", "sporades.json"];
-  for (const file of requiredFiles) {
-    if (!(await pathReadable(path.join(releaseDirectory, file)))) {
-      throw helperError(
-        "Hosted Capsule release files are missing.",
-        `The recorded release cannot be started from ${releaseDirectory}. Push a new release or choose another release from \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\`.`,
-      );
+async function assertRollbackReleaseFiles(request: HostHelperRequest, releaseDirectory: string, recordedRelease: any = null) {
+  try {
+    const expected = await recordedReleaseFileClaims(releaseDirectory, recordedRelease);
+    const actual = await validateExtractedReleaseTree(releaseDirectory, expected);
+    const recordedInventory = recordedRelease?.source?.fileInventory;
+    if (Array.isArray(recordedInventory)) {
+      const actualByPath = new Map(actual.map((file) => [file.path, file]));
+      for (const recorded of recordedInventory) {
+        if (actualByPath.get(recorded.path)?.sha256 !== recorded.sha256) {
+          throw helperError("Hosted Capsule release inventory changed.", "Preserve immutable release files and choose another recorded release.");
+        }
+      }
     }
-  }
-  if (!(await pathReadable(publicIndex)) && (!(await pathReadable(legacyIndex)) || !(await pathReadable(legacyClient)))) {
+  } catch (error) {
+    if (errorDetails(error).message?.startsWith("Hosted Capsule release")) throw error;
     throw helperError(
       "Hosted Capsule release files are missing.",
       `The recorded release cannot be started from ${releaseDirectory}. Push a new release or choose another release from \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\`.`,
     );
   }
+}
+
+async function recordedReleaseFileClaims(releaseDirectory: string, recordedRelease: any): Promise<ReleaseArchiveFile[]> {
+  const source = recordedRelease?.source ?? {};
+  if (Object.hasOwn(source, "fileInventory")) {
+    if (!Array.isArray(source.fileInventory) || source.fileInventory.length === 0) {
+      throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+    }
+    const canonical = new Set<string>();
+    let totalBytes = 0;
+    const claims = source.fileInventory.map((file: any) => {
+      if (!validRecordedReleaseIdentity(file)) {
+        throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+      }
+      const normalized = file.path.normalize("NFC");
+      if (canonical.has(normalized)) throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+      canonical.add(normalized);
+      totalBytes += file.size;
+      return { path: file.path, size: file.size };
+    });
+    if (claims.length > HOST_RELEASE_ARCHIVE_LIMITS.entries || totalBytes > HOST_RELEASE_ARCHIVE_LIMITS.totalBytes) {
+      throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+    }
+    return claims;
+  }
+  if (!Array.isArray(source.files) || source.files.length === 0) {
+    return deriveReleaseFileClaims(releaseDirectory);
+  }
+  const files = source.files;
+  const claims: ReleaseArchiveFile[] = [];
+  const canonical = new Set<string>();
+  for (const file of files) {
+    if (typeof file !== "string" || !safeRecordedReleasePath(file)) {
+      throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+    }
+    const normalized = file.normalize("NFC");
+    if (canonical.has(normalized)) throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+    canonical.add(normalized);
+    const stats = await lstat(path.join(releaseDirectory, ...file.split("/")));
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
+      throw helperError("Hosted Capsule release files are missing.", "Choose another complete immutable release.");
+    }
+    claims.push({ path: file, size: stats.size });
+  }
+  return claims;
+}
+
+async function deriveReleaseFileClaims(root: string) {
+  const claims: ReleaseArchiveFile[] = [];
+  async function visit(directory: string, prefix = "") {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (!safeRecordedReleasePath(relative)) {
+        throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+      }
+      const entryPath = path.join(directory, entry.name);
+      const stats = await lstat(entryPath);
+      if (stats.isSymbolicLink()) {
+        throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+      }
+      if (stats.isDirectory()) {
+        await visit(entryPath, relative);
+      } else if (stats.isFile() && stats.nlink === 1) {
+        claims.push({ path: relative, size: stats.size });
+      } else {
+        throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+      }
+    }
+  }
+  await visit(root);
+  const paths = new Set(claims.map((file) => file.path));
+  const complete = paths.has("server.mjs")
+    && paths.has("sporades.json")
+    && (paths.has("public/index.html") || (paths.has("index.html") && paths.has("client.js")));
+  if (!complete) throw helperError("Hosted Capsule release files are missing.", "Choose another complete immutable release.");
+  return claims;
+}
+
+function validRecordedReleaseIdentity(file: any) {
+  return file
+    && safeRecordedReleasePath(file.path)
+    && Number.isSafeInteger(file.size)
+    && file.size >= 0
+    && typeof file.sha256 === "string"
+    && /^[a-f0-9]{64}$/.test(file.sha256);
+}
+
+function safeRecordedReleasePath(file: string) {
+  return file.length > 0
+    && !file.startsWith("/")
+    && !file.includes("\\")
+    && !file.includes("\0")
+    && path.posix.normalize(file) === file
+    && Buffer.byteLength(file, "utf8") <= HOST_RELEASE_ARCHIVE_LIMITS.pathBytes
+    && file.split("/").every((segment) => segment && segment !== "." && segment !== "..");
 }
 
 async function verifyRegisteredCapsule(request: HostHelperRequest, purpose: any = "push") {

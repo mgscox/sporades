@@ -982,6 +982,13 @@ async function writeArchiveSecurityFixture(dir, mode) {
     await writeFile(path.join(runtimeDir, "public", "oversized.bin"), Buffer.alloc(16 * 1024 * 1024 + 1));
     files.push("public/oversized.bin");
     entries.push("public/oversized.bin");
+  } else if (mode === "metadata-over-byte") {
+    await writeFile(path.join(runtimeDir, "metadata-oversized"), Buffer.alloc(64 * 1024 * 1024 + 1));
+    await createTarGzWithTransforms(archivePath, runtimeDir, ["|^metadata-oversized$|._oversized|"], [...entries, "metadata-oversized"]);
+  } else if (mode === "metadata-over-count") {
+    const metadata = Array.from({ length: 2049 }, (_, index) => `metadata-${String(index).padStart(4, "0")}`);
+    await Promise.all(metadata.map((file) => writeFile(path.join(runtimeDir, file), "x")));
+    await createTarGzWithTransforms(archivePath, runtimeDir, ["|^metadata-|._metadata-|"], [...entries, ...metadata]);
   } else if (mode === "excess-files") {
     const excess = Array.from({ length: 512 }, (_, index) => `asset-${String(index).padStart(3, "0")}.js`);
     await Promise.all(excess.map((file) => writeFile(path.join(runtimeDir, "public", file), "x")));
@@ -999,7 +1006,7 @@ async function writeArchiveSecurityFixture(dir, mode) {
       [...entries, "one", "two"],
     );
   }
-  if (!["absolute", "normalization-collision"].includes(mode)) await createTarGz(archivePath, runtimeDir, entries);
+  if (!["absolute", "normalization-collision", "metadata-over-byte", "metadata-over-count"].includes(mode)) await createTarGz(archivePath, runtimeDir, entries);
   const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
   await mkdir(path.dirname(registryRecordPath), { recursive: true });
   await writeFile(registryRecordPath, `${JSON.stringify({ subname: "team-notes", domain: "capsules.example.dev", remoteCapsuleId: "capsules.example.dev/team-notes" })}\n`);
@@ -4497,6 +4504,40 @@ test("sporades host helper installs a release atomically and updates the current
   });
 });
 
+test("sporades host helper extracts the atomically claimed archive when the incoming path is swapped", async () => {
+  await withTempDir(async (dir) => {
+    const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: "archive-swap", previousReleaseId: null });
+    fixture.release.restart = false;
+    const maliciousDir = path.join(dir, "malicious-runtime");
+    for (const file of fixture.release.files) {
+      const target = path.join(maliciousDir, ...file.split("/"));
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, file === "public/index.html" ? '<script src="/assets/evil.js"></script>\n' : "malicious replacement bytes\n");
+    }
+    const maliciousArchive = path.join(dir, "malicious-swap.tar.gz");
+    await createTarGz(maliciousArchive, maliciousDir, fixture.release.files);
+
+    const install = await runHostHelper(
+      {
+        action: "capsule.release.install",
+        host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname },
+        release: fixture.release,
+      },
+      { cwd: dir, env: { SPORADES_TEST_HOST_ARCHIVE_SWAP_PATH: maliciousArchive } },
+    );
+
+    assert.equal(install.code, 0, install.stderr);
+    assert.equal(JSON.parse(install.stdout).ok, true, install.stdout);
+    const installed = path.join(fixture.capsuleDir, "releases", fixture.releaseId);
+    assert.match(await readFile(path.join(installed, "public", "assets", "app-a1b2.js"), "utf8"), /client bundle/);
+    assert.doesNotMatch(await readFile(path.join(installed, "public", "index.html"), "utf8"), /evil\.js/);
+    await assert.rejects(stat(fixture.archivePath), { code: "ENOENT" });
+    await assert.rejects(stat(maliciousArchive), { code: "ENOENT" });
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), installed);
+  });
+});
+
 test("sporades host helper rejects non-canonical Sealed Server env private key paths", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
@@ -4574,7 +4615,7 @@ test("sporades host helper rejects non-canonical Sealed Server env private key p
   });
 });
 
-test("sporades host helper ignores nested macOS archive metadata entries", async () => {
+test("sporades host helper rejects nested macOS archive metadata entries", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
     const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
@@ -4588,15 +4629,18 @@ test("sporades host helper ignores nested macOS archive metadata entries", async
     await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
     await writeFile(path.join(runtimeDir, ".sporades", "sealed-server-env", "server-env.sealed.json"), "{\"version\":1,\"valueAlgorithm\":\"aes-256-gcm\",\"entries\":{}}\n");
-    await writeFile(path.join(runtimeDir, "._server.mjs"), "discard me\n");
-    await writeFile(path.join(runtimeDir, ".sporades", "sealed-server-env", "._server-env.sealed.json"), "discard me too\n");
-    await createTarGz(archivePath, runtimeDir, [
-      "._server.mjs",
+    await writeFile(path.join(runtimeDir, "metadata-server"), "discard me\n");
+    await writeFile(path.join(runtimeDir, "metadata-envelope"), "discard me too\n");
+    await createTarGzWithTransforms(archivePath, runtimeDir, [
+      "|^metadata-server$|._server.mjs|",
+      "|^metadata-envelope$|.sporades/sealed-server-env/._server-env.sealed.json|",
+    ], [
+      "metadata-server",
       "server.mjs",
       "client.js",
       "index.html",
       "sporades.json",
-      ".sporades/sealed-server-env/._server-env.sealed.json",
+      "metadata-envelope",
       ".sporades/sealed-server-env/server-env.sealed.json",
     ]);
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
@@ -4668,9 +4712,15 @@ test("sporades host helper ignores nested macOS archive metadata entries", async
     );
 
     assert.equal(install.code, 0, install.stderr);
-    assert.equal(JSON.parse(install.stdout).ok, true);
-    await assert.rejects(readFile(path.join(capsuleDir, "releases", "20260630T221500Z-feedface", "._server.mjs"), "utf8"), { code: "ENOENT" });
-    await assert.rejects(readFile(path.join(capsuleDir, "releases", "20260630T221500Z-feedface", ".sporades", "sealed-server-env", "._server-env.sealed.json"), "utf8"), { code: "ENOENT" });
+    assert.deepEqual(JSON.parse(install.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Hosted Capsule release archive contains unsupported metadata.",
+        hint: "Push again without __MACOSX or AppleDouble metadata entries.",
+      },
+    });
+    await assert.rejects(stat(path.join(capsuleDir, "releases", "20260630T221500Z-feedface")), { code: "ENOENT" });
   });
 });
 
@@ -7806,7 +7856,7 @@ test("sporades host helper derives install paths from Host state instead of requ
   });
 });
 
-test("sporades host helper discards known macOS archive metadata during release install", async () => {
+test("sporades host helper rejects known macOS archive metadata before release install", async () => {
   await withTempDir(async (dir) => {
     const remoteRoot = path.join(dir, "remote-root");
     const capsuleDir = path.join(remoteRoot, "hosts", "capsules.example.dev", "capsules", "team-notes");
@@ -7819,15 +7869,18 @@ test("sporades host helper discards known macOS archive metadata during release 
     await writeFile(path.join(runtimeDir, "client.js"), "console.log('client bundle');\n");
     await writeFile(path.join(runtimeDir, "index.html"), "<div id=\"root\"></div>\n");
     await writeFile(path.join(runtimeDir, "sporades.json"), "{\"name\":\"team-notes\"}\n");
-    await writeFile(path.join(runtimeDir, "._server.mjs"), "appledouble metadata\n");
-    await writeFile(path.join(runtimeDir, "__MACOSX", "._server.mjs"), "appledouble metadata\n");
-    await createTarGz(archivePath, runtimeDir, [
+    await writeFile(path.join(runtimeDir, "metadata-root"), "appledouble metadata\n");
+    await writeFile(path.join(runtimeDir, "metadata-nested"), "appledouble metadata\n");
+    await createTarGzWithTransforms(archivePath, runtimeDir, [
+      "|^metadata-root$|._server.mjs|",
+      "|^metadata-nested$|__MACOSX/._server.mjs|",
+    ], [
       "server.mjs",
       "client.js",
       "index.html",
       "sporades.json",
-      "._server.mjs",
-      "__MACOSX",
+      "metadata-root",
+      "metadata-nested",
     ]);
     const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
     await mkdir(path.dirname(registryRecordPath), { recursive: true });
@@ -7874,10 +7927,9 @@ test("sporades host helper discards known macOS archive metadata during release 
 
     assert.equal(install.code, 0, install.stderr);
     const output = JSON.parse(install.stdout);
-    assert.equal(output.ok, true);
-    const releaseDir = path.join(capsuleDir, "releases", "20260630T221500Z-feedface");
-    assert.equal(await readFile(path.join(releaseDir, "server.mjs"), "utf8"), "export default 'server bundle';\n");
-    assert.deepEqual((await readdir(releaseDir)).toSorted(), ["client.js", "index.html", "server.mjs", "sporades.json"]);
+    assert.equal(output.ok, false);
+    assert.equal(output.error.message, "Hosted Capsule release archive contains unsupported metadata.");
+    await assert.rejects(stat(path.join(capsuleDir, "releases", "20260630T221500Z-feedface")), { code: "ENOENT" });
   });
 });
 
@@ -8075,7 +8127,7 @@ test("sporades host helper rejects release archives with parent-relative paths",
 });
 
 test("sporades host helper rejects duplicate, normalization-colliding, and bounded-public-tree archive abuse", async (t) => {
-  for (const mode of ["absolute", "duplicate", "normalization-collision", "overlong", "oversized", "excess-files"]) {
+  for (const mode of ["absolute", "duplicate", "normalization-collision", "overlong", "oversized", "excess-files", "metadata-over-count", "metadata-over-byte"]) {
     await t.test(mode, async () => {
       await withTempDir(async (dir) => {
         const fixture = await writeArchiveSecurityFixture(dir, mode);
@@ -8083,7 +8135,7 @@ test("sporades host helper rejects duplicate, normalization-colliding, and bound
         assert.equal(install.code, 0, install.stderr);
         const output = JSON.parse(install.stdout);
         assert.equal(output.ok, false, `${mode}: ${install.stdout}`);
-        assert.match(output.error.message, /unsafe paths|unexpected files|duplicate paths|file list|exceeds release bounds/);
+        assert.match(output.error.message, /unsafe paths|unexpected files|duplicate paths|file list|exceeds release bounds|archive exceeds bounds/);
         await assert.rejects(stat(path.join(fixture.capsuleDir, "releases", "20260630T221500Z-feedface")), { code: "ENOENT" });
         await assert.rejects(stat(path.join(fixture.capsuleDir, "data")), { code: "ENOENT" });
       });
@@ -8473,6 +8525,52 @@ test("sporades host helper applies verification fallback only after the previous
     assert.equal(failedRelease.fallbackAttempts.length, 1);
     assert.equal(failedRelease.fallbackAttempts[0].releaseId, fixture.previousReleaseId);
     assert.equal(fallbackRelease.current, true);
+  });
+});
+
+test("sporades host helper leaves current unchanged when fallback inventory is missing a source map", async () => {
+  await withTempDir(async (dir) => {
+    const port = await reserveUnusedPort();
+    const fixture = await writeHostedCapsuleInstallFixture(dir, {
+      rootName: "fallback-missing-map",
+      domain: `localhost:${port}`,
+      scheme: "http",
+    });
+    const previousDir = path.join(fixture.capsuleDir, "releases", fixture.previousReleaseId);
+    const previousFiles = ["server.mjs", "sporades.json", "public/index.html", "public/assets/previous.js", "public/assets/previous.css", "public/assets/previous.woff2", "public/assets/previous.js.map"];
+    for (const file of previousFiles) {
+      const target = path.join(previousDir, ...file.split("/"));
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, `${file}\n`);
+    }
+    const inventory = await Promise.all(previousFiles.map(async (file) => {
+      const contents = await readFile(path.join(previousDir, ...file.split("/")));
+      return { path: file, size: contents.byteLength, sha256: createHash("sha256").update(contents).digest("hex") };
+    }));
+    const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+    record.releases[0].source = { files: previousFiles, fileInventory: inventory };
+    await writeFile(fixture.registryRecordPath, `${JSON.stringify(record)}\n`);
+    await rm(path.join(previousDir, "public", "assets", "previous.js.map"));
+    const docker = await installFakeDocker(path.join(dir, "fallback-missing-map-docker"));
+
+    const install = await runHostHelper(
+      {
+        action: "capsule.release.install",
+        host: { alias: "personal", domain: fixture.domain, scheme: "http", remoteRoot: fixture.remoteRoot },
+        capsule: { subname: fixture.subname },
+        release: fixture.release,
+        lifecycle: fixture.lifecycle,
+        verification: { enabled: true, fallbackToPreviousRelease: true, healthTimeoutMs: 25 },
+      },
+      { cwd: dir, env: docker.env },
+    );
+
+    assert.equal(install.code, 1, install.stderr);
+    const output = JSON.parse(install.stdout);
+    assert.equal(output.data.fallback.applied, false);
+    assert.equal(output.data.fallback.reason, "fallback-failed");
+    assert.match(output.data.fallback.error.message, /release files are missing|release inventory changed/);
+    assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), path.join(fixture.capsuleDir, "releases", fixture.releaseId));
   });
 });
 
@@ -8933,6 +9031,62 @@ test("sporades host helper rejects rollback when selected release files are miss
     assert.match(output.error.hint, /recorded release cannot be started/);
     assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), path.join(fixture.releasesDir, fixture.currentReleaseId));
   });
+});
+
+test("sporades host helper rejects rollback when recorded nested public assets are missing", async (t) => {
+  const missingAssets = [
+    "public/assets/app-a1b2.js",
+    "public/assets/app-a1b2.css",
+    "public/assets/fonts/app-a1b2.woff2",
+    "public/assets/app-a1b2.js.map",
+  ];
+  for (const missingAsset of missingAssets) {
+    await t.test(missingAsset, async () => {
+      await withTempDir(async (dir) => {
+        const fixture = await writeHostedCapsuleInstallFixture(dir, { rootName: `rollback-missing-${path.basename(missingAsset)}`, previousReleaseId: null });
+        fixture.release.restart = false;
+        const installed = await runHostHelper(
+          {
+            action: "capsule.release.install",
+            host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+            capsule: { subname: fixture.subname },
+            release: fixture.release,
+          },
+          { cwd: dir },
+        );
+        assert.equal(JSON.parse(installed.stdout).ok, true, installed.stdout);
+        const nextId = "20260701T120000Z-cafebabe";
+        const nextDir = path.join(fixture.capsuleDir, "releases", nextId);
+        await mkdir(path.join(nextDir, "public"), { recursive: true });
+        await writeFile(path.join(nextDir, "server.mjs"), "export default {};\n");
+        await writeFile(path.join(nextDir, "sporades.json"), "{}\n");
+        await writeFile(path.join(nextDir, "public", "index.html"), "<div>next</div>\n");
+        await rm(path.join(fixture.capsuleDir, "current"));
+        await symlink(nextDir, path.join(fixture.capsuleDir, "current"));
+        const record = JSON.parse(await readFile(fixture.registryRecordPath, "utf8"));
+        record.currentRelease = { id: nextId };
+        record.releases.push({ id: nextId, state: "verified", current: true, source: { files: ["server.mjs", "sporades.json", "public/index.html"] } });
+        await writeFile(fixture.registryRecordPath, `${JSON.stringify(record)}\n`);
+        await rm(path.join(fixture.capsuleDir, "releases", fixture.releaseId, ...missingAsset.split("/")));
+
+        const rollback = await runHostHelper(
+          {
+            action: "capsule.release.rollback",
+            host: { alias: "personal", domain: fixture.domain, scheme: "https", remoteRoot: fixture.remoteRoot },
+            capsule: { subname: fixture.subname },
+            rollback: { releaseId: fixture.releaseId },
+          },
+          { cwd: dir },
+        );
+
+        assert.equal(rollback.code, 0, rollback.stderr);
+        const output = JSON.parse(rollback.stdout);
+        assert.equal(output.ok, false);
+        assert.match(output.error.message, /release files are missing|release inventory changed/);
+        assert.equal(await readlink(path.join(fixture.capsuleDir, "current")), nextDir);
+      });
+    });
+  }
 });
 
 test("sporades host helper starts a stopped Capsule during rollback", async () => {

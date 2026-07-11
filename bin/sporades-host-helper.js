@@ -3,11 +3,11 @@
 
 // src/cli/sporades-host-helper.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { constants as fsConstants, statSync } from "node:fs";
-import { access, chmod, chown, lstat, mkdir, readdir as readdir2, readFile as readFile2, readlink, rename, rm as rm2, statfs, symlink, writeFile } from "node:fs/promises";
+import { constants as fsConstants, createReadStream, statSync } from "node:fs";
+import { access, chmod, chown, lstat, mkdir, readdir, readFile as readFile2, readlink, rename, rm, statfs, symlink, writeFile } from "node:fs/promises";
 import { createHash as createHash2, generateKeyPairSync, randomBytes as randomBytes2 } from "node:crypto";
 import { freemem, loadavg, totalmem } from "node:os";
-import path4 from "node:path";
+import path3 from "node:path";
 
 // src/base-image.ts
 var SPORADES_BASE_IMAGE = {
@@ -112,6 +112,17 @@ function restartPolicyStatus(mode, overrides = {}) {
     ...overrides
   };
 }
+
+// src/public-tree.ts
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+var PUBLIC_TREE_LIMITS = {
+  files: 512,
+  fileBytes: 16 * 1024 * 1024,
+  totalBytes: 64 * 1024 * 1024,
+  pathBytes: 240
+};
+var execFileAsync = promisify(execFile);
 
 // src/server-runtime-source.ts
 import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
@@ -375,19 +386,6 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
 
 // src/cli/host-helper-archive.ts
 import { spawnSync } from "node:child_process";
-import { readdir, rm } from "node:fs/promises";
-import path from "node:path";
-
-// src/public-tree.ts
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-var PUBLIC_TREE_LIMITS = {
-  files: 512,
-  fileBytes: 16 * 1024 * 1024,
-  totalBytes: 64 * 1024 * 1024,
-  pathBytes: 240
-};
-var execFileAsync = promisify(execFile);
 
 // src/cli/host-helper-release-files.ts
 function expectedReleaseFiles(release) {
@@ -418,12 +416,25 @@ function isExpectedClaimedReleaseFile(file) {
 }
 
 // src/cli/host-helper-archive.ts
-function validateReleaseArchive(request) {
+var HOST_RELEASE_ARCHIVE_LIMITS = {
+  entries: 2048,
+  fileBytes: 64 * 1024 * 1024,
+  totalBytes: 128 * 1024 * 1024,
+  pathBytes: PUBLIC_TREE_LIMITS.pathBytes + Buffer.byteLength("public/", "utf8"),
+  compressedBytes: 128 * 1024 * 1024
+};
+function validateReleaseArchive(request, archivePath = request.release.remoteArchive) {
   const release = request.release;
-  const entries = listArchiveEntries(release.remoteArchive);
+  const entries = listArchiveEntries(archivePath);
   const expectedFiles = expectedReleaseFiles(release);
   const allNames = entries.map((entry) => normaliseArchiveEntryName(entry.name));
-  const runtimeEntries = entries.filter((entry) => !isDiscardableArchiveMetadata(entry.name));
+  validateArchiveBounds(entries);
+  if (entries.some((entry) => isDiscardableArchiveMetadata(entry.name))) {
+    throw helperError(
+      "Hosted Capsule release archive contains unsupported metadata.",
+      "Push again without __MACOSX or AppleDouble metadata entries."
+    );
+  }
   if (entries.some((entry) => !isSafeArchiveEntryType(entry, expectedFiles))) {
     throw helperError(
       "Hosted Capsule release archive contains unsafe entries.",
@@ -437,7 +448,7 @@ function validateReleaseArchive(request) {
     );
   }
   const canonicalNames = /* @__PURE__ */ new Set();
-  for (const entry of runtimeEntries) {
+  for (const entry of entries) {
     const name = normaliseArchiveEntryName(entry.name);
     const canonical = name.normalize("NFC");
     if (canonicalNames.has(canonical)) {
@@ -445,7 +456,7 @@ function validateReleaseArchive(request) {
     }
     canonicalNames.add(canonical);
   }
-  const unexpectedEntry = runtimeEntries.find((entry) => {
+  const unexpectedEntry = entries.find((entry) => {
     const name = normaliseArchiveEntryName(entry.name);
     if (entry.type === "-") return !expectedFiles.includes(name);
     return !expectedFiles.some((file) => file.startsWith(`${name}/`));
@@ -453,8 +464,8 @@ function validateReleaseArchive(request) {
   if (unexpectedEntry) {
     throw helperError("Hosted Capsule release archive contains unexpected files.", "Push again so Sporades can package only runtime files.");
   }
-  validatePublicArchiveBounds(runtimeEntries);
-  const actual = runtimeEntries.filter((entry) => entry.type === "-").map((entry) => normaliseArchiveEntryName(entry.name)).sort();
+  validatePublicArchiveBounds(entries);
+  const actual = entries.filter((entry) => entry.type === "-").map((entry) => normaliseArchiveEntryName(entry.name)).sort();
   const expected = [...expectedFiles].sort();
   if (actual.length !== expected.length || actual.some((name, index) => name !== expected[index])) {
     throw helperError(
@@ -462,18 +473,9 @@ function validateReleaseArchive(request) {
       "Push again so Sporades can package only runtime files."
     );
   }
-}
-async function removeDiscardedArchiveMetadata(directory) {
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    const entryPath = path.join(directory, entry.name);
-    if (entry.name === "__MACOSX" || entry.name.startsWith("._")) {
-      await rm(entryPath, { recursive: entry.isDirectory(), force: true });
-      continue;
-    }
-    if (entry.isDirectory()) {
-      await removeDiscardedArchiveMetadata(entryPath);
-    }
-  }
+  return {
+    files: entries.filter((entry) => entry.type === "-").map((entry) => ({ path: normaliseArchiveEntryName(entry.name), size: entry.size })).sort((left, right) => left.path.localeCompare(right.path))
+  };
 }
 function listArchiveEntries(archivePath) {
   const namesResult = spawnSync("tar", ["-tzf", archivePath], { encoding: "utf8" });
@@ -516,7 +518,27 @@ function isSafeArchiveEntryType(entry, expectedFiles) {
   }
   if (entry.type !== "d") return false;
   const name = normaliseArchiveEntryName(entry.name);
-  return isDiscardableArchiveMetadata(entry.name) || expectedFiles.some((file) => file.startsWith(`${name}/`));
+  return expectedFiles.some((file) => file.startsWith(`${name}/`));
+}
+function validateArchiveBounds(entries) {
+  if (entries.length > HOST_RELEASE_ARCHIVE_LIMITS.entries) {
+    throw helperError("Hosted Capsule release archive exceeds bounds.", "Reduce archive entries and push again.");
+  }
+  let totalBytes = 0;
+  for (const entry of entries) {
+    const name = normaliseArchiveEntryName(entry.name);
+    if (Buffer.byteLength(name, "utf8") > HOST_RELEASE_ARCHIVE_LIMITS.pathBytes) {
+      throw helperError("Hosted Capsule release archive exceeds bounds.", "Use shorter release paths and push again.");
+    }
+    if (entry.type !== "-") continue;
+    if (!Number.isSafeInteger(entry.size) || entry.size < 0 || entry.size > HOST_RELEASE_ARCHIVE_LIMITS.fileBytes) {
+      throw helperError("Hosted Capsule release archive exceeds bounds.", "Reduce oversized release files and push again.");
+    }
+    totalBytes += entry.size;
+  }
+  if (totalBytes > HOST_RELEASE_ARCHIVE_LIMITS.totalBytes) {
+    throw helperError("Hosted Capsule release archive exceeds bounds.", "Reduce total release bytes and push again.");
+  }
 }
 function isSafeArchiveEntryName(name) {
   if (!name || name.startsWith("/") || name.includes("\\") || name.includes("\0") || /[\r\n]/.test(name)) {
@@ -547,7 +569,7 @@ function validatePublicArchiveBounds(entries) {
 
 // src/cli/host-helper-config.ts
 import { readFile } from "node:fs/promises";
-import path2 from "node:path";
+import path from "node:path";
 var HOST_HELPER_CONFIG_FILE = "sporades-host-helper.json";
 var DEFAULT_HOSTED_CAPSULE_DOCKER_IMAGE = SPORADES_BASE_IMAGE.image;
 var DEFAULT_HOSTED_CAPSULE_DOCKER_NETWORK = "sporades-hosted-capsules";
@@ -603,7 +625,7 @@ function hostHelperConfigPath(request) {
   if (typeof request.host?.remoteRoot !== "string" || request.host.remoteRoot.length === 0) {
     return null;
   }
-  return path2.join(request.host.remoteRoot, HOST_HELPER_CONFIG_FILE);
+  return path.join(request.host.remoteRoot, HOST_HELPER_CONFIG_FILE);
 }
 function applyHostHelperConfig(loaded, config, configPath) {
   assertPlainObject(config, "Host helper config", configPath);
@@ -675,7 +697,7 @@ function readConfigPositiveInteger(value, key, configPath) {
 }
 
 // src/cli/host-helper-validation.ts
-import path3 from "node:path";
+import path2 from "node:path";
 function missingCapsuleHint(request, purpose) {
   if (purpose === "push") {
     return `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before pushing a release.`;
@@ -823,7 +845,7 @@ function validateListRequest(request) {
 }
 function validateListRegistryRecord(request, record, recordPath) {
   const capsuleRecord = record;
-  const expectedSubname = path3.basename(recordPath, ".json");
+  const expectedSubname = path2.basename(recordPath, ".json");
   const expectedRemoteCapsuleId = `${request.host.domain}/${typeof capsuleRecord?.subname === "string" ? capsuleRecord.subname : expectedSubname}`;
   const valid = capsuleRecord && typeof capsuleRecord.subname === "string" && capsuleRecord.subname.length > 0 && capsuleRecord.subname === expectedSubname && capsuleRecord.domain === request.host.domain && (capsuleRecord.remoteCapsuleId ?? expectedRemoteCapsuleId) === expectedRemoteCapsuleId;
   if (!valid) {
@@ -949,8 +971,8 @@ function validateInstallRequest(request) {
   if (!directories?.releases || !directories.release) {
     throw helperError("Invalid Hosted Capsule release directory.", "Update the Sporades CLI and retry `sporades host push`.");
   }
-  const expectedReleaseDirectory = path3.join(directories.releases, release.id);
-  if (path3.resolve(directories.release) !== path3.resolve(expectedReleaseDirectory)) {
+  const expectedReleaseDirectory = path2.join(directories.releases, release.id);
+  if (path2.resolve(directories.release) !== path2.resolve(expectedReleaseDirectory)) {
     throw helperError("Invalid Hosted Capsule release directory.", "Update the Sporades CLI and retry `sporades host push`.");
   }
 }
@@ -967,7 +989,7 @@ function validateClaimedReleaseFiles(files) {
   for (const file of publicFiles) {
     const relative = file.slice("public/".length);
     const normalized = relative.normalize("NFC");
-    const safe = relative.length > 0 && !relative.startsWith("/") && !relative.includes("\\") && !relative.includes("\0") && path3.posix.normalize(relative) === relative && relative.split("/").every((segment) => segment && segment !== "." && segment !== "..") && Buffer.byteLength(relative, "utf8") <= PUBLIC_TREE_LIMITS.pathBytes;
+    const safe = relative.length > 0 && !relative.startsWith("/") && !relative.includes("\\") && !relative.includes("\0") && path2.posix.normalize(relative) === relative && relative.split("/").every((segment) => segment && segment !== "." && segment !== "..") && Buffer.byteLength(relative, "utf8") <= PUBLIC_TREE_LIMITS.pathBytes;
     if (!safe || canonical.has(normalized)) {
       throw helperError("Invalid Hosted Capsule release file list.", "Update the Sporades CLI and retry `sporades host push`.");
     }
@@ -1149,13 +1171,13 @@ async function registerCapsule(request) {
   await ensureHostedDomainBootstrapped(request, registration);
   let reactivated = false;
   let sealedServerEnv = null;
-  await mkdir(path4.dirname(registryLockPath(request)), { recursive: true });
+  await mkdir(path3.dirname(registryLockPath(request)), { recursive: true });
   await withRegistryLock(request, async () => {
     if (await pathExists(registration.registryRecord)) {
       const existing = await readRegistryRecordForCapsule(request, "register");
       assertRegistryRecordMatchesRequest(request, existing);
       if (existing.status === "unregistered") {
-        await mkdir(path4.dirname(registration.registryRecord), { recursive: true });
+        await mkdir(path3.dirname(registration.registryRecord), { recursive: true });
         await mkdir(registration.directories.releases, { recursive: true });
         await mkdir(registration.directories.data, { recursive: true });
         await writeUnavailableRoute(registration.lifecycle);
@@ -1169,7 +1191,7 @@ async function registerCapsule(request) {
         `Choose a different Capsule subname for ${request.host.domain}.`
       );
     }
-    await mkdir(path4.dirname(registration.registryRecord), { recursive: true });
+    await mkdir(path3.dirname(registration.registryRecord), { recursive: true });
     await mkdir(registration.directories.releases, { recursive: true });
     await mkdir(registration.directories.data, { recursive: true });
     await mkdir(registration.directories.logs, { recursive: true });
@@ -1199,7 +1221,7 @@ async function registerCapsule(request) {
 }
 async function rotateCapsuleSealedEnvKey(request) {
   validateSealedEnvRotationRequest(request);
-  await mkdir(path4.dirname(registryLockPath(request)), { recursive: true });
+  await mkdir(path3.dirname(registryLockPath(request)), { recursive: true });
   let data;
   await withRegistryLock(request, async () => {
     const record = await readRegistryRecordForCapsule(request, "rotate-key");
@@ -1210,7 +1232,7 @@ async function rotateCapsuleSealedEnvKey(request) {
         `Run \`sporades host register ${request.capsule.subname} --host ${request.host.alias}\` before rotating the sealed-env key.`
       );
     }
-    const dataDirectory = path4.join(request.host.remoteRoot, "hosts", request.host.domain, "capsules", request.capsule.subname, "data");
+    const dataDirectory = path3.join(request.host.remoteRoot, "hosts", request.host.domain, "capsules", request.capsule.subname, "data");
     const previousPublicKeyFingerprint = record.sealedServerEnv?.currentKeyFingerprint ?? null;
     const sealedServerEnv = await generateHostSealedEnvKeyPair(dataDirectory);
     const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -1245,7 +1267,7 @@ async function rotateCapsuleSealedEnvKey(request) {
 async function unregisterCapsule(request) {
   validateUnregisterRequest(request);
   const unregister = normaliseUnregister(request);
-  await mkdir(path4.dirname(registryLockPath(request)), { recursive: true });
+  await mkdir(path3.dirname(registryLockPath(request)), { recursive: true });
   let data;
   await withRegistryLock(request, async () => {
     const record = await readRegistryRecordForCapsule(request, "unregister");
@@ -1280,7 +1302,7 @@ async function unregisterCapsule(request) {
 async function deleteCapsule(request) {
   validateDeleteRequest(request);
   const deletion = normaliseDeletion(request);
-  await mkdir(path4.dirname(registryLockPath(request)), { recursive: true });
+  await mkdir(path3.dirname(registryLockPath(request)), { recursive: true });
   let data;
   await withRegistryLock(request, async () => {
     const record = await readOptionalRegistryRecordForCapsule(request);
@@ -1314,14 +1336,27 @@ function deletionRequiresUnregisterError(request) {
   );
 }
 async function installRelease(request) {
-  const release = request.release;
   validateInstallRequest(request);
   const previousRecord = await verifyRegisteredCapsule(request);
-  const previousCurrentRelease = previousRecord.currentRelease?.id ? { id: previousRecord.currentRelease.id } : null;
-  validateReleaseArchive(request);
   const paths = canonicalReleasePaths(request);
   if (!paths.release) {
     throw helperError("Invalid release install request.", "Update the Sporades CLI and retry `sporades host push`.");
+  }
+  const claimedArchive = await claimReleaseArchive(request);
+  try {
+    await installClaimedRelease(request, previousRecord, { ...paths, release: paths.release }, claimedArchive);
+  } finally {
+    await rm(claimedArchive.path, { force: true });
+    await rm(request.release.remoteArchive, { force: true });
+  }
+}
+async function installClaimedRelease(request, previousRecord, paths, claimedArchive) {
+  const release = request.release;
+  const previousCurrentRelease = previousRecord.currentRelease?.id ? { id: previousRecord.currentRelease.id } : null;
+  const validatedArchive = validateReleaseArchive(request, claimedArchive.path);
+  await maybeSwapUnclaimedArchiveForTest(release);
+  if (await releaseArchiveSha256(claimedArchive.path) !== claimedArchive.sha256) {
+    throw helperError("Hosted Capsule release archive ownership changed.", "Upload the release again so the Host helper can claim immutable archive bytes.");
   }
   validateSealedServerEnvPrivateKeyPath(release, paths);
   await mkdir(paths.releases, { recursive: true });
@@ -1330,24 +1365,33 @@ async function installRelease(request) {
   await mkdir(paths.logs, { recursive: true });
   const tempReleaseDirectory = `${paths.release}.tmp-${process.pid}`;
   const tempCurrentLink = `${paths.currentLink}.tmp-${process.pid}`;
-  await rm2(tempReleaseDirectory, { recursive: true, force: true });
-  await rm2(tempCurrentLink, { force: true });
+  await rm(tempReleaseDirectory, { recursive: true, force: true });
+  await rm(tempCurrentLink, { force: true });
   await mkdir(tempReleaseDirectory, { recursive: true });
-  const extract = spawnSync2("tar", ["-xzf", release.remoteArchive, "-C", tempReleaseDirectory], {
+  const extract = spawnSync2("tar", ["-xzf", claimedArchive.path, "-C", tempReleaseDirectory], {
     encoding: "utf8"
   });
   if (extract.error || extract.status !== 0) {
-    await rm2(tempReleaseDirectory, { recursive: true, force: true });
+    await rm(tempReleaseDirectory, { recursive: true, force: true });
     throw helperError(
       "Failed to extract Hosted Capsule release archive.",
       "Upload the release again with `sporades host push` and check that tar is installed on the Host server."
     );
   }
-  await removeDiscardedArchiveMetadata(tempReleaseDirectory);
+  let installedInventory;
+  try {
+    installedInventory = await validateExtractedReleaseTree(tempReleaseDirectory, validatedArchive.files);
+    if (await releaseArchiveSha256(claimedArchive.path) !== claimedArchive.sha256) {
+      throw helperError("Hosted Capsule release archive ownership changed.", "Upload the release again so the Host helper can claim immutable archive bytes.");
+    }
+  } catch (error) {
+    await rm(tempReleaseDirectory, { recursive: true, force: true });
+    throw error;
+  }
   try {
     await rename(tempReleaseDirectory, paths.release);
   } catch (error) {
-    await rm2(tempReleaseDirectory, { recursive: true, force: true });
+    await rm(tempReleaseDirectory, { recursive: true, force: true });
     const details = errorDetails(error);
     if (details.code === "EEXIST" || details.code === "ENOTEMPTY") {
       throw helperError(
@@ -1360,7 +1404,7 @@ async function installRelease(request) {
   await symlink(paths.release, tempCurrentLink);
   await rename(tempCurrentLink, paths.currentLink);
   await installSealedServerEnvPrivateKey(release);
-  await recordReleaseUploaded(request, release);
+  await recordReleaseUploaded(request, release, installedInventory);
   let restartResult = null;
   let restartError = null;
   if (release.restart) {
@@ -1408,6 +1452,102 @@ async function installRelease(request) {
     return;
   }
   writeEnvelope({ ok: true, data, error: null });
+}
+async function claimReleaseArchive(request) {
+  const expectedIncoming = path3.join(request.host.remoteRoot, "incoming", `${request.release.id}.tar.gz`);
+  if (path3.resolve(request.release.remoteArchive) !== path3.resolve(expectedIncoming)) {
+    throw helperError("Invalid release install request.", "Upload the release to the canonical Host incoming path and retry `sporades host push`.");
+  }
+  const claimsDirectory = path3.join(request.host.remoteRoot, ".release-claims");
+  await mkdir(claimsDirectory, { recursive: true, mode: 448 });
+  const claimsStats = await lstat(claimsDirectory);
+  if (!claimsStats.isDirectory() || claimsStats.isSymbolicLink() || typeof process.getuid === "function" && claimsStats.uid !== process.getuid()) {
+    throw helperError("Hosted Capsule release claim directory is unsafe.", "Repair Host helper ownership of the release claim directory and retry.");
+  }
+  await chmod(claimsDirectory, 448);
+  const claimedPath = path3.join(claimsDirectory, `${request.release.id}-${process.pid}-${randomBytes2(16).toString("hex")}.tar.gz`);
+  await rename(request.release.remoteArchive, claimedPath);
+  try {
+    const stats = await lstat(claimedPath);
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1 || stats.size > HOST_RELEASE_ARCHIVE_LIMITS.compressedBytes) {
+      throw helperError("Hosted Capsule release archive is unsafe.", "Upload one bounded regular archive file and retry `sporades host push`.");
+    }
+    await chmod(claimedPath, 384);
+    return { path: claimedPath, sha256: await releaseArchiveSha256(claimedPath) };
+  } catch (error) {
+    await rm(claimedPath, { force: true });
+    throw error;
+  }
+}
+async function releaseArchiveSha256(archivePath) {
+  return new Promise((resolve, reject) => {
+    const hash = createHash2("sha256");
+    const stream = createReadStream(archivePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
+}
+async function maybeSwapUnclaimedArchiveForTest(release) {
+  const replacement = process.env.SPORADES_TEST_HOST_ARCHIVE_SWAP_PATH;
+  if (!replacement) return;
+  await rename(replacement, release.remoteArchive);
+}
+async function validateExtractedReleaseTree(root, expectedFiles) {
+  const expected = new Map(expectedFiles.map((file) => [file.path, file]));
+  const canonical = /* @__PURE__ */ new Set();
+  const actual = [];
+  let totalBytes = 0;
+  let publicFiles = 0;
+  let publicBytes = 0;
+  async function visit(directory, prefix = "") {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const normalized = relative.normalize("NFC");
+      const safe = relative.length > 0 && !relative.startsWith("/") && !relative.includes("\\") && !relative.includes("\0") && path3.posix.normalize(relative) === relative && Buffer.byteLength(relative, "utf8") <= HOST_RELEASE_ARCHIVE_LIMITS.pathBytes && relative.split("/").every((segment) => segment && segment !== "." && segment !== "..");
+      if (!safe || canonical.has(normalized)) {
+        throw helperError("Extracted Hosted Capsule release is unsafe.", "Upload a release with unique bounded relative paths.");
+      }
+      canonical.add(normalized);
+      const entryPath = path3.join(directory, entry.name);
+      const stats = await lstat(entryPath);
+      if (stats.isSymbolicLink()) {
+        throw helperError("Extracted Hosted Capsule release is unsafe.", "Upload regular release files without symbolic links.");
+      }
+      if (stats.isDirectory()) {
+        if (![...expected.keys()].some((file) => file.startsWith(`${relative}/`))) {
+          throw helperError("Extracted Hosted Capsule release does not match its archive.", "Upload the release again from a clean normalized Bundle.");
+        }
+        await visit(entryPath, relative);
+        continue;
+      }
+      if (!stats.isFile() || stats.nlink !== 1) {
+        throw helperError("Extracted Hosted Capsule release is unsafe.", "Upload regular single-link release files only.");
+      }
+      if (stats.size > HOST_RELEASE_ARCHIVE_LIMITS.fileBytes) {
+        throw helperError("Extracted Hosted Capsule release exceeds bounds.", "Choose another bounded release or push a replacement.");
+      }
+      const claimed = expected.get(relative);
+      if (!claimed || claimed.size !== stats.size) {
+        throw helperError("Extracted Hosted Capsule release does not match its archive.", "Upload the release again from a clean normalized Bundle.");
+      }
+      totalBytes += stats.size;
+      if (relative.startsWith("public/")) {
+        const publicPath = relative.slice("public/".length);
+        publicFiles += 1;
+        publicBytes += stats.size;
+        if (Buffer.byteLength(publicPath, "utf8") > PUBLIC_TREE_LIMITS.pathBytes || stats.size > PUBLIC_TREE_LIMITS.fileBytes) {
+          throw helperError("Extracted Hosted Capsule public tree exceeds bounds.", "Reduce public paths and files, then push again.");
+        }
+      }
+      actual.push({ path: relative, size: stats.size, sha256: createHash2("sha256").update(await readFile2(entryPath)).digest("hex") });
+    }
+  }
+  await visit(root);
+  if (actual.length !== expected.size || actual.length > HOST_RELEASE_ARCHIVE_LIMITS.entries || totalBytes > HOST_RELEASE_ARCHIVE_LIMITS.totalBytes || publicFiles > PUBLIC_TREE_LIMITS.files || publicBytes > PUBLIC_TREE_LIMITS.totalBytes) {
+    throw helperError("Extracted Hosted Capsule release does not match its bounded archive.", "Upload the release again from a clean normalized Bundle.");
+  }
+  return actual.sort((left, right) => left.path.localeCompare(right.path));
 }
 function isVerificationRequested(request) {
   return request.verification?.enabled === true;
@@ -1540,7 +1680,9 @@ async function maybeFallbackToPreviousRelease(request, failedReleaseId, previous
   const releaseId = previousCurrentRelease.id;
   const paths = canonicalRollbackPaths(request, releaseId);
   try {
-    await assertRollbackReleaseFiles(request, paths.release);
+    const record = await readRegistryRecordForCapsule(request, "rollback");
+    const recordedRelease = normaliseReleaseHistory(record).find((entry) => entry.id === releaseId) ?? null;
+    await assertRollbackReleaseFiles(request, paths.release, recordedRelease);
     await switchCurrentReleaseLink(paths.currentLink, paths.release);
     let lifecycle = null;
     let restartError = null;
@@ -1572,7 +1714,7 @@ async function maybeFallbackToPreviousRelease(request, failedReleaseId, previous
 }
 async function switchCurrentReleaseLink(currentLink, releaseDirectory) {
   const tempCurrentLink = `${currentLink}.tmp-${process.pid}`;
-  await rm2(tempCurrentLink, { force: true });
+  await rm(tempCurrentLink, { force: true });
   await symlink(releaseDirectory, tempCurrentLink);
   await rename(tempCurrentLink, currentLink);
 }
@@ -1766,7 +1908,7 @@ async function installSealedServerEnvPrivateKey(release) {
   if (!release.sealedServerEnvIncluded || !privateKey || !privateKeyPath) {
     return;
   }
-  await mkdir(path4.dirname(privateKeyPath), { recursive: true });
+  await mkdir(path3.dirname(privateKeyPath), { recursive: true });
   await writeFile(privateKeyPath, privateKey, { mode: 384 });
 }
 function validateSealedServerEnvPrivateKeyPath(release, paths) {
@@ -1777,8 +1919,8 @@ function validateSealedServerEnvPrivateKeyPath(release, paths) {
     return;
   }
   const privateKeyPath = release.sealedServerEnv?.privateKeyPath;
-  const expectedPrivateKeyPath = path4.join(paths.data, "sealed-server-env", "server-env.private.pem");
-  if (typeof privateKeyPath !== "string" || path4.resolve(privateKeyPath) !== path4.resolve(expectedPrivateKeyPath)) {
+  const expectedPrivateKeyPath = path3.join(paths.data, "sealed-server-env", "server-env.private.pem");
+  if (typeof privateKeyPath !== "string" || path3.resolve(privateKeyPath) !== path3.resolve(expectedPrivateKeyPath)) {
     throw helperError(
       "Invalid Sealed Server env private key path.",
       "Update the Sporades CLI and retry `sporades host push`."
@@ -2158,10 +2300,10 @@ async function rollbackRelease(request) {
     );
   }
   const paths = canonicalRollbackPaths(request, releaseId);
-  await assertRollbackReleaseFiles(request, paths.release);
+  await assertRollbackReleaseFiles(request, paths.release, selectedRelease);
   const previousCurrentRelease = record.currentRelease ?? null;
   const tempCurrentLink = `${paths.currentLink}.tmp-${process.pid}`;
-  await rm2(tempCurrentLink, { force: true });
+  await rm(tempCurrentLink, { force: true });
   await symlink(paths.release, tempCurrentLink);
   await rename(tempCurrentLink, paths.currentLink);
   await recordReleaseRollbackSelected(request, releaseId);
@@ -2312,7 +2454,7 @@ function createUnregisterResult(request, unregister, record, idempotent, route =
     registryRecord: unregister.registryRecord,
     directories: unregister.directories,
     preserved: {
-      releases: record.currentRelease?.id ? path4.join(unregister.directories.releases, record.currentRelease.id) : unregister.directories.releases,
+      releases: record.currentRelease?.id ? path3.join(unregister.directories.releases, record.currentRelease.id) : unregister.directories.releases,
       data: unregister.directories.data
     },
     deleteAfter: record.deleteAfter ?? null,
@@ -2361,28 +2503,28 @@ function createDeleteResult(request, deletion, removals) {
   };
 }
 function canonicalReleasePaths(request) {
-  const capsule = path4.join(
+  const capsule = path3.join(
     request.host.remoteRoot,
     "hosts",
     request.host.domain,
     "capsules",
     request.capsule.subname
   );
-  const releases = path4.join(capsule, "releases");
+  const releases = path3.join(capsule, "releases");
   return {
     capsule,
     releases,
-    release: request.release?.id ? path4.join(releases, request.release.id) : null,
-    data: path4.join(capsule, "data"),
-    logs: path4.join(capsule, "logs"),
-    currentLink: path4.join(capsule, "current")
+    release: request.release?.id ? path3.join(releases, request.release.id) : null,
+    data: path3.join(capsule, "data"),
+    logs: path3.join(capsule, "logs"),
+    currentLink: path3.join(capsule, "current")
   };
 }
 function canonicalRollbackPaths(request, releaseId) {
   const paths = canonicalReleasePaths({ ...request, release: { id: releaseId, remoteArchive: "", files: [] } });
   return {
     ...paths,
-    release: path4.join(paths.releases, releaseId)
+    release: path3.join(paths.releases, releaseId)
   };
 }
 function normaliseLifecycle(request, registryRecord = null) {
@@ -2393,7 +2535,7 @@ function normaliseLifecycle(request, registryRecord = null) {
   const hostedUrl = typeof provided.hostedUrl === "string" ? provided.hostedUrl : request.release?.hostedUrl ?? `${request.host.scheme ?? "https"}://${subname}.${domain}`;
   const remoteCapsuleId = typeof provided.remoteCapsuleId === "string" ? provided.remoteCapsuleId : `${domain}/${subname}`;
   const containerName = provided.container?.name ?? createHostedContainerName(domain, subname);
-  const routeFile = provided.routes?.running?.routeFile ?? path4.join(request.host.remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
+  const routeFile = provided.routes?.running?.routeFile ?? path3.join(request.host.remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
   const currentLink = typeof provided.currentLink === "string" ? provided.currentLink : paths.currentLink;
   const routeAccessLog = provided.routes;
   const accessLog = routeAccessLog?.accessLog ?? provided.accessLog ?? defaultCapsuleHttpLogPath(request.host.remoteRoot, domain, subname);
@@ -2411,14 +2553,14 @@ function normaliseLifecycle(request, registryRecord = null) {
   };
   const defaultMounts = {
     files: [
-      { host: path4.join(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
-      { host: path4.join(currentLink, "public"), container: "/app/public", mode: "ro", optional: true },
-      { host: path4.join(currentLink, "client.js"), container: "/app/client.js", mode: "ro", optional: true },
-      { host: path4.join(currentLink, "index.html"), container: "/app/index.html", mode: "ro", optional: true },
-      { host: path4.join(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
-      { host: path4.join(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
+      { host: path3.join(currentLink, "server.mjs"), container: "/app/server.mjs", mode: "ro" },
+      { host: path3.join(currentLink, "public"), container: "/app/public", mode: "ro", optional: true },
+      { host: path3.join(currentLink, "client.js"), container: "/app/client.js", mode: "ro", optional: true },
+      { host: path3.join(currentLink, "index.html"), container: "/app/index.html", mode: "ro", optional: true },
+      { host: path3.join(currentLink, "sporades.json"), container: "/app/sporades.json", mode: "ro" },
+      { host: path3.join(currentLink, ".env.sporades.server"), container: "/app/.env.sporades.server", mode: "ro", optional: true },
       {
-        host: path4.join(currentLink, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+        host: path3.join(currentLink, ".sporades", "sealed-server-env", "server-env.sealed.json"),
         container: "/app/.sporades/sealed-server-env/server-env.sealed.json",
         mode: "ro",
         optional: true
@@ -2735,10 +2877,10 @@ function inspectContainerLifecycle(containerName) {
   };
 }
 async function readCapsuleRegistryRecords(request) {
-  const registryDirectory = path4.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", "capsules");
+  const registryDirectory = path3.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", "capsules");
   let entries;
   try {
-    entries = await readdir2(registryDirectory, { withFileTypes: true });
+    entries = await readdir(registryDirectory, { withFileTypes: true });
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       return [];
@@ -2748,7 +2890,7 @@ async function readCapsuleRegistryRecords(request) {
   const records = [];
   const files = entries.filter((entry) => entry.isFile() && entry.name.endsWith(".json")).map((entry) => entry.name).sort();
   for (const file of files) {
-    const recordPath = path4.join(registryDirectory, file);
+    const recordPath = path3.join(registryDirectory, file);
     let record;
     try {
       record = JSON.parse(await readFile2(recordPath, "utf8"));
@@ -2886,8 +3028,8 @@ function normaliseRegistration(request) {
   const scheme = request.host.scheme ?? "https";
   const hostedUrl = `${scheme}://${subname}.${domain}`;
   const remoteCapsuleId = `${domain}/${subname}`;
-  const capsuleDirectory = path4.join(remoteRoot, "hosts", domain, "capsules", subname);
-  const routeFile = path4.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
+  const capsuleDirectory = path3.join(remoteRoot, "hosts", domain, "capsules", subname);
+  const routeFile = path3.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
   const routeTls = normaliseRegistrationTls(request);
   const accessLog = request.registration?.route?.log?.file ?? defaultCapsuleHttpLogPath(remoteRoot, domain, subname);
   const route = {
@@ -2904,12 +3046,12 @@ function normaliseRegistration(request) {
     remoteRoot,
     hostedUrl,
     remoteCapsuleId,
-    registryRecord: path4.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
+    registryRecord: path3.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
     directories: {
       capsule: capsuleDirectory,
-      releases: path4.join(capsuleDirectory, "releases"),
-      data: path4.join(capsuleDirectory, "data"),
-      logs: path4.join(capsuleDirectory, "logs")
+      releases: path3.join(capsuleDirectory, "releases"),
+      data: path3.join(capsuleDirectory, "data"),
+      logs: path3.join(capsuleDirectory, "logs")
     },
     baseImage: normaliseProvidedBaseImage(request.registration?.baseImage),
     route,
@@ -2927,19 +3069,19 @@ function normaliseUnregister(request) {
   const scheme = request.host.scheme ?? "https";
   const hostedUrl = `${scheme}://${subname}.${domain}`;
   const remoteCapsuleId = `${domain}/${subname}`;
-  const capsuleDirectory = path4.join(remoteRoot, "hosts", domain, "capsules", subname);
-  const routeFile = path4.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
+  const capsuleDirectory = path3.join(remoteRoot, "hosts", domain, "capsules", subname);
+  const routeFile = path3.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`);
   const containerName = createHostedContainerName(domain, subname);
   return {
     subname,
     domain,
     hostedUrl,
     remoteCapsuleId,
-    registryRecord: path4.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
+    registryRecord: path3.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
     directories: {
       capsule: capsuleDirectory,
-      releases: path4.join(capsuleDirectory, "releases"),
-      data: path4.join(capsuleDirectory, "data")
+      releases: path3.join(capsuleDirectory, "releases"),
+      data: path3.join(capsuleDirectory, "data")
     },
     container: {
       name: containerName
@@ -2960,21 +3102,21 @@ function normaliseDeletion(request) {
   const domain = request.host.domain;
   const remoteRoot = request.host.remoteRoot;
   const scheme = request.host.scheme ?? "https";
-  const capsuleDirectory = path4.join(remoteRoot, "hosts", domain, "capsules", subname);
+  const capsuleDirectory = path3.join(remoteRoot, "hosts", domain, "capsules", subname);
   return {
     subname,
     domain,
     hostedUrl: `${scheme}://${subname}.${domain}`,
     remoteCapsuleId: `${domain}/${subname}`,
-    registryRecord: path4.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
+    registryRecord: path3.join(remoteRoot, "hosts", domain, "registry", "capsules", `${subname}.json`),
     directories: {
       capsule: capsuleDirectory,
-      releases: path4.join(capsuleDirectory, "releases"),
-      data: path4.join(capsuleDirectory, "data")
+      releases: path3.join(capsuleDirectory, "releases"),
+      data: path3.join(capsuleDirectory, "data")
     },
     route: {
       hostname: `${subname}.${domain}`,
-      routeFile: path4.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`)
+      routeFile: path3.join(remoteRoot, "caddy", "hosts", domain, `${subname}.caddy`)
     },
     lifecycle: {
       remoteRoot
@@ -2985,17 +3127,17 @@ function normaliseRegistrationTls(request) {
   const remoteRoot = request.host.remoteRoot;
   const domain = request.host.domain;
   const tlsMode = request.registration?.bootstrap?.tls?.mode ?? request.bootstrap?.tls?.mode ?? "automatic";
-  const tlsDirectory = path4.join(remoteRoot, "hosts", domain, "tls");
+  const tlsDirectory = path3.join(remoteRoot, "hosts", domain, "tls");
   return {
     mode: tlsMode,
     directory: tlsDirectory,
-    certificate: tlsMode === "cloudflare-origin" ? path4.join(tlsDirectory, "origin.crt") : null,
-    key: tlsMode === "cloudflare-origin" ? path4.join(tlsDirectory, "origin.key") : null
+    certificate: tlsMode === "cloudflare-origin" ? path3.join(tlsDirectory, "origin.crt") : null,
+    key: tlsMode === "cloudflare-origin" ? path3.join(tlsDirectory, "origin.key") : null
   };
 }
 async function ensureHostedDomainBootstrapped(request, registration) {
-  const caddyfile = path4.join(request.host.remoteRoot, "caddy", "Caddyfile");
-  const domainInclude = path4.join(request.host.remoteRoot, "caddy", "hosts", `${request.host.domain}.caddy`);
+  const caddyfile = path3.join(request.host.remoteRoot, "caddy", "Caddyfile");
+  const domainInclude = path3.join(request.host.remoteRoot, "caddy", "hosts", `${request.host.domain}.caddy`);
   const bootstrapped = await pathExists(caddyfile) && await pathExists(domainInclude);
   if (bootstrapped) {
     return;
@@ -3065,7 +3207,7 @@ async function cleanupUnreferencedHostSealedEnvKeys(dataDirectory, referencedFin
   const paths = hostSealedEnvKeyPaths(dataDirectory, "placeholder");
   let entries;
   try {
-    entries = await readdir2(paths.keys);
+    entries = await readdir(paths.keys);
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       return {
@@ -3085,7 +3227,7 @@ async function cleanupUnreferencedHostSealedEnvKeys(dataDirectory, referencedFin
     if (referencedFingerprints.has(fingerprint)) {
       continue;
     }
-    await rm2(path4.join(paths.keys, entry), { force: true });
+    await rm(path3.join(paths.keys, entry), { force: true });
     deleted.add(fingerprint);
   }
   return {
@@ -3119,7 +3261,7 @@ async function inspectHostSealedEnvKey(record, remoteRoot) {
   if (typeof publicKeyFingerprint !== "string" || publicKeyFingerprint.length === 0) {
     return null;
   }
-  const dataDirectory = path4.join(remoteRoot, "hosts", record.domain, "capsules", record.subname, "data");
+  const dataDirectory = path3.join(remoteRoot, "hosts", record.domain, "capsules", record.subname, "data");
   const paths = hostSealedEnvKeyPaths(dataDirectory, publicKeyFingerprint);
   const [publicKeyReadable, privateKeyReadable] = await Promise.all([
     pathReadable(paths.publicKey),
@@ -3186,13 +3328,13 @@ function currentReleaseSealedServerEnvFingerprint(record) {
   return typeof fingerprint === "string" ? fingerprint : null;
 }
 function hostSealedEnvKeyPaths(dataDirectory, fingerprint) {
-  const root = path4.join(dataDirectory, "sealed-server-env");
-  const keys = path4.join(root, "keys");
+  const root = path3.join(dataDirectory, "sealed-server-env");
+  const keys = path3.join(root, "keys");
   return {
     root,
     keys,
-    privateKey: path4.join(keys, `${fingerprint}.private.pem`),
-    publicKey: path4.join(keys, `${fingerprint}.public.pem`)
+    privateKey: path3.join(keys, `${fingerprint}.private.pem`),
+    publicKey: path3.join(keys, `${fingerprint}.public.pem`)
   };
 }
 function fingerprintPublicKey(publicKey) {
@@ -3252,29 +3394,29 @@ function normaliseBootstrap(request) {
   const provided = request.bootstrap ?? {};
   const remoteRoot = request.host.remoteRoot;
   const domain = request.host.domain;
-  const caddyDirectory = path4.join(remoteRoot, "caddy");
-  const domainDirectory = path4.join(remoteRoot, "hosts", domain);
-  const tlsDirectory = path4.join(domainDirectory, "tls");
+  const caddyDirectory = path3.join(remoteRoot, "caddy");
+  const domainDirectory = path3.join(remoteRoot, "hosts", domain);
+  const tlsDirectory = path3.join(domainDirectory, "tls");
   const tlsMode = provided.tls?.mode ?? "automatic";
   const directories = {
     remoteRoot,
-    bin: path4.join(remoteRoot, "bin"),
-    incoming: path4.join(remoteRoot, "incoming"),
+    bin: path3.join(remoteRoot, "bin"),
+    incoming: path3.join(remoteRoot, "incoming"),
     caddy: caddyDirectory,
-    caddyHosts: path4.join(caddyDirectory, "hosts"),
-    hosts: path4.join(remoteRoot, "hosts"),
+    caddyHosts: path3.join(caddyDirectory, "hosts"),
+    hosts: path3.join(remoteRoot, "hosts"),
     domain: domainDirectory,
     tls: tlsDirectory,
-    registry: path4.join(domainDirectory, "registry"),
-    capsules: path4.join(domainDirectory, "capsules"),
+    registry: path3.join(domainDirectory, "registry"),
+    capsules: path3.join(domainDirectory, "capsules"),
     ...provided.directories ?? {}
   };
-  directories.incoming = provided.directories?.incoming ?? path4.join(remoteRoot, "incoming");
+  directories.incoming = provided.directories?.incoming ?? path3.join(remoteRoot, "incoming");
   const tls = {
     mode: tlsMode,
     directory: provided.tls?.directory ?? directories.tls,
-    certificate: tlsMode === "cloudflare-origin" ? provided.tls?.certificate ?? path4.join(directories.tls, "origin.crt") : null,
-    key: tlsMode === "cloudflare-origin" ? provided.tls?.key ?? path4.join(directories.tls, "origin.key") : null
+    certificate: tlsMode === "cloudflare-origin" ? provided.tls?.certificate ?? path3.join(directories.tls, "origin.crt") : null,
+    key: tlsMode === "cloudflare-origin" ? provided.tls?.key ?? path3.join(directories.tls, "origin.key") : null
   };
   return {
     substrate: {
@@ -3286,11 +3428,11 @@ function normaliseBootstrap(request) {
     tls,
     network: provided.network ?? hostHelperConfig.hostedCapsule.dockerNetwork,
     caddy: {
-      caddyfile: path4.join(directories.caddy, "Caddyfile"),
-      managedInclude: provided.caddy?.managedInclude ?? path4.join(directories.caddy, "sporades-hosted-domains.caddy"),
-      domainInclude: provided.caddy?.domainInclude ?? path4.join(directories.caddyHosts, `${domain}.caddy`),
-      routesDirectory: path4.join(directories.caddyHosts, domain),
-      healthRoute: path4.join(directories.caddyHosts, domain, "host.caddy"),
+      caddyfile: path3.join(directories.caddy, "Caddyfile"),
+      managedInclude: provided.caddy?.managedInclude ?? path3.join(directories.caddy, "sporades-hosted-domains.caddy"),
+      domainInclude: provided.caddy?.domainInclude ?? path3.join(directories.caddyHosts, `${domain}.caddy`),
+      routesDirectory: path3.join(directories.caddyHosts, domain),
+      healthRoute: path3.join(directories.caddyHosts, domain, "host.caddy"),
       accessLog: provided.caddy?.accessLog ?? defaultCaddyAccessLogPath(remoteRoot)
     }
   };
@@ -3301,13 +3443,13 @@ async function ensureBootstrapDirectories(bootstrap) {
     bootstrap.directories.bin,
     bootstrap.directories.incoming,
     bootstrap.directories.caddy,
-    path4.dirname(bootstrap.caddy.accessLog),
+    path3.dirname(bootstrap.caddy.accessLog),
     bootstrap.directories.caddyHosts,
     bootstrap.directories.hosts,
     bootstrap.directories.domain,
     bootstrap.directories.tls,
     bootstrap.directories.registry,
-    path4.join(bootstrap.directories.registry, "capsules"),
+    path3.join(bootstrap.directories.registry, "capsules"),
     bootstrap.directories.capsules,
     bootstrap.caddy.routesDirectory
   ];
@@ -3317,7 +3459,7 @@ async function ensureBootstrapDirectories(bootstrap) {
 }
 async function provisionCaddyAccessLog(request, bootstrap) {
   const logFile = bootstrap.caddy.accessLog;
-  const logDirectory = path4.dirname(logFile);
+  const logDirectory = path3.dirname(logFile);
   const caddyUser = resolveCaddyServiceUser();
   if (!caddyUser) {
     throw helperError(
@@ -3348,7 +3490,7 @@ async function provisionRouteLogFile(route) {
   if (!logFile) {
     return;
   }
-  const logDirectory = path4.dirname(logFile);
+  const logDirectory = path3.dirname(logFile);
   await mkdir(logDirectory, { recursive: true });
   await writeFile(logFile, "", { flag: "a" });
   await chmod(logDirectory, 488);
@@ -3418,15 +3560,15 @@ async function installCaddyBootstrapConfig(request, bootstrap) {
   const caddyfile = bootstrap.caddy.caddyfile;
   const managedInclude = bootstrap.caddy.managedInclude;
   const domainInclude = bootstrap.caddy.domainInclude;
-  const placeholderRoute = path4.join(bootstrap.caddy.routesDirectory, ".sporades-placeholder.caddy");
+  const placeholderRoute = path3.join(bootstrap.caddy.routesDirectory, ".sporades-placeholder.caddy");
   await writeFile(placeholderRoute, "# Sporades keeps this placeholder so Caddy route imports are valid before Capsules are registered.\n");
   await writeFile(bootstrap.caddy.healthRoute, renderHostHealthRoute(request.host.domain, bootstrap.tls));
   await writeManagedCaddyfile(caddyfile, `import ${managedInclude}`);
   await writeFile(managedInclude, `# Sporades-managed Hosted domain include list.
-import ${path4.join(bootstrap.directories.caddyHosts, "*.caddy")}
+import ${path3.join(bootstrap.directories.caddyHosts, "*.caddy")}
 `);
   await writeFile(domainInclude, `# Sporades-managed routes for ${request.host.domain}.
-import ${path4.join(bootstrap.caddy.routesDirectory, "*.caddy")}
+import ${path3.join(bootstrap.caddy.routesDirectory, "*.caddy")}
 `);
   validateCaddyBootstrap(caddyfile);
   reloadCaddyBootstrap(caddyfile);
@@ -3663,7 +3805,7 @@ function ensureHostedBaseImage(lifecycle) {
   if (pull.ok) {
     return;
   }
-  const dockerfilePath = path4.join(lifecycle.remoteRoot, "Dockerfile.base");
+  const dockerfilePath = path3.join(lifecycle.remoteRoot, "Dockerfile.base");
   if (!pathExistsSync(dockerfilePath)) {
     throw helperError(
       "Unable to prepare the Sporades Base image.",
@@ -3753,7 +3895,7 @@ async function currentReleaseId(currentLink, request) {
     }
     throw error;
   }
-  return path4.basename(target);
+  return path3.basename(target);
 }
 function loopbackRunningRoute(route, publishedPort) {
   return {
@@ -3835,16 +3977,16 @@ function renderRouteLogBlock(log) {
 `;
 }
 async function applyManagedRoute(lifecycle, routeFile, contents) {
-  await mkdir(path4.dirname(routeFile), { recursive: true });
+  await mkdir(path3.dirname(routeFile), { recursive: true });
   const tempRouteFile = `${routeFile}.tmp`;
   const previousRouteFile = `${routeFile}.previous-${process.pid}`;
-  await rm2(tempRouteFile, { force: true });
-  await rm2(previousRouteFile, { force: true });
+  await rm(tempRouteFile, { force: true });
+  await rm(previousRouteFile, { force: true });
   await writeFile(tempRouteFile, contents);
   try {
     validateCaddyRoute(tempRouteFile);
   } catch (error) {
-    await rm2(tempRouteFile, { force: true });
+    await rm(tempRouteFile, { force: true });
     throw error;
   }
   const hadPreviousRoute = await pathExists(routeFile);
@@ -3855,7 +3997,7 @@ async function applyManagedRoute(lifecycle, routeFile, contents) {
     await rename(tempRouteFile, routeFile);
     reloadCaddy(lifecycle);
   } catch (error) {
-    await rm2(routeFile, { force: true });
+    await rm(routeFile, { force: true });
     if (hadPreviousRoute) {
       await rename(previousRouteFile, routeFile);
     }
@@ -3869,11 +4011,11 @@ async function applyManagedRoute(lifecycle, routeFile, contents) {
     }
     throw error;
   }
-  await rm2(previousRouteFile, { force: true });
+  await rm(previousRouteFile, { force: true });
 }
 async function removeManagedRoute(lifecycle, routeFile) {
   const previousRouteFile = `${routeFile}.previous-${process.pid}`;
-  await rm2(previousRouteFile, { force: true });
+  await rm(previousRouteFile, { force: true });
   const hadRoute = await pathExists(routeFile);
   if (!hadRoute) {
     return { routeFile, removed: false };
@@ -3900,14 +4042,14 @@ async function removeManagedRoute(lifecycle, routeFile) {
 }
 async function finalizeRemovedRoute(route) {
   if (route?.previousRouteFile) {
-    await rm2(route.previousRouteFile, { force: true });
+    await rm(route.previousRouteFile, { force: true });
   }
 }
 async function restoreRemovedRoute(lifecycle, route) {
   if (!route?.previousRouteFile) {
     return;
   }
-  await rm2(route.routeFile, { force: true });
+  await rm(route.routeFile, { force: true });
   await rename(route.previousRouteFile, route.routeFile);
   reloadCaddy(lifecycle);
 }
@@ -3916,7 +4058,7 @@ async function removePathIfPresent(targetPath, options = {}) {
   if (!existed) {
     return { path: targetPath, removed: false };
   }
-  await rm2(targetPath, { recursive: Boolean(options.recursive), force: true });
+  await rm(targetPath, { recursive: Boolean(options.recursive), force: true });
   return { path: targetPath, removed: true };
 }
 async function prepareWritableDataPath(targetPath) {
@@ -3938,9 +4080,9 @@ async function prepareWritableDataPath(targetPath) {
   await prepareRuntimeDataOwnership(targetPath, stats);
   if (stats.isDirectory()) {
     await chmod(targetPath, 448);
-    const entries = await readdir2(targetPath, { withFileTypes: true });
+    const entries = await readdir(targetPath, { withFileTypes: true });
     for (const entry of entries) {
-      await prepareWritableDataPath(path4.join(targetPath, entry.name));
+      await prepareWritableDataPath(path3.join(targetPath, entry.name));
     }
     return;
   }
@@ -3982,7 +4124,7 @@ function validateCaddyRoute(routeFile) {
   }
 }
 function reloadCaddy(lifecycle) {
-  const configPath = path4.join(lifecycle.remoteRoot, "caddy", "Caddyfile");
+  const configPath = path3.join(lifecycle.remoteRoot, "caddy", "Caddyfile");
   const result = spawnSync2("caddy", ["reload", "--config", configPath, "--adapter", "caddyfile"], { encoding: "utf8" });
   if (result.error || result.status !== 0) {
     throw helperError(
@@ -4007,7 +4149,7 @@ async function recordFailedStartAndUnavailableRoute(request, lifecycle, releaseI
   }
   await recordReleaseFailure(request, releaseId, failureMessage);
 }
-async function recordReleaseUploaded(request, release) {
+async function recordReleaseUploaded(request, release, fileInventory) {
   await mutateRegistryRecord(request, (record) => {
     const now = (/* @__PURE__ */ new Date()).toISOString();
     record.currentRelease = { ...record.currentRelease ?? {}, id: release.id };
@@ -4026,6 +4168,7 @@ async function recordReleaseUploaded(request, release) {
         hostedUrl: release.hostedUrl ?? entry.source?.hostedUrl ?? null,
         remoteCapsuleId: release.remoteCapsuleId ?? entry.source?.remoteCapsuleId ?? null,
         files: Array.isArray(release.files) ? [...release.files] : [],
+        fileInventory: fileInventory.map((file) => ({ ...file })),
         serverEnvIncluded: Boolean(release.serverEnvIncluded),
         sealedServerEnvIncluded: Boolean(release.sealedServerEnvIncluded),
         sealedServerEnv: release.sealedServerEnv?.publicKeyFingerprint ? { publicKeyFingerprint: release.sealedServerEnv.publicKeyFingerprint } : void 0,
@@ -4287,12 +4430,12 @@ function releaseSealedServerEnvPrivateKeyMount(registryRecord, paths) {
   const fingerprint = release?.source?.sealedServerEnv?.publicKeyFingerprint;
   if (typeof fingerprint === "string" && /^[a-f0-9]{16}$/.test(fingerprint)) {
     return {
-      host: path4.join(paths.data, "sealed-server-env", "keys", `${fingerprint}.private.pem`),
+      host: path3.join(paths.data, "sealed-server-env", "keys", `${fingerprint}.private.pem`),
       fingerprint
     };
   }
   return {
-    host: path4.join(paths.data, "sealed-server-env", "server-env.private.pem"),
+    host: path3.join(paths.data, "sealed-server-env", "server-env.private.pem"),
     fingerprint: null
   };
 }
@@ -4304,7 +4447,7 @@ function releaseSshAuthorizedKeysMount(registryRecord, paths) {
     return null;
   }
   return {
-    host: path4.join(paths.currentLink, ".sporades", "ssh", "authorized_keys"),
+    host: path3.join(paths.currentLink, ".sporades", "ssh", "authorized_keys"),
     container: "/run/sporades/ssh/authorized_keys",
     mode: "ro",
     optional: false
@@ -4473,7 +4616,7 @@ async function writeRegistryRecordAtomic(registryRecordPath, record) {
     }
     await rename(tempPath, registryRecordPath);
   } catch (error) {
-    await rm2(tempPath, { force: true });
+    await rm(tempPath, { force: true });
     throw error;
   }
 }
@@ -4501,11 +4644,11 @@ async function withRegistryLock(request, fn) {
   try {
     return await fn();
   } finally {
-    await rm2(lockDir, { recursive: true, force: true });
+    await rm(lockDir, { recursive: true, force: true });
   }
 }
 function registryPath(request) {
-  return path4.join(
+  return path3.join(
     request.host.remoteRoot,
     "hosts",
     request.host.domain,
@@ -4515,7 +4658,7 @@ function registryPath(request) {
   );
 }
 function registryLockPath(request) {
-  return path4.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", ".lock");
+  return path3.join(request.host.remoteRoot, "hosts", request.host.domain, "registry", ".lock");
 }
 function capsuleData(request, lifecycle) {
   return {
@@ -4617,30 +4760,109 @@ function createHostedContainerName(domain, subname) {
   return `sporades-${domain.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase()}-${subname}`;
 }
 function defaultCaddyAccessLogPath(remoteRoot) {
-  return path4.join(remoteRoot, "caddy", "logs", "access.log");
+  return path3.join(remoteRoot, "caddy", "logs", "access.log");
 }
 function defaultCapsuleHttpLogPath(remoteRoot, domain, subname) {
-  return path4.join(remoteRoot, "hosts", domain, "capsules", subname, "logs", "http.log");
+  return path3.join(remoteRoot, "hosts", domain, "capsules", subname, "logs", "http.log");
 }
-async function assertRollbackReleaseFiles(request, releaseDirectory) {
-  const publicIndex = path4.join(releaseDirectory, "public", "index.html");
-  const legacyIndex = path4.join(releaseDirectory, "index.html");
-  const legacyClient = path4.join(releaseDirectory, "client.js");
-  const requiredFiles = ["server.mjs", "sporades.json"];
-  for (const file of requiredFiles) {
-    if (!await pathReadable(path4.join(releaseDirectory, file))) {
-      throw helperError(
-        "Hosted Capsule release files are missing.",
-        `The recorded release cannot be started from ${releaseDirectory}. Push a new release or choose another release from \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\`.`
-      );
+async function assertRollbackReleaseFiles(request, releaseDirectory, recordedRelease = null) {
+  try {
+    const expected = await recordedReleaseFileClaims(releaseDirectory, recordedRelease);
+    const actual = await validateExtractedReleaseTree(releaseDirectory, expected);
+    const recordedInventory = recordedRelease?.source?.fileInventory;
+    if (Array.isArray(recordedInventory)) {
+      const actualByPath = new Map(actual.map((file) => [file.path, file]));
+      for (const recorded of recordedInventory) {
+        if (actualByPath.get(recorded.path)?.sha256 !== recorded.sha256) {
+          throw helperError("Hosted Capsule release inventory changed.", "Preserve immutable release files and choose another recorded release.");
+        }
+      }
     }
-  }
-  if (!await pathReadable(publicIndex) && (!await pathReadable(legacyIndex) || !await pathReadable(legacyClient))) {
+  } catch (error) {
+    if (errorDetails(error).message?.startsWith("Hosted Capsule release")) throw error;
     throw helperError(
       "Hosted Capsule release files are missing.",
       `The recorded release cannot be started from ${releaseDirectory}. Push a new release or choose another release from \`sporades host releases ${request.capsule.subname} --host ${request.host.alias} --json\`.`
     );
   }
+}
+async function recordedReleaseFileClaims(releaseDirectory, recordedRelease) {
+  const source = recordedRelease?.source ?? {};
+  if (Object.hasOwn(source, "fileInventory")) {
+    if (!Array.isArray(source.fileInventory) || source.fileInventory.length === 0) {
+      throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+    }
+    const canonical2 = /* @__PURE__ */ new Set();
+    let totalBytes = 0;
+    const claims2 = source.fileInventory.map((file) => {
+      if (!validRecordedReleaseIdentity(file)) {
+        throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+      }
+      const normalized = file.path.normalize("NFC");
+      if (canonical2.has(normalized)) throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+      canonical2.add(normalized);
+      totalBytes += file.size;
+      return { path: file.path, size: file.size };
+    });
+    if (claims2.length > HOST_RELEASE_ARCHIVE_LIMITS.entries || totalBytes > HOST_RELEASE_ARCHIVE_LIMITS.totalBytes) {
+      throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+    }
+    return claims2;
+  }
+  if (!Array.isArray(source.files) || source.files.length === 0) {
+    return deriveReleaseFileClaims(releaseDirectory);
+  }
+  const files = source.files;
+  const claims = [];
+  const canonical = /* @__PURE__ */ new Set();
+  for (const file of files) {
+    if (typeof file !== "string" || !safeRecordedReleasePath(file)) {
+      throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+    }
+    const normalized = file.normalize("NFC");
+    if (canonical.has(normalized)) throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+    canonical.add(normalized);
+    const stats = await lstat(path3.join(releaseDirectory, ...file.split("/")));
+    if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
+      throw helperError("Hosted Capsule release files are missing.", "Choose another complete immutable release.");
+    }
+    claims.push({ path: file, size: stats.size });
+  }
+  return claims;
+}
+async function deriveReleaseFileClaims(root) {
+  const claims = [];
+  async function visit(directory, prefix = "") {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const relative = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (!safeRecordedReleasePath(relative)) {
+        throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+      }
+      const entryPath = path3.join(directory, entry.name);
+      const stats = await lstat(entryPath);
+      if (stats.isSymbolicLink()) {
+        throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+      }
+      if (stats.isDirectory()) {
+        await visit(entryPath, relative);
+      } else if (stats.isFile() && stats.nlink === 1) {
+        claims.push({ path: relative, size: stats.size });
+      } else {
+        throw helperError("Hosted Capsule release inventory is invalid.", "Choose another recorded release or push a replacement.");
+      }
+    }
+  }
+  await visit(root);
+  const paths = new Set(claims.map((file) => file.path));
+  const complete = paths.has("server.mjs") && paths.has("sporades.json") && (paths.has("public/index.html") || paths.has("index.html") && paths.has("client.js"));
+  if (!complete) throw helperError("Hosted Capsule release files are missing.", "Choose another complete immutable release.");
+  return claims;
+}
+function validRecordedReleaseIdentity(file) {
+  return file && safeRecordedReleasePath(file.path) && Number.isSafeInteger(file.size) && file.size >= 0 && typeof file.sha256 === "string" && /^[a-f0-9]{64}$/.test(file.sha256);
+}
+function safeRecordedReleasePath(file) {
+  return file.length > 0 && !file.startsWith("/") && !file.includes("\\") && !file.includes("\0") && path3.posix.normalize(file) === file && Buffer.byteLength(file, "utf8") <= HOST_RELEASE_ARCHIVE_LIMITS.pathBytes && file.split("/").every((segment) => segment && segment !== "." && segment !== "..");
 }
 async function verifyRegisteredCapsule(request, purpose = "push") {
   const record = await readRegistryRecordForCapsule(request, purpose);
