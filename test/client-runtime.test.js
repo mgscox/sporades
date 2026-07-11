@@ -142,7 +142,16 @@ test("Journey capture publishes only safe browser signals after consent and tear
   const listeners = new Map();
   const add = (type, listener) => listeners.set(type, [...(listeners.get(type) ?? []), listener]);
   const remove = (type, listener) => listeners.set(type, (listeners.get(type) ?? []).filter((item) => item !== listener));
-  globalThis.document = { hidden: false, documentElement: {}, querySelector: () => null, addEventListener: add, removeEventListener: remove };
+  let semanticMeta = null;
+  const head = {};
+  globalThis.document = { hidden: false, head, documentElement: {}, querySelector: () => semanticMeta, addEventListener: add, removeEventListener: remove };
+  const observers = [];
+  globalThis.MutationObserver = class {
+    constructor(callback) { this.callback = callback; this.observations = []; observers.push(this); }
+    observe(target, options) { this.observations.push({ target, options }); }
+    disconnect() { this.observations = []; }
+    emit(records) { this.callback(records); }
+  };
   window.addEventListener = add; window.removeEventListener = remove;
   window.requestAnimationFrame = (callback) => { queueMicrotask(callback); return 1; };
   window.cancelAnimationFrame = () => {};
@@ -160,16 +169,72 @@ test("Journey capture publishes only safe browser signals after consent and tear
     assert.throws(() => window.history.replaceState({}, "", "/nope"), /native-error/);
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.deepEqual(calls.at(-1), { status: "viewing", metadata: { page: "/checkout" } });
+    for (const listener of listeners.get("popstate") ?? []) listener({ type: "popstate" });
+    for (const listener of listeners.get("hashchange") ?? []) listener({ type: "hashchange" });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(calls.at(-1).metadata.page, "/checkout", "history signals never expose the raw hash");
+    for (const listener of listeners.get("focus") ?? []) listener({ type: "focus" }); await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(calls.at(-1).status, "focused");
+    for (const listener of listeners.get("blur") ?? []) listener({ type: "blur" }); await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(calls.at(-1).status, "away");
+    document.hidden = true; for (const listener of listeners.get("visibilitychange") ?? []) listener({ type: "visibilitychange" }); await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(calls.at(-1).status, "away"); document.hidden = false;
+    const unrelatedCount = calls.length;
+    const headObserver = observers.find((observer) => observer.observations.some(({ target }) => target === head));
+    assert.deepEqual(headObserver.observations[0].options, { childList: true }, "metadata lifecycle observation is head-only and non-subtree");
+    headObserver.emit([{ addedNodes: [{ matches: () => false }], removedNodes: [] }]);
+    await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.length, unrelatedCount);
+    semanticMeta = { matches: () => true, getAttribute: () => "orders.detail" };
+    headObserver.emit([{ addedNodes: [semanticMeta], removedNodes: [] }]);
+    await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.at(-1).metadata.page, "orders.detail");
+    const metaObserver = observers.find((observer) => observer.observations.some(({ target }) => target === semanticMeta));
+    semanticMeta.getAttribute = () => "orders.revised"; metaObserver.emit([{ target: semanticMeta, attributeName: "content" }]);
+    await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.at(-1).metadata.page, "orders.revised");
+    semanticMeta = null; headObserver.emit([{ addedNodes: [], removedNodes: [{ matches: () => true }] }]);
+    await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.at(-1).metadata.page, "/checkout");
+    const clickListenerCount = (listeners.get("click") ?? []).length;
+    await runtime.journey.enable(); await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal((listeners.get("click") ?? []).length, clickListenerCount, "repeat enable/HMR setup remains idempotent");
     const annotation = { getAttribute: (name) => name === "data-sporades-journey" ? "checkout.started" : null };
-    for (const listener of listeners.get("click") ?? []) listener({ composedPath: () => [annotation], defaultPrevented: false, secret: "never publish" });
+    for (const listener of listeners.get("click") ?? []) listener({ type: "click", composedPath: () => [annotation], defaultPrevented: false, secret: "never publish" });
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.deepEqual(calls.at(-1), { status: "checkout.started", metadata: { page: "/checkout" } });
     const beforePrevented = calls.length;
-    for (const listener of listeners.get("click") ?? []) listener({ composedPath: () => [annotation], defaultPrevented: true });
+    for (const listener of listeners.get("click") ?? []) listener({ type: "click", composedPath: () => [annotation], defaultPrevented: true });
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(calls.length, beforePrevented);
+    const beforeInvalid = calls.length;
+    const invalid = { getAttribute: () => "inactive" };
+    const oversized = { getAttribute: () => "x".repeat(257) };
+    for (const value of [invalid, oversized]) for (const listener of listeners.get("click") ?? []) listener({ type: "click", composedPath: () => [value], defaultPrevented: false });
+    await new Promise((resolve) => setTimeout(resolve, 5)); assert.equal(calls.length, beforeInvalid);
+    assert.equal(listeners.has("change"), false); assert.equal(listeners.has("pointerdown"), false); assert.equal(listeners.has("keydown"), false);
+    const form = { getAttribute: (name) => name === "data-sporades-journey" ? "checkout.form" : null };
+    const beforeSubmit = calls.length;
+    for (const listener of listeners.get("click") ?? []) listener({ type: "click", composedPath: () => [annotation, form], defaultPrevented: false });
+    for (const listener of listeners.get("submit") ?? []) listener({ type: "submit", submitter: annotation, composedPath: () => [form], defaultPrevented: false });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(calls.length, beforeSubmit + 1, "native submit activation publishes exactly once");
+    assert.equal(calls.at(-1).status, "checkout.started", "submitter annotation wins over its form");
     await runtime.journey.disable();
     assert.equal((listeners.get("click") ?? []).length, 0);
+  } finally { delete globalThis.MutationObserver; delete globalThis.document; browser.cleanup(); }
+});
+
+test("Journey capture narrowing can keep a consenting page invisible while manual state remains available", async () => {
+  const calls = [];
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "journey.enable": async () => ({ type: "journey.enable.result", data: { sessionId: "j2", userId: anonymousAuth.userId, capture: { navigation: false, focus: false, interactions: false }, resumeCredential: "r2" }, error: null }),
+    "journey.set": async (message) => { calls.push(message.state); return { type: "journey.set.result", data: { journey: message.state }, error: null }; },
+  }});
+  globalThis.document = { head: {}, documentElement: {}, querySelector: () => null };
+  try {
+    const runtime = await importClientRuntime();
+    const result = await runtime.journey.enable({ capture: { navigation: false, focus: false, interactions: false } });
+    assert.deepEqual(result.data.capture, { navigation: false, focus: false, interactions: false });
+    await new Promise((resolve) => setTimeout(resolve, 0)); assert.deepEqual(calls, []);
+    await runtime.journey.set({ status: "typing", metadata: { step: 2 }, ttlSeconds: 7 });
+    assert.deepEqual(calls, [{ status: "typing", metadata: { step: 2 }, ttlSeconds: 7 }]);
   } finally { delete globalThis.document; browser.cleanup(); }
 });
 

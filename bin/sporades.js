@@ -691,15 +691,22 @@ function createConnection() {
       }
       listen(window, "popstate", scheduleRoute);
       listen(window, "hashchange", scheduleRoute);
-      if (typeof MutationObserver === "function" && document.documentElement) {
-        const observer = new MutationObserver((records) => {
-          if (records.some((record) => {
-            const nodes = [record.target, ...(record.addedNodes ?? []), ...(record.removedNodes ?? [])];
-            return nodes.some((node) => node?.matches?.('meta[name="sporades-journey"]') || node?.querySelector?.('meta[name="sporades-journey"]'));
-          })) scheduleRoute();
+      if (typeof MutationObserver === "function" && document.head) {
+        let meta = null;
+        const metaObserver = new MutationObserver(() => scheduleRoute());
+        const bindMeta = () => {
+          const next = document.querySelector?.('meta[name="sporades-journey"]') ?? null;
+          if (next === meta) return;
+          metaObserver.disconnect(); meta = next;
+          if (meta) metaObserver.observe(meta, { attributes: true, attributeFilter: ["content"] });
+        };
+        bindMeta();
+        const headObserver = new MutationObserver((records) => {
+          if (!records.some((record) => [...(record.addedNodes ?? []), ...(record.removedNodes ?? [])].some((node) => node?.matches?.('meta[name="sporades-journey"]')))) return;
+          bindMeta(); scheduleRoute();
         });
-        observer.observe(document.documentElement, { subtree: true, childList: true, attributes: true, attributeFilter: ["content"] });
-        cleanups.push(() => observer.disconnect());
+        headObserver.observe(document.head, { childList: true });
+        cleanups.push(() => { headObserver.disconnect(); metaObserver.disconnect(); });
       }
       scheduleRoute();
     }
@@ -709,19 +716,28 @@ function createConnection() {
       listen(document, "visibilitychange", () => publish(document.hidden ? "away" : "focused"));
     }
     if (capture.interactions) {
+      let pendingClick = null;
       const observeInteraction = (event) => {
         const path = typeof event.composedPath === "function" ? event.composedPath() : [];
         const candidates = event.type === "submit" && event.submitter ? [event.submitter, ...path] : path;
         const annotated = candidates.find((node) => node?.getAttribute?.("data-sporades-journey") != null);
         const status = annotated?.getAttribute?.("data-sporades-journey")?.trim();
         if (!status) return;
-        queueMicrotask(() => {
+        const publishAfterPropagation = () => queueMicrotask(() => {
           if (event.defaultPrevented || status === "inactive" || new TextEncoder().encode(status).length > 256) return;
           publish(status);
         });
+        if (event.type === "submit") {
+          if (pendingClick && event.submitter && pendingClick.element === event.submitter) { clearTimeout(pendingClick.timer); pendingClick = null; }
+          publishAfterPropagation();
+          return;
+        }
+        const timer = setTimeout(() => { if (pendingClick?.timer === timer) pendingClick = null; publishAfterPropagation(); }, 0);
+        pendingClick = { element: annotated, timer };
       };
       listen(document, "click", observeInteraction, true);
       listen(document, "submit", observeInteraction, true);
+      cleanups.push(() => { if (pendingClick) clearTimeout(pendingClick.timer); pendingClick = null; });
     }
     let stopped = false;
     journeyCaptureTeardown = () => { if (stopped) return; stopped = true; for (const cleanup of cleanups.splice(0).reverse()) cleanup(); if (window[ownerKey] === journeyCaptureTeardown) delete window[ownerKey]; };
