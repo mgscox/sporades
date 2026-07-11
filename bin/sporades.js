@@ -698,9 +698,9 @@ function createConnection() {
             bindMeta(); scheduleRoute();
           }
         });
-        const bindMeta = () => {
+        const bindMeta = (force = false) => {
           const next = document.querySelector?.('meta[name="sporades-journey"]') ?? null;
-          if (next === meta) return;
+          if (next === meta && !force) return;
           metaObserver.disconnect(); meta = next;
           for (const candidate of document.head.querySelectorAll?.("meta") ?? []) metaObserver.observe(candidate, { attributes: true, attributeFilter: ["name", "content"], attributeOldValue: true });
           if (meta && !(document.head.querySelectorAll?.("meta") ?? []).includes(meta)) metaObserver.observe(meta, { attributes: true, attributeFilter: ["name", "content"], attributeOldValue: true });
@@ -708,7 +708,7 @@ function createConnection() {
         bindMeta();
         const headObserver = new MutationObserver((records) => {
           if (!records.some((record) => [...(record.addedNodes ?? []), ...(record.removedNodes ?? [])].some((node) => node?.matches?.("meta")))) return;
-          const previous = meta; bindMeta(); if (previous !== meta) scheduleRoute();
+          const previous = meta; bindMeta(true); if (previous !== meta) scheduleRoute();
         });
         headObserver.observe(document.head, { childList: true });
         cleanups.push(() => { headObserver.disconnect(); metaObserver.disconnect(); });
@@ -733,12 +733,12 @@ function createConnection() {
           publish(status);
         });
         if (event.type === "submit") {
-          if (pendingClick && (pendingClick.status === status || event.submitter && pendingClick.element === event.submitter)) { clearTimeout(pendingClick.timer); pendingClick = null; }
+          if (pendingClick && (event.submitter && pendingClick.element === event.submitter || candidates.includes(pendingClick.element))) { clearTimeout(pendingClick.timer); pendingClick = null; }
           publishAfterPropagation();
           return;
         }
         const timer = setTimeout(() => { if (pendingClick?.timer === timer) pendingClick = null; publishAfterPropagation(); }, 0);
-        pendingClick = { element: annotated, status, timer };
+        pendingClick = { element: annotated, timer };
       };
       listen(document, "click", observeInteraction, true);
       listen(document, "submit", observeInteraction, true);

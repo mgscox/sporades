@@ -151,7 +151,10 @@ test("Journey capture publishes only safe browser signals after consent and tear
     constructor(callback) { this.callback = callback; this.observations = []; observers.push(this); }
     observe(target, options) { this.observations.push({ target, options }); }
     disconnect() { this.observations = []; }
-    emit(records) { this.callback(records); }
+    emit(records) {
+      for (const record of records) if (record.attributeName && !this.observations.some(({ target }) => target === record.target)) throw new Error("Mutation emitted for an unobserved target");
+      this.callback(records);
+    }
   };
   window.addEventListener = add; window.removeEventListener = remove;
   window.requestAnimationFrame = (callback) => { queueMicrotask(callback); return 1; };
@@ -191,8 +194,16 @@ test("Journey capture publishes only safe browser signals after consent and tear
     headObserver.emit([{ addedNodes: [semanticMeta], removedNodes: [] }]);
     await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.at(-1).metadata.page, "orders.detail");
     const metaObserver = observers.find((observer) => observer.observations.some(({ target }) => target === semanticMeta));
+    let alternateName = "description";
+    const alternateMeta = { matches: (selector) => selector === "meta", getAttribute: (name) => name === "name" ? alternateName : "alternate.page" };
+    headMetas = [semanticMeta, alternateMeta]; headObserver.emit([{ addedNodes: [alternateMeta], removedNodes: [] }]);
+    assert.ok(metaObserver.observations.some(({ target }) => target === alternateMeta), "new ordinary head meta becomes a narrowly observed name-transition candidate");
+    alternateName = "sporades-journey"; metaObserver.emit([{ target: alternateMeta, attributeName: "name", oldValue: "description" }]);
+    await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.at(-1).metadata.page, "orders.detail", "the existing first semantic meta retains selection");
     semanticMeta.getAttribute = () => "orders.revised"; metaObserver.emit([{ target: semanticMeta, attributeName: "content" }]);
     await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.at(-1).metadata.page, "orders.revised");
+    semanticMeta = alternateMeta; headMetas = [alternateMeta]; headObserver.emit([{ addedNodes: [], removedNodes: [semanticMeta] }]);
+    await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.at(-1).metadata.page, "alternate.page", "removing the active meta selects an already-observed renamed candidate");
     semanticMeta = null; headMetas = []; headObserver.emit([{ addedNodes: [], removedNodes: [{ matches: (selector) => selector === "meta" }] }]);
     await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.at(-1).metadata.page, "/checkout");
     let transitionName = "description";
@@ -250,6 +261,13 @@ test("Journey capture publishes only safe browser signals after consent and tear
     for (const listener of listeners.get("submit") ?? []) listener({ type: "submit", submitter: null, composedPath: () => [form], defaultPrevented: false });
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(calls.length, beforeEnter + 1, "Enter-key form submission follows the native submit path");
+    const sameStatusClick = { getAttribute: () => "shared.status" };
+    const sameStatusForm = { getAttribute: () => "shared.status" };
+    const beforeUnrelated = calls.length;
+    for (const listener of listeners.get("click") ?? []) listener({ type: "click", composedPath: () => [sameStatusClick], defaultPrevented: false });
+    for (const listener of listeners.get("submit") ?? []) listener({ type: "submit", submitter: null, composedPath: () => [sameStatusForm], defaultPrevented: false });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(calls.length, beforeUnrelated + 2, "an unrelated same-status click and programmatic submit both publish");
     await replacementRuntime.journey.disable();
     assert.equal((listeners.get("click") ?? []).length, 0);
     for (const type of ["submit", "popstate", "hashchange", "focus", "blur", "visibilitychange"]) assert.equal((listeners.get(type) ?? []).length, 0, `${type} listener is torn down`);
