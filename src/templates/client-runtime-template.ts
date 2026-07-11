@@ -1,4 +1,4 @@
-export function createClientRuntimeSource() {
+export function createClientRuntimeSource(options: { devRefresh?: boolean } = {}) {
   return `
 const websocketPath = "/__sporades/ws";
 
@@ -361,7 +361,7 @@ function createConnection() {
     }
     socket = new WebSocket(url);
     socket.addEventListener("open", () => {
-      request("dev.refresh.subscribe");
+      ${options.devRefresh ? 'request("dev.refresh.subscribe");' : ""}
       request("auth.get");
       if (journeyConsentOptions) {
         request("journey.enable", { options: journeyConsentOptions }).then((result) => {
@@ -379,10 +379,11 @@ function createConnection() {
     });
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
-      if (message.type === "refresh" && message.data?.mode === "full-page") {
+      ${options.devRefresh ? `if (message.type === "refresh" && message.data?.mode === "full-page") {
+        send({ id: null, type: "dev.refresh.received", sequence: message.data.sequence });
         window.location.reload();
         return;
-      }
+      }` : ""}
       if (message.type === "auth.result" || message.type === "auth.session.replace") {
         storeAuthSession(message);
       }

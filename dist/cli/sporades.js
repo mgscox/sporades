@@ -1282,13 +1282,86 @@ async function inspectContainerSchedules(options) {
         throw commandError(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
     writeResult(bounded);
 }
+function createDevRefreshController(timeoutMs = 1_000) {
+    let sequence = 0;
+    const clients = new Map();
+    const settle = (pending, outcome) => {
+        if (pending.settled)
+            return;
+        pending.settled = true;
+        clearTimeout(pending.timer);
+        pending.resolve(outcome);
+    };
+    const disconnected = (client) => {
+        const state = clients.get(client);
+        if (!state)
+            return;
+        clients.delete(client);
+        for (const pending of state.pending.values())
+            settle(pending, "disconnected");
+        state.pending.clear();
+    };
+    const transport = {
+        connected(client, send) {
+            clients.set(client, { send, subscribed: false, pending: new Map() });
+        },
+        disconnected,
+        message(client, message) {
+            const state = clients.get(client);
+            if (!state)
+                return false;
+            if (message.type === "dev.refresh.subscribe") {
+                state.subscribed = true;
+                state.send({ id: message.id ?? null, type: "dev.refresh.ready", data: { mode: "full-page", sequence }, error: null });
+                return true;
+            }
+            if (message.type === "dev.refresh.received") {
+                const acknowledged = Number.isInteger(message.sequence) ? state.pending.get(message.sequence) : null;
+                if (acknowledged) {
+                    state.pending.delete(message.sequence);
+                    settle(acknowledged, "delivered");
+                }
+                return true;
+            }
+            return false;
+        },
+    };
+    const broadcast = async () => {
+        const currentSequence = ++sequence;
+        const targets = [...clients.values()].filter((client) => client.subscribed);
+        const outcomes = await Promise.all(targets.map((client) => new Promise((resolve) => {
+            const pending = { resolve, settled: false, timer: null };
+            pending.timer = setTimeout(() => {
+                client.pending.delete(currentSequence);
+                settle(pending, "timed-out");
+            }, timeoutMs);
+            client.pending.set(currentSequence, pending);
+            try {
+                client.send({ id: null, type: "refresh", data: { mode: "full-page", sequence: currentSequence }, error: null });
+            }
+            catch {
+                client.pending.delete(currentSequence);
+                settle(pending, "send-failed");
+            }
+        })));
+        return {
+            sequence: currentSequence,
+            clientsAttempted: targets.length,
+            clientsDelivered: outcomes.filter((outcome) => outcome === "delivered").length,
+            clientsTimedOut: outcomes.filter((outcome) => outcome === "timed-out").length,
+            clientsDisconnected: outcomes.filter((outcome) => outcome === "disconnected").length,
+            clientsSendFailed: outcomes.filter((outcome) => outcome === "send-failed").length,
+        };
+    };
+    return { transport, broadcast };
+}
 async function startDevSession(options) {
     let config = await readProjectConfig(options.projectDir);
     const session = options.publicDev ? "public-dev" : "dev";
     let security = resolveEffectiveSecurityPolicy(config, session);
     const restartPolicy = restartPolicyForMode("dev");
     const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4000;
-    let bundle = await createBundle(options.projectDir, config);
+    let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true });
     const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
     const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
         wait: true,
@@ -1314,7 +1387,8 @@ async function startDevSession(options) {
         message: "Dev session started",
         data: { diagnostics: runtime.database.runtimeDiagnostics },
     });
-    const websocketHub = createWebSocketHub(() => runtime.database);
+    const devRefresh = createDevRefreshController();
+    const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport);
     const server = createServer(async (request, response) => {
         try {
             const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -1590,7 +1664,7 @@ async function startDevSession(options) {
             const nextConfig = await readProjectConfig(options.projectDir);
             const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
             const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
-            rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false });
+            rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true });
             const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
                 wait: true,
                 emit: (data, error) => emitDevEvent(options, data, error),
@@ -1606,7 +1680,7 @@ async function startDevSession(options) {
                 runtimeServiceEnv = nextCapsuleServiceEnv;
                 fatalRestartAttempts = 0;
                 if (configuredClientToolchain(nextConfig) === "vite")
-                    refresh = websocketHub.refreshAll();
+                    refresh = await devRefresh.broadcast();
                 websocketHub.disconnectAll();
             }
             const previousBundle = bundle;
@@ -1620,7 +1694,7 @@ async function startDevSession(options) {
             config = nextConfig;
             security = nextSecurity;
             if (!affectsServerRuntime && configuredClientToolchain(nextConfig) === "vite")
-                refresh = websocketHub.refreshAll();
+                refresh = await devRefresh.broadcast();
             emitDevEvent(options, {
                 event: "rebuild",
                 status: "success",

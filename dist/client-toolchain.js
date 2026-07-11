@@ -51,7 +51,7 @@ async function buildEsbuild(options) {
                 resolveDir: path.dirname(options.clientSourcePath),
                 loader: options.frameworkConfig.loader,
             },
-            plugins: [sporadesEsbuildClientPlugin()],
+            plugins: [sporadesEsbuildClientPlugin(options.devRefresh === true)],
         });
         const outputs = result.outputFiles ?? [];
         const clientOutput = outputs.find((output) => path.relative(outputDir, output.path) === "client.js");
@@ -116,7 +116,7 @@ async function buildVite(options) {
             logLevel: "silent",
             esbuild: { jsx: "automatic", jsxImportSource: options.frameworkConfig.jsxImportSource ?? undefined },
             css: { postcss: { plugins: [] } },
-            plugins: [...frameworkPlugins, sporadesViteClientPlugin()],
+            plugins: [...frameworkPlugins, sporadesViteClientPlugin(options.devRefresh === true)],
             build: {
                 write: false,
                 emptyOutDir: false,
@@ -275,22 +275,22 @@ function isCanonicalDescendant(parent, candidate) {
 function projectToolchainError(_framework, message, hint, diagnostics) {
     return clientToolchainError(message, hint, diagnostics);
 }
-function sporadesEsbuildClientPlugin() {
+function sporadesEsbuildClientPlugin(devRefresh = false) {
     return {
         name: "sporades-client",
         setup(build) {
             build.onResolve({ filter: /^sporades\/client$/ }, () => ({ path: "sporades/client", namespace: "sporades-runtime" }));
-            build.onLoad({ filter: /^sporades\/client$/, namespace: "sporades-runtime" }, () => ({ loader: "js", contents: createClientRuntimeSource() }));
+            build.onLoad({ filter: /^sporades\/client$/, namespace: "sporades-runtime" }, () => ({ loader: "js", contents: createClientRuntimeSource({ devRefresh }) }));
         },
     };
 }
-function sporadesViteClientPlugin() {
+function sporadesViteClientPlugin(devRefresh = false) {
     const runtimeId = "\0sporades:client-runtime";
     return {
         name: "sporades-client-runtime",
         enforce: "pre",
         resolveId(id) { return id === "sporades/client" ? runtimeId : null; },
-        load(id) { return id === runtimeId ? createClientRuntimeSource() : null; },
+        load(id) { return id === runtimeId ? createClientRuntimeSource({ devRefresh }) : null; },
     };
 }
 function referencesLegacyClientShell(html) {

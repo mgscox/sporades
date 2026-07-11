@@ -44,6 +44,7 @@ export type FrameworkBundleConfig = {
 };
 export declare function createBundle(projectDir: string, config: ProjectConfig, options?: {
     publishLegacy?: boolean;
+    devClientRefresh?: boolean;
     activeReferenceFault?: (event: "before-active-write" | "after-active-write" | "before-active-restore" | "after-active-restore") => void;
 }): Promise<{
     paths: {

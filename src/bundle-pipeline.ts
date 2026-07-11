@@ -87,6 +87,7 @@ export async function createBundle(
   config: ProjectConfig,
   options: {
     publishLegacy?: boolean;
+    devClientRefresh?: boolean;
     activeReferenceFault?: (event: "before-active-write" | "after-active-write" | "before-active-restore" | "after-active-restore") => void;
   } = {},
 ) {
@@ -138,6 +139,7 @@ export async function createBundle(
     clientSource,
     clientSourcePath: paths.clientEntry,
     frameworkConfig: frameworkBundleConfig,
+    devRefresh: options.devClientRefresh === true,
   }).catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain); });
   const clientBundle = clientOutput.legacyClientBundle;
   const serverBundle = createServerBundleSource({

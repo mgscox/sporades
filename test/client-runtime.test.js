@@ -4,8 +4,8 @@ import { test } from "node:test";
 import { createClientRuntimeSource } from "../dist/templates/client-runtime-template.js";
 import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
 
-async function importClientRuntime() {
-  const source = createClientRuntimeSource();
+async function importClientRuntime(options = {}) {
+  const source = createClientRuntimeSource(options);
   const encoded = Buffer.from(source).toString("base64");
   return import(`data:text/javascript;base64,${encoded}#${Date.now()}-${Math.random()}`);
 }
@@ -913,19 +913,31 @@ test("client performs one full-page refresh from the Sporades transport without 
   let reloads = 0;
   globalThis.window.location.reload = () => { reloads += 1; };
   try {
-    const runtime = await importClientRuntime();
+    const runtime = await importClientRuntime({ devRefresh: true });
     await runtime.auth.get();
     assert.equal(browser.sockets.length, 1);
     assert.equal(browser.sent.filter((message) => message.type === "dev.refresh.subscribe").length, 1, "the sole page transport explicitly joins the Dev refresh broadcast set");
     assert.equal(browser.sockets[0].listeners.get("message")?.length, 1);
     browser.sockets[0].emit("message", {
-      data: JSON.stringify({ id: null, type: "refresh", data: { mode: "full-page" }, error: null }),
+      data: JSON.stringify({ id: null, type: "refresh", data: { mode: "full-page", sequence: 1 }, error: null }),
     });
     assert.equal(reloads, 1);
+    assert.deepEqual(browser.sent.find((message) => message.type === "dev.refresh.received"), { id: null, type: "dev.refresh.received", sequence: 1, sessionToken: "session-token" });
     assert.equal(browser.sockets.length, 1, "refresh reuses the sole Sporades page transport");
   } finally {
     browser.cleanup();
   }
+});
+
+test("production client runtime omits the Dev refresh protocol", async () => {
+  const source = createClientRuntimeSource();
+  assert.doesNotMatch(source, /dev\.refresh\.(?:subscribe|ready|received)/);
+  const browser = installBrowserFakes(anonymousAuth);
+  try {
+    const runtime = await importClientRuntime();
+    await runtime.auth.get();
+    assert.equal(browser.sent.some((message) => String(message.type).startsWith("dev.refresh.")), false);
+  } finally { browser.cleanup(); }
 });
 
 test("client isAuthenticated returns true for linked auth", async () => {

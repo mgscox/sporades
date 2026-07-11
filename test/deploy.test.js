@@ -816,6 +816,9 @@ for (const { framework, template } of [
 
     const publicRoot = path.join(projectDir, ".sporades", "build", ".public-trees", binding.clientRelease.publicTree);
     const output = (await Promise.all(binding.clientRelease.paths.map((file) => readFile(path.join(publicRoot, file), "utf8")))).join("\n");
+    const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
+    assert.doesNotMatch(output, /dev\.refresh\.(?:subscribe|ready|received)/, "Container client output omits Dev refresh protocol");
+    assert.doesNotMatch(serverBundle, /dev\.refresh\.(?:subscribe|ready|received)/, "Container server output omits Dev refresh capability and hints");
     assert.doesNotMatch(output, /vite-container-secret|SERVER_ONLY_TOKEN|\/@vite\/client|react-refresh|vite\/hmr/i);
     if (framework === "preact") assert.doesNotMatch(output, /node_modules\/react(?:-dom)?\/|from ["']react(?:-dom)?/);
     if (framework === "vue") assert.match(output, {

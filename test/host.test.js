@@ -4258,6 +4258,9 @@ for (const { framework, template } of [
     const publicEntries = entries.filter((file) => file.startsWith("public/"));
     const publicRoot = path.join(projectDir, ".sporades", "build", ".public-trees", JSON.parse(await readFile(path.join(projectDir, ".sporades", "build", ".public-trees", "active.json"), "utf8")).tree);
     const publicText = (await Promise.all(publicEntries.map((file) => readFile(path.join(publicRoot, file.slice("public/".length)), "utf8")))).join("\n");
+    const serverBundle = await readFile(path.join(projectDir, ".sporades", "build", "server.mjs"), "utf8");
+    assert.doesNotMatch(publicText, /dev\.refresh\.(?:subscribe|ready|received)/, "Hosted client output omits Dev refresh protocol");
+    assert.doesNotMatch(serverBundle, /dev\.refresh\.(?:subscribe|ready|received)/, "Hosted server output omits Dev refresh capability and hints");
     assert.doesNotMatch(publicText, /\/@vite\/client|react-refresh|vite\/hmr|SERVER_ONLY/i);
     if (framework === "preact") assert.doesNotMatch(publicText, /node_modules\/react(?:-dom)?\/|from ["']react(?:-dom)?/);
     if (framework === "vue") assert.match(publicText, {

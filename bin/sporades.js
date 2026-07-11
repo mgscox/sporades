@@ -21,7 +21,7 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
 // src/templates/client-runtime-template.ts
-function createClientRuntimeSource() {
+function createClientRuntimeSource(options = {}) {
   return `
 const websocketPath = "/__sporades/ws";
 
@@ -384,7 +384,7 @@ function createConnection() {
     }
     socket = new WebSocket(url);
     socket.addEventListener("open", () => {
-      request("dev.refresh.subscribe");
+      ${options.devRefresh ? 'request("dev.refresh.subscribe");' : ""}
       request("auth.get");
       if (journeyConsentOptions) {
         request("journey.enable", { options: journeyConsentOptions }).then((result) => {
@@ -402,10 +402,11 @@ function createConnection() {
     });
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
-      if (message.type === "refresh" && message.data?.mode === "full-page") {
+      ${options.devRefresh ? `if (message.type === "refresh" && message.data?.mode === "full-page") {
+        send({ id: null, type: "dev.refresh.received", sequence: message.data.sequence });
         window.location.reload();
         return;
-      }
+      }` : ""}
       if (message.type === "auth.result" || message.type === "auth.session.replace") {
         storeAuthSession(message);
       }
@@ -980,7 +981,7 @@ async function buildEsbuild(options) {
         resolveDir: path.dirname(options.clientSourcePath),
         loader: options.frameworkConfig.loader
       },
-      plugins: [sporadesEsbuildClientPlugin()]
+      plugins: [sporadesEsbuildClientPlugin(options.devRefresh === true)]
     });
     const outputs = result.outputFiles ?? [];
     const clientOutput = outputs.find((output) => path.relative(outputDir, output.path) === "client.js");
@@ -1041,7 +1042,7 @@ async function buildVite(options) {
       logLevel: "silent",
       esbuild: { jsx: "automatic", jsxImportSource: options.frameworkConfig.jsxImportSource ?? void 0 },
       css: { postcss: { plugins: [] } },
-      plugins: [...frameworkPlugins, sporadesViteClientPlugin()],
+      plugins: [...frameworkPlugins, sporadesViteClientPlugin(options.devRefresh === true)],
       build: {
         write: false,
         emptyOutDir: false,
@@ -1193,16 +1194,16 @@ function isCanonicalDescendant(parent, candidate) {
 function projectToolchainError(_framework, message, hint, diagnostics) {
   return clientToolchainError(message, hint, diagnostics);
 }
-function sporadesEsbuildClientPlugin() {
+function sporadesEsbuildClientPlugin(devRefresh = false) {
   return {
     name: "sporades-client",
     setup(build) {
       build.onResolve({ filter: /^sporades\/client$/ }, () => ({ path: "sporades/client", namespace: "sporades-runtime" }));
-      build.onLoad({ filter: /^sporades\/client$/, namespace: "sporades-runtime" }, () => ({ loader: "js", contents: createClientRuntimeSource() }));
+      build.onLoad({ filter: /^sporades\/client$/, namespace: "sporades-runtime" }, () => ({ loader: "js", contents: createClientRuntimeSource({ devRefresh }) }));
     }
   };
 }
-function sporadesViteClientPlugin() {
+function sporadesViteClientPlugin(devRefresh = false) {
   const runtimeId = "\0sporades:client-runtime";
   return {
     name: "sporades-client-runtime",
@@ -1211,7 +1212,7 @@ function sporadesViteClientPlugin() {
       return id === "sporades/client" ? runtimeId : null;
     },
     load(id) {
-      return id === runtimeId ? createClientRuntimeSource() : null;
+      return id === runtimeId ? createClientRuntimeSource({ devRefresh }) : null;
     }
   };
 }
@@ -8163,12 +8164,11 @@ function validateJourneyJson(value, depth, seen) {
 function journeyError(id, code = "JOURNEY_NOT_ENABLED", message = "User journey tracking is not enabled for this Capsule.", hint = "Declare journey: { enabled: true } on capsule().") {
   return { id: id ?? null, type: "error", data: null, error: { code, message, hint } };
 }
-function createWebSocketHub(getDatabase) {
+function createWebSocketHub(getDatabase, trustedTransport = null) {
   const clients = /* @__PURE__ */ new Set();
   const journeys = /* @__PURE__ */ new Map();
   const connectionTokens = /* @__PURE__ */ new Map();
   let nextClientId = 1;
-  let devRefreshSequence = 0;
   const connectionTokenTtlMs = 4 * 60 * 60 * 1e3;
   let journeyExpiryTimer = null;
   let journeyDisableRequests = 0;
@@ -8221,10 +8221,10 @@ function createWebSocketHub(getDatabase) {
         connectedAt: now,
         lastSeenAt: now,
         journey: null,
-        journeySubscriptions: /* @__PURE__ */ new Set(),
-        devRefreshSubscribed: false
+        journeySubscriptions: /* @__PURE__ */ new Set()
       };
       clients.add(client);
+      trustedTransport?.connected?.(client, (message) => sendJson(client, message));
       socket.on("data", (chunk) => {
         client.lastSeenAt = (/* @__PURE__ */ new Date()).toISOString();
         client.buffer = Buffer.concat([client.buffer, chunk]);
@@ -8232,6 +8232,7 @@ function createWebSocketHub(getDatabase) {
       });
       const removeClient = () => {
         clients.delete(client);
+        trustedTransport?.disconnected?.(client);
         client.subscriptions.clear();
         client.journeySubscriptions.clear();
         client.journey = null;
@@ -8243,6 +8244,7 @@ function createWebSocketHub(getDatabase) {
       if (journeyExpiryTimer !== null) getDatabase().clock.clearTimer(journeyExpiryTimer);
       journeyExpiryTimer = null;
       for (const client of clients) {
+        trustedTransport?.disconnected?.(client);
         closeWebSocketClient(client);
       }
       clients.clear();
@@ -8258,20 +8260,6 @@ function createWebSocketHub(getDatabase) {
     },
     journeyDiagnostics() {
       return { disableRequests: journeyDisableRequests, activeStates: journeys.size };
-    },
-    refreshAll() {
-      const sequence = ++devRefreshSequence;
-      let clientsAttempted = 0;
-      for (const client of clients) {
-        if (!client.devRefreshSubscribed) continue;
-        clientsAttempted += 1;
-        try {
-          sendJson(client, { id: null, type: "refresh", data: { mode: "full-page", sequence }, error: null });
-        } catch {
-          client.subscriptions.clear();
-        }
-      }
-      return { sequence, clientsAttempted };
     },
     notifyFileEvent(userId, event) {
       for (const client of clients) {
@@ -8450,16 +8438,7 @@ function createWebSocketHub(getDatabase) {
       });
       return;
     }
-    if (message.type === "dev.refresh.subscribe") {
-      client.devRefreshSubscribed = true;
-      sendJson(client, {
-        id: message.id ?? null,
-        type: "dev.refresh.ready",
-        data: { mode: "full-page", sequence: devRefreshSequence },
-        error: null
-      });
-      return;
-    }
+    if (await trustedTransport?.message?.(client, message)) return;
     const database = getDatabase();
     const messageSessionToken = typeof message.sessionToken === "string" && message.sessionToken.length > 0 ? message.sessionToken : client.session.token;
     const resolvedSession = await resolveAnonymousSession(database, messageSessionToken ?? null);
@@ -8798,7 +8777,7 @@ function createWebSocketHub(getDatabase) {
       type: "error",
       error: {
         message: `Unsupported WebSocket message: ${message.type ?? ""}`.trim(),
-        hint: "Use auth.get, auth.signIn, auth.signOut, query.subscribe, query.unsubscribe, mutation.run, app messages, files.*, or the Dev refresh subscription through the Sporades client SDK."
+        hint: "Use auth.get, auth.signIn, auth.signOut, query.subscribe, query.unsubscribe, mutation.run, app messages, or files.* through the Sporades client SDK."
       }
     });
   }
@@ -11734,7 +11713,8 @@ async function createBundle(projectDir, config, options = {}) {
     indexHtmlPath: paths.indexHtml,
     clientSource,
     clientSourcePath: paths.clientEntry,
-    frameworkConfig: frameworkBundleConfig
+    frameworkConfig: frameworkBundleConfig,
+    devRefresh: options.devClientRefresh === true
   }).catch((error) => {
     throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
   });
@@ -18707,13 +18687,81 @@ async function inspectContainerSchedules(options) {
   if (!bounded.ok) throw commandError4(bounded.error.message, bounded.error.hint, bounded.error.diagnostics);
   writeResult(bounded);
 }
+function createDevRefreshController(timeoutMs = 1e3) {
+  let sequence = 0;
+  const clients = /* @__PURE__ */ new Map();
+  const settle = (pending, outcome) => {
+    if (pending.settled) return;
+    pending.settled = true;
+    clearTimeout(pending.timer);
+    pending.resolve(outcome);
+  };
+  const disconnected = (client) => {
+    const state = clients.get(client);
+    if (!state) return;
+    clients.delete(client);
+    for (const pending of state.pending.values()) settle(pending, "disconnected");
+    state.pending.clear();
+  };
+  const transport = {
+    connected(client, send) {
+      clients.set(client, { send, subscribed: false, pending: /* @__PURE__ */ new Map() });
+    },
+    disconnected,
+    message(client, message) {
+      const state = clients.get(client);
+      if (!state) return false;
+      if (message.type === "dev.refresh.subscribe") {
+        state.subscribed = true;
+        state.send({ id: message.id ?? null, type: "dev.refresh.ready", data: { mode: "full-page", sequence }, error: null });
+        return true;
+      }
+      if (message.type === "dev.refresh.received") {
+        const acknowledged = Number.isInteger(message.sequence) ? state.pending.get(message.sequence) : null;
+        if (acknowledged) {
+          state.pending.delete(message.sequence);
+          settle(acknowledged, "delivered");
+        }
+        return true;
+      }
+      return false;
+    }
+  };
+  const broadcast = async () => {
+    const currentSequence = ++sequence;
+    const targets = [...clients.values()].filter((client) => client.subscribed);
+    const outcomes = await Promise.all(targets.map((client) => new Promise((resolve) => {
+      const pending = { resolve, settled: false, timer: null };
+      pending.timer = setTimeout(() => {
+        client.pending.delete(currentSequence);
+        settle(pending, "timed-out");
+      }, timeoutMs);
+      client.pending.set(currentSequence, pending);
+      try {
+        client.send({ id: null, type: "refresh", data: { mode: "full-page", sequence: currentSequence }, error: null });
+      } catch {
+        client.pending.delete(currentSequence);
+        settle(pending, "send-failed");
+      }
+    })));
+    return {
+      sequence: currentSequence,
+      clientsAttempted: targets.length,
+      clientsDelivered: outcomes.filter((outcome) => outcome === "delivered").length,
+      clientsTimedOut: outcomes.filter((outcome) => outcome === "timed-out").length,
+      clientsDisconnected: outcomes.filter((outcome) => outcome === "disconnected").length,
+      clientsSendFailed: outcomes.filter((outcome) => outcome === "send-failed").length
+    };
+  };
+  return { transport, broadcast };
+}
 async function startDevSession(options) {
   let config = await readProjectConfig(options.projectDir);
   const session = options.publicDev ? "public-dev" : "dev";
   let security = resolveEffectiveSecurityPolicy(config, session);
   const restartPolicy = restartPolicyForMode("dev");
   const port = options.port ?? config.dev?.port ?? config.deploy?.port ?? 4e3;
-  let bundle = await createBundle(options.projectDir, config);
+  let bundle = await createBundle(options.projectDir, config, { devClientRefresh: true });
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config, { publishPorts: true });
   const capsuleServiceEnv = await startCapsuleServices(capsuleServices, options.projectDir, {
     wait: true,
@@ -18739,7 +18787,8 @@ async function startDevSession(options) {
     message: "Dev session started",
     data: { diagnostics: runtime.database.runtimeDiagnostics }
   });
-  const websocketHub = createWebSocketHub(() => runtime.database);
+  const devRefresh = createDevRefreshController();
+  const websocketHub = createWebSocketHub(() => runtime.database, devRefresh.transport);
   const server = createServer(async (request, response) => {
     try {
       const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -19030,7 +19079,7 @@ async function startDevSession(options) {
       const nextConfig = await readProjectConfig(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
       const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
-      rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false });
+      rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false, devClientRefresh: true });
       const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
         wait: true,
         emit: (data, error) => emitDevEvent(options, data, error)
@@ -19056,7 +19105,7 @@ async function startDevSession(options) {
         });
         runtimeServiceEnv = nextCapsuleServiceEnv;
         fatalRestartAttempts = 0;
-        if (configuredClientToolchain(nextConfig) === "vite") refresh = websocketHub.refreshAll();
+        if (configuredClientToolchain(nextConfig) === "vite") refresh = await devRefresh.broadcast();
         websocketHub.disconnectAll();
       }
       const previousBundle = bundle;
@@ -19069,7 +19118,7 @@ async function startDevSession(options) {
       });
       config = nextConfig;
       security = nextSecurity;
-      if (!affectsServerRuntime && configuredClientToolchain(nextConfig) === "vite") refresh = websocketHub.refreshAll();
+      if (!affectsServerRuntime && configuredClientToolchain(nextConfig) === "vite") refresh = await devRefresh.broadcast();
       emitDevEvent(options, {
         event: "rebuild",
         status: "success",

@@ -89,6 +89,7 @@ export async function createBundle(projectDir, config, options = {}) {
         clientSource,
         clientSourcePath: paths.clientEntry,
         frameworkConfig: frameworkBundleConfig,
+        devRefresh: options.devClientRefresh === true,
     }).catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain); });
     const clientBundle = clientOutput.legacyClientBundle;
     const serverBundle = createServerBundleSource({

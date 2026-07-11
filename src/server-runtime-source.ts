@@ -7492,12 +7492,11 @@ function journeyError(id: any, code = "JOURNEY_NOT_ENABLED", message = "User jou
   return { id: id ?? null, type: "error", data: null, error: { code, message, hint } };
 }
 
-export function createWebSocketHub(getDatabase: () => any) {
+export function createWebSocketHub(getDatabase: () => any, trustedTransport: any = null) {
   const clients = new Set<any>();
   const journeys = new Map<string, any>();
   const connectionTokens = new Map<string, number>();
   let nextClientId = 1;
-  let devRefreshSequence = 0;
   const connectionTokenTtlMs = 4 * 60 * 60 * 1000;
   let journeyExpiryTimer: any = null;
   let journeyDisableRequests = 0;
@@ -7554,9 +7553,9 @@ export function createWebSocketHub(getDatabase: () => any) {
         lastSeenAt: now,
         journey: null,
         journeySubscriptions: new Set(),
-        devRefreshSubscribed: false,
       };
       clients.add(client);
+      trustedTransport?.connected?.(client, (message: any) => sendJson(client, message));
       socket.on("data", (chunk: Uint8Array<ArrayBufferLike>) => {
         client.lastSeenAt = new Date().toISOString();
         client.buffer = Buffer.concat([client.buffer, chunk]);
@@ -7564,6 +7563,7 @@ export function createWebSocketHub(getDatabase: () => any) {
       });
       const removeClient = () => {
         clients.delete(client);
+        trustedTransport?.disconnected?.(client);
         client.subscriptions.clear();
         client.journeySubscriptions.clear();
         client.journey = null;
@@ -7575,6 +7575,7 @@ export function createWebSocketHub(getDatabase: () => any) {
       if (journeyExpiryTimer !== null) getDatabase().clock.clearTimer(journeyExpiryTimer);
       journeyExpiryTimer = null;
       for (const client of clients) {
+        trustedTransport?.disconnected?.(client);
         closeWebSocketClient(client);
       }
       clients.clear();
@@ -7589,20 +7590,6 @@ export function createWebSocketHub(getDatabase: () => any) {
       }));
     },
     journeyDiagnostics() { return { disableRequests: journeyDisableRequests, activeStates: journeys.size }; },
-    refreshAll() {
-      const sequence = ++devRefreshSequence;
-      let clientsAttempted = 0;
-      for (const client of clients) {
-        if (!client.devRefreshSubscribed) continue;
-        clientsAttempted += 1;
-        try {
-          sendJson(client, { id: null, type: "refresh", data: { mode: "full-page", sequence }, error: null });
-        } catch {
-          client.subscriptions.clear();
-        }
-      }
-      return { sequence, clientsAttempted };
-    },
     notifyFileEvent(userId: any, event: any) {
       for (const client of clients) {
         if (client.session.auth.userId !== userId) {
@@ -7803,16 +7790,7 @@ export function createWebSocketHub(getDatabase: () => any) {
       return;
     }
 
-    if (message.type === "dev.refresh.subscribe") {
-      client.devRefreshSubscribed = true;
-      sendJson(client, {
-        id: message.id ?? null,
-        type: "dev.refresh.ready",
-        data: { mode: "full-page", sequence: devRefreshSequence },
-        error: null,
-      });
-      return;
-    }
+    if (await trustedTransport?.message?.(client, message)) return;
 
     const database = getDatabase();
     const messageSessionToken =
@@ -8154,7 +8132,7 @@ export function createWebSocketHub(getDatabase: () => any) {
       type: "error",
       error: {
         message: `Unsupported WebSocket message: ${message.type ?? ""}`.trim(),
-        hint: "Use auth.get, auth.signIn, auth.signOut, query.subscribe, query.unsubscribe, mutation.run, app messages, files.*, or the Dev refresh subscription through the Sporades client SDK.",
+        hint: "Use auth.get, auth.signIn, auth.signOut, query.subscribe, query.unsubscribe, mutation.run, app messages, or files.* through the Sporades client SDK.",
       },
     });
   }

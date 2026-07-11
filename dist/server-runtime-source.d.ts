@@ -1309,7 +1309,7 @@ export declare function validateReadOnlyInspectionSql(sql: any): {
     ok: true;
 };
 export declare function simulateLocalIdentitySession(database: LooseRecord, options?: LooseRecord): Promise<any>;
-export declare function createWebSocketHub(getDatabase: () => any): {
+export declare function createWebSocketHub(getDatabase: () => any, trustedTransport?: any): {
     createConnectionToken(): string;
     accept(request: IncomingMessage, socket: Duplex): Promise<void>;
     disconnectAll(): void;
@@ -1330,10 +1330,6 @@ export declare function createWebSocketHub(getDatabase: () => any): {
     journeyDiagnostics(): {
         disableRequests: number;
         activeStates: number;
-    };
-    refreshAll(): {
-        sequence: number;
-        clientsAttempted: number;
     };
     notifyFileEvent(userId: any, event: any): void;
     deliverAuthSession(target: any, sessionData: {

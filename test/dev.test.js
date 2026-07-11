@@ -2143,6 +2143,8 @@ for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire
     const events = captureJsonEvents(child);
     let socket;
     let messages;
+    let foreignSocket;
+    let foreignMessages;
     try {
       const scrub = (html) => html.replace(/window\.__SPORADES_CONNECTION_TOKEN="[^"]+"/, 'window.__SPORADES_CONNECTION_TOKEN="<token>"');
       const started = await events.next((event) => event.ok && event.data?.event === "started");
@@ -2155,15 +2157,30 @@ for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire
       socket.send(JSON.stringify({ id: "svelte-dev-ready", type: "dev.refresh.subscribe" }));
       const ready = await messages.next((message) => message.id === "svelte-dev-ready" && message.type === "dev.refresh.ready");
       assert.deepEqual(ready, { id: "svelte-dev-ready", type: "dev.refresh.ready", data: { mode: "full-page", sequence: 0 }, error: null }, "acknowledgment proves this connection is in the Dev refresh broadcast set");
+      if (template === "guestbook") {
+        socket.send(JSON.stringify({ id: null, type: "dev.refresh.received", sequence: 1 }));
+        foreignSocket = await openSocket(started.data.url);
+        foreignMessages = captureSocketMessages(foreignSocket);
+      }
 
       const rebuiltSource = original.replace("</main>", '<p data-dev-probe="rebuilt">Svelte rebuilt</p></main>');
       assert.notEqual(rebuiltSource, original, `${template} edit must change generated output`);
       const refresh = messages.next((message) => message.type === "refresh");
       await writeFile(appPath, rebuiltSource);
+      const refreshMessage = await refresh;
+      assert.deepEqual(refreshMessage, { id: null, type: "refresh", data: { mode: "full-page", sequence: 1 }, error: null });
+      assert.equal(events.events.some((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success"), false, "rebuild success waits for refresh receipt");
+      if (foreignSocket) {
+        foreignSocket.send(JSON.stringify({ id: null, type: "dev.refresh.received", sequence: refreshMessage.data.sequence }));
+        foreignSocket.send(JSON.stringify({ id: "foreign-ack-barrier", type: "auth.get" }));
+        await foreignMessages.next((message) => message.id === "foreign-ack-barrier");
+        assert.equal(events.events.some((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success"), false, "foreign acknowledgment cannot release delivery");
+      }
+      socket.send(JSON.stringify({ id: null, type: "dev.refresh.received", sequence: refreshMessage.data.sequence }));
+      socket.send(JSON.stringify({ id: null, type: "dev.refresh.received", sequence: refreshMessage.data.sequence }));
       const rebuilt = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
       assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "svelte", toolchain: "vite" });
-      assert.deepEqual(rebuilt.data.refresh, { sequence: 1, clientsAttempted: 1 }, "success is emitted after the sequenced broadcast attempt");
-      assert.deepEqual(await refresh, { id: null, type: "refresh", data: { mode: "full-page", sequence: 1 }, error: null });
+      assert.deepEqual(rebuilt.data.refresh, { sequence: 1, clientsAttempted: 1, clientsDelivered: 1, clientsTimedOut: 0, clientsDisconnected: 0, clientsSendFailed: 0 }, "success is emitted after sequenced delivery acknowledgment");
       assert.equal(messages.history.filter((message) => message.type === "refresh").length, 1, "one successful edit emits exactly one full-page refresh");
       const lastGood = scrub(await (await fetch(started.data.url)).text());
       assert.notEqual(lastGood, initialHtml, "the successful edit changes the served Vite output tree");
@@ -2179,14 +2196,61 @@ for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire
       const recoveredSource = original.replace("</main>", '<p data-dev-probe="recovered">Svelte recovered</p></main>');
       assert.notEqual(recoveredSource, original);
       await writeFile(appPath, recoveredSource);
+      const recoveredMessage = await recoveredRefresh;
+      assert.deepEqual(recoveredMessage, { id: null, type: "refresh", data: { mode: "full-page", sequence: 2 }, error: null });
+      assert.equal(events.events.some((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success"), false);
+      socket.send(JSON.stringify({ id: null, type: "dev.refresh.received", sequence: recoveredMessage.data.sequence }));
       const recovered = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
       assert.deepEqual(recovered.data.build, { phase: "client", framework: "svelte", toolchain: "vite" });
-      assert.deepEqual(recovered.data.refresh, { sequence: 2, clientsAttempted: 1 });
-      assert.deepEqual(await recoveredRefresh, { id: null, type: "refresh", data: { mode: "full-page", sequence: 2 }, error: null });
+      assert.deepEqual(recovered.data.refresh, { sequence: 2, clientsAttempted: 1, clientsDelivered: 1, clientsTimedOut: 0, clientsDisconnected: 0, clientsSendFailed: 0 });
       assert.equal(messages.history.filter((message) => message.type === "refresh").length, 2, "recovery emits one additional full-page refresh");
     } finally {
       messages?.dispose();
+      foreignMessages?.dispose();
+      foreignSocket?.close();
       socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+      events.dispose();
+    }
+  });
+});
+
+test("Dev refresh delivery reports bounded timeout and disconnect outcomes without hanging the watcher", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "svelte-refresh-partial", "--framework", "svelte", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "svelte-refresh-partial");
+    await installSvelte(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const appPath = path.join(projectDir, "client", "App.svelte");
+    const original = await readFile(appPath, "utf8");
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    const events = captureJsonEvents(child);
+    const sockets = [];
+    const captures = [];
+    try {
+      const started = await events.next((event) => event.ok && event.data?.event === "started");
+      for (const id of ["timeout", "disconnect"]) {
+        const socket = await openSocket(started.data.url);
+        const capture = captureSocketMessages(socket);
+        sockets.push(socket); captures.push(capture);
+        socket.send(JSON.stringify({ id, type: "dev.refresh.subscribe" }));
+        await capture.next((message) => message.id === id && message.type === "dev.refresh.ready");
+      }
+      await writeFile(appPath, original.replace("</main>", "<p>Partial refresh delivery</p></main>"));
+      await Promise.all(captures.map((capture) => capture.next((message) => message.type === "refresh")));
+      sockets[1].close();
+      const rebuilt = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(rebuilt.data.refresh, {
+        sequence: 1, clientsAttempted: 2, clientsDelivered: 0, clientsTimedOut: 1, clientsDisconnected: 1, clientsSendFailed: 0,
+      });
+    } finally {
+      captures.forEach((capture) => capture.dispose());
+      sockets.forEach((socket) => socket.close());
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
       events.dispose();
@@ -10910,6 +10974,12 @@ async function subscribeDevRefresh(socket) {
   assert.equal(message.type, "dev.refresh.ready");
   assert.equal(message.data?.mode, "full-page");
   assert.equal(typeof message.data?.sequence, "number");
+  socket.addEventListener("message", (event) => {
+    const refresh = JSON.parse(event.data);
+    if (refresh.type === "refresh" && Number.isInteger(refresh.data?.sequence)) {
+      socket.send(JSON.stringify({ id: null, type: "dev.refresh.received", sequence: refresh.data.sequence }));
+    }
+  });
   return message;
 }
 

@@ -28,6 +28,7 @@ export declare function buildClientToolchain(options: {
     clientSourcePath: string;
     indexHtml: string;
     indexHtmlPath: string;
+    devRefresh?: boolean;
 }): Promise<ClientToolchainOutput>;
 export declare function validateClientToolchainInput(options: {
     frameworkConfig: FrameworkBuildConfig;
