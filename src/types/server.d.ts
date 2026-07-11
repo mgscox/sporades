@@ -558,6 +558,7 @@ export type CapsuleDefinition<Schema extends SchemaDefinition = SchemaDefinition
   messages?: Record<string, MessageDefinition<MessageHandler<Schema>>>;
   jobs?: Record<string, JobDefinition>;
   schedules?: Record<string, ScheduleDefinition>;
+  journey?: { enabled: true; ttlSeconds?: number; capture?: { navigation?: boolean; focus?: boolean; interactions?: boolean } };
   middleware?: ContextMiddleware<Schema>[];
   hooks?: CapsuleHooks<Schema>;
 };

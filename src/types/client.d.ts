@@ -20,6 +20,18 @@ export type SporadesResult<Data = unknown> = {
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
 export type JsonObject = { [key: string]: JsonValue };
 
+export type JourneyCapture = { navigation?: boolean; focus?: boolean; interactions?: boolean };
+export type JourneyEnableOptions = { capture?: JourneyCapture };
+export type JourneySetInput = { status: string; metadata?: JsonObject; ttlSeconds?: number };
+export type JourneyRecord = { sessionId: string; userId: string; status: string; metadata?: JsonObject; createdAt: string; updatedAt: string; expiresAt: string };
+export type JourneyEnableResult = { sessionId: string; userId: string; capture: Required<JourneyCapture> };
+export type JourneyApi = {
+  enable(options?: JourneyEnableOptions): Promise<SporadesResult<JourneyEnableResult>>;
+  set(state: JourneySetInput): Promise<SporadesResult<{ journey: JourneyRecord }>>;
+  list(): Promise<SporadesResult<{ journeys: JourneyRecord[] }>>;
+  disable(): Promise<SporadesResult<{ ok: boolean }>>;
+};
+
 /**
  * Current Sporades auth state in the browser.
  *
@@ -246,6 +258,8 @@ export const auth: AuthApi;
 export const files: FilesApi;
 /** Runtime-owned current-user preferences commands. */
 export const preferences: PreferencesApi;
+/** Explicit, page-runtime User journey publication lifecycle. */
+export const journey: JourneyApi;
 
 /** Return whether the current browser session is authenticated. */
 export function isAuthenticated(): Promise<boolean>;

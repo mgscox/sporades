@@ -18,6 +18,28 @@ test("browser client runtime exposes no Privileged server role authority", async
   assert.equal(Object.hasOwn(runtime.auth, "asPrivileged"), false);
 });
 
+test("browser client runtime exposes the explicit Journey session lifecycle over transport", async () => {
+  const calls = [];
+  const browser = installBrowserFakes(anonymousAuth, {
+    handlers: Object.fromEntries(["journey.enable", "journey.set", "journey.list", "journey.disable"].map((type) => [type, async (message) => {
+      calls.push(message);
+      return { type: `${type}.result`, data: { ok: true }, error: null };
+    }])),
+  });
+  try {
+    const runtime = await importClientRuntime();
+    await runtime.journey.enable({ capture: { focus: false } });
+    await runtime.journey.set({ status: "editing", metadata: { document: "roadmap" }, ttlSeconds: 20 });
+    await runtime.journey.list();
+    await runtime.journey.disable();
+    assert.deepEqual(calls.map(({ type }) => type), ["journey.enable", "journey.set", "journey.list", "journey.disable"]);
+    assert.deepEqual(calls[0].options, { capture: { focus: false } });
+    assert.deepEqual(calls[1].state, { status: "editing", metadata: { document: "roadmap" }, ttlSeconds: 20 });
+  } finally {
+    browser.cleanup();
+  }
+});
+
 function installBrowserFakes(auth, options = {}) {
   const storage = new Map();
   const sockets = [];

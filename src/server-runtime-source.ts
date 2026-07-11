@@ -47,6 +47,10 @@ const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
 const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
 
 export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
+  normalizeJourneyPolicy,
+  normalizeJourneyState,
+  validateJourneyJson,
+  journeyError,
   readJsonRequest,
   readLimitedRequestBody,
   resolveHttpMaxBodyBytes,
@@ -754,6 +758,7 @@ export async function openDevDatabase(
     contextMiddleware,
     mutationHooks,
     lifecycleHooks,
+    journeyPolicy: normalizeJourneyPolicy(capsuleDefinition?.journey),
     jobScheduleProvenanceByContext: new WeakMap(),
     rowCache,
     serverEnv,
@@ -7434,8 +7439,49 @@ function normalizeSimulatedText(value: null | undefined) {
   return text ? text : null;
 }
 
+function normalizeJourneyPolicy(value: any) {
+  if (value == null) return null;
+  if (!value || typeof value !== "object" || Array.isArray(value) || value.enabled !== true) throw commandError("Invalid Journey declaration.", "Declare journey: { enabled: true } on capsule().");
+  const ttlSeconds = value.ttlSeconds ?? 30;
+  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 300) throw commandError("Invalid Journey TTL.", "Set journey.ttlSeconds to an integer from 1 through 300.");
+  const capture: any = {};
+  for (const key of ["navigation", "focus", "interactions"]) {
+    const setting = value.capture?.[key];
+    if (setting !== undefined && typeof setting !== "boolean") throw commandError("Invalid Journey capture policy.", `Set journey.capture.${key} to true or false.`);
+    capture[key] = setting ?? true;
+  }
+  return { ttlSeconds, capture };
+}
+
+function normalizeJourneyState(value: any, defaultTtlSeconds: number) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw { code: "INVALID_JOURNEY_STATE", message: "Journey state must be an object.", hint: "Pass status, optional metadata, and optional ttlSeconds to journey.set()." };
+  const status = typeof value.status === "string" ? value.status.trim() : "";
+  if (!status || Buffer.byteLength(status, "utf8") > 256 || status === "inactive") throw { code: "INVALID_JOURNEY_STATUS", message: "Journey status is invalid.", hint: "Use a trimmed status from 1 through 256 UTF-8 characters other than inactive." };
+  const ttlSeconds = value.ttlSeconds ?? defaultTtlSeconds;
+  if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 300) throw { code: "INVALID_JOURNEY_TTL", message: "Journey TTL is invalid.", hint: "Use an integer from 1 through 300." };
+  if (value.metadata !== undefined && (value.metadata === null || typeof value.metadata !== "object" || Array.isArray(value.metadata) || Object.getPrototypeOf(value.metadata) !== Object.prototype)) throw { code: "INVALID_JOURNEY_METADATA", message: "Journey metadata must be a plain JSON object.", hint: "Pass a plain JSON object as metadata." };
+  if (value.metadata !== undefined) validateJourneyJson(value.metadata, 0, new Set());
+  if (value.metadata !== undefined && Buffer.byteLength(JSON.stringify(value.metadata), "utf8") > 8192) throw { code: "INVALID_JOURNEY_METADATA", message: "Journey metadata is too large.", hint: "Keep serialized metadata at or below 8 KiB." };
+  return { status, metadata: value.metadata, ttlSeconds };
+}
+
+function validateJourneyJson(value: any, depth: number, seen: Set<any>) {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number") { if (Number.isFinite(value)) return; throw { code: "INVALID_JOURNEY_METADATA", message: "Journey metadata contains a non-finite number.", hint: "Use finite JSON numbers." }; }
+  if (typeof value !== "object" || depth >= 8 || seen.has(value)) throw { code: "INVALID_JOURNEY_METADATA", message: "Journey metadata is not JSON-safe.", hint: "Use bounded plain JSON values without cycles, binary values, or custom prototypes." };
+  if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype) throw { code: "INVALID_JOURNEY_METADATA", message: "Journey metadata is not a plain JSON object.", hint: "Use plain JSON objects and arrays." };
+  const entries = Array.isArray(value) ? value : Object.values(value);
+  if (entries.length > 64) throw { code: "INVALID_JOURNEY_METADATA", message: "Journey metadata has too many entries.", hint: "Keep each object or array at 64 entries or fewer." };
+  seen.add(value); try { for (const item of entries) validateJourneyJson(item, depth + 1, seen); } finally { seen.delete(value); }
+}
+
+function journeyError(id: any, code = "JOURNEY_NOT_ENABLED", message = "User journey tracking is not enabled for this Capsule.", hint = "Declare journey: { enabled: true } on capsule().") {
+  return { id: id ?? null, type: "error", data: null, error: { code, message, hint } };
+}
+
 export function createWebSocketHub(getDatabase: () => any) {
   const clients = new Set<any>();
+  const journeys = new Map<string, any>();
   const connectionTokens = new Map<string, number>();
   let nextClientId = 1;
   const connectionTokenTtlMs = 4 * 60 * 60 * 1000;
@@ -7480,7 +7526,7 @@ export function createWebSocketHub(getDatabase: () => any) {
 
       const origin = requestOrigin(request);
       const now = new Date().toISOString();
-      const client = {
+      const client: any = {
         id: `client-${(nextClientId++).toString(36)}`,
         socket,
         buffer: Buffer.alloc(0),
@@ -7490,6 +7536,7 @@ export function createWebSocketHub(getDatabase: () => any) {
         origin,
         connectedAt: now,
         lastSeenAt: now,
+        journey: null,
       };
       clients.add(client);
       socket.on("data", (chunk: Uint8Array<ArrayBufferLike>) => {
@@ -7497,8 +7544,9 @@ export function createWebSocketHub(getDatabase: () => any) {
         client.buffer = Buffer.concat([client.buffer, chunk]);
         drainWebSocketFrames(client, (message: any) => enqueueClientMessage(client, message));
       });
-      socket.on("close", () => clients.delete(client));
-      socket.on("error", () => clients.delete(client));
+      const removeClient = () => { clients.delete(client); if (client.journey) journeys.delete(client.journey.sessionId); };
+      socket.on("close", removeClient);
+      socket.on("error", removeClient);
     },
     disconnectAll() {
       for (const client of clients) {
@@ -7766,6 +7814,50 @@ export function createWebSocketHub(getDatabase: () => any) {
         data: result.data,
         error: result.error,
       });
+      return;
+    }
+
+    if (message.type === "journey.enable") {
+      const policy = database.journeyPolicy;
+      if (!policy) { sendJson(client, journeyError(message.id)); return; }
+      if (!client.journey) {
+        const requested = message.options?.capture;
+        const capture: any = {};
+        for (const key of ["navigation", "focus", "interactions"]) capture[key] = policy.capture[key] && requested?.[key] !== false;
+        client.journey = { sessionId: randomBytes(24).toString("base64url"), resumeCredential: randomBytes(32).toString("base64url"), userId: client.session.auth.userId, capture };
+      }
+      sendJson(client, { id: message.id ?? null, type: "journey.enable.result", data: { sessionId: client.journey.sessionId, userId: client.journey.userId, capture: client.journey.capture }, error: null });
+      return;
+    }
+
+    if (message.type === "journey.set") {
+      if (!database.journeyPolicy) { sendJson(client, journeyError(message.id)); return; }
+      if (!client.journey) { sendJson(client, journeyError(message.id, "JOURNEY_NOT_ENABLED", "Journey publication is not enabled for this page.", "Call journey.enable() before journey.set().")); return; }
+      try {
+        const state = normalizeJourneyState(message.state, database.journeyPolicy.ttlSeconds);
+        const now = new Date().toISOString();
+        const previous = journeys.get(client.journey.sessionId);
+        const record = { sessionId: client.journey.sessionId, userId: client.session.auth.userId, status: state.status, ...(state.metadata === undefined ? {} : { metadata: state.metadata }), createdAt: previous?.createdAt ?? now, updatedAt: now, expiresAt: new Date(Date.now() + state.ttlSeconds * 1000).toISOString() };
+        journeys.set(record.sessionId, record);
+        sendJson(client, { id: message.id ?? null, type: "journey.set.result", data: { journey: record }, error: null });
+      } catch (error: any) { sendJson(client, { id: message.id ?? null, type: "error", data: null, error }); }
+      return;
+    }
+
+    if (message.type === "journey.list") {
+      if (!database.journeyPolicy) { sendJson(client, journeyError(message.id)); return; }
+      const now = Date.now();
+      for (const [id, record] of journeys) if (Date.parse(record.expiresAt) <= now) journeys.delete(id);
+      const records = [...journeys.values()].sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+      sendJson(client, { id: message.id ?? null, type: "journey.list.result", data: { journeys: records }, error: null });
+      return;
+    }
+
+    if (message.type === "journey.disable") {
+      if (!database.journeyPolicy) { sendJson(client, journeyError(message.id)); return; }
+      if (client.journey) journeys.delete(client.journey.sessionId);
+      client.journey = null;
+      sendJson(client, { id: message.id ?? null, type: "journey.disable.result", data: { ok: true }, error: null });
       return;
     }
 

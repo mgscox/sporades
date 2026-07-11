@@ -68,10 +68,11 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, endpoint, job, message, mutation, query, requireAuth, schedule, table } from "sporades/server";
-import { auth, createHooks, files, isAuthenticated, onMessage, preferences, sendMessage } from "sporades/client";
+import { auth, createHooks, files, isAuthenticated, journey, onMessage, preferences, sendMessage } from "sporades/client";
 
 const app = capsule({
   name: "typed island",
+  journey: { enabled: true, ttlSeconds: 30, capture: { navigation: true, focus: false } },
   jobs: {
     summarise: job(async (ctx, payload) => {
       const text = typeof payload === "object" && payload !== null && "text" in payload && typeof payload.text === "string" ? payload.text : "";
@@ -260,6 +261,14 @@ preferences.get().then((result) => result.data?.preferences.theme);
 preferences.update({ theme: "dark", sidebar: { collapsed: true } }).then((result) => result.data?.preferences.sidebar);
 // @ts-expect-error preferences.update accepts a JSON object patch.
 preferences.update(null);
+journey.enable({ capture: { focus: false } }).then((result) => result.data?.sessionId);
+journey.set({ status: "editing", metadata: { document: "roadmap" }, ttlSeconds: 20 });
+journey.list().then((result) => result.data?.journeys.map((entry) => entry.userId));
+journey.disable();
+// @ts-expect-error journey.set requires an object with a status.
+journey.set(null);
+// @ts-expect-error Journey metadata is a top-level JSON object, not an array.
+journey.set({ status: "editing", metadata: [] });
 isAuthenticated().then((ok) => ok.valueOf());
 sendMessage("typing", { active: true });
 onMessage<{ active: boolean }>()

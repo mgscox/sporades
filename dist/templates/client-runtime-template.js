@@ -23,6 +23,13 @@ export const preferences = {
   },
 };
 
+export const journey = {
+  enable(options = {}) { return connect().journeyEnable(options); },
+  set(state) { return connect().journeySet(state); },
+  list() { return connect().journeyList(); },
+  disable() { return connect().journeyDisable(); },
+};
+
 export const auth = {
   signUp(provider, credentials) {
     return connect().signUp(provider, credentials);
@@ -357,6 +364,10 @@ function createConnection() {
     updatePreferences(patch) {
       return request("preferences.update", { patch });
     },
+    journeyEnable(options = {}) { return request("journey.enable", { options }); },
+    journeySet(state) { return request("journey.set", { state }); },
+    journeyList() { return request("journey.list"); },
+    journeyDisable() { return request("journey.disable"); },
     sendMessage(type, data) {
       return request("app.send", { message: type, data });
     },
