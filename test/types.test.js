@@ -68,7 +68,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, endpoint, job, message, mutation, query, requireAuth, schedule, table } from "sporades/server";
-import { auth, createHooks, files, isAuthenticated, journey, onMessage, preferences, sendMessage } from "sporades/client";
+import { auth, createHooks, files, isAuthenticated, journey, onMessage, preferences, sendMessage, type JourneyRecord } from "sporades/client";
 
 const app = capsule({
   name: "typed island",
@@ -264,6 +264,10 @@ preferences.update(null);
 journey.enable({ capture: { focus: false } }).then((result) => result.data?.sessionId);
 journey.set({ status: "editing", metadata: { document: "roadmap" }, ttlSeconds: 20 });
 journey.list().then((result) => result.data?.journeys.map((entry) => entry.userId));
+const journeyRecord: JourneyRecord = { sessionId: "session", userId: "user", status: "online", metadata: null, updatedAt: "now", expiresAt: "later" };
+journeyRecord.metadata;
+// @ts-expect-error public Journey records require an explicit metadata field.
+const incompleteJourneyRecord: JourneyRecord = { sessionId: "session", userId: "user", status: "online", updatedAt: "now", expiresAt: "later" };
 const journeySubscription = journey.subscribe((event) => event.type === "snapshot" ? event.states : event.state);
 journeySubscription.unsubscribe();
 journey.disable();

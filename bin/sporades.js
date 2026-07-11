@@ -7961,7 +7961,7 @@ function createWebSocketHub(getDatabase) {
         }
         const nowDate = database.clock.now();
         const now = nowDate.toISOString();
-        const record = { sessionId: client.journey.sessionId, userId: client.session.auth.userId, status: state.status, ...state.metadata === void 0 ? {} : { metadata: state.metadata }, updatedAt: now, expiresAt: new Date(nowDate.getTime() + state.ttlSeconds * 1e3).toISOString() };
+        const record = { sessionId: client.journey.sessionId, userId: client.session.auth.userId, status: state.status, metadata: state.metadata ?? null, updatedAt: now, expiresAt: new Date(nowDate.getTime() + state.ttlSeconds * 1e3).toISOString() };
         journeys.set(record.sessionId, record);
         scheduleJourneyExpiry();
         sendJson(client, { id: message.id ?? null, type: "journey.set.result", data: { journey: record }, error: null });
