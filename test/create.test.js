@@ -761,7 +761,7 @@ test("sporades create rejects unsupported Vue toolchains and admits every comple
         assert.match(app, /journey\.subscribe/);
         assert.match(app, /preferences\.get/);
         assert.match(app, /preferences\.update/);
-        assert.match(app, /retireJourneyConsent/);
+        assert.match(app, /retireOwnedActivity/);
         assert.match(app, /createTypingPublisher/);
         assert.doesNotMatch(await readFile(path.join(project, "index.html"), "utf8"), /tailwindcss/);
         assert.doesNotMatch(readme, /Tailwind is loaded|Shadcn/i);

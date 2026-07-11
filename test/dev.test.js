@@ -1457,6 +1457,92 @@ test("Vue Campfire stale preference restore retires deferred activity without to
   });
 });
 
+for (const deferredStage of ["journey.enable", "journey.set", "preferences.update"]) test(`Vue Campfire direct consent is identity-safe while ${deferredStage} is pending`, async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createVueCampfire(dir, `vue-campfire-direct-${deferredStage.replaceAll(".", "-")}`);
+    const calls = [];
+    let releaseStage;
+    let markStageStarted;
+    const stageStarted = new Promise((resolve) => { markStageStarted = resolve; });
+    const waitAtStage = async (stage) => {
+      if (stage !== deferredStage) return;
+      markStageStarted();
+      await new Promise((resolve) => { releaseStage = resolve; });
+    };
+    const state = campfireHarnessState(calls, {
+      async enable(options) {
+        const userId = globalThis.__SPORADES_VUE_TEMPLATE_HARNESS__.session.auth?.userId;
+        calls.push(["journey.enable", options, userId]);
+        await waitAtStage("journey.enable");
+        return { data: null, error: null };
+      },
+      async set(value) {
+        const userId = globalThis.__SPORADES_VUE_TEMPLATE_HARNESS__.session.auth?.userId;
+        calls.push(["journey.set", value, userId]);
+        await waitAtStage("journey.set");
+        return { data: null, error: null };
+      },
+    });
+    state.session.auth = { userId: "athos-user", provider: "email", displayName: "Athos", isGuest: false };
+    state.preferences.get = async () => {
+      const userId = globalThis.__SPORADES_VUE_TEMPLATE_HARNESS__.session.auth?.userId;
+      calls.push(["preferences.get", userId]);
+      return { data: { preferences: { campfireShareActivity: false } }, error: null };
+    };
+    state.preferences.update = async (value) => {
+      const userId = globalThis.__SPORADES_VUE_TEMPLATE_HARNESS__.session.auth?.userId;
+      calls.push(["preferences.update", value, userId]);
+      await waitAtStage("preferences.update");
+      return { data: { preferences: value }, error: null };
+    };
+    const harness = await mountVueTemplate(projectDir, state);
+    try {
+      const share = harness.find((node) => node.type === "input" && node.props.type === "checkbox");
+      const consent = harness.trigger(share, "change", { checked: true });
+      await stageStarted;
+      harness.state.session.auth = { userId: "porthos-user", provider: "email", displayName: "Porthos", isGuest: false };
+      await harness.settle();
+      assert.equal(share.props.checked, false, "pending consent never exposes stale sharing");
+      assert.equal(calls.filter(([name]) => name === "journey.disable").length, 0, "auth retirement waits for the owned action");
+      releaseStage();
+      await consent;
+      await harness.settle();
+      assert.equal(share.props.checked, false, "stale consent remains hidden after completion");
+      assert.equal(calls.filter(([name]) => name === "journey.disable").length, 1, "stale direct activity is retired exactly once");
+      assert.equal(calls.filter(([name, _value, userId]) => name === "journey.set" && userId === "porthos-user").length, 0, "successor receives no stale Journey state");
+      assert.equal(calls.filter(([name, _value, userId]) => name === "preferences.update" && userId === "porthos-user").length, 0, "successor preferences are never written by stale consent");
+      assert(calls.some(([name, userId]) => name === "preferences.get" && userId === "porthos-user"), "successor restore runs after stale retirement");
+    } finally { harness.unmount(); }
+  });
+});
+
+for (const failureStage of ["journey.set", "preferences.update"]) test(`Vue Campfire direct consent handles structured ${failureStage} errors`, async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createVueCampfire(dir, `vue-campfire-error-${failureStage.replaceAll(".", "-")}`);
+    const calls = [];
+    const state = campfireHarnessState(calls, {
+      async set(value) {
+        calls.push(["journey.set", value]);
+        return failureStage === "journey.set" ? { data: null, error: new Error("Journey publication failed") } : { data: null, error: null };
+      },
+    });
+    state.session.auth = { userId: "athos-user", provider: "email", displayName: "Athos", isGuest: false };
+    state.preferences.update = async (value) => {
+      calls.push(["preferences.update", value]);
+      return failureStage === "preferences.update" ? { data: null, error: new Error("Preference save failed") } : { data: { preferences: value }, error: null };
+    };
+    const harness = await mountVueTemplate(projectDir, state);
+    try {
+      const share = harness.find((node) => node.type === "input" && node.props.type === "checkbox");
+      await harness.trigger(share, "change", { checked: true });
+      assert.equal(share.props.checked, false);
+      assert.match(harness.text(), failureStage === "journey.set" ? /Journey publication failed/ : /Preference save failed/);
+      assert.equal(calls.filter(([name]) => name === "journey.disable").length, 1, "failed consent retires its owned activity once");
+      if (failureStage === "journey.set") assert.equal(calls.some(([name]) => name === "preferences.update"), false, "failed publication is never persisted");
+    } finally { harness.unmount(); }
+  });
+});
+
 test("Vue Vite fails closed for missing, unsupported, and unloadable project compiler packages", async () => {
   for (const scenario of ["missing", "version", "load"]) {
     await withTempDir(async (dir) => {
