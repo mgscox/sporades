@@ -1,7 +1,7 @@
 export function scaffoldFiles(options) {
     const templateOptions = resolveTemplateOptions(options.template);
     const framework = options.framework ?? templateOptions.framework;
-    const toolchain = options.toolchain ?? "esbuild";
+    const toolchain = options.toolchain ?? (framework === "vue" ? "vite" : "esbuild");
     const renderOptions = { ...options, name: options.name, framework, toolchain };
     const packageName = options.name;
     const sporadesDependency = options.sporadesDependency ?? "sporades";
@@ -12,17 +12,23 @@ export function scaffoldFiles(options) {
         }
         : framework === "preact" ? {
             preact: "^10.25.0",
+        } : framework === "vue" ? {
+            vue: "^3.5.13",
         } : {};
     const frameworkDevDependencies = framework === "react"
         ? {
             "@types/react": "^19.0.0",
             "@types/react-dom": "^19.0.0",
         }
-        : {};
+        : framework === "vue" ? {
+            "@vue/compiler-sfc": "^3.5.13",
+        } : {};
     const baseTemplateFiles = framework === "vanilla" ? vanillaTemplateFiles(renderOptions) : templateOptions.files(renderOptions);
-    const templateFiles = toolchain === "vite" && framework !== "vanilla"
-        ? viteTemplateFiles(baseTemplateFiles, framework)
-        : baseTemplateFiles;
+    const templateFiles = framework === "vue"
+        ? vueTemplateFiles(renderOptions, baseTemplateFiles)
+        : toolchain === "vite" && framework !== "vanilla"
+            ? viteTemplateFiles(baseTemplateFiles, framework)
+            : baseTemplateFiles;
     return {
         "sporades.json": `${JSON.stringify({
             name: options.name,
@@ -69,12 +75,82 @@ export function scaffoldFiles(options) {
   </head>
   <body>
     <div id="app"></div>
-    <script type="module" src="${toolchain === "vite" ? "/client/index.tsx" : "/client.js"}"></script>
+    <script type="module" src="${toolchain === "vite" ? `/client/${framework === "vue" ? "index.ts" : "index.tsx"}` : "/client.js"}"></script>
   </body>
 </html>
 `,
         ...templateFiles,
     };
+}
+function vueTemplateFiles(options, files) {
+    const { "client/index.tsx": _jsxEntry, ...sharedFiles } = files;
+    return {
+        ...sharedFiles,
+        "client/index.ts": `import { createApp } from "vue";\nimport App from "./App.vue";\n\ncreateApp(App).mount("#app");\n`,
+        "client/sporades.ts": `import { onScopeDispose, reactive } from "vue";\nimport { createVueComposables } from "sporades/client";\n\nexport const { useAuth, useMutation, useQuery } = createVueComposables({ reactive, onScopeDispose });\n`,
+        "client/App.vue": options.template === "todo" ? vueTodoAppTemplate() : vueBlankAppTemplate(),
+        "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#42b883"/></svg>\n`,
+    };
+}
+function vueBlankAppTemplate() {
+    return `<script setup lang="ts">
+import { useAuth } from "./sporades";
+
+const session = useAuth();
+</script>
+
+<template>
+  <main>
+    <img class="mark" src="./sporades-mark.svg" alt="" />
+    <h1>Blank Sporades Capsule</h1>
+    <p v-if="session.loading">Connecting…</p>
+    <p v-else>Start building in server/index.ts and client/App.vue.</p>
+  </main>
+</template>
+
+<style scoped>
+main { max-width: 42rem; margin: 4rem auto; font-family: system-ui, sans-serif; }
+.mark { width: 2rem; height: 2rem; }
+</style>
+`;
+}
+function vueTodoAppTemplate() {
+    return `<script setup lang="ts">
+import { ref } from "vue";
+import { auth } from "sporades/client";
+import { useAuth, useMutation, useQuery } from "./sporades";
+
+const session = useAuth();
+const todos = useQuery("todos");
+const addTodo = useMutation("addTodo");
+const text = ref("");
+
+async function submit() {
+  const value = text.value.trim();
+  if (!value) return;
+  const result = await addTodo.run(value);
+  if (!result.error) text.value = "";
+}
+</script>
+
+<template>
+  <main>
+    <header><img class="mark" src="./sporades-mark.svg" alt="" /><h1>Sporades Todos</h1></header>
+    <button v-if="session.providers.google?.enabled && !session.isAuthenticated()" type="button" @click="auth.signIn('google')">Sign in with Google</button>
+    <form @submit.prevent="submit"><input v-model="text" aria-label="Todo" /><button :disabled="addTodo.loading">Add</button></form>
+    <p v-if="todos.loading">Loading…</p>
+    <p v-else-if="todos.error" role="alert">{{ todos.error.message }}</p>
+    <ul v-else><li v-for="todo in todos.data ?? []" :key="todo.id">{{ todo.text }}</li></ul>
+  </main>
+</template>
+
+<style scoped>
+main { max-width: 42rem; margin: 3rem auto; font-family: system-ui, sans-serif; }
+header, form { display: flex; gap: .75rem; align-items: center; }
+.mark { width: 2rem; height: 2rem; }
+li { margin-block: .5rem; }
+</style>
+`;
 }
 function viteTemplateFiles(files, framework) {
     return {
@@ -1596,6 +1672,7 @@ const styles = \`
 }
 function agentsTemplate(template, framework, toolchain) {
     const vanilla = framework === "vanilla";
+    const clientFiles = framework === "vue" ? "client/*.vue and client/*.ts" : `client/*.${vanilla ? "ts" : "tsx"}`;
     return `# Sporades App Instructions
 
 This directory is for a Sporades app. Sporades is a CLI-first tool for building and running full-stack web apps.
@@ -1608,7 +1685,7 @@ Client toolchain: ${toolchain}
 
 - Server code goes in \`server/\`, client code in \`client/\`, shared code in \`shared/\`.
 - Use \`sporades/server\` only from \`server/*.ts\`.
-- Use \`sporades/client\` only from \`client/*.${vanilla ? "ts" : "tsx"}\`.
+- Use \`sporades/client\` only from \`${clientFiles}\`.
 - Data is accessed through queries. Changes go through mutations.
 - Use endpoints only for HTTP integrations that cannot use queries, mutations, or app messages.
 - No file-based routing. Use the router included in the scaffold template.

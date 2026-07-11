@@ -68,7 +68,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, endpoint, job, message, mutation, query, requireAuth, schedule, table } from "sporades/server";
-import { auth, createHooks, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, type JourneyRecord } from "sporades/client";
+import { auth, createHooks, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, type JourneyRecord } from "sporades/client";
 
 const app = capsule({
   name: "typed island",
@@ -246,6 +246,13 @@ const todos = hooks.useQuery<Array<{ id: string; text: string }>>("todos");
 todos.data?.map((todo) => todo.text.toUpperCase());
 hooks.useMutation("addTodo").run("Ship the types");
 hooks.useAuth().signIn("google");
+const vue = createVueComposables({
+  reactive<State extends object>(state: State): State { return state; },
+  onScopeDispose(cleanup) { void cleanup; },
+});
+vue.useQuery<Array<{ id: string; text: string }>>("todos").data?.map((todo) => todo.text.toUpperCase());
+vue.useMutation("addTodo").run("Ship Vue types");
+vue.useAuth().signOut();
 const querySubscription = queries.subscribe<Array<{ id: string; text: string }>>("todos", (state) => {
   state.data?.map((todo) => todo.text.toUpperCase());
   state.error?.message.toUpperCase();

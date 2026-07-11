@@ -112,8 +112,9 @@ export default capsule({
 });
 ```
 
-Client scaffolds wire `sporades/client` into React or Preact hooks so the UI can
-subscribe to queries and run mutations without hand-rolled fetch plumbing.
+Client scaffolds wire `sporades/client` into React or Preact hooks, Vue
+composables, or framework-neutral subscriptions so the UI can consume queries,
+mutations, and auth without hand-rolled fetch plumbing.
 
 ## What You Get
 
@@ -122,6 +123,9 @@ Sporades currently includes:
 - React and Preact project scaffolds with `blank`, `todo`, `guestbook`,
   `photo-library`, and `campfire` templates. Campfire is the complete
   consented User journey tracker exemplar.
+- Vue/Vite project scaffolds with the admitted `blank` and `todo` templates and
+  native Single-File Components. Other Vue templates remain intentionally
+  unavailable until their own admission work lands.
 - Local Dev sessions with rebuilds, WebSocket reconnects, SQLite persistence,
   logs, database inspection, auth helpers, and file storage.
 - Local Docker Container sessions for production-like staging tests.
@@ -155,7 +159,8 @@ sporades --help
 ```
 
 Sporades depends on `esbuild` for the Server Bundle and default client builds;
-React and Preact clients can explicitly use the runtime-owned Vite adapter. On newer npm versions, you
+React and Preact clients can explicitly use the runtime-owned Vite adapter;
+Vue selects Vite. On newer npm versions, you
 may see an `allow-scripts` warning during global install because `esbuild` uses
 a postinstall script to select the native binary for your platform.
 

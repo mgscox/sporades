@@ -22,7 +22,7 @@ import { createGithubAutodeployWorkflow } from "./github-autodeploy-workflow.js"
 import { SECURITY_SESSIONS, authorizedKeyFingerprint, readBaseImageUpdatePolicy, readOptionalProjectSecurity, readProjectConfig, resolveAuthorizedKeyLines, resolveEffectiveSecurityPolicy, resolveLocalContainerSshAccess, withRuntimeSecuritySession, } from "./project-config.js";
 import { commandError, errorDetails, writeResult } from "./cli-support.js";
 import { CLI_VERSION } from "./cli-version.js";
-const SUPPORTED_FRAMEWORKS = new Set(["react", "preact", "vanilla"]);
+const SUPPORTED_FRAMEWORKS = new Set(["react", "preact", "vue", "vanilla"]);
 const SUPPORTED_CLIENT_TOOLCHAINS = new Set(["esbuild", "vite"]);
 const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
@@ -212,7 +212,7 @@ async function printVersion(options) {
 function parseCreateArgs(args) {
     let name = null;
     let framework = null;
-    let toolchain = "esbuild";
+    let toolchain = null;
     let template = "blank";
     let install = true;
     let git = true;
@@ -252,16 +252,23 @@ function parseCreateArgs(args) {
         throw commandError("Missing scaffold name.", "Use `sporades create <name>`.");
     }
     if (framework !== null && !SUPPORTED_FRAMEWORKS.has(framework)) {
-        throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, vanilla.");
+        throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, vanilla.");
     }
+    toolchain ??= framework === "vue" ? "vite" : "esbuild";
     if (!SUPPORTED_CLIENT_TOOLCHAINS.has(toolchain)) {
         throw commandError(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
     }
     if (toolchain === "vite" && framework === "vanilla") {
         throw commandError(`Unsupported client framework/toolchain combination: ${framework ?? "default"}/vite`, "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild.");
     }
+    if (framework === "vue" && toolchain !== "vite") {
+        throw commandError(`Unsupported client framework/toolchain combination: vue/${toolchain}`, "Use Vue with Vite.");
+    }
     if (!SUPPORTED_TEMPLATES.has(template)) {
         throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
+    }
+    if (framework === "vue" && template !== "blank" && template !== "todo") {
+        throw commandError(`Unsupported Vue template: ${template}`, "Use the blank or todo template with Vue; other Vue templates are not admitted yet.");
     }
     return {
         name,
@@ -1597,7 +1604,7 @@ async function startDevSession(options) {
                 await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, nextCapsuleServiceEnv, rebuild.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(nextConfig, session)).catch((error) => { throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true }); });
                 runtimeServiceEnv = nextCapsuleServiceEnv;
                 fatalRestartAttempts = 0;
-                if ((nextConfig.client?.toolchain ?? "esbuild") === "vite")
+                if (configuredClientToolchain(nextConfig) === "vite")
                     websocketHub.refreshAll();
                 websocketHub.disconnectAll();
             }
@@ -1611,7 +1618,7 @@ async function startDevSession(options) {
             });
             config = nextConfig;
             security = nextSecurity;
-            if (!affectsServerRuntime && (nextConfig.client?.toolchain ?? "esbuild") === "vite")
+            if (!affectsServerRuntime && configuredClientToolchain(nextConfig) === "vite")
                 websocketHub.refreshAll();
             emitDevEvent(options, {
                 event: "rebuild",
@@ -1622,7 +1629,7 @@ async function startDevSession(options) {
                 build: {
                     phase: affectsServerRuntime ? "bundle" : "client",
                     framework: nextConfig.client?.framework ?? "react",
-                    toolchain: nextConfig.client?.toolchain ?? "esbuild",
+                    toolchain: configuredClientToolchain(nextConfig),
                 },
             });
         }
@@ -1715,8 +1722,11 @@ function tagDevRebuildError(error, phase, config, options = {}) {
         : commandError(String(error), "Fix the rebuild error and save again."));
     tagged.phase = phase;
     tagged.framework = config.client?.framework ?? "react";
-    tagged.toolchain = config.client?.toolchain ?? "esbuild";
+    tagged.toolchain = configuredClientToolchain(config);
     return tagged;
+}
+function configuredClientToolchain(config) {
+    return config.client?.toolchain ?? (config.client?.framework === "vue" ? "vite" : "esbuild");
 }
 function reportDevPublicCleanupDegradation(options, runtime, url, port, config, error) {
     runtime.database.log.emit({
@@ -1731,7 +1741,7 @@ function reportDevPublicCleanupDegradation(options, runtime, url, port, config, 
         status: "degraded",
         url,
         port,
-        build: { phase: "public", framework: config.client?.framework ?? "react", toolchain: config.client?.toolchain ?? "esbuild" },
+        build: { phase: "public", framework: config.client?.framework ?? "react", toolchain: configuredClientToolchain(config) },
     }, {
         message: "Public tree cleanup degraded.",
         hint: "A later rebuild will retry bounded cleanup while preserving the active public tree.",
@@ -2856,7 +2866,7 @@ async function startContainerSession(options) {
     try {
         clientRelease = {
             framework: config.client?.framework ?? "react",
-            toolchain: config.client?.toolchain ?? "esbuild",
+            toolchain: configuredClientToolchain(config),
             publicTree: path.basename(bundle.staticFiles.publicDir),
             ...(await summarizePublicTree(bundle.staticFiles.publicDir)),
         };
@@ -2864,7 +2874,7 @@ async function startContainerSession(options) {
     catch (error) {
         const details = errorDetails(error);
         await discardPublicTree(bundle.staticFiles.publicTree).catch(() => { });
-        throw commandError("Container public tree validation failed.", details.hint ?? "Rebuild the Capsule public output and retry deployment; the running Container was preserved.", { phase: "public", framework: config.client?.framework ?? "react", toolchain: config.client?.toolchain ?? "esbuild", cause: details.message });
+        throw commandError("Container public tree validation failed.", details.hint ?? "Rebuild the Capsule public output and retry deployment; the running Container was preserved.", { phase: "public", framework: config.client?.framework ?? "react", toolchain: configuredClientToolchain(config), cause: details.message });
     }
     ensureLocalBaseImage(options.projectDir);
     const existingContainer = existingBinding?.containerId

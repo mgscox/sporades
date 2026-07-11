@@ -145,6 +145,43 @@ export function createHooks(primitives) {
   return { useQuery, useMutation, useAuth };
 }
 
+export function createVueComposables(primitives) {
+  const { reactive, onScopeDispose } = primitives;
+
+  function useQuery(name) {
+    const state = reactive({ data: null, error: null, loading: true });
+    const subscription = queries.subscribe(name, (nextState) => Object.assign(state, nextState));
+    onScopeDispose(() => subscription.unsubscribe());
+    return state;
+  }
+
+  function useMutation(name) {
+    const state = reactive({ error: null, loading: false });
+    state.run = async (...args) => {
+      state.error = null;
+      state.loading = true;
+      const result = await mutations.run(name, ...args);
+      state.error = result.error ?? null;
+      state.loading = false;
+      return result;
+    };
+    return state;
+  }
+
+  function useAuth() {
+    const state = reactive({ auth: null, providers: {}, loading: true, error: null });
+    const subscription = auth.subscribe((nextState) => Object.assign(state, nextState));
+    onScopeDispose(() => subscription.unsubscribe());
+    state.isAuthenticated = () => Boolean(state.auth?.isAuthenticated);
+    state.signUp = (provider, credentials) => connect().signUp(provider, credentials);
+    state.signIn = (provider, credentials) => connect().signIn(provider, credentials);
+    state.signOut = () => connect().signOut();
+    return state;
+  }
+
+  return { useQuery, useMutation, useAuth };
+}
+
 let connection;
 
 function connect() {

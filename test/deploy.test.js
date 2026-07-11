@@ -424,6 +424,11 @@ async function installFakePreact(projectDir) {
   );
 }
 
+async function installVue(projectDir) {
+  await mkdir(path.join(projectDir, "node_modules"), { recursive: true });
+  await symlink(path.join(repoRoot, "node_modules", "vue"), path.join(projectDir, "node_modules", "vue"));
+}
+
 async function writePackage(projectDir, packageName, exports, files) {
   const packageDir = path.join(projectDir, "node_modules", packageName);
   await mkdir(packageDir, { recursive: true });
@@ -770,15 +775,20 @@ test("sporades deploy assembles a Vanilla TypeScript release without leaking Ser
   });
 });
 
-for (const framework of ["react", "preact"]) test(`sporades deploy mounts the complete normalized ${framework} Vite public tree`, async () => {
+for (const { framework, template } of [
+  { framework: "react", template: "blank" },
+  { framework: "preact", template: "blank" },
+  { framework: "vue", template: "blank" },
+  { framework: "vue", template: "todo" },
+]) test(`sporades deploy mounts the complete normalized ${framework} Vite ${template} public tree`, async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(
-      ["create", "vite-release", "--framework", framework, "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      ["create", "vite-release", "--template", template, "--framework", framework, "--toolchain", "vite", "--no-install", "--no-git", "--json"],
       { cwd: dir },
     );
     assert.equal(createResult.code, 0, createResult.stderr);
     const projectDir = await realpath(path.join(dir, "vite-release"));
-    await (framework === "react" ? installFakeReact : installFakePreact)(projectDir);
+    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : installVue)(projectDir);
     await writeFile(path.join(projectDir, ".env.sporades.server"), "SERVER_ONLY_TOKEN=vite-container-secret\n");
     const docker = await installFakeDocker(dir, "vite-container");
     const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
@@ -790,7 +800,8 @@ for (const framework of ["react", "preact"]) test(`sporades deploy mounts the co
     assert(binding.clientRelease.paths.includes("index.html"));
     assert(binding.clientRelease.paths.some((file) => /^assets\/index-[^/]+\.js$/.test(file)));
     assert(binding.clientRelease.paths.some((file) => /^assets\/index-[^/]+\.css$/.test(file)));
-    assert(binding.clientRelease.paths.some((file) => /^assets\/vite-scaffold-[^/]+\.js$/.test(file)));
+    if (framework !== "vue") assert(binding.clientRelease.paths.some((file) => /^assets\/vite-scaffold-[^/]+\.js$/.test(file)));
+    assert(binding.clientRelease.paths.some((file) => /^assets\/sporades-mark-[^/]+\.svg$/.test(file)));
     assert(binding.clientRelease.paths.some((file) => file.endsWith(".js.map")));
     assert.equal(binding.clientRelease.paths.includes("client.js"), false);
 
@@ -798,6 +809,7 @@ for (const framework of ["react", "preact"]) test(`sporades deploy mounts the co
     const output = (await Promise.all(binding.clientRelease.paths.map((file) => readFile(path.join(publicRoot, file), "utf8")))).join("\n");
     assert.doesNotMatch(output, /vite-container-secret|SERVER_ONLY_TOKEN|\/@vite\/client|react-refresh|vite\/hmr/i);
     if (framework === "preact") assert.doesNotMatch(output, /node_modules\/react(?:-dom)?\/|from ["']react(?:-dom)?/);
+    if (framework === "vue") assert.match(output, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
     const runCall = firstDockerRunCall(await docker.calls());
     assertVolume(runCall.args, `${publicRoot}:/app/public:ro`);
   });

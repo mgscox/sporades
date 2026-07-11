@@ -44,12 +44,17 @@ async function fetchEventually(url, timeoutMs = 10_000) {
   throw lastError;
 }
 
-for (const framework of ["react", "preact"]) test(`real Container serves a complete ${framework} Vite public tree from the actual Base image`, {
+for (const { framework, template } of [
+  { framework: "react", template: "blank" },
+  { framework: "preact", template: "blank" },
+  { framework: "vue", template: "blank" },
+  { framework: "vue", template: "todo" },
+]) test(`real Container serves a complete ${framework} Vite ${template} public tree from the actual Base image`, {
   skip: enabled ? false : "Set SPORADES_REAL_VITE_CONTAINER=1 to run the disposable Docker acceptance test.",
   timeout: 300_000,
 }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-real-vite-container-"));
-  const projectName = `real-${framework}-vite-container`;
+  const projectName = `real-${framework}-${template}-vite-container`;
   const projectDir = path.join(root, projectName);
   let deployAttempted = false;
   try {
@@ -57,7 +62,7 @@ for (const framework of ["react", "preact"]) test(`real Container serves a compl
     assert.match(docker.stdout.trim(), /^\d+\./, docker.stderr);
 
     const created = await runCli([
-      "create", projectName, "--framework", framework, "--toolchain", "vite",
+      "create", projectName, "--template", template, "--framework", framework, "--toolchain", "vite",
       "--no-install", "--no-git", "--json",
     ], root);
     assert.equal(created.code, 0, created.stderr);
@@ -66,17 +71,18 @@ for (const framework of ["react", "preact"]) test(`real Container serves a compl
       timeout: 120_000,
       maxBuffer: 10 * 1024 * 1024,
     });
-    if (framework === "preact") {
+    if (framework === "preact" || framework === "vue") {
       await assert.rejects(access(path.join(projectDir, "node_modules", "react")), (error) => error.code === "ENOENT");
       await assert.rejects(access(path.join(projectDir, "node_modules", "react-dom")), (error) => error.code === "ENOENT");
       const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
-      assert.equal(packageJson.dependencies.preact, "^10.25.0");
+      assert.equal(packageJson.dependencies[framework], framework === "preact" ? "^10.25.0" : "^3.5.13");
+      if (framework === "vue") assert.equal(packageJson.devDependencies["@vue/compiler-sfc"], "^3.5.13");
       assert.equal(packageJson.dependencies.react, undefined);
       assert.equal(packageJson.dependencies["react-dom"], undefined);
     }
     await writeFile(path.join(projectDir, ".env"), "VITE_REAL_CONTAINER_LEAK=browser-secret-must-not-ship\n");
     await writeFile(path.join(projectDir, ".env.sporades.server"), "SERVER_REAL_CONTAINER_LEAK=server-secret-must-not-ship\n");
-    const clientPath = path.join(projectDir, "client", "index.tsx");
+    const clientPath = path.join(projectDir, "client", framework === "vue" ? "index.ts" : "index.tsx");
     await writeFile(
       clientPath,
       `${await readFile(clientPath, "utf8")}\nconsole.log(import.meta.env.VITE_REAL_CONTAINER_LEAK);\n`,
@@ -122,11 +128,11 @@ for (const framework of ["react", "preact"]) test(`real Container serves a compl
       fetched[kind] = { path: publicPath, bytes: Buffer.byteLength(body), mime: response.headers.get("content-type") };
     }
     const output = bodies.join("\n");
-    assert.match(output, /Blank Sporades Capsule/);
+    assert.match(output, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
     assert.doesNotMatch(output, /browser-secret-must-not-ship|server-secret-must-not-ship/);
     assert.doesNotMatch(output, /\/@vite\/client|react-refresh|vite\/hmr/i);
     assert.equal((await fetchEventually(`${url}/client.js`)).status, 404);
-    t.diagnostic(JSON.stringify({ framework, baseImage: inspectedImage.stdout.trim(), url, fetched, clientJsStatus: 404 }));
+    t.diagnostic(JSON.stringify({ framework, template, baseImage: inspectedImage.stdout.trim(), url, fetched, clientJsStatus: 404 }));
   } finally {
     if (deployAttempted) await runCli(["deploy", "remove", "--json"], projectDir).catch(() => {});
     await rm(root, { recursive: true, force: true });

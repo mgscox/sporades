@@ -20,6 +20,13 @@ const FRAMEWORK_BUNDLE_CONFIG = {
         jsxImportSource: "preact",
         jsxRuntimeImport: "preact/jsx-runtime",
     },
+    vue: {
+        framework: "vue",
+        entry: "index.ts",
+        loader: "ts",
+        jsxImportSource: null,
+        jsxRuntimeImport: null,
+    },
     vanilla: {
         framework: "vanilla",
         entry: "index.ts",
@@ -31,7 +38,7 @@ const FRAMEWORK_BUNDLE_CONFIG = {
 const SUPPORTED_AUTH_PROVIDERS = new Set(["anonymous", "google", "email"]);
 export async function createBundle(projectDir, config, options = {}) {
     const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
-    const toolchain = readClientToolchain(config.client?.toolchain ?? "esbuild", frameworkBundleConfig.framework);
+    const toolchain = readClientToolchain(config.client?.toolchain ?? (frameworkBundleConfig.framework === "vue" ? "vite" : "esbuild"), frameworkBundleConfig.framework);
     const buildDir = path.join(projectDir, ".sporades", "build");
     const paths = {
         config: path.join(projectDir, "sporades.json"),
@@ -497,7 +504,7 @@ async function readRequiredFile(filePath, message, hint) {
 }
 function readFrameworkBundleConfig(framework) {
     if (typeof framework !== "string" || !(framework in FRAMEWORK_BUNDLE_CONFIG)) {
-        throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, vanilla.");
+        throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, vanilla.");
     }
     return FRAMEWORK_BUNDLE_CONFIG[framework];
 }
@@ -507,6 +514,9 @@ function readClientToolchain(toolchain, framework) {
     }
     if (toolchain === "vite" && framework === "vanilla") {
         throw commandError(`Unsupported client framework/toolchain combination: ${framework}/vite`, "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild.");
+    }
+    if (framework === "vue" && toolchain !== "vite") {
+        throw commandError("Unsupported client framework/toolchain combination: vue/esbuild", "Use Vue with Vite.");
     }
     return toolchain;
 }

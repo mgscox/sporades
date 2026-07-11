@@ -28,7 +28,7 @@ await Promise.all(
       platform: "node",
       format: "esm",
       target: "node22",
-      external: ["esbuild", "vite"],
+      external: ["esbuild", "vite", "@vitejs/plugin-vue", "@vue/compiler-sfc"],
       sourcemap: false,
       logLevel: "info",
       banner: {

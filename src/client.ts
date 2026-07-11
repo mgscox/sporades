@@ -9,6 +9,7 @@ export const journey = runtime.journey;
 export const mutations = runtime.mutations;
 export const queries = runtime.queries;
 export const createHooks = runtime.createHooks;
+export const createVueComposables = runtime.createVueComposables;
 export const isAuthenticated = runtime.isAuthenticated;
 export const onMessage = runtime.onMessage;
 export const sendMessage = runtime.sendMessage;

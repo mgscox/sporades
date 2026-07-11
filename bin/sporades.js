@@ -166,6 +166,43 @@ export function createHooks(primitives) {
   return { useQuery, useMutation, useAuth };
 }
 
+export function createVueComposables(primitives) {
+  const { reactive, onScopeDispose } = primitives;
+
+  function useQuery(name) {
+    const state = reactive({ data: null, error: null, loading: true });
+    const subscription = queries.subscribe(name, (nextState) => Object.assign(state, nextState));
+    onScopeDispose(() => subscription.unsubscribe());
+    return state;
+  }
+
+  function useMutation(name) {
+    const state = reactive({ error: null, loading: false });
+    state.run = async (...args) => {
+      state.error = null;
+      state.loading = true;
+      const result = await mutations.run(name, ...args);
+      state.error = result.error ?? null;
+      state.loading = false;
+      return result;
+    };
+    return state;
+  }
+
+  function useAuth() {
+    const state = reactive({ auth: null, providers: {}, loading: true, error: null });
+    const subscription = auth.subscribe((nextState) => Object.assign(state, nextState));
+    onScopeDispose(() => subscription.unsubscribe());
+    state.isAuthenticated = () => Boolean(state.auth?.isAuthenticated);
+    state.signUp = (provider, credentials) => connect().signUp(provider, credentials);
+    state.signIn = (provider, credentials) => connect().signIn(provider, credentials);
+    state.signOut = () => connect().signOut();
+    return state;
+  }
+
+  return { useQuery, useMutation, useAuth };
+}
+
 let connection;
 
 function connect() {
@@ -764,23 +801,23 @@ async function buildClientToolchain(options) {
 }
 function validateClientToolchainInput(options) {
   if (options.toolchain !== "vite") return;
-  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : "React";
-  if (options.frameworkConfig.framework !== "react" && options.frameworkConfig.framework !== "preact") {
+  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "vue" ? "Vue" : "React";
+  if (!(/* @__PURE__ */ new Set(["react", "preact", "vue"])).has(options.frameworkConfig.framework)) {
     throw clientToolchainError(
       `Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`,
-      "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild."
+      "Use React, Preact, or Vue with Vite, or keep Vanilla TypeScript on esbuild."
     );
   }
   if (referencesLegacyClientShell(options.indexHtml)) {
     throw clientToolchainError(
       `${frameworkLabel}/Vite requires an author-owned source entry in index.html.`,
-      'Replace the `/client.js` script with `<script type="module" src="/client/index.tsx"></script>`, then retry.'
+      `Replace the \`/client.js\` script with \`<script type="module" src="/client/${options.frameworkConfig.entry}"></script>\`, then retry.`
     );
   }
-  if (!referencesFrameworkSourceEntry(options.indexHtml)) {
+  if (!referencesFrameworkSourceEntry(options.indexHtml, options.frameworkConfig.entry)) {
     throw clientToolchainError(
       `${frameworkLabel}/Vite could not find the client source entry in index.html.`,
-      'Add `<script type="module" src="/client/index.tsx"></script>` to the author-owned HTML shell.'
+      `Add \`<script type="module" src="/client/${options.frameworkConfig.entry}"></script>\` to the author-owned HTML shell.`
     );
   }
 }
@@ -854,6 +891,11 @@ async function buildEsbuild(options) {
 }
 async function buildVite(options) {
   const { build } = await import("vite");
+  const frameworkPlugins = [];
+  if (options.frameworkConfig.framework === "vue") {
+    const { default: vue } = await import("@vitejs/plugin-vue");
+    frameworkPlugins.push(vue());
+  }
   let projectRoot = path.resolve(options.projectDir);
   try {
     projectRoot = await realpath(options.projectDir);
@@ -872,7 +914,7 @@ async function buildVite(options) {
       logLevel: "silent",
       esbuild: { jsx: "automatic", jsxImportSource: options.frameworkConfig.jsxImportSource ?? void 0 },
       css: { postcss: { plugins: [] } },
-      plugins: [sporadesViteClientPlugin()],
+      plugins: [...frameworkPlugins, sporadesViteClientPlugin()],
       build: {
         write: false,
         emptyOutDir: false,
@@ -937,8 +979,9 @@ function sporadesViteClientPlugin() {
 function referencesLegacyClientShell(html) {
   return /<script\b[^>]*\bsrc\s*=\s*["']\/?client\.js(?:\?[^"']*)?["'][^>]*>/i.test(html);
 }
-function referencesFrameworkSourceEntry(html) {
-  return /<script\b[^>]*\bsrc\s*=\s*["']\/?client\/index\.tsx(?:\?[^"']*)?["'][^>]*>/i.test(html);
+function referencesFrameworkSourceEntry(html, entry) {
+  const escapedEntry = entry.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`<script\\b[^>]*\\bsrc\\s*=\\s*["']\\/?client/${escapedEntry}(?:\\?[^"']*)?["'][^>]*>`, "i").test(html);
 }
 function normalizeOutputPath(fileName) {
   const normalized = fileName.replaceAll("\\", "/").replace(/^\.\//, "");
@@ -953,7 +996,7 @@ function viteBuildError(error, projectRoots, framework) {
   const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectRoots, rawFile) : null;
   return clientToolchainError(
     `Client bundle failed: ${message}`,
-    `Fix the ${framework === "preact" ? "Preact" : "React"}/Vite client source and save again.`,
+    `Fix the ${framework === "preact" ? "Preact" : framework === "vue" ? "Vue" : "React"}/Vite client source and save again.`,
     {
       ...typeof details.code === "string" ? { code: details.code.slice(0, 80) } : {},
       ...relativeFile ? { file: relativeFile } : {},
@@ -11363,6 +11406,13 @@ var FRAMEWORK_BUNDLE_CONFIG = {
     jsxImportSource: "preact",
     jsxRuntimeImport: "preact/jsx-runtime"
   },
+  vue: {
+    framework: "vue",
+    entry: "index.ts",
+    loader: "ts",
+    jsxImportSource: null,
+    jsxRuntimeImport: null
+  },
   vanilla: {
     framework: "vanilla",
     entry: "index.ts",
@@ -11374,7 +11424,7 @@ var FRAMEWORK_BUNDLE_CONFIG = {
 var SUPPORTED_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "google", "email"]);
 async function createBundle(projectDir, config, options = {}) {
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
-  const toolchain = readClientToolchain(config.client?.toolchain ?? "esbuild", frameworkBundleConfig.framework);
+  const toolchain = readClientToolchain(config.client?.toolchain ?? (frameworkBundleConfig.framework === "vue" ? "vite" : "esbuild"), frameworkBundleConfig.framework);
   const buildDir = path4.join(projectDir, ".sporades", "build");
   const paths = {
     config: path4.join(projectDir, "sporades.json"),
@@ -11825,7 +11875,7 @@ async function readRequiredFile(filePath, message, hint) {
 }
 function readFrameworkBundleConfig(framework) {
   if (typeof framework !== "string" || !(framework in FRAMEWORK_BUNDLE_CONFIG)) {
-    throw commandError2(`Unsupported framework: ${framework}`, "Use one of: react, preact, vanilla.");
+    throw commandError2(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, vanilla.");
   }
   return FRAMEWORK_BUNDLE_CONFIG[framework];
 }
@@ -11838,6 +11888,9 @@ function readClientToolchain(toolchain, framework) {
       `Unsupported client framework/toolchain combination: ${framework}/vite`,
       "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild."
     );
+  }
+  if (framework === "vue" && toolchain !== "vite") {
+    throw commandError2("Unsupported client framework/toolchain combination: vue/esbuild", "Use Vue with Vite.");
   }
   return toolchain;
 }
@@ -11999,7 +12052,7 @@ function restartPolicyStatus(mode, overrides = {}) {
 function scaffoldFiles(options) {
   const templateOptions = resolveTemplateOptions(options.template);
   const framework = options.framework ?? templateOptions.framework;
-  const toolchain = options.toolchain ?? "esbuild";
+  const toolchain = options.toolchain ?? (framework === "vue" ? "vite" : "esbuild");
   const renderOptions = { ...options, name: options.name, framework, toolchain };
   const packageName = options.name;
   const sporadesDependency = options.sporadesDependency ?? "sporades";
@@ -12008,13 +12061,17 @@ function scaffoldFiles(options) {
     "react-dom": "^19.0.0"
   } : framework === "preact" ? {
     preact: "^10.25.0"
+  } : framework === "vue" ? {
+    vue: "^3.5.13"
   } : {};
   const frameworkDevDependencies = framework === "react" ? {
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0"
+  } : framework === "vue" ? {
+    "@vue/compiler-sfc": "^3.5.13"
   } : {};
   const baseTemplateFiles = framework === "vanilla" ? vanillaTemplateFiles(renderOptions) : templateOptions.files(renderOptions);
-  const templateFiles = toolchain === "vite" && framework !== "vanilla" ? viteTemplateFiles(baseTemplateFiles, framework) : baseTemplateFiles;
+  const templateFiles = framework === "vue" ? vueTemplateFiles(renderOptions, baseTemplateFiles) : toolchain === "vite" && framework !== "vanilla" ? viteTemplateFiles(baseTemplateFiles, framework) : baseTemplateFiles;
   return {
     "sporades.json": `${JSON.stringify(
       {
@@ -12071,12 +12128,91 @@ function scaffoldFiles(options) {
   </head>
   <body>
     <div id="app"></div>
-    <script type="module" src="${toolchain === "vite" ? "/client/index.tsx" : "/client.js"}"></script>
+    <script type="module" src="${toolchain === "vite" ? `/client/${framework === "vue" ? "index.ts" : "index.tsx"}` : "/client.js"}"></script>
   </body>
 </html>
 `,
     ...templateFiles
   };
+}
+function vueTemplateFiles(options, files) {
+  const { "client/index.tsx": _jsxEntry, ...sharedFiles } = files;
+  return {
+    ...sharedFiles,
+    "client/index.ts": `import { createApp } from "vue";
+import App from "./App.vue";
+
+createApp(App).mount("#app");
+`,
+    "client/sporades.ts": `import { onScopeDispose, reactive } from "vue";
+import { createVueComposables } from "sporades/client";
+
+export const { useAuth, useMutation, useQuery } = createVueComposables({ reactive, onScopeDispose });
+`,
+    "client/App.vue": options.template === "todo" ? vueTodoAppTemplate() : vueBlankAppTemplate(),
+    "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#42b883"/></svg>
+`
+  };
+}
+function vueBlankAppTemplate() {
+  return `<script setup lang="ts">
+import { useAuth } from "./sporades";
+
+const session = useAuth();
+</script>
+
+<template>
+  <main>
+    <img class="mark" src="./sporades-mark.svg" alt="" />
+    <h1>Blank Sporades Capsule</h1>
+    <p v-if="session.loading">Connecting\u2026</p>
+    <p v-else>Start building in server/index.ts and client/App.vue.</p>
+  </main>
+</template>
+
+<style scoped>
+main { max-width: 42rem; margin: 4rem auto; font-family: system-ui, sans-serif; }
+.mark { width: 2rem; height: 2rem; }
+</style>
+`;
+}
+function vueTodoAppTemplate() {
+  return `<script setup lang="ts">
+import { ref } from "vue";
+import { auth } from "sporades/client";
+import { useAuth, useMutation, useQuery } from "./sporades";
+
+const session = useAuth();
+const todos = useQuery("todos");
+const addTodo = useMutation("addTodo");
+const text = ref("");
+
+async function submit() {
+  const value = text.value.trim();
+  if (!value) return;
+  const result = await addTodo.run(value);
+  if (!result.error) text.value = "";
+}
+</script>
+
+<template>
+  <main>
+    <header><img class="mark" src="./sporades-mark.svg" alt="" /><h1>Sporades Todos</h1></header>
+    <button v-if="session.providers.google?.enabled && !session.isAuthenticated()" type="button" @click="auth.signIn('google')">Sign in with Google</button>
+    <form @submit.prevent="submit"><input v-model="text" aria-label="Todo" /><button :disabled="addTodo.loading">Add</button></form>
+    <p v-if="todos.loading">Loading\u2026</p>
+    <p v-else-if="todos.error" role="alert">{{ todos.error.message }}</p>
+    <ul v-else><li v-for="todo in todos.data ?? []" :key="todo.id">{{ todo.text }}</li></ul>
+  </main>
+</template>
+
+<style scoped>
+main { max-width: 42rem; margin: 3rem auto; font-family: system-ui, sans-serif; }
+header, form { display: flex; gap: .75rem; align-items: center; }
+.mark { width: 2rem; height: 2rem; }
+li { margin-block: .5rem; }
+</style>
+`;
 }
 function viteTemplateFiles(files, framework) {
   return {
@@ -13613,6 +13749,7 @@ const styles = \`
 }
 function agentsTemplate(template, framework, toolchain) {
   const vanilla = framework === "vanilla";
+  const clientFiles = framework === "vue" ? "client/*.vue and client/*.ts" : `client/*.${vanilla ? "ts" : "tsx"}`;
   return `# Sporades App Instructions
 
 This directory is for a Sporades app. Sporades is a CLI-first tool for building and running full-stack web apps.
@@ -13625,7 +13762,7 @@ Client toolchain: ${toolchain}
 
 - Server code goes in \`server/\`, client code in \`client/\`, shared code in \`shared/\`.
 - Use \`sporades/server\` only from \`server/*.ts\`.
-- Use \`sporades/client\` only from \`client/*.${vanilla ? "ts" : "tsx"}\`.
+- Use \`sporades/client\` only from \`${clientFiles}\`.
 - Data is accessed through queries. Changes go through mutations.
 - Use endpoints only for HTTP integrations that cannot use queries, mutations, or app messages.
 - No file-based routing. Use the router included in the scaffold template.
@@ -14253,7 +14390,7 @@ var HELP_TEXT = {
 Scaffold a new Capsule.
 
 Options:
-  --framework <name>  Client framework: react, preact, or vanilla
+  --framework <name>  Client framework: react, preact, vue, or vanilla
   --toolchain <name>  Client toolchain: esbuild (default) or vite (React only)
   --template <name>   Template: blank, todo, guestbook, photo-library, or campfire
   --no-install        Skip npm install
@@ -14529,7 +14666,7 @@ import { createHash as createHash3 } from "node:crypto";
 import { chmod, mkdir as mkdir5, readFile as readFile5, writeFile as writeFile5 } from "node:fs/promises";
 import path6 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
-var CLIENT_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "vanilla"]);
+var CLIENT_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "vue", "vanilla"]);
 var CLIENT_TOOLCHAINS = /* @__PURE__ */ new Set(["esbuild", "vite"]);
 var DEFAULT_CSP_DIRECTIVES = {
   "default-src": ["'self'"],
@@ -14586,7 +14723,7 @@ function validateClientConfig(client) {
     throw commandError4("Invalid client configuration.", "Set `client.framework` and optional `client.toolchain` in sporades.json.");
   }
   if (client.framework !== void 0 && !CLIENT_FRAMEWORKS.has(client.framework)) {
-    throw commandError4(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, vanilla.");
+    throw commandError4(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, vue, vanilla.");
   }
   if (client.toolchain !== void 0 && !CLIENT_TOOLCHAINS.has(client.toolchain)) {
     throw commandError4(`Unsupported client toolchain: ${client.toolchain}`, "Use one of: esbuild, vite.");
@@ -14596,6 +14733,9 @@ function validateClientConfig(client) {
       `Unsupported client framework/toolchain combination: ${client.framework}/vite`,
       "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild."
     );
+  }
+  if (client.framework === "vue" && client.toolchain !== void 0 && client.toolchain !== "vite") {
+    throw commandError4("Unsupported client framework/toolchain combination: vue/esbuild", "Use Vue with Vite.");
   }
 }
 function validateSchedulingConfig(scheduling) {
@@ -16409,7 +16549,7 @@ jobs:
 var CLI_VERSION = "0.3.0";
 
 // src/cli/sporades.ts
-var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "vanilla"]);
+var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "vue", "vanilla"]);
 var SUPPORTED_CLIENT_TOOLCHAINS = /* @__PURE__ */ new Set(["esbuild", "vite"]);
 var SUPPORTED_TEMPLATES = /* @__PURE__ */ new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
 var DEV_SESSION_FILE = path8.join(".sporades", "dev-session.json");
@@ -16601,7 +16741,7 @@ async function printVersion(options) {
 function parseCreateArgs(args) {
   let name = null;
   let framework = null;
-  let toolchain = "esbuild";
+  let toolchain = null;
   let template = "blank";
   let install = true;
   let git = true;
@@ -16641,8 +16781,9 @@ function parseCreateArgs(args) {
     throw commandError4("Missing scaffold name.", "Use `sporades create <name>`.");
   }
   if (framework !== null && !SUPPORTED_FRAMEWORKS.has(framework)) {
-    throw commandError4(`Unsupported framework: ${framework}`, "Use one of: react, preact, vanilla.");
+    throw commandError4(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, vanilla.");
   }
+  toolchain ??= framework === "vue" ? "vite" : "esbuild";
   if (!SUPPORTED_CLIENT_TOOLCHAINS.has(toolchain)) {
     throw commandError4(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
   }
@@ -16652,8 +16793,20 @@ function parseCreateArgs(args) {
       "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild."
     );
   }
+  if (framework === "vue" && toolchain !== "vite") {
+    throw commandError4(
+      `Unsupported client framework/toolchain combination: vue/${toolchain}`,
+      "Use Vue with Vite."
+    );
+  }
   if (!SUPPORTED_TEMPLATES.has(template)) {
     throw commandError4(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
+  }
+  if (framework === "vue" && template !== "blank" && template !== "todo") {
+    throw commandError4(
+      `Unsupported Vue template: ${template}`,
+      "Use the blank or todo template with Vue; other Vue templates are not admitted yet."
+    );
   }
   return {
     name,
@@ -18067,7 +18220,7 @@ async function startDevSession(options) {
         });
         runtimeServiceEnv = nextCapsuleServiceEnv;
         fatalRestartAttempts = 0;
-        if ((nextConfig.client?.toolchain ?? "esbuild") === "vite") websocketHub.refreshAll();
+        if (configuredClientToolchain(nextConfig) === "vite") websocketHub.refreshAll();
         websocketHub.disconnectAll();
       }
       const previousBundle = bundle;
@@ -18080,7 +18233,7 @@ async function startDevSession(options) {
       });
       config = nextConfig;
       security = nextSecurity;
-      if (!affectsServerRuntime && (nextConfig.client?.toolchain ?? "esbuild") === "vite") websocketHub.refreshAll();
+      if (!affectsServerRuntime && configuredClientToolchain(nextConfig) === "vite") websocketHub.refreshAll();
       emitDevEvent(options, {
         event: "rebuild",
         status: "success",
@@ -18090,7 +18243,7 @@ async function startDevSession(options) {
         build: {
           phase: affectsServerRuntime ? "bundle" : "client",
           framework: nextConfig.client?.framework ?? "react",
-          toolchain: nextConfig.client?.toolchain ?? "esbuild"
+          toolchain: configuredClientToolchain(nextConfig)
         }
       });
     } catch (error) {
@@ -18181,8 +18334,11 @@ function tagDevRebuildError(error, phase, config, options = {}) {
   const tagged = error instanceof Error ? error : commandError4(String(error), "Fix the rebuild error and save again.");
   tagged.phase = phase;
   tagged.framework = config.client?.framework ?? "react";
-  tagged.toolchain = config.client?.toolchain ?? "esbuild";
+  tagged.toolchain = configuredClientToolchain(config);
   return tagged;
+}
+function configuredClientToolchain(config) {
+  return config.client?.toolchain ?? (config.client?.framework === "vue" ? "vite" : "esbuild");
 }
 function reportDevPublicCleanupDegradation(options, runtime, url, port, config, error) {
   runtime.database.log.emit({
@@ -18199,7 +18355,7 @@ function reportDevPublicCleanupDegradation(options, runtime, url, port, config, 
       status: "degraded",
       url,
       port,
-      build: { phase: "public", framework: config.client?.framework ?? "react", toolchain: config.client?.toolchain ?? "esbuild" }
+      build: { phase: "public", framework: config.client?.framework ?? "react", toolchain: configuredClientToolchain(config) }
     },
     {
       message: "Public tree cleanup degraded.",
@@ -19370,7 +19526,7 @@ async function startContainerSession(options) {
   try {
     clientRelease = {
       framework: config.client?.framework ?? "react",
-      toolchain: config.client?.toolchain ?? "esbuild",
+      toolchain: configuredClientToolchain(config),
       publicTree: path8.basename(bundle.staticFiles.publicDir),
       ...await summarizePublicTree(bundle.staticFiles.publicDir)
     };
@@ -19381,7 +19537,7 @@ async function startContainerSession(options) {
     throw commandError4(
       "Container public tree validation failed.",
       details.hint ?? "Rebuild the Capsule public output and retry deployment; the running Container was preserved.",
-      { phase: "public", framework: config.client?.framework ?? "react", toolchain: config.client?.toolchain ?? "esbuild", cause: details.message }
+      { phase: "public", framework: config.client?.framework ?? "react", toolchain: configuredClientToolchain(config), cause: details.message }
     );
   }
   ensureLocalBaseImage(options.projectDir);

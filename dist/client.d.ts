@@ -5,6 +5,7 @@ export declare const journey: any;
 export declare const mutations: any;
 export declare const queries: any;
 export declare const createHooks: any;
+export declare const createVueComposables: any;
 export declare const isAuthenticated: any;
 export declare const onMessage: any;
 export declare const sendMessage: any;

@@ -672,6 +672,68 @@ test("sporades create explicitly scaffolds Preact with the Vite client toolchain
   });
 });
 
+test("sporades create scaffolds an idiomatic Vue/Vite blank Capsule by default", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "vue-blank", "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr);
+    const projectDir = path.join(dir, "vue-blank");
+    const [config, html, entry, app, client, packageJson] = await Promise.all([
+      readFile(path.join(projectDir, "sporades.json"), "utf8").then(JSON.parse),
+      readFile(path.join(projectDir, "index.html"), "utf8"),
+      readFile(path.join(projectDir, "client", "index.ts"), "utf8"),
+      readFile(path.join(projectDir, "client", "App.vue"), "utf8"),
+      readFile(path.join(projectDir, "client", "sporades.ts"), "utf8"),
+      readFile(path.join(projectDir, "package.json"), "utf8").then(JSON.parse),
+    ]);
+    assert.deepEqual(config.client, { framework: "vue", toolchain: "vite" });
+    assert.match(html, /src="\/client\/index\.ts"/);
+    assert.match(entry, /createApp\(App\)/);
+    assert.match(app, /<script setup lang="ts">/);
+    assert.match(app, /<template>/);
+    assert.match(app, /<style scoped>/);
+    assert.match(client, /createVueComposables/);
+    assert.equal(packageJson.dependencies.vue, "^3.5.13");
+    assert.equal(packageJson.devDependencies["@vue/compiler-sfc"], "^3.5.13");
+    assert.equal(packageJson.dependencies.react, undefined);
+    assert.equal(packageJson.dependencies.preact, undefined);
+  });
+});
+
+test("sporades create scaffolds the admitted Vue/Vite todo Capsule", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "vue-todo", "--template", "todo", "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr);
+    const projectDir = path.join(dir, "vue-todo");
+    const [server, app] = await Promise.all([
+      readFile(path.join(projectDir, "server", "index.ts"), "utf8"),
+      readFile(path.join(projectDir, "client", "App.vue"), "utf8"),
+    ]);
+    assert.match(server, /todos: table/);
+    assert.match(app, /useQuery\("todos"\)/);
+    assert.match(app, /useMutation\("addTodo"\)/);
+    assert.match(app, /v-model="text"/);
+    assert.match(app, /@submit\.prevent="submit"/);
+    assert.doesNotMatch(app, /createHooks|react|preact/i);
+  });
+});
+
+test("sporades create structurally rejects unsupported Vue toolchains and later templates", async () => {
+  await withTempDir(async (dir) => {
+    const esbuild = await runCli(["create", "vue-esbuild", "--framework", "vue", "--toolchain", "esbuild", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(esbuild.code, 1);
+    assert.deepEqual(JSON.parse(esbuild.stdout).error, {
+      message: "Unsupported client framework/toolchain combination: vue/esbuild",
+      hint: "Use Vue with Vite.",
+    });
+    const guestbook = await runCli(["create", "vue-guestbook", "--framework", "vue", "--template", "guestbook", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(guestbook.code, 1);
+    assert.deepEqual(JSON.parse(guestbook.stdout).error, {
+      message: "Unsupported Vue template: guestbook",
+      hint: "Use the blank or todo template with Vue; other Vue templates are not admitted yet.",
+    });
+  });
+});
+
 test("sporades create keeps Vanilla TypeScript on esbuild", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(
@@ -963,7 +1025,7 @@ test("sporades create rejects unsupported framework values with structured JSON"
       data: null,
       error: {
         message: "Unsupported framework: angular",
-        hint: "Use one of: react, preact, vanilla.",
+        hint: "Use one of: react, preact, vue, vanilla.",
       },
     });
   });

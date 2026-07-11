@@ -1208,6 +1208,11 @@ async function installFakePreact(projectDir) {
   );
 }
 
+async function installVue(projectDir) {
+  await mkdir(path.join(projectDir, "node_modules"), { recursive: true });
+  await symlink(path.join(repoRoot, "node_modules", "vue"), path.join(projectDir, "node_modules", "vue"));
+}
+
 async function writePackage(projectDir, packageName, exports, files) {
   const packageDir = path.join(projectDir, "node_modules", packageName);
   await mkdir(packageDir, { recursive: true });
@@ -4190,7 +4195,12 @@ process.exit(0);
   });
 });
 
-for (const framework of ["react", "preact"]) test(`sporades host push archives the complete normalized ${framework} Vite public tree`, async () => {
+for (const { framework, template } of [
+  { framework: "react", template: "blank" },
+  { framework: "preact", template: "blank" },
+  { framework: "vue", template: "blank" },
+  { framework: "vue", template: "todo" },
+]) test(`sporades host push archives the complete normalized ${framework} Vite ${template} public tree`, async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
@@ -4199,12 +4209,12 @@ for (const framework of ["react", "preact"]) test(`sporades host push archives t
     );
     const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
     const created = await runCli(
-      ["create", "vite-hosted", "--framework", framework, "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      ["create", "vite-hosted", "--template", template, "--framework", framework, "--toolchain", "vite", "--no-install", "--no-git", "--json"],
       { cwd: dir },
     );
     assert.equal(created.code, 0, created.stderr);
     const projectDir = path.join(dir, "vite-hosted");
-    await (framework === "react" ? installFakeReact : installFakePreact)(projectDir);
+    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : installVue)(projectDir);
     await rm(path.join(projectDir, ".env.sporades.server"), { force: true });
     const env = {
       ...hostEnv(configDir), ...fakeSsh.env, ...fakeScp.env,
@@ -4222,7 +4232,8 @@ for (const framework of ["react", "preact"]) test(`sporades host push archives t
     assert(files.includes("public/index.html"));
     assert(files.some((file) => /^public\/assets\/index-[^/]+\.js$/.test(file)));
     assert(files.some((file) => /^public\/assets\/index-[^/]+\.css$/.test(file)));
-    assert(files.some((file) => /^public\/assets\/vite-scaffold-[^/]+\.js$/.test(file)));
+    if (framework !== "vue") assert(files.some((file) => /^public\/assets\/vite-scaffold-[^/]+\.js$/.test(file)));
+    assert(files.some((file) => /^public\/assets\/sporades-mark-[^/]+\.svg$/.test(file)));
     assert(files.some((file) => file.endsWith(".js.map")));
     assert.equal(files.includes("public/client.js"), false);
 
@@ -4234,6 +4245,7 @@ for (const framework of ["react", "preact"]) test(`sporades host push archives t
     const publicText = (await Promise.all(publicEntries.map((file) => readFile(path.join(publicRoot, file.slice("public/".length)), "utf8")))).join("\n");
     assert.doesNotMatch(publicText, /\/@vite\/client|react-refresh|vite\/hmr|SERVER_ONLY/i);
     if (framework === "preact") assert.doesNotMatch(publicText, /node_modules\/react(?:-dom)?\/|from ["']react(?:-dom)?/);
+    if (framework === "vue") assert.match(publicText, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
   });
 });
 

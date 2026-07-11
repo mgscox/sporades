@@ -197,26 +197,30 @@ sporades create tiny --framework preact
 sporades create framework-free --framework vanilla
 sporades create vite-react --framework react --toolchain vite
 sporades create vite-preact --framework preact --toolchain vite
+sporades create vue-todo --template todo --framework vue
 sporades create no-install-yet --no-install --no-git
 ```
 
 Available templates are `blank`, `todo`, `guestbook`, `photo-library`, and
 `campfire`. Campfire demonstrates realtime messaging, durable reactions, email
 fixture identities, and explicitly consented ephemeral Journey activity.
-Available client frameworks are `react`, `preact`, and framework-neutral
-Vanilla TypeScript. esbuild remains the default client toolchain. React and
-Preact can explicitly select Vite with `--toolchain vite`; Vanilla TypeScript
-remains on esbuild.
+Available client frameworks are `react`, `preact`, `vue`, and framework-neutral
+Vanilla TypeScript. esbuild remains the React and Preact default client
+toolchain, and they can explicitly select Vite with `--toolchain vite`. Vue
+selects Vite and currently admits only the `blank` and `todo` templates;
+Vanilla TypeScript remains on esbuild.
 
-React/Vite and Preact/Vite scaffolds keep `index.html` author-owned and reference
-`/client/index.tsx`. Sporades runs Vite as an isolated one-shot build with local
-Vite config and `.env*` loading disabled, then serves transformed HTML and its
+React/Vite and Preact/Vite scaffolds reference `/client/index.tsx`; Vue/Vite
+references `/client/index.ts` and compiles native `client/App.vue` SFCs. All
+keep `index.html` author-owned. Sporades runs Vite as an isolated one-shot build
+with local Vite config and `.env*` loading disabled, then serves transformed HTML and its
 hashed JS, CSS, source-map, and imported-asset tree. Sporades remains the only
 Dev watcher/server and requests a full-page refresh after successful rebuilds;
-neither framework uses a Vite dev server, HMR, React Refresh, or another socket.
-Migrating an existing esbuild Capsule requires replacing the `/client.js`
-script in author-owned `index.html` with `/client/index.tsx`; Sporades reports
-that change as a write-free preflight error and never rewrites the source shell.
+none uses a Vite dev server, HMR, framework refresh plugin, or another socket.
+Migrating an existing React or Preact esbuild Capsule requires replacing the
+`/client.js` script in author-owned `index.html` with `/client/index.tsx`. A
+Vue source shell uses `/client/index.ts`. Sporades reports a mismatched source
+entry as a write-free preflight error and never rewrites the source shell.
 
 ### 2. Start a Dev Session
 
@@ -477,6 +481,16 @@ const addTodo = useMutation("addTodo");
 await addTodo.run("Buy coffee");
 ```
 
+For Vue, open `client/App.vue`. The scaffold binds native reactive state and
+scope disposal to the same framework-neutral connection in `client/sporades.ts`:
+
+```ts
+import { onScopeDispose, reactive } from "vue";
+import { createVueComposables } from "sporades/client";
+
+export const { useAuth, useMutation, useQuery } = createVueComposables({ reactive, onScopeDispose });
+```
+
 Queries stay subscribed over the Sporades client transport, so successful
 mutations refresh connected clients without you writing manual fetch code.
 
@@ -556,12 +570,13 @@ messages, middleware, and server-side behavior.
 APIs, Server env, and Sporades runtime imports.
 
 `index.html` is user-owned and served at `/`. esbuild clients load `/client.js`.
-React/Vite and Preact/Vite source HTML instead load `/client/index.tsx`; the
-released HTML references only transformed hashed assets.
+React/Vite and Preact/Vite source HTML instead load `/client/index.tsx`;
+Vue/Vite loads `/client/index.ts`. Released HTML references only transformed
+hashed assets.
 
 `sporades.json` configures the Capsule name, template, client framework and
 toolchain, auth, and default ports. Omitting `client.toolchain` preserves the
-esbuild default for existing React and Preact Capsules.
+esbuild default for existing React and Preact Capsules. Vue defaults to Vite.
 
 Sealed Server env stores server-only values in `.sporades/sealed-server-env/`
 and exposes them as `ctx.env` inside server handlers. `.env.sporades.server`

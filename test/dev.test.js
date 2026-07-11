@@ -332,6 +332,11 @@ async function installFakePreact(projectDir) {
   );
 }
 
+async function installVue(projectDir) {
+  await mkdir(path.join(projectDir, "node_modules"), { recursive: true });
+  await symlink(path.join(repoRoot, "node_modules", "vue"), path.join(projectDir, "node_modules", "vue"));
+}
+
 async function writePackage(projectDir, packageName, exports, files) {
   const packageDir = path.join(projectDir, "node_modules", packageName);
   await mkdir(packageDir, { recursive: true });
@@ -1101,6 +1106,42 @@ test("Preact configuration without a toolchain preserves the esbuild client defa
   });
 });
 
+test("Vue Vite compiles native SFCs into an isolated normalized public tree", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "vue-todo-build", "--template", "todo", "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "vue-todo-build");
+    await installVue(projectDir);
+    await writeFile(path.join(projectDir, ".env"), "VITE_VUE_LEAK=vue-browser-secret\n");
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "VUE_SERVER_ONLY=vue-server-secret\n");
+    await writeFile(path.join(projectDir, "vite.config.ts"), 'throw new Error("vue-vite-config-loaded");\n');
+    await writeFile(path.join(projectDir, "postcss.config.mjs"), 'throw new Error("vue-postcss-config-loaded");\n');
+    const entryPath = path.join(projectDir, "client", "index.ts");
+    await writeFile(entryPath, `${await readFile(entryPath, "utf8")}\nconsole.log(import.meta.env.VITE_VUE_LEAK);\n`);
+    const appSource = await readFile(path.join(projectDir, "client", "App.vue"), "utf8");
+    assert.match(appSource, /useQuery\("todos"\)/);
+    assert.match(appSource, /<style scoped>/);
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    const bundle = await createBundle(projectDir, config, { publishLegacy: false });
+    try {
+      const files = Object.keys(await snapshotProjectTree(bundle.staticFiles.publicDir)).filter((file) => !file.endsWith("/"));
+      assert(files.includes("index.html"), JSON.stringify(files));
+      assert(files.some((file) => /^assets\/index-[^/]+\.js$/.test(file)));
+      assert(files.some((file) => /^assets\/index-[^/]+\.css$/.test(file)));
+      assert(files.some((file) => /^assets\/sporades-mark-[^/]+\.svg$/.test(file)));
+      assert(files.some((file) => file.endsWith(".js.map")));
+      assert.equal(files.includes("client.js"), false);
+      const output = (await Promise.all(files.map((file) => readFile(path.join(bundle.staticFiles.publicDir, file), "utf8")))).join("\n");
+      assert.match(output, /Sporades Todos/);
+      assert.doesNotMatch(output, /vue-(?:browser|server)-secret|vue-(?:vite|postcss)-config-loaded/);
+      assert.doesNotMatch(output, /\/@vite\/client|react-refresh|vite\/hmr/i);
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
 test("sporades dev owns React Vite rebuilds, preserves last-good output, and requests full-page refresh", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(
@@ -1211,6 +1252,57 @@ test("sporades dev owns Preact Vite failure recovery and full-page refresh", asy
       await writeFile(chunkPath, 'export const viteScaffoldLabel = "Sporades Preact/Vite recovered";\n');
       const recovered = await waitForJsonEvent(child, (event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
       assert.deepEqual(recovered.data.build, { phase: "client", framework: "preact", toolchain: "vite" });
+      assert.equal((await recoveredRefresh).type, "refresh");
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good Vue ${template} SFC output and recovers with full-page refresh`, async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "vue-dev", "--template", template, "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "vue-dev");
+    await installVue(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    if (template === "blank") delete config.client.toolchain;
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const appPath = path.join(projectDir, "client", "App.vue");
+    const original = await readFile(appPath, "utf8");
+    const sourceLabel = template === "todo" ? "Sporades Todos" : "Blank Sporades Capsule";
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+      const firstRefresh = readSocketMessage(socket);
+      await writeFile(appPath, original.replace(sourceLabel, "Vue SFC rebuilt"));
+      const rebuilt = await waitForJsonEvent(child, (event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "vue", toolchain: "vite" });
+      assert.equal((await firstRefresh).type, "refresh");
+      const scrub = (html) => html.replace(/window\.__SPORADES_CONNECTION_TOKEN="[^"]+"/, 'window.__SPORADES_CONNECTION_TOKEN="<token>"');
+      const lastGood = scrub(await (await fetch(started.data.url)).text());
+
+      await writeFile(appPath, '<script setup lang="ts">const broken = </script><template><div></template>\n');
+      const failed = await waitForJsonEvent(child, (event) => !event.ok && event.data?.event === "rebuild");
+      assert.deepEqual(failed.data.build, { phase: "client", framework: "vue", toolchain: "vite" });
+      assert.match(failed.error.message, /Client bundle failed/);
+      assert.match(failed.error.hint, /Vue\/Vite client source/);
+      assert(JSON.stringify(failed).length < 4096);
+      assert.doesNotMatch(JSON.stringify(failed), new RegExp(projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.equal(scrub(await (await fetch(started.data.url)).text()), lastGood);
+
+      const recoveredRefresh = readSocketMessage(socket);
+      await writeFile(appPath, original.replace(sourceLabel, "Vue SFC recovered"));
+      const recovered = await waitForJsonEvent(child, (event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(recovered.data.build, { phase: "client", framework: "vue", toolchain: "vite" });
       assert.equal((await recoveredRefresh).type, "refresh");
     } finally {
       socket?.close();

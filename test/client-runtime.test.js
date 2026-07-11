@@ -19,6 +19,46 @@ test("browser client runtime exposes no Privileged server role authority", async
   assert.equal(Object.hasOwn(runtime.auth, "asPrivileged"), false);
 });
 
+test("Vue composables expose complete reactive state and dispose shared subscriptions", async () => {
+  const unsubscribes = [];
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "query.subscribe": async () => ({ type: "query.result", data: [{ id: "todo-1", text: "Vue update" }], error: null }),
+    "query.unsubscribe": async (message) => { unsubscribes.push(message); return { type: "query.unsubscribe.result", data: { removed: true }, error: null }; },
+    "mutation.run": async () => ({ type: "mutation.result", data: null, error: { message: "Vue mutation failed" } }),
+  }});
+  const disposals = [];
+  const reactive = (value) => value;
+  try {
+    const runtime = await importClientRuntime();
+    assert.equal(typeof runtime.createVueComposables, "function");
+    const composables = runtime.createVueComposables({ reactive, onScopeDispose: (cleanup) => disposals.push(cleanup) });
+    const query = composables.useQuery("todos");
+    const mutation = composables.useMutation("addTodo");
+    const auth = composables.useAuth();
+    assert.deepEqual(query, { data: null, error: null, loading: true });
+    assert.equal(mutation.loading, false);
+    assert.equal(mutation.error, null);
+    assert.equal(typeof mutation.run, "function");
+    assert.equal(auth.loading, true);
+    assert.equal(auth.error, null);
+    assert.equal(auth.auth, null);
+    assert.deepEqual(auth.providers, {});
+    assert.equal(disposals.length, 2, "query and auth own one Vue disposal each");
+    assert.equal(browser.sockets.length, 1, "Vue composables share the framework-neutral page connection");
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(query, { data: [{ id: "todo-1", text: "Vue update" }], error: null, loading: false });
+    assert.equal(auth.loading, false);
+    assert.deepEqual(auth.auth, anonymousAuth);
+    const failed = await mutation.run("broken");
+    assert.equal(failed.error.message, "Vue mutation failed");
+    assert.equal(mutation.loading, false);
+    assert.equal(mutation.error.message, "Vue mutation failed");
+    disposals.forEach((dispose) => dispose());
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(unsubscribes.length, 1);
+  } finally { browser.cleanup(); }
+});
+
 test("Journey metadata rejects symbol-keyed objects before publication", () => {
   const normalize = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "normalizeJourneyState");
   const metadata = { visible: true, [Symbol("private")]: "lost" };

@@ -46,23 +46,23 @@ export function validateClientToolchainInput(options: {
   indexHtml: string;
 }) {
   if (options.toolchain !== "vite") return;
-  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : "React";
-  if (options.frameworkConfig.framework !== "react" && options.frameworkConfig.framework !== "preact") {
+  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "vue" ? "Vue" : "React";
+  if (!new Set(["react", "preact", "vue"]).has(options.frameworkConfig.framework)) {
     throw clientToolchainError(
       `Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`,
-      "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild.",
+      "Use React, Preact, or Vue with Vite, or keep Vanilla TypeScript on esbuild.",
     );
   }
   if (referencesLegacyClientShell(options.indexHtml)) {
     throw clientToolchainError(
       `${frameworkLabel}/Vite requires an author-owned source entry in index.html.`,
-      'Replace the `/client.js` script with `<script type="module" src="/client/index.tsx"></script>`, then retry.',
+      `Replace the \`/client.js\` script with \`<script type="module" src="/client/${options.frameworkConfig.entry}"></script>\`, then retry.`,
     );
   }
-  if (!referencesFrameworkSourceEntry(options.indexHtml)) {
+  if (!referencesFrameworkSourceEntry(options.indexHtml, options.frameworkConfig.entry)) {
     throw clientToolchainError(
       `${frameworkLabel}/Vite could not find the client source entry in index.html.`,
-      'Add `<script type="module" src="/client/index.tsx"></script>` to the author-owned HTML shell.',
+      `Add \`<script type="module" src="/client/${options.frameworkConfig.entry}"></script>\` to the author-owned HTML shell.`,
     );
   }
 }
@@ -141,6 +141,11 @@ async function buildVite(options: {
   indexHtmlPath: string;
 }) {
   const { build } = await import("vite");
+  const frameworkPlugins: VitePlugin[] = [];
+  if (options.frameworkConfig.framework === "vue") {
+    const { default: vue } = await import("@vitejs/plugin-vue");
+    frameworkPlugins.push(vue());
+  }
   let projectRoot = path.resolve(options.projectDir);
   try {
     projectRoot = await realpath(options.projectDir);
@@ -159,7 +164,7 @@ async function buildVite(options: {
       logLevel: "silent",
       esbuild: { jsx: "automatic", jsxImportSource: options.frameworkConfig.jsxImportSource ?? undefined },
       css: { postcss: { plugins: [] } },
-      plugins: [sporadesViteClientPlugin()],
+      plugins: [...frameworkPlugins, sporadesViteClientPlugin()],
       build: {
         write: false,
         emptyOutDir: false,
@@ -224,8 +229,9 @@ function referencesLegacyClientShell(html: string) {
   return /<script\b[^>]*\bsrc\s*=\s*["']\/?client\.js(?:\?[^"']*)?["'][^>]*>/i.test(html);
 }
 
-function referencesFrameworkSourceEntry(html: string) {
-  return /<script\b[^>]*\bsrc\s*=\s*["']\/?client\/index\.tsx(?:\?[^"']*)?["'][^>]*>/i.test(html);
+function referencesFrameworkSourceEntry(html: string, entry: string) {
+  const escapedEntry = entry.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`<script\\b[^>]*\\bsrc\\s*=\\s*["']\\/?client/${escapedEntry}(?:\\?[^"']*)?["'][^>]*>`, "i").test(html);
 }
 
 function normalizeOutputPath(fileName: string) {
@@ -242,7 +248,7 @@ function viteBuildError(error: unknown, projectRoots: string[], framework: strin
   const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectRoots, rawFile) : null;
   return clientToolchainError(
     `Client bundle failed: ${message}`,
-    `Fix the ${framework === "preact" ? "Preact" : "React"}/Vite client source and save again.`,
+    `Fix the ${framework === "preact" ? "Preact" : framework === "vue" ? "Vue" : "React"}/Vite client source and save again.`,
     {
       ...(typeof details.code === "string" ? { code: details.code.slice(0, 80) } : {}),
       ...(relativeFile ? { file: relativeFile } : {}),

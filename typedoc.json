@@ -11,5 +11,7 @@
   "readme": "none",
   "cleanOutputDir": true,
   "hideGenerator": true,
-  "gitRevision": "main"
+  "gitRevision": "main",
+  "disableGit": true,
+  "sourceLinkTemplate": "https://github.com/mgscox/sporades/blob/{gitRevision}/src/types/{path}#L{line}"
 }

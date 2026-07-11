@@ -286,6 +286,19 @@ export type SporadesHooks = {
   useAuth(): UseAuthState;
 };
 
+/** Vue lifecycle/reactivity primitives consumed by `createVueComposables()`. */
+export type VueComposablePrimitives = {
+  reactive<State extends object>(state: State): State;
+  onScopeDispose(cleanup: () => void): void;
+};
+
+/** Vue-native Sporades composables over the shared framework-neutral client connection. */
+export type SporadesVueComposables = {
+  useQuery<Data = unknown>(name: string): QueryState<Data>;
+  useMutation<Result = unknown>(name: string): MutationState<Result>;
+  useAuth(): UseAuthState;
+};
+
 /** Auth commands for the current browser session. */
 export const auth: AuthApi;
 /** File upload, URL, download, delete, and public URL commands. */
@@ -324,3 +337,6 @@ export function onMessage<Data = unknown>(listener: (message: AppMessage<Data>) 
  * ```
  */
 export function createHooks(primitives: HookPrimitives): SporadesHooks;
+
+/** Bind reactive Sporades state and subscription cleanup to a Vue effect scope or component. */
+export function createVueComposables(primitives: VueComposablePrimitives): SporadesVueComposables;

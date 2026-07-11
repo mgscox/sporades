@@ -12,7 +12,8 @@ and `sporades host ...`.
 
 Apps run as real Node.js code with SQLite-backed persistence. The CLI keeps the
 Server Bundle on esbuild and builds clients through a framework/toolchain
-adapter: esbuild remains the default, while React and Preact can explicitly select Vite.
+adapter: esbuild remains the React/Preact default, while those frameworks can
+explicitly select Vite and Vue uses Vite for native Single-File Components.
 The normalized release runs unchanged in a local Dev session, a local Docker
 Container session, or a Hosted Capsule on a Host server.
 
@@ -26,7 +27,8 @@ LLM systems that need a scriptable build, deploy, inspect, and repair loop.
 The repository currently includes:
 
 - `sporades create` scaffolding with template selection, React, Preact, and
-  Vanilla TypeScript framework support, explicit React/Vite and Preact/Vite admission,
+  Vanilla TypeScript framework support, explicit React/Vite and Preact/Vite
+  admission, and Vue/Vite admission for blank and todo Capsules,
   framework support, `AGENTS.md`, `CLAUDE.md`, `index.html`, `sporades.json`,
   Server env, and optional `npm install` / git initialization.
 - `sporades dev` for local Node execution with bundling, file watching,
@@ -259,7 +261,8 @@ transport remain the default application path.
 ## Client API
 
 `sporades/client` exports framework-neutral query, mutation, auth, current-user
-preferences and file APIs, app-message helpers, and a `createHooks` factory.
+preferences and file APIs, app-message helpers, a `createHooks` factory, and
+Vue-native composables over the same connection.
 Vanilla TypeScript clients can use the transport primitives directly:
 
 ```ts
@@ -286,6 +289,16 @@ const { useAuth, useMutation, useQuery } = createHooks({ useState, useEffect });
 
 const current = await preferences.get();
 const next = await preferences.update({ theme: "dark" });
+```
+
+Vue clients bind the same complete state and disposal semantics to the active
+Vue scope:
+
+```ts
+import { onScopeDispose, reactive } from "vue";
+import { createVueComposables } from "sporades/client";
+
+const { useAuth, useMutation, useQuery } = createVueComposables({ reactive, onScopeDispose });
 ```
 
 The browser connects to `/__sporades/ws` on the same origin. The transport
@@ -422,7 +435,7 @@ Database adapter and keeping app-facing file APIs unchanged.
 `server/`, `client/`, `shared/`, `index.html`, and `sporades.json`. Server and
 shared changes restart the runtime; client and HTML changes refresh served
 assets. Failed rebuilds keep the last successful Bundle running. Sporades
-invokes React/Vite and Preact/Vite as one-shot production builds under its own
+invokes React/Vite, Preact/Vite, and Vue/Vite as one-shot production builds under its own
 watcher and server; it does not start a Vite dev server, HMR transport, or
 second watcher.
 
