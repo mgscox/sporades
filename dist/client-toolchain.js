@@ -2,9 +2,23 @@ import path from "node:path";
 import { realpath } from "node:fs/promises";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 export async function buildClientToolchain(options) {
+    validateClientToolchainInput(options);
     if (options.toolchain === "vite")
         return buildReactVite(options);
     return buildEsbuild(options);
+}
+export function validateClientToolchainInput(options) {
+    if (options.toolchain !== "vite")
+        return;
+    if (options.frameworkConfig.framework !== "react") {
+        throw clientToolchainError(`Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`, "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild.");
+    }
+    if (referencesLegacyClientShell(options.indexHtml)) {
+        throw clientToolchainError("React/Vite requires an author-owned source entry in index.html.", 'Replace the `/client.js` script with `<script type="module" src="/client/index.tsx"></script>`, then retry.');
+    }
+    if (!referencesReactSourceEntry(options.indexHtml)) {
+        throw clientToolchainError("React/Vite could not find the client source entry in index.html.", 'Add `<script type="module" src="/client/index.tsx"></script>` to the author-owned HTML shell.');
+    }
 }
 async function buildEsbuild(options) {
     const { build } = await import("esbuild");
@@ -71,18 +85,10 @@ async function buildEsbuild(options) {
     }
 }
 async function buildReactVite(options) {
-    if (options.frameworkConfig.framework !== "react") {
-        throw clientToolchainError(`Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`, "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild.");
-    }
-    if (referencesLegacyClientShell(options.indexHtml)) {
-        throw clientToolchainError("React/Vite requires an author-owned source entry in index.html.", 'Replace the `/client.js` script with `<script type="module" src="/client/index.tsx"></script>`, then retry.');
-    }
-    if (!referencesReactSourceEntry(options.indexHtml)) {
-        throw clientToolchainError("React/Vite could not find the client source entry in index.html.", 'Add `<script type="module" src="/client/index.tsx"></script>` to the author-owned HTML shell.');
-    }
     const { build } = await import("vite");
+    let projectRoot = path.resolve(options.projectDir);
     try {
-        const projectRoot = await realpath(options.projectDir);
+        projectRoot = await realpath(options.projectDir);
         const result = await build({
             root: projectRoot,
             base: "/",
@@ -97,6 +103,7 @@ async function buildReactVite(options) {
             clearScreen: false,
             logLevel: "silent",
             esbuild: { jsx: "automatic", jsxImportSource: "react" },
+            css: { postcss: { plugins: [] } },
             plugins: [sporadesViteClientPlugin()],
             build: {
                 write: false,
@@ -139,7 +146,7 @@ async function buildReactVite(options) {
     catch (error) {
         if (hasHint(error))
             throw error;
-        throw viteBuildError(error, options.projectDir);
+        throw viteBuildError(error, [options.projectDir, projectRoot]);
     }
 }
 function sporadesEsbuildClientPlugin() {
@@ -172,12 +179,12 @@ function normalizeOutputPath(fileName) {
         throw new Error("Vite emitted an unsafe public path.");
     return normalized;
 }
-function viteBuildError(error, projectDir) {
+function viteBuildError(error, projectRoots) {
     const details = errorDetails(error);
-    const message = boundedBuildMessage(error, projectDir);
+    const message = boundedBuildMessage(error, projectRoots);
     const loc = errorDetails(details.loc);
     const rawFile = typeof loc.file === "string" ? loc.file : typeof details.id === "string" ? details.id : null;
-    const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectDir, rawFile) : null;
+    const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectRoots, rawFile) : null;
     return clientToolchainError(`Client bundle failed: ${message}`, "Fix the React/Vite client source and save again.", {
         ...(typeof details.code === "string" ? { code: details.code.slice(0, 80) } : {}),
         ...(relativeFile ? { file: relativeFile } : {}),
@@ -185,19 +192,30 @@ function viteBuildError(error, projectDir) {
         ...(Number.isInteger(loc.column) ? { column: loc.column } : {}),
     });
 }
-function safeRelativeDiagnosticPath(projectDir, fileName) {
-    const relative = path.relative(projectDir, fileName).split(path.sep).join("/");
-    return relative && !relative.startsWith("../") && relative !== ".." ? relative.slice(0, 240) : path.basename(fileName).slice(0, 120);
+function safeRelativeDiagnosticPath(projectRoots, fileName) {
+    for (const projectRoot of canonicalDiagnosticRoots(projectRoots)) {
+        const relative = path.relative(projectRoot, fileName).split(path.sep).join("/");
+        if (relative && !relative.startsWith("../") && relative !== "..")
+            return relative.slice(0, 240);
+    }
+    return path.basename(fileName).slice(0, 120);
 }
-function boundedBuildMessage(error, projectDir) {
+function boundedBuildMessage(error, projectRoots = []) {
     const details = errorDetails(error);
     const firstError = Array.isArray(details.errors) ? details.errors[0] : null;
     let message = typeof errorDetails(firstError).text === "string"
         ? String(errorDetails(firstError).text)
         : typeof details.message === "string" ? details.message : "unknown error";
-    if (projectDir)
-        message = message.split(projectDir).join("<project>");
+    for (const projectRoot of canonicalDiagnosticRoots(projectRoots)) {
+        message = message.split(projectRoot).join("<project>");
+    }
     return message.replace(/[\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 1200);
+}
+function canonicalDiagnosticRoots(projectRoots) {
+    return [...new Set(projectRoots.flatMap((projectRoot) => {
+            const resolved = path.resolve(projectRoot);
+            return [projectRoot, resolved];
+        }).filter(Boolean))].sort((left, right) => right.length - left.length);
 }
 function clientToolchainError(message, hint, diagnostics) {
     const error = new Error(message);

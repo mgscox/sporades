@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { access, chmod, mkdtemp, mkdir, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdtemp, mkdir, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -27,6 +27,24 @@ async function withTempDir(fn) {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+async function snapshotProjectTree(root, current = root) {
+  const snapshot = {};
+  for (const name of (await readdir(current)).sort()) {
+    const filePath = path.join(current, name);
+    const relativePath = path.relative(root, filePath).split(path.sep).join("/");
+    const metadata = await lstat(filePath);
+    if (metadata.isDirectory()) {
+      snapshot[`${relativePath}/`] = "directory";
+      Object.assign(snapshot, await snapshotProjectTree(root, filePath));
+    } else if (metadata.isSymbolicLink()) {
+      snapshot[relativePath] = `symlink:${await readFile(filePath, "utf8").catch(() => "")}`;
+    } else {
+      snapshot[relativePath] = (await readFile(filePath)).toString("base64");
+    }
+  }
+  return snapshot;
 }
 
 function runCli(args, options = {}) {
@@ -918,7 +936,7 @@ test("React Vite rejects a legacy client.js source shell before creating release
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.client.toolchain = "vite";
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
-    const sourceHtml = await readFile(path.join(projectDir, "index.html"), "utf8");
+    const before = await snapshotProjectTree(projectDir);
 
     await assert.rejects(createBundle(projectDir, config), (error) => {
       assert.equal(error.message, "React/Vite requires an author-owned source entry in index.html.");
@@ -928,8 +946,8 @@ test("React Vite rejects a legacy client.js source shell before creating release
       assert.equal(error.toolchain, "vite");
       return true;
     });
-    assert.equal(await readFile(path.join(projectDir, "index.html"), "utf8"), sourceHtml, "migration never rewrites author source");
-    assert.deepEqual(await readdir(path.join(projectDir, ".sporades", "build", ".public-trees")).catch(() => []), []);
+    assert.deepEqual(await snapshotProjectTree(projectDir), before, "migration preflight performs zero filesystem writes or source mutations");
+    await assert.rejects(access(path.join(projectDir, ".sporades")), (error) => error.code === "ENOENT");
   });
 });
 
@@ -948,6 +966,10 @@ test("React Vite emits only a normalized transformed public tree and ignores loc
     await writeFile(
       path.join(projectDir, "vite.config.ts"),
       `throw new Error("project-local-vite-config-was-loaded");\n`,
+    );
+    await writeFile(
+      path.join(projectDir, "postcss.config.cjs"),
+      `throw new Error("project-local-postcss-config-was-loaded");\n`,
     );
     const clientPath = path.join(projectDir, "client", "index.tsx");
     await writeFile(
@@ -1006,7 +1028,7 @@ test("React Vite emits only a normalized transformed public tree and ignores loc
       assert.doesNotMatch(transformedHtml, /\/client\/index\.tsx|\/client\.js/);
       assert.match(transformedHtml, /\/assets\/index-[^"']+\.js/);
       const output = (await Promise.all(files.map((file) => readFile(path.join(bundle.staticFiles.publicDir, file), "utf8")))).join("\n");
-      assert.doesNotMatch(output, /project-local-vite-config-was-loaded|project-env-secret|local-env-secret|process-env-secret|server-env-secret|SERVER_ONLY_TOKEN/);
+      assert.doesNotMatch(output, /project-local-(?:vite|postcss)-config-was-loaded|project-env-secret|local-env-secret|process-env-secret|server-env-secret|SERVER_ONLY_TOKEN/);
       assert.doesNotMatch(output, /\/@vite\/client|react-refresh|vite\/hmr/i);
       assert.deepEqual(Object.keys(bundle.staticFiles).sort(), ["clientBundle", "indexHtml", "publicDir", "publicTree"]);
       assert.equal(bundle.staticFiles.clientBundle, null);
@@ -1080,6 +1102,57 @@ test("sporades dev owns React Vite rebuilds, preserves last-good output, and req
       assert.equal((await recoveredRefresh).type, "refresh");
     } finally {
       socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("React Vite redacts symlink aliases and canonical project roots from missing-import diagnostics", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(
+      ["create", "vite-real-root", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(created.code, 0, created.stderr);
+    const realProjectDir = path.join(dir, "vite-real-root");
+    const aliasProjectDir = path.join(dir, "vite-alias");
+    await installFakeReact(realProjectDir);
+    await symlink(realProjectDir, aliasProjectDir);
+    const configPath = path.join(realProjectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const child = startCli(["dev", "--json"], { cwd: aliasProjectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      await writeFile(
+        path.join(realProjectDir, "client", "index.tsx"),
+        'import "./missing-through-real-root.js";\n',
+      );
+      const failed = await waitForJsonEvent(child, (event) => !event.ok && event.data?.event === "rebuild");
+      const serialized = JSON.stringify(failed);
+      assert.match(failed.error.message, /Client bundle failed/);
+      assert.match(serialized, /missing-through-real-root/);
+      const forbiddenRoots = [aliasProjectDir, realProjectDir, await import("node:fs/promises").then(({ realpath }) => realpath(realProjectDir))];
+      for (const leakedRoot of forbiddenRoots) {
+        assert.doesNotMatch(serialized, new RegExp(leakedRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      }
+      assert.doesNotMatch(serialized, /\/(?:private\/)?var\/folders\//);
+      if (failed.error.diagnostics?.file) assert.doesNotMatch(failed.error.diagnostics.file, /^\//);
+
+      await assert.rejects(createBundle(aliasProjectDir, config), (error) => {
+        const directDiagnostics = JSON.stringify({ message: error.message, diagnostics: error.diagnostics, stack: error.stack });
+        assert.match(directDiagnostics, /missing-through-real-root/);
+        for (const leakedRoot of forbiddenRoots) {
+          assert.doesNotMatch(directDiagnostics, new RegExp(leakedRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        }
+        assert.doesNotMatch(directDiagnostics, /\/(?:private\/)?var\/folders\//);
+        return true;
+      });
+    } finally {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
     }

@@ -32,6 +32,7 @@
     "typecheck": "tsc --project tsconfig.json --noEmit",
     "pretest": "npm run build && node ./scripts/check-generated-bin.mjs",
     "test": "node --test --test-concurrency=1",
+    "test:real-vite-container": "SPORADES_REAL_VITE_CONTAINER=1 node --test --test-concurrency=1 test/real-vite-container.test.js",
     "prepublishOnly": "npm test"
   },
   "engines": {

@@ -29,5 +29,10 @@ export declare function buildClientToolchain(options: {
     indexHtml: string;
     indexHtmlPath: string;
 }): Promise<ClientToolchainOutput>;
+export declare function validateClientToolchainInput(options: {
+    frameworkConfig: FrameworkBuildConfig;
+    toolchain: ClientToolchainName;
+    indexHtml: string;
+}): void;
 export {};
 //# sourceMappingURL=client-toolchain.d.ts.map

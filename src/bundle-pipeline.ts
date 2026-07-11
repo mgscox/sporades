@@ -3,7 +3,7 @@ import path from "node:path";
 import type { PathLike } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 
-import { buildClientToolchain, type ClientToolchainName } from "./client-toolchain.js";
+import { buildClientToolchain, validateClientToolchainInput, type ClientToolchainName } from "./client-toolchain.js";
 import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv } from "./sealed-server-env.js";
 import { serverRuntimeModuleSource } from "./server.js";
 import { createServerBundleSource } from "./templates/server-bundle-template.js";
@@ -79,7 +79,6 @@ export async function createBundle(
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
   const toolchain = readClientToolchain(config.client?.toolchain ?? "esbuild", frameworkBundleConfig.framework);
   const buildDir = path.join(projectDir, ".sporades", "build");
-  await mkdir(buildDir, { recursive: true });
 
   const paths = {
     config: path.join(projectDir, "sporades.json"),
@@ -90,6 +89,14 @@ export async function createBundle(
     serverBundle: path.join(buildDir, "server.mjs"),
     clientBundle: path.join(buildDir, "client.js"),
   };
+  const indexHtml = await readRequiredFile(paths.indexHtml, "Missing HTML shell: index.html", "Restore index.html or run `sporades create`.")
+    .catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain); });
+  try {
+    validateClientToolchainInput({ frameworkConfig: frameworkBundleConfig, toolchain, indexHtml });
+  } catch (error) {
+    throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain);
+  }
+
   const sealedPaths = sealedServerEnvPaths(projectDir);
   const sealedEnvelope = await readSealedServerEnv(sealedPaths);
   const serverEnvFile = sealedEnvelope ? { exists: false, raw: "" } : await readServerEnvFile(paths.serverEnv);
@@ -98,12 +105,10 @@ export async function createBundle(
     : parseServerEnv(serverEnvFile);
   validateAuthConfig(config, serverEnv);
 
-  const [serverSource, clientSource, indexHtml] = await Promise.all([
+  const [serverSource, clientSource] = await Promise.all([
     readRequiredFile(paths.serverEntry, "Missing capsule entry: server/index.ts", "Run `sporades create` to scaffold a new project.")
       .catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain); }),
     readRequiredFile(paths.clientEntry, `Missing client entry: client/${frameworkBundleConfig.entry}`, "Run `sporades create` to scaffold a new project.")
-      .catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain); }),
-    readRequiredFile(paths.indexHtml, "Missing HTML shell: index.html", "Restore index.html or run `sporades create`.")
       .catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain); }),
   ]);
 
@@ -129,6 +134,7 @@ export async function createBundle(
     serverModuleSource: serverCapsuleModule,
   });
 
+  await mkdir(buildDir, { recursive: true });
   const publicTree = await createPublicTree(buildDir, clientOutput.publicFiles)
     .catch((error) => { throw tagBuildError(error, "public", frameworkBundleConfig.framework, toolchain); });
 
