@@ -37,16 +37,30 @@ async function relativeFiles(root, directory = root) {
   return files.sort();
 }
 
-async function waitForPublicTreeCandidate(projectDir) {
+async function readOptional(file) {
+  return readFile(file, "utf8").catch((error) => {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  });
+}
+
+async function waitForPublicTreeCandidate(projectDir, excluded = new Set()) {
   const treesDir = path.join(projectDir, ".sporades", "build", ".public-trees");
   const deadline = Date.now() + 5000;
   while (Date.now() < deadline) {
     const entries = await readdir(treesDir, { withFileTypes: true }).catch(() => []);
-    const candidate = entries.find((entry) => entry.isDirectory() && /^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(entry.name));
+    const candidate = entries.find((entry) => entry.isDirectory() && !excluded.has(entry.name) && /^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(entry.name));
     if (candidate) return path.join(treesDir, candidate.name);
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
   throw new Error("Timed out waiting for a staged public-tree candidate.");
+}
+
+async function deployOwnedContainer(projectDir, dir, containerId = "container-old") {
+  const docker = await installFakeDocker(path.join(dir, "owned-container"), containerId);
+  const result = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+  assert.equal(result.code, 0, result.stderr);
+  return JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
 }
 
 function runCli(args, options = {}) {
@@ -877,6 +891,86 @@ test("Container replacement restores publication, consumer, binding, and cleanup
   }
 });
 
+test("Container replacement fails closed before mutation when binding and consumer ownership disagree", async (t) => {
+  const cases = [
+    "stale-binding-successor-consumer",
+    "tokenless-binding-successor-consumer",
+    "missing-binding-existing-consumer",
+    "binding-token-missing-consumer",
+    "malformed-consumer",
+    "consumer-identity-mismatch",
+    "public-tree-mismatch",
+    "container-name-mismatch",
+  ];
+  for (const mode of cases) {
+    await t.test(mode, async () => {
+      await withTempDir(async (dir) => {
+        const created = await runCli(["create", `ownership-${mode}`, "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+        assert.equal(created.code, 0, created.stderr);
+        const projectDir = await realpath(path.join(dir, `ownership-${mode}`));
+        await installFakeReact(projectDir);
+        const initialDocker = await installFakeDocker(path.join(dir, "initial"), `container-${mode}`);
+        const initial = await runCli(["deploy", "--json"], { cwd: projectDir, env: initialDocker.env });
+        assert.equal(initial.code, 0, initial.stderr);
+
+        const buildDir = path.join(projectDir, ".sporades", "build");
+        const bindingPath = path.join(projectDir, ".sporades", "binding.json");
+        const consumerPath = path.join(buildDir, ".public-trees", ".consumers", "container.json");
+        const binding = JSON.parse(await readFile(bindingPath, "utf8"));
+        const consumer = JSON.parse(await readFile(consumerPath, "utf8"));
+        if (mode === "stale-binding-successor-consumer") {
+          consumer.token = "a".repeat(32);
+          consumer.identity = "successor-container";
+          await writeFile(consumerPath, `${JSON.stringify(consumer)}\n`);
+        } else if (mode === "tokenless-binding-successor-consumer") {
+          delete binding.clientRelease.consumerToken;
+          consumer.token = "b".repeat(32);
+          consumer.identity = "successor-container";
+          await writeFile(bindingPath, `${JSON.stringify(binding, null, 2)}\n`);
+          await writeFile(consumerPath, `${JSON.stringify(consumer)}\n`);
+        } else if (mode === "missing-binding-existing-consumer") {
+          await rm(bindingPath);
+        } else if (mode === "binding-token-missing-consumer") {
+          await rm(consumerPath);
+        } else if (mode === "malformed-consumer") {
+          await writeFile(consumerPath, "{not-json\n");
+        } else if (mode === "consumer-identity-mismatch") {
+          consumer.identity = "different-container";
+          await writeFile(consumerPath, `${JSON.stringify(consumer)}\n`);
+        } else if (mode === "public-tree-mismatch") {
+          binding.clientRelease.publicTree = "different-public-tree";
+          await writeFile(bindingPath, `${JSON.stringify(binding, null, 2)}\n`);
+        } else if (mode === "container-name-mismatch") {
+          binding.containerName = "sporades-different-capsule";
+          await writeFile(bindingPath, `${JSON.stringify(binding, null, 2)}\n`);
+        }
+
+        const observedPaths = {
+          binding: bindingPath,
+          consumer: consumerPath,
+          active: path.join(buildDir, ".public-trees", "active.json"),
+          server: path.join(buildDir, "server.mjs"),
+          client: path.join(buildDir, "client.js"),
+        };
+        const before = Object.fromEntries(await Promise.all(Object.entries(observedPaths).map(async ([key, file]) => [key, await readOptional(file)])));
+        const beforeFiles = await relativeFiles(buildDir);
+        const docker = await installFakeDocker(path.join(dir, "replacement"), `candidate-${mode}`);
+
+        const replacement = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+
+        assert.equal(replacement.code, 1, `${mode}: ${replacement.stderr}\n${replacement.stdout}`);
+        assert.deepEqual(await docker.calls(), [], `${mode} reached Docker`);
+        assert.deepEqual(
+          Object.fromEntries(await Promise.all(Object.entries(observedPaths).map(async ([key, file]) => [key, await readOptional(file)]))),
+          before,
+          `${mode} mutated committed state`,
+        );
+        assert.deepEqual(await relativeFiles(buildDir), beforeFiles, `${mode} mutated public-tree/build publication state`);
+      });
+    });
+  }
+});
+
 test("ambiguous docker run failure never removes an unrelated canonical-name container", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", "name-conflict-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
@@ -900,19 +994,19 @@ test("unsafe Container public output fails validation before replacing the runni
     assert.equal(created.code, 0, created.stderr);
     const projectDir = await realpath(path.join(dir, "unsafe-public-island"));
     await installFakeReact(projectDir);
+    await deployOwnedContainer(projectDir, dir);
     const configPath = path.join(projectDir, "sporades.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.services = { database: { kind: "database", engine: "libsql" } };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
-    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
-    await writeFile(path.join(projectDir, ".sporades", "binding.json"), `${JSON.stringify({ containerId: "container-old", containerName: "sporades-unsafe-public-island" })}\n`);
     const outside = path.join(projectDir, "outside-client.js");
     await writeFile(outside, "unsafe replacement");
 
     await withFakeCapsuleService(async ({ port }) => {
       const docker = await installFakeDocker(dir, "container-never-started", { composePortOutput: `127.0.0.1:${port}`, composePsDelayMs: 750 });
+      const existingTrees = new Set(await readdir(path.join(projectDir, ".sporades", "build", ".public-trees")));
       const deploying = runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
-      const candidate = await waitForPublicTreeCandidate(projectDir);
+      const candidate = await waitForPublicTreeCandidate(projectDir, existingTrees);
       await rm(path.join(candidate, "client.js"));
       await symlink(outside, path.join(candidate, "client.js"));
       const result = await deploying;
@@ -941,8 +1035,7 @@ test("missing and over-limit Container public inputs fail before replacement wit
         assert.equal(created.code, 0, created.stderr);
         const projectDir = await realpath(path.join(dir, `invalid-${scenario}-island`));
         await installFakeReact(projectDir);
-        await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
-        await writeFile(path.join(projectDir, ".sporades", "binding.json"), `${JSON.stringify({ containerId: "container-old" })}\n`);
+        await deployOwnedContainer(projectDir, dir);
         if (scenario === "missing") await rm(path.join(projectDir, "index.html"));
         else await writeFile(path.join(projectDir, "index.html"), Buffer.alloc(16 * 1024 * 1024 + 1, 1));
         const docker = await installFakeDocker(dir, "container-never-started");
@@ -3024,6 +3117,7 @@ test("sporades deploy starts declared services before replacing the local Contai
 
     const projectDir = await realpath(path.join(dir, "todo-island"));
     await installFakeReact(projectDir);
+    await deployOwnedContainer(projectDir, dir);
     const configPath = path.join(projectDir, "sporades.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.services = {
@@ -3033,11 +3127,6 @@ test("sporades deploy starts declared services before replacing the local Contai
       },
     };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
-    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
-    await writeFile(
-      path.join(projectDir, ".sporades", "binding.json"),
-      `${JSON.stringify({ containerId: "container-old", containerName: "sporades-todo-island" }, null, 2)}\n`,
-    );
     await withFakeCapsuleService(async ({ port }) => {
       const docker = await installFakeDocker(dir, "container-replacement", {
         composePortOutput: `127.0.0.1:${port}`,
@@ -3332,6 +3421,7 @@ test("sporades deploy fails before replacement when a declared service is unheal
 
     const projectDir = await realpath(path.join(dir, "todo-island"));
     await installFakeReact(projectDir);
+    await deployOwnedContainer(projectDir, dir);
     const configPath = path.join(projectDir, "sporades.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.services = {
@@ -3342,11 +3432,6 @@ test("sporades deploy fails before replacement when a declared service is unheal
       },
     };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
-    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
-    await writeFile(
-      path.join(projectDir, ".sporades", "binding.json"),
-      `${JSON.stringify({ containerId: "container-old", containerName: "sporades-todo-island" }, null, 2)}\n`,
-    );
     const docker = await installFakeDocker(dir, "container-never-started", {
       composePsOutput: JSON.stringify({ State: "running", Health: "unhealthy" }),
     });
@@ -3388,6 +3473,7 @@ test("sporades deploy fails before replacement when a declared service never rep
 
     const projectDir = await realpath(path.join(dir, "todo-island"));
     await installFakeReact(projectDir);
+    await deployOwnedContainer(projectDir, dir);
     const configPath = path.join(projectDir, "sporades.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.services = {
@@ -3398,11 +3484,6 @@ test("sporades deploy fails before replacement when a declared service never rep
       },
     };
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
-    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
-    await writeFile(
-      path.join(projectDir, ".sporades", "binding.json"),
-      `${JSON.stringify({ containerId: "container-old", containerName: "sporades-todo-island" }, null, 2)}\n`,
-    );
     const docker = await installFakeDocker(dir, "container-never-started", {
       composePsOutput: JSON.stringify({ State: "running", Health: "" }),
     });
@@ -3890,11 +3971,7 @@ test("sporades deploy replaces the existing container binding before starting a 
 
     const projectDir = await realpath(path.join(dir, "todo-island"));
     await installFakeReact(projectDir);
-    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
-    await writeFile(
-      path.join(projectDir, ".sporades", "binding.json"),
-      `${JSON.stringify({ containerId: "container-old", containerName: "sporades-todo-island" }, null, 2)}\n`,
-    );
+    await deployOwnedContainer(projectDir, dir);
     const docker = await installFakeDocker(dir, "container-replacement");
 
     const deployResult = await runCli(["deploy", "--json"], {
@@ -3929,11 +4006,7 @@ test("sporades deploy --force ignores stale container bindings when the containe
 
     const projectDir = await realpath(path.join(dir, "todo-island"));
     await installFakeReact(projectDir);
-    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
-    await writeFile(
-      path.join(projectDir, ".sporades", "binding.json"),
-      `${JSON.stringify({ containerId: "container-deleted", containerName: "sporades-todo-island" }, null, 2)}\n`,
-    );
+    await deployOwnedContainer(projectDir, dir, "container-deleted");
     const docker = await installFakeDocker(dir, "container-replacement", {
       missingInspectIds: ["container-deleted"],
     });
@@ -4002,11 +4075,7 @@ test("sporades deploy fails on stale container bindings without --force", async 
 
     const projectDir = await realpath(path.join(dir, "todo-island"));
     await installFakeReact(projectDir);
-    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
-    await writeFile(
-      path.join(projectDir, ".sporades", "binding.json"),
-      `${JSON.stringify({ containerId: "container-deleted", containerName: "sporades-todo-island" }, null, 2)}\n`,
-    );
+    await deployOwnedContainer(projectDir, dir, "container-deleted");
     const docker = await installFakeDocker(dir, "container-replacement", {
       missingInspectIds: ["container-deleted"],
     });

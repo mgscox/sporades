@@ -3343,17 +3343,20 @@ async function startContainerSession(options: LooseRecord) {
   const config = await readProjectConfig(options.projectDir);
   const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
   const port = options.port ?? config.deploy?.port ?? 4000;
+  const runtimeDir = path.join(options.projectDir, ".sporades");
+  const containerName = `sporades-${config.name ?? path.basename(options.projectDir)}`;
+  const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const existingBinding = await readContainerBinding(bindingPath);
+  const previousConsumer = await readPublicTreeConsumer(path.join(runtimeDir, "build"), "container");
+  verifyContainerReplacementOwnership(existingBinding, previousConsumer, containerName);
+
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const bundle = await createBundle(options.projectDir, config, { publishLegacy: false });
-  const runtimeDir = path.join(options.projectDir, ".sporades");
   const dataDir = path.join(runtimeDir, "data");
   const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
   await mkdir(dataDir, { recursive: true });
   await prepareRuntimeDataPath(dataDir);
 
-  const containerName = `sporades-${config.name ?? path.basename(options.projectDir)}`;
-  const bindingPath = path.join(options.projectDir, CONTAINER_BINDING_FILE);
-  const existingBinding = await readContainerBinding(bindingPath);
   const updatePolicyMode = readBaseImageUpdatePolicy(config);
   const containerCapsuleServices = await startCapsuleServices(capsuleServices, options.projectDir, {
     connection: "container",
@@ -3379,7 +3382,6 @@ async function startContainerSession(options: LooseRecord) {
   }
 
   ensureLocalBaseImage(options.projectDir);
-  const previousConsumer = await readPublicTreeConsumer(bundle.buildDir, "container");
   const existingContainer = existingBinding?.containerId
     ? inspectDockerContainerOptional(options.projectDir, existingBinding.containerId)
     : null;
@@ -5967,6 +5969,31 @@ async function replaceContainerBinding(bindingPath: string, binding: LooseRecord
     await rename(temporaryPath, bindingPath);
   } finally {
     await rm(temporaryPath, { force: true });
+  }
+}
+
+function verifyContainerReplacementOwnership(
+  binding: LooseRecord | null,
+  consumer: Awaited<ReturnType<typeof readPublicTreeConsumer>>,
+  expectedContainerName: string,
+) {
+  if (binding === null && consumer === null) return;
+  const owned = Boolean(
+    binding
+    && consumer
+    && typeof binding.containerId === "string"
+    && binding.containerId.length > 0
+    && binding.containerName === expectedContainerName
+    && typeof binding.clientRelease?.consumerToken === "string"
+    && binding.clientRelease.consumerToken === consumer.token
+    && binding.clientRelease.publicTree === consumer.tree
+    && binding.containerId === consumer.identity,
+  );
+  if (!owned) {
+    throw commandError(
+      "Container replacement ownership could not be verified.",
+      "Preserve the current Container state and reconcile its binding and public-tree consumer before retrying deployment.",
+    );
   }
 }
 
