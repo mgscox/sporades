@@ -25,6 +25,13 @@ test("Journey metadata rejects symbol-keyed objects before publication", () => {
   assert.throws(() => normalize({ status: "editing", metadata }, 30), (error) => error.code === "INVALID_JOURNEY_METADATA");
 });
 
+test("Journey declaration rejects non-plain capture policy shapes", () => {
+  const normalize = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "normalizeJourneyPolicy");
+  for (const capture of [null, [], "focus", Object.create({ focus: true })]) {
+    assert.throws(() => normalize({ enabled: true, capture }), /Invalid Journey capture policy/);
+  }
+});
+
 test("browser client runtime exposes the explicit Journey session lifecycle over transport", async () => {
   const calls = [];
   const browser = installBrowserFakes(anonymousAuth, {

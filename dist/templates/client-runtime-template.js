@@ -249,6 +249,7 @@ function createConnection() {
   function storeAuthSession(message) {
     const token = message.data?.sessionToken;
     if (token) {
+      if (sessionToken && token !== sessionToken) journeyResumeCredential = null;
       sessionToken = token;
       localStorage.setItem("sporades.sessionToken", token);
     }
@@ -341,6 +342,7 @@ function createConnection() {
     signOut() {
       return request("auth.signOut").then(async (result) => {
         if (!result.error && result.data?.ok === true) {
+          journeyResumeCredential = null;
           sessionToken = null;
           localStorage.removeItem("sporades.sessionToken");
           await request("auth.get");

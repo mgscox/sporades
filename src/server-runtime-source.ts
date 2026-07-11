@@ -7445,6 +7445,7 @@ function normalizeJourneyPolicy(value: any) {
   const ttlSeconds = value.ttlSeconds ?? 30;
   if (!Number.isInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > 300) throw commandError("Invalid Journey TTL.", "Set journey.ttlSeconds to an integer from 1 through 300.");
   const capture: any = {};
+  if (value.capture !== undefined && (value.capture === null || typeof value.capture !== "object" || Array.isArray(value.capture) || Object.getPrototypeOf(value.capture) !== Object.prototype)) throw commandError("Invalid Journey capture policy.", "Set journey.capture to a plain object of boolean source settings.");
   for (const key of ["navigation", "focus", "interactions"]) {
     const setting = value.capture?.[key];
     if (setting !== undefined && typeof setting !== "boolean") throw commandError("Invalid Journey capture policy.", `Set journey.capture.${key} to true or false.`);
@@ -7580,6 +7581,7 @@ export function createWebSocketHub(getDatabase: () => any) {
     deliverAuthSession(target: any, sessionData: { localStorage: { value: any; }; auth: any; }) {
       const recipients = authSessionRecipients(target);
       for (const client of recipients) {
+        retireJourney(client);
         client.session = {
           token: sessionData.localStorage.value,
           auth: sessionData.auth,
@@ -7609,6 +7611,13 @@ export function createWebSocketHub(getDatabase: () => any) {
         connectionTokens.delete(token);
       }
     }
+  }
+
+  function retireJourney(client: LooseRecord) {
+    if (!client.journey) return;
+    journeys.delete(client.journey.sessionId);
+    journeySessions.delete(client.journey.resumeCredential);
+    client.journey = null;
   }
 
   function validateConnectionToken(token: string | null) {
@@ -7717,7 +7726,9 @@ export function createWebSocketHub(getDatabase: () => any) {
     const database = getDatabase();
     const messageSessionToken =
       typeof message.sessionToken === "string" && message.sessionToken.length > 0 ? message.sessionToken : client.session.token;
-    client.session = await resolveAnonymousSession(database, messageSessionToken ?? null);
+    const resolvedSession = await resolveAnonymousSession(database, messageSessionToken ?? null);
+    if (client.session.auth.userId && client.session.auth.userId !== resolvedSession.auth.userId) retireJourney(client);
+    client.session = resolvedSession;
     if (message.type === "auth.get") {
       await sendAuthResult(client, message.id ?? null);
       return;
@@ -7725,6 +7736,7 @@ export function createWebSocketHub(getDatabase: () => any) {
 
     if (message.type === "auth.signOut") {
       const result = await signOutSession(database, client);
+      if (result.ok) retireJourney(client);
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "auth.signOut.result" : "error",
@@ -7737,6 +7749,7 @@ export function createWebSocketHub(getDatabase: () => any) {
     if (message.type === "auth.signUp") {
       const result: any = await signUpWithEmail(database, client.session, message.provider, message.credentials ?? {});
       if (result.ok) {
+        retireJourney(client);
         client.session = {
           token: result.sessionToken,
           auth: result.auth,
@@ -7756,6 +7769,7 @@ export function createWebSocketHub(getDatabase: () => any) {
       if (provider === "email") {
         const result: any = await signInWithEmail(database, client.session, message.credentials ?? {});
         if (result.ok) {
+          retireJourney(client);
           client.session = {
             token: result.sessionToken,
             auth: result.auth,

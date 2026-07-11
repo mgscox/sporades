@@ -52,9 +52,10 @@ test("User journey lifecycle is declaration-gated and bound to the enabling iden
       assert.equal(invalid.error.code, "INVALID_JOURNEY_STATUS");
       assert.deepEqual((await sendAndWait(socket, { id: "unchanged", type: "journey.list" })).data.journeys, [set.data.journey]);
       assert.equal((await sendAndWait(socket, { id: "signout", type: "auth.signOut" })).error, null);
-      const identityChanged = await sendAndWait(socket, { id: "identity-changed", type: "journey.set", state: { status: "editing" } });
-      assert.equal(identityChanged.error.code, "JOURNEY_IDENTITY_CHANGED");
       assert.deepEqual((await sendAndWait(socket, { id: "retired", type: "journey.list" })).data.journeys, []);
+      const reenabled = await sendAndWait(socket, { id: "reenable", type: "journey.enable", options: {} });
+      assert.notEqual(reenabled.data.sessionId, enabled.data.sessionId);
+      assert.notEqual(reenabled.data.userId, enabled.data.userId);
       assert.deepEqual((await sendAndWait(socket, { id: "disable", type: "journey.disable" })).data, { ok: true });
       assert.deepEqual((await sendAndWait(socket, { id: "empty", type: "journey.list" })).data.journeys, []);
     } finally { socket?.close(); await stopDevSession(child); }
