@@ -198,6 +198,9 @@ sporades create framework-free --framework vanilla
 sporades create vite-react --framework react --toolchain vite
 sporades create vite-preact --framework preact --toolchain vite
 sporades create vue-todo --template todo --framework vue
+sporades create vue-guestbook --template guestbook --framework vue
+sporades create vue-gallery --template photo-library --framework vue
+sporades create vue-campfire --template campfire --framework vue
 sporades create no-install-yet --no-install --no-git
 ```
 
@@ -207,8 +210,8 @@ fixture identities, and explicitly consented ephemeral Journey activity.
 Available client frameworks are `react`, `preact`, `vue`, and framework-neutral
 Vanilla TypeScript. esbuild remains the React and Preact default client
 toolchain, and they can explicitly select Vite with `--toolchain vite`. Vue
-selects Vite and currently admits only the `blank` and `todo` templates;
-Vanilla TypeScript remains on esbuild.
+selects Vite and supports the complete template set; Vanilla TypeScript remains
+on esbuild.
 
 React/Vite and Preact/Vite scaffolds reference `/client/index.tsx`; Vue/Vite
 references `/client/index.ts` and compiles native `client/App.vue` SFCs. All
@@ -495,6 +498,11 @@ Vue mutation composables keep `loading` true until every concurrent invocation
 settles. Reactive `data` and `error` follow the latest invocation, so an older
 completion cannot overwrite newer state; each `run()` promise still resolves
 or rejects with its own outcome.
+
+The Vue Guestbook uses those composables for auth, queries, and mutations. The
+Photo Library keeps authenticated uploads private until publication is
+explicit, and the Campfire uses the shared preferences and consented Journey
+APIs directly from `sporades/client`.
 
 Queries stay subscribed over the Sporades client transport, so successful
 mutations refresh connected clients without you writing manual fetch code.

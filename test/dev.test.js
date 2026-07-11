@@ -1142,6 +1142,66 @@ test("Vue Vite compiles native SFCs into an isolated normalized public tree", as
   });
 });
 
+for (const { template, marker } of [
+  { template: "guestbook", marker: "Leave a note from this island" },
+  { template: "photo-library", marker: "Photo Library" },
+  { template: "campfire", marker: "Campfire" },
+]) test(`Vue Vite compiles the complete ${template} exemplar without leaking Server env`, async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", `vue-${template}-build`, "--template", template, "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, `vue-${template}-build`);
+    await installVue(projectDir);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), `${template === "photo-library" ? "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n" : ""}VUE_EXEMPLAR_SECRET=server-only-vue-exemplar\n`);
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    const bundle = await createBundle(projectDir, config, { publishLegacy: false });
+    try {
+      const files = Object.keys(await snapshotProjectTree(bundle.staticFiles.publicDir)).filter((file) => !file.endsWith("/"));
+      assert(files.some((file) => /^assets\/index-[^/]+\.js$/.test(file)), JSON.stringify(files));
+      assert(files.some((file) => /^assets\/index-[^/]+\.css$/.test(file)), JSON.stringify(files));
+      assert.equal(files.some((file) => file.endsWith(".tsx")), false);
+      const output = (await Promise.all(files.map((file) => readFile(path.join(bundle.staticFiles.publicDir, file), "utf8")))).join("\n");
+      assert.match(output, new RegExp(marker));
+      assert.doesNotMatch(output, /server-only-vue-exemplar|VUE_EXEMPLAR_SECRET|\/@vite\/client|react-refresh|vite\/hmr/i);
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
+test("complete Vue exemplars start through Sporades Dev with normalized Vite assets", async () => {
+  await withTempDir(async (dir) => {
+    for (const template of ["guestbook", "photo-library", "campfire"]) {
+      const created = await runCli(["create", `vue-${template}-dev`, "--template", template, "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(created.code, 0, created.stderr);
+      const projectDir = path.join(dir, `vue-${template}-dev`);
+      await installVue(projectDir);
+      const configPath = path.join(projectDir, "sporades.json");
+      const config = JSON.parse(await readFile(configPath, "utf8"));
+      config.dev.port = 0;
+      await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+      if (template === "photo-library") await writeFile(path.join(projectDir, ".env.sporades.server"), "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n");
+      const child = startCli(["dev", "--json"], { cwd: projectDir });
+      try {
+        const started = await waitForJsonEvent(child, (event) => event.data?.event === "started");
+        assert.equal(started.ok, true);
+        const htmlResponse = await fetch(started.data.url);
+        assert.equal(htmlResponse.status, 200);
+        const html = await htmlResponse.text();
+        const asset = html.match(/src="([^"]*\/assets\/index-[^"]+\.js)"/)?.[1];
+        assert(asset, html);
+        const assetResponse = await fetch(new URL(asset, started.data.url));
+        assert.equal(assetResponse.status, 200);
+        assert.doesNotMatch(await assetResponse.text(), /\/@vite\/client|vite\/hmr/i);
+      } finally {
+        child.kill("SIGTERM");
+        await new Promise((resolve) => child.once("exit", resolve));
+      }
+    }
+  });
+});
+
 test("Vue Vite fails closed for missing, unsupported, and unloadable project compiler packages", async () => {
   for (const scenario of ["missing", "version", "load"]) {
     await withTempDir(async (dir) => {

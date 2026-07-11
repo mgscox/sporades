@@ -718,7 +718,7 @@ test("sporades create scaffolds the admitted Vue/Vite todo Capsule", async () =>
   });
 });
 
-test("sporades create structurally rejects unsupported Vue toolchains and later templates", async () => {
+test("sporades create rejects unsupported Vue toolchains and admits every complete template", async () => {
   await withTempDir(async (dir) => {
     const esbuild = await runCli(["create", "vue-esbuild", "--framework", "vue", "--toolchain", "esbuild", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(esbuild.code, 1);
@@ -726,12 +726,47 @@ test("sporades create structurally rejects unsupported Vue toolchains and later 
       message: "Unsupported client framework/toolchain combination: vue/esbuild",
       hint: "Use Vue with Vite.",
     });
-    const guestbook = await runCli(["create", "vue-guestbook", "--framework", "vue", "--template", "guestbook", "--no-install", "--no-git", "--json"], { cwd: dir });
-    assert.equal(guestbook.code, 1);
-    assert.deepEqual(JSON.parse(guestbook.stdout).error, {
-      message: "Unsupported Vue template: guestbook",
-      hint: "Use the blank or todo template with Vue; other Vue templates are not admitted yet.",
-    });
+    for (const template of ["guestbook", "photo-library", "campfire"]) {
+      const result = await runCli(["create", `vue-${template}`, "--framework", "vue", "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(result.code, 0, `${template}: ${result.stderr || result.stdout}`);
+      const project = path.join(dir, `vue-${template}`);
+      const [config, app] = await Promise.all([
+        readFile(path.join(project, "sporades.json"), "utf8").then(JSON.parse),
+        readFile(path.join(project, "client", "App.vue"), "utf8"),
+      ]);
+      assert.deepEqual(config.client, { framework: "vue", toolchain: "vite" });
+      assert.match(app, /<script setup lang="ts">/);
+      assert.match(app, /<template>/);
+      assert.match(app, /<style scoped>/);
+      const agents = await readFile(path.join(project, "AGENTS.md"), "utf8");
+      const readme = await readFile(path.join(project, "README.md"), "utf8");
+      assert.match(agents, /client\/index\.ts.*Vue mount entrypoint/);
+      assert.match(agents, /client\/App\.vue.*Vue Single-File Component UI/);
+      assert.match(readme, /native Vue Single-File Component in `client\/App\.vue`/);
+      assert.doesNotMatch(app, /createHooks|react-dom|preact\/hooks/);
+      assert.equal((await readdir(path.join(project, "client"), { recursive: true })).some((file) => String(file).endsWith(".tsx")), false);
+      if (template === "guestbook") {
+        assert.match(app, /useQuery\("entries"\)/);
+        assert.match(app, /useMutation\("sign"\)/);
+        assert.match(app, /auth\.signIn\("google"\)/);
+        assert.match(app, /authorPicture/);
+      } else if (template === "photo-library") {
+        assert.match(app, /files\.upload\(selectedFile\.value\)/);
+        assert.match(app, /shouldPublish \? await files\.publicUrl/);
+        assert.match(app, /files\.revokePublicUrl/);
+        assert.match(app, /Photo saved privately/);
+      } else {
+        assert.match(app, /journey\.enable/);
+        assert.match(app, /journey\.disable/);
+        assert.match(app, /journey\.subscribe/);
+        assert.match(app, /preferences\.get/);
+        assert.match(app, /preferences\.update/);
+        assert.match(app, /retireJourneyConsent/);
+        assert.match(app, /createTypingPublisher/);
+        assert.doesNotMatch(await readFile(path.join(project, "index.html"), "utf8"), /tailwindcss/);
+        assert.doesNotMatch(readme, /Tailwind is loaded|Shadcn/i);
+      }
+    }
   });
 });
 

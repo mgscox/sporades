@@ -780,6 +780,9 @@ for (const { framework, template } of [
   { framework: "preact", template: "blank" },
   { framework: "vue", template: "blank" },
   { framework: "vue", template: "todo" },
+  { framework: "vue", template: "guestbook" },
+  { framework: "vue", template: "photo-library" },
+  { framework: "vue", template: "campfire" },
 ]) test(`sporades deploy mounts the complete normalized ${framework} Vite ${template} public tree`, async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(
@@ -789,7 +792,7 @@ for (const { framework, template } of [
     assert.equal(createResult.code, 0, createResult.stderr);
     const projectDir = await realpath(path.join(dir, "vite-release"));
     await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : installVue)(projectDir);
-    await writeFile(path.join(projectDir, ".env.sporades.server"), "SERVER_ONLY_TOKEN=vite-container-secret\n");
+    await writeFile(path.join(projectDir, ".env.sporades.server"), `${template === "photo-library" ? "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n" : ""}SERVER_ONLY_TOKEN=vite-container-secret\n`);
     const docker = await installFakeDocker(dir, "vite-container");
     const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
     assert.equal(deployed.code, 0, deployed.stderr);
@@ -809,7 +812,10 @@ for (const { framework, template } of [
     const output = (await Promise.all(binding.clientRelease.paths.map((file) => readFile(path.join(publicRoot, file), "utf8")))).join("\n");
     assert.doesNotMatch(output, /vite-container-secret|SERVER_ONLY_TOKEN|\/@vite\/client|react-refresh|vite\/hmr/i);
     if (framework === "preact") assert.doesNotMatch(output, /node_modules\/react(?:-dom)?\/|from ["']react(?:-dom)?/);
-    if (framework === "vue") assert.match(output, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+    if (framework === "vue") assert.match(output, {
+      blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
+      "photo-library": /Photo Library/, campfire: /Campfire/,
+    }[template]);
     const runCall = firstDockerRunCall(await docker.calls());
     assertVolume(runCall.args, `${publicRoot}:/app/public:ro`);
   });

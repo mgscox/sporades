@@ -1487,7 +1487,9 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   resolveSchedulePayloadFactoryTimeoutMs,
   resolveJourneySessionInactivityMinutes,
   scheduleDefinitionsFromCapsule,
+  resolveScheduleTimezone,
   parseScheduleExpression,
+  scheduleWallClockParts,
   nextScheduleOccurrence,
   ensureScheduleStorage,
   scheduledOccurrenceIdentity,
@@ -2281,10 +2283,10 @@ function resolveScheduleTimezone(value) {
     throw commandError(`Invalid Schedule timezone: ${String(requested)}`, "Pass an available IANA timezone name from the runtime timezone database.");
   }
 }
-var scheduleWeekdays = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 function scheduleWallClockParts(formatter, instant) {
   const parts = Object.fromEntries(formatter.formatToParts(instant).map((part) => [part.type, part.value]));
-  return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday: scheduleWeekdays[parts.weekday] };
+  const weekdays = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday: weekdays[parts.weekday] };
 }
 function nextScheduleOccurrence(fields, after, timezone) {
   const formatter = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {
@@ -12233,7 +12235,7 @@ function scaffoldFiles(options) {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${escapeHtml(options.name)}</title>${options.template === "campfire" ? `
+    <title>${escapeHtml(options.name)}</title>${options.template === "campfire" && framework !== "vue" ? `
     <script src="https://cdn.tailwindcss.com"></script>` : ""}
   </head>
   <body>
@@ -12246,9 +12248,25 @@ function scaffoldFiles(options) {
   };
 }
 function vueTemplateFiles(options, files) {
-  const { "client/index.tsx": _jsxEntry, ...sharedFiles } = files;
+  const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));
+  const apps = {
+    todo: vueTodoAppTemplate,
+    guestbook: vueGuestbookAppTemplate,
+    "photo-library": vuePhotoLibraryAppTemplate,
+    campfire: vueCampfireAppTemplate
+  };
+  const app = apps[options.template] ?? vueBlankAppTemplate;
+  const readme = `${sharedFiles["README.md"] ?? ""}
+## Vue client
+
+The browser UI mounts from \`client/index.ts\` and is authored as a native Vue Single-File Component in \`client/App.vue\`. Styles are scoped by Vue and the Capsule uses the Sporades Vue composables from \`client/sporades.ts\`.
+`.replace(
+    /Tailwind is loaded from its browser CDN[^\n]+\n/,
+    "Campfire's Vue Single-File Component owns its scoped CSS and needs no browser CDN or React component package.\n"
+  );
   return {
     ...sharedFiles,
+    "README.md": readme,
     "client/index.ts": `import { createApp } from "vue";
 import App from "./App.vue";
 
@@ -12259,7 +12277,7 @@ import { createVueComposables } from "sporades/client";
 
 export const { useAuth, useMutation, useQuery } = createVueComposables({ reactive, onScopeDispose });
 `,
-    "client/App.vue": options.template === "todo" ? vueTodoAppTemplate() : vueBlankAppTemplate(),
+    "client/App.vue": app(),
     "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#42b883"/></svg>
 `
   };
@@ -12321,6 +12339,327 @@ main { max-width: 42rem; margin: 3rem auto; font-family: system-ui, sans-serif; 
 header, form { display: flex; gap: .75rem; align-items: center; }
 .mark { width: 2rem; height: 2rem; }
 li { margin-block: .5rem; }
+</style>
+`;
+}
+function vueGuestbookAppTemplate() {
+  return `<script setup lang="ts">
+import { computed, ref } from "vue";
+import { auth } from "sporades/client";
+import { useAuth, useMutation, useQuery } from "./sporades";
+
+const maxLength = 280;
+const session = useAuth();
+const entries = useQuery("entries");
+const sign = useMutation("sign");
+const body = ref("");
+const authError = ref("");
+const remaining = computed(() => maxLength - body.value.length);
+
+async function signInWithGoogle() {
+  authError.value = "";
+  const result = await auth.signIn("google");
+  if (result.error) authError.value = result.error.message;
+}
+
+async function signOut() {
+  authError.value = "";
+  const result = await auth.signOut();
+  if (result.error) authError.value = result.error.message;
+}
+
+async function submit() {
+  const message = body.value.trim();
+  if (!message || message.length > maxLength) return;
+  const result = await sign.run(message);
+  if (!result.error) body.value = "";
+}
+
+function initials(name: string) {
+  return name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?";
+}
+</script>
+
+<template>
+  <main class="shell">
+    <section class="intro">
+      <div><img class="mark" src="./sporades-mark.svg" alt="" /><p class="eyebrow">Sporades guestbook</p><h1>Leave a note from this island.</h1></div>
+      <div class="auth-panel">
+        <span>{{ session.auth?.displayName ?? "Anonymous" }}</span>
+        <button v-if="!session.isAuthenticated()" type="button" @click="signInWithGoogle">Sign in with Google</button>
+        <button v-else class="secondary-button" type="button" @click="signOut">Sign out</button>
+        <p v-if="authError" class="error">{{ authError }}</p>
+      </div>
+    </section>
+    <form class="composer" @submit.prevent="submit">
+      <textarea v-model="body" :maxlength="maxLength" placeholder="Write something kind, sharp, or strangely memorable." />
+      <div class="composer-row"><span>{{ remaining }} characters left</span><button :disabled="!body.trim() || sign.loading">Sign guestbook</button></div>
+      <p v-if="sign.error" class="error">{{ sign.error.message }}</p>
+    </form>
+    <p v-if="entries.loading">Loading\u2026</p>
+    <p v-else-if="entries.error" class="error" role="alert">{{ entries.error.message }}</p>
+    <section v-else class="entries">
+      <article v-for="entry in entries.data ?? []" :key="entry.id" class="entry">
+        <img v-if="entry.authorPicture" :src="entry.authorPicture" alt="" />
+        <span v-else class="author-badge">{{ initials(entry.authorName) }}</span>
+        <div><div class="entry-meta"><strong>{{ entry.authorName }}</strong><time :datetime="entry.createdAt">{{ new Date(entry.createdAt).toLocaleString() }}</time></div><p>{{ entry.body }}</p></div>
+      </article>
+    </section>
+  </main>
+</template>
+
+<style scoped>
+:global(body) { margin: 0; background: #f6f3ed; color: #25211b; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+.shell { width: min(920px, calc(100% - 32px)); margin: 0 auto; padding: 48px 0; }
+.intro, .composer-row, .auth-panel, .entry-meta { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.eyebrow { color: #7a4b28; font-size: .8rem; font-weight: 700; text-transform: uppercase; }
+.mark { width: 2rem; height: 2rem; }
+h1 { margin: 0; font-size: clamp(2rem, 6vw, 4.8rem); line-height: .95; }
+button { border: 0; border-radius: 8px; background: #176b61; color: white; min-height: 42px; padding: 0 16px; font: inherit; font-weight: 700; }
+.secondary-button { background: #51483d; }
+.composer, .entry { background: white; border: 1px solid #ded6ca; border-radius: 8px; padding: 16px; margin-top: 24px; }
+textarea { width: 100%; min-height: 116px; box-sizing: border-box; padding: 12px; font: inherit; }
+.entries { display: grid; gap: 12px; }.entry { display: grid; grid-template-columns: 48px 1fr; gap: 14px; margin-top: 0; }
+.entry img, .author-badge { width: 48px; height: 48px; border-radius: 50%; }.author-badge { display: grid; place-items: center; background: #25211b; color: white; }
+.error { color: #a33b28; } time { color: #73695b; font-size: .88rem; }
+@media (max-width: 680px) { .intro, .composer-row { display: grid; }.auth-panel { justify-content: flex-start; } }
+</style>
+`;
+}
+function vuePhotoLibraryAppTemplate() {
+  return `<script setup lang="ts">
+import { computed, ref } from "vue";
+import { auth, files } from "sporades/client";
+import { useAuth, useMutation, useQuery } from "./sporades";
+
+const session = useAuth();
+const publicPhotos = useQuery("publicPhotos");
+const personalPhotos = useQuery("personalPhotos");
+const recordPhoto = useMutation("recordPhoto");
+const updatePhotoIsPublic = useMutation("updatePhotoIsPublic");
+const updatePhotoImageUrl = useMutation("updatePhotoImageUrl");
+const updatePhotoPublicUrlId = useMutation("updatePhotoPublicUrlId");
+const title = ref("");
+const selectedFile = ref<File | null>(null);
+const publish = ref(false);
+const message = ref("");
+const isGoogleUser = computed(() => session.auth?.provider === "google");
+
+function selectFile(event: Event) { selectedFile.value = (event.currentTarget as HTMLInputElement).files?.[0] ?? null; }
+async function signInWithGoogle() { message.value = ""; const result = await auth.signIn("google"); if (result.error) message.value = result.error.message; }
+async function signOut() { message.value = ""; const result = await auth.signOut(); if (result.error) message.value = result.error.message; }
+
+async function submit() {
+  if (!selectedFile.value) return;
+  message.value = "Uploading...";
+  try {
+    const file = await files.upload(selectedFile.value);
+    const shouldPublish = !session.isAuthenticated() || publish.value;
+    // Google-authenticated uploads stay private unless the user explicitly opts in.
+    const publicUrl = shouldPublish ? await files.publicUrl(file.id, { noExpiry: true }) : null;
+    const result = await recordPhoto.run({ title: title.value, file, isPublic: shouldPublish, publicUrl });
+    if (result.error) { message.value = result.error.message; return; }
+    title.value = ""; selectedFile.value = null; publish.value = false;
+    message.value = shouldPublish ? "Photo added to the public gallery." : "Photo saved privately.";
+  } catch (error) { message.value = error instanceof Error ? error.message : "Upload failed."; }
+}
+
+async function makePublic(photo: any) {
+  message.value = "";
+  try {
+    const publicUrl = await files.publicUrl(photo.fileId, { noExpiry: true });
+    await updatePhotoImageUrl.run(photo.id, publicUrl.url);
+    await updatePhotoPublicUrlId.run(photo.id, publicUrl.id);
+    await updatePhotoIsPublic.run(photo.id, true);
+  } catch (error) { message.value = error instanceof Error ? error.message : "Could not publish photo."; }
+}
+
+async function makePrivate(photo: any) {
+  message.value = "";
+  try {
+    if (photo.publicUrlId) await files.revokePublicUrl(photo.publicUrlId);
+    await updatePhotoIsPublic.run(photo.id, false);
+    await updatePhotoImageUrl.run(photo.id, "");
+    await updatePhotoPublicUrlId.run(photo.id, "");
+  } catch (error) { message.value = error instanceof Error ? error.message : "Could not hide photo."; }
+}
+</script>
+
+<template>
+  <main class="shell">
+    <header class="topbar"><div><img class="mark" src="./sporades-mark.svg" alt="" /><p class="eyebrow">Sporades Storage</p><h1>Photo Library</h1></div><div class="auth-panel"><span>{{ session.auth?.displayName ?? "Anonymous" }}</span><button v-if="isGoogleUser" class="secondary-button" @click="signOut">Sign out</button><button v-else @click="signInWithGoogle">Sign in with Google</button></div></header>
+    <form class="uploader" @submit.prevent="submit">
+      <input v-model="title" placeholder="Caption" /><input type="file" accept="image/*" @change="selectFile" />
+      <label :class="session.isAuthenticated() ? 'check' : 'check muted'"><input v-model="publish" type="checkbox" :checked="!session.isAuthenticated() || publish" :disabled="!session.isAuthenticated()" />{{ session.isAuthenticated() ? "Publish to gallery" : "Anonymous uploads are public" }}</label>
+      <button :disabled="!selectedFile || recordPhoto.loading">Upload photo</button><p v-if="message" class="message">{{ message }}</p>
+    </form>
+    <section><h2>Public gallery</h2><p v-if="publicPhotos.error" role="alert">{{ publicPhotos.error.message }}</p><div class="grid"><article v-for="photo in publicPhotos.data ?? []" :key="photo.id" class="photo"><img :src="photo.imageUrl" :alt="photo.title" /><div><strong>{{ photo.title }}</strong><span>{{ photo.ownerName }}</span></div></article></div></section>
+    <section v-if="isGoogleUser"><h2>My library</h2><div class="list"><article v-for="photo in personalPhotos.data ?? []" :key="photo.id" class="library-row"><div><strong>{{ photo.title }}</strong><span>{{ photo.status }}</span></div><button v-if="photo.isPublic" class="secondary-button" @click="makePrivate(photo)">Make private</button><button v-else @click="makePublic(photo)">Make public</button></article></div></section>
+  </main>
+</template>
+
+<style scoped>
+:global(body) { margin: 0; background: #f7f7f2; color: #20231f; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+.shell { width: min(1080px, calc(100% - 32px)); margin: auto; padding: 40px 0; }.topbar, .auth-panel, .uploader, .check, .library-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.eyebrow { color: #35605a; font-size: .78rem; font-weight: 800; text-transform: uppercase; }h1 { margin: 0; font-size: clamp(2.2rem, 7vw, 5rem); }button { border: 0; border-radius: 8px; min-height: 40px; padding: 0 14px; background: #245f73; color: white; font: inherit; font-weight: 800; }.secondary-button { background: #4d5148; }
+.mark { width: 2rem; height: 2rem; }
+.uploader, .library-row { border: 1px solid #d8ddd2; background: white; border-radius: 8px; padding: 14px; }.message { flex-basis: 100%; color: #8a3f2d; }.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }.photo { border: 1px solid #d8ddd2; border-radius: 8px; background: white; overflow: hidden; }.photo img { width: 100%; aspect-ratio: 4/3; object-fit: cover; }.photo div { padding: 12px; }.photo strong, .photo span, .library-row strong, .library-row span { display: block; }.list { display: grid; gap: 10px; }.muted { color: #677065; }
+@media (max-width: 700px) { .topbar { display: grid; } }
+</style>
+`;
+}
+function vueCampfireAppTemplate() {
+  return `<script setup lang="ts">
+import { computed, onMounted, onScopeDispose, ref, watch } from "vue";
+import { auth, journey, preferences } from "sporades/client";
+import { useAuth, useMutation, useQuery } from "./sporades";
+import { createTypingPublisher } from "./journey-typing";
+import { retireJourneyConsent } from "./journey-lifecycle";
+
+const musketeers = [
+  { key: "athos", name: "Athos", email: "athos@campfire.example" },
+  { key: "porthos", name: "Porthos", email: "porthos@campfire.example" },
+  { key: "aramis", name: "Aramis", email: "aramis@campfire.example" },
+  { key: "dartagnan", name: "d'Artagnan", email: "dartagnan@campfire.example" },
+];
+const fixedChannels = ["general", "ideas", "random", "protect-the-crown"];
+const demoPassword = "all-for-one-campfire";
+const session = useAuth();
+const channel = ref("general");
+const draft = ref("");
+const notice = ref("");
+const sharing = ref(false);
+const activities = ref<any[]>([]);
+const fixturesPrepared = ref(false);
+const profiles = useQuery("profiles");
+const channelQueries = {
+  general: useQuery("messagesGeneral"), ideas: useQuery("messagesIdeas"), random: useQuery("messagesRandom"),
+  "protect-the-crown": useQuery("messagesProtectTheCrown"),
+};
+const messages = computed(() => channelQueries[channel.value as keyof typeof channelQueries]);
+const sendMessage = useMutation("sendMessage");
+const toggleReaction = useMutation("toggleReaction");
+const seedCampfire = useMutation("seedCampfire");
+const registerFixture = useMutation("registerFixture");
+const typingPublisher = createTypingPublisher((state) => journey.set(state));
+let activityRestoreGeneration = 0;
+let fixturePreparationActive = false;
+let unsubscribe = () => {};
+
+function isLocalDemoOrigin(hostname = window.location.hostname) { return ["localhost", "127.0.0.1", "::1"].includes(hostname); }
+function applyJourneyEvent(current: any[], event: any) {
+  const data = event?.data ?? event;
+  if (data?.type === "snapshot") return data.states ?? [];
+  if (data?.type === "removed" || data?.type === "expired") return current.filter((item) => item.sessionId !== data.state?.sessionId);
+  if (!data?.state) return current;
+  return [...current.filter((item) => item.sessionId !== data.state.sessionId), data.state];
+}
+function activityText(activity: any) {
+  const name = (profiles.data ?? []).find((profile: any) => profile.userId === activity.userId)?.name ?? "A Musketeer";
+  const place = activity.metadata?.channel ?? "campfire";
+  if (activity.status === "posted") return name + " posted a message in #" + place;
+  if (activity.status === "liked") return name + " liked a message in #" + place;
+  if (activity.status === "disliked") return name + " disliked a message in #" + place;
+  return name + " is " + activity.status + " #" + place;
+}
+function reactionCount(message: any, kind: string) { return Object.keys(message.reactions ?? {}).filter((key) => key.endsWith(":" + kind)).length; }
+function reactionMine(message: any, kind: string) { return Object.keys(message.reactions ?? {}).includes(session.auth?.userId + ":" + kind); }
+
+onMounted(() => {
+  unsubscribe = journey.subscribe((event) => { activities.value = applyJourneyEvent(activities.value, event); }).unsubscribe;
+});
+onScopeDispose(() => {
+  unsubscribe();
+  typingPublisher.dispose();
+  void journey.disable();
+});
+
+watch(() => profiles.data, async (value) => {
+  if (fixturesPrepared.value || !Array.isArray(value)) return;
+  fixturesPrepared.value = true;
+  if (!isLocalDemoOrigin()) return;
+  const existing = new Set(value.map((profile: any) => profile.key));
+  await prepareFixtures(musketeers.filter((person) => !existing.has(person.key)));
+});
+
+watch(() => session.auth?.userId, async (userId, previousUserId) => {
+  if (previousUserId && previousUserId !== userId) await retireJourneyConsent({ typingPublisher, journey, setSharing: (value) => { sharing.value = value; } });
+  if (!userId || session.auth?.isGuest || fixturePreparationActive) return;
+  const generation = ++activityRestoreGeneration;
+  const stored = await preferences.get();
+  if (generation !== activityRestoreGeneration || stored.error || stored.data.preferences.campfireShareActivity !== true) return;
+  if (await enableSharing(generation)) notice.value = "Activity sharing restored for this Musketeer.";
+});
+
+async function prepareFixtures(people = musketeers) {
+  fixturePreparationActive = true;
+  activityRestoreGeneration += 1;
+  await retireJourneyConsent({ typingPublisher, journey, setSharing: (value) => { sharing.value = value; } });
+  for (const person of people) {
+    let result = await auth.signUp("email", { email: person.email, password: demoPassword, name: person.name });
+    if (result.error && /already|exists|registered/i.test(result.error.message)) result = await auth.signIn("email", { email: person.email, password: demoPassword });
+    if (result.error) { notice.value = "Could not prepare " + person.name + ": " + result.error.message; fixturePreparationActive = false; return; }
+    await registerFixture.run(person.key);
+    await retireJourneyConsent({ typingPublisher, journey, setSharing: (value) => { sharing.value = value; } });
+    await auth.signOut();
+  }
+  fixturePreparationActive = false;
+  const seeded = await seedCampfire.run();
+  notice.value = seeded.error ? seeded.error.message : "Development-only fixtures ready.";
+}
+
+async function switchTo(person: any) {
+  activityRestoreGeneration += 1;
+  await retireJourneyConsent({ typingPublisher, journey, setSharing: (value) => { sharing.value = value; } });
+  await auth.signOut();
+  const result = await auth.signIn("email", { email: person.email, password: demoPassword });
+  notice.value = result.error ? result.error.message : "Signed in as " + person.name + ". Restoring activity preference\u2026";
+}
+
+async function enableSharing(expectedGeneration: number | null = null) {
+  const result = await journey.enable({ capture: { navigation: false, focus: false, interactions: false } });
+  if (result.error) { notice.value = result.error.message; return false; }
+  if (expectedGeneration !== null && expectedGeneration !== activityRestoreGeneration) { await journey.disable(); return false; }
+  await journey.set({ status: "reading", metadata: { channel: channel.value }, ttlSeconds: 12 });
+  sharing.value = true;
+  return true;
+}
+async function setShare(enabled: boolean) {
+  if (enabled ? !await enableSharing() : false) return;
+  if (!enabled) { typingPublisher.dispose(); await journey.disable(); sharing.value = false; }
+  const saved = await preferences.update({ campfireShareActivity: enabled });
+  if (saved.error) notice.value = saved.error.message;
+}
+async function chooseChannel(next: string) {
+  typingPublisher.dispose(); channel.value = next;
+  if (sharing.value) await journey.set({ status: "reading", metadata: { channel: next }, ttlSeconds: 12 });
+}
+function compose() { if (sharing.value) typingPublisher.input(draft.value, channel.value); }
+async function submit() {
+  const result = await sendMessage.run({ channel: channel.value, body: draft.value });
+  if (result.error) { notice.value = result.error.message; return; }
+  draft.value = "";
+  if (sharing.value) { typingPublisher.dispose(); await journey.set({ status: "posted", metadata: { channel: channel.value }, ttlSeconds: 8 }); }
+}
+async function react(messageId: string, kind: string) {
+  const result = await toggleReaction.run({ messageId, kind });
+  if (result.error) { notice.value = result.error.message; return; }
+  if (sharing.value) await journey.set({ status: kind === "up" ? "liked" : "disliked", metadata: { channel: channel.value }, ttlSeconds: 8 });
+}
+</script>
+
+<template>
+  <main class="campfire">
+    <aside class="rail"><img class="mark" src="./sporades-mark.svg" alt="" /><p class="eyebrow">Sporades exemplar</p><h1>\u{1F525} Campfire</h1><nav aria-label="Channels"><button v-for="slug in fixedChannels" :key="slug" :class="{ active: channel === slug }" @click="chooseChannel(slug)"># {{ slug }}</button></nav><p class="warning">Demo fixtures prepare automatically in this development exemplar. Never expose the known credentials publicly.</p></aside>
+    <section class="conversation"><header><h2># {{ channel }}</h2><p role="status">{{ notice }}</p></header><div class="messages"><article v-for="message in messages.data ?? []" :key="message.id"><div class="meta"><strong>{{ message.authorName }}</strong><time>{{ new Date(message.createdAt).toLocaleString() }}</time></div><p>{{ message.body }}</p><div class="reactions"><button v-for="kind in ['up', 'down']" :key="kind" :aria-label="(kind === 'up' ? 'Thumbs up' : 'Thumbs down') + ': ' + reactionCount(message, kind)" :aria-pressed="reactionMine(message, kind)" @click="react(message.id, kind)">{{ kind === "up" ? "\u{1F44D}" : "\u{1F44E}" }} {{ reactionCount(message, kind) }}</button></div></article></div><form @submit.prevent="submit"><label for="message">Message</label><div class="compose"><input id="message" v-model="draft" maxlength="500" :placeholder="'Message #' + channel" @input="compose" /><button>Send</button></div></form></section>
+    <aside class="activity"><h2>What's happening</h2><label class="switch"><input type="checkbox" :checked="sharing" @change="setShare(($event.currentTarget as HTMLInputElement).checked)" />Share my activity</label><p>Shares reading, typing, posting, likes, dislikes, and channel. Never drafts, messages, URLs, query strings, emails, passwords, message IDs, or keystrokes.</p><ul><li v-for="item in activities" :key="item.sessionId">{{ activityText(item) }}</li></ul><h3>Switch Musketeer</h3><button v-for="person in musketeers" :key="person.key" @click="switchTo(person)">{{ person.name }}</button></aside>
+  </main>
+</template>
+
+<style scoped>
+:global(body) { margin: 0; background: #120d0a; color: #fff7ed; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }.campfire { min-height: 100vh; display: grid; grid-template-columns: 240px minmax(0, 1fr) 300px; }.rail, .activity { padding: 20px; background: #1b120d; }.rail { border-right: 1px solid #78350f66; }.activity { border-left: 1px solid #78350f66; }.eyebrow { color: #f59e0b; font-size: .72rem; font-weight: 800; text-transform: uppercase; letter-spacing: .22em; }nav, .activity { display: grid; align-content: start; gap: 9px; }button, input { border: 1px solid #92400e; border-radius: 7px; padding: 9px 12px; background: #29211d; color: inherit; font: inherit; }nav button, .activity button { text-align: left; }.active { background: #b45309; }.warning, .activity p { color: #fde68aaa; font-size: .78rem; }.conversation { display: flex; min-width: 0; flex-direction: column; }.conversation header, form { padding: 20px; border-bottom: 1px solid #78350f66; }.messages { flex: 1; padding: 20px; display: grid; align-content: start; gap: 14px; }.messages article { padding: 16px; border: 1px solid #78350f66; border-radius: 9px; background: #1c1410; }.meta, .reactions, .compose, .switch { display: flex; align-items: center; gap: 10px; }.meta time { color: #fde68a99; font-size: .75rem; }.compose input { flex: 1; }.conversation form label { position: absolute; clip: rect(0 0 0 0); }.activity ul { padding-left: 18px; }
+.mark { width: 2rem; height: 2rem; }
+@media (max-width: 900px) { .campfire { grid-template-columns: 1fr; }.rail, .activity { border: 0; }.conversation { min-height: 70vh; } }
 </style>
 `;
 }
@@ -13859,6 +14198,7 @@ const styles = \`
 }
 function agentsTemplate(template, framework, toolchain) {
   const vanilla = framework === "vanilla";
+  const vue = framework === "vue";
   const clientFiles = framework === "vue" ? "client/*.vue and client/*.ts" : `client/*.${vanilla ? "ts" : "tsx"}`;
   return `# Sporades App Instructions
 
@@ -13895,8 +14235,8 @@ sporades db dump
 ## Structure
 
 - \`server/index.ts\` - schema, queries, mutations
-- \`client/index.${vanilla ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : "UI entrypoint"}
-- \`shared/\` - pure TypeScript shared by client and server
+- \`client/index.${vanilla || vue ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : vue ? "Vue mount entrypoint" : "UI entrypoint"}
+${vue ? "- `client/App.vue` - Vue Single-File Component UI\n" : ""}- \`shared/\` - pure TypeScript shared by client and server
 - \`index.html\` - HTML shell (user-owned)
 - \`sporades.json\` - project configuration
 `;
@@ -16911,12 +17251,6 @@ function parseCreateArgs(args) {
   }
   if (!SUPPORTED_TEMPLATES.has(template)) {
     throw commandError4(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
-  }
-  if (framework === "vue" && template !== "blank" && template !== "todo") {
-    throw commandError4(
-      `Unsupported Vue template: ${template}`,
-      "Use the blank or todo template with Vue; other Vue templates are not admitted yet."
-    );
   }
   return {
     name,

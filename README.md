@@ -120,12 +120,9 @@ mutations, and auth without hand-rolled fetch plumbing.
 
 Sporades currently includes:
 
-- React and Preact project scaffolds with `blank`, `todo`, `guestbook`,
-  `photo-library`, and `campfire` templates. Campfire is the complete
-  consented User journey tracker exemplar.
-- Vue/Vite project scaffolds with the admitted `blank` and `todo` templates and
-  native Single-File Components. Other Vue templates remain intentionally
-  unavailable until their own admission work lands.
+- React, Preact, and Vue project scaffolds with `blank`, `todo`, `guestbook`,
+  `photo-library`, and `campfire` templates. Vue uses native Single-File
+  Components; Campfire is the complete consented User journey tracker exemplar.
 - Local Dev sessions with rebuilds, WebSocket reconnects, SQLite persistence,
   logs, database inspection, auth helpers, and file storage.
 - Local Docker Container sessions for production-like staging tests.

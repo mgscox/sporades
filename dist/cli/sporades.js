@@ -267,9 +267,6 @@ function parseCreateArgs(args) {
     if (!SUPPORTED_TEMPLATES.has(template)) {
         throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
     }
-    if (framework === "vue" && template !== "blank" && template !== "todo") {
-        throw commandError(`Unsupported Vue template: ${template}`, "Use the blank or todo template with Vue; other Vue templates are not admitted yet.");
-    }
     return {
         name,
         framework,

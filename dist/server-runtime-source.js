@@ -36,7 +36,9 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     resolveSchedulePayloadFactoryTimeoutMs,
     resolveJourneySessionInactivityMinutes,
     scheduleDefinitionsFromCapsule,
+    resolveScheduleTimezone,
     parseScheduleExpression,
+    scheduleWallClockParts,
     nextScheduleOccurrence,
     ensureScheduleStorage,
     scheduledOccurrenceIdentity,
@@ -859,10 +861,10 @@ function resolveScheduleTimezone(value) {
         throw commandError(`Invalid Schedule timezone: ${String(requested)}`, "Pass an available IANA timezone name from the runtime timezone database.");
     }
 }
-const scheduleWeekdays = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 function scheduleWallClockParts(formatter, instant) {
     const parts = Object.fromEntries(formatter.formatToParts(instant).map((part) => [part.type, part.value]));
-    return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday: scheduleWeekdays[parts.weekday] };
+    const weekdays = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+    return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday: weekdays[parts.weekday] };
 }
 function nextScheduleOccurrence(fields, after, timezone) {
     const formatter = new Intl.DateTimeFormat("en-US-u-ca-gregory-nu-latn", {

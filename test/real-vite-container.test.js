@@ -49,6 +49,9 @@ for (const { framework, template } of [
   { framework: "preact", template: "blank" },
   { framework: "vue", template: "blank" },
   { framework: "vue", template: "todo" },
+  { framework: "vue", template: "guestbook" },
+  { framework: "vue", template: "photo-library" },
+  { framework: "vue", template: "campfire" },
 ]) test(`real Container serves a complete ${framework} Vite ${template} public tree from the actual Base image`, {
   skip: enabled ? false : "Set SPORADES_REAL_VITE_CONTAINER=1 to run the disposable Docker acceptance test.",
   timeout: 300_000,
@@ -89,7 +92,7 @@ for (const { framework, template } of [
       }
     }
     await writeFile(path.join(projectDir, ".env"), "VITE_REAL_CONTAINER_LEAK=browser-secret-must-not-ship\n");
-    await writeFile(path.join(projectDir, ".env.sporades.server"), "SERVER_REAL_CONTAINER_LEAK=server-secret-must-not-ship\n");
+    await writeFile(path.join(projectDir, ".env.sporades.server"), `${template === "photo-library" ? "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n" : ""}SERVER_REAL_CONTAINER_LEAK=server-secret-must-not-ship\n`);
     const clientPath = path.join(projectDir, "client", framework === "vue" ? "index.ts" : "index.tsx");
     await writeFile(
       clientPath,
@@ -136,7 +139,10 @@ for (const { framework, template } of [
       fetched[kind] = { path: publicPath, bytes: Buffer.byteLength(body), mime: response.headers.get("content-type") };
     }
     const output = bodies.join("\n");
-    assert.match(output, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+    assert.match(output, framework === "vue" ? {
+      blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
+      "photo-library": /Photo Library/, campfire: /Campfire/,
+    }[template] : template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
     assert.doesNotMatch(output, /browser-secret-must-not-ship|server-secret-must-not-ship/);
     assert.doesNotMatch(output, /\/@vite\/client|react-refresh|vite\/hmr/i);
     assert.equal((await fetchEventually(`${url}/client.js`)).status, 404);

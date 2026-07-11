@@ -29,6 +29,7 @@ export declare function scaffoldFiles(options: {
     ".env.sporades.server": string;
     "index.html": string;
 } | {
+    "README.md": string;
     "client/index.ts": string;
     "client/sporades.ts": string;
     "client/App.vue": string;

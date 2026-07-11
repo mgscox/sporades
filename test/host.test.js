@@ -4200,6 +4200,9 @@ for (const { framework, template } of [
   { framework: "preact", template: "blank" },
   { framework: "vue", template: "blank" },
   { framework: "vue", template: "todo" },
+  { framework: "vue", template: "guestbook" },
+  { framework: "vue", template: "photo-library" },
+  { framework: "vue", template: "campfire" },
 ]) test(`sporades host push archives the complete normalized ${framework} Vite ${template} public tree`, async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
@@ -4215,6 +4218,12 @@ for (const { framework, template } of [
     assert.equal(created.code, 0, created.stderr);
     const projectDir = path.join(dir, "vite-hosted");
     await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : installVue)(projectDir);
+    if (template === "photo-library") {
+      const configPath = path.join(projectDir, "sporades.json");
+      const config = JSON.parse(await readFile(configPath, "utf8"));
+      config.auth = { providers: { anonymous: true } };
+      await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    }
     await rm(path.join(projectDir, ".env.sporades.server"), { force: true });
     const env = {
       ...hostEnv(configDir), ...fakeSsh.env, ...fakeScp.env,
@@ -4245,7 +4254,10 @@ for (const { framework, template } of [
     const publicText = (await Promise.all(publicEntries.map((file) => readFile(path.join(publicRoot, file.slice("public/".length)), "utf8")))).join("\n");
     assert.doesNotMatch(publicText, /\/@vite\/client|react-refresh|vite\/hmr|SERVER_ONLY/i);
     if (framework === "preact") assert.doesNotMatch(publicText, /node_modules\/react(?:-dom)?\/|from ["']react(?:-dom)?/);
-    if (framework === "vue") assert.match(publicText, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+    if (framework === "vue") assert.match(publicText, {
+      blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
+      "photo-library": /Photo Library/, campfire: /Campfire/,
+    }[template]);
   });
 });
 

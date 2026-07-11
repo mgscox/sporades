@@ -78,7 +78,9 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   resolveSchedulePayloadFactoryTimeoutMs,
   resolveJourneySessionInactivityMinutes,
   scheduleDefinitionsFromCapsule,
+  resolveScheduleTimezone,
   parseScheduleExpression,
+  scheduleWallClockParts,
   nextScheduleOccurrence,
   ensureScheduleStorage,
   scheduledOccurrenceIdentity,
@@ -908,11 +910,10 @@ function resolveScheduleTimezone(value: any) {
   }
 }
 
-const scheduleWeekdays: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
-
 function scheduleWallClockParts(formatter: Intl.DateTimeFormat, instant: Date) {
   const parts = Object.fromEntries(formatter.formatToParts(instant).map((part) => [part.type, part.value]));
-  return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday: scheduleWeekdays[parts.weekday] };
+  const weekdays: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return { minute: Number(parts.minute), hour: Number(parts.hour), day: Number(parts.day), month: Number(parts.month), weekday: weekdays[parts.weekday] };
 }
 
 function nextScheduleOccurrence(fields: Set<number>[], after: Date, timezone: string) {
