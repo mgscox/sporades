@@ -209,8 +209,7 @@ export async function createBundle(
     containerMounts: {
       files: [
         { host: paths.serverBundle, container: "/app/server.mjs", mode: "ro" },
-        { host: paths.clientBundle, container: "/app/client.js", mode: "ro" },
-        { host: paths.indexHtml, container: "/app/index.html", mode: "ro" },
+        { host: publicTree.root, container: "/app/public", mode: "ro" },
         { host: paths.config, container: "/app/sporades.json", mode: "ro" },
       ],
       serverEnv: serverEnvFile.exists
@@ -564,10 +563,12 @@ async function bundleClientSource(clientSource: string, options: { clientSourceP
       platform: "browser",
       write: false,
       logLevel: "silent",
-      sourcemap: "inline",
+      sourcemap: "external",
       outdir: outputDir,
       entryNames: "client",
+      chunkNames: "assets/[name]-[hash]",
       assetNames: "assets/[name]-[hash]",
+      splitting: true,
       loader: {
         ".svg": "file",
         ".png": "file",
@@ -607,7 +608,10 @@ async function bundleClientSource(clientSource: string, options: { clientSourceP
     return {
       clientBundle,
       publicFiles: outputs.map((output) => {
-        const relativePath = path.relative(outputDir, output.path).split(path.sep).join("/");
+        const emittedPath = path.relative(outputDir, output.path).split(path.sep).join("/");
+        const relativePath = emittedPath === "client.css" || emittedPath === "client.css.map"
+          ? `assets/${emittedPath}`
+          : emittedPath;
         return { path: relativePath, contents: relativePath === "client.js" ? clientBundle : output.contents };
       }),
     };

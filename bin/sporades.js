@@ -9984,7 +9984,7 @@ function createServerBundleSource({
   return `// Sporades server bundle
 import { createDecipheriv, createHash, createHash as createHash2, createHmac, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readFileSync as readFileSync2 } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 
@@ -10036,6 +10036,7 @@ database.log.emit({
   release: process.env.SPORADES_RELEASE_ID ? { id: process.env.SPORADES_RELEASE_ID } : null,
 });
 const websocketHub = createWebSocketHub(() => database);
+const runtimePublicRoot = resolveRuntimePublicRoot();
 
 const server = createServer(async (request, response) => {
   try {
@@ -10059,17 +10060,7 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    if (request.url === "/" || request.url === "/index.html") {
-      const html = await readRuntimeFile("index.html", path.join(process.cwd(), "index.html"));
-      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(injectPageConnectionToken(html, websocketHub.createConnectionToken()));
-      return;
-    }
-
-    if (request.url === "/client.js") {
-      const client = await readRuntimeFile("client.js", path.join(process.cwd(), ".sporades", "build", "client.js"));
-      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
-      response.end(client);
+    if (await routePublicAsset(request, response, runtimePublicRoot, websocketHub)) {
       return;
     }
 
@@ -10108,14 +10099,52 @@ const shutdown = async () => {
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
-async function readRuntimeFile(containerFileName, fallbackPath) {
+function resolveRuntimePublicRoot() {
+  const mounted = path.join(process.cwd(), "public");
+  if (existsSync(path.join(mounted, "index.html"))) return mounted;
   try {
-    return await readFile(path.join(process.cwd(), containerFileName), "utf8");
-  } catch (error) {
-    if (error?.code !== "ENOENT") {
-      throw error;
-    }
-    return readFile(fallbackPath, "utf8");
+    const treesDir = path.join(process.cwd(), ".sporades", "build", ".public-trees");
+    const tree = JSON.parse(readFileSync(path.join(treesDir, "active.json"), "utf8"))?.tree;
+    if (/^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(tree)) return path.join(treesDir, tree);
+  } catch {}
+  return mounted;
+}
+
+async function routePublicAsset(request, response, publicRoot, hub) {
+  const rawPathname = String(request.url ?? "/").split("?", 1)[0];
+  if (/%2f|%5c/i.test(rawPathname)) return false;
+  let decoded;
+  try { decoded = decodeURIComponent(rawPathname); } catch { return false; }
+  if (!decoded.startsWith("/") || decoded.includes("\\\\") || decoded.includes("\\0")) return false;
+  const relativePath = decoded === "/" ? "index.html" : decoded.slice(1);
+  const segments = relativePath.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return false;
+  const filePath = path.join(publicRoot, ...segments);
+  const stats = await lstat(filePath).catch(() => null);
+  if (!stats?.isFile() || stats.isSymbolicLink()) return false;
+  const body = await readFile(filePath);
+  const html = relativePath === "index.html";
+  response.writeHead(200, { "content-type": publicContentType(relativePath) });
+  response.end(html ? injectPageConnectionToken(body.toString("utf8"), hub.createConnectionToken()) : body);
+  return true;
+}
+
+function publicContentType(relativePath) {
+  switch (path.extname(relativePath).toLowerCase()) {
+    case ".html": return "text/html; charset=utf-8";
+    case ".js": case ".mjs": return "text/javascript; charset=utf-8";
+    case ".css": return "text/css; charset=utf-8";
+    case ".json": case ".map": return "application/json; charset=utf-8";
+    case ".svg": return "image/svg+xml";
+    case ".png": return "image/png";
+    case ".jpg": case ".jpeg": return "image/jpeg";
+    case ".gif": return "image/gif";
+    case ".webp": return "image/webp";
+    case ".ico": return "image/x-icon";
+    case ".woff": return "font/woff";
+    case ".woff2": return "font/woff2";
+    case ".txt": return "text/plain; charset=utf-8";
+    default: return "application/octet-stream";
   }
 }
 
@@ -10254,6 +10283,7 @@ async function validatePublicTree(root) {
     throw publicTreeError("Invalid public tree.", "The public output root must be a real directory.");
   }
   const canonicalPaths = /* @__PURE__ */ new Map();
+  const filePaths = [];
   let fileCount = 0;
   let totalBytes = 0;
   async function visit(directory, prefix = "") {
@@ -10284,6 +10314,7 @@ async function validatePublicTree(root) {
       }
       fileCount += 1;
       totalBytes += stats.size;
+      filePaths.push(relativePath);
       if (fileCount > PUBLIC_TREE_LIMITS.files) {
         throw publicTreeError("Invalid public tree.", `Public output may contain at most ${PUBLIC_TREE_LIMITS.files} files.`);
       }
@@ -10300,7 +10331,18 @@ async function validatePublicTree(root) {
   if (!indexStats?.isFile() || indexStats.isSymbolicLink()) {
     throw publicTreeError("Invalid public tree.", "Client output must contain a regular index.html file.");
   }
-  return { fileCount, totalBytes };
+  return { fileCount, totalBytes, paths: filePaths.sort() };
+}
+async function summarizePublicTree(root) {
+  const validated = await validatePublicTree(root);
+  const paths = validated.paths.slice(0, 20);
+  return {
+    htmlEntry: "index.html",
+    fileCount: validated.fileCount,
+    totalBytes: validated.totalBytes,
+    paths,
+    truncated: validated.paths.length > paths.length
+  };
 }
 async function validateActivePublicTreeReference(treesDir, raw) {
   let tree;
@@ -10920,8 +10962,7 @@ async function createBundle(projectDir, config, options = {}) {
     containerMounts: {
       files: [
         { host: paths.serverBundle, container: "/app/server.mjs", mode: "ro" },
-        { host: paths.clientBundle, container: "/app/client.js", mode: "ro" },
-        { host: paths.indexHtml, container: "/app/index.html", mode: "ro" },
+        { host: publicTree.root, container: "/app/public", mode: "ro" },
         { host: paths.config, container: "/app/sporades.json", mode: "ro" }
       ],
       serverEnv: serverEnvFile.exists ? { host: paths.serverEnv, container: "/app/.env.sporades.server", mode: "ro" } : null,
@@ -11232,10 +11273,12 @@ async function bundleClientSource(clientSource, options) {
       platform: "browser",
       write: false,
       logLevel: "silent",
-      sourcemap: "inline",
+      sourcemap: "external",
       outdir: outputDir,
       entryNames: "client",
+      chunkNames: "assets/[name]-[hash]",
       assetNames: "assets/[name]-[hash]",
+      splitting: true,
       loader: {
         ".svg": "file",
         ".png": "file",
@@ -11273,7 +11316,8 @@ async function bundleClientSource(clientSource, options) {
     return {
       clientBundle,
       publicFiles: outputs.map((output) => {
-        const relativePath = path3.relative(outputDir, output.path).split(path3.sep).join("/");
+        const emittedPath = path3.relative(outputDir, output.path).split(path3.sep).join("/");
+        const relativePath = emittedPath === "client.css" || emittedPath === "client.css.map" ? `assets/${emittedPath}` : emittedPath;
         return { path: relativePath, contents: relativePath === "client.js" ? clientBundle : output.contents };
       })
     };
@@ -14279,7 +14323,7 @@ async function runDoctorChecks(options) {
       checks.push(...await devSessionChecks(options));
       checks.push(...await localCapsuleServiceChecks(project.config, options));
     } else if (options.session === "container") {
-      checks.push(...await localContainerChecks(options));
+      checks.push(...await localContainerChecks(options, project.config));
       checks.push(...await localCapsuleServiceChecks(project.config, options));
     } else if (options.session === "hosted") {
       checks.push(...await hostedCapsuleDoctorChecks(options));
@@ -14982,7 +15026,7 @@ async function devSessionChecks(options) {
     }
   ];
 }
-async function localContainerChecks(options) {
+async function localContainerChecks(options, config) {
   const bindingPath = path6.join(options.projectDir, ".sporades", "binding.json");
   const binding = await readOptionalJsonFile(bindingPath);
   if (!binding?.containerId) {
@@ -15062,6 +15106,7 @@ async function localContainerChecks(options) {
     }
   });
   checks.push(containerRuntimePolicyCheck(container));
+  checks.push(await containerClientReleaseCheck(container, config));
   return checks;
 }
 function containerRuntimePolicyCheck(container) {
@@ -15073,7 +15118,7 @@ function containerRuntimePolicyCheck(container) {
     version: labels["com.sporades.base-image.version"] ?? null,
     updatePolicy: labels["com.sporades.base-image.update-policy"] ?? null
   };
-  const readOnlyReleaseMounts = ["/app/server.mjs", "/app/client.js", "/app/index.html", "/app/sporades.json"].every((target) => {
+  const readOnlyReleaseMounts = ["/app/server.mjs", "/app/public", "/app/sporades.json"].every((target) => {
     const mount = mounts.find((candidate) => candidate.Target === target || candidate.Destination === target);
     return Boolean(mount && mountIsReadOnly(mount));
   });
@@ -15105,6 +15150,52 @@ function containerRuntimePolicyCheck(container) {
       ports
     }
   };
+}
+async function containerClientReleaseCheck(container, config) {
+  const mounts = containerInspectMounts(container);
+  const publicMount = mounts.find((candidate) => candidate.Target === "/app/public" || candidate.Destination === "/app/public");
+  const framework = config.client?.framework ?? "react";
+  const toolchain = config.client?.toolchain ?? "esbuild";
+  if (!publicMount || !mountIsReadOnly(publicMount)) {
+    return {
+      id: "doctor.container.client-release",
+      title: "Container client release",
+      scope: "container",
+      status: "warn",
+      severity: "warning",
+      message: "The Container public-tree mount is missing or is not read-only.",
+      hint: "Redeploy the Capsule so Sporades mounts one validated public directory at /app/public:ro.",
+      commands: ["sporades deploy", "sporades deploy status"],
+      details: { framework, toolchain, htmlEntry: "index.html", public: null }
+    };
+  }
+  const source = publicMount.Source ?? publicMount.SourcePath;
+  try {
+    const summary = await summarizePublicTree(source);
+    return {
+      id: "doctor.container.client-release",
+      title: "Container client release",
+      scope: "container",
+      status: "pass",
+      severity: "info",
+      message: `Container client release is ${framework}/${toolchain} with ${summary.fileCount} bounded public assets.`,
+      commands: ["sporades deploy status"],
+      details: { framework, toolchain, htmlEntry: summary.htmlEntry, public: summary }
+    };
+  } catch (error) {
+    const details = errorDetails2(error);
+    return {
+      id: "doctor.container.client-release",
+      title: "Container client release",
+      scope: "container",
+      status: "warn",
+      severity: "warning",
+      message: "The mounted Container public tree could not be validated from its host source.",
+      hint: details.hint ?? "Redeploy the Capsule from a valid bounded public tree.",
+      commands: ["sporades deploy", "sporades deploy status"],
+      details: { framework, toolchain, htmlEntry: "index.html", public: null, cause: details.message }
+    };
+  }
 }
 function containerInspectMounts(container) {
   if (Array.isArray(container?.Mounts)) {
@@ -16775,7 +16866,7 @@ function defaultSporadesDependency() {
 async function manageLocalLifecycle(surface, options) {
   switch (options.subcommand) {
     case "status":
-      await printLocalCapsuleServiceStatus(options);
+      await printLocalCapsuleServiceStatus(options, surface);
       return;
     case "stop":
       if (surface === "deploy") {
@@ -18579,7 +18670,7 @@ async function startContainerSession(options) {
   const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
   const port = options.port ?? config.deploy?.port ?? 4e3;
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
-  const bundle = await createBundle(options.projectDir, config);
+  const bundle = await createBundle(options.projectDir, config, { publishLegacy: false });
   const runtimeDir = path7.join(options.projectDir, ".sporades");
   const dataDir = path7.join(runtimeDir, "data");
   const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
@@ -18593,6 +18684,31 @@ async function startContainerSession(options) {
     connection: "container",
     wait: true
   });
+  let clientRelease;
+  try {
+    clientRelease = {
+      framework: config.client?.framework ?? "react",
+      toolchain: config.client?.toolchain ?? "esbuild",
+      publicTree: path7.basename(bundle.staticFiles.publicDir),
+      ...await summarizePublicTree(bundle.staticFiles.publicDir)
+    };
+  } catch (error) {
+    const details = errorDetails2(error);
+    await discardPublicTree(bundle.staticFiles.publicTree).catch(() => {
+    });
+    throw commandError4(
+      "Container public tree validation failed.",
+      details.hint ?? "Rebuild the Capsule public output and retry deployment; the running Container was preserved.",
+      { phase: "public", framework: config.client?.framework ?? "react", toolchain: config.client?.toolchain ?? "esbuild", cause: details.message }
+    );
+  }
+  const rollbackBundlePublication = await bundle.publishLegacy();
+  try {
+    await bundle.releasePublicTreeLease();
+  } catch (error) {
+    await rollbackBundlePublication();
+    throw error;
+  }
   if (existingBinding?.containerId) {
     runDockerCleanup(
       ["stop", existingBinding.containerId],
@@ -18686,6 +18802,7 @@ async function startContainerSession(options) {
   const binding = {
     containerId,
     containerName,
+    clientRelease,
     ...sshAccess.enabled ? {
       ssh: {
         enabled: true,
@@ -20142,10 +20259,20 @@ function runDocker(args, cwd, message, hint) {
   }
   return result.stdout.trim();
 }
-async function printLocalCapsuleServiceStatus(options) {
+async function printLocalCapsuleServiceStatus(options, surface) {
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = localCapsuleServicesFromConfig2(config, options.projectDir);
-  const data = { services: await localCapsuleServicesStatus(capsuleServices, options.projectDir) };
+  const binding = surface === "deploy" ? await readContainerBinding(path7.join(options.projectDir, CONTAINER_BINDING_FILE)) : null;
+  const data = {
+    ...binding?.containerId ? {
+      container: {
+        containerId: binding.containerId,
+        containerName: binding.containerName ?? null,
+        clientRelease: binding.clientRelease ?? null
+      }
+    } : {},
+    services: await localCapsuleServicesStatus(capsuleServices, options.projectDir)
+  };
   if (options.json) {
     writeResult({ ok: true, data, error: null });
     return;

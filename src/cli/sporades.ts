@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../bundle-pipeline.js";
-import { discardPublicTree, readPublicAsset } from "../public-tree.js";
+import { discardPublicTree, readPublicAsset, summarizePublicTree } from "../public-tree.js";
 import {
   SPORADES_BASE_IMAGE,
   baseImageLabels,
@@ -1390,7 +1390,7 @@ function defaultSporadesDependency() {
 async function manageLocalLifecycle(surface: string, options: LooseRecord) {
   switch (options.subcommand) {
     case "status":
-      await printLocalCapsuleServiceStatus(options);
+      await printLocalCapsuleServiceStatus(options, surface);
       return;
 
     case "stop":
@@ -3325,7 +3325,7 @@ async function startContainerSession(options: LooseRecord) {
   const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
   const port = options.port ?? config.deploy?.port ?? 4000;
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
-  const bundle = await createBundle(options.projectDir, config);
+  const bundle = await createBundle(options.projectDir, config, { publishLegacy: false });
   const runtimeDir = path.join(options.projectDir, ".sporades");
   const dataDir = path.join(runtimeDir, "data");
   const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
@@ -3340,6 +3340,32 @@ async function startContainerSession(options: LooseRecord) {
     connection: "container",
     wait: true,
   });
+
+  let clientRelease;
+  try {
+    clientRelease = {
+      framework: config.client?.framework ?? "react",
+      toolchain: config.client?.toolchain ?? "esbuild",
+      publicTree: path.basename(bundle.staticFiles.publicDir),
+      ...(await summarizePublicTree(bundle.staticFiles.publicDir)),
+    };
+  } catch (error) {
+    const details = errorDetails(error);
+    await discardPublicTree(bundle.staticFiles.publicTree).catch(() => {});
+    throw commandError(
+      "Container public tree validation failed.",
+      details.hint ?? "Rebuild the Capsule public output and retry deployment; the running Container was preserved.",
+      { phase: "public", framework: config.client?.framework ?? "react", toolchain: config.client?.toolchain ?? "esbuild", cause: details.message },
+    );
+  }
+
+  const rollbackBundlePublication = await bundle.publishLegacy();
+  try {
+    await bundle.releasePublicTreeLease();
+  } catch (error) {
+    await rollbackBundlePublication();
+    throw error;
+  }
 
   if (existingBinding?.containerId) {
     runDockerCleanup(
@@ -3443,6 +3469,7 @@ async function startContainerSession(options: LooseRecord) {
   const binding = {
     containerId,
     containerName,
+    clientRelease,
     ...(sshAccess.enabled ? {
       ssh: {
         enabled: true,
@@ -5068,10 +5095,22 @@ function runDocker(args: any[] | readonly string[], cwd: any, message: string, h
   return result.stdout.trim();
 }
 
-async function printLocalCapsuleServiceStatus(options: LooseRecord) {
+async function printLocalCapsuleServiceStatus(options: LooseRecord, surface: string) {
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = localCapsuleServicesFromConfig(config, options.projectDir);
-  const data = { services: await localCapsuleServicesStatus(capsuleServices, options.projectDir) };
+  const binding = surface === "deploy"
+    ? await readContainerBinding(path.join(options.projectDir, CONTAINER_BINDING_FILE))
+    : null;
+  const data = {
+    ...(binding?.containerId ? {
+      container: {
+        containerId: binding.containerId,
+        containerName: binding.containerName ?? null,
+        clientRelease: binding.clientRelease ?? null,
+      },
+    } : {}),
+    services: await localCapsuleServicesStatus(capsuleServices, options.projectDir),
+  };
 
   if (options.json) {
     writeResult({ ok: true, data, error: null });

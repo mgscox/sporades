@@ -118,6 +118,7 @@ export async function validatePublicTree(root: string) {
   }
 
   const canonicalPaths = new Map<string, string>();
+  const filePaths: string[] = [];
   let fileCount = 0;
   let totalBytes = 0;
 
@@ -150,6 +151,7 @@ export async function validatePublicTree(root: string) {
       }
       fileCount += 1;
       totalBytes += stats.size;
+      filePaths.push(relativePath);
       if (fileCount > PUBLIC_TREE_LIMITS.files) {
         throw publicTreeError("Invalid public tree.", `Public output may contain at most ${PUBLIC_TREE_LIMITS.files} files.`);
       }
@@ -168,7 +170,19 @@ export async function validatePublicTree(root: string) {
     throw publicTreeError("Invalid public tree.", "Client output must contain a regular index.html file.");
   }
 
-  return { fileCount, totalBytes };
+  return { fileCount, totalBytes, paths: filePaths.sort() };
+}
+
+export async function summarizePublicTree(root: string) {
+  const validated = await validatePublicTree(root);
+  const paths = validated.paths.slice(0, 20);
+  return {
+    htmlEntry: "index.html",
+    fileCount: validated.fileCount,
+    totalBytes: validated.totalBytes,
+    paths,
+    truncated: validated.paths.length > paths.length,
+  };
 }
 
 export async function validateActivePublicTreeReference(treesDir: string, raw: string) {

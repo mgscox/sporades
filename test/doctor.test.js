@@ -187,8 +187,7 @@ if (call.args[0] === "inspect") {
     },
     Mounts: [
       { Source: "/tmp/build/server.mjs", Destination: "/app/server.mjs", Mode: "ro", RW: false },
-      { Source: "/tmp/build/client.js", Destination: "/app/client.js", Mode: "ro", RW: false },
-      { Source: "/tmp/index.html", Destination: "/app/index.html", Mode: "ro", RW: false },
+      { Source: "/tmp/public", Destination: "/app/public", Mode: "ro", RW: false },
       { Source: "/tmp/sporades.json", Destination: "/app/sporades.json", Mode: "ro", RW: false },
       { Source: "/tmp/data", Destination: "/app/data", Mode: "rw", RW: true }
     ],
@@ -984,6 +983,52 @@ test("sporades doctor reports healthy local Container runtime hardening with fak
     const calls = await docker.calls();
     assert.equal(calls.some((call) => mutatingDockerCommands.has(call.args[0])), false);
     assert.equal(calls.some((call) => call.args[0] === "compose" && ["up", "down", "build", "pull"].some((verb) => call.args.includes(verb))), false);
+  });
+});
+
+test("Container doctor reports a bounded public-tree summary without requiring client.js", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createProject(dir, "container-public-island");
+    await writeContainerBinding(projectDir);
+    const publicDir = path.join(projectDir, ".sporades", "build", ".public-trees", "candidate");
+    await mkdir(path.join(publicDir, "assets"), { recursive: true });
+    await writeFile(path.join(publicDir, "index.html"), "<script type=module src=/assets/app-hash.js></script>\n");
+    for (let index = 0; index < 24; index += 1) {
+      await writeFile(path.join(publicDir, "assets", `asset-${String(index).padStart(2, "0")}.js`), `export default ${index};\n`);
+    }
+    const docker = await installFakeDocker(dir, {
+      inspectJson: {
+        State: { Running: true },
+        Config: {
+          User: "501:20",
+          Labels: {
+            "com.sporades.base-image.name": "sporades-base",
+            "com.sporades.base-image.version": "0.1.0-node22-alpine",
+            "com.sporades.base-image.update-policy": "host-managed",
+          },
+        },
+        HostConfig: { ReadonlyRootfs: true, RestartPolicy: { Name: "unless-stopped" } },
+        Mounts: [
+          { Source: path.join(projectDir, ".sporades", "build", "server.mjs"), Destination: "/app/server.mjs", Mode: "ro", RW: false },
+          { Source: publicDir, Destination: "/app/public", Mode: "ro", RW: false },
+          { Source: path.join(projectDir, "sporades.json"), Destination: "/app/sporades.json", Mode: "ro", RW: false },
+          { Source: path.join(projectDir, ".sporades", "data"), Destination: "/app/data", Mode: "rw", RW: true },
+        ],
+        NetworkSettings: { Ports: { "4000/tcp": [{ HostIp: "127.0.0.1", HostPort: "4000" }] } },
+      },
+    });
+
+    const result = await runCli(["doctor", "--session", "container", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(result.code, 0, result.stderr);
+    const check = findCheck(JSON.parse(result.stdout), "doctor.container.client-release");
+    assert.equal(check.status, "pass");
+    assert.equal(check.details.framework, "react");
+    assert.equal(check.details.toolchain, "esbuild");
+    assert.equal(check.details.htmlEntry, "index.html");
+    assert.equal(check.details.public.fileCount, 25);
+    assert.equal(check.details.public.paths.length, 20);
+    assert.equal(check.details.public.truncated, true);
+    assert.equal(check.details.public.paths.includes("client.js"), false);
   });
 });
 

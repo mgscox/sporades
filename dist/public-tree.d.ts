@@ -43,6 +43,14 @@ export declare function releasePublicTreeLease(tree: PublicTree): Promise<void>;
 export declare function validatePublicTree(root: string): Promise<{
     fileCount: number;
     totalBytes: number;
+    paths: string[];
+}>;
+export declare function summarizePublicTree(root: string): Promise<{
+    htmlEntry: string;
+    fileCount: number;
+    totalBytes: number;
+    paths: string[];
+    truncated: boolean;
 }>;
 export declare function validateActivePublicTreeReference(treesDir: string, raw: string): Promise<string>;
 export declare function validatePublicFiles(files: ReadonlyArray<PublicFile>): {

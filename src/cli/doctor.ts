@@ -9,6 +9,7 @@ import {
   capsuleServicesComposeModel,
 } from "../capsule-services.js";
 import { bundleServerCapsuleModule } from "../bundle-pipeline.js";
+import { summarizePublicTree } from "../public-tree.js";
 import { schemaFromCapsuleDefinition } from "../server-runtime-source.js";
 import type { LooseRecord } from "./cli-support.js";
 import { commandError, errorDetails } from "./cli-support.js";
@@ -59,7 +60,7 @@ export async function runDoctorChecks(options: LooseRecord) {
       checks.push(...await devSessionChecks(options));
       checks.push(...await localCapsuleServiceChecks(project.config, options));
     } else if (options.session === "container") {
-      checks.push(...await localContainerChecks(options));
+      checks.push(...await localContainerChecks(options, project.config));
       checks.push(...await localCapsuleServiceChecks(project.config, options));
     } else if (options.session === "hosted") {
       checks.push(...await hostedCapsuleDoctorChecks(options));
@@ -860,7 +861,7 @@ async function devSessionChecks(options: LooseRecord) {
   ];
 }
 
-async function localContainerChecks(options: LooseRecord) {
+async function localContainerChecks(options: LooseRecord, config: LooseRecord) {
   const bindingPath = path.join(options.projectDir, ".sporades", "binding.json");
   const binding = await readOptionalJsonFile(bindingPath);
   if (!binding?.containerId) {
@@ -943,6 +944,7 @@ async function localContainerChecks(options: LooseRecord) {
     },
   });
   checks.push(containerRuntimePolicyCheck(container));
+  checks.push(await containerClientReleaseCheck(container, config));
   return checks;
 }
 
@@ -955,7 +957,7 @@ function containerRuntimePolicyCheck(container: LooseRecord) {
     version: labels["com.sporades.base-image.version"] ?? null,
     updatePolicy: labels["com.sporades.base-image.update-policy"] ?? null,
   };
-  const readOnlyReleaseMounts = ["/app/server.mjs", "/app/client.js", "/app/index.html", "/app/sporades.json"].every((target) => {
+  const readOnlyReleaseMounts = ["/app/server.mjs", "/app/public", "/app/sporades.json"].every((target) => {
     const mount = mounts.find((candidate: LooseRecord) => candidate.Target === target || candidate.Destination === target);
     return Boolean(mount && mountIsReadOnly(mount));
   });
@@ -1001,6 +1003,53 @@ function containerRuntimePolicyCheck(container: LooseRecord) {
       ports,
     },
   };
+}
+
+async function containerClientReleaseCheck(container: LooseRecord, config: LooseRecord) {
+  const mounts = containerInspectMounts(container);
+  const publicMount = mounts.find((candidate: LooseRecord) => candidate.Target === "/app/public" || candidate.Destination === "/app/public");
+  const framework = config.client?.framework ?? "react";
+  const toolchain = config.client?.toolchain ?? "esbuild";
+  if (!publicMount || !mountIsReadOnly(publicMount)) {
+    return {
+      id: "doctor.container.client-release",
+      title: "Container client release",
+      scope: "container",
+      status: "warn",
+      severity: "warning",
+      message: "The Container public-tree mount is missing or is not read-only.",
+      hint: "Redeploy the Capsule so Sporades mounts one validated public directory at /app/public:ro.",
+      commands: ["sporades deploy", "sporades deploy status"],
+      details: { framework, toolchain, htmlEntry: "index.html", public: null },
+    };
+  }
+  const source = publicMount.Source ?? publicMount.SourcePath;
+  try {
+    const summary = await summarizePublicTree(source);
+    return {
+      id: "doctor.container.client-release",
+      title: "Container client release",
+      scope: "container",
+      status: "pass",
+      severity: "info",
+      message: `Container client release is ${framework}/${toolchain} with ${summary.fileCount} bounded public assets.`,
+      commands: ["sporades deploy status"],
+      details: { framework, toolchain, htmlEntry: summary.htmlEntry, public: summary },
+    };
+  } catch (error) {
+    const details = errorDetails(error);
+    return {
+      id: "doctor.container.client-release",
+      title: "Container client release",
+      scope: "container",
+      status: "warn",
+      severity: "warning",
+      message: "The mounted Container public tree could not be validated from its host source.",
+      hint: details.hint ?? "Redeploy the Capsule from a valid bounded public tree.",
+      commands: ["sporades deploy", "sporades deploy status"],
+      details: { framework, toolchain, htmlEntry: "index.html", public: null, cause: details.message },
+    };
+  }
 }
 
 function containerInspectMounts(container: LooseRecord) {

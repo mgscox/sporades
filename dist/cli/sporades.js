@@ -7,7 +7,7 @@ import { appendFile, chmod, lstat, mkdir, readdir, readFile, rename, rm, writeFi
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../bundle-pipeline.js";
-import { discardPublicTree, readPublicAsset } from "../public-tree.js";
+import { discardPublicTree, readPublicAsset, summarizePublicTree } from "../public-tree.js";
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageRuntimeUser, } from "../base-image.js";
 import { ensureSealedServerEnvKeyPair, envelopeSummary, exportedEnvelope, readKeyPair, readSealedServerEnv, sealServerEnv, sealedServerEnvPaths, unsealServerEnv, writeSealedServerEnv, } from "../sealed-server-env.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
@@ -1072,7 +1072,7 @@ function defaultSporadesDependency() {
 async function manageLocalLifecycle(surface, options) {
     switch (options.subcommand) {
         case "status":
-            await printLocalCapsuleServiceStatus(options);
+            await printLocalCapsuleServiceStatus(options, surface);
             return;
         case "stop":
             if (surface === "deploy") {
@@ -2810,7 +2810,7 @@ async function startContainerSession(options) {
     const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
     const port = options.port ?? config.deploy?.port ?? 4000;
     const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
-    const bundle = await createBundle(options.projectDir, config);
+    const bundle = await createBundle(options.projectDir, config, { publishLegacy: false });
     const runtimeDir = path.join(options.projectDir, ".sporades");
     const dataDir = path.join(runtimeDir, "data");
     const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
@@ -2824,6 +2824,28 @@ async function startContainerSession(options) {
         connection: "container",
         wait: true,
     });
+    let clientRelease;
+    try {
+        clientRelease = {
+            framework: config.client?.framework ?? "react",
+            toolchain: config.client?.toolchain ?? "esbuild",
+            publicTree: path.basename(bundle.staticFiles.publicDir),
+            ...(await summarizePublicTree(bundle.staticFiles.publicDir)),
+        };
+    }
+    catch (error) {
+        const details = errorDetails(error);
+        await discardPublicTree(bundle.staticFiles.publicTree).catch(() => { });
+        throw commandError("Container public tree validation failed.", details.hint ?? "Rebuild the Capsule public output and retry deployment; the running Container was preserved.", { phase: "public", framework: config.client?.framework ?? "react", toolchain: config.client?.toolchain ?? "esbuild", cause: details.message });
+    }
+    const rollbackBundlePublication = await bundle.publishLegacy();
+    try {
+        await bundle.releasePublicTreeLease();
+    }
+    catch (error) {
+        await rollbackBundlePublication();
+        throw error;
+    }
     if (existingBinding?.containerId) {
         runDockerCleanup(["stop", existingBinding.containerId], options.projectDir, "Failed to stop the existing container session.", "Check Docker is running. If the bound container was deleted manually, retry with `sporades deploy --force`; through npm, use `npm run deploy -- --force`.", options.force);
         runDockerCleanup(["rm", existingBinding.containerId], options.projectDir, "Failed to remove the existing container session.", "Remove the old container manually or retry with `sporades deploy --force`; through npm, use `npm run deploy -- --force`.", options.force);
@@ -2906,6 +2928,7 @@ async function startContainerSession(options) {
     const binding = {
         containerId,
         containerName,
+        clientRelease,
         ...(sshAccess.enabled ? {
             ssh: {
                 enabled: true,
@@ -4300,10 +4323,22 @@ function runDocker(args, cwd, message, hint) {
     }
     return result.stdout.trim();
 }
-async function printLocalCapsuleServiceStatus(options) {
+async function printLocalCapsuleServiceStatus(options, surface) {
     const config = await readProjectConfig(options.projectDir);
     const capsuleServices = localCapsuleServicesFromConfig(config, options.projectDir);
-    const data = { services: await localCapsuleServicesStatus(capsuleServices, options.projectDir) };
+    const binding = surface === "deploy"
+        ? await readContainerBinding(path.join(options.projectDir, CONTAINER_BINDING_FILE))
+        : null;
+    const data = {
+        ...(binding?.containerId ? {
+            container: {
+                containerId: binding.containerId,
+                containerName: binding.containerName ?? null,
+                clientRelease: binding.clientRelease ?? null,
+            },
+        } : {}),
+        services: await localCapsuleServicesStatus(capsuleServices, options.projectDir),
+    };
     if (options.json) {
         writeResult({ ok: true, data, error: null });
         return;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { Buffer } from "node:buffer";
-import { chmod, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -25,6 +25,28 @@ async function withTempDir(fn) {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+async function relativeFiles(root, directory = root) {
+  const files = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const entryPath = path.join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await relativeFiles(root, entryPath));
+    else files.push(path.relative(root, entryPath).split(path.sep).join("/"));
+  }
+  return files.sort();
+}
+
+async function waitForPublicTreeCandidate(projectDir) {
+  const treesDir = path.join(projectDir, ".sporades", "build", ".public-trees");
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    const entries = await readdir(treesDir, { withFileTypes: true }).catch(() => []);
+    const candidate = entries.find((entry) => entry.isDirectory() && /^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(entry.name));
+    if (candidate) return path.join(treesDir, candidate.name);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error("Timed out waiting for a staged public-tree candidate.");
 }
 
 function runCli(args, options = {}) {
@@ -119,6 +141,8 @@ if (call.args[0] === "compose" && call.args.includes("up")) {
   process.exit(Number(process.env.FAKE_DOCKER_COMPOSE_UP_STATUS ?? "0"));
 }
 if (call.args[0] === "compose" && call.args.includes("ps")) {
+  const delayMs = Number(process.env.FAKE_DOCKER_COMPOSE_PS_DELAY_MS || "0");
+  if (delayMs > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, delayMs);
   process.stdout.write(process.env.FAKE_DOCKER_COMPOSE_PS_OUTPUT + "\\n");
   process.exit(0);
 }
@@ -163,6 +187,7 @@ if (call.args[0] === "run") {
       FAKE_DOCKER_COMPOSE_UP_STATUS: String(options.composeUpStatus ?? 0),
       FAKE_DOCKER_COMPOSE_DOWN_STATUS: String(options.composeDownStatus ?? 0),
       FAKE_DOCKER_COMPOSE_PS_OUTPUT: options.composePsOutput ?? JSON.stringify({ State: "running", Health: "healthy" }),
+      FAKE_DOCKER_COMPOSE_PS_DELAY_MS: String(options.composePsDelayMs ?? 0),
       FAKE_DOCKER_COMPOSE_PORT_OUTPUT: options.composePortOutput ?? "127.0.0.1:49161",
       FAKE_DOCKER_NETWORK_INSPECT_STATUS: String(options.networkInspectStatus ?? 0),
       FAKE_DOCKER_SPORADES_IMAGES: options.sporadesImages ?? "",
@@ -601,10 +626,14 @@ test("sporades deploy --json bundles and starts a container session", async () =
     assert.match(clientBundle, /Sporades Todos/);
 
     const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
-    assert.deepEqual(binding, {
-      containerId: "container-first",
-      containerName: "sporades-todo-island",
-    });
+    assert.equal(binding.containerId, "container-first");
+    assert.equal(binding.containerName, "sporades-todo-island");
+    assert.equal(binding.clientRelease.framework, "react");
+    assert.equal(binding.clientRelease.toolchain, "esbuild");
+    assert.equal(binding.clientRelease.htmlEntry, "index.html");
+    assert.equal(binding.clientRelease.fileCount, 3);
+    assert.deepEqual(binding.clientRelease.paths, ["client.js", "client.js.map", "index.html"]);
+    assert.equal(binding.clientRelease.truncated, false);
 
     const runCall = firstDockerRunCall(await docker.calls());
     assert.equal(runCall.cwd, projectDir);
@@ -618,8 +647,9 @@ test("sporades deploy --json bundles and starts a container session", async () =
     assert.equal(runCall.args[runCall.args.indexOf("--security-opt") + 1], "no-new-privileges");
     assert.equal(runCall.args[runCall.args.indexOf("--publish") + 1], "4321:4000");
     assertVolume(runCall.args, `${path.join(projectDir, ".sporades", "build", "server.mjs")}:/app/server.mjs:ro`);
-    assertVolume(runCall.args, `${path.join(projectDir, ".sporades", "build", "client.js")}:/app/client.js:ro`);
-    assertVolume(runCall.args, `${path.join(projectDir, "index.html")}:/app/index.html:ro`);
+    const activeTree = JSON.parse(await readFile(path.join(projectDir, ".sporades", "build", ".public-trees", "active.json"), "utf8")).tree;
+    assertVolume(runCall.args, `${path.join(projectDir, ".sporades", "build", ".public-trees", activeTree)}:/app/public:ro`);
+    assert.equal(runCall.args.some((arg) => arg.endsWith(":/app/client.js:ro") || arg.endsWith(":/app/index.html:ro")), false);
     assertVolume(runCall.args, `${path.join(projectDir, "sporades.json")}:/app/sporades.json:ro`);
     assertVolume(runCall.args, `${path.join(projectDir, ".env.sporades.server")}:/app/.env.sporades.server:ro`);
     assert.equal(runCall.args[runCall.args.indexOf("--env-file") + 1], path.join(projectDir, ".env.sporades.server"));
@@ -648,6 +678,12 @@ test("sporades deploy --json bundles and starts a container session", async () =
     assert.equal(preparedDataDir.gid, process.getgid());
     assert.equal(preparedDatabase.uid, process.getuid());
     assert.equal(preparedDatabase.gid, process.getgid());
+
+    const statusResult = await runCli(["deploy", "status", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(statusResult.code, 0, statusResult.stderr);
+    const statusData = JSON.parse(statusResult.stdout).data;
+    assert.equal(statusData.container.containerId, "container-first");
+    assert.deepEqual(statusData.container.clientRelease, binding.clientRelease);
   });
 });
 
@@ -690,6 +726,117 @@ test("sporades deploy does not require changing local runtime data ownership", a
     assert.equal(preparedDatabase.uid, process.getuid());
     assert.equal(preparedDatabase.gid, process.getgid());
   });
+});
+
+test("Container replacement switches one complete public tree while persistent data stays separate", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "replacement-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "replacement-island"));
+    await installFakeReact(projectDir);
+    const dataMarker = path.join(projectDir, ".sporades", "data", "persistent.txt");
+    await mkdir(path.dirname(dataMarker), { recursive: true });
+    await writeFile(dataMarker, "keep me");
+    const docker = await installFakeDocker(dir, "container-replacement");
+
+    const first = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(first.code, 0, first.stderr);
+    const firstBinding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
+    const firstRoot = path.join(projectDir, ".sporades", "build", ".public-trees", firstBinding.clientRelease.publicTree);
+    assert.match(await readFile(path.join(firstRoot, "client.js"), "utf8"), /Sporades Todos/);
+
+    const clientEntry = path.join(projectDir, "client", "index.tsx");
+    await writeFile(clientEntry, (await readFile(clientEntry, "utf8")).replaceAll("Sporades Todos", "Sporades Replacement Todos"));
+    const second = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(second.code, 0, second.stderr);
+    const secondBinding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
+    const secondRoot = path.join(projectDir, ".sporades", "build", ".public-trees", secondBinding.clientRelease.publicTree);
+    assert.notEqual(secondRoot, firstRoot);
+    assert.doesNotMatch(await readFile(path.join(firstRoot, "client.js"), "utf8"), /Replacement Todos/);
+    assert.match(await readFile(path.join(secondRoot, "client.js"), "utf8"), /Sporades Replacement Todos/);
+    assert.equal(await readFile(dataMarker, "utf8"), "keep me");
+
+    const calls = await docker.calls();
+    const runs = calls.filter((call) => call.args[0] === "run");
+    assert.equal(runs.length, 2);
+    assertVolume(runs[0].args, `${firstRoot}:/app/public:ro`);
+    assertVolume(runs[1].args, `${secondRoot}:/app/public:ro`);
+    assertVolume(runs[0].args, `${path.join(projectDir, ".sporades", "data")}:/app/data:rw`);
+    assertVolume(runs[1].args, `${path.join(projectDir, ".sporades", "data")}:/app/data:rw`);
+    const stopIndex = calls.findIndex((call, index) => index > calls.indexOf(runs[0]) && call.args[0] === "stop");
+    assert.ok(stopIndex > calls.indexOf(runs[0]));
+    assert.ok(calls.indexOf(runs[1]) > stopIndex);
+  });
+});
+
+test("unsafe Container public output fails validation before replacing the running session", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "unsafe-public-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "unsafe-public-island"));
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.services = { database: { kind: "database", engine: "libsql" } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
+    await writeFile(path.join(projectDir, ".sporades", "binding.json"), `${JSON.stringify({ containerId: "container-old", containerName: "sporades-unsafe-public-island" })}\n`);
+    const outside = path.join(projectDir, "outside-client.js");
+    await writeFile(outside, "unsafe replacement");
+
+    await withFakeCapsuleService(async ({ port }) => {
+      const docker = await installFakeDocker(dir, "container-never-started", { composePortOutput: `127.0.0.1:${port}`, composePsDelayMs: 750 });
+      const deploying = runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+      const candidate = await waitForPublicTreeCandidate(projectDir);
+      await rm(path.join(candidate, "client.js"));
+      await symlink(outside, path.join(candidate, "client.js"));
+      const result = await deploying;
+      assert.equal(result.code, 1);
+      const envelope = JSON.parse(result.stdout);
+      assert.equal(envelope.error.message, "Container public tree validation failed.");
+      assert.match(envelope.error.hint, /symbolic link|regular file/i);
+      assert.deepEqual(envelope.error.diagnostics, {
+        phase: "public",
+        framework: "react",
+        toolchain: "esbuild",
+        cause: "Invalid public tree.",
+      });
+      const calls = await docker.calls();
+      assert.equal(calls.some((call) => call.args[0] === "stop" || call.args[0] === "rm" || call.args[0] === "run"), false);
+      assert.equal(JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8")).containerId, "container-old");
+    });
+  });
+});
+
+test("missing and over-limit Container public inputs fail before replacement with guidance", async (t) => {
+  for (const scenario of ["missing", "over-limit"]) {
+    await t.test(scenario, async () => {
+      await withTempDir(async (dir) => {
+        const created = await runCli(["create", `invalid-${scenario}-island`, "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+        assert.equal(created.code, 0, created.stderr);
+        const projectDir = await realpath(path.join(dir, `invalid-${scenario}-island`));
+        await installFakeReact(projectDir);
+        await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
+        await writeFile(path.join(projectDir, ".sporades", "binding.json"), `${JSON.stringify({ containerId: "container-old" })}\n`);
+        if (scenario === "missing") await rm(path.join(projectDir, "index.html"));
+        else await writeFile(path.join(projectDir, "index.html"), Buffer.alloc(16 * 1024 * 1024 + 1, 1));
+        const docker = await installFakeDocker(dir, "container-never-started");
+        const result = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+        assert.equal(result.code, 1);
+        const envelope = JSON.parse(result.stdout);
+        if (scenario === "missing") {
+          assert.equal(envelope.error.message, "Missing HTML shell: index.html");
+          assert.match(envelope.error.hint, /Restore index\.html/);
+        } else {
+          assert.equal(envelope.error.message, "Invalid public tree.");
+          assert.match(envelope.error.hint, /index\.html exceeds the per-file public output limit/);
+        }
+        const calls = await docker.calls();
+        assert.equal(calls.some((call) => call.args[0] === "stop" || call.args[0] === "rm" || call.args[0] === "run"), false);
+        assert.equal(JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8")).containerId, "container-old");
+      });
+    });
+  }
 });
 
 test("sporades deploy enables configured SSH access for local Container sessions", async () => {
@@ -1121,6 +1268,66 @@ test("sporades deploy writes a server bundle that serves the capsule", async () 
       assert.match(await rootResponse.text(), /<div id="app"><\/div>/);
       const clientResponse = await waitForHttp(`http://127.0.0.1:${port}/client.js`, child);
       assert.match(await clientResponse.text(), /Sporades Todos/);
+    } finally {
+      await stopChild(child);
+    }
+  });
+});
+
+test("Container public-tree runtime serves nested built assets with stable MIME types", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "asset-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "asset-island"));
+    await installFakeReact(projectDir);
+    await writeFile(path.join(projectDir, "client", "lazy.ts"), "export const lazyValue = 'nested lazy chunk';\n");
+    await writeFile(path.join(projectDir, "client", "styles.css"), "@font-face { font-family: Capsule; src: url('./capsule.woff2'); } body { color: teal; }\n");
+    await writeFile(path.join(projectDir, "client", "capsule.woff2"), Buffer.from("fake-font"));
+    await writeFile(path.join(projectDir, "client", "capsule.png"), Buffer.from("fake-png"));
+    await writeFile(
+      path.join(projectDir, "client", "index.tsx"),
+      `${await readFile(path.join(projectDir, "client", "index.tsx"), "utf8")}\nimport './styles.css';\nimport logo from './capsule.png';\nconsole.log(logo);\nimport('./lazy').then((value) => console.log(value.lazyValue));\n`,
+    );
+    await writeFile(
+      path.join(projectDir, "index.html"),
+      '<!doctype html><html><head><link rel="stylesheet" href="/assets/client.css"></head><body><div id="app"></div><script type="module" src="/client.js"></script></body></html>\n',
+    );
+    const docker = await installFakeDocker(dir, "container-assets");
+    const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deployed.code, 0, deployed.stderr);
+
+    const activeTreeName = JSON.parse(await readFile(path.join(projectDir, ".sporades", "build", ".public-trees", "active.json"), "utf8")).tree;
+    const publicRoot = path.join(projectDir, ".sporades", "build", ".public-trees", activeTreeName);
+    const files = await relativeFiles(publicRoot);
+    const nestedJs = files.find((file) => /^assets\/lazy-.*\.js$/.test(file));
+    const nestedMap = files.find((file) => /^assets\/lazy-.*\.js\.map$/.test(file));
+    const nestedImage = files.find((file) => /^assets\/capsule-.*\.png$/.test(file));
+    const nestedFont = files.find((file) => /^assets\/capsule-.*\.woff2$/.test(file));
+    for (const expected of ["index.html", "client.js", "client.js.map", "assets/client.css", "assets/client.css.map", nestedJs, nestedMap, nestedImage, nestedFont]) {
+      assert.ok(expected && files.includes(expected), `Expected built public asset ${expected}; got ${files.join(", ")}`);
+    }
+
+    const port = await getAvailablePort();
+    const child = spawn(process.execPath, [path.join(projectDir, ".sporades", "build", "server.mjs")], {
+      cwd: projectDir,
+      env: { ...process.env, PORT: String(port), SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "asset-data.db") },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    try {
+      const expectedTypes = new Map([
+        ["/", "text/html; charset=utf-8"],
+        ["/client.js", "text/javascript; charset=utf-8"],
+        ["/assets/client.css", "text/css; charset=utf-8"],
+        [`/${nestedJs}`, "text/javascript; charset=utf-8"],
+        [`/${nestedMap}`, "application/json; charset=utf-8"],
+        [`/${nestedImage}`, "image/png"],
+        [`/${nestedFont}`, "font/woff2"],
+      ]);
+      for (const [urlPath, contentType] of expectedTypes) {
+        const response = await waitForHttp(`http://127.0.0.1:${port}${urlPath}`, child);
+        assert.equal(response.status, 200, urlPath);
+        assert.equal(response.headers.get("content-type"), contentType, urlPath);
+      }
     } finally {
       await stopChild(child);
     }
@@ -3496,10 +3703,9 @@ test("sporades deploy replaces the existing container binding before starting a 
     assert.equal(firstDockerRunCall(calls).args[0], "run");
 
     const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
-    assert.deepEqual(binding, {
-      containerId: "container-replacement",
-      containerName: "sporades-todo-island",
-    });
+    assert.equal(binding.containerId, "container-replacement");
+    assert.equal(binding.containerName, "sporades-todo-island");
+    assert.equal(binding.clientRelease.htmlEntry, "index.html");
   });
 });
 
@@ -3536,10 +3742,9 @@ test("sporades deploy --force ignores stale container bindings when the containe
     );
 
     const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
-    assert.deepEqual(binding, {
-      containerId: "container-replacement",
-      containerName: "sporades-todo-island",
-    });
+    assert.equal(binding.containerId, "container-replacement");
+    assert.equal(binding.containerName, "sporades-todo-island");
+    assert.equal(binding.clientRelease.htmlEntry, "index.html");
   });
 });
 

@@ -7,7 +7,7 @@ export function createServerBundleSource({ config, serverEnv, sealedServerEnv = 
     return `// Sporades server bundle
 import { createDecipheriv, createHash, createHash as createHash2, createHmac, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readFileSync as readFileSync2 } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 
@@ -59,6 +59,7 @@ database.log.emit({
   release: process.env.SPORADES_RELEASE_ID ? { id: process.env.SPORADES_RELEASE_ID } : null,
 });
 const websocketHub = createWebSocketHub(() => database);
+const runtimePublicRoot = resolveRuntimePublicRoot();
 
 const server = createServer(async (request, response) => {
   try {
@@ -82,17 +83,7 @@ const server = createServer(async (request, response) => {
       return;
     }
 
-    if (request.url === "/" || request.url === "/index.html") {
-      const html = await readRuntimeFile("index.html", path.join(process.cwd(), "index.html"));
-      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(injectPageConnectionToken(html, websocketHub.createConnectionToken()));
-      return;
-    }
-
-    if (request.url === "/client.js") {
-      const client = await readRuntimeFile("client.js", path.join(process.cwd(), ".sporades", "build", "client.js"));
-      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
-      response.end(client);
+    if (await routePublicAsset(request, response, runtimePublicRoot, websocketHub)) {
       return;
     }
 
@@ -131,14 +122,52 @@ const shutdown = async () => {
 process.on("SIGTERM", shutdown);
 process.on("SIGINT", shutdown);
 
-async function readRuntimeFile(containerFileName, fallbackPath) {
+function resolveRuntimePublicRoot() {
+  const mounted = path.join(process.cwd(), "public");
+  if (existsSync(path.join(mounted, "index.html"))) return mounted;
   try {
-    return await readFile(path.join(process.cwd(), containerFileName), "utf8");
-  } catch (error) {
-    if (error?.code !== "ENOENT") {
-      throw error;
-    }
-    return readFile(fallbackPath, "utf8");
+    const treesDir = path.join(process.cwd(), ".sporades", "build", ".public-trees");
+    const tree = JSON.parse(readFileSync(path.join(treesDir, "active.json"), "utf8"))?.tree;
+    if (/^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(tree)) return path.join(treesDir, tree);
+  } catch {}
+  return mounted;
+}
+
+async function routePublicAsset(request, response, publicRoot, hub) {
+  const rawPathname = String(request.url ?? "/").split("?", 1)[0];
+  if (/%2f|%5c/i.test(rawPathname)) return false;
+  let decoded;
+  try { decoded = decodeURIComponent(rawPathname); } catch { return false; }
+  if (!decoded.startsWith("/") || decoded.includes("\\\\") || decoded.includes("\\0")) return false;
+  const relativePath = decoded === "/" ? "index.html" : decoded.slice(1);
+  const segments = relativePath.split("/");
+  if (segments.some((segment) => !segment || segment === "." || segment === "..")) return false;
+  const filePath = path.join(publicRoot, ...segments);
+  const stats = await lstat(filePath).catch(() => null);
+  if (!stats?.isFile() || stats.isSymbolicLink()) return false;
+  const body = await readFile(filePath);
+  const html = relativePath === "index.html";
+  response.writeHead(200, { "content-type": publicContentType(relativePath) });
+  response.end(html ? injectPageConnectionToken(body.toString("utf8"), hub.createConnectionToken()) : body);
+  return true;
+}
+
+function publicContentType(relativePath) {
+  switch (path.extname(relativePath).toLowerCase()) {
+    case ".html": return "text/html; charset=utf-8";
+    case ".js": case ".mjs": return "text/javascript; charset=utf-8";
+    case ".css": return "text/css; charset=utf-8";
+    case ".json": case ".map": return "application/json; charset=utf-8";
+    case ".svg": return "image/svg+xml";
+    case ".png": return "image/png";
+    case ".jpg": case ".jpeg": return "image/jpeg";
+    case ".gif": return "image/gif";
+    case ".webp": return "image/webp";
+    case ".ico": return "image/x-icon";
+    case ".woff": return "font/woff";
+    case ".woff2": return "font/woff2";
+    case ".txt": return "text/plain; charset=utf-8";
+    default: return "application/octet-stream";
   }
 }
 
