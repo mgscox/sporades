@@ -49,6 +49,9 @@ for (const { framework, template } of [
   { framework: "preact", template: "blank" },
   { framework: "solid", template: "blank" },
   { framework: "solid", template: "todo" },
+  { framework: "solid", template: "guestbook" },
+  { framework: "solid", template: "photo-library" },
+  { framework: "solid", template: "campfire" },
   { framework: "vue", template: "blank" },
   { framework: "vue", template: "todo" },
   { framework: "vue", template: "guestbook" },
@@ -163,7 +166,7 @@ for (const { framework, template } of [
       fetched[kind] = { path: publicPath, bytes: Buffer.byteLength(body), mime: response.headers.get("content-type") };
     }
     const output = bodies.join("\n");
-    assert.match(output, ["vue", "svelte"].includes(framework) ? {
+    assert.match(output, ["solid", "vue", "svelte"].includes(framework) ? {
       blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
       "photo-library": /Photo Library/, campfire: /Campfire/,
     }[template] : template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);

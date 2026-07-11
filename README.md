@@ -126,8 +126,8 @@ Sporades currently includes:
 - Svelte/Vite project scaffolds across the complete template set, with native
   components and lazily observed stores. Campfire preserves identity-safe
   consent, caller-renewed Journey TTL state, and deterministic cleanup.
-- SolidJS/Vite `blank` and `todo` scaffolds with native JSX, signals, and
-  reactive-root cleanup.
+- SolidJS/Vite scaffolds across the complete template set, with native JSX,
+  signals, identity-safe Campfire consent, and reactive-root cleanup.
 - Local Dev sessions with rebuilds, WebSocket reconnects, SQLite persistence,
   logs, database inspection, auth helpers, and file storage.
 - Local Docker Container sessions for production-like staging tests.

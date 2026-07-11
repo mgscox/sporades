@@ -271,9 +271,6 @@ function parseCreateArgs(args) {
     if (framework === "solid" && toolchain !== "vite") {
         throw commandError(`Unsupported client framework/toolchain combination: solid/${toolchain}`, "Use SolidJS with Vite.");
     }
-    if (framework === "solid" && !["blank", "todo"].includes(template)) {
-        throw commandError(`Unsupported client template for SolidJS: ${template}`, "Use SolidJS with the blank or todo template.");
-    }
     if (!SUPPORTED_TEMPLATES.has(template)) {
         throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
     }

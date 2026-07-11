@@ -704,7 +704,7 @@ test("sporades create scaffolds an idiomatic Solid/Vite blank Capsule by default
   });
 });
 
-test("sporades create admits Solid/Vite todo and rejects unsupported Solid combinations structurally", async () => {
+test("sporades create admits every Solid/Vite template and rejects the unsupported toolchain structurally", async () => {
   await withTempDir(async (dir) => {
     const todo = await runCli(["create", "solid-todo", "--framework", "solid", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(todo.code, 0, todo.stderr || todo.stdout);
@@ -721,12 +721,19 @@ test("sporades create admits Solid/Vite todo and rejects unsupported Solid combi
       hint: "Use SolidJS with Vite.",
     });
 
-    const richer = await runCli(["create", "solid-guestbook", "--framework", "solid", "--template", "guestbook", "--no-install", "--no-git", "--json"], { cwd: dir });
-    assert.equal(richer.code, 1);
-    assert.deepEqual(JSON.parse(richer.stdout).error, {
-      message: "Unsupported client template for SolidJS: guestbook",
-      hint: "Use SolidJS with the blank or todo template.",
-    });
+    for (const [template, marker] of [["guestbook", /createMutation\("sign"\)/], ["photo-library", /files\.upload/], ["campfire", /createTypingPublisher/]]) {
+      const richer = await runCli(["create", `solid-${template}`, "--framework", "solid", "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(richer.code, 0, richer.stderr || richer.stdout);
+      const project = path.join(dir, `solid-${template}`);
+      const [richerApp, html, readme, agents, files] = await Promise.all([
+        readFile(path.join(project, "client", "App.tsx"), "utf8"), readFile(path.join(project, "index.html"), "utf8"),
+        readFile(path.join(project, "README.md"), "utf8"), readFile(path.join(project, "AGENTS.md"), "utf8"), readdir(path.join(project, "client")),
+      ]);
+      assert.match(richerApp, marker);
+      assert.match(readme, /SolidJS client/);
+      assert.match(agents, /SolidJS|Solid/);
+      assert.doesNotMatch(`${richerApp}\n${html}\n${files.join("\n")}`, /from "react|react-dom|cdn\.tailwindcss|components\/ui/);
+    }
   });
 });
 

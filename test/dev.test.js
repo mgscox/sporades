@@ -15,6 +15,7 @@ import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
 import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
 import { mountSvelteTemplate } from "./support/svelte-template-harness.js";
+import { mountSolidTemplate } from "./support/solid-template-harness.js";
 import { mountVueTemplate } from "./support/vue-template-harness.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 import { buildClientToolchain } from "../dist/client-toolchain.js";
@@ -450,6 +451,14 @@ async function createSvelteTemplate(dir, name, template) {
   assert.equal(created.code, 0, created.stderr);
   const projectDir = path.join(dir, name);
   await installSvelte(projectDir);
+  return projectDir;
+}
+
+async function createSolidTemplate(dir, name, template) {
+  const created = await runCli(["create", name, "--template", template, "--framework", "solid", "--no-install", "--no-git", "--json"], { cwd: dir });
+  assert.equal(created.code, 0, created.stderr || created.stdout);
+  const projectDir = path.join(dir, name);
+  await installProjectSolidToolchain(projectDir, repoRoot);
   return projectDir;
 }
 
@@ -1564,6 +1573,53 @@ test("Svelte Campfire serializes direct consent against an auth successor", asyn
   });
 });
 
+test("Solid Guestbook renders query state and drives its native mutation primitive", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createSolidTemplate(dir, "solid-guestbook-behavior", "guestbook");
+    let finishSign;
+    const signCalls = [];
+    const harness = await mountSolidTemplate(projectDir, {
+      session: sessionState(),
+      queries: { entries: { loading: true, data: null, error: null } },
+      mutations: { sign: { loading: false, data: null, error: null, async run(body) {
+        signCalls.push(body);
+        return new Promise((resolve) => { finishSign = resolve; });
+      } } },
+      auth: authStub(), files: {}, journey: {}, preferences: {},
+    });
+    try {
+      assert.match(harness.text(), /Loading/);
+      harness.setQuery("entries", { loading: false, data: null, error: { message: "Guestbook unavailable" } });
+      await harness.settle();
+      assert.match(harness.text(), /Guestbook unavailable/);
+      harness.setQuery("entries", { loading: false, error: null, data: [{ id: "entry-1", body: "All for one", authorName: "Athos", authorPicture: "", createdAt: "2026-07-11T12:00:00.000Z" }] });
+      await harness.settle();
+      assert.match(harness.text(), /Athos.*All for one/s);
+
+      const textarea = harness.find("textarea");
+      const form = harness.find("form");
+      await harness.setValue(textarea, "  One for all  ");
+      await harness.trigger(form, "submit");
+      assert.deepEqual(signCalls, ["One for all"]);
+      assert.equal(harness.state.counts.mutations.sign.runs, 1, "the template invokes createMutation().run rather than treating state as a store");
+      assert.equal(harness.find("button[type=submit]").disabled, true);
+      finishSign({ data: null, error: { message: "Signing failed" } });
+      await harness.settle();
+      assert.match(harness.text(), /Signing failed/);
+      assert.equal(textarea.value, "  One for all  ", "failed mutation preserves the draft");
+
+      await harness.trigger(form, "submit");
+      finishSign({ data: { id: "entry-2" }, error: null });
+      await harness.settle();
+      assert.equal(textarea.value, "", "successful mutation clears the rendered draft");
+    } finally {
+      await harness.unmount();
+      assert.equal(harness.state.counts.queries.entries.stopped, 1);
+      assert.equal(harness.state.counts.session.stopped, 1, "Solid root disposal owns auth cleanup");
+    }
+  });
+});
+
 test("Vue Guestbook renders query state and drives mutation loading, errors, and updates", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", "vue-guestbook-behavior", "--template", "guestbook", "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
@@ -1617,6 +1673,68 @@ test("Vue Guestbook renders query state and drives mutation loading, errors, and
       await succeeding;
       assert.equal(textarea.value, "", "successful mutation clears the rendered draft");
     } finally { harness.unmount(); }
+  });
+});
+
+test("Solid Photo Library keeps authenticated uploads private and drives explicit publication", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createSolidTemplate(dir, "solid-photo-behavior", "photo-library");
+    const calls = [];
+    const photo = { id: "photo-private", title: "Secret crown", status: "private", fileId: "file-private", imageUrl: "", publicUrlId: "", isPublic: false };
+    const mutation = (name) => ({ loading: false, data: null, error: null, async run(...args) {
+      calls.push([name, ...args]);
+      if (name.startsWith("updatePhoto")) {
+        if (name === "updatePhotoIsPublic") photo.isPublic = args[1];
+        if (name === "updatePhotoPublicUrlId") photo.publicUrlId = args[1];
+        if (name === "updatePhotoImageUrl") photo.imageUrl = args[1];
+        globalThis.__SPORADES_SOLID_TEMPLATE_HARNESS__.controls.queries.personalPhotos.publish({ loading: false, error: null, data: [{ ...photo }] });
+      }
+      return { data: null, error: null };
+    } });
+    const harness = await mountSolidTemplate(projectDir, {
+      session: sessionState(),
+      queries: { publicPhotos: { loading: false, data: [], error: null }, personalPhotos: { loading: false, data: [photo], error: null } },
+      mutations: Object.fromEntries(["recordPhoto", "updatePhotoIsPublic", "updatePhotoImageUrl", "updatePhotoPublicUrlId"].map((name) => [name, mutation(name)])),
+      auth: authStub(),
+      files: {
+        async upload(file) { calls.push(["upload", file.name]); return { id: `file-${file.name}`, name: file.name, type: file.type, size: file.size }; },
+        async publicUrl(fileId) { calls.push(["publicUrl", fileId]); return { id: `url-${fileId}`, url: `https://files.example/${fileId}` }; },
+        async revokePublicUrl(id) { calls.push(["revokePublicUrl", id]); return { data: null, error: null }; },
+      },
+      journey: {}, preferences: {},
+    });
+    try {
+      const fileInput = harness.find('input[type="file"]');
+      const form = harness.find("form");
+      await harness.trigger(fileInput, "change", { files: [{ name: "guest.png", type: "image/png", size: 10 }] });
+      await harness.trigger(form, "submit");
+      await harness.settle();
+      assert(calls.some(([name]) => name === "publicUrl"), "anonymous upload receives a public URL");
+
+      calls.length = 0;
+      harness.setSession({ ...sessionState(), auth: { userId: "google-user", provider: "google", displayName: "Aramis", isGuest: false, isAuthenticated: true } });
+      await harness.settle();
+      await harness.trigger(fileInput, "change", { files: [{ name: "private.png", type: "image/png", size: 11 }] });
+      await harness.trigger(form, "submit");
+      await harness.settle();
+      assert(calls.some(([name]) => name === "upload"));
+      assert.equal(calls.some(([name]) => name === "publicUrl"), false, "authenticated upload stays private by default");
+      assert.match(harness.text(), /Photo saved privately/);
+      assert.match(harness.text(), /My library.*Secret crown/s);
+
+      calls.length = 0;
+      await harness.trigger([...harness.findAll("button")].find((button) => button.textContent === "Make public"), "click");
+      await harness.settle();
+      assert.deepEqual(calls.map(([name]) => name), ["publicUrl", "updatePhotoImageUrl", "updatePhotoPublicUrlId", "updatePhotoIsPublic"]);
+      calls.length = 0;
+      await harness.trigger([...harness.findAll("button")].find((button) => button.textContent === "Make private"), "click");
+      await harness.settle();
+      assert.deepEqual(calls.map(([name]) => name), ["revokePublicUrl", "updatePhotoIsPublic", "updatePhotoImageUrl", "updatePhotoPublicUrlId"]);
+    } finally {
+      await harness.unmount();
+      assert.equal(harness.state.counts.queries.publicPhotos.stopped, 1);
+      assert.equal(harness.state.counts.queries.personalPhotos.stopped, 1);
+    }
   });
 });
 
@@ -1676,6 +1794,140 @@ test("Vue Photo Library enforces private auth uploads and explicit publication l
       assert.deepEqual(calls.map(([name]) => name), ["revokePublicUrl", "updatePhotoIsPublic", "updatePhotoImageUrl", "updatePhotoPublicUrlId"]);
       assert.doesNotMatch(harness.text(), /dummy-secret|GOOGLE_CLIENT_SECRET|credential/i);
     } finally { harness.unmount(); }
+  });
+});
+
+test("Solid Campfire drives messages, preferences, consented TTL activity, and root cleanup", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createSolidTemplate(dir, "solid-campfire-behavior", "campfire");
+    const calls = [];
+    let journeySubscriber = () => {};
+    const state = campfireHarnessState(calls, { subscribe(callback) { journeySubscriber = callback; return { unsubscribe() { calls.push(["unsubscribe"]); } }; } });
+    const harness = await mountSolidTemplate(projectDir, state);
+    try {
+      harness.setSession({ ...sessionState(), auth: { userId: "athos-user", provider: "email", displayName: "Athos", isGuest: false, isAuthenticated: true } });
+      await harness.settle();
+      assert(calls.some(([name]) => name === "preferences.get"));
+      assert(calls.some(([name, value]) => name === "journey.set" && value.status === "reading" && value.ttlSeconds === 12));
+      assert.equal(harness.find('input[type="checkbox"]').checked, true);
+
+      journeySubscriber({ data: { type: "snapshot", states: [{ sessionId: "p1", userId: "porthos-user", status: "reading", metadata: { channel: "ideas" } }] } });
+      await harness.settle();
+      assert.match(harness.text(), /A Musketeer is reading #ideas/);
+
+      const messageInput = harness.find("#message");
+      await harness.setValue(messageInput, "Protect the crown");
+      assert(calls.some(([name, value]) => name === "journey.set" && value.status === "typing" && value.ttlSeconds === 4));
+      await harness.trigger(harness.find("form"), "submit");
+      await harness.settle();
+      assert(calls.some(([name, input]) => name === "sendMessage" && input.body === "Protect the crown"));
+      assert(calls.some(([name, value]) => name === "journey.set" && value.status === "posted" && value.ttlSeconds === 8));
+
+      const share = harness.find('input[type="checkbox"]');
+      share.checked = false;
+      await harness.trigger(share, "change");
+      await harness.settle();
+      assert(calls.some(([name, value]) => name === "preferences.update" && value.campfireShareActivity === false));
+      harness.setSession({ ...sessionState(), auth: { userId: "porthos-user", provider: "email", displayName: "Porthos", isGuest: false, isAuthenticated: true } });
+      await harness.settle();
+      assert(calls.some(([name]) => name === "journey.disable"), "auth successor retires the previous owner's consent");
+    } finally {
+      await harness.unmount();
+      assert(calls.some(([name]) => name === "unsubscribe"), "root cleanup releases Journey observation");
+      assert.equal(harness.state.counts.queries.messagesGeneral.stopped, 1);
+      assert.equal(harness.state.counts.session.stopped, 1);
+    }
+  });
+});
+
+test("Solid Campfire stale preference restore retires deferred activity without touching successor state", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createSolidTemplate(dir, "solid-campfire-race", "campfire");
+    const calls = [];
+    let releaseFirstSet, firstSetStarted;
+    const firstSet = new Promise((resolve) => { firstSetStarted = resolve; });
+    let setCount = 0;
+    const state = campfireHarnessState(calls, { async set(value) {
+      const userId = globalThis.__SPORADES_SOLID_TEMPLATE_HARNESS__.controls.session.value.auth?.userId;
+      calls.push(["journey.set", value, userId]);
+      if (++setCount === 1) { firstSetStarted(); await new Promise((resolve) => { releaseFirstSet = resolve; }); }
+      return { data: null, error: null };
+    } });
+    state.preferences.get = async () => {
+      const userId = globalThis.__SPORADES_SOLID_TEMPLATE_HARNESS__.controls.session.value.auth?.userId;
+      calls.push(["preferences.get", userId]);
+      return { data: { preferences: { campfireShareActivity: userId === "athos-user" } }, error: null };
+    };
+    const harness = await mountSolidTemplate(projectDir, state);
+    try {
+      harness.setSession({ ...sessionState(), auth: { userId: "athos-user", provider: "email", displayName: "Athos", isGuest: false, isAuthenticated: true } });
+      await firstSet;
+      harness.setSession({ ...sessionState(), auth: { userId: "porthos-user", provider: "email", displayName: "Porthos", isGuest: false, isAuthenticated: true } });
+      await harness.settle();
+      const disables = calls.filter(([name]) => name === "journey.disable").length;
+      releaseFirstSet();
+      await harness.settle();
+      assert.equal(calls.filter(([name]) => name === "journey.disable").length, disables + 1);
+      assert.equal(harness.find('input[type="checkbox"]').checked, false);
+      assert.equal(calls.filter(([name, _value, userId]) => name === "journey.set" && userId === "porthos-user").length, 0);
+      assert(calls.some(([name, userId]) => name === "preferences.get" && userId === "porthos-user"));
+    } finally { await harness.unmount(); }
+  });
+});
+
+for (const deferredStage of ["journey.enable", "journey.set", "preferences.update"]) test(`Solid Campfire direct consent is identity-safe while ${deferredStage} is pending`, async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createSolidTemplate(dir, `solid-campfire-direct-${deferredStage.replaceAll(".", "-")}`, "campfire");
+    const calls = [];
+    let releaseStage, markStageStarted;
+    const stageStarted = new Promise((resolve) => { markStageStarted = resolve; });
+    const waitAtStage = async (stage) => { if (stage === deferredStage) { markStageStarted(); await new Promise((resolve) => { releaseStage = resolve; }); } };
+    const userId = () => globalThis.__SPORADES_SOLID_TEMPLATE_HARNESS__.controls.session.value.auth?.userId;
+    const state = campfireHarnessState(calls, {
+      async enable(options) { calls.push(["journey.enable", options, userId()]); await waitAtStage("journey.enable"); return { data: null, error: null }; },
+      async set(value) { calls.push(["journey.set", value, userId()]); await waitAtStage("journey.set"); return { data: null, error: null }; },
+    });
+    state.session.auth = { userId: "athos-user", provider: "email", displayName: "Athos", isGuest: false, isAuthenticated: true };
+    state.preferences.get = async () => { calls.push(["preferences.get", userId()]); return { data: { preferences: { campfireShareActivity: false } }, error: null }; };
+    state.preferences.update = async (value) => { calls.push(["preferences.update", value, userId()]); await waitAtStage("preferences.update"); return { data: { preferences: value }, error: null }; };
+    const harness = await mountSolidTemplate(projectDir, state);
+    try {
+      await harness.settle();
+      const share = harness.find('input[type="checkbox"]');
+      share.checked = true;
+      await harness.trigger(share, "change");
+      await stageStarted;
+      harness.setSession({ ...sessionState(), auth: { userId: "porthos-user", provider: "email", displayName: "Porthos", isGuest: false, isAuthenticated: true } });
+      await harness.settle();
+      assert.equal(share.checked, false, "pending consent stays hidden");
+      assert.equal(calls.filter(([name]) => name === "journey.disable").length, 0, "retirement waits for the owned action");
+      releaseStage();
+      await harness.settle();
+      assert.equal(share.checked, false);
+      assert.equal(calls.filter(([name]) => name === "journey.disable").length, 1);
+      assert.equal(calls.filter(([name, _value, owner]) => name === "journey.set" && owner === "porthos-user").length, 0);
+      assert.equal(calls.filter(([name, _value, owner]) => name === "preferences.update" && owner === "porthos-user").length, 0);
+      assert(calls.some(([name, owner]) => name === "preferences.get" && owner === "porthos-user"));
+    } finally { await harness.unmount(); }
+  });
+});
+
+for (const failureStage of ["journey.set", "preferences.update"]) test(`Solid Campfire direct consent handles structured ${failureStage} errors`, async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createSolidTemplate(dir, `solid-campfire-error-${failureStage.replaceAll(".", "-")}`, "campfire");
+    const calls = [];
+    const state = campfireHarnessState(calls, { async set(value) { calls.push(["journey.set", value]); return failureStage === "journey.set" ? { data: null, error: new Error("Journey publication failed") } : { data: null, error: null }; } });
+    state.session.auth = { userId: "athos-user", provider: "email", displayName: "Athos", isGuest: false, isAuthenticated: true };
+    state.preferences.get = async () => ({ data: { preferences: { campfireShareActivity: false } }, error: null });
+    state.preferences.update = async (value) => { calls.push(["preferences.update", value]); return failureStage === "preferences.update" ? { data: null, error: new Error("Preference save failed") } : { data: { preferences: value }, error: null }; };
+    const harness = await mountSolidTemplate(projectDir, state);
+    try {
+      const share = harness.find('input[type="checkbox"]'); share.checked = true; await harness.trigger(share, "change"); await harness.settle();
+      assert.equal(share.checked, false);
+      assert.match(harness.text(), failureStage === "journey.set" ? /Journey publication failed/ : /Preference save failed/);
+      assert.equal(calls.filter(([name]) => name === "journey.disable").length, 1);
+      if (failureStage === "journey.set") assert.equal(calls.some(([name]) => name === "preferences.update"), false);
+    } finally { await harness.unmount(); }
   });
 });
 
@@ -2174,12 +2426,13 @@ test("sporades dev owns Preact Vite failure recovery and full-page refresh", asy
   });
 });
 
-for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good Solid ${template} output and recovers through acknowledged refresh`, async () => {
+for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire"]) test(`sporades dev preserves last-good Solid ${template} output and recovers through acknowledged refresh`, async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", `solid-${template}-dev`, "--template", template, "--framework", "solid", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(created.code, 0, created.stderr);
     const projectDir = path.join(dir, `solid-${template}-dev`);
     await installProjectSolidToolchain(projectDir, repoRoot);
+    if (template === "photo-library") await writeFile(path.join(projectDir, ".env.sporades.server"), "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n");
     const configPath = path.join(projectDir, "sporades.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.dev.port = 0;

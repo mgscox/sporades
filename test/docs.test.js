@@ -125,10 +125,10 @@ test("published docs and API reference describe the admitted SolidJS client cont
     readProjectFile("src/types/client.d.ts"),
     readProjectFile("docs/api/functions/client.createSolidPrimitives.html"),
   ]);
-  assert.match(readme, /SolidJS\/Vite `blank` and `todo`/);
-  assert.match(prd, /SolidJS\/Vite[\s\S]*`blank` and `todo`/);
+  assert.match(readme, /SolidJS\/Vite scaffolds across the complete template set/);
+  assert.match(prd, /SolidJS\/Vite admission across every supported template/);
   assert.match(prd, /createSolidPrimitives/);
-  assert.match(guide, /`solid`[\s\S]*SolidJS selects Vite[\s\S]*`blank`[\s\S]*`todo`/);
+  assert.match(guide, /`solid`[\s\S]*SolidJS also[\s\S]*support the complete template set/);
   assert.match(clientTypes, /createSolidPrimitives[\s\S]*SporadesSolidPrimitives/);
   assert.match(api, /Bind root-owned SolidJS signals and cleanup/);
 });

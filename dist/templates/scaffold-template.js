@@ -83,7 +83,7 @@ export function scaffoldFiles(options) {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${escapeHtml(options.name)}</title>${options.template === "campfire" && !["vue", "svelte"].includes(framework) ? `
+    <title>${escapeHtml(options.name)}</title>${options.template === "campfire" && !["solid", "vue", "svelte"].includes(framework) ? `
     <script src="https://cdn.tailwindcss.com"></script>` : ""}
   </head>
   <body>
@@ -96,18 +96,25 @@ export function scaffoldFiles(options) {
     };
 }
 function solidTemplateFiles(options, files) {
-    const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => file !== "client/index.tsx"));
+    const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));
+    const apps = {
+        todo: solidTodoAppTemplate,
+        guestbook: solidGuestbookAppTemplate,
+        "photo-library": solidPhotoLibraryAppTemplate,
+        campfire: solidCampfireAppTemplate,
+    };
+    const readme = `${sharedFiles["README.md"] ?? ""}\n## SolidJS client\n\nThe browser renders from \`client/index.tsx\`; author native Solid JSX in \`client/App.tsx\` and bind Sporades state through the Solid primitives in \`client/sporades.ts\`.\n`.replace(/Tailwind is loaded from its browser CDN[^\n]+\n/, "Campfire's Solid component owns its CSS and needs no browser CDN or React component package.\n");
     return {
         ...sharedFiles,
-        "README.md": `${sharedFiles["README.md"] ?? ""}\n## SolidJS client\n\nThe browser renders from \`client/index.tsx\`; author native Solid JSX in \`client/App.tsx\` and bind Sporades state through the Solid primitives in \`client/sporades.ts\`.\n`,
+        "README.md": readme,
         "tsconfig.json": `${JSON.stringify({ compilerOptions: {
                 target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true, noEmit: true,
                 jsx: "preserve", jsxImportSource: "solid-js", lib: ["ES2022", "DOM", "DOM.Iterable"], types: ["vite/client"], skipLibCheck: true,
             } }, null, 2)}\n`,
         "client/index.tsx": `import { render } from "solid-js/web";\nimport App from "./App";\nimport "./styles.css";\n\nrender(() => <App />, document.getElementById("app")!);\n`,
         "client/sporades.ts": `import { createSignal, onCleanup } from "solid-js";\nimport { createSolidPrimitives } from "sporades/client";\n\nexport const { createAuth, createMutation, createQuery } = createSolidPrimitives({ createSignal, onCleanup });\n`,
-        "client/App.tsx": options.template === "todo" ? solidTodoAppTemplate() : solidBlankAppTemplate(),
-        "client/styles.css": `:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #15211d; background: #f2f7f4; }\nbody { margin: 0; }\nmain { width: min(42rem, calc(100% - 2rem)); margin: 5rem auto; }\n.mark { width: 2rem; height: 2rem; }\n`,
+        "client/App.tsx": (apps[options.template] ?? solidBlankAppTemplate)(),
+        "client/styles.css": solidStyles(options.template),
         "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#2c8c69"/></svg>\n`,
     };
 }
@@ -116,6 +123,120 @@ function solidBlankAppTemplate() {
 }
 function solidTodoAppTemplate() {
     return `import { createSignal, For, Show } from "solid-js";\nimport { auth } from "sporades/client";\nimport type { Todo } from "../shared/types";\nimport { createAuth, createMutation, createQuery } from "./sporades";\nimport mark from "./sporades-mark.svg";\n\nexport default function App() {\n  const session = createAuth();\n  const todos = createQuery<Todo[]>("todos");\n  const addTodo = createMutation("addTodo");\n  const [text, setText] = createSignal("");\n\n  async function submit(event: SubmitEvent) {\n    event.preventDefault();\n    const value = text().trim();\n    if (!value) return;\n    const result = await addTodo.run(value);\n    if (!result.error) setText("");\n  }\n\n  return (\n    <main>\n      <header><img class="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>\n      <Show when={session.state().providers.google?.enabled && !session.isAuthenticated()}>\n        <button type="button" onClick={() => auth.signIn("google")}>Sign in with Google</button>\n      </Show>\n      <form onSubmit={submit}>\n        <input aria-label="Todo" value={text()} onInput={(event) => setText(event.currentTarget.value)} />\n        <button disabled={addTodo.state().loading}>Add</button>\n      </form>\n      <Show when={!todos().loading} fallback={<p>Loading…</p>}>\n        <Show when={!todos().error} fallback={<p role="alert">{todos().error?.message}</p>}>\n          <ul><For each={todos().data ?? []}>{(todo) => <li>{todo.text}</li>}</For></ul>\n        </Show>\n      </Show>\n    </main>\n  );\n}\n`;
+}
+function solidGuestbookAppTemplate() {
+    return `import { createSignal, For, Show } from "solid-js";
+import { auth } from "sporades/client";
+import { createAuth, createMutation, createQuery } from "./sporades";
+import mark from "./sporades-mark.svg";
+
+export default function App() {
+  const session = createAuth();
+  const entries = createQuery<any[]>("entries");
+  const sign = createMutation("sign");
+  const [body, setBody] = createSignal("");
+  const [authError, setAuthError] = createSignal("");
+  const maxLength = 280;
+  const initials = (name: string) => name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?";
+  async function signIn() { setAuthError(""); const result = await auth.signIn("google"); if (result.error) setAuthError(result.error.message); }
+  async function signOut() { setAuthError(""); const result = await auth.signOut(); if (result.error) setAuthError(result.error.message); }
+  async function submit(event: SubmitEvent) {
+    event.preventDefault();
+    const message = body().trim();
+    if (!message || message.length > maxLength) return;
+    const result = await sign.run(message);
+    if (!result.error) setBody("");
+  }
+  return <main class="shell">
+    <section class="intro"><div><img class="mark" src={mark} alt="" /><p class="eyebrow">Sporades guestbook</p><h1>Leave a note from this island.</h1></div>
+      <div class="auth-panel"><span>{session.state().auth?.displayName ?? "Anonymous"}</span><Show when={!session.isAuthenticated()} fallback={<button class="secondary" type="button" onClick={signOut}>Sign out</button>}><button type="button" onClick={signIn}>Sign in with Google</button></Show><Show when={authError()}><p class="error">{authError()}</p></Show></div></section>
+    <form onSubmit={submit}><textarea value={body()} maxLength={maxLength} placeholder="Write something kind, sharp, or strangely memorable." onInput={(event) => setBody(event.currentTarget.value)} /><div class="row"><span>{maxLength - body().length} characters left</span><button type="submit" disabled={!body().trim() || sign.state().loading}>Sign guestbook</button></div><Show when={sign.state().error}><p class="error">{sign.state().error?.message}</p></Show></form>
+    <Show when={!entries().loading} fallback={<p>Loading…</p>}><Show when={!entries().error} fallback={<p class="error" role="alert">{entries().error?.message}</p>}><section class="entries"><For each={entries().data ?? []}>{(entry) => <article><Show when={entry.authorPicture} fallback={<span class="badge">{initials(entry.authorName)}</span>}><img src={entry.authorPicture} alt="" /></Show><div><strong>{entry.authorName}</strong><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time><p>{entry.body}</p></div></article>}</For></section></Show></Show>
+  </main>;
+}
+`;
+}
+function solidPhotoLibraryAppTemplate() {
+    return `import { createSignal, For, Show } from "solid-js";
+import { auth, files } from "sporades/client";
+import { createAuth, createMutation, createQuery } from "./sporades";
+import mark from "./sporades-mark.svg";
+
+export default function App() {
+  const session = createAuth();
+  const publicPhotos = createQuery<any[]>("publicPhotos"), personalPhotos = createQuery<any[]>("personalPhotos");
+  const recordPhoto = createMutation("recordPhoto"), updatePhotoIsPublic = createMutation("updatePhotoIsPublic"), updatePhotoImageUrl = createMutation("updatePhotoImageUrl"), updatePhotoPublicUrlId = createMutation("updatePhotoPublicUrlId");
+  const [title, setTitle] = createSignal(""), [selectedFile, setSelectedFile] = createSignal<File | null>(null), [publish, setPublish] = createSignal(false), [message, setMessage] = createSignal("");
+  const isGoogleUser = () => session.state().auth?.provider === "google";
+  async function signIn() { setMessage(""); const result = await auth.signIn("google"); if (result.error) setMessage(result.error.message); }
+  async function signOut() { setMessage(""); const result = await auth.signOut(); if (result.error) setMessage(result.error.message); }
+  async function requireMutation(mutation: any, ...args: any[]) { const result = await mutation.run(...args); if (result.error) throw result.error; return result; }
+  async function submit(event: SubmitEvent) {
+    event.preventDefault(); const selected = selectedFile(); if (!selected) return; setMessage("Uploading...");
+    try { const file = await files.upload(selected); const shouldPublish = !session.isAuthenticated() || publish(); const publicUrl = shouldPublish ? await files.publicUrl(file.id, { noExpiry: true }) : null; const result = await recordPhoto.run({ title: title(), file, isPublic: shouldPublish, publicUrl }); if (result.error) { setMessage(result.error.message); return; } setTitle(""); setSelectedFile(null); setPublish(false); setMessage(shouldPublish ? "Photo added to the public gallery." : "Photo saved privately."); } catch (error) { setMessage(error instanceof Error ? error.message : "Upload failed."); }
+  }
+  async function makePublic(photo: any) { setMessage(""); try { const publicUrl = await files.publicUrl(photo.fileId, { noExpiry: true }); await requireMutation(updatePhotoImageUrl, photo.id, publicUrl.url); await requireMutation(updatePhotoPublicUrlId, photo.id, publicUrl.id); await requireMutation(updatePhotoIsPublic, photo.id, true); } catch (error) { setMessage(error instanceof Error ? error.message : "Could not publish photo."); } }
+  async function makePrivate(photo: any) { setMessage(""); try { if (photo.publicUrlId) await files.revokePublicUrl(photo.publicUrlId); await requireMutation(updatePhotoIsPublic, photo.id, false); await requireMutation(updatePhotoImageUrl, photo.id, ""); await requireMutation(updatePhotoPublicUrlId, photo.id, ""); } catch (error) { setMessage(error instanceof Error ? error.message : "Could not hide photo."); } }
+  return <main class="shell"><header><div><img class="mark" src={mark} alt="" /><p>Sporades Storage</p><h1>Photo Library</h1></div><div><span>{session.state().auth?.displayName ?? "Anonymous"}</span><Show when={isGoogleUser()} fallback={<button type="button" onClick={signIn}>Sign in with Google</button>}><button type="button" onClick={signOut}>Sign out</button></Show></div></header>
+    <form onSubmit={submit}><input value={title()} onInput={(event) => setTitle(event.currentTarget.value)} placeholder="Caption" /><input type="file" accept="image/*" onChange={(event) => setSelectedFile(event.currentTarget.files?.[0] ?? null)} /><label><input type="checkbox" checked={!session.isAuthenticated() || publish()} disabled={!session.isAuthenticated()} onChange={(event) => setPublish(event.currentTarget.checked)} />{session.isAuthenticated() ? "Publish to gallery" : "Anonymous uploads are public"}</label><button type="submit" disabled={!selectedFile() || recordPhoto.state().loading}>Upload photo</button><Show when={message()}><p>{message()}</p></Show></form>
+    <section><h2>Public gallery</h2><Show when={publicPhotos().error}><p role="alert">{publicPhotos().error?.message}</p></Show><div class="grid"><For each={publicPhotos().data ?? []}>{(photo) => <article><img src={photo.imageUrl} alt={photo.title} /><strong>{photo.title}</strong><span>{photo.ownerName}</span></article>}</For></div></section>
+    <Show when={isGoogleUser()}><section><h2>My library</h2><div class="list"><For each={personalPhotos().data ?? []}>{(photo) => <article class="library"><div><strong>{photo.title}</strong><span>{photo.status}</span></div><Show when={photo.isPublic} fallback={<button type="button" onClick={() => makePublic(photo)}>Make public</button>}><button type="button" onClick={() => makePrivate(photo)}>Make private</button></Show></article>}</For></div></section></Show>
+  </main>;
+}
+`;
+}
+function solidCampfireAppTemplate() {
+    return `import { createEffect, createMemo, createSignal, For, onCleanup } from "solid-js";
+import { auth, journey, preferences } from "sporades/client";
+import { createAuth, createMutation, createQuery } from "./sporades";
+import { createTypingPublisher } from "./journey-typing";
+import mark from "./sporades-mark.svg";
+
+export default function App() {
+  const musketeers = [{ key: "athos", name: "Athos", email: "athos@campfire.example" }, { key: "porthos", name: "Porthos", email: "porthos@campfire.example" }, { key: "aramis", name: "Aramis", email: "aramis@campfire.example" }, { key: "dartagnan", name: "d'Artagnan", email: "dartagnan@campfire.example" }];
+  const channels = ["general", "ideas", "random", "protect-the-crown"], password = "all-for-one-campfire";
+  const session = createAuth(), profiles = createQuery<any[]>("profiles");
+  const channelQueries = { general: createQuery<any[]>("messagesGeneral"), ideas: createQuery<any[]>("messagesIdeas"), random: createQuery<any[]>("messagesRandom"), "protect-the-crown": createQuery<any[]>("messagesProtectTheCrown") };
+  const sendMessage = createMutation("sendMessage"), toggleReaction = createMutation("toggleReaction"), seedCampfire = createMutation("seedCampfire"), registerFixture = createMutation("registerFixture");
+  const [channel, setChannel] = createSignal("general"), [draft, setDraft] = createSignal(""), [notice, setNotice] = createSignal(""), [sharing, setSharing] = createSignal(false), [activities, setActivities] = createSignal<any[]>([]), [fixturesPrepared, setFixturesPrepared] = createSignal(false);
+  const messages = createMemo(() => channelQueries[channel() as keyof typeof channelQueries]());
+  const typingPublisher = createTypingPublisher((state: any) => journey.set(state));
+  let generation = 0, owner: number | null = null, tail = Promise.resolve(), fixturePreparationActive = false;
+  const current = (value: number, userId: string) => value === generation && session.state().auth?.userId === userId;
+  async function lane<T>(action: () => Promise<T>) { const before = tail; let release = () => {}; tail = new Promise<void>((resolve) => { release = resolve; }); await before; try { return await action(); } finally { release(); } }
+  async function retire(expected: number | null = null) { typingPublisher.dispose(); setSharing(false); if (owner === null || (expected !== null && owner !== expected)) return; owner = null; const result = await journey.disable(); if (result?.error) setNotice(result.error.message); }
+  async function enable(value: number, userId: string, expose = true) { const result = await journey.enable({ capture: { navigation: false, focus: false, interactions: false } }); if (result.error) { setNotice(result.error.message); return false; } owner = value; if (!current(value, userId)) { await retire(value); return false; } const published = await journey.set({ status: "reading", metadata: { channel: channel() }, ttlSeconds: 12 }); if (published?.error) { setNotice(published.error.message); await retire(value); return false; } if (!current(value, userId)) { await retire(value); return false; } if (expose) setSharing(true); return true; }
+  async function authChanged(userId: string | undefined, previousUserId: string | undefined) { const value = ++generation; await lane(async () => { if (previousUserId && previousUserId !== userId) await retire(); if (!userId || session.state().auth?.isGuest || fixturePreparationActive || !current(value, userId)) return; const stored = await preferences.get(); if (!current(value, userId) || stored.error || stored.data.preferences.campfireShareActivity !== true) return; if (await enable(value, userId) && current(value, userId)) setNotice("Activity sharing restored for this Musketeer."); }); }
+  async function setShare(enabled: boolean) { const userId = session.state().auth?.userId, value = ++generation; setSharing(false); if (!userId) { setNotice("Sign in before sharing activity."); return; } await lane(async () => { if (!current(value, userId)) return; if (enabled) { if (!await enable(value, userId, false) || !current(value, userId)) { await retire(value); return; } } else { await retire(); if (!current(value, userId)) return; } if (!current(value, userId)) { await retire(value); return; } const saved = await preferences.update({ campfireShareActivity: enabled }); if (saved?.error) { setNotice(saved.error.message); if (enabled) await retire(value); return; } if (!current(value, userId)) { if (enabled) await retire(value); return; } setSharing(enabled); }); }
+  function isLocalDemoOrigin(hostname = window.location.hostname) { return ["localhost", "127.0.0.1", "::1"].includes(hostname); }
+  async function prepareFixtures(people = musketeers) { fixturePreparationActive = true; ++generation; await lane(() => retire()); for (const person of people) { let result = await auth.signUp("email", { email: person.email, password, name: person.name }); if (result.error && /already|exists|registered/i.test(result.error.message)) result = await auth.signIn("email", { email: person.email, password }); if (result.error) { setNotice("Could not prepare " + person.name + ": " + result.error.message); fixturePreparationActive = false; return; } const registered = await registerFixture.run(person.key); if (registered.error) { setNotice(registered.error.message); fixturePreparationActive = false; return; } await lane(() => retire()); await auth.signOut(); } fixturePreparationActive = false; const seeded = await seedCampfire.run(); setNotice(seeded.error ? seeded.error.message : "Development-only fixtures ready."); }
+  async function choose(next: string) { typingPublisher.dispose(); setChannel(next); if (sharing()) await journey.set({ status: "reading", metadata: { channel: next }, ttlSeconds: 12 }); }
+  function compose() { if (sharing()) typingPublisher.input(draft(), channel()); }
+  async function submit(event: SubmitEvent) { event.preventDefault(); const result = await sendMessage.run({ channel: channel(), body: draft() }); if (result.error) { setNotice(result.error.message); return; } setDraft(""); if (sharing()) { typingPublisher.dispose(); await journey.set({ status: "posted", metadata: { channel: channel() }, ttlSeconds: 8 }); } }
+  async function react(messageId: string, kind: string) { const result = await toggleReaction.run({ messageId, kind }); if (result.error) { setNotice(result.error.message); return; } if (sharing()) await journey.set({ status: kind === "up" ? "liked" : "disliked", metadata: { channel: channel() }, ttlSeconds: 8 }); }
+  async function switchTo(person: any) { ++generation; await lane(() => retire()); await auth.signOut(); const result = await auth.signIn("email", { email: person.email, password }); setNotice(result.error ? result.error.message : "Signed in as " + person.name + ". Restoring activity preference…"); }
+  function apply(currentActivities: any[], event: any) { const data = event?.data ?? event; if (data?.type === "snapshot") return data.states ?? []; if (data?.type === "removed" || data?.type === "expired") return currentActivities.filter((item) => item.sessionId !== data.state?.sessionId); return data?.state ? [...currentActivities.filter((item) => item.sessionId !== data.state.sessionId), data.state] : currentActivities; }
+  function activityText(item: any) { const name = (profiles().data ?? []).find((profile: any) => profile.userId === item.userId)?.name ?? "A Musketeer", place = item.metadata?.channel ?? "campfire"; return item.status === "posted" ? name + " posted a message in #" + place : item.status === "liked" ? name + " liked a message in #" + place : item.status === "disliked" ? name + " disliked a message in #" + place : name + " is " + item.status + " #" + place; }
+  function reactionCount(message: any, kind: string) { return Object.keys(message.reactions ?? {}).filter((key) => key.endsWith(":" + kind)).length; }
+  createEffect<string | undefined>((previousUserId) => { const userId = session.state().auth?.userId; if (userId !== previousUserId) void authChanged(userId, previousUserId); return userId; }, undefined);
+  createEffect(() => { const value = profiles().data; if (fixturesPrepared() || !Array.isArray(value)) return; setFixturesPrepared(true); if (isLocalDemoOrigin()) void prepareFixtures(musketeers.filter((person) => !new Set(value.map((profile: any) => profile.key)).has(person.key))); });
+  const subscription = journey.subscribe((event: any) => setActivities((currentActivities) => apply(currentActivities, event)));
+  onCleanup(() => { subscription.unsubscribe(); ++generation; void lane(() => retire()); });
+  return <main class="campfire"><aside><img class="mark" src={mark} alt="" /><h1>🔥 Campfire</h1><nav><For each={channels}>{(slug) => <button classList={{ active: channel() === slug }} onClick={() => choose(slug)}># {slug}</button>}</For></nav><p>Development-only Musketeer identities. Never expose known credentials publicly.</p></aside>
+    <section class="conversation"><header><h2># {channel()}</h2><p role="status">{notice()}</p></header><div class="messages"><For each={messages().data ?? []}>{(message) => <article><strong>{message.authorName}</strong><time>{new Date(message.createdAt).toLocaleString()}</time><p>{message.body}</p><button disabled={toggleReaction.state().loading} aria-label={"Thumbs up: " + reactionCount(message, "up")} onClick={() => react(message.id, "up")}>👍 {reactionCount(message, "up")}</button><button disabled={toggleReaction.state().loading} aria-label={"Thumbs down: " + reactionCount(message, "down")} onClick={() => react(message.id, "down")}>👎 {reactionCount(message, "down")}</button></article>}</For></div><form onSubmit={submit}><input id="message" value={draft()} onInput={(event) => { setDraft(event.currentTarget.value); compose(); }} placeholder={"Message #" + channel()} /><button disabled={sendMessage.state().loading || !draft().trim()}>Send</button></form></section>
+    <aside><h2>What's happening</h2><label><input type="checkbox" checked={sharing()} onChange={(event) => { const enabled = event.currentTarget.checked; event.currentTarget.checked = sharing(); void setShare(enabled); }} />Share my activity</label><p>Shares reading, typing, posting, likes, dislikes, and channel. Never drafts, messages, URLs, query strings, emails, passwords, message IDs, or keystrokes.</p><ul><For each={activities()}>{(item) => <li>{activityText(item)}</li>}</For></ul><h3>Switch Musketeer</h3><For each={musketeers}>{(person) => <button onClick={() => switchTo(person)}>{person.name}</button>}</For></aside></main>;
+}
+`;
+}
+function solidStyles(template) {
+    const base = `:root{font-family:Inter,ui-sans-serif,system-ui,sans-serif;color:#15211d;background:#f2f7f4}body{margin:0}.shell{width:min(920px,calc(100% - 32px));margin:auto;padding:48px 0}.mark{width:2rem;height:2rem}button{border:0;border-radius:8px;background:#176b61;color:white;padding:12px 16px;font-weight:700}.secondary{background:#51483d}.error{color:#a33b28}`;
+    if (template === "guestbook")
+        return `${base}.intro,.row,.auth-panel{display:flex;justify-content:space-between;gap:16px;align-items:center}.eyebrow{color:#7a4b28;font-weight:700}h1{font-size:clamp(2rem,6vw,4.8rem);margin:0}form,article{background:white;border:1px solid #ded6ca;border-radius:8px;padding:16px;margin-top:24px}textarea{width:100%;min-height:116px;box-sizing:border-box}.entries{display:grid;gap:12px}.entries article{display:grid;grid-template-columns:48px 1fr;gap:14px}.badge{display:grid;place-items:center;background:#25211b;color:white;border-radius:50%;width:48px;height:48px}time{margin-left:10px;color:#73695b}`;
+    if (template === "photo-library")
+        return `${base}.shell{width:min(1080px,calc(100% - 32px));padding:40px 0}header,header div,form,.library{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}h1{font-size:clamp(2.2rem,7vw,5rem);margin:0}form,.library{background:white;border:1px solid #d8ddd2;border-radius:8px;padding:14px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}.grid article{background:white}.grid img{width:100%;aspect-ratio:4/3;object-fit:cover}.list{display:grid;gap:10px}`;
+    if (template === "campfire")
+        return `:root{font-family:Inter,ui-sans-serif,system-ui,sans-serif;color:#fff7ed;background:#120d0a}body{margin:0}.campfire{min-height:100vh;display:grid;grid-template-columns:240px minmax(0,1fr) 300px}.campfire>aside,.conversation>header,.conversation>form{padding:20px;background:#1b120d}.mark{width:2rem}nav,.campfire>aside{display:grid;align-content:start;gap:9px}button,input{border:1px solid #92400e;border-radius:7px;padding:9px 12px;background:#29211d;color:inherit}.active{background:#b45309}.conversation{display:flex;flex-direction:column}.messages{flex:1;padding:20px;display:grid;align-content:start;gap:14px}.messages article{padding:16px;border:1px solid #78350f;border-radius:9px}.messages time{margin-left:10px;color:#fde68a99}.conversation form{display:flex;gap:8px}.conversation input{flex:1}@media(max-width:900px){.campfire{grid-template-columns:1fr}}`;
+    return `${base}main{width:min(42rem,calc(100% - 2rem));margin:5rem auto}`;
 }
 function svelteTemplateFiles(options, files) {
     const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));

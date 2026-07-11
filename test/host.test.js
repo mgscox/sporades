@@ -4202,6 +4202,9 @@ for (const { framework, template } of [
   { framework: "preact", template: "blank" },
   { framework: "solid", template: "blank" },
   { framework: "solid", template: "todo" },
+  { framework: "solid", template: "guestbook" },
+  { framework: "solid", template: "photo-library" },
+  { framework: "solid", template: "campfire" },
   { framework: "vue", template: "blank" },
   { framework: "vue", template: "todo" },
   { framework: "vue", template: "guestbook" },
@@ -4267,7 +4270,7 @@ for (const { framework, template } of [
     assert.doesNotMatch(publicText, /\/@vite\/client|react-refresh|vite\/hmr|SERVER_ONLY/i);
     if (framework === "preact") assert.doesNotMatch(publicText, /node_modules\/react(?:-dom)?\/|from ["']react(?:-dom)?/);
     if (framework === "solid") {
-      assert.match(publicText, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+      assert.match(publicText, { blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/, "photo-library": /Photo Library/, campfire: /Campfire/ }[template]);
       assert.doesNotMatch(publicText, /react-dom|react\/jsx-runtime/);
     }
     if (framework === "vue") assert.match(publicText, {
