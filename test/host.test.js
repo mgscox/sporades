@@ -1013,6 +1013,8 @@ async function writeArchiveSecurityFixture(dir, mode) {
       [`|^one$|public/${composed}|`, `|^two$|public/${decomposed}|`],
       [...entries, "one", "two"],
     );
+  } else if (mode === "prefix-normalization-collision") {
+    files.push("public/assets/caf\u00e9/a.js", "public/assets/cafe\u0301/b.js");
   }
   if (!["absolute", "normalization-collision", "metadata-over-byte", "metadata-over-count"].includes(mode)) await createTarGz(archivePath, runtimeDir, entries);
   const registryRecordPath = path.join(remoteRoot, "hosts", "capsules.example.dev", "registry", "capsules", "team-notes.json");
@@ -8116,7 +8118,7 @@ test("sporades host helper rejects release archives with parent-relative paths",
 });
 
 test("sporades host helper rejects duplicate, normalization-colliding, and bounded-public-tree archive abuse", async (t) => {
-  for (const mode of ["absolute", "duplicate", "normalization-collision", "overlong", "oversized", "excess-files", "metadata-over-count", "metadata-over-byte"]) {
+  for (const mode of ["absolute", "duplicate", "normalization-collision", "prefix-normalization-collision", "overlong", "oversized", "excess-files", "metadata-over-count", "metadata-over-byte"]) {
     await t.test(mode, async () => {
       await withTempDir(async (dir) => {
         const fixture = await writeArchiveSecurityFixture(dir, mode);
@@ -8124,6 +8126,7 @@ test("sporades host helper rejects duplicate, normalization-colliding, and bound
         assert.equal(install.code, 0, install.stderr);
         const output = JSON.parse(install.stdout);
         assert.equal(output.ok, false, `${mode}: ${install.stdout}`);
+        if (mode === "prefix-normalization-collision") assert.equal(output.error.message, "Invalid Hosted Capsule release file list.");
         assert.match(output.error.message, /unsafe paths|unexpected files|duplicate paths|file list|exceeds release bounds|archive exceeds bounds/);
         await assert.rejects(stat(path.join(fixture.capsuleDir, "releases", "20260630T221500Z-feedface")), { code: "ENOENT" });
         await assert.rejects(stat(path.join(fixture.capsuleDir, "data")), { code: "ENOENT" });

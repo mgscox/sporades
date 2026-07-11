@@ -1569,6 +1569,58 @@ test("generated runtime does not serve fixed root client files outside the publi
   });
 });
 
+test("direct runtime prefers the active built tree over a conventional source public directory", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "active-tree-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "active-tree-island"));
+    await installFakeReact(projectDir);
+    await mkdir(path.join(projectDir, "public"));
+    await writeFile(path.join(projectDir, "public", "favicon.ico"), "source-only favicon");
+    const docker = await installFakeDocker(dir, "container-active-tree");
+    const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deployed.code, 0, deployed.stderr);
+
+    const serverBundle = path.join(projectDir, ".sporades", "build", "server.mjs");
+    const start = async () => {
+      const port = await getAvailablePort();
+      const child = spawn(process.execPath, [serverBundle], {
+        cwd: projectDir,
+        env: { ...process.env, PORT: String(port), SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", `active-${port}.db`) },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      return { port, child };
+    };
+
+    const active = await start();
+    try {
+      const root = await waitForHttp(`http://127.0.0.1:${active.port}/`, active.child);
+      assert.match(await root.text(), /<div id="app"><\/div>/);
+      const client = await waitForHttp(`http://127.0.0.1:${active.port}/client.js`, active.child);
+      assert.match(await client.text(), /Sporades Todos/);
+      const sourceOnly = await waitForHttp(`http://127.0.0.1:${active.port}/favicon.ico`, active.child, 404);
+      assert.equal(await sourceOnly.text(), "Not found");
+    } finally {
+      await stopChild(active.child);
+    }
+
+    const activeReference = path.join(projectDir, ".sporades", "build", ".public-trees", "active.json");
+    for (const state of ["malformed", "missing"]) {
+      if (state === "malformed") await writeFile(activeReference, "{\"tree\":");
+      else await rm(activeReference);
+      const fallback = await start();
+      try {
+        const sourceOnly = await waitForHttp(`http://127.0.0.1:${fallback.port}/favicon.ico`, fallback.child);
+        assert.equal(await sourceOnly.text(), "source-only favicon", state);
+        const root = await waitForHttp(`http://127.0.0.1:${fallback.port}/`, fallback.child, 404);
+        assert.equal(await root.text(), "Not found", state);
+      } finally {
+        await stopChild(fallback.child);
+      }
+    }
+  });
+});
+
 test("Container public-tree runtime serves nested built assets with stable MIME types", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", "asset-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });

@@ -12,7 +12,7 @@ export function createServerBundleSource({ config, serverEnv, sealedServerEnv = 
     const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
     return `// Sporades server bundle
 import { createDecipheriv, createHash, createHash as createHash2, createHmac, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readFileSync as readFileSync2 } from "node:fs";
+import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readFileSync as readFileSync2 } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
@@ -131,13 +131,29 @@ process.on("SIGINT", shutdown);
 
 function resolveRuntimePublicRoot() {
   const mounted = path.join(process.cwd(), "public");
-  if (existsSync(mounted)) return mounted;
+  if (process.cwd() === "/app") return mounted;
+  return resolveActiveRuntimePublicRoot() ?? mounted;
+}
+
+function resolveActiveRuntimePublicRoot() {
   try {
     const treesDir = path.join(process.cwd(), ".sporades", "build", ".public-trees");
+    const treesStats = lstatSync(treesDir);
+    const referencePath = path.join(treesDir, "active.json");
+    const referenceStats = lstatSync(referencePath);
     const tree = JSON.parse(readFileSync(path.join(treesDir, "active.json"), "utf8"))?.tree;
-    if (/^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(tree)) return path.join(treesDir, tree);
+    if (!/^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(tree)) return null;
+    const candidate = path.join(treesDir, tree);
+    const candidateStats = lstatSync(candidate);
+    const indexStats = lstatSync(path.join(candidate, "index.html"));
+    if (
+      treesStats.isDirectory() && !treesStats.isSymbolicLink()
+      && referenceStats.isFile() && !referenceStats.isSymbolicLink()
+      && candidateStats.isDirectory() && !candidateStats.isSymbolicLink()
+      && indexStats.isFile() && !indexStats.isSymbolicLink()
+    ) return candidate;
   } catch {}
-  return mounted;
+  return null;
 }
 
 async function routePublicAsset(request, response, publicRoot, hub) {

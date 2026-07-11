@@ -129,15 +129,28 @@ function normalizePublicTreePath(value) {
 }
 function validatePublicTreeFileSet(files) {
   if (files.length > PUBLIC_TREE_LIMITS.files) return { ok: false, reason: "files" };
-  const canonicalPaths = /* @__PURE__ */ new Set();
+  const canonicalPrefixes = /* @__PURE__ */ new Map();
+  const canonicalFiles = /* @__PURE__ */ new Set();
   let totalBytes = 0;
   let hasIndex = false;
   for (const file of files) {
     const normalized = normalizePublicTreePath(file.path);
     if (normalized === null || !Number.isSafeInteger(file.size) || file.size < 0) return { ok: false, reason: "path" };
-    const canonical = normalized.normalize("NFC");
-    if (canonicalPaths.has(canonical)) return { ok: false, reason: "collision" };
-    canonicalPaths.add(canonical);
+    const segments = normalized.split("/");
+    let canonical = "";
+    let raw = "";
+    for (let index = 0; index < segments.length; index += 1) {
+      raw = raw ? `${raw}/${segments[index]}` : segments[index];
+      const canonicalSegment = segments[index].normalize("NFC");
+      canonical = canonical ? `${canonical}/${canonicalSegment}` : canonicalSegment;
+      const existingRaw = canonicalPrefixes.get(canonical);
+      if (existingRaw !== void 0 && existingRaw !== raw) return { ok: false, reason: "collision" };
+      if (index < segments.length - 1 && canonicalFiles.has(canonical)) return { ok: false, reason: "collision" };
+      canonicalPrefixes.set(canonical, raw);
+    }
+    if (canonicalFiles.has(canonical)) return { ok: false, reason: "collision" };
+    if ([...canonicalFiles].some((existing) => existing.startsWith(`${canonical}/`))) return { ok: false, reason: "collision" };
+    canonicalFiles.add(canonical);
     if (file.size > PUBLIC_TREE_LIMITS.fileBytes) return { ok: false, reason: "file-bytes", path: normalized };
     totalBytes += file.size;
     if (totalBytes > PUBLIC_TREE_LIMITS.totalBytes) return { ok: false, reason: "total-bytes" };

@@ -622,6 +622,16 @@ test("normalized public trees reject symlinks and Unicode normalization collisio
       ]),
       (error) => /normalization collision/.test(error.hint),
     );
+
+    await assert.rejects(
+      createPublicTree(root, [
+        { path: "index.html", contents: "<h1>safe</h1>" },
+        { path: "assets/caf\u00e9/a.js", contents: "one" },
+        { path: "assets/cafe\u0301/b.js", contents: "two" },
+      ]),
+      (error) => /normalization collision/.test(error.hint),
+    );
+    await assert.rejects(access(path.join(root, ".public-trees")), (error) => error.code === "ENOENT");
   });
 });
 
@@ -669,4 +679,18 @@ test("the shared public-tree contract admits nested assets and rejects ambiguous
     { path: "assets/caf\u00e9.js", size: 1 },
     { path: "assets/cafe\u0301.js", size: 1 },
   ]), { ok: false, reason: "collision" });
+
+  const prefixCollisions = [
+    ["assets/caf\u00e9/a.js", "assets/cafe\u0301/b.js"],
+    ["assets/icons/caf\u00e9/dark/a.js", "assets/icons/cafe\u0301/light/b.js"],
+    ["assets/caf\u00e9", "assets/cafe\u0301/a.js"],
+    ["assets/cafe\u0301/a.js", "assets/caf\u00e9"],
+  ];
+  for (const [first, second] of prefixCollisions) {
+    assert.deepEqual(validatePublicTreeFileSet([
+      { path: "index.html", size: 1 },
+      { path: first, size: 1 },
+      { path: second, size: 1 },
+    ]), { ok: false, reason: "collision" }, `${first} <> ${second}`);
+  }
 });
