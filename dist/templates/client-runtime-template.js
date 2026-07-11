@@ -377,7 +377,7 @@ function createConnection() {
       if (typeof MutationObserver === "function" && document.head) {
         let meta = null;
         const metaObserver = new MutationObserver((records) => {
-          if (records.some((record) => record.attributeName === "content" && record.target === meta || record.attributeName === "name" && (record.oldValue === "sporades-journey" || record.target?.getAttribute?.("name") === "sporades-journey"))) {
+          if (records.some((record) => record.target === meta && (record.attributeName === "content" || record.attributeName === "name"))) {
             bindMeta(); scheduleRoute();
           }
         });
@@ -385,8 +385,7 @@ function createConnection() {
           const next = document.querySelector?.('meta[name="sporades-journey"]') ?? null;
           if (next === meta && !force) return;
           metaObserver.disconnect(); meta = next;
-          for (const candidate of document.head.querySelectorAll?.("meta") ?? []) metaObserver.observe(candidate, { attributes: true, attributeFilter: ["name", "content"], attributeOldValue: true });
-          if (meta && !(document.head.querySelectorAll?.("meta") ?? []).includes(meta)) metaObserver.observe(meta, { attributes: true, attributeFilter: ["name", "content"], attributeOldValue: true });
+          if (meta) metaObserver.observe(meta, { attributes: true, attributeFilter: ["name", "content"] });
         };
         bindMeta();
         const headObserver = new MutationObserver((records) => {
