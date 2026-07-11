@@ -79,7 +79,7 @@ export declare function createBundle(projectDir: string, config: ProjectConfig, 
         };
         publicDir: string;
         indexHtml: string;
-        clientBundle: string;
+        clientBundle: string | null;
     };
     containerMounts: {
         files: {

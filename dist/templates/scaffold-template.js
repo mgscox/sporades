@@ -1,7 +1,8 @@
 export function scaffoldFiles(options) {
     const templateOptions = resolveTemplateOptions(options.template);
     const framework = options.framework ?? templateOptions.framework;
-    const renderOptions = { ...options, name: options.name, framework };
+    const toolchain = options.toolchain ?? "esbuild";
+    const renderOptions = { ...options, name: options.name, framework, toolchain };
     const packageName = options.name;
     const sporadesDependency = options.sporadesDependency ?? "sporades";
     const frameworkDependencies = framework === "react"
@@ -18,12 +19,15 @@ export function scaffoldFiles(options) {
             "@types/react-dom": "^19.0.0",
         }
         : {};
-    const templateFiles = framework === "vanilla" ? vanillaTemplateFiles(renderOptions) : templateOptions.files(renderOptions);
+    const baseTemplateFiles = framework === "vanilla" ? vanillaTemplateFiles(renderOptions) : templateOptions.files(renderOptions);
+    const templateFiles = framework === "react" && toolchain === "vite"
+        ? reactViteTemplateFiles(baseTemplateFiles)
+        : baseTemplateFiles;
     return {
         "sporades.json": `${JSON.stringify({
             name: options.name,
             template: options.template,
-            client: { framework, toolchain: "esbuild" },
+            client: { framework, toolchain },
             auth: templateOptions.auth,
             security: {
                 cors: {
@@ -51,8 +55,8 @@ export function scaffoldFiles(options) {
                 typescript: "^5.8.0",
             },
         }, null, 2)}\n`,
-        "AGENTS.md": agentsTemplate(options.template, framework),
-        "CLAUDE.md": agentsTemplate(options.template, framework),
+        "AGENTS.md": agentsTemplate(options.template, framework, toolchain),
+        "CLAUDE.md": agentsTemplate(options.template, framework, toolchain),
         ".gitignore": "node_modules/\n.sporades/\n.env*.local\n",
         ".env.sporades.server": templateOptions.serverEnv,
         "index.html": `<!doctype html>
@@ -65,11 +69,20 @@ export function scaffoldFiles(options) {
   </head>
   <body>
     <div id="app"></div>
-    <script type="module" src="/client.js"></script>
+    <script type="module" src="${toolchain === "vite" ? "/client/index.tsx" : "/client.js"}"></script>
   </body>
 </html>
 `,
         ...templateFiles,
+    };
+}
+function reactViteTemplateFiles(files) {
+    return {
+        ...files,
+        "client/index.tsx": `import "./styles.css";\nimport("./vite-scaffold").then(({ viteScaffoldLabel }) => console.info(viteScaffoldLabel));\n${files["client/index.tsx"]}`,
+        "client/styles.css": `.sporades-vite-asset { background-image: url("./sporades-mark.svg"); }\n`,
+        "client/vite-scaffold.ts": `export const viteScaffoldLabel = "Sporades React/Vite client loaded";\n`,
+        "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#6750a4"/></svg>\n`,
     };
 }
 function vanillaTemplateFiles(options) {
@@ -1581,7 +1594,7 @@ const styles = \`
 \`;
 `;
 }
-function agentsTemplate(template, framework) {
+function agentsTemplate(template, framework, toolchain) {
     const vanilla = framework === "vanilla";
     return `# Sporades App Instructions
 
@@ -1589,6 +1602,7 @@ This directory is for a Sporades app. Sporades is a CLI-first tool for building 
 
 Template: ${template}
 Client framework: ${framework}
+Client toolchain: ${toolchain}
 
 ## Rules
 

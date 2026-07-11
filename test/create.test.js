@@ -146,6 +146,7 @@ test("sporades create writes a runnable React blank scaffold by default", async 
     assert.equal(config.name, "blank-island");
     assert.equal(config.template, "blank");
     assert.equal(config.client.framework, "react");
+    assert.equal(config.client.toolchain, "esbuild");
     assert.equal(config.auth.mode, "anonymous");
 
     const serverEntry = await readFile(path.join(projectDir, "server", "index.ts"), "utf8");
@@ -159,6 +160,7 @@ test("sporades create writes a runnable React blank scaffold by default", async 
     assert.match(clientEntry, /createRoot/);
     assert.match(clientEntry, /Blank Sporades Capsule/);
     assert.doesNotMatch(clientEntry, /createHooks|useQuery|useMutation|useAuth|files|messages|todo/i);
+    assert.match(await readFile(path.join(projectDir, "index.html"), "utf8"), /src="\/client\.js"/);
 
     const agents = await readFile(path.join(projectDir, "AGENTS.md"), "utf8");
     assert.match(agents, /Template: blank/);
@@ -611,6 +613,55 @@ test("sporades create writes a runnable framework-neutral Vanilla TypeScript sca
     assert.match(agents, /client\/index\.ts/);
     assert.match(agents, /framework-neutral/i);
     assert.doesNotMatch(agents, /useAuth\(\)/);
+  });
+});
+
+test("sporades create explicitly scaffolds React with the Vite client toolchain", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(
+      ["create", "vite-island", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(result.code, 0, result.stderr);
+    const projectDir = path.join(dir, "vite-island");
+    const [config, html, client, css, chunk, asset, packageJson] = await Promise.all([
+      readFile(path.join(projectDir, "sporades.json"), "utf8").then(JSON.parse),
+      readFile(path.join(projectDir, "index.html"), "utf8"),
+      readFile(path.join(projectDir, "client", "index.tsx"), "utf8"),
+      readFile(path.join(projectDir, "client", "styles.css"), "utf8"),
+      readFile(path.join(projectDir, "client", "vite-scaffold.ts"), "utf8"),
+      readFile(path.join(projectDir, "client", "sporades-mark.svg"), "utf8"),
+      readFile(path.join(projectDir, "package.json"), "utf8").then(JSON.parse),
+    ]);
+    assert.deepEqual(config.client, { framework: "react", toolchain: "vite" });
+    assert.match(html, /src="\/client\/index\.tsx"/);
+    assert.doesNotMatch(html, /src="\/client\.js"/);
+    assert.match(client, /import "\.\/styles\.css"/);
+    assert.match(client, /import\("\.\/vite-scaffold"\)/);
+    assert.match(css, /sporades-mark\.svg/);
+    assert.match(chunk, /viteScaffoldLabel/);
+    assert.match(asset, /<svg/);
+    assert.equal(packageJson.dependencies.react, "^19.0.0");
+    assert.equal(packageJson.dependencies["react-dom"], "^19.0.0");
+    assert.equal(packageJson.devDependencies.vite, undefined, "Sporades owns the selected client toolchain");
+  });
+});
+
+test("sporades create rejects Vite for frameworks not yet admitted", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(
+      ["create", "preact-vite", "--framework", "preact", "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(result.code, 1);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Unsupported client framework/toolchain combination: preact/vite",
+        hint: "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild.",
+      },
+    });
   });
 });
 

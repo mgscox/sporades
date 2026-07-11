@@ -220,6 +220,10 @@ function createConnection() {
     });
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
+      if (message.type === "refresh" && message.data?.mode === "full-page") {
+        window.location.reload();
+        return;
+      }
       if (message.type === "auth.result" || message.type === "auth.session.replace") {
         storeAuthSession(message);
       }

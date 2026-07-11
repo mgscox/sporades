@@ -6,6 +6,7 @@ import { validateCapsuleServicesConfig } from "../capsule-services.js";
 import { commandError, errorDetails } from "./cli-support.js";
 export const SECURITY_SESSIONS = new Set(["dev", "public-dev", "container", "hosted"]);
 const CLIENT_FRAMEWORKS = new Set(["react", "preact", "vanilla"]);
+const CLIENT_TOOLCHAINS = new Set(["esbuild", "vite"]);
 const DEFAULT_CSP_DIRECTIVES = {
     "default-src": ["'self'"],
     "script-src": ["'self'", "'unsafe-inline'"],
@@ -61,8 +62,11 @@ export function validateClientConfig(client) {
     if (client.framework !== undefined && !CLIENT_FRAMEWORKS.has(client.framework)) {
         throw commandError(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, vanilla.");
     }
-    if (client.toolchain !== undefined && client.toolchain !== "esbuild") {
-        throw commandError(`Unsupported client toolchain: ${client.toolchain}`, "Use `client.toolchain` of `esbuild`.");
+    if (client.toolchain !== undefined && !CLIENT_TOOLCHAINS.has(client.toolchain)) {
+        throw commandError(`Unsupported client toolchain: ${client.toolchain}`, "Use one of: esbuild, vite.");
+    }
+    if (client.toolchain === "vite" && (client.framework ?? "react") !== "react") {
+        throw commandError(`Unsupported client framework/toolchain combination: ${client.framework}/vite`, "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild.");
     }
 }
 export function validateSchedulingConfig(scheduling) {

@@ -4177,6 +4177,52 @@ process.exit(0);
   });
 });
 
+test("sporades host push archives the complete normalized React Vite public tree", async () => {
+  await withTempDir(async (dir) => {
+    const configDir = path.join(dir, "machine-config");
+    const fakeSsh = await installContractFakeSsh(
+      path.join(dir, "fake-ssh"),
+      `const request = JSON.parse(stdin); process.stdout.write(JSON.stringify({ ok: true, data: { installed: true, release: { id: request.release.id, files: request.release.files }, capsule: { subname: request.capsule.subname, hostedUrl: request.release.hostedUrl } }, error: null }) + "\\n");`,
+    );
+    const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
+    const created = await runCli(
+      ["create", "vite-hosted", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "vite-hosted");
+    await installFakeReact(projectDir);
+    await rm(path.join(projectDir, ".env.sporades.server"), { force: true });
+    const env = {
+      ...hostEnv(configDir), ...fakeSsh.env, ...fakeScp.env,
+      PATH: `${fakeSsh.fakeBinDir}${path.delimiter}${fakeScp.fakeBinDir}${path.delimiter}${process.env.PATH}`,
+    };
+    assert.equal((await runCli(
+      ["host", "add", "work", "--server", "deploy@example.test", "--domain", "apps.work.test", "--remote-root", "/srv/sporades", "--json"],
+      { cwd: projectDir, env },
+    )).code, 0);
+
+    const push = await runCli(["host", "push", "--host", "work", "--subname", "vite-app", "--json"], { cwd: projectDir, env });
+    assert.equal(push.code, 0, `${push.stderr}\n${push.stdout}`);
+    const output = JSON.parse(push.stdout);
+    const files = output.data.release.files;
+    assert(files.includes("public/index.html"));
+    assert(files.some((file) => /^public\/assets\/index-[^/]+\.js$/.test(file)));
+    assert(files.some((file) => /^public\/assets\/index-[^/]+\.css$/.test(file)));
+    assert(files.some((file) => /^public\/assets\/vite-scaffold-[^/]+\.js$/.test(file)));
+    assert(files.some((file) => file.endsWith(".js.map")));
+    assert.equal(files.includes("public/client.js"), false);
+
+    const [scpCall] = await readJsonl(fakeScp.logPath);
+    const entries = await listArchiveEntries(scpCall.copiedTo, projectDir);
+    assert.deepEqual(entries, [...files.filter((file) => file.startsWith("public/")), "server.mjs", "sporades.json"].sort());
+    const publicEntries = entries.filter((file) => file.startsWith("public/"));
+    const publicRoot = path.join(projectDir, ".sporades", "build", ".public-trees", JSON.parse(await readFile(path.join(projectDir, ".sporades", "build", ".public-trees", "active.json"), "utf8")).tree);
+    const publicText = (await Promise.all(publicEntries.map((file) => readFile(path.join(publicRoot, file.slice("public/".length)), "utf8")))).join("\n");
+    assert.doesNotMatch(publicText, /\/@vite\/client|react-refresh|vite\/hmr|SERVER_ONLY/i);
+  });
+});
+
 test("sporades host push --verify requests Hosted Capsule restart and release verification", async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");

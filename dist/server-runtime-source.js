@@ -6831,6 +6831,16 @@ export function createWebSocketHub(getDatabase) {
             }));
         },
         journeyDiagnostics() { return { disableRequests: journeyDisableRequests, activeStates: journeys.size }; },
+        refreshAll() {
+            for (const client of clients) {
+                try {
+                    sendJson(client, { id: null, type: "refresh", data: { mode: "full-page" }, error: null });
+                }
+                catch {
+                    client.subscriptions.clear();
+                }
+            }
+        },
         notifyFileEvent(userId, event) {
             for (const client of clients) {
                 if (client.session.auth.userId !== userId) {

@@ -1331,6 +1331,7 @@ export declare function createWebSocketHub(getDatabase: () => any): {
         disableRequests: number;
         activeStates: number;
     };
+    refreshAll(): void;
     notifyFileEvent(userId: any, event: any): void;
     deliverAuthSession(target: any, sessionData: {
         localStorage: {

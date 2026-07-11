@@ -124,6 +124,7 @@ type StartCapsuleServicesOptions = {
 };
 
 const SUPPORTED_FRAMEWORKS = new Set(["react", "preact", "vanilla"]);
+const SUPPORTED_CLIENT_TOOLCHAINS = new Set(["esbuild", "vite"]);
 const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
 const DEV_DATABASE_ENV_FILE = path.join(".sporades", "dev-database-env.json");
@@ -340,6 +341,7 @@ async function printVersion(options: LooseRecord) {
 function parseCreateArgs(args: string[]): LooseRecord {
   let name = null;
   let framework = null;
+  let toolchain = "esbuild";
   let template = "blank";
   let install = true;
   let git = true;
@@ -351,6 +353,10 @@ function parseCreateArgs(args: string[]): LooseRecord {
     switch (arg) {
       case "--framework":
         framework = readFlagValue(args, ++index, "--framework");
+        break;
+
+      case "--toolchain":
+        toolchain = readFlagValue(args, ++index, "--toolchain");
         break;
 
       case "--template":
@@ -386,6 +392,15 @@ function parseCreateArgs(args: string[]): LooseRecord {
   if (framework !== null && !SUPPORTED_FRAMEWORKS.has(framework)) {
     throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, vanilla.");
   }
+  if (!SUPPORTED_CLIENT_TOOLCHAINS.has(toolchain)) {
+    throw commandError(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
+  }
+  if (toolchain === "vite" && framework !== "react") {
+    throw commandError(
+      `Unsupported client framework/toolchain combination: ${framework ?? "default"}/vite`,
+      "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild.",
+    );
+  }
   if (!SUPPORTED_TEMPLATES.has(template)) {
     throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
   }
@@ -393,6 +408,7 @@ function parseCreateArgs(args: string[]): LooseRecord {
   return {
     name,
     framework,
+    toolchain,
     template,
     install,
     git,
@@ -1942,6 +1958,7 @@ async function startDevSession(options: LooseRecord) {
         ).catch((error: unknown) => { throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true }); });
         runtimeServiceEnv = nextCapsuleServiceEnv;
         fatalRestartAttempts = 0;
+        if ((nextConfig.client?.toolchain ?? "esbuild") === "vite") websocketHub.refreshAll();
         websocketHub.disconnectAll();
       }
       const previousBundle = bundle;
@@ -1954,6 +1971,7 @@ async function startDevSession(options: LooseRecord) {
       });
       config = nextConfig;
       security = nextSecurity;
+      if (!affectsServerRuntime && (nextConfig.client?.toolchain ?? "esbuild") === "vite") websocketHub.refreshAll();
       emitDevEvent(options, {
         event: "rebuild",
         status: "success",
@@ -1963,7 +1981,7 @@ async function startDevSession(options: LooseRecord) {
         build: {
           phase: affectsServerRuntime ? "bundle" : "client",
           framework: nextConfig.client?.framework ?? "react",
-          toolchain: "esbuild",
+          toolchain: nextConfig.client?.toolchain ?? "esbuild",
         },
       });
     } catch (error) {
@@ -2066,7 +2084,7 @@ function tagDevRebuildError(
     };
   tagged.phase = phase;
   tagged.framework = config.client?.framework ?? "react";
-  tagged.toolchain = "esbuild";
+  tagged.toolchain = config.client?.toolchain ?? "esbuild";
   return tagged;
 }
 
@@ -2092,7 +2110,7 @@ function reportDevPublicCleanupDegradation(
       status: "degraded",
       url,
       port,
-      build: { phase: "public", framework: config.client?.framework ?? "react", toolchain: "esbuild" },
+      build: { phase: "public", framework: config.client?.framework ?? "react", toolchain: config.client?.toolchain ?? "esbuild" },
     },
     {
       message: "Public tree cleanup degraded.",

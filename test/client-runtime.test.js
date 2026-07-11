@@ -639,6 +639,25 @@ test("client WebSocket URL does not include the stored session token", async () 
   }
 });
 
+test("client performs one full-page refresh from the Sporades transport without another WebSocket", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  let reloads = 0;
+  globalThis.window.location.reload = () => { reloads += 1; };
+  try {
+    const runtime = await importClientRuntime();
+    await runtime.auth.get();
+    assert.equal(browser.sockets.length, 1);
+    assert.equal(browser.sockets[0].listeners.get("message")?.length, 1);
+    browser.sockets[0].emit("message", {
+      data: JSON.stringify({ id: null, type: "refresh", data: { mode: "full-page" }, error: null }),
+    });
+    assert.equal(reloads, 1);
+    assert.equal(browser.sockets.length, 1, "refresh reuses the sole Sporades page transport");
+  } finally {
+    browser.cleanup();
+  }
+});
+
 test("client isAuthenticated returns true for linked auth", async () => {
   const browser = installBrowserFakes({
     userId: "linked-user",

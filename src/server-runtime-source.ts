@@ -7586,6 +7586,15 @@ export function createWebSocketHub(getDatabase: () => any) {
       }));
     },
     journeyDiagnostics() { return { disableRequests: journeyDisableRequests, activeStates: journeys.size }; },
+    refreshAll() {
+      for (const client of clients) {
+        try {
+          sendJson(client, { id: null, type: "refresh", data: { mode: "full-page" }, error: null });
+        } catch {
+          client.subscriptions.clear();
+        }
+      }
+    },
     notifyFileEvent(userId: any, event: any) {
       for (const client of clients) {
         if (client.session.auth.userId !== userId) {

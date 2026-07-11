@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
+import { buildClientToolchain } from "../dist/client-toolchain.js";
 import { cleanupPublicTrees, discardPublicTree } from "../dist/public-tree.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -901,6 +902,184 @@ test("sporades dev serves a genuinely built nested esbuild asset with its MIME t
       assert.equal(asset.headers.get("content-type"), "image/svg+xml");
       assert.match(await asset.text(), /<circle r="4"\/>/);
     } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("React Vite rejects a legacy client.js source shell before creating release output", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "vite-migration", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "vite-migration");
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.client.toolchain = "vite";
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const sourceHtml = await readFile(path.join(projectDir, "index.html"), "utf8");
+
+    await assert.rejects(createBundle(projectDir, config), (error) => {
+      assert.equal(error.message, "React/Vite requires an author-owned source entry in index.html.");
+      assert.match(error.hint, /replace.*\/client\.js.*\/client\/index\.tsx/i);
+      assert.equal(error.phase, "client");
+      assert.equal(error.framework, "react");
+      assert.equal(error.toolchain, "vite");
+      return true;
+    });
+    assert.equal(await readFile(path.join(projectDir, "index.html"), "utf8"), sourceHtml, "migration never rewrites author source");
+    assert.deepEqual(await readdir(path.join(projectDir, ".sporades", "build", ".public-trees")).catch(() => []), []);
+  });
+});
+
+test("React Vite emits only a normalized transformed public tree and ignores local config and env files", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(
+      ["create", "vite-build", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "vite-build");
+    await installFakeReact(projectDir);
+    await writeFile(path.join(projectDir, ".env"), "VITE_BROWSER_LEAK=project-env-secret\n");
+    await writeFile(path.join(projectDir, ".env.local"), "VITE_LOCAL_LEAK=local-env-secret\n");
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "SERVER_ONLY_TOKEN=server-env-secret\n");
+    await writeFile(
+      path.join(projectDir, "vite.config.ts"),
+      `throw new Error("project-local-vite-config-was-loaded");\n`,
+    );
+    const clientPath = path.join(projectDir, "client", "index.tsx");
+    await writeFile(
+      clientPath,
+      `${await readFile(clientPath, "utf8")}\nconsole.log(import.meta.env.VITE_BROWSER_LEAK, import.meta.env.VITE_LOCAL_LEAK, import.meta.env.VITE_PROCESS_LEAK);\n`,
+    );
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    const sourceHtml = await readFile(path.join(projectDir, "index.html"), "utf8");
+    const previousProcessLeak = process.env.VITE_PROCESS_LEAK;
+    process.env.VITE_PROCESS_LEAK = "process-env-secret";
+    let adapterOutput;
+    let bundle;
+    try {
+      adapterOutput = await buildClientToolchain({
+        projectDir,
+        frameworkConfig: { framework: "react", entry: "index.tsx", loader: "tsx", jsxImportSource: "react", jsxRuntimeImport: "react/jsx-runtime" },
+        toolchain: "vite",
+        clientSource: await readFile(clientPath, "utf8"),
+        clientSourcePath: clientPath,
+        indexHtml: sourceHtml,
+        indexHtmlPath: path.join(projectDir, "index.html"),
+      });
+      bundle = await createBundle(projectDir, config, { publishLegacy: false });
+    } finally {
+      if (previousProcessLeak === undefined) delete process.env.VITE_PROCESS_LEAK;
+      else process.env.VITE_PROCESS_LEAK = previousProcessLeak;
+    }
+    assert.deepEqual(Object.keys(adapterOutput).sort(), ["diagnostics", "legacyClientBundle", "publicFiles"]);
+    assert.deepEqual(adapterOutput.diagnostics, { framework: "react", toolchain: "vite", refresh: "full-page" });
+    assert.equal(adapterOutput.legacyClientBundle, null);
+    assert.equal(Object.hasOwn(adapterOutput, "output"), false);
+    assert.equal(Object.hasOwn(adapterOutput, "rollupOutput"), false);
+    try {
+      const visit = async (root, current = root) => {
+        const files = [];
+        for (const entry of await readdir(current, { withFileTypes: true })) {
+          const file = path.join(current, entry.name);
+          if (entry.isDirectory()) files.push(...await visit(root, file));
+          else files.push(path.relative(root, file).split(path.sep).join("/"));
+        }
+        return files.sort();
+      };
+      const files = await visit(bundle.staticFiles.publicDir);
+      assert(files.includes("index.html"), JSON.stringify(files));
+      assert(files.some((file) => /^assets\/index-[A-Za-z0-9_-]+\.js$/.test(file)), JSON.stringify(files));
+      assert(files.some((file) => /^assets\/index-[A-Za-z0-9_-]+\.js\.map$/.test(file)), JSON.stringify(files));
+      assert(files.some((file) => /^assets\/index-[A-Za-z0-9_-]+\.css$/.test(file)), JSON.stringify(files));
+      assert(files.some((file) => /^assets\/vite-scaffold-[A-Za-z0-9_-]+\.js$/.test(file)), JSON.stringify(files));
+      assert(files.some((file) => /^assets\/vite-scaffold-[A-Za-z0-9_-]+\.js\.map$/.test(file)), JSON.stringify(files));
+      assert(files.some((file) => /^assets\/sporades-mark-[A-Za-z0-9_-]+\.svg$/.test(file)), JSON.stringify(files));
+      assert.equal(files.includes("client.js"), false);
+
+      const transformedHtml = await readFile(path.join(bundle.staticFiles.publicDir, "index.html"), "utf8");
+      assert.notEqual(transformedHtml, sourceHtml);
+      assert.equal(await readFile(path.join(projectDir, "index.html"), "utf8"), sourceHtml, "Vite never rewrites author-owned source HTML");
+      assert.doesNotMatch(transformedHtml, /\/client\/index\.tsx|\/client\.js/);
+      assert.match(transformedHtml, /\/assets\/index-[^"']+\.js/);
+      const output = (await Promise.all(files.map((file) => readFile(path.join(bundle.staticFiles.publicDir, file), "utf8")))).join("\n");
+      assert.doesNotMatch(output, /project-local-vite-config-was-loaded|project-env-secret|local-env-secret|process-env-secret|server-env-secret|SERVER_ONLY_TOKEN/);
+      assert.doesNotMatch(output, /\/@vite\/client|react-refresh|vite\/hmr/i);
+      assert.deepEqual(Object.keys(bundle.staticFiles).sort(), ["clientBundle", "indexHtml", "publicDir", "publicTree"]);
+      assert.equal(bundle.staticFiles.clientBundle, null);
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
+test("sporades dev owns React Vite rebuilds, preserves last-good output, and requests full-page refresh", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(
+      ["create", "vite-dev", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "vite-dev");
+    await installFakeReact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+      const initialHtml = await (await fetch(started.data.url)).text();
+      const initialEntry = /src="(\/assets\/index-[^"]+\.js)"/.exec(initialHtml)?.[1];
+      assert.ok(initialEntry, initialHtml);
+      assert.doesNotMatch(initialHtml, /\/client\/index\.tsx|\/client\.js/);
+      const initialEntrySource = await (await fetch(`${started.data.url}${initialEntry}`)).text();
+      assert.doesNotMatch(initialEntrySource, /\/@vite\/client|react-refresh|vite\/hmr/i);
+
+      socket = await openSocket(started.data.url);
+      const refresh = readSocketMessage(socket);
+      const chunkPath = path.join(projectDir, "client", "vite-scaffold.ts");
+      await writeFile(chunkPath, 'export const viteScaffoldLabel = "Sporades Vite rebuilt by its sole watcher";\n');
+      const rebuilt = await waitForJsonEvent(child, (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "react", toolchain: "vite" });
+      assert.deepEqual(await refresh, { id: null, type: "refresh", data: { mode: "full-page" }, error: null });
+      const rebuiltHtml = await (await fetch(started.data.url)).text();
+      const rebuiltEntry = /src="(\/assets\/index-[^"]+\.js)"/.exec(rebuiltHtml)?.[1];
+      assert.ok(rebuiltEntry, rebuiltHtml);
+      const rebuiltEntrySource = await (await fetch(`${started.data.url}${rebuiltEntry}`)).text();
+      const rebuiltChunkPath = /import\("(\.\/vite-scaffold-[^"]+\.js)"\)/.exec(rebuiltEntrySource)?.[1];
+      assert.ok(rebuiltChunkPath, rebuiltEntrySource);
+      assert.match(await (await fetch(new URL(rebuiltChunkPath, `${started.data.url}${rebuiltEntry}`))).text(), /sole watcher/);
+
+      const withoutConnectionToken = (html) => html.replace(/window\.__SPORADES_CONNECTION_TOKEN="[^"]+"/, 'window.__SPORADES_CONNECTION_TOKEN="<token>"');
+      const lastGoodHtml = withoutConnectionToken(rebuiltHtml);
+      const lastGoodEntry = rebuiltEntrySource;
+      await writeFile(chunkPath, "export const = ;\n");
+      const failed = await waitForJsonEvent(child, (event) => !event.ok && event.data.event === "rebuild" && event.data.status === "failed");
+      assert.deepEqual(failed.data.build, { phase: "client", framework: "react", toolchain: "vite" });
+      assert.match(failed.error.message, /Client bundle failed/);
+      assert.match(failed.error.hint, /React\/Vite client source/);
+      assert(JSON.stringify(failed).length < 4096, JSON.stringify(failed));
+      assert.doesNotMatch(JSON.stringify(failed), new RegExp(projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.doesNotMatch(JSON.stringify(failed), /\/(?:private\/)?var\/folders\//);
+      if (failed.error.diagnostics?.file) assert.doesNotMatch(failed.error.diagnostics.file, /^\//);
+      assert.equal(withoutConnectionToken(await (await fetch(started.data.url)).text()), lastGoodHtml);
+      assert.equal(await (await fetch(`${started.data.url}${rebuiltEntry}`)).text(), lastGoodEntry);
+
+      const recoveredRefresh = readSocketMessage(socket);
+      await writeFile(chunkPath, 'export const viteScaffoldLabel = "Sporades Vite recovered";\n');
+      const recovered = await waitForJsonEvent(child, (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(recovered.data.build, { phase: "client", framework: "react", toolchain: "vite" });
+      assert.equal((await recoveredRefresh).type, "refresh");
+    } finally {
+      socket?.close();
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
     }

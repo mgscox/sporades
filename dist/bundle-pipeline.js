@@ -1,8 +1,8 @@
 import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { buildClientToolchain } from "./client-toolchain.js";
 import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv } from "./sealed-server-env.js";
 import { serverRuntimeModuleSource } from "./server.js";
-import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 import { createServerBundleSource } from "./templates/server-bundle-template.js";
 import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateActivePublicTreeReference } from "./public-tree.js";
 const FRAMEWORK_BUNDLE_CONFIG = {
@@ -30,10 +30,8 @@ const FRAMEWORK_BUNDLE_CONFIG = {
 };
 const SUPPORTED_AUTH_PROVIDERS = new Set(["anonymous", "google", "email"]);
 export async function createBundle(projectDir, config, options = {}) {
-    if ((config.client?.toolchain ?? "esbuild") !== "esbuild") {
-        throw commandError(`Unsupported client toolchain: ${config.client?.toolchain}`, "Use `client.toolchain` of `esbuild`.");
-    }
     const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
+    const toolchain = readClientToolchain(config.client?.toolchain ?? "esbuild", frameworkBundleConfig.framework);
     const buildDir = path.join(projectDir, ".sporades", "build");
     await mkdir(buildDir, { recursive: true });
     const paths = {
@@ -54,21 +52,26 @@ export async function createBundle(projectDir, config, options = {}) {
     validateAuthConfig(config, serverEnv);
     const [serverSource, clientSource, indexHtml] = await Promise.all([
         readRequiredFile(paths.serverEntry, "Missing capsule entry: server/index.ts", "Run `sporades create` to scaffold a new project.")
-            .catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.framework); }),
+            .catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain); }),
         readRequiredFile(paths.clientEntry, `Missing client entry: client/${frameworkBundleConfig.entry}`, "Run `sporades create` to scaffold a new project.")
-            .catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework); }),
+            .catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain); }),
         readRequiredFile(paths.indexHtml, "Missing HTML shell: index.html", "Restore index.html or run `sporades create`.")
-            .catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework); }),
+            .catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain); }),
     ]);
     const serverCapsuleModule = await bundleServerCapsuleModule({
         serverSource,
         serverSourcePath: paths.serverEntry,
-    }).catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.framework); });
-    const clientOutput = await bundleClientSource(clientSource, {
+    }).catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.framework, toolchain); });
+    const clientOutput = await buildClientToolchain({
+        projectDir,
+        toolchain,
+        indexHtml,
+        indexHtmlPath: paths.indexHtml,
+        clientSource,
         clientSourcePath: paths.clientEntry,
-        frameworkBundleConfig,
-    }).catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework); });
-    const clientBundle = clientOutput.clientBundle;
+        frameworkConfig: frameworkBundleConfig,
+    }).catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.framework, toolchain); });
+    const clientBundle = clientOutput.legacyClientBundle;
     const serverBundle = createServerBundleSource({
         config,
         serverEnv: sealedEnvelope ? {} : serverEnv,
@@ -76,10 +79,8 @@ export async function createBundle(projectDir, config, options = {}) {
         serverSource,
         serverModuleSource: serverCapsuleModule,
     });
-    const publicTree = await createPublicTree(buildDir, [
-        { path: "index.html", contents: indexHtml },
-        ...clientOutput.publicFiles,
-    ]).catch((error) => { throw tagBuildError(error, "public", frameworkBundleConfig.framework); });
+    const publicTree = await createPublicTree(buildDir, clientOutput.publicFiles)
+        .catch((error) => { throw tagBuildError(error, "public", frameworkBundleConfig.framework, toolchain); });
     const legacyFiles = [
         { target: paths.serverBundle, contents: serverBundle },
         { target: paths.clientBundle, contents: clientBundle },
@@ -87,7 +88,7 @@ export async function createBundle(projectDir, config, options = {}) {
     let legacyPublished = false;
     const publishLegacy = async () => {
         if (legacyPublished) {
-            throw tagBuildError(new Error("Legacy Bundles are already published."), "publish", frameworkBundleConfig.framework);
+            throw tagBuildError(new Error("Legacy Bundles are already published."), "publish", frameworkBundleConfig.framework, toolchain);
         }
         let previous;
         const activeTreePath = path.join(buildDir, ".public-trees", "active.json");
@@ -107,7 +108,8 @@ export async function createBundle(projectDir, config, options = {}) {
                     return null;
                 throw error;
             });
-            await publishLegacyBundles(buildDir, legacyFiles);
+            await publishLegacyBundles(buildDir, legacyFiles.filter((file) => file.contents !== null));
+            await Promise.all(legacyFiles.filter((file) => file.contents === null).map((file) => rm(file.target, { force: true })));
             try {
                 options.activeReferenceFault?.("before-active-write");
                 await replaceBundleStateFile(activeTreePath, `${JSON.stringify({ tree: candidateTreeName })}\n`);
@@ -126,7 +128,7 @@ export async function createBundle(projectDir, config, options = {}) {
             legacyPublished = true;
         }
         catch (error) {
-            throw tagBuildError(error, "publish", frameworkBundleConfig.framework);
+            throw tagBuildError(error, "publish", frameworkBundleConfig.framework, toolchain);
         }
         return async () => {
             try {
@@ -182,7 +184,7 @@ export async function createBundle(projectDir, config, options = {}) {
             publicTree,
             publicDir: publicTree.root,
             indexHtml: path.join(publicTree.root, "index.html"),
-            clientBundle: path.join(publicTree.root, "client.js"),
+            clientBundle: clientBundle === null ? null : path.join(publicTree.root, "client.js"),
         },
         containerMounts: {
             files: [
@@ -493,89 +495,14 @@ function readFrameworkBundleConfig(framework) {
     }
     return FRAMEWORK_BUNDLE_CONFIG[framework];
 }
-async function bundleClientSource(clientSource, options) {
-    const { build } = await import("esbuild");
-    try {
-        const outputDir = path.join(path.dirname(options.clientSourcePath), ".sporades-esbuild-public");
-        const result = await build({
-            bundle: true,
-            format: "esm",
-            platform: "browser",
-            write: false,
-            logLevel: "silent",
-            sourcemap: "external",
-            outdir: outputDir,
-            entryNames: "client",
-            chunkNames: "assets/[name]-[hash]",
-            assetNames: "assets/[name]-[hash]",
-            splitting: true,
-            loader: {
-                ".svg": "file",
-                ".png": "file",
-                ".jpg": "file",
-                ".jpeg": "file",
-                ".gif": "file",
-                ".webp": "file",
-                ".ico": "file",
-                ".woff": "file",
-                ".woff2": "file",
-            },
-            jsx: "automatic",
-            ...(options.frameworkBundleConfig.jsxImportSource ? { jsxImportSource: options.frameworkBundleConfig.jsxImportSource } : {}),
-            stdin: {
-                contents: clientSource,
-                sourcefile: options.clientSourcePath,
-                resolveDir: path.dirname(options.clientSourcePath),
-                loader: options.frameworkBundleConfig.loader,
-            },
-            plugins: [sporadesClientPlugin()],
-        });
-        const outputs = result.outputFiles ?? [];
-        const clientOutput = outputs.find((output) => path.relative(outputDir, output.path) === "client.js");
-        if (!clientOutput) {
-            throw commandError("Client bundle failed: esbuild returned no output.", `Fix client/${options.frameworkBundleConfig.entry} and save again.`);
-        }
-        const clientBundle = [
-            "// Sporades client bundle",
-            `// Client framework: ${options.frameworkBundleConfig.framework}`,
-            ...(options.frameworkBundleConfig.jsxImportSource ? [
-                `// JSX import source: ${options.frameworkBundleConfig.jsxImportSource}`,
-                `// JSX runtime import: ${options.frameworkBundleConfig.jsxRuntimeImport}`,
-            ] : []),
-            'console.log("Sporades client bundle loaded");',
-            "",
-            clientOutput.text,
-        ].join("\n");
-        return {
-            clientBundle,
-            publicFiles: outputs.map((output) => {
-                const emittedPath = path.relative(outputDir, output.path).split(path.sep).join("/");
-                const relativePath = emittedPath === "client.css" || emittedPath === "client.css.map"
-                    ? `assets/${emittedPath}`
-                    : emittedPath;
-                return { path: relativePath, contents: relativePath === "client.js" ? clientBundle : output.contents };
-            }),
-        };
+function readClientToolchain(toolchain, framework) {
+    if (toolchain !== "esbuild" && toolchain !== "vite") {
+        throw commandError(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
     }
-    catch (error) {
-        const message = bundleErrorMessage(error);
-        throw commandError(`Client bundle failed: ${message}`, `Fix client/${options.frameworkBundleConfig.entry} and save again.`);
+    if (toolchain === "vite" && framework !== "react") {
+        throw commandError(`Unsupported client framework/toolchain combination: ${framework}/vite`, "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild.");
     }
-}
-function sporadesClientPlugin() {
-    return {
-        name: "sporades-client",
-        setup(build) {
-            build.onResolve({ filter: /^sporades\/client$/ }, () => ({
-                path: "sporades/client",
-                namespace: "sporades-runtime",
-            }));
-            build.onLoad({ filter: /^sporades\/client$/, namespace: "sporades-runtime" }, () => ({
-                loader: "js",
-                contents: createClientRuntimeSource(),
-            }));
-        },
-    };
+    return toolchain;
 }
 function sporadesServerPlugin() {
     return {
@@ -620,11 +547,11 @@ function commandError(message, hint, diagnostics) {
         error.diagnostics = diagnostics;
     return error;
 }
-function tagBuildError(error, phase, framework) {
+function tagBuildError(error, phase, framework, toolchain) {
     const tagged = error instanceof Error ? error : commandError(String(error), "Fix the build error and save again.");
     tagged.phase = phase;
     tagged.framework = framework;
-    tagged.toolchain = "esbuild";
+    tagged.toolchain = toolchain;
     return tagged;
 }
 //# sourceMappingURL=bundle-pipeline.js.map

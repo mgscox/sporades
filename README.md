@@ -154,7 +154,8 @@ npm install --global sporades
 sporades --help
 ```
 
-Sporades depends on `esbuild` for Capsule bundling. On newer npm versions, you
+Sporades depends on `esbuild` for the Server Bundle and default client builds;
+React clients can explicitly use the runtime-owned Vite adapter. On newer npm versions, you
 may see an `allow-scripts` warning during global install because `esbuild` uses
 a postinstall script to select the native binary for your platform.
 
