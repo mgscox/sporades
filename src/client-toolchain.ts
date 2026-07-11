@@ -36,7 +36,7 @@ export async function buildClientToolchain(options: {
   indexHtmlPath: string;
 }): Promise<ClientToolchainOutput> {
   validateClientToolchainInput(options);
-  if (options.toolchain === "vite") return buildReactVite(options);
+  if (options.toolchain === "vite") return buildVite(options);
   return buildEsbuild(options);
 }
 
@@ -46,21 +46,22 @@ export function validateClientToolchainInput(options: {
   indexHtml: string;
 }) {
   if (options.toolchain !== "vite") return;
-  if (options.frameworkConfig.framework !== "react") {
+  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : "React";
+  if (options.frameworkConfig.framework !== "react" && options.frameworkConfig.framework !== "preact") {
     throw clientToolchainError(
       `Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`,
-      "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild.",
+      "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild.",
     );
   }
   if (referencesLegacyClientShell(options.indexHtml)) {
     throw clientToolchainError(
-      "React/Vite requires an author-owned source entry in index.html.",
+      `${frameworkLabel}/Vite requires an author-owned source entry in index.html.`,
       'Replace the `/client.js` script with `<script type="module" src="/client/index.tsx"></script>`, then retry.',
     );
   }
-  if (!referencesReactSourceEntry(options.indexHtml)) {
+  if (!referencesFrameworkSourceEntry(options.indexHtml)) {
     throw clientToolchainError(
-      "React/Vite could not find the client source entry in index.html.",
+      `${frameworkLabel}/Vite could not find the client source entry in index.html.`,
       'Add `<script type="module" src="/client/index.tsx"></script>` to the author-owned HTML shell.',
     );
   }
@@ -133,7 +134,7 @@ async function buildEsbuild(options: {
   }
 }
 
-async function buildReactVite(options: {
+async function buildVite(options: {
   projectDir: string;
   frameworkConfig: FrameworkBuildConfig;
   indexHtml: string;
@@ -156,7 +157,7 @@ async function buildReactVite(options: {
       appType: "mpa",
       clearScreen: false,
       logLevel: "silent",
-      esbuild: { jsx: "automatic", jsxImportSource: "react" },
+      esbuild: { jsx: "automatic", jsxImportSource: options.frameworkConfig.jsxImportSource ?? undefined },
       css: { postcss: { plugins: [] } },
       plugins: [sporadesViteClientPlugin()],
       build: {
@@ -191,11 +192,11 @@ async function buildReactVite(options: {
     return {
       publicFiles: [...files].map(([filePath, contents]) => ({ path: filePath, contents })),
       legacyClientBundle: null,
-      diagnostics: { framework: "react", toolchain: "vite" as const, refresh: "full-page" as const },
+      diagnostics: { framework: options.frameworkConfig.framework, toolchain: "vite" as const, refresh: "full-page" as const },
     };
   } catch (error) {
     if (hasHint(error)) throw error;
-    throw viteBuildError(error, [options.projectDir, projectRoot]);
+    throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
   }
 }
 
@@ -223,7 +224,7 @@ function referencesLegacyClientShell(html: string) {
   return /<script\b[^>]*\bsrc\s*=\s*["']\/?client\.js(?:\?[^"']*)?["'][^>]*>/i.test(html);
 }
 
-function referencesReactSourceEntry(html: string) {
+function referencesFrameworkSourceEntry(html: string) {
   return /<script\b[^>]*\bsrc\s*=\s*["']\/?client\/index\.tsx(?:\?[^"']*)?["'][^>]*>/i.test(html);
 }
 
@@ -233,7 +234,7 @@ function normalizeOutputPath(fileName: string) {
   return normalized;
 }
 
-function viteBuildError(error: unknown, projectRoots: string[]) {
+function viteBuildError(error: unknown, projectRoots: string[], framework: string) {
   const details = errorDetails(error);
   const message = boundedBuildMessage(error, projectRoots);
   const loc = errorDetails(details.loc);
@@ -241,7 +242,7 @@ function viteBuildError(error: unknown, projectRoots: string[]) {
   const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectRoots, rawFile) : null;
   return clientToolchainError(
     `Client bundle failed: ${message}`,
-    "Fix the React/Vite client source and save again.",
+    `Fix the ${framework === "preact" ? "Preact" : "React"}/Vite client source and save again.`,
     {
       ...(typeof details.code === "string" ? { code: details.code.slice(0, 80) } : {}),
       ...(relativeFile ? { file: relativeFile } : {}),

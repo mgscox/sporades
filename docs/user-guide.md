@@ -196,6 +196,7 @@ sporades create campfire --template campfire
 sporades create tiny --framework preact
 sporades create framework-free --framework vanilla
 sporades create vite-react --framework react --toolchain vite
+sporades create vite-preact --framework preact --toolchain vite
 sporades create no-install-yet --no-install --no-git
 ```
 
@@ -203,15 +204,19 @@ Available templates are `blank`, `todo`, `guestbook`, `photo-library`, and
 `campfire`. Campfire demonstrates realtime messaging, durable reactions, email
 fixture identities, and explicitly consented ephemeral Journey activity.
 Available client frameworks are `react`, `preact`, and framework-neutral
-Vanilla TypeScript. esbuild remains the default client toolchain. React can
-explicitly select Vite with `--toolchain vite`; Preact and Vanilla TypeScript
-remain on esbuild.
+Vanilla TypeScript. esbuild remains the default client toolchain. React and
+Preact can explicitly select Vite with `--toolchain vite`; Vanilla TypeScript
+remains on esbuild.
 
-React/Vite scaffolds keep `index.html` author-owned and reference
+React/Vite and Preact/Vite scaffolds keep `index.html` author-owned and reference
 `/client/index.tsx`. Sporades runs Vite as an isolated one-shot build with local
 Vite config and `.env*` loading disabled, then serves transformed HTML and its
 hashed JS, CSS, source-map, and imported-asset tree. Sporades remains the only
-Dev watcher/server and requests a full-page refresh after successful rebuilds.
+Dev watcher/server and requests a full-page refresh after successful rebuilds;
+neither framework uses a Vite dev server, HMR, React Refresh, or another socket.
+Migrating an existing esbuild Capsule requires replacing the `/client.js`
+script in author-owned `index.html` with `/client/index.tsx`; Sporades reports
+that change as a write-free preflight error and never rewrites the source shell.
 
 ### 2. Start a Dev Session
 
@@ -551,12 +556,12 @@ messages, middleware, and server-side behavior.
 APIs, Server env, and Sporades runtime imports.
 
 `index.html` is user-owned and served at `/`. esbuild clients load `/client.js`.
-React/Vite source HTML instead loads `/client/index.tsx`; the released HTML
-references only transformed hashed assets.
+React/Vite and Preact/Vite source HTML instead load `/client/index.tsx`; the
+released HTML references only transformed hashed assets.
 
 `sporades.json` configures the Capsule name, template, client framework and
 toolchain, auth, and default ports. Omitting `client.toolchain` preserves the
-esbuild default for existing React Capsules.
+esbuild default for existing React and Preact Capsules.
 
 Sealed Server env stores server-only values in `.sporades/sealed-server-env/`
 and exposes them as `ctx.env` inside server handlers. `.env.sporades.server`

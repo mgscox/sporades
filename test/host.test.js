@@ -1195,6 +1195,19 @@ async function installFakeReact(projectDir) {
   );
 }
 
+async function installFakePreact(projectDir) {
+  await writePackage(
+    projectDir,
+    "preact",
+    { ".": "./index.js", "./hooks": "./hooks.js", "./jsx-runtime": "./jsx-runtime.js" },
+    {
+      "index.js": "export function render() {}\n",
+      "hooks.js": "export function useEffect() {}\nexport function useState(value) { return [value, () => {}]; }\n",
+      "jsx-runtime.js": "export const Fragment = Symbol.for('preact.fragment');\nexport function jsx(type, props) { return { type, props }; }\nexport const jsxs = jsx;\n",
+    },
+  );
+}
+
 async function writePackage(projectDir, packageName, exports, files) {
   const packageDir = path.join(projectDir, "node_modules", packageName);
   await mkdir(packageDir, { recursive: true });
@@ -4177,7 +4190,7 @@ process.exit(0);
   });
 });
 
-test("sporades host push archives the complete normalized React Vite public tree", async () => {
+for (const framework of ["react", "preact"]) test(`sporades host push archives the complete normalized ${framework} Vite public tree`, async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
@@ -4186,12 +4199,12 @@ test("sporades host push archives the complete normalized React Vite public tree
     );
     const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
     const created = await runCli(
-      ["create", "vite-hosted", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      ["create", "vite-hosted", "--framework", framework, "--toolchain", "vite", "--no-install", "--no-git", "--json"],
       { cwd: dir },
     );
     assert.equal(created.code, 0, created.stderr);
     const projectDir = path.join(dir, "vite-hosted");
-    await installFakeReact(projectDir);
+    await (framework === "react" ? installFakeReact : installFakePreact)(projectDir);
     await rm(path.join(projectDir, ".env.sporades.server"), { force: true });
     const env = {
       ...hostEnv(configDir), ...fakeSsh.env, ...fakeScp.env,
@@ -4220,6 +4233,7 @@ test("sporades host push archives the complete normalized React Vite public tree
     const publicRoot = path.join(projectDir, ".sporades", "build", ".public-trees", JSON.parse(await readFile(path.join(projectDir, ".sporades", "build", ".public-trees", "active.json"), "utf8")).tree);
     const publicText = (await Promise.all(publicEntries.map((file) => readFile(path.join(publicRoot, file.slice("public/".length)), "utf8")))).join("\n");
     assert.doesNotMatch(publicText, /\/@vite\/client|react-refresh|vite\/hmr|SERVER_ONLY/i);
+    if (framework === "preact") assert.doesNotMatch(publicText, /node_modules\/react(?:-dom)?\/|from ["']react(?:-dom)?/);
   });
 });
 

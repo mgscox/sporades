@@ -257,8 +257,8 @@ function parseCreateArgs(args) {
     if (!SUPPORTED_CLIENT_TOOLCHAINS.has(toolchain)) {
         throw commandError(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
     }
-    if (toolchain === "vite" && framework !== "react") {
-        throw commandError(`Unsupported client framework/toolchain combination: ${framework ?? "default"}/vite`, "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild.");
+    if (toolchain === "vite" && framework === "vanilla") {
+        throw commandError(`Unsupported client framework/toolchain combination: ${framework ?? "default"}/vite`, "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild.");
     }
     if (!SUPPORTED_TEMPLATES.has(template)) {
         throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");

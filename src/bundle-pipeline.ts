@@ -582,10 +582,10 @@ function readClientToolchain(toolchain: unknown, framework: string): ClientToolc
   if (toolchain !== "esbuild" && toolchain !== "vite") {
     throw commandError(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
   }
-  if (toolchain === "vite" && framework !== "react") {
+  if (toolchain === "vite" && framework === "vanilla") {
     throw commandError(
       `Unsupported client framework/toolchain combination: ${framework}/vite`,
-      "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild.",
+      "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild.",
     );
   }
   return toolchain;

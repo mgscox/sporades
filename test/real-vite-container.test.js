@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -30,19 +30,34 @@ function lastJsonLine(output) {
   return JSON.parse(output.trim().split("\n").at(-1));
 }
 
-test("real Container serves a complete React Vite public tree from the actual Base image", {
+async function fetchEventually(url, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  let lastError;
+  do {
+    try {
+      return await fetch(url);
+    } catch (error) {
+      lastError = error;
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  } while (Date.now() < deadline);
+  throw lastError;
+}
+
+for (const framework of ["react", "preact"]) test(`real Container serves a complete ${framework} Vite public tree from the actual Base image`, {
   skip: enabled ? false : "Set SPORADES_REAL_VITE_CONTAINER=1 to run the disposable Docker acceptance test.",
   timeout: 300_000,
 }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-real-vite-container-"));
-  const projectDir = path.join(root, "real-vite-container");
+  const projectName = `real-${framework}-vite-container`;
+  const projectDir = path.join(root, projectName);
   let deployAttempted = false;
   try {
     const docker = await execFileAsync("docker", ["info", "--format", "{{.ServerVersion}}"], { timeout: 30_000 });
     assert.match(docker.stdout.trim(), /^\d+\./, docker.stderr);
 
     const created = await runCli([
-      "create", "real-vite-container", "--framework", "react", "--toolchain", "vite",
+      "create", projectName, "--framework", framework, "--toolchain", "vite",
       "--no-install", "--no-git", "--json",
     ], root);
     assert.equal(created.code, 0, created.stderr);
@@ -51,6 +66,14 @@ test("real Container serves a complete React Vite public tree from the actual Ba
       timeout: 120_000,
       maxBuffer: 10 * 1024 * 1024,
     });
+    if (framework === "preact") {
+      await assert.rejects(access(path.join(projectDir, "node_modules", "react")), (error) => error.code === "ENOENT");
+      await assert.rejects(access(path.join(projectDir, "node_modules", "react-dom")), (error) => error.code === "ENOENT");
+      const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
+      assert.equal(packageJson.dependencies.preact, "^10.25.0");
+      assert.equal(packageJson.dependencies.react, undefined);
+      assert.equal(packageJson.dependencies["react-dom"], undefined);
+    }
     await writeFile(path.join(projectDir, ".env"), "VITE_REAL_CONTAINER_LEAK=browser-secret-must-not-ship\n");
     await writeFile(path.join(projectDir, ".env.sporades.server"), "SERVER_REAL_CONTAINER_LEAK=server-secret-must-not-ship\n");
     const clientPath = path.join(projectDir, "client", "index.tsx");
@@ -90,7 +113,7 @@ test("real Container serves a complete React Vite public tree from the actual Ba
     };
     const bodies = [];
     for (const [kind, publicPath] of Object.entries(representatives)) {
-      const response = await fetch(`${url}/${publicPath}`);
+      const response = await fetchEventually(`${url}/${publicPath}`);
       assert.equal(response.status, 200, `${kind} ${publicPath}`);
       assert.match(response.headers.get("content-type") ?? "", expectedMime[kind], `${kind} ${publicPath}`);
       const body = await response.text();
@@ -102,8 +125,8 @@ test("real Container serves a complete React Vite public tree from the actual Ba
     assert.match(output, /Blank Sporades Capsule/);
     assert.doesNotMatch(output, /browser-secret-must-not-ship|server-secret-must-not-ship/);
     assert.doesNotMatch(output, /\/@vite\/client|react-refresh|vite\/hmr/i);
-    assert.equal((await fetch(`${url}/client.js`)).status, 404);
-    t.diagnostic(JSON.stringify({ baseImage: inspectedImage.stdout.trim(), url, fetched, clientJsStatus: 404 }));
+    assert.equal((await fetchEventually(`${url}/client.js`)).status, 404);
+    t.diagnostic(JSON.stringify({ framework, baseImage: inspectedImage.stdout.trim(), url, fetched, clientJsStatus: 404 }));
   } finally {
     if (deployAttempted) await runCli(["deploy", "remove", "--json"], projectDir).catch(() => {});
     await rm(root, { recursive: true, force: true });

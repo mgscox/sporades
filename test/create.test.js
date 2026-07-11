@@ -563,6 +563,7 @@ test("sporades create --template blank preserves framework selection", async () 
     const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
     assert.equal(config.template, "blank");
     assert.equal(config.client.framework, "preact");
+    assert.equal(config.client.toolchain, "esbuild");
 
     const clientEntry = await readFile(path.join(projectDir, "client", "index.tsx"), "utf8");
     assert.match(clientEntry, /from "preact"/);
@@ -647,20 +648,40 @@ test("sporades create explicitly scaffolds React with the Vite client toolchain"
   });
 });
 
-test("sporades create rejects Vite for frameworks not yet admitted", async () => {
+test("sporades create explicitly scaffolds Preact with the Vite client toolchain", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(
       ["create", "preact-vite", "--framework", "preact", "--toolchain", "vite", "--no-install", "--no-git", "--json"],
       { cwd: dir },
     );
+    assert.equal(result.code, 0, result.stderr);
+    const projectDir = path.join(dir, "preact-vite");
+    const [config, html, client, packageJson] = await Promise.all([
+      readFile(path.join(projectDir, "sporades.json"), "utf8").then(JSON.parse),
+      readFile(path.join(projectDir, "index.html"), "utf8"),
+      readFile(path.join(projectDir, "client", "index.tsx"), "utf8"),
+      readFile(path.join(projectDir, "package.json"), "utf8").then(JSON.parse),
+    ]);
+    assert.deepEqual(config.client, { framework: "preact", toolchain: "vite" });
+    assert.match(html, /src="\/client\/index\.tsx"/);
+    assert.match(client, /from "preact"/);
+    assert.match(client, /import "\.\/styles\.css"/);
+    assert.equal(packageJson.dependencies.preact, "^10.25.0");
+    assert.equal(packageJson.dependencies.react, undefined);
+    assert.equal(packageJson.dependencies["react-dom"], undefined);
+  });
+});
+
+test("sporades create keeps Vanilla TypeScript on esbuild", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(
+      ["create", "vanilla-vite", "--framework", "vanilla", "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
     assert.equal(result.code, 1);
-    assert.deepEqual(JSON.parse(result.stdout), {
-      ok: false,
-      data: null,
-      error: {
-        message: "Unsupported client framework/toolchain combination: preact/vite",
-        hint: "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild.",
-      },
+    assert.deepEqual(JSON.parse(result.stdout).error, {
+      message: "Unsupported client framework/toolchain combination: vanilla/vite",
+      hint: "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild.",
     });
   });
 });

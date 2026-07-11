@@ -4,20 +4,21 @@ import { createClientRuntimeSource } from "./templates/client-runtime-template.j
 export async function buildClientToolchain(options) {
     validateClientToolchainInput(options);
     if (options.toolchain === "vite")
-        return buildReactVite(options);
+        return buildVite(options);
     return buildEsbuild(options);
 }
 export function validateClientToolchainInput(options) {
     if (options.toolchain !== "vite")
         return;
-    if (options.frameworkConfig.framework !== "react") {
-        throw clientToolchainError(`Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`, "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild.");
+    const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : "React";
+    if (options.frameworkConfig.framework !== "react" && options.frameworkConfig.framework !== "preact") {
+        throw clientToolchainError(`Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`, "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild.");
     }
     if (referencesLegacyClientShell(options.indexHtml)) {
-        throw clientToolchainError("React/Vite requires an author-owned source entry in index.html.", 'Replace the `/client.js` script with `<script type="module" src="/client/index.tsx"></script>`, then retry.');
+        throw clientToolchainError(`${frameworkLabel}/Vite requires an author-owned source entry in index.html.`, 'Replace the `/client.js` script with `<script type="module" src="/client/index.tsx"></script>`, then retry.');
     }
-    if (!referencesReactSourceEntry(options.indexHtml)) {
-        throw clientToolchainError("React/Vite could not find the client source entry in index.html.", 'Add `<script type="module" src="/client/index.tsx"></script>` to the author-owned HTML shell.');
+    if (!referencesFrameworkSourceEntry(options.indexHtml)) {
+        throw clientToolchainError(`${frameworkLabel}/Vite could not find the client source entry in index.html.`, 'Add `<script type="module" src="/client/index.tsx"></script>` to the author-owned HTML shell.');
     }
 }
 async function buildEsbuild(options) {
@@ -84,7 +85,7 @@ async function buildEsbuild(options) {
         throw clientToolchainError(`Client bundle failed: ${boundedBuildMessage(error)}`, `Fix client/${options.frameworkConfig.entry} and save again.`);
     }
 }
-async function buildReactVite(options) {
+async function buildVite(options) {
     const { build } = await import("vite");
     let projectRoot = path.resolve(options.projectDir);
     try {
@@ -102,7 +103,7 @@ async function buildReactVite(options) {
             appType: "mpa",
             clearScreen: false,
             logLevel: "silent",
-            esbuild: { jsx: "automatic", jsxImportSource: "react" },
+            esbuild: { jsx: "automatic", jsxImportSource: options.frameworkConfig.jsxImportSource ?? undefined },
             css: { postcss: { plugins: [] } },
             plugins: [sporadesViteClientPlugin()],
             build: {
@@ -140,13 +141,13 @@ async function buildReactVite(options) {
         return {
             publicFiles: [...files].map(([filePath, contents]) => ({ path: filePath, contents })),
             legacyClientBundle: null,
-            diagnostics: { framework: "react", toolchain: "vite", refresh: "full-page" },
+            diagnostics: { framework: options.frameworkConfig.framework, toolchain: "vite", refresh: "full-page" },
         };
     }
     catch (error) {
         if (hasHint(error))
             throw error;
-        throw viteBuildError(error, [options.projectDir, projectRoot]);
+        throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
     }
 }
 function sporadesEsbuildClientPlugin() {
@@ -170,7 +171,7 @@ function sporadesViteClientPlugin() {
 function referencesLegacyClientShell(html) {
     return /<script\b[^>]*\bsrc\s*=\s*["']\/?client\.js(?:\?[^"']*)?["'][^>]*>/i.test(html);
 }
-function referencesReactSourceEntry(html) {
+function referencesFrameworkSourceEntry(html) {
     return /<script\b[^>]*\bsrc\s*=\s*["']\/?client\/index\.tsx(?:\?[^"']*)?["'][^>]*>/i.test(html);
 }
 function normalizeOutputPath(fileName) {
@@ -179,13 +180,13 @@ function normalizeOutputPath(fileName) {
         throw new Error("Vite emitted an unsafe public path.");
     return normalized;
 }
-function viteBuildError(error, projectRoots) {
+function viteBuildError(error, projectRoots, framework) {
     const details = errorDetails(error);
     const message = boundedBuildMessage(error, projectRoots);
     const loc = errorDetails(details.loc);
     const rawFile = typeof loc.file === "string" ? loc.file : typeof details.id === "string" ? details.id : null;
     const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectRoots, rawFile) : null;
-    return clientToolchainError(`Client bundle failed: ${message}`, "Fix the React/Vite client source and save again.", {
+    return clientToolchainError(`Client bundle failed: ${message}`, `Fix the ${framework === "preact" ? "Preact" : "React"}/Vite client source and save again.`, {
         ...(typeof details.code === "string" ? { code: details.code.slice(0, 80) } : {}),
         ...(relativeFile ? { file: relativeFile } : {}),
         ...(Number.isInteger(loc.line) ? { line: loc.line } : {}),

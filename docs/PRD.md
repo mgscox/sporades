@@ -12,7 +12,7 @@ and `sporades host ...`.
 
 Apps run as real Node.js code with SQLite-backed persistence. The CLI keeps the
 Server Bundle on esbuild and builds clients through a framework/toolchain
-adapter: esbuild remains the default, while React can explicitly select Vite.
+adapter: esbuild remains the default, while React and Preact can explicitly select Vite.
 The normalized release runs unchanged in a local Dev session, a local Docker
 Container session, or a Hosted Capsule on a Host server.
 
@@ -26,7 +26,7 @@ LLM systems that need a scriptable build, deploy, inspect, and repair loop.
 The repository currently includes:
 
 - `sporades create` scaffolding with template selection, React, Preact, and
-  Vanilla TypeScript framework support, explicit React/Vite admission,
+  Vanilla TypeScript framework support, explicit React/Vite and Preact/Vite admission,
   framework support, `AGENTS.md`, `CLAUDE.md`, `index.html`, `sporades.json`,
   Server env, and optional `npm install` / git initialization.
 - `sporades dev` for local Node execution with bundling, file watching,
@@ -421,9 +421,10 @@ Database adapter and keeping app-facing file APIs unchanged.
 `sporades dev` runs a local Node process with the bundled runtime. It watches
 `server/`, `client/`, `shared/`, `index.html`, and `sporades.json`. Server and
 shared changes restart the runtime; client and HTML changes refresh served
-assets. Failed rebuilds keep the last successful Bundle running. React/Vite is
-invoked as a one-shot production build under the Sporades watcher and server;
-it does not start a Vite dev server, HMR transport, or second watcher.
+assets. Failed rebuilds keep the last successful Bundle running. Sporades
+invokes React/Vite and Preact/Vite as one-shot production builds under its own
+watcher and server; it does not start a Vite dev server, HMR transport, or
+second watcher.
 
 Debug surfaces include logs, database listing/dump/query, auth client listing,
 and local identity simulation.

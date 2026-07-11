@@ -411,6 +411,19 @@ async function installFakeReact(projectDir) {
   );
 }
 
+async function installFakePreact(projectDir) {
+  await writePackage(
+    projectDir,
+    "preact",
+    { ".": "./index.js", "./hooks": "./hooks.js", "./jsx-runtime": "./jsx-runtime.js" },
+    {
+      "index.js": "export function render() {}\n",
+      "hooks.js": "export function useEffect() {}\nexport function useState(value) { return [value, () => {}]; }\n",
+      "jsx-runtime.js": "export const Fragment = Symbol.for('preact.fragment');\nexport function jsx(type, props) { return { type, props }; }\nexport const jsxs = jsx;\n",
+    },
+  );
+}
+
 async function writePackage(projectDir, packageName, exports, files) {
   const packageDir = path.join(projectDir, "node_modules", packageName);
   await mkdir(packageDir, { recursive: true });
@@ -757,22 +770,22 @@ test("sporades deploy assembles a Vanilla TypeScript release without leaking Ser
   });
 });
 
-test("sporades deploy mounts the complete normalized React Vite public tree", async () => {
+for (const framework of ["react", "preact"]) test(`sporades deploy mounts the complete normalized ${framework} Vite public tree`, async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(
-      ["create", "vite-release", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      ["create", "vite-release", "--framework", framework, "--toolchain", "vite", "--no-install", "--no-git", "--json"],
       { cwd: dir },
     );
     assert.equal(createResult.code, 0, createResult.stderr);
     const projectDir = await realpath(path.join(dir, "vite-release"));
-    await installFakeReact(projectDir);
+    await (framework === "react" ? installFakeReact : installFakePreact)(projectDir);
     await writeFile(path.join(projectDir, ".env.sporades.server"), "SERVER_ONLY_TOKEN=vite-container-secret\n");
     const docker = await installFakeDocker(dir, "vite-container");
     const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
     assert.equal(deployed.code, 0, deployed.stderr);
 
     const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
-    assert.equal(binding.clientRelease.framework, "react");
+    assert.equal(binding.clientRelease.framework, framework);
     assert.equal(binding.clientRelease.toolchain, "vite");
     assert(binding.clientRelease.paths.includes("index.html"));
     assert(binding.clientRelease.paths.some((file) => /^assets\/index-[^/]+\.js$/.test(file)));
@@ -784,6 +797,7 @@ test("sporades deploy mounts the complete normalized React Vite public tree", as
     const publicRoot = path.join(projectDir, ".sporades", "build", ".public-trees", binding.clientRelease.publicTree);
     const output = (await Promise.all(binding.clientRelease.paths.map((file) => readFile(path.join(publicRoot, file), "utf8")))).join("\n");
     assert.doesNotMatch(output, /vite-container-secret|SERVER_ONLY_TOKEN|\/@vite\/client|react-refresh|vite\/hmr/i);
+    if (framework === "preact") assert.doesNotMatch(output, /node_modules\/react(?:-dom)?\/|from ["']react(?:-dom)?/);
     const runCall = firstDockerRunCall(await docker.calls());
     assertVolume(runCall.args, `${publicRoot}:/app/public:ro`);
   });

@@ -759,26 +759,27 @@ function structuredError(error) {
 // src/client-toolchain.ts
 async function buildClientToolchain(options) {
   validateClientToolchainInput(options);
-  if (options.toolchain === "vite") return buildReactVite(options);
+  if (options.toolchain === "vite") return buildVite(options);
   return buildEsbuild(options);
 }
 function validateClientToolchainInput(options) {
   if (options.toolchain !== "vite") return;
-  if (options.frameworkConfig.framework !== "react") {
+  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : "React";
+  if (options.frameworkConfig.framework !== "react" && options.frameworkConfig.framework !== "preact") {
     throw clientToolchainError(
       `Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`,
-      "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild."
+      "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild."
     );
   }
   if (referencesLegacyClientShell(options.indexHtml)) {
     throw clientToolchainError(
-      "React/Vite requires an author-owned source entry in index.html.",
+      `${frameworkLabel}/Vite requires an author-owned source entry in index.html.`,
       'Replace the `/client.js` script with `<script type="module" src="/client/index.tsx"></script>`, then retry.'
     );
   }
-  if (!referencesReactSourceEntry(options.indexHtml)) {
+  if (!referencesFrameworkSourceEntry(options.indexHtml)) {
     throw clientToolchainError(
-      "React/Vite could not find the client source entry in index.html.",
+      `${frameworkLabel}/Vite could not find the client source entry in index.html.`,
       'Add `<script type="module" src="/client/index.tsx"></script>` to the author-owned HTML shell.'
     );
   }
@@ -851,7 +852,7 @@ async function buildEsbuild(options) {
     throw clientToolchainError(`Client bundle failed: ${boundedBuildMessage(error)}`, `Fix client/${options.frameworkConfig.entry} and save again.`);
   }
 }
-async function buildReactVite(options) {
+async function buildVite(options) {
   const { build } = await import("vite");
   let projectRoot = path.resolve(options.projectDir);
   try {
@@ -869,7 +870,7 @@ async function buildReactVite(options) {
       appType: "mpa",
       clearScreen: false,
       logLevel: "silent",
-      esbuild: { jsx: "automatic", jsxImportSource: "react" },
+      esbuild: { jsx: "automatic", jsxImportSource: options.frameworkConfig.jsxImportSource ?? void 0 },
       css: { postcss: { plugins: [] } },
       plugins: [sporadesViteClientPlugin()],
       build: {
@@ -904,11 +905,11 @@ async function buildReactVite(options) {
     return {
       publicFiles: [...files].map(([filePath, contents]) => ({ path: filePath, contents })),
       legacyClientBundle: null,
-      diagnostics: { framework: "react", toolchain: "vite", refresh: "full-page" }
+      diagnostics: { framework: options.frameworkConfig.framework, toolchain: "vite", refresh: "full-page" }
     };
   } catch (error) {
     if (hasHint(error)) throw error;
-    throw viteBuildError(error, [options.projectDir, projectRoot]);
+    throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
   }
 }
 function sporadesEsbuildClientPlugin() {
@@ -936,7 +937,7 @@ function sporadesViteClientPlugin() {
 function referencesLegacyClientShell(html) {
   return /<script\b[^>]*\bsrc\s*=\s*["']\/?client\.js(?:\?[^"']*)?["'][^>]*>/i.test(html);
 }
-function referencesReactSourceEntry(html) {
+function referencesFrameworkSourceEntry(html) {
   return /<script\b[^>]*\bsrc\s*=\s*["']\/?client\/index\.tsx(?:\?[^"']*)?["'][^>]*>/i.test(html);
 }
 function normalizeOutputPath(fileName) {
@@ -944,7 +945,7 @@ function normalizeOutputPath(fileName) {
   if (!normalized || normalized.startsWith("/") || normalized.split("/").includes("..")) throw new Error("Vite emitted an unsafe public path.");
   return normalized;
 }
-function viteBuildError(error, projectRoots) {
+function viteBuildError(error, projectRoots, framework) {
   const details = errorDetails(error);
   const message = boundedBuildMessage(error, projectRoots);
   const loc = errorDetails(details.loc);
@@ -952,7 +953,7 @@ function viteBuildError(error, projectRoots) {
   const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectRoots, rawFile) : null;
   return clientToolchainError(
     `Client bundle failed: ${message}`,
-    "Fix the React/Vite client source and save again.",
+    `Fix the ${framework === "preact" ? "Preact" : "React"}/Vite client source and save again.`,
     {
       ...typeof details.code === "string" ? { code: details.code.slice(0, 80) } : {},
       ...relativeFile ? { file: relativeFile } : {},
@@ -11832,10 +11833,10 @@ function readClientToolchain(toolchain, framework) {
   if (toolchain !== "esbuild" && toolchain !== "vite") {
     throw commandError2(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
   }
-  if (toolchain === "vite" && framework !== "react") {
+  if (toolchain === "vite" && framework === "vanilla") {
     throw commandError2(
       `Unsupported client framework/toolchain combination: ${framework}/vite`,
-      "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild."
+      "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild."
     );
   }
   return toolchain;
@@ -12013,7 +12014,7 @@ function scaffoldFiles(options) {
     "@types/react-dom": "^19.0.0"
   } : {};
   const baseTemplateFiles = framework === "vanilla" ? vanillaTemplateFiles(renderOptions) : templateOptions.files(renderOptions);
-  const templateFiles = framework === "react" && toolchain === "vite" ? reactViteTemplateFiles(baseTemplateFiles) : baseTemplateFiles;
+  const templateFiles = toolchain === "vite" && framework !== "vanilla" ? viteTemplateFiles(baseTemplateFiles, framework) : baseTemplateFiles;
   return {
     "sporades.json": `${JSON.stringify(
       {
@@ -12077,7 +12078,7 @@ function scaffoldFiles(options) {
     ...templateFiles
   };
 }
-function reactViteTemplateFiles(files) {
+function viteTemplateFiles(files, framework) {
   return {
     ...files,
     "client/index.tsx": `import "./styles.css";
@@ -12085,7 +12086,7 @@ import("./vite-scaffold").then(({ viteScaffoldLabel }) => console.info(viteScaff
 ${files["client/index.tsx"]}`,
     "client/styles.css": `.sporades-vite-asset { background-image: url("./sporades-mark.svg"); }
 `,
-    "client/vite-scaffold.ts": `export const viteScaffoldLabel = "Sporades React/Vite client loaded";
+    "client/vite-scaffold.ts": `export const viteScaffoldLabel = "Sporades ${framework === "preact" ? "Preact" : "React"}/Vite client loaded";
 `,
     "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#6750a4"/></svg>
 `
@@ -14590,10 +14591,10 @@ function validateClientConfig(client) {
   if (client.toolchain !== void 0 && !CLIENT_TOOLCHAINS.has(client.toolchain)) {
     throw commandError4(`Unsupported client toolchain: ${client.toolchain}`, "Use one of: esbuild, vite.");
   }
-  if (client.toolchain === "vite" && (client.framework ?? "react") !== "react") {
+  if (client.toolchain === "vite" && (client.framework ?? "react") === "vanilla") {
     throw commandError4(
       `Unsupported client framework/toolchain combination: ${client.framework}/vite`,
-      "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild."
+      "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild."
     );
   }
 }
@@ -16645,10 +16646,10 @@ function parseCreateArgs(args) {
   if (!SUPPORTED_CLIENT_TOOLCHAINS.has(toolchain)) {
     throw commandError4(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
   }
-  if (toolchain === "vite" && framework !== "react") {
+  if (toolchain === "vite" && framework === "vanilla") {
     throw commandError4(
       `Unsupported client framework/toolchain combination: ${framework ?? "default"}/vite`,
-      "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild."
+      "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild."
     );
   }
   if (!SUPPORTED_TEMPLATES.has(template)) {

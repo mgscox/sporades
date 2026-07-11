@@ -20,8 +20,8 @@ export function scaffoldFiles(options) {
         }
         : {};
     const baseTemplateFiles = framework === "vanilla" ? vanillaTemplateFiles(renderOptions) : templateOptions.files(renderOptions);
-    const templateFiles = framework === "react" && toolchain === "vite"
-        ? reactViteTemplateFiles(baseTemplateFiles)
+    const templateFiles = toolchain === "vite" && framework !== "vanilla"
+        ? viteTemplateFiles(baseTemplateFiles, framework)
         : baseTemplateFiles;
     return {
         "sporades.json": `${JSON.stringify({
@@ -76,12 +76,12 @@ export function scaffoldFiles(options) {
         ...templateFiles,
     };
 }
-function reactViteTemplateFiles(files) {
+function viteTemplateFiles(files, framework) {
     return {
         ...files,
         "client/index.tsx": `import "./styles.css";\nimport("./vite-scaffold").then(({ viteScaffoldLabel }) => console.info(viteScaffoldLabel));\n${files["client/index.tsx"]}`,
         "client/styles.css": `.sporades-vite-asset { background-image: url("./sporades-mark.svg"); }\n`,
-        "client/vite-scaffold.ts": `export const viteScaffoldLabel = "Sporades React/Vite client loaded";\n`,
+        "client/vite-scaffold.ts": `export const viteScaffoldLabel = "Sporades ${framework === "preact" ? "Preact" : "React"}/Vite client loaded";\n`,
         "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#6750a4"/></svg>\n`,
     };
 }

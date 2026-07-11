@@ -65,8 +65,8 @@ export function validateClientConfig(client) {
     if (client.toolchain !== undefined && !CLIENT_TOOLCHAINS.has(client.toolchain)) {
         throw commandError(`Unsupported client toolchain: ${client.toolchain}`, "Use one of: esbuild, vite.");
     }
-    if (client.toolchain === "vite" && (client.framework ?? "react") !== "react") {
-        throw commandError(`Unsupported client framework/toolchain combination: ${client.framework}/vite`, "Use React with Vite, or keep Preact and Vanilla TypeScript on esbuild.");
+    if (client.toolchain === "vite" && (client.framework ?? "react") === "vanilla") {
+        throw commandError(`Unsupported client framework/toolchain combination: ${client.framework}/vite`, "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild.");
     }
 }
 export function validateSchedulingConfig(scheduling) {

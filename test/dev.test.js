@@ -926,12 +926,12 @@ test("sporades dev serves a genuinely built nested esbuild asset with its MIME t
   });
 });
 
-test("React Vite rejects a legacy client.js source shell before creating release output", async () => {
+for (const framework of ["react", "preact"]) test(`${framework} Vite rejects a legacy client.js source shell before creating release output`, async () => {
   await withTempDir(async (dir) => {
-    const created = await runCli(["create", "vite-migration", "--no-install", "--no-git", "--json"], { cwd: dir });
+    const created = await runCli(["create", "vite-migration", "--framework", framework, "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(created.code, 0, created.stderr);
     const projectDir = path.join(dir, "vite-migration");
-    await installFakeReact(projectDir);
+    await (framework === "react" ? installFakeReact : installFakePreact)(projectDir);
     const configPath = path.join(projectDir, "sporades.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.client.toolchain = "vite";
@@ -939,10 +939,10 @@ test("React Vite rejects a legacy client.js source shell before creating release
     const before = await snapshotProjectTree(projectDir);
 
     await assert.rejects(createBundle(projectDir, config), (error) => {
-      assert.equal(error.message, "React/Vite requires an author-owned source entry in index.html.");
+      assert.equal(error.message, `${framework === "react" ? "React" : "Preact"}/Vite requires an author-owned source entry in index.html.`);
       assert.match(error.hint, /replace.*\/client\.js.*\/client\/index\.tsx/i);
       assert.equal(error.phase, "client");
-      assert.equal(error.framework, "react");
+      assert.equal(error.framework, framework);
       assert.equal(error.toolchain, "vite");
       return true;
     });
@@ -1039,6 +1039,68 @@ test("React Vite emits only a normalized transformed public tree and ignores loc
   });
 });
 
+test("Preact Vite preserves createHooks source compatibility and emits a Preact-only normalized tree", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(
+      ["create", "preact-vite-build", "--template", "todo", "--framework", "preact", "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "preact-vite-build");
+    await installFakePreact(projectDir);
+    await writeFile(path.join(projectDir, ".env"), "VITE_PREACT_LEAK=preact-browser-secret\n");
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "PREACT_SERVER_ONLY=preact-server-secret\n");
+    await writeFile(path.join(projectDir, "vite.config.mjs"), 'throw new Error("preact-vite-config-loaded");\n');
+    await writeFile(path.join(projectDir, "postcss.config.js"), 'throw new Error("preact-postcss-config-loaded");\n');
+    const clientPath = path.join(projectDir, "client", "index.tsx");
+    const clientSource = await readFile(clientPath, "utf8");
+    assert.match(clientSource, /createHooks\(\{ useState, useEffect \}\)/);
+    assert.match(clientSource, /from "preact"/);
+    assert.match(clientSource, /from "preact\/hooks"/);
+    assert.doesNotMatch(clientSource, /from "react|react-dom/);
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    const bundle = await createBundle(projectDir, config, { publishLegacy: false });
+    try {
+      const files = await snapshotProjectTree(bundle.staticFiles.publicDir);
+      const paths = Object.keys(files).filter((file) => !file.endsWith("/"));
+      assert(paths.includes("index.html"), JSON.stringify(paths));
+      assert(paths.some((file) => /^assets\/index-[^/]+\.js$/.test(file)));
+      assert(paths.some((file) => /^assets\/index-[^/]+\.css$/.test(file)));
+      assert(paths.some((file) => /^assets\/vite-scaffold-[^/]+\.js$/.test(file)));
+      assert(paths.some((file) => file.endsWith(".js.map")));
+      assert.equal(paths.includes("client.js"), false);
+      const output = (await Promise.all(paths.map((file) => readFile(path.join(bundle.staticFiles.publicDir, file), "utf8")))).join("\n");
+      assert.doesNotMatch(output, /preact-(?:browser|server)-secret|preact-(?:vite|postcss)-config-loaded/);
+      assert.doesNotMatch(output, /node_modules\/react(?:-dom)?\/|from ["']react(?:-dom)?/);
+      assert.doesNotMatch(output, /\/@vite\/client|react-refresh|vite\/hmr/i);
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
+test("Preact configuration without a toolchain preserves the esbuild client default", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "preact-default", "--framework", "preact", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "preact-default");
+    await installFakePreact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    delete config.client.toolchain;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const bundle = await createBundle(projectDir, config, { publishLegacy: false });
+    try {
+      assert.match(await readFile(bundle.staticFiles.clientBundle, "utf8"), /JSX import source: preact/);
+      assert.match(await readFile(bundle.staticFiles.indexHtml, "utf8"), /src="\/client\.js"/);
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
 test("sporades dev owns React Vite rebuilds, preserves last-good output, and requests full-page refresh", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(
@@ -1099,6 +1161,56 @@ test("sporades dev owns React Vite rebuilds, preserves last-good output, and req
       await writeFile(chunkPath, 'export const viteScaffoldLabel = "Sporades Vite recovered";\n');
       const recovered = await waitForJsonEvent(child, (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success");
       assert.deepEqual(recovered.data.build, { phase: "client", framework: "react", toolchain: "vite" });
+      assert.equal((await recoveredRefresh).type, "refresh");
+    } finally {
+      socket?.close();
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev owns Preact Vite failure recovery and full-page refresh", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(
+      ["create", "preact-vite-dev", "--framework", "preact", "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "preact-vite-dev");
+    await installFakePreact(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+      const chunkPath = path.join(projectDir, "client", "vite-scaffold.ts");
+      const firstRefresh = readSocketMessage(socket);
+      await writeFile(chunkPath, 'export const viteScaffoldLabel = "Sporades Preact/Vite rebuilt";\n');
+      const rebuilt = await waitForJsonEvent(child, (event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "preact", toolchain: "vite" });
+      assert.equal((await firstRefresh).type, "refresh");
+      const withoutConnectionToken = (html) => html.replace(/window\.__SPORADES_CONNECTION_TOKEN="[^"]+"/, 'window.__SPORADES_CONNECTION_TOKEN="<token>"');
+      const lastGoodHtml = withoutConnectionToken(await (await fetch(started.data.url)).text());
+
+      await writeFile(chunkPath, "export const = ;\n");
+      const failed = await waitForJsonEvent(child, (event) => !event.ok && event.data?.event === "rebuild");
+      assert.deepEqual(failed.data.build, { phase: "client", framework: "preact", toolchain: "vite" });
+      assert.match(failed.error.message, /Client bundle failed/);
+      assert.match(failed.error.hint, /Preact\/Vite client source/);
+      assert(JSON.stringify(failed).length < 4096);
+      assert.equal(withoutConnectionToken(await (await fetch(started.data.url)).text()), lastGoodHtml);
+
+      const recoveredRefresh = readSocketMessage(socket);
+      await writeFile(chunkPath, 'export const viteScaffoldLabel = "Sporades Preact/Vite recovered";\n');
+      const recovered = await waitForJsonEvent(child, (event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(recovered.data.build, { phase: "client", framework: "preact", toolchain: "vite" });
       assert.equal((await recoveredRefresh).type, "refresh");
     } finally {
       socket?.close();
