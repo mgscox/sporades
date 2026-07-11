@@ -4,7 +4,7 @@
 
 **Blocked by:** 03 — Buffer And Expire Journey State.
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## Parent
 
