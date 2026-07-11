@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — Publish And Manage One Journey Session.
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## Parent
 
@@ -14,7 +14,7 @@
 - [ ] `journey.subscribe(listener)` emits exactly one `{ type: "snapshot", states }` event first, then `{ type: "added" | "updated" | "removed", state }` events.
 - [ ] Every public record has the flat shape `{ sessionId, userId, status, metadata, updatedAt, expiresAt }` with no server-produced per-user aggregate.
 - [ ] List results and snapshot arrays sort lexicographically by `userId`, then `sessionId`.
-- [ ] Enabling a Journey session emits an added change containing its complete app-visible record.
+- [ ] The first accepted publication for an enabled Journey session emits an added change containing its complete app-visible record.
 - [ ] Replacing status or metadata emits an updated change for the same Journey session ID.
 - [ ] Disabling a Journey session emits a removed change identifying the record that left the active set.
 - [ ] Separate tabs, windows, devices, and browser sessions produce distinct Journey session IDs even when they authenticate as the same Sporades user.
