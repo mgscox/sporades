@@ -474,7 +474,7 @@ function createConnection() {
   const appMessageListeners = new Set();
   const authStateListeners = new Set();
   let latestAuthMessage = null;
-  let journeyResumeCredential = null;
+  let journeyConsentOptions = null;
   let journeyEnabledUserId = null;
   let journeyCapture = null;
   let journeyCaptureTeardown = null;
@@ -504,8 +504,8 @@ function createConnection() {
     socket = new WebSocket(url);
     socket.addEventListener("open", () => {
       request("auth.get");
-      if (journeyResumeCredential) {
-        request("journey.enable", { resumeCredential: journeyResumeCredential }).then((result) => {
+      if (journeyConsentOptions) {
+        request("journey.enable", { options: journeyConsentOptions }).then((result) => {
           if (!result.error && result.data?.capture) startJourneyCapture(result.data.capture);
         });
       }
@@ -522,13 +522,6 @@ function createConnection() {
       const message = JSON.parse(event.data);
       if (message.type === "auth.result" || message.type === "auth.session.replace") {
         storeAuthSession(message);
-      }
-      if (message.type === "journey.retired") {
-        stopJourneyCapture();
-        journeyCapture = null;
-        journeyResumeCredential = null;
-        journeyEnabledUserId = null;
-        return;
       }
       if (message.type === "journey.event") {
         const subscription = journeySubscriptions.get(message.id);
@@ -623,12 +616,12 @@ function createConnection() {
     if ((latestAuthUserId && nextAuthUserId && latestAuthUserId !== nextAuthUserId) || (journeyEnabledUserId && nextAuthUserId && journeyEnabledUserId !== nextAuthUserId)) {
       stopJourneyCapture();
       journeyCapture = null;
-      journeyResumeCredential = null;
+      journeyConsentOptions = null;
       journeyEnabledUserId = null;
     }
     if (nextAuthUserId) latestAuthUserId = nextAuthUserId;
     if (token) {
-      if (sessionToken && token !== sessionToken) { stopJourneyCapture(); journeyCapture = null; journeyResumeCredential = null; }
+      if (sessionToken && token !== sessionToken) { stopJourneyCapture(); journeyCapture = null; journeyConsentOptions = null; journeyEnabledUserId = null; }
       sessionToken = token;
       localStorage.setItem("sporades.sessionToken", token);
     }
@@ -820,7 +813,7 @@ function createConnection() {
     signOut() {
       return request("auth.signOut").then(async (result) => {
         if (!result.error && result.data?.ok === true) {
-          journeyResumeCredential = null;
+          journeyConsentOptions = null;
           journeyEnabledUserId = null;
           stopJourneyCapture();
           journeyCapture = null;
@@ -853,12 +846,11 @@ function createConnection() {
     },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
-        if (result.data?.resumeCredential) journeyResumeCredential = result.data.resumeCredential;
+        if (!result.error) journeyConsentOptions = options;
         if (result.data?.userId) journeyEnabledUserId = result.data.userId;
         if (!result.error && result.data?.capture) startJourneyCapture(result.data.capture);
         if (!result.data) return result;
-        const { resumeCredential, ...data } = result.data;
-        return { ...result, data };
+        return result;
       });
     },
     journeySet(state) { return request("journey.set", { state }); },
@@ -872,7 +864,7 @@ function createConnection() {
       if (activeSocket.readyState === WebSocket.OPEN) send({ id, type: "journey.subscribe" });
       return { unsubscribe() { if (journeySubscriptions.delete(id)) send({ id: nextId++, type: "journey.unsubscribe", subscriptionId: id }); } };
     },
-    journeyDisable() { return request("journey.disable").then((result) => { if (!result.error) { stopJourneyCapture(); journeyCapture = null; journeyResumeCredential = null; journeyEnabledUserId = null; } return result; }); },
+    journeyDisable() { return request("journey.disable").then((result) => { if (!result.error) { stopJourneyCapture(); journeyCapture = null; journeyConsentOptions = null; journeyEnabledUserId = null; } return result; }); },
     sendMessage(type, data) {
       return request("app.send", { message: type, data });
     },
@@ -1007,6 +999,7 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createRuntimeDatabaseAdapter,
   createRuntimeClock,
   resolveSchedulePayloadFactoryTimeoutMs,
+  resolveJourneySessionInactivityMinutes,
   scheduleDefinitionsFromCapsule,
   parseScheduleExpression,
   nextScheduleOccurrence,
@@ -1611,6 +1604,7 @@ function sanitizeResponseHeaders(headers) {
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
   const path7 = await import("node:path");
   const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
+  const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
   globalThis.requireAuth = requireAuth;
   const sqlite = await createRuntimeDatabaseAdapter(databasePath, options?.serviceEnv ?? serverEnv, config);
   const serviceEnv = options?.serviceEnv ?? serverEnv;
@@ -1653,6 +1647,8 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     mutationHooks,
     lifecycleHooks,
     journeyPolicy: normalizeJourneyPolicy(capsuleDefinition?.journey),
+    journeySessionInactivityMinutes,
+    runtimeDiagnostics: { journey: { sessionInactivityMinutes: journeySessionInactivityMinutes } },
     jobScheduleProvenanceByContext: /* @__PURE__ */ new WeakMap(),
     rowCache,
     serverEnv,
@@ -1722,6 +1718,11 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   assertValidReferenceTargets(schema);
   await sqlite.migrateAppSchema(schema);
   return database;
+}
+function resolveJourneySessionInactivityMinutes(config = {}) {
+  const value = config.journey?.sessionInactivityMinutes;
+  if (typeof value !== "number" || !Number.isFinite(value)) return 30;
+  return Math.min(1440, Math.max(1, Math.round(value)));
 }
 function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
   const schedules = [];
@@ -7547,7 +7548,6 @@ function journeyError(id, code = "JOURNEY_NOT_ENABLED", message = "User journey 
 function createWebSocketHub(getDatabase) {
   const clients = /* @__PURE__ */ new Set();
   const journeys = /* @__PURE__ */ new Map();
-  const journeySessions = /* @__PURE__ */ new Map();
   const connectionTokens = /* @__PURE__ */ new Map();
   let nextClientId = 1;
   const connectionTokenTtlMs = 4 * 60 * 60 * 1e3;
@@ -7611,6 +7611,7 @@ function createWebSocketHub(getDatabase) {
       });
       const removeClient = () => {
         clients.delete(client);
+        client.journey = null;
       };
       socket.on("close", removeClient);
       socket.on("error", removeClient);
@@ -7679,13 +7680,11 @@ function createWebSocketHub(getDatabase) {
   }
   function retireJourney(client) {
     if (!client.journey) return;
-    const removed = journeys.get(client.journey.sessionId);
-    journeys.delete(client.journey.sessionId);
-    journeySessions.delete(client.journey.resumeCredential);
+    const removed = [...client.journey.sessionIds ?? []].map((sessionId) => journeys.get(sessionId)).filter(Boolean);
+    for (const sessionId of client.journey.sessionIds ?? []) journeys.delete(sessionId);
     client.journey = null;
-    if (removed) broadcastJourneyEvent({ type: "removed", state: removed });
+    for (const state of removed) broadcastJourneyEvent({ type: "removed", state });
     scheduleJourneyExpiry();
-    sendJson(client, { id: null, type: "journey.retired", data: { retired: true }, error: null });
   }
   function activeJourneys() {
     pruneExpiredJourneys();
@@ -7919,18 +7918,13 @@ function createWebSocketHub(getDatabase) {
         sendJson(client, journeyError(message.id));
         return;
       }
-      if (typeof message.resumeCredential === "string") {
-        const resumed = journeySessions.get(message.resumeCredential);
-        if (resumed && resumed.userId === client.session.auth.userId) client.journey = resumed;
-      }
       if (!client.journey) {
         const requested = message.options?.capture;
         const capture = {};
         for (const key of ["navigation", "focus", "interactions"]) capture[key] = policy.capture[key] && requested?.[key] !== false;
-        client.journey = { sessionId: randomBytes2(24).toString("base64url"), resumeCredential: randomBytes2(32).toString("base64url"), userId: client.session.auth.userId, capture };
-        journeySessions.set(client.journey.resumeCredential, client.journey);
+        client.journey = { sessionId: null, sessionIds: /* @__PURE__ */ new Set(), lastActivityAt: null, userId: client.session.auth.userId, capture };
       }
-      sendJson(client, { id: message.id ?? null, type: "journey.enable.result", data: { sessionId: client.journey.sessionId, userId: client.journey.userId, capture: client.journey.capture, resumeCredential: client.journey.resumeCredential }, error: null });
+      sendJson(client, { id: message.id ?? null, type: "journey.enable.result", data: { enabled: true, userId: client.journey.userId, capture: client.journey.capture }, error: null });
       return;
     }
     if (message.type === "journey.set") {
@@ -7943,25 +7937,29 @@ function createWebSocketHub(getDatabase) {
         return;
       }
       if (client.journey.userId !== client.session.auth.userId) {
-        journeys.delete(client.journey.sessionId);
-        journeySessions.delete(client.journey.resumeCredential);
-        client.journey = null;
+        retireJourney(client);
         sendJson(client, journeyError(message.id, "JOURNEY_IDENTITY_CHANGED", "Journey session identity changed.", "Call journey.enable() again for the current authenticated user."));
         return;
       }
       try {
         const state = normalizeJourneyState(message.state, database.journeyPolicy.ttlSeconds);
         pruneExpiredJourneys();
+        const nowDate = database.clock.now();
+        const inactivityMs = database.journeySessionInactivityMinutes * 6e4;
+        if (!client.journey.sessionId || client.journey.lastActivityAt !== null && nowDate.getTime() - client.journey.lastActivityAt >= inactivityMs) {
+          client.journey.sessionId = randomBytes2(24).toString("base64url");
+          client.journey.sessionIds.add(client.journey.sessionId);
+        }
         const previous = journeys.get(client.journey.sessionId);
         if (!previous) {
           const userCount = [...journeys.values()].filter((record2) => record2.userId === client.session.auth.userId).length;
           if (userCount >= 32) throw { code: "JOURNEY_USER_CAPACITY", message: "Journey user capacity reached.", hint: "Wait for an existing Journey state to expire or disable one before publishing another." };
           if (journeys.size >= 1e3) throw { code: "JOURNEY_CAPSULE_CAPACITY", message: "Journey Capsule capacity reached.", hint: "Wait for an existing Journey state to expire or be disabled before publishing another." };
         }
-        const nowDate = database.clock.now();
         const now = nowDate.toISOString();
         const record = { sessionId: client.journey.sessionId, userId: client.session.auth.userId, status: state.status, metadata: state.metadata ?? null, updatedAt: now, expiresAt: new Date(nowDate.getTime() + state.ttlSeconds * 1e3).toISOString() };
         journeys.set(record.sessionId, record);
+        client.journey.lastActivityAt = nowDate.getTime();
         scheduleJourneyExpiry();
         sendJson(client, { id: message.id ?? null, type: "journey.set.result", data: { journey: record }, error: null });
         broadcastJourneyEvent({ type: previous ? "updated" : "added", state: record });
@@ -7998,13 +7996,12 @@ function createWebSocketHub(getDatabase) {
         sendJson(client, journeyError(message.id));
         return;
       }
-      const removed = client.journey ? journeys.get(client.journey.sessionId) : null;
-      if (client.journey) journeys.delete(client.journey.sessionId);
-      if (client.journey) journeySessions.delete(client.journey.resumeCredential);
+      const removed = client.journey ? [...client.journey.sessionIds].map((sessionId) => journeys.get(sessionId)).filter(Boolean) : [];
+      if (client.journey) for (const sessionId of client.journey.sessionIds) journeys.delete(sessionId);
       client.journey = null;
       scheduleJourneyExpiry();
       sendJson(client, { id: message.id ?? null, type: "journey.disable.result", data: { ok: true }, error: null });
-      if (removed) broadcastJourneyEvent({ type: "removed", state: removed });
+      for (const state of removed) broadcastJourneyEvent({ type: "removed", state });
       return;
     }
     if (message.type === "preferences.update") {

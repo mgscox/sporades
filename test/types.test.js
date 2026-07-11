@@ -261,7 +261,7 @@ preferences.get().then((result) => result.data?.preferences.theme);
 preferences.update({ theme: "dark", sidebar: { collapsed: true } }).then((result) => result.data?.preferences.sidebar);
 // @ts-expect-error preferences.update accepts a JSON object patch.
 preferences.update(null);
-journey.enable({ capture: { focus: false } }).then((result) => result.data?.sessionId);
+journey.enable({ capture: { focus: false } }).then((result) => result.data?.enabled);
 journey.set({ status: "editing", metadata: { document: "roadmap" }, ttlSeconds: 20 });
 journey.list().then((result) => result.data?.journeys.map((entry) => entry.userId));
 const journeyRecord: JourneyRecord = { sessionId: "session", userId: "user", status: "online", metadata: null, updatedAt: "now", expiresAt: "later" };

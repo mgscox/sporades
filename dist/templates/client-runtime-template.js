@@ -157,7 +157,7 @@ function createConnection() {
   const appMessageListeners = new Set();
   const authStateListeners = new Set();
   let latestAuthMessage = null;
-  let journeyResumeCredential = null;
+  let journeyConsentOptions = null;
   let journeyEnabledUserId = null;
   let journeyCapture = null;
   let journeyCaptureTeardown = null;
@@ -187,8 +187,8 @@ function createConnection() {
     socket = new WebSocket(url);
     socket.addEventListener("open", () => {
       request("auth.get");
-      if (journeyResumeCredential) {
-        request("journey.enable", { resumeCredential: journeyResumeCredential }).then((result) => {
+      if (journeyConsentOptions) {
+        request("journey.enable", { options: journeyConsentOptions }).then((result) => {
           if (!result.error && result.data?.capture) startJourneyCapture(result.data.capture);
         });
       }
@@ -205,13 +205,6 @@ function createConnection() {
       const message = JSON.parse(event.data);
       if (message.type === "auth.result" || message.type === "auth.session.replace") {
         storeAuthSession(message);
-      }
-      if (message.type === "journey.retired") {
-        stopJourneyCapture();
-        journeyCapture = null;
-        journeyResumeCredential = null;
-        journeyEnabledUserId = null;
-        return;
       }
       if (message.type === "journey.event") {
         const subscription = journeySubscriptions.get(message.id);
@@ -306,12 +299,12 @@ function createConnection() {
     if ((latestAuthUserId && nextAuthUserId && latestAuthUserId !== nextAuthUserId) || (journeyEnabledUserId && nextAuthUserId && journeyEnabledUserId !== nextAuthUserId)) {
       stopJourneyCapture();
       journeyCapture = null;
-      journeyResumeCredential = null;
+      journeyConsentOptions = null;
       journeyEnabledUserId = null;
     }
     if (nextAuthUserId) latestAuthUserId = nextAuthUserId;
     if (token) {
-      if (sessionToken && token !== sessionToken) { stopJourneyCapture(); journeyCapture = null; journeyResumeCredential = null; }
+      if (sessionToken && token !== sessionToken) { stopJourneyCapture(); journeyCapture = null; journeyConsentOptions = null; journeyEnabledUserId = null; }
       sessionToken = token;
       localStorage.setItem("sporades.sessionToken", token);
     }
@@ -503,7 +496,7 @@ function createConnection() {
     signOut() {
       return request("auth.signOut").then(async (result) => {
         if (!result.error && result.data?.ok === true) {
-          journeyResumeCredential = null;
+          journeyConsentOptions = null;
           journeyEnabledUserId = null;
           stopJourneyCapture();
           journeyCapture = null;
@@ -536,12 +529,11 @@ function createConnection() {
     },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
-        if (result.data?.resumeCredential) journeyResumeCredential = result.data.resumeCredential;
+        if (!result.error) journeyConsentOptions = options;
         if (result.data?.userId) journeyEnabledUserId = result.data.userId;
         if (!result.error && result.data?.capture) startJourneyCapture(result.data.capture);
         if (!result.data) return result;
-        const { resumeCredential, ...data } = result.data;
-        return { ...result, data };
+        return result;
       });
     },
     journeySet(state) { return request("journey.set", { state }); },
@@ -555,7 +547,7 @@ function createConnection() {
       if (activeSocket.readyState === WebSocket.OPEN) send({ id, type: "journey.subscribe" });
       return { unsubscribe() { if (journeySubscriptions.delete(id)) send({ id: nextId++, type: "journey.unsubscribe", subscriptionId: id }); } };
     },
-    journeyDisable() { return request("journey.disable").then((result) => { if (!result.error) { stopJourneyCapture(); journeyCapture = null; journeyResumeCredential = null; journeyEnabledUserId = null; } return result; }); },
+    journeyDisable() { return request("journey.disable").then((result) => { if (!result.error) { stopJourneyCapture(); journeyCapture = null; journeyConsentOptions = null; journeyEnabledUserId = null; } return result; }); },
     sendMessage(type, data) {
       return request("app.send", { message: type, data });
     },

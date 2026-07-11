@@ -19,6 +19,7 @@ test("Journey state expires and can be renewed under the enabled session using r
     });
     try {
       const enabled = await send(publisher, { id: "enable", type: "journey.enable", options: {} });
+      assert.deepEqual(Object.keys(enabled.data).sort(), ["capture", "enabled", "userId"]);
       const defaulted = await send(publisher, { id: "default", type: "journey.set", state: { status: "online" } });
       assert.equal(defaulted.data.journey.expiresAt, "2030-01-01T00:00:30.000Z");
       const first = await send(publisher, { id: "first", type: "journey.set", state: { status: "editing", ttlSeconds: 1 } });
@@ -36,7 +37,7 @@ test("Journey state expires and can be renewed under the enabled session using r
       assert.equal(events.length, 2, "cleanup emits exactly one removal");
 
       const renewed = await send(publisher, { id: "renewed", type: "journey.set", state: { status: "reviewing", ttlSeconds: 300 } });
-      assert.equal(renewed.data.journey.sessionId, enabled.data.sessionId);
+      assert.notEqual(renewed.data.journey.sessionId, undefined);
       assert.equal(renewed.data.journey.expiresAt, "2030-01-01T00:05:01.000Z");
       for (const ttlSeconds of [0, 1.5, 301]) {
         const invalid = await send(publisher, { id: `invalid-${ttlSeconds}`, type: "journey.set", state: { status: "invalid", ttlSeconds } });
@@ -44,6 +45,38 @@ test("Journey state expires and can be renewed under the enabled session using r
       }
     } finally { publisher.close(); observer.close(); }
   });
+});
+
+test("Journey creates sessions lazily and rotates at the configured inactivity boundary", async () => {
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  await withJourneyRuntime(clock, async ({ open }) => {
+    const publisher = await open();
+    try {
+      const enabled = await send(publisher, { id: "enable", type: "journey.enable", options: {} });
+      assert.equal(enabled.data.sessionId, undefined);
+      const first = await send(publisher, { id: "first", type: "journey.set", state: { status: "first", ttlSeconds: 300 } });
+      clock.advanceBy(59_999);
+      const before = await send(publisher, { id: "before", type: "journey.set", state: { status: "before", ttlSeconds: 300 } });
+      assert.equal(before.data.journey.sessionId, first.data.journey.sessionId);
+      clock.advanceBy(60_000);
+      const boundary = await send(publisher, { id: "boundary", type: "journey.set", state: { status: "boundary", ttlSeconds: 300 } });
+      assert.notEqual(boundary.data.journey.sessionId, first.data.journey.sessionId);
+    } finally { publisher.close(); }
+  }, { journey: { sessionInactivityMinutes: 1 } });
+});
+
+test("Journey inactivity configuration defaults, rounds, clamps, and reports its effective value", async () => {
+  const cases = [
+    [undefined, 30], [null, 30], ["30", 30], [Number.NaN, 30],
+    [0, 1], [1.49, 1], [1.5, 2], [2000, 1440],
+  ];
+  for (const [value, expected] of cases) {
+    const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+    await withJourneyRuntime(clock, async ({ database }) => {
+      assert.equal(database.journeySessionInactivityMinutes, expected);
+      assert.deepEqual(database.runtimeDiagnostics.journey, { sessionInactivityMinutes: expected });
+    }, value === undefined ? {} : { journey: { sessionInactivityMinutes: value } });
+  }
 });
 
 test("Journey enforces per-user capacity without evicting live state and permits replacement", async () => {
@@ -100,9 +133,9 @@ test("Journey enforces Capsule capacity, permits replacement, and prunes expiry 
   });
 });
 
-async function withJourneyRuntime(clock, fn) {
+async function withJourneyRuntime(clock, fn, config = {}) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-journey-expiry-"));
-  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "journey-expiry" }, {
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "journey-expiry", ...config }, {
     name: "journey-expiry", schema: {}, queries: {}, mutations: {}, endpoints: {}, messages: {}, journey: { enabled: true, ttlSeconds: 30 },
   }, { clock });
   const hub = createWebSocketHub(() => database);
@@ -111,7 +144,7 @@ async function withJourneyRuntime(clock, fn) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   try {
-    await fn({ open: () => new Promise((resolve, reject) => {
+    await fn({ database, open: () => new Promise((resolve, reject) => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/?connectionToken=${hub.createConnectionToken()}`);
       ws.addEventListener("open", () => resolve(ws), { once: true });
       ws.addEventListener("error", reject, { once: true });

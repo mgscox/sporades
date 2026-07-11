@@ -34,6 +34,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     createRuntimeDatabaseAdapter,
     createRuntimeClock,
     resolveSchedulePayloadFactoryTimeoutMs,
+    resolveJourneySessionInactivityMinutes,
     scheduleDefinitionsFromCapsule,
     parseScheduleExpression,
     nextScheduleOccurrence,
@@ -638,6 +639,7 @@ function sanitizeResponseHeaders(headers) {
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
     const path = await import("node:path");
     const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
+    const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
     // Handler sources extracted from Capsule server code are re-created with
     // `new Function`, which only sees globals. Install the sporades/server
     // requireAuth helper there so those handlers resolve the same auth gate.
@@ -685,6 +687,8 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         mutationHooks,
         lifecycleHooks,
         journeyPolicy: normalizeJourneyPolicy(capsuleDefinition?.journey),
+        journeySessionInactivityMinutes,
+        runtimeDiagnostics: { journey: { sessionInactivityMinutes: journeySessionInactivityMinutes } },
         jobScheduleProvenanceByContext: new WeakMap(),
         rowCache,
         serverEnv,
@@ -759,6 +763,12 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
     assertValidReferenceTargets(schema);
     await sqlite.migrateAppSchema(schema);
     return database;
+}
+function resolveJourneySessionInactivityMinutes(config = {}) {
+    const value = config.journey?.sessionInactivityMinutes;
+    if (typeof value !== "number" || !Number.isFinite(value))
+        return 30;
+    return Math.min(1_440, Math.max(1, Math.round(value)));
 }
 function scheduleDefinitionsFromCapsule(capsuleDefinition, jobs) {
     const schedules = [];
@@ -6733,7 +6743,6 @@ function journeyError(id, code = "JOURNEY_NOT_ENABLED", message = "User journey 
 export function createWebSocketHub(getDatabase) {
     const clients = new Set();
     const journeys = new Map();
-    const journeySessions = new Map();
     const connectionTokens = new Map();
     let nextClientId = 1;
     const connectionTokenTtlMs = 4 * 60 * 60 * 1000;
@@ -6793,7 +6802,7 @@ export function createWebSocketHub(getDatabase) {
                 client.buffer = Buffer.concat([client.buffer, chunk]);
                 drainWebSocketFrames(client, (message) => enqueueClientMessage(client, message));
             });
-            const removeClient = () => { clients.delete(client); };
+            const removeClient = () => { clients.delete(client); client.journey = null; };
             socket.on("close", removeClient);
             socket.on("error", removeClient);
         },
@@ -6863,14 +6872,13 @@ export function createWebSocketHub(getDatabase) {
     function retireJourney(client) {
         if (!client.journey)
             return;
-        const removed = journeys.get(client.journey.sessionId);
-        journeys.delete(client.journey.sessionId);
-        journeySessions.delete(client.journey.resumeCredential);
+        const removed = [...(client.journey.sessionIds ?? [])].map((sessionId) => journeys.get(sessionId)).filter(Boolean);
+        for (const sessionId of client.journey.sessionIds ?? [])
+            journeys.delete(sessionId);
         client.journey = null;
-        if (removed)
-            broadcastJourneyEvent({ type: "removed", state: removed });
+        for (const state of removed)
+            broadcastJourneyEvent({ type: "removed", state });
         scheduleJourneyExpiry();
-        sendJson(client, { id: null, type: "journey.retired", data: { retired: true }, error: null });
     }
     function activeJourneys() {
         pruneExpiredJourneys();
@@ -7119,20 +7127,14 @@ export function createWebSocketHub(getDatabase) {
                 sendJson(client, journeyError(message.id));
                 return;
             }
-            if (typeof message.resumeCredential === "string") {
-                const resumed = journeySessions.get(message.resumeCredential);
-                if (resumed && resumed.userId === client.session.auth.userId)
-                    client.journey = resumed;
-            }
             if (!client.journey) {
                 const requested = message.options?.capture;
                 const capture = {};
                 for (const key of ["navigation", "focus", "interactions"])
                     capture[key] = policy.capture[key] && requested?.[key] !== false;
-                client.journey = { sessionId: randomBytes(24).toString("base64url"), resumeCredential: randomBytes(32).toString("base64url"), userId: client.session.auth.userId, capture };
-                journeySessions.set(client.journey.resumeCredential, client.journey);
+                client.journey = { sessionId: null, sessionIds: new Set(), lastActivityAt: null, userId: client.session.auth.userId, capture };
             }
-            sendJson(client, { id: message.id ?? null, type: "journey.enable.result", data: { sessionId: client.journey.sessionId, userId: client.journey.userId, capture: client.journey.capture, resumeCredential: client.journey.resumeCredential }, error: null });
+            sendJson(client, { id: message.id ?? null, type: "journey.enable.result", data: { enabled: true, userId: client.journey.userId, capture: client.journey.capture }, error: null });
             return;
         }
         if (message.type === "journey.set") {
@@ -7145,15 +7147,19 @@ export function createWebSocketHub(getDatabase) {
                 return;
             }
             if (client.journey.userId !== client.session.auth.userId) {
-                journeys.delete(client.journey.sessionId);
-                journeySessions.delete(client.journey.resumeCredential);
-                client.journey = null;
+                retireJourney(client);
                 sendJson(client, journeyError(message.id, "JOURNEY_IDENTITY_CHANGED", "Journey session identity changed.", "Call journey.enable() again for the current authenticated user."));
                 return;
             }
             try {
                 const state = normalizeJourneyState(message.state, database.journeyPolicy.ttlSeconds);
                 pruneExpiredJourneys();
+                const nowDate = database.clock.now();
+                const inactivityMs = database.journeySessionInactivityMinutes * 60_000;
+                if (!client.journey.sessionId || (client.journey.lastActivityAt !== null && nowDate.getTime() - client.journey.lastActivityAt >= inactivityMs)) {
+                    client.journey.sessionId = randomBytes(24).toString("base64url");
+                    client.journey.sessionIds.add(client.journey.sessionId);
+                }
                 const previous = journeys.get(client.journey.sessionId);
                 if (!previous) {
                     const userCount = [...journeys.values()].filter((record) => record.userId === client.session.auth.userId).length;
@@ -7162,10 +7168,10 @@ export function createWebSocketHub(getDatabase) {
                     if (journeys.size >= 1000)
                         throw { code: "JOURNEY_CAPSULE_CAPACITY", message: "Journey Capsule capacity reached.", hint: "Wait for an existing Journey state to expire or be disabled before publishing another." };
                 }
-                const nowDate = database.clock.now();
                 const now = nowDate.toISOString();
                 const record = { sessionId: client.journey.sessionId, userId: client.session.auth.userId, status: state.status, metadata: state.metadata ?? null, updatedAt: now, expiresAt: new Date(nowDate.getTime() + state.ttlSeconds * 1000).toISOString() };
                 journeys.set(record.sessionId, record);
+                client.journey.lastActivityAt = nowDate.getTime();
                 scheduleJourneyExpiry();
                 sendJson(client, { id: message.id ?? null, type: "journey.set.result", data: { journey: record }, error: null });
                 broadcastJourneyEvent({ type: previous ? "updated" : "added", state: record });
@@ -7203,16 +7209,15 @@ export function createWebSocketHub(getDatabase) {
                 sendJson(client, journeyError(message.id));
                 return;
             }
-            const removed = client.journey ? journeys.get(client.journey.sessionId) : null;
+            const removed = client.journey ? [...client.journey.sessionIds].map((sessionId) => journeys.get(sessionId)).filter(Boolean) : [];
             if (client.journey)
-                journeys.delete(client.journey.sessionId);
-            if (client.journey)
-                journeySessions.delete(client.journey.resumeCredential);
+                for (const sessionId of client.journey.sessionIds)
+                    journeys.delete(sessionId);
             client.journey = null;
             scheduleJourneyExpiry();
             sendJson(client, { id: message.id ?? null, type: "journey.disable.result", data: { ok: true }, error: null });
-            if (removed)
-                broadcastJourneyEvent({ type: "removed", state: removed });
+            for (const state of removed)
+                broadcastJourneyEvent({ type: "removed", state });
             return;
         }
         if (message.type === "preferences.update") {

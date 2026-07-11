@@ -32,10 +32,10 @@ test("Journey declaration rejects non-plain capture policy shapes", () => {
   }
 });
 
-test("client clears private Journey consent on same-token auth identity replacement", async () => {
+test("client clears Journey consent on same-token auth identity replacement", async () => {
   const calls = [];
   const browser = installBrowserFakes(anonymousAuth, { handlers: {
-    "journey.enable": async (message) => { calls.push(message); return { type: "journey.enable.result", data: { sessionId: "j1", userId: anonymousAuth.userId, capture: {}, resumeCredential: "resume-1" }, error: null }; },
+    "journey.enable": async (message) => { calls.push(message); return { type: "journey.enable.result", data: { userId: anonymousAuth.userId, capture: {} }, error: null }; },
   }});
   try {
     const runtime = await importClientRuntime();
@@ -47,17 +47,17 @@ test("client clears private Journey consent on same-token auth identity replacem
   } finally { browser.cleanup(); }
 });
 
-test("failed auth transition preserves private Journey consent for reconnect", async () => {
+test("failed auth transition preserves Journey consent for reconnect", async () => {
   const calls = [];
   const browser = installBrowserFakes(anonymousAuth, { handlers: {
-    "journey.enable": async (message) => { calls.push(message); return { type: "journey.enable.result", data: { sessionId: "j1", userId: anonymousAuth.userId, capture: {}, resumeCredential: "resume-1" }, error: null }; },
+    "journey.enable": async (message) => { calls.push(message); return { type: "journey.enable.result", data: { userId: anonymousAuth.userId, capture: {} }, error: null }; },
     "auth.signOut": async () => ({ type: "error", data: null, error: { message: "nope" } }),
   }});
   try {
     const runtime = await importClientRuntime(); await runtime.journey.enable(); await runtime.auth.signOut();
     browser.sockets[0].readyState = 3; browser.sockets[0].emit("close", {});
     await new Promise((resolve) => setTimeout(resolve, 550));
-    assert.equal(calls.at(-1).resumeCredential, "resume-1");
+    assert.deepEqual(calls.at(-1).options, {});
   } finally { browser.cleanup(); }
 });
 
@@ -66,13 +66,13 @@ test("browser client runtime exposes the explicit Journey session lifecycle over
   const browser = installBrowserFakes(anonymousAuth, {
     handlers: Object.fromEntries(["journey.enable", "journey.set", "journey.list", "journey.disable"].map((type) => [type, async (message) => {
       calls.push(message);
-      return { type: `${type}.result`, data: type === "journey.enable" ? { sessionId: "journey-1", userId: anonymousAuth.userId, capture: { navigation: true, focus: false, interactions: true }, resumeCredential: "private-resume" } : { ok: true }, error: null };
+      return { type: `${type}.result`, data: type === "journey.enable" ? { userId: anonymousAuth.userId, capture: { navigation: true, focus: false, interactions: true } } : { ok: true }, error: null };
     }])),
   });
   try {
     const runtime = await importClientRuntime();
     const enabled = await runtime.journey.enable({ capture: { focus: false } });
-    assert.equal(Object.hasOwn(enabled.data, "resumeCredential"), false);
+    assert.equal(Object.hasOwn(enabled.data, "sessionId"), false);
     await runtime.journey.set({ status: "editing", metadata: { document: "roadmap" }, ttlSeconds: 20 });
     await runtime.journey.list();
     assert.deepEqual(calls.map(({ type }) => type), ["journey.enable", "journey.set", "journey.list"]);
@@ -83,7 +83,7 @@ test("browser client runtime exposes the explicit Journey session lifecycle over
     await new Promise((resolve) => setTimeout(resolve, 550));
     await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(calls.at(-1).type, "journey.enable");
-    assert.equal(calls.at(-1).resumeCredential, "private-resume");
+    assert.deepEqual(calls.at(-1).options, { capture: { focus: false } });
     await runtime.journey.disable();
   } finally {
     browser.cleanup();
@@ -114,7 +114,7 @@ test("Journey subscriptions deliver platform events and unsubscribe without enab
 test("each local Journey subscriber starts with one snapshot and reconnect converges through changes", async () => {
   const calls = [];
   const browser = installBrowserFakes(anonymousAuth, { handlers: {
-    "journey.subscribe": async (message) => { calls.push(message); return { type: message.resume ? "journey.sync" : "journey.event", data: { type: "snapshot", states: message.resume ? [{ sessionId: "j2", userId: "u", status: "reviewing", updatedAt: "2", expiresAt: "3" }] : [] }, error: null }; },
+    "journey.subscribe": async (message) => { calls.push(message); return { type: message.resume ? "journey.sync" : "journey.event", data: { type: "snapshot", states: message.resume ? [{ userId: "u", status: "reviewing", updatedAt: "2", expiresAt: "3" }] : [] }, error: null }; },
   }});
   try {
     const runtime = await importClientRuntime();
@@ -135,7 +135,7 @@ test("each local Journey subscriber starts with one snapshot and reconnect conve
 test("Journey capture publishes only safe browser signals after consent and tears down on disable", async () => {
   const calls = [];
   const browser = installBrowserFakes(anonymousAuth, { href: "https://capsule.test/orders/42?token=secret#private", handlers: {
-    "journey.enable": async () => ({ type: "journey.enable.result", data: { sessionId: "j1", userId: anonymousAuth.userId, capture: { navigation: true, focus: true, interactions: true }, resumeCredential: "resume" }, error: null }),
+    "journey.enable": async () => ({ type: "journey.enable.result", data: { userId: anonymousAuth.userId, capture: { navigation: true, focus: true, interactions: true } }, error: null }),
     "journey.set": async (message) => { calls.push(message.state); return { type: "journey.set.result", data: { journey: message.state }, error: null }; },
     "journey.disable": async () => ({ type: "journey.disable.result", data: { ok: true }, error: null }),
   }});
@@ -287,7 +287,7 @@ test("Journey capture publishes only safe browser signals after consent and tear
 test("Journey capture narrowing can keep a consenting page invisible while manual state remains available", async () => {
   const calls = [];
   const browser = installBrowserFakes(anonymousAuth, { handlers: {
-    "journey.enable": async () => ({ type: "journey.enable.result", data: { sessionId: "j2", userId: anonymousAuth.userId, capture: { navigation: false, focus: false, interactions: false }, resumeCredential: "r2" }, error: null }),
+    "journey.enable": async () => ({ type: "journey.enable.result", data: { userId: anonymousAuth.userId, capture: { navigation: false, focus: false, interactions: false } }, error: null }),
     "journey.set": async (message) => { calls.push(message.state); return { type: "journey.set.result", data: { journey: message.state }, error: null }; },
   }});
   globalThis.document = { head: {}, documentElement: {}, querySelector: () => null };
@@ -301,10 +301,10 @@ test("Journey capture narrowing can keep a consenting page invisible while manua
   } finally { delete globalThis.document; browser.cleanup(); }
 });
 
-test("same-user reconnect resumes the same Journey session and narrowed capture policy", async () => {
+test("same-user reconnect restores consent and narrowed capture policy", async () => {
   const enables = []; const states = [];
   const browser = installBrowserFakes(anonymousAuth, { href: "https://capsule.test/resume", handlers: {
-    "journey.enable": async (message) => { enables.push(message); return { type: "journey.enable.result", data: { sessionId: "stable-session", userId: anonymousAuth.userId, capture: { navigation: true, focus: false, interactions: false }, resumeCredential: "stable-resume" }, error: null }; },
+    "journey.enable": async (message) => { enables.push(message); return { type: "journey.enable.result", data: { userId: anonymousAuth.userId, capture: { navigation: true, focus: false, interactions: false } }, error: null }; },
     "journey.set": async (message) => { states.push(message.state); return { type: "journey.set.result", data: { journey: message.state }, error: null }; },
   }});
   const listeners = new Map(); const add = (type, listener) => listeners.set(type, [...(listeners.get(type) ?? []), listener]);
@@ -315,12 +315,12 @@ test("same-user reconnect resumes the same Journey session and narrowed capture 
   try {
     const runtime = await importClientRuntime();
     const enabled = await runtime.journey.enable({ capture: { focus: false, interactions: false } });
-    assert.equal(enabled.data.sessionId, "stable-session"); await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(enabled.data.sessionId, undefined); await new Promise((resolve) => setTimeout(resolve, 0));
     browser.sockets[0].readyState = 3; browser.sockets[0].emit("close", {});
     await new Promise((resolve) => setTimeout(resolve, 550)); await new Promise((resolve) => setTimeout(resolve, 0));
-    assert.deepEqual(enables.map(({ options, resumeCredential }) => ({ options, resumeCredential })), [
-      { options: { capture: { focus: false, interactions: false } }, resumeCredential: undefined },
-      { options: undefined, resumeCredential: "stable-resume" },
+    assert.deepEqual(enables.map(({ options }) => options), [
+      { capture: { focus: false, interactions: false } },
+      { capture: { focus: false, interactions: false } },
     ]);
     assert.equal(states.filter(({ status }) => status === "viewing").length, 2, "capture resumes once after reconnect without duplicate observers");
     assert.equal((listeners.get("focus") ?? []).length, 0); assert.equal((listeners.get("click") ?? []).length, 0);
