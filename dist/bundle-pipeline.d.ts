@@ -55,6 +55,7 @@ export declare function createBundle(projectDir: string, config: ProjectConfig):
         capsuleModuleSource: string;
     };
     staticFiles: {
+        publicDir: string;
         indexHtml: string;
         clientBundle: string;
     };

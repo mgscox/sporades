@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -123,6 +123,24 @@ async function withFakeServiceEndpoint(fn) {
 
 function headerNames(headers) {
   return new Set([...headers.keys()].map((name) => name.toLowerCase()));
+}
+
+async function rawHttpStatus(baseUrl, requestPath) {
+  const url = new URL(baseUrl);
+  return new Promise((resolve, reject) => {
+    const socket = connect(Number(url.port), url.hostname, () => {
+      socket.write(`GET ${requestPath} HTTP/1.1\r\nHost: ${url.host}\r\nConnection: close\r\n\r\n`);
+    });
+    let response = "";
+    socket.setEncoding("utf8");
+    socket.on("data", (chunk) => { response += chunk; });
+    socket.on("error", reject);
+    socket.on("close", () => {
+      const match = /^HTTP\/1\.1 (\d{3})/.exec(response);
+      if (!match) reject(new Error(`Invalid HTTP response: ${response}`));
+      else resolve(Number(match[1]));
+    });
+  });
 }
 
 async function waitForJsonLine(child) {
@@ -755,6 +773,57 @@ test("sporades dev bundles and serves the default blank React capsule", async ()
       assert.match(html, /<div id="app"><\/div>/);
     } finally {
       child.kill("SIGTERM");
+    }
+  });
+});
+
+test("sporades dev builds and safely serves the normalized public tree", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "public-island", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = path.join(dir, "public-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started.error));
+
+      const publicDir = path.join(projectDir, ".sporades", "build", "public");
+      const sourceHtml = await readFile(path.join(projectDir, "index.html"), "utf8");
+      assert.equal(await readFile(path.join(publicDir, "index.html"), "utf8"), sourceHtml);
+      assert.equal(await readFile(path.join(publicDir, "client.js"), "utf8"), await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8"));
+
+      const servedHtml = await (await fetch(started.data.url)).text();
+      assert.match(servedHtml, /window\.__SPORADES_CONNECTION_TOKEN=/);
+      assert.doesNotMatch(sourceHtml, /__SPORADES_CONNECTION_TOKEN/);
+
+      await mkdir(path.join(publicDir, "assets"), { recursive: true });
+      await writeFile(path.join(publicDir, "assets", "capsule.css"), "body { color: teal; }\n");
+      const css = await fetch(`${started.data.url}/assets/capsule.css`);
+      assert.equal(css.status, 200);
+      assert.equal(css.headers.get("content-type"), "text/css; charset=utf-8");
+      assert.equal(await css.text(), "body { color: teal; }\n");
+
+      await writeFile(path.join(projectDir, "outside.css"), "body { color: red; }\n");
+      await symlink(path.join(projectDir, "outside.css"), path.join(publicDir, "assets", "linked.css"));
+      assert.equal((await fetch(`${started.data.url}/assets/linked.css`)).status, 404);
+
+      assert.equal((await fetch(`${started.data.url}/assets/missing.css`)).status, 404);
+      assert.equal((await fetch(`${started.data.url}/%2e%2e/sporades.json`)).status, 404);
+      assert.equal(await rawHttpStatus(started.data.url, "/assets/%2e%2e/client.js"), 404);
+      assert.equal(await rawHttpStatus(started.data.url, "/assets%2fcapsule.css"), 404);
+      assert.equal((await fetch(`${started.data.url}/assets%2f..%2f..%2fsporades.json`)).status, 404);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
     }
   });
 });
@@ -2340,6 +2409,7 @@ test("sporades dev streams rebuild success events and serves the rebuilt client 
       assert.ok(Date.now() - changedAt >= 90);
       assert.equal(rebuilt.error, null);
       assert.equal(rebuilt.data.port, started.data.port);
+      assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "react", toolchain: "esbuild" });
 
       const clientResponse = await fetch(`${started.data.url}/client.js`);
       assert.equal(clientResponse.status, 200);
@@ -2479,8 +2549,11 @@ test("sporades dev streams rebuild failure events and keeps serving the last cli
       const clientResponse = await fetch(`${started.data.url}/client.js`);
       assert.equal(clientResponse.status, 200);
       const lastSuccessfulClient = await clientResponse.text();
+      const clientPath = path.join(projectDir, "client", "index.tsx");
+      const originalClient = await readFile(clientPath, "utf8");
+      const lastSuccessfulPublic = await readFile(path.join(projectDir, ".sporades", "build", "public", "client.js"), "utf8");
 
-      await rm(path.join(projectDir, "client", "index.tsx"));
+      await rm(clientPath);
 
       const failed = await waitForJsonEvent(
         child,
@@ -2488,10 +2561,20 @@ test("sporades dev streams rebuild failure events and keeps serving the last cli
       );
       assert.match(failed.error.message, /Missing client entry: client\/index\.tsx/);
       assert.equal(failed.error.hint, "Run `sporades create` to scaffold a new project.");
+      assert.deepEqual(failed.data.build, { phase: "client", framework: "react", toolchain: "esbuild" });
 
       const afterFailureResponse = await fetch(`${started.data.url}/client.js`);
       assert.equal(afterFailureResponse.status, 200);
       assert.equal(await afterFailureResponse.text(), lastSuccessfulClient);
+      assert.equal(await readFile(path.join(projectDir, ".sporades", "build", "public", "client.js"), "utf8"), lastSuccessfulPublic);
+
+      await writeFile(clientPath, originalClient.replace("Sporades Todos", "Sporades Recovered Todos"));
+      const recovered = await waitForJsonEvent(
+        child,
+        (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success",
+      );
+      assert.deepEqual(recovered.data.build, { phase: "client", framework: "react", toolchain: "esbuild" });
+      assert.match(await (await fetch(`${started.data.url}/client.js`)).text(), /Sporades Recovered Todos/);
     } finally {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));

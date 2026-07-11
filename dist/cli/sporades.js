@@ -7,6 +7,7 @@ import { appendFile, chmod, lstat, mkdir, readdir, readFile, rm, writeFile } fro
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../bundle-pipeline.js";
+import { readPublicAsset } from "../public-tree.js";
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageRuntimeUser, } from "../base-image.js";
 import { ensureSealedServerEnvKeyPair, envelopeSummary, exportedEnvelope, readKeyPair, readSealedServerEnv, sealServerEnv, sealedServerEnvPaths, unsealServerEnv, writeSealedServerEnv, } from "../sealed-server-env.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
@@ -1385,18 +1386,14 @@ async function startDevSession(options) {
                 || (await routeEndpoint(runtime.database, request, response))) {
                 return;
             }
-            switch (request.url) {
-                case '/':
-                case '/index.html': {
-                    response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-                    response.end(injectPageConnectionToken(await readFile(bundle.staticFiles.indexHtml, "utf8"), websocketHub.createConnectionToken()));
-                    return;
-                }
-                case '/client.js': {
-                    response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
-                    response.end(await readFile(bundle.staticFiles.clientBundle, "utf8"));
-                    return;
-                }
+            const rawPublicPathname = (request.url ?? "/").split("?", 1)[0];
+            const publicAsset = await readPublicAsset(bundle.staticFiles.publicDir, rawPublicPathname);
+            if (publicAsset) {
+                response.writeHead(200, { "content-type": publicAsset.contentType });
+                response.end(publicAsset.html
+                    ? injectPageConnectionToken(publicAsset.body.toString("utf8"), websocketHub.createConnectionToken())
+                    : publicAsset.body);
+                return;
             }
             response.writeHead(404, { "content-type": "text/plain; charset=utf-8" });
             response.end("Not found");
@@ -1561,6 +1558,11 @@ async function startDevSession(options) {
                 url,
                 port: actualPort,
                 security,
+                build: {
+                    phase: affectsServerRuntime ? "bundle" : "client",
+                    framework: nextConfig.client?.framework ?? "react",
+                    toolchain: "esbuild",
+                },
             });
         }
         catch (error) {
@@ -1577,6 +1579,13 @@ async function startDevSession(options) {
                 status: "failed",
                 url,
                 port: actualPort,
+                ...(typeof details.phase === "string" ? {
+                    build: {
+                        phase: details.phase,
+                        framework: typeof details.framework === "string" ? details.framework : config.client?.framework ?? "react",
+                        toolchain: typeof details.toolchain === "string" ? details.toolchain : "esbuild",
+                    },
+                } : {}),
             }, {
                 message: details.message,
                 hint: details.hint ?? "Fix the build error and save again.",

@@ -8,10 +8,11 @@ import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv
 import { serverRuntimeModuleSource } from "./server.js";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 import { createServerBundleSource } from "./templates/server-bundle-template.js";
+import { replacePublicTree } from "./public-tree.js";
 
 export type JsonRecord = Record<string, unknown>;
 export type ServerEnv = Record<string, string>;
-type HelperError = Error & { hint?: string };
+type HelperError = Error & { hint?: string; phase?: string; framework?: string; toolchain?: string };
 export type ServerEnvFile = { exists: boolean; raw: string };
 export type ProjectConfig = JsonRecord & {
   auth?: AuthConfig;
@@ -74,20 +75,28 @@ export async function createBundle(projectDir: string, config: ProjectConfig) {
     : parseServerEnv(serverEnvFile);
   validateAuthConfig(config, serverEnv);
 
-  const [serverSource, clientSource] = await Promise.all([
-    readRequiredFile(paths.serverEntry, "Missing capsule entry: server/index.ts", "Run `sporades create` to scaffold a new project."),
-    readRequiredFile(paths.clientEntry, "Missing client entry: client/index.tsx", "Run `sporades create` to scaffold a new project."),
-    readRequiredFile(paths.indexHtml, "Missing HTML shell: index.html", "Restore index.html or run `sporades create`."),
+  const [serverSource, clientSource, indexHtml] = await Promise.all([
+    readRequiredFile(paths.serverEntry, "Missing capsule entry: server/index.ts", "Run `sporades create` to scaffold a new project.")
+      .catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.jsxImportSource); }),
+    readRequiredFile(paths.clientEntry, "Missing client entry: client/index.tsx", "Run `sporades create` to scaffold a new project.")
+      .catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.jsxImportSource); }),
+    readRequiredFile(paths.indexHtml, "Missing HTML shell: index.html", "Restore index.html or run `sporades create`.")
+      .catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.jsxImportSource); }),
   ]);
 
   const serverCapsuleModule = await bundleServerCapsuleModule({
     serverSource,
     serverSourcePath: paths.serverEntry,
-  });
+  }).catch((error) => { throw tagBuildError(error, "server", frameworkBundleConfig.jsxImportSource); });
   const clientBundle = await bundleClientSource(clientSource, {
     clientSourcePath: paths.clientEntry,
     frameworkBundleConfig,
-  });
+  }).catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.jsxImportSource); });
+
+  const publicDir = await replacePublicTree(buildDir, [
+    { path: "index.html", contents: indexHtml },
+    { path: "client.js", contents: clientBundle },
+  ]);
 
   await Promise.all([
     writeFile(
@@ -112,8 +121,9 @@ export async function createBundle(projectDir: string, config: ProjectConfig) {
       capsuleModuleSource: serverCapsuleModule,
     },
     staticFiles: {
-      indexHtml: paths.indexHtml,
-      clientBundle: paths.clientBundle,
+      publicDir,
+      indexHtml: path.join(publicDir, "index.html"),
+      clientBundle: path.join(publicDir, "client.js"),
     },
     containerMounts: {
       files: [
@@ -446,4 +456,12 @@ function commandError(message: string, hint: string): HelperError {
   const error: HelperError = new Error(message);
   error.hint = hint;
   return error;
+}
+
+function tagBuildError(error: unknown, phase: string, framework: string) {
+  const tagged = error instanceof Error ? error as HelperError : commandError(String(error), "Fix the build error and save again.");
+  tagged.phase = phase;
+  tagged.framework = framework;
+  tagged.toolchain = "esbuild";
+  return tagged;
 }
