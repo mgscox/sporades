@@ -268,6 +268,13 @@ test("Journey capture publishes only safe browser signals after consent and tear
     for (const listener of listeners.get("submit") ?? []) listener({ type: "submit", submitter: null, composedPath: () => [sameStatusForm], defaultPrevented: false });
     await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(calls.length, beforeUnrelated + 2, "an unrelated same-status click and programmatic submit both publish");
+    const nonSubmitButton = { getAttribute: () => null };
+    const otherSubmitter = { getAttribute: () => null };
+    const beforeRequestSubmit = calls.length;
+    for (const listener of listeners.get("click") ?? []) listener({ type: "click", composedPath: () => [nonSubmitButton, form], defaultPrevented: false });
+    for (const listener of listeners.get("submit") ?? []) listener({ type: "submit", submitter: otherSubmitter, composedPath: () => [form], defaultPrevented: false });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(calls.length, beforeRequestSubmit + 2, "non-submit click and requestSubmit with another submitter remain distinct interactions");
     await replacementRuntime.journey.disable();
     assert.equal((listeners.get("click") ?? []).length, 0);
     for (const type of ["submit", "popstate", "hashchange", "focus", "blur", "visibilitychange"]) assert.equal((listeners.get(type) ?? []).length, 0, `${type} listener is torn down`);

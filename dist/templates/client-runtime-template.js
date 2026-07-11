@@ -416,12 +416,12 @@ function createConnection() {
           publish(status);
         });
         if (event.type === "submit") {
-          if (pendingClick && (event.submitter && pendingClick.element === event.submitter || candidates.includes(pendingClick.element))) { clearTimeout(pendingClick.timer); pendingClick = null; }
+          if (pendingClick && event.submitter && pendingClick.activationPath.includes(event.submitter)) { clearTimeout(pendingClick.timer); pendingClick = null; }
           publishAfterPropagation();
           return;
         }
         const timer = setTimeout(() => { if (pendingClick?.timer === timer) pendingClick = null; publishAfterPropagation(); }, 0);
-        pendingClick = { element: annotated, timer };
+        pendingClick = { activationPath: path, timer };
       };
       listen(document, "click", observeInteraction, true);
       listen(document, "submit", observeInteraction, true);
