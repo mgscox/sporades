@@ -361,6 +361,7 @@ function createConnection() {
     }
     socket = new WebSocket(url);
     socket.addEventListener("open", () => {
+      request("dev.refresh.subscribe");
       request("auth.get");
       if (journeyConsentOptions) {
         request("journey.enable", { options: journeyConsentOptions }).then((result) => {

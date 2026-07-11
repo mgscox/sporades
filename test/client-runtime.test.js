@@ -610,6 +610,7 @@ test("same-user reconnect restores consent and narrowed capture policy", async (
 function installBrowserFakes(auth, options = {}) {
   const storage = new Map();
   const sockets = [];
+  const sent = [];
   const handlers = options.handlers ?? {};
 
   globalThis.localStorage = {
@@ -658,6 +659,7 @@ function installBrowserFakes(auth, options = {}) {
 
     send(rawMessage) {
       const message = JSON.parse(rawMessage);
+      sent.push(message);
       const handler = handlers[message.type];
       if (handler) {
         queueMicrotask(async () => {
@@ -693,6 +695,15 @@ function installBrowserFakes(auth, options = {}) {
               },
               error: null,
             }),
+          });
+        });
+        return;
+      }
+
+      if (message.type === "dev.refresh.subscribe") {
+        queueMicrotask(() => {
+          this.emit("message", {
+            data: JSON.stringify({ id: message.id, type: "dev.refresh.ready", data: { mode: "full-page", sequence: 0 }, error: null }),
           });
         });
         return;
@@ -740,6 +751,7 @@ function installBrowserFakes(auth, options = {}) {
   return {
     storage,
     sockets,
+    sent,
     openSockets() {
       for (const socket of sockets) {
         socket.readyState = globalThis.WebSocket.OPEN;
@@ -904,6 +916,7 @@ test("client performs one full-page refresh from the Sporades transport without 
     const runtime = await importClientRuntime();
     await runtime.auth.get();
     assert.equal(browser.sockets.length, 1);
+    assert.equal(browser.sent.filter((message) => message.type === "dev.refresh.subscribe").length, 1, "the sole page transport explicitly joins the Dev refresh broadcast set");
     assert.equal(browser.sockets[0].listeners.get("message")?.length, 1);
     browser.sockets[0].emit("message", {
       data: JSON.stringify({ id: null, type: "refresh", data: { mode: "full-page" }, error: null }),

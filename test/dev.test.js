@@ -1980,12 +1980,13 @@ test("sporades dev owns React Vite rebuilds, preserves last-good output, and req
       assert.doesNotMatch(initialEntrySource, /\/@vite\/client|react-refresh|vite\/hmr/i);
 
       socket = await openSocket(started.data.url);
+      await subscribeDevRefresh(socket);
       const refresh = readSocketMessage(socket);
       const chunkPath = path.join(projectDir, "client", "vite-scaffold.ts");
       await writeFile(chunkPath, 'export const viteScaffoldLabel = "Sporades Vite rebuilt by its sole watcher";\n');
       const rebuilt = await waitForJsonEvent(child, (event) => event.ok && event.data.event === "rebuild" && event.data.status === "success");
       assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "react", toolchain: "vite" });
-      assert.deepEqual(await refresh, { id: null, type: "refresh", data: { mode: "full-page" }, error: null });
+      assert.deepEqual(await refresh, { id: null, type: "refresh", data: { mode: "full-page", sequence: 1 }, error: null });
       const rebuiltHtml = await (await fetch(started.data.url)).text();
       const rebuiltEntry = /src="(\/assets\/index-[^"]+\.js)"/.exec(rebuiltHtml)?.[1];
       assert.ok(rebuiltEntry, rebuiltHtml);
@@ -2042,6 +2043,7 @@ test("sporades dev owns Preact Vite failure recovery and full-page refresh", asy
       const started = await waitForJsonLine(child);
       assert.equal(started.ok, true, JSON.stringify(started));
       socket = await openSocket(started.data.url);
+      await subscribeDevRefresh(socket);
       const chunkPath = path.join(projectDir, "client", "vite-scaffold.ts");
       const firstRefresh = readSocketMessage(socket);
       await writeFile(chunkPath, 'export const viteScaffoldLabel = "Sporades Preact/Vite rebuilt";\n');
@@ -2093,6 +2095,7 @@ for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good
       const started = await waitForJsonLine(child);
       assert.equal(started.ok, true, JSON.stringify(started));
       socket = await openSocket(started.data.url);
+      await subscribeDevRefresh(socket);
       const firstRefresh = readSocketMessage(socket);
       await writeFile(appPath, original.replace(sourceLabel, "Vue SFC rebuilt"));
       const rebuilt = await waitForJsonEvent(child, (event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
@@ -2149,9 +2152,9 @@ for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire
       const initialHtml = scrub(await initialResponse.text());
       socket = await openSocket(started.data.url);
       messages = captureSocketMessages(socket);
-      socket.send(JSON.stringify({ id: "svelte-dev-ready", type: "auth.get" }));
-      const ready = await messages.next((message) => message.id === "svelte-dev-ready" && message.type === "auth.result");
-      assert.equal(ready.error, null, "WebSocket request/response proves the server subscribed before the edit");
+      socket.send(JSON.stringify({ id: "svelte-dev-ready", type: "dev.refresh.subscribe" }));
+      const ready = await messages.next((message) => message.id === "svelte-dev-ready" && message.type === "dev.refresh.ready");
+      assert.deepEqual(ready, { id: "svelte-dev-ready", type: "dev.refresh.ready", data: { mode: "full-page", sequence: 0 }, error: null }, "acknowledgment proves this connection is in the Dev refresh broadcast set");
 
       const rebuiltSource = original.replace("</main>", '<p data-dev-probe="rebuilt">Svelte rebuilt</p></main>');
       assert.notEqual(rebuiltSource, original, `${template} edit must change generated output`);
@@ -2159,7 +2162,8 @@ for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire
       await writeFile(appPath, rebuiltSource);
       const rebuilt = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
       assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "svelte", toolchain: "vite" });
-      assert.deepEqual(await refresh, { id: null, type: "refresh", data: { mode: "full-page" }, error: null });
+      assert.deepEqual(rebuilt.data.refresh, { sequence: 1, clientsAttempted: 1 }, "success is emitted after the sequenced broadcast attempt");
+      assert.deepEqual(await refresh, { id: null, type: "refresh", data: { mode: "full-page", sequence: 1 }, error: null });
       assert.equal(messages.history.filter((message) => message.type === "refresh").length, 1, "one successful edit emits exactly one full-page refresh");
       const lastGood = scrub(await (await fetch(started.data.url)).text());
       assert.notEqual(lastGood, initialHtml, "the successful edit changes the served Vite output tree");
@@ -2177,7 +2181,8 @@ for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire
       await writeFile(appPath, recoveredSource);
       const recovered = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
       assert.deepEqual(recovered.data.build, { phase: "client", framework: "svelte", toolchain: "vite" });
-      assert.deepEqual(await recoveredRefresh, { id: null, type: "refresh", data: { mode: "full-page" }, error: null });
+      assert.deepEqual(recovered.data.refresh, { sequence: 2, clientsAttempted: 1 });
+      assert.deepEqual(await recoveredRefresh, { id: null, type: "refresh", data: { mode: "full-page", sequence: 2 }, error: null });
       assert.equal(messages.history.filter((message) => message.type === "refresh").length, 2, "recovery emits one additional full-page refresh");
     } finally {
       messages?.dispose();
@@ -10895,6 +10900,17 @@ async function openSocket(baseUrl, sessionToken = null) {
     socket.addEventListener("open", () => resolve(socket), { once: true });
     socket.addEventListener("error", reject, { once: true });
   });
+}
+
+async function subscribeDevRefresh(socket) {
+  const ready = readSocketMessage(socket);
+  socket.send(JSON.stringify({ id: "dev-refresh-ready", type: "dev.refresh.subscribe" }));
+  const message = await ready;
+  assert.equal(message.id, "dev-refresh-ready");
+  assert.equal(message.type, "dev.refresh.ready");
+  assert.equal(message.data?.mode, "full-page");
+  assert.equal(typeof message.data?.sequence, "number");
+  return message;
 }
 
 async function readPageConnectionToken(baseUrl) {

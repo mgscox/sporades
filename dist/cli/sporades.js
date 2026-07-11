@@ -1585,6 +1585,7 @@ async function startDevSession(options) {
         let rebuild = null;
         let rollbackLegacy = null;
         let rollbackServiceEnv = null;
+        let refresh = null;
         try {
             const nextConfig = await readProjectConfig(options.projectDir);
             const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
@@ -1605,7 +1606,7 @@ async function startDevSession(options) {
                 runtimeServiceEnv = nextCapsuleServiceEnv;
                 fatalRestartAttempts = 0;
                 if (configuredClientToolchain(nextConfig) === "vite")
-                    websocketHub.refreshAll();
+                    refresh = websocketHub.refreshAll();
                 websocketHub.disconnectAll();
             }
             const previousBundle = bundle;
@@ -1619,7 +1620,7 @@ async function startDevSession(options) {
             config = nextConfig;
             security = nextSecurity;
             if (!affectsServerRuntime && configuredClientToolchain(nextConfig) === "vite")
-                websocketHub.refreshAll();
+                refresh = websocketHub.refreshAll();
             emitDevEvent(options, {
                 event: "rebuild",
                 status: "success",
@@ -1631,6 +1632,7 @@ async function startDevSession(options) {
                     framework: nextConfig.client?.framework ?? "react",
                     toolchain: configuredClientToolchain(nextConfig),
                 },
+                ...(refresh ? { refresh } : {}),
             });
         }
         catch (error) {

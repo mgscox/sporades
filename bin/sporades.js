@@ -384,6 +384,7 @@ function createConnection() {
     }
     socket = new WebSocket(url);
     socket.addEventListener("open", () => {
+      request("dev.refresh.subscribe");
       request("auth.get");
       if (journeyConsentOptions) {
         request("journey.enable", { options: journeyConsentOptions }).then((result) => {
@@ -8167,6 +8168,7 @@ function createWebSocketHub(getDatabase) {
   const journeys = /* @__PURE__ */ new Map();
   const connectionTokens = /* @__PURE__ */ new Map();
   let nextClientId = 1;
+  let devRefreshSequence = 0;
   const connectionTokenTtlMs = 4 * 60 * 60 * 1e3;
   let journeyExpiryTimer = null;
   let journeyDisableRequests = 0;
@@ -8219,7 +8221,8 @@ function createWebSocketHub(getDatabase) {
         connectedAt: now,
         lastSeenAt: now,
         journey: null,
-        journeySubscriptions: /* @__PURE__ */ new Set()
+        journeySubscriptions: /* @__PURE__ */ new Set(),
+        devRefreshSubscribed: false
       };
       clients.add(client);
       socket.on("data", (chunk) => {
@@ -8257,13 +8260,18 @@ function createWebSocketHub(getDatabase) {
       return { disableRequests: journeyDisableRequests, activeStates: journeys.size };
     },
     refreshAll() {
+      const sequence = ++devRefreshSequence;
+      let clientsAttempted = 0;
       for (const client of clients) {
+        if (!client.devRefreshSubscribed) continue;
+        clientsAttempted += 1;
         try {
-          sendJson(client, { id: null, type: "refresh", data: { mode: "full-page" }, error: null });
+          sendJson(client, { id: null, type: "refresh", data: { mode: "full-page", sequence }, error: null });
         } catch {
           client.subscriptions.clear();
         }
       }
+      return { sequence, clientsAttempted };
     },
     notifyFileEvent(userId, event) {
       for (const client of clients) {
@@ -8439,6 +8447,16 @@ function createWebSocketHub(getDatabase) {
           message: "Invalid WebSocket message.",
           hint: "Send a JSON object with a supported Sporades message type."
         }
+      });
+      return;
+    }
+    if (message.type === "dev.refresh.subscribe") {
+      client.devRefreshSubscribed = true;
+      sendJson(client, {
+        id: message.id ?? null,
+        type: "dev.refresh.ready",
+        data: { mode: "full-page", sequence: devRefreshSequence },
+        error: null
       });
       return;
     }
@@ -8780,7 +8798,7 @@ function createWebSocketHub(getDatabase) {
       type: "error",
       error: {
         message: `Unsupported WebSocket message: ${message.type ?? ""}`.trim(),
-        hint: "Use auth.get, auth.signIn, auth.signOut, query.subscribe, query.unsubscribe, mutation.run, app messages, or files.* through the Sporades client SDK."
+        hint: "Use auth.get, auth.signIn, auth.signOut, query.subscribe, query.unsubscribe, mutation.run, app messages, files.*, or the Dev refresh subscription through the Sporades client SDK."
       }
     });
   }
@@ -19007,6 +19025,7 @@ async function startDevSession(options) {
     let rebuild = null;
     let rollbackLegacy = null;
     let rollbackServiceEnv = null;
+    let refresh = null;
     try {
       const nextConfig = await readProjectConfig(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
@@ -19037,7 +19056,7 @@ async function startDevSession(options) {
         });
         runtimeServiceEnv = nextCapsuleServiceEnv;
         fatalRestartAttempts = 0;
-        if (configuredClientToolchain(nextConfig) === "vite") websocketHub.refreshAll();
+        if (configuredClientToolchain(nextConfig) === "vite") refresh = websocketHub.refreshAll();
         websocketHub.disconnectAll();
       }
       const previousBundle = bundle;
@@ -19050,7 +19069,7 @@ async function startDevSession(options) {
       });
       config = nextConfig;
       security = nextSecurity;
-      if (!affectsServerRuntime && configuredClientToolchain(nextConfig) === "vite") websocketHub.refreshAll();
+      if (!affectsServerRuntime && configuredClientToolchain(nextConfig) === "vite") refresh = websocketHub.refreshAll();
       emitDevEvent(options, {
         event: "rebuild",
         status: "success",
@@ -19061,7 +19080,8 @@ async function startDevSession(options) {
           phase: affectsServerRuntime ? "bundle" : "client",
           framework: nextConfig.client?.framework ?? "react",
           toolchain: configuredClientToolchain(nextConfig)
-        }
+        },
+        ...refresh ? { refresh } : {}
       });
     } catch (error) {
       let rebuildError = error;

@@ -7497,6 +7497,7 @@ export function createWebSocketHub(getDatabase: () => any) {
   const journeys = new Map<string, any>();
   const connectionTokens = new Map<string, number>();
   let nextClientId = 1;
+  let devRefreshSequence = 0;
   const connectionTokenTtlMs = 4 * 60 * 60 * 1000;
   let journeyExpiryTimer: any = null;
   let journeyDisableRequests = 0;
@@ -7553,6 +7554,7 @@ export function createWebSocketHub(getDatabase: () => any) {
         lastSeenAt: now,
         journey: null,
         journeySubscriptions: new Set(),
+        devRefreshSubscribed: false,
       };
       clients.add(client);
       socket.on("data", (chunk: Uint8Array<ArrayBufferLike>) => {
@@ -7588,13 +7590,18 @@ export function createWebSocketHub(getDatabase: () => any) {
     },
     journeyDiagnostics() { return { disableRequests: journeyDisableRequests, activeStates: journeys.size }; },
     refreshAll() {
+      const sequence = ++devRefreshSequence;
+      let clientsAttempted = 0;
       for (const client of clients) {
+        if (!client.devRefreshSubscribed) continue;
+        clientsAttempted += 1;
         try {
-          sendJson(client, { id: null, type: "refresh", data: { mode: "full-page" }, error: null });
+          sendJson(client, { id: null, type: "refresh", data: { mode: "full-page", sequence }, error: null });
         } catch {
           client.subscriptions.clear();
         }
       }
+      return { sequence, clientsAttempted };
     },
     notifyFileEvent(userId: any, event: any) {
       for (const client of clients) {
@@ -7792,6 +7799,17 @@ export function createWebSocketHub(getDatabase: () => any) {
           message: "Invalid WebSocket message.",
           hint: "Send a JSON object with a supported Sporades message type.",
         },
+      });
+      return;
+    }
+
+    if (message.type === "dev.refresh.subscribe") {
+      client.devRefreshSubscribed = true;
+      sendJson(client, {
+        id: message.id ?? null,
+        type: "dev.refresh.ready",
+        data: { mode: "full-page", sequence: devRefreshSequence },
+        error: null,
       });
       return;
     }
@@ -8136,7 +8154,7 @@ export function createWebSocketHub(getDatabase: () => any) {
       type: "error",
       error: {
         message: `Unsupported WebSocket message: ${message.type ?? ""}`.trim(),
-        hint: "Use auth.get, auth.signIn, auth.signOut, query.subscribe, query.unsubscribe, mutation.run, app messages, or files.* through the Sporades client SDK.",
+        hint: "Use auth.get, auth.signIn, auth.signOut, query.subscribe, query.unsubscribe, mutation.run, app messages, files.*, or the Dev refresh subscription through the Sporades client SDK.",
       },
     });
   }

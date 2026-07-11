@@ -1941,6 +1941,7 @@ async function startDevSession(options: LooseRecord) {
     let rebuild: Awaited<ReturnType<typeof createBundle>> | null = null;
     let rollbackLegacy: (() => Promise<void>) | null = null;
     let rollbackServiceEnv: (() => Promise<void>) | null = null;
+    let refresh: { sequence: number; clientsAttempted: number } | null = null;
     try {
       const nextConfig = await readProjectConfig(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
@@ -1967,7 +1968,7 @@ async function startDevSession(options: LooseRecord) {
         ).catch((error: unknown) => { throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true }); });
         runtimeServiceEnv = nextCapsuleServiceEnv;
         fatalRestartAttempts = 0;
-        if (configuredClientToolchain(nextConfig) === "vite") websocketHub.refreshAll();
+        if (configuredClientToolchain(nextConfig) === "vite") refresh = websocketHub.refreshAll();
         websocketHub.disconnectAll();
       }
       const previousBundle = bundle;
@@ -1980,7 +1981,7 @@ async function startDevSession(options: LooseRecord) {
       });
       config = nextConfig;
       security = nextSecurity;
-      if (!affectsServerRuntime && configuredClientToolchain(nextConfig) === "vite") websocketHub.refreshAll();
+      if (!affectsServerRuntime && configuredClientToolchain(nextConfig) === "vite") refresh = websocketHub.refreshAll();
       emitDevEvent(options, {
         event: "rebuild",
         status: "success",
@@ -1992,6 +1993,7 @@ async function startDevSession(options: LooseRecord) {
           framework: nextConfig.client?.framework ?? "react",
           toolchain: configuredClientToolchain(nextConfig),
         },
+        ...(refresh ? { refresh } : {}),
       });
     } catch (error) {
       let rebuildError = error;
