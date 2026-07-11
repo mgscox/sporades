@@ -6,8 +6,8 @@ Baseline at `5bd74f6`: `npm test` passed 596, failed 0, skipped 8.
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 05 | rework | 04 done | `af51482` | `codex/user-journey-05-replacement` / `/tmp/sporades-user-journey-swarm/issue-05` | `/root/journey_issue_05` | `7e416fa` | `/root/journey_fix_02` | REQUEST_CHANGES: permanent capacity exhaustion and non-atomic persistence failure | pending | happy-path restart fixed; reclamation contract and failure-path RED tests required | pending |
-| 06 | blocked | 05 must be merged and integration-green | pending | pending | pending | pending | pending | pending | pending | pending | pending |
+| 05 | external-blocked | 04 done | `af51482` | `codex/user-journey-05-replacement` / `/tmp/sporades-user-journey-swarm/issue-05` | `/root/journey_issue_05` | `7e416fa` | `/root/journey_fix_02` | REQUEST_CHANGES; no accepted SHA | none | contract decision required for bounded revocation versus indefinite resume; persistence-failure atomicity remains after decision | retained clean worktree and branch as unintegrated evidence |
+| 06 | blocked | 05 must be merged and integration-green | pending | pending | pending | pending | pending | pending | pending | not run | not dispatched |
 
 ## Preserved abandoned attempt
 

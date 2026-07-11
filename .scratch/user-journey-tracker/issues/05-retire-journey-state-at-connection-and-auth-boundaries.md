@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — Capture Safe Browser Journey Signals.
 
-**Status:** ready-for-agent
+**Status:** ready-for-human
 
 ## Parent
 
@@ -28,3 +28,28 @@
 - [ ] Cleanup failures return or log bounded safe diagnostics under existing conventions without exposing Session tokens or private ownership data.
 - [ ] Multi-client transport tests cover clean and abrupt disconnect buffering, late join before expiry, same-user automatic reconnect, reconnect after disable/page replacement, server restart, sign-in, sign-out, Session replacement, same-user independent clients, and stale-ID rejection.
 - [ ] Source and generated runtime behavior remains aligned for every connection and auth transition.
+
+## Comments
+
+### 2026-07-11 — Swarm blocker
+
+Commit-pinned review exposed an unresolved capability-lifetime tradeoff. The
+current contract simultaneously requires still-consenting pages to resume
+indefinitely across full runtime/database replacement, retired credentials to
+remain invalid forever, and durable capability metadata to remain permanently
+bounded. Without a maximum resume lifetime or a generation/secret-rotation
+boundary, finite reclamation either invalidates a still-consenting page or
+revives a retired credential; retaining every issued and retired capability
+eventually exhausts any fixed bound.
+
+A human decision is required before implementation can continue:
+
+- define a maximum private resume-capability lifetime, after which explicit
+  `journey.enable()` is required again; or
+- define a generation/secret-rotation boundary that may invalidate existing
+  consenting resumes; or
+- explicitly permit lifetime-growing durable capability metadata.
+
+The replacement worker branch `codex/user-journey-05-replacement` is preserved
+with unintegrated evidence commits through `7e416fa`; none has an `ACCEPT`
+verdict and none should be merged as-is.
