@@ -693,17 +693,22 @@ function createConnection() {
       listen(window, "hashchange", scheduleRoute);
       if (typeof MutationObserver === "function" && document.head) {
         let meta = null;
-        const metaObserver = new MutationObserver(() => scheduleRoute());
+        const metaObserver = new MutationObserver((records) => {
+          if (records.some((record) => record.attributeName === "content" && record.target === meta || record.attributeName === "name" && (record.oldValue === "sporades-journey" || record.target?.getAttribute?.("name") === "sporades-journey"))) {
+            bindMeta(); scheduleRoute();
+          }
+        });
         const bindMeta = () => {
           const next = document.querySelector?.('meta[name="sporades-journey"]') ?? null;
           if (next === meta) return;
           metaObserver.disconnect(); meta = next;
-          if (meta) metaObserver.observe(meta, { attributes: true, attributeFilter: ["content"] });
+          for (const candidate of document.head.querySelectorAll?.("meta") ?? []) metaObserver.observe(candidate, { attributes: true, attributeFilter: ["name", "content"], attributeOldValue: true });
+          if (meta && !(document.head.querySelectorAll?.("meta") ?? []).includes(meta)) metaObserver.observe(meta, { attributes: true, attributeFilter: ["name", "content"], attributeOldValue: true });
         };
         bindMeta();
         const headObserver = new MutationObserver((records) => {
-          if (!records.some((record) => [...(record.addedNodes ?? []), ...(record.removedNodes ?? [])].some((node) => node?.matches?.('meta[name="sporades-journey"]')))) return;
-          bindMeta(); scheduleRoute();
+          if (!records.some((record) => [...(record.addedNodes ?? []), ...(record.removedNodes ?? [])].some((node) => node?.matches?.("meta")))) return;
+          const previous = meta; bindMeta(); if (previous !== meta) scheduleRoute();
         });
         headObserver.observe(document.head, { childList: true });
         cleanups.push(() => { headObserver.disconnect(); metaObserver.disconnect(); });
@@ -728,12 +733,12 @@ function createConnection() {
           publish(status);
         });
         if (event.type === "submit") {
-          if (pendingClick && event.submitter && pendingClick.element === event.submitter) { clearTimeout(pendingClick.timer); pendingClick = null; }
+          if (pendingClick && (pendingClick.status === status || event.submitter && pendingClick.element === event.submitter)) { clearTimeout(pendingClick.timer); pendingClick = null; }
           publishAfterPropagation();
           return;
         }
         const timer = setTimeout(() => { if (pendingClick?.timer === timer) pendingClick = null; publishAfterPropagation(); }, 0);
-        pendingClick = { element: annotated, timer };
+        pendingClick = { element: annotated, status, timer };
       };
       listen(document, "click", observeInteraction, true);
       listen(document, "submit", observeInteraction, true);

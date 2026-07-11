@@ -143,7 +143,8 @@ test("Journey capture publishes only safe browser signals after consent and tear
   const add = (type, listener) => listeners.set(type, [...(listeners.get(type) ?? []), listener]);
   const remove = (type, listener) => listeners.set(type, (listeners.get(type) ?? []).filter((item) => item !== listener));
   let semanticMeta = null;
-  const head = {};
+  let headMetas = [];
+  const head = { querySelectorAll: () => headMetas };
   globalThis.document = { hidden: false, head, documentElement: {}, querySelector: () => semanticMeta, addEventListener: add, removeEventListener: remove };
   const observers = [];
   globalThis.MutationObserver = class {
@@ -159,6 +160,7 @@ test("Journey capture publishes only safe browser signals after consent and tear
     pushState(_state, _unused, url) { window.location.href = new URL(url, window.location.href).href; return "native-return"; },
     replaceState() { throw new Error("native-error"); },
   };
+  const nativePushState = window.history.pushState;
   try {
     const runtime = await importClientRuntime();
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -184,16 +186,29 @@ test("Journey capture publishes only safe browser signals after consent and tear
     assert.deepEqual(headObserver.observations[0].options, { childList: true }, "metadata lifecycle observation is head-only and non-subtree");
     headObserver.emit([{ addedNodes: [{ matches: () => false }], removedNodes: [] }]);
     await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.length, unrelatedCount);
-    semanticMeta = { matches: () => true, getAttribute: () => "orders.detail" };
+    semanticMeta = { matches: (selector) => selector === "meta" || selector === 'meta[name="sporades-journey"]', getAttribute: (name) => name === "name" ? "sporades-journey" : "orders.detail" };
+    headMetas = [semanticMeta];
     headObserver.emit([{ addedNodes: [semanticMeta], removedNodes: [] }]);
     await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.at(-1).metadata.page, "orders.detail");
     const metaObserver = observers.find((observer) => observer.observations.some(({ target }) => target === semanticMeta));
     semanticMeta.getAttribute = () => "orders.revised"; metaObserver.emit([{ target: semanticMeta, attributeName: "content" }]);
     await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.at(-1).metadata.page, "orders.revised");
-    semanticMeta = null; headObserver.emit([{ addedNodes: [], removedNodes: [{ matches: () => true }] }]);
+    semanticMeta = null; headMetas = []; headObserver.emit([{ addedNodes: [], removedNodes: [{ matches: (selector) => selector === "meta" }] }]);
+    await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.at(-1).metadata.page, "/checkout");
+    let transitionName = "description";
+    let transitionContent = "transition.page";
+    const transitioningMeta = { matches: (selector) => selector === "meta", getAttribute: (name) => name === "name" ? transitionName : transitionContent };
+    headMetas = [transitioningMeta]; headObserver.emit([{ addedNodes: [transitioningMeta], removedNodes: [] }]);
+    transitionName = "sporades-journey"; semanticMeta = transitioningMeta;
+    metaObserver.emit([{ target: transitioningMeta, attributeName: "name", oldValue: "description" }]);
+    await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.at(-1).metadata.page, "transition.page");
+    transitionContent = "x".repeat(257); metaObserver.emit([{ target: transitioningMeta, attributeName: "content", oldValue: "transition.page" }]);
+    await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.at(-1).metadata.page, "/checkout", "oversized semantic pages fail safely to the normalized pathname");
+    transitionName = "description"; semanticMeta = null;
+    metaObserver.emit([{ target: transitioningMeta, attributeName: "name", oldValue: "sporades-journey" }]);
     await new Promise((resolve) => setTimeout(resolve, 0)); assert.equal(calls.at(-1).metadata.page, "/checkout");
     const clickListenerCount = (listeners.get("click") ?? []).length;
-    await runtime.journey.enable(); await new Promise((resolve) => setTimeout(resolve, 0));
+    const replacementRuntime = await importClientRuntime(); await replacementRuntime.journey.enable(); await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal((listeners.get("click") ?? []).length, clickListenerCount, "repeat enable/HMR setup remains idempotent");
     const annotation = { getAttribute: (name) => name === "data-sporades-journey" ? "checkout.started" : null };
     for (const listener of listeners.get("click") ?? []) listener({ type: "click", composedPath: () => [annotation], defaultPrevented: false, secret: "never publish" });
@@ -209,6 +224,14 @@ test("Journey capture publishes only safe browser signals after consent and tear
     for (const value of [invalid, oversized]) for (const listener of listeners.get("click") ?? []) listener({ type: "click", composedPath: () => [value], defaultPrevented: false });
     await new Promise((resolve) => setTimeout(resolve, 5)); assert.equal(calls.length, beforeInvalid);
     assert.equal(listeners.has("change"), false); assert.equal(listeners.has("pointerdown"), false); assert.equal(listeners.has("keydown"), false);
+    const inner = { getAttribute: () => "dialog.confirmed" }; const outer = { getAttribute: () => "dialog.open" };
+    for (const listener of listeners.get("click") ?? []) listener({ type: "click", composedPath: () => [inner, outer], defaultPrevented: false, stopPropagation() {} });
+    await new Promise((resolve) => setTimeout(resolve, 5)); assert.equal(calls.at(-1).status, "dialog.confirmed", "nearest open-shadow composedPath annotation wins despite stopped propagation");
+    const closedHost = { getAttribute: () => "widget.activated" };
+    for (const listener of listeners.get("click") ?? []) listener({ type: "click", composedPath: () => [closedHost], defaultPrevented: false });
+    await new Promise((resolve) => setTimeout(resolve, 5)); assert.equal(calls.at(-1).status, "widget.activated", "closed shadow capture requires and accepts its annotated host");
+    await replacementRuntime.journey.set({ status: "manual.override", metadata: { typed: true } });
+    assert.equal(calls.at(-1).status, "manual.override");
     const form = { getAttribute: (name) => name === "data-sporades-journey" ? "checkout.form" : null };
     const beforeSubmit = calls.length;
     for (const listener of listeners.get("click") ?? []) listener({ type: "click", composedPath: () => [annotation, form], defaultPrevented: false });
@@ -216,8 +239,22 @@ test("Journey capture publishes only safe browser signals after consent and tear
     await new Promise((resolve) => setTimeout(resolve, 5));
     assert.equal(calls.length, beforeSubmit + 1, "native submit activation publishes exactly once");
     assert.equal(calls.at(-1).status, "checkout.started", "submitter annotation wins over its form");
-    await runtime.journey.disable();
+    const plainSubmitter = { getAttribute: () => null };
+    const beforeFormSubmit = calls.length;
+    for (const listener of listeners.get("click") ?? []) listener({ type: "click", composedPath: () => [plainSubmitter, form], defaultPrevented: false });
+    for (const listener of listeners.get("submit") ?? []) listener({ type: "submit", submitter: plainSubmitter, composedPath: () => [form], defaultPrevented: false });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(calls.length, beforeFormSubmit + 1, "unannotated submitter activation dedupes by selected annotated form");
+    assert.equal(calls.at(-1).status, "checkout.form");
+    const beforeEnter = calls.length;
+    for (const listener of listeners.get("submit") ?? []) listener({ type: "submit", submitter: null, composedPath: () => [form], defaultPrevented: false });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.equal(calls.length, beforeEnter + 1, "Enter-key form submission follows the native submit path");
+    await replacementRuntime.journey.disable();
     assert.equal((listeners.get("click") ?? []).length, 0);
+    for (const type of ["submit", "popstate", "hashchange", "focus", "blur", "visibilitychange"]) assert.equal((listeners.get(type) ?? []).length, 0, `${type} listener is torn down`);
+    assert.equal(window.history.pushState, nativePushState, "native History methods are restored on teardown");
+    assert.ok(observers.every((observer) => observer.observations.length === 0), "metadata observers are disconnected on teardown");
   } finally { delete globalThis.MutationObserver; delete globalThis.document; browser.cleanup(); }
 });
 
@@ -235,6 +272,32 @@ test("Journey capture narrowing can keep a consenting page invisible while manua
     await new Promise((resolve) => setTimeout(resolve, 0)); assert.deepEqual(calls, []);
     await runtime.journey.set({ status: "typing", metadata: { step: 2 }, ttlSeconds: 7 });
     assert.deepEqual(calls, [{ status: "typing", metadata: { step: 2 }, ttlSeconds: 7 }]);
+  } finally { delete globalThis.document; browser.cleanup(); }
+});
+
+test("same-user reconnect resumes the same Journey session and narrowed capture policy", async () => {
+  const enables = []; const states = [];
+  const browser = installBrowserFakes(anonymousAuth, { href: "https://capsule.test/resume", handlers: {
+    "journey.enable": async (message) => { enables.push(message); return { type: "journey.enable.result", data: { sessionId: "stable-session", userId: anonymousAuth.userId, capture: { navigation: true, focus: false, interactions: false }, resumeCredential: "stable-resume" }, error: null }; },
+    "journey.set": async (message) => { states.push(message.state); return { type: "journey.set.result", data: { journey: message.state }, error: null }; },
+  }});
+  const listeners = new Map(); const add = (type, listener) => listeners.set(type, [...(listeners.get(type) ?? []), listener]);
+  const remove = (type, listener) => listeners.set(type, (listeners.get(type) ?? []).filter((item) => item !== listener));
+  globalThis.document = { head: { querySelectorAll: () => [] }, documentElement: {}, querySelector: () => null, addEventListener: add, removeEventListener: remove };
+  window.addEventListener = add; window.removeEventListener = remove; window.history = { pushState() {}, replaceState() {} };
+  window.requestAnimationFrame = (callback) => { queueMicrotask(callback); return 1; }; window.cancelAnimationFrame = () => {};
+  try {
+    const runtime = await importClientRuntime();
+    const enabled = await runtime.journey.enable({ capture: { focus: false, interactions: false } });
+    assert.equal(enabled.data.sessionId, "stable-session"); await new Promise((resolve) => setTimeout(resolve, 0));
+    browser.sockets[0].readyState = 3; browser.sockets[0].emit("close", {});
+    await new Promise((resolve) => setTimeout(resolve, 550)); await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(enables.map(({ options, resumeCredential }) => ({ options, resumeCredential })), [
+      { options: { capture: { focus: false, interactions: false } }, resumeCredential: undefined },
+      { options: undefined, resumeCredential: "stable-resume" },
+    ]);
+    assert.equal(states.filter(({ status }) => status === "viewing").length, 2, "capture resumes once after reconnect without duplicate observers");
+    assert.equal((listeners.get("focus") ?? []).length, 0); assert.equal((listeners.get("click") ?? []).length, 0);
   } finally { delete globalThis.document; browser.cleanup(); }
 });
 
