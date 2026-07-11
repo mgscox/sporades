@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 — Observe Capsule-Wide Journey Changes.
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## Parent
 
