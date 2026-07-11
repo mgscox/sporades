@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { access, mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -269,6 +271,7 @@ test("lease and lock ownership rejects PID reuse and non-positive owners without
         pid: owner.pid,
         processStart: owner.processStart,
         createdAt: Date.now(),
+        heartbeatAt: Date.now(),
         token: `token-${owner.name}`,
       })}\n`);
     }
@@ -280,17 +283,106 @@ test("lease and lock ownership rejects PID reuse and non-positive owners without
     assert.ok(processStart, "Expected a process-start identity on supported macOS/Linux.");
     const lockDir = path.join(treesDir, ".lifecycle-lock");
     await mkdir(lockDir);
-    await writeFile(path.join(lockDir, "owner.json"), `${JSON.stringify({ pid: process.pid, processStart: "forged:start", createdAt: Date.now() })}\n`);
+    await writeFile(path.join(lockDir, "owner.json"), `${JSON.stringify({ pid: process.pid, processStart: "forged:start", createdAt: Date.now(), heartbeatAt: Date.now(), token: "forged-lock" })}\n`);
     await cleanupPublicTrees(buildDir);
 
     await mkdir(lockDir);
-    await writeFile(path.join(lockDir, "owner.json"), `${JSON.stringify({ pid: process.pid, processStart, createdAt: Date.now() })}\n`);
+    await writeFile(path.join(lockDir, "owner.json"), `${JSON.stringify({ pid: process.pid, processStart, createdAt: Date.now(), heartbeatAt: Date.now(), token: "matching-lock" })}\n`);
     const waitingCleanup = cleanupPublicTrees(buildDir);
     await new Promise((resolve) => setTimeout(resolve, 40));
     await access(lockDir);
     await rm(lockDir, { recursive: true });
     await waitingCleanup;
     await access(active.root);
+  });
+});
+
+test("Darwin process identity forces a locale-stable environment and canonical result", async () => {
+  const calls = [];
+  const execute = async (file, args, options) => {
+    calls.push({ file, args, options });
+    return { stdout: "Fri Jul 11 09:08:07 2026\n" };
+  };
+  const previousLocale = process.env.LC_ALL;
+  try {
+    process.env.LC_ALL = "fr_FR.UTF-8";
+    const frenchParent = await getProcessStartIdentity(process.pid, { platform: "darwin", execFile: execute });
+    process.env.LC_ALL = "de_DE.UTF-8";
+    const germanParent = await getProcessStartIdentity(process.pid, { platform: "darwin", execFile: execute });
+    assert.equal(frenchParent, "darwin:2026-07-11T09:08:07");
+    assert.equal(germanParent, frenchParent);
+    assert.equal(calls.length, 2);
+    for (const call of calls) {
+      assert.equal(call.file, "/bin/ps");
+      assert.deepEqual(call.args, ["-o", "lstart=", "-p", String(process.pid)]);
+      assert.equal(call.options.env.LC_ALL, "C");
+      assert.equal(call.options.env.LANG, "C");
+    }
+  } finally {
+    if (previousLocale === undefined) delete process.env.LC_ALL;
+    else process.env.LC_ALL = previousLocale;
+  }
+});
+
+test("unverified ownership uses bounded heartbeats and an old lock token cannot remove its successor", async () => {
+  await withTempDir(async (buildDir) => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    await new Promise((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
+    });
+    try {
+      const treesDir = path.join(buildDir, ".public-trees");
+      await mkdir(path.join(treesDir, ".leases"), { recursive: true });
+      const now = Date.now();
+      const cases = [
+        { prefix: 981, heartbeatAt: now, survives: true },
+        { prefix: 982, heartbeatAt: now - 30_001, survives: false },
+        { prefix: 983, heartbeatAt: now + 60_000, survives: false },
+        { prefix: 984, heartbeatAt: "malformed", survives: false },
+      ];
+      for (const item of cases) {
+        item.name = `${item.prefix}-${now}-aaaaaaaaaaaaaaaa`;
+        const root = path.join(treesDir, item.name);
+        await mkdir(root);
+        await writeFile(path.join(root, "index.html"), item.name);
+        await writeFile(path.join(root, "client.js"), item.name);
+        await writeFile(path.join(treesDir, ".leases", `${item.name}.json`), `${JSON.stringify({
+          tree: item.name,
+          pid: child.pid,
+          processStart: null,
+          createdAt: now - 60_000,
+          heartbeatAt: item.heartbeatAt,
+          token: `token-${item.name}`,
+        })}\n`);
+      }
+      await cleanupPublicTrees(buildDir, { maxCompleted: 0, now: () => now });
+      for (const item of cases) {
+        if (item.survives) await access(path.join(treesDir, item.name));
+        else await assert.rejects(access(path.join(treesDir, item.name)), (error) => error.code === "ENOENT");
+      }
+
+      const disposable = path.join(treesDir, "not-a-candidate");
+      await mkdir(disposable);
+      const lockDir = path.join(treesDir, ".lifecycle-lock");
+      await assert.rejects(
+        cleanupPublicTrees(buildDir, {
+          maxCompleted: 0,
+          fault: (_event, entryPath) => {
+            if (entryPath !== disposable) return;
+            rmSync(lockDir, { recursive: true, force: true });
+            mkdirSync(lockDir);
+            writeFileSync(path.join(lockDir, "owner.json"), `${JSON.stringify({ token: "successor-token" })}\n`);
+          },
+        }),
+        /Public tree lock ownership changed/,
+      );
+      assert.equal(JSON.parse(await readFile(path.join(lockDir, "owner.json"), "utf8")).token, "successor-token");
+      await rm(lockDir, { recursive: true, force: true });
+    } finally {
+      child.kill();
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
   });
 });
 

@@ -10177,8 +10177,11 @@ var PUBLIC_TREE_LIMITS = {
   pathBytes: 240
 };
 var LIVE_PUBLIC_TREE_LEASES = /* @__PURE__ */ new Set();
+var OWNER_HEARTBEATS = /* @__PURE__ */ new Map();
 var execFileAsync = promisify(execFile);
 var UNVERIFIED_OWNER_TTL_MS = 3e4;
+var OWNER_HEARTBEAT_INTERVAL_MS = 1e4;
+var OWNER_CLOCK_SKEW_MS = 5e3;
 async function createPublicTree(buildDir, files, options = {}) {
   const nonce = `${process.pid}-${Date.now()}-${randomBytes3(8).toString("hex")}`;
   const treesDir = path2.join(buildDir, ".public-trees");
@@ -10328,7 +10331,8 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
   if (typeof activeReference === "string") {
     keepNames.add(activeReference);
   }
-  const { live: liveLeaseNames, stale: staleLeaseNames } = await publicTreeLeaseStates(treesDir);
+  const now = options.now ?? Date.now;
+  const { live: liveLeaseNames, stale: staleLeaseNames } = await publicTreeLeaseStates(treesDir, now);
   for (const name of liveLeaseNames) keepNames.add(name);
   const completed = await Promise.all(entries.filter((entry) => entry.isDirectory() && isPublicTreeName(entry.name)).map(async (entry) => ({ entry, modifiedAt: (await lstat(path2.join(treesDir, entry.name))).mtimeMs })));
   completed.sort((left, right) => right.modifiedAt - left.modifiedAt);
@@ -10342,7 +10346,7 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
   }
   const failures = [];
   for (const entry of entries) {
-    if (entry.name === "active.json" || entry.name === ".leases" || entry.name === ".lifecycle-lock") continue;
+    if (entry.name === "active.json" || entry.name === ".leases" || entry.name === ".lifecycle-lock" || entry.name === ".owner-heartbeats") continue;
     if (keepNames.has(entry.name)) continue;
     const entryPath = path2.join(treesDir, entry.name);
     try {
@@ -10358,7 +10362,8 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
       `Could not remove ${failures.length} stale public tree entr${failures.length === 1 ? "y" : "ies"}; the active and recoverable trees were preserved.`
     );
   }
-  await removeStalePublicTreeLeases(treesDir, new Set(completed.map((item) => item.entry.name)));
+  await removeStalePublicTreeLeases(treesDir, new Set(completed.map((item) => item.entry.name)), now);
+  await removeOrphanedOwnerHeartbeats(treesDir);
 }
 async function readPublicAsset(tree, rawPathname) {
   const relativePath = publicPathFromRequest(rawPathname);
@@ -10471,29 +10476,35 @@ async function createPublicTreeLease(treesDir, treeName) {
   await mkdir2(leasesDir, { recursive: true });
   const token = randomBytes3(16).toString("hex");
   const leasePath = path2.join(leasesDir, `${treeName}.json`);
-  await writeFile2(leasePath, `${JSON.stringify({
+  const processStart = await getProcessStartIdentity(process.pid);
+  const record = {
     tree: treeName,
     pid: process.pid,
-    processStart: await getProcessStartIdentity(process.pid),
+    processStart,
     createdAt: Date.now(),
+    heartbeatAt: Date.now(),
     token
-  })}
+  };
+  await writeFile2(leasePath, `${JSON.stringify(record)}
 `, { flag: "wx" });
   LIVE_PUBLIC_TREE_LEASES.add(token);
+  if (processStart === null) startOwnerHeartbeat(leasePath, record);
   return { path: leasePath, token };
 }
 async function removePublicTreeLease(lease) {
+  await stopOwnerHeartbeat(lease.token);
   const record = await readFile2(lease.path, "utf8").then(JSON.parse).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
     throw error;
   });
   if (record && record.token !== lease.token) {
+    LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
     throw publicTreeError("Public tree lease ownership changed.", "Preserve the candidate and retry cleanup from its owning build.");
   }
   await rm(lease.path, { force: true });
   LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
 }
-async function publicTreeLeaseStates(treesDir) {
+async function publicTreeLeaseStates(treesDir, now) {
   const leasesDir = path2.join(treesDir, ".leases");
   const entries = await readdir(leasesDir).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
@@ -10505,7 +10516,7 @@ async function publicTreeLeaseStates(treesDir) {
     try {
       const lease = JSON.parse(await readFile2(path2.join(leasesDir, entry), "utf8"));
       if (validLeaseRecord(lease)) {
-        if (await leaseIsLive(lease)) live.add(lease.tree);
+        if (await leaseIsLive(lease, path2.join(leasesDir, entry), now)) live.add(lease.tree);
         else stale.add(lease.tree);
       } else if (entry.endsWith(".json")) stale.add(entry.slice(0, -5));
     } catch {
@@ -10514,7 +10525,7 @@ async function publicTreeLeaseStates(treesDir) {
   }
   return { live, stale };
 }
-async function removeStalePublicTreeLeases(treesDir, completedNames) {
+async function removeStalePublicTreeLeases(treesDir, completedNames, now) {
   const leasesDir = path2.join(treesDir, ".leases");
   const entries = await readdir(leasesDir).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
@@ -10527,22 +10538,23 @@ async function removeStalePublicTreeLeases(treesDir, completedNames) {
       lease = JSON.parse(await readFile2(leasePath, "utf8"));
     } catch {
     }
-    if (!validLeaseRecord(lease) || !completedNames.has(lease.tree) || !await leaseIsLive(lease)) {
-      if (validLeaseRecord(lease)) LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
+    if (!validLeaseRecord(lease) || !completedNames.has(lease.tree) || !await leaseIsLive(lease, leasePath, now)) {
+      if (validLeaseRecord(lease)) {
+        LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
+        await stopOwnerHeartbeat(lease.token);
+      }
       await rm(leasePath, { force: true });
     }
   }
 }
 function validLeaseRecord(lease) {
   return Boolean(
-    lease && typeof lease.tree === "string" && !lease.tree.includes("/") && !lease.tree.includes("\\") && Number.isInteger(lease.pid) && lease.pid > 0 && (typeof lease.processStart === "string" || lease.processStart === null) && Number.isFinite(lease.createdAt) && typeof lease.token === "string"
+    lease && typeof lease.tree === "string" && !lease.tree.includes("/") && !lease.tree.includes("\\") && Number.isInteger(lease.pid) && lease.pid > 0 && (typeof lease.processStart === "string" || lease.processStart === null) && Number.isFinite(lease.createdAt) && Number.isFinite(lease.heartbeatAt) && typeof lease.token === "string" && lease.token.length > 0
   );
 }
-async function leaseIsLive(lease) {
+async function leaseIsLive(lease, recordPath, now) {
   if (lease.pid === process.pid && !LIVE_PUBLIC_TREE_LEASES.has(lease.token)) return false;
-  const actualStart = await getProcessStartIdentity(lease.pid);
-  if (actualStart !== null && lease.processStart !== null) return actualStart === lease.processStart;
-  return processIsLive(lease.pid) && Date.now() - lease.createdAt <= UNVERIFIED_OWNER_TTL_MS;
+  return ownerIdentityIsLive(lease, recordPath, now);
 }
 async function readActivePublicTreeReference(treesDir) {
   try {
@@ -10564,19 +10576,35 @@ async function acquirePublicTreeLock(treesDir) {
   for (let attempt = 0; attempt < 500; attempt += 1) {
     try {
       await mkdir2(lockDir);
-      await writeFile2(path2.join(lockDir, "owner.json"), `${JSON.stringify({
+      const ownerPath = path2.join(lockDir, "owner.json");
+      const token = randomBytes3(16).toString("hex");
+      const processStart = await getProcessStartIdentity(process.pid);
+      const owner = {
         pid: process.pid,
-        processStart: await getProcessStartIdentity(process.pid),
-        createdAt: Date.now()
-      })}
+        processStart,
+        createdAt: Date.now(),
+        heartbeatAt: Date.now(),
+        token
+      };
+      await writeFile2(ownerPath, `${JSON.stringify(owner)}
 `);
+      if (processStart === null) startOwnerHeartbeat(ownerPath, owner);
       return async () => {
+        await stopOwnerHeartbeat(token);
+        const currentOwner = await readFile2(ownerPath, "utf8").then(JSON.parse).catch((error) => {
+          if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+          throw error;
+        });
+        if (currentOwner === null) return;
+        if (currentOwner.token !== token) {
+          throw publicTreeError("Public tree lock ownership changed.", "Preserve the successor lock and retry after its owner completes.");
+        }
         await rm(lockDir, { recursive: true, force: true });
       };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
       const owner = await readFile2(path2.join(lockDir, "owner.json"), "utf8").then((raw) => JSON.parse(raw)).catch(() => null);
-      if (owner !== null && !await ownerIdentityIsLive(owner)) {
+      if (owner !== null && !await ownerIdentityIsLive(owner, path2.join(lockDir, "owner.json"))) {
         await rm(lockDir, { recursive: true, force: true });
         continue;
       }
@@ -10592,15 +10620,87 @@ async function acquirePublicTreeLock(treesDir) {
   }
   throw publicTreeError("Public tree lifecycle is busy.", "Retry after the other Bundle operation completes.");
 }
-async function ownerIdentityIsLive(owner) {
-  if (!(owner && Number.isInteger(owner.pid) && owner.pid > 0 && Number.isFinite(owner.createdAt))) return false;
+async function ownerIdentityIsLive(owner, recordPath, clock = Date.now) {
+  if (!validOwnerRecord(owner)) return false;
   const actualStart = await getProcessStartIdentity(owner.pid);
   if (actualStart !== null && typeof owner.processStart === "string") return actualStart === owner.processStart;
-  return processIsLive(owner.pid) && Date.now() - owner.createdAt <= UNVERIFIED_OWNER_TTL_MS;
+  const heartbeatAge = clock() - await readOwnerHeartbeat(recordPath, owner);
+  return processIsLive(owner.pid) && heartbeatAge >= -OWNER_CLOCK_SKEW_MS && heartbeatAge <= UNVERIFIED_OWNER_TTL_MS;
 }
-async function getProcessStartIdentity(pid) {
+function validOwnerRecord(owner) {
+  return Boolean(
+    owner && Number.isInteger(owner.pid) && owner.pid > 0 && (typeof owner.processStart === "string" || owner.processStart === null) && Number.isFinite(owner.createdAt) && Number.isFinite(owner.heartbeatAt) && typeof owner.token === "string" && owner.token.length > 0
+  );
+}
+function startOwnerHeartbeat(recordPath, record) {
+  let stopped = false;
+  let inFlight = Promise.resolve();
+  const heartbeatPath = ownerHeartbeatPath(recordPath, record.token);
+  const refresh = async () => {
+    const current = await readFile2(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    if (!validOwnerRecord(current) || current.token !== record.token) {
+      stopped = true;
+      clearInterval(timer);
+      return;
+    }
+    await mkdir2(path2.dirname(heartbeatPath), { recursive: true });
+    await writeFile2(heartbeatPath, `${JSON.stringify({ token: record.token, heartbeatAt: Date.now() })}
+`);
+  };
+  const timer = setInterval(() => {
+    if (!stopped) inFlight = inFlight.then(refresh).catch(() => {
+    });
+  }, OWNER_HEARTBEAT_INTERVAL_MS);
+  timer.unref();
+  OWNER_HEARTBEATS.set(record.token, {
+    stop: async () => {
+      stopped = true;
+      clearInterval(timer);
+      await inFlight;
+      await rm(heartbeatPath, { force: true });
+    }
+  });
+}
+function ownerHeartbeatPath(recordPath, token) {
+  const ownerDir = path2.dirname(recordPath);
+  const treesDir = [".leases", ".lifecycle-lock"].includes(path2.basename(ownerDir)) ? path2.dirname(ownerDir) : ownerDir;
+  return path2.join(treesDir, ".owner-heartbeats", `${token}.json`);
+}
+async function readOwnerHeartbeat(recordPath, owner) {
+  try {
+    const heartbeat = JSON.parse(await readFile2(ownerHeartbeatPath(recordPath, owner.token), "utf8"));
+    if (!(heartbeat && heartbeat.token === owner.token && Number.isFinite(heartbeat.heartbeatAt))) return Number.NaN;
+    return heartbeat.heartbeatAt;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return owner.heartbeatAt;
+    return Number.NaN;
+  }
+}
+async function stopOwnerHeartbeat(token) {
+  const heartbeat = OWNER_HEARTBEATS.get(token);
+  OWNER_HEARTBEATS.delete(token);
+  await heartbeat?.stop();
+}
+async function removeOrphanedOwnerHeartbeats(treesDir) {
+  const retained = /* @__PURE__ */ new Set();
+  const leaseFiles = await readdir(path2.join(treesDir, ".leases")).catch(() => []);
+  for (const entry of leaseFiles) {
+    const lease = await readFile2(path2.join(treesDir, ".leases", entry), "utf8").then(JSON.parse).catch(() => null);
+    if (validLeaseRecord(lease)) retained.add(lease.token);
+  }
+  const lock = await readFile2(path2.join(treesDir, ".lifecycle-lock", "owner.json"), "utf8").then(JSON.parse).catch(() => null);
+  if (validOwnerRecord(lock)) retained.add(lock.token);
+  const heartbeatDir = path2.join(treesDir, ".owner-heartbeats");
+  const heartbeatFiles = await readdir(heartbeatDir).catch(() => []);
+  for (const entry of heartbeatFiles) {
+    const token = entry.endsWith(".json") ? entry.slice(0, -5) : "";
+    if (!retained.has(token)) await rm(path2.join(heartbeatDir, entry), { recursive: true, force: true });
+  }
+}
+async function getProcessStartIdentity(pid, options = {}) {
   if (!(Number.isInteger(pid) && pid > 0)) return null;
-  if (process.platform === "linux") {
+  const platform = options.platform ?? process.platform;
+  if (platform === "linux") {
     try {
       const stat = await readFile2(`/proc/${pid}/stat`, "utf8");
       const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
@@ -10609,11 +10709,16 @@ async function getProcessStartIdentity(pid) {
       return null;
     }
   }
-  if (process.platform === "darwin") {
+  if (platform === "darwin") {
     try {
-      const { stdout } = await execFileAsync("/bin/ps", ["-o", "lstart=", "-p", String(pid)]);
-      const started = stdout.trim().replace(/\s+/g, " ");
-      return started ? `darwin:${started}` : null;
+      const run2 = options.execFile ?? execFileAsync;
+      const { stdout } = await run2("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
+        env: { ...process.env, LC_ALL: "C", LANG: "C" }
+      });
+      const match = /^(?:Sun|Mon|Tue|Wed|Thu|Fri|Sat) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{1,2}) (\d{2}:\d{2}:\d{2}) (\d{4})$/.exec(stdout.trim().replace(/\s+/g, " "));
+      if (!match) return null;
+      const month = String(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].indexOf(match[1]) + 1).padStart(2, "0");
+      return `darwin:${match[4]}-${month}-${match[2].padStart(2, "0")}T${match[3]}`;
     } catch {
       return null;
     }

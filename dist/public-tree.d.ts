@@ -23,6 +23,11 @@ type PublicFile = {
     contents: string | Uint8Array;
 };
 type CleanupFault = (event: "before-remove", entryPath: string) => void;
+type ProcessIdentityExec = (file: string, args: readonly string[], options: {
+    env: NodeJS.ProcessEnv;
+}) => Promise<{
+    stdout: string;
+}>;
 export declare function createPublicTree(buildDir: string, files: ReadonlyArray<PublicFile>, options?: {
     cleanupFault?: CleanupFault;
 }): Promise<{
@@ -48,8 +53,12 @@ export declare function cleanupPublicTrees(buildDir: string, options?: {
     keepRoots?: string[];
     maxCompleted?: number;
     fault?: CleanupFault;
+    now?: () => number;
 }): Promise<void>;
 export declare function readPublicAsset(tree: PublicTree, rawPathname: string): Promise<PublicAsset | null>;
-export declare function getProcessStartIdentity(pid: number): Promise<string | null>;
+export declare function getProcessStartIdentity(pid: number, options?: {
+    platform?: NodeJS.Platform;
+    execFile?: ProcessIdentityExec;
+}): Promise<string | null>;
 export {};
 //# sourceMappingURL=public-tree.d.ts.map
