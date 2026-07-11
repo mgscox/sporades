@@ -44,7 +44,7 @@ test("User journey lifecycle is declaration-gated and bound to the enabling iden
       const enabled = await sendAndWait(socket, { id: "enable", type: "journey.enable", options: {} });
       assert.equal(enabled.data.userId, auth.data.auth.userId); assert.equal(typeof enabled.data.sessionId, "string");
       const set = await sendAndWait(socket, { id: "set", type: "journey.set", state: { status: " editing ", metadata: { step: 1 }, ttlSeconds: 20 } });
-      assert.deepEqual(Object.keys(set.data.journey).sort(), ["createdAt", "expiresAt", "metadata", "sessionId", "status", "updatedAt", "userId"]);
+      assert.deepEqual(Object.keys(set.data.journey).sort(), ["expiresAt", "metadata", "sessionId", "status", "updatedAt", "userId"]);
       assert.equal(set.data.journey.status, "editing"); assert.equal(set.data.journey.userId, auth.data.auth.userId);
       const listed = await sendAndWait(socket, { id: "list", type: "journey.list" });
       assert.deepEqual(listed.data.journeys, [set.data.journey]);
@@ -79,6 +79,55 @@ test("User journey lifecycle is declaration-gated and bound to the enabling iden
     } finally { socket?.close(); otherSocket?.close(); await stopDevSession(child); }
   });
 });
+
+test("Journey subscribers receive a Capsule-wide snapshot before complete realtime changes", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "journey-observer", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "journey-observer");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8")); config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    await writeFile(path.join(projectDir, "server", "index.ts"), `import { capsule } from "sporades/server"; export default capsule({ name: "journey-observer", journey: { enabled: true } });\n`);
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let publisher; let sameUserPublisher; let observer;
+    try {
+      const started = await waitForJsonLine(child);
+      publisher = await openSocket(started.data.url);
+      const auth = await sendAndWait(publisher, { id: "auth", type: "auth.get" });
+      const enabled = await sendAndWait(publisher, { id: "enable", type: "journey.enable", options: {} });
+      const first = await sendAndWait(publisher, { id: "first", type: "journey.set", state: { status: "editing", metadata: { safe: true } } });
+      sameUserPublisher = await openSocket(started.data.url, auth.data.sessionToken);
+      const sameUserEnabled = await sendAndWait(sameUserPublisher, { id: "same-user-enable", type: "journey.enable", options: {} });
+      assert.notEqual(sameUserEnabled.data.sessionId, enabled.data.sessionId);
+      assert.equal(sameUserEnabled.data.userId, enabled.data.userId);
+      const second = await sendAndWait(sameUserPublisher, { id: "second", type: "journey.set", state: { status: "comparing" } });
+      observer = await openSocket(started.data.url);
+      const events = [];
+      observer.addEventListener("message", (event) => { const message = JSON.parse(event.data); if (message.type === "journey.event") events.push(message.data); });
+      observer.send(JSON.stringify({ id: "subscription", type: "journey.subscribe" }));
+      await waitFor(() => events.length === 1);
+      const expectedSnapshot = [first.data.journey, second.data.journey].sort((a, b) => a.userId.localeCompare(b.userId) || a.sessionId.localeCompare(b.sessionId));
+      assert.deepEqual(events[0], { type: "snapshot", states: expectedSnapshot });
+      const updated = await sendAndWait(publisher, { id: "updated", type: "journey.set", state: { status: "reviewing" } });
+      await waitFor(() => events.length === 2);
+      assert.deepEqual(events[1], { type: "updated", state: updated.data.journey });
+      await sendAndWait(publisher, { id: "disable", type: "journey.disable" });
+      await waitFor(() => events.length === 3);
+      assert.deepEqual(events[2], { type: "removed", state: updated.data.journey });
+      assert.deepEqual(Object.keys(events[2].state).sort(), ["expiresAt", "metadata", "sessionId", "status", "updatedAt", "userId"].filter((key) => key !== "metadata"));
+    } finally { publisher?.close(); sameUserPublisher?.close(); observer?.close(); await stopDevSession(child); }
+  });
+});
+
+async function waitFor(predicate, timeoutMs = TEST_WEBSOCKET_TIMEOUT_MS) {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeoutMs) throw new Error("Timed out waiting for condition.");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
 
 function runCli(args, options = {}) {
   return new Promise((resolve) => {

@@ -6784,6 +6784,7 @@ export function createWebSocketHub(getDatabase) {
                 connectedAt: now,
                 lastSeenAt: now,
                 journey: null,
+                journeySubscribed: false,
             };
             clients.add(client);
             socket.on("data", (chunk) => {
@@ -6858,10 +6859,26 @@ export function createWebSocketHub(getDatabase) {
     function retireJourney(client) {
         if (!client.journey)
             return;
+        const removed = journeys.get(client.journey.sessionId);
         journeys.delete(client.journey.sessionId);
         journeySessions.delete(client.journey.resumeCredential);
         client.journey = null;
+        if (removed)
+            broadcastJourneyEvent({ type: "removed", state: removed });
         sendJson(client, { id: null, type: "journey.retired", data: { retired: true }, error: null });
+    }
+    function activeJourneys() {
+        const now = Date.now();
+        for (const [id, record] of journeys)
+            if (Date.parse(record.expiresAt) <= now)
+                journeys.delete(id);
+        return [...journeys.values()].sort((a, b) => a.userId.localeCompare(b.userId) || a.sessionId.localeCompare(b.sessionId));
+    }
+    function broadcastJourneyEvent(event) {
+        for (const recipient of clients) {
+            if (recipient.journeySubscribed)
+                sendJson(recipient, { id: null, type: "journey.event", data: event, error: null });
+        }
     }
     function validateConnectionToken(token) {
         pruneConnectionTokens();
@@ -7106,9 +7123,10 @@ export function createWebSocketHub(getDatabase) {
                 const state = normalizeJourneyState(message.state, database.journeyPolicy.ttlSeconds);
                 const now = new Date().toISOString();
                 const previous = journeys.get(client.journey.sessionId);
-                const record = { sessionId: client.journey.sessionId, userId: client.session.auth.userId, status: state.status, ...(state.metadata === undefined ? {} : { metadata: state.metadata }), createdAt: previous?.createdAt ?? now, updatedAt: now, expiresAt: new Date(Date.now() + state.ttlSeconds * 1000).toISOString() };
+                const record = { sessionId: client.journey.sessionId, userId: client.session.auth.userId, status: state.status, ...(state.metadata === undefined ? {} : { metadata: state.metadata }), updatedAt: now, expiresAt: new Date(Date.now() + state.ttlSeconds * 1000).toISOString() };
                 journeys.set(record.sessionId, record);
                 sendJson(client, { id: message.id ?? null, type: "journey.set.result", data: { journey: record }, error: null });
+                broadcastJourneyEvent({ type: previous ? "updated" : "added", state: record });
             }
             catch (error) {
                 sendJson(client, { id: message.id ?? null, type: "error", data: null, error });
@@ -7120,12 +7138,16 @@ export function createWebSocketHub(getDatabase) {
                 sendJson(client, journeyError(message.id));
                 return;
             }
-            const now = Date.now();
-            for (const [id, record] of journeys)
-                if (Date.parse(record.expiresAt) <= now)
-                    journeys.delete(id);
-            const records = [...journeys.values()].sort((a, b) => a.sessionId.localeCompare(b.sessionId));
-            sendJson(client, { id: message.id ?? null, type: "journey.list.result", data: { journeys: records }, error: null });
+            sendJson(client, { id: message.id ?? null, type: "journey.list.result", data: { journeys: activeJourneys() }, error: null });
+            return;
+        }
+        if (message.type === "journey.subscribe") {
+            if (!database.journeyPolicy) {
+                sendJson(client, journeyError(message.id));
+                return;
+            }
+            client.journeySubscribed = true;
+            sendJson(client, { id: null, type: "journey.event", data: { type: "snapshot", states: activeJourneys() }, error: null });
             return;
         }
         if (message.type === "journey.disable") {
@@ -7133,12 +7155,15 @@ export function createWebSocketHub(getDatabase) {
                 sendJson(client, journeyError(message.id));
                 return;
             }
+            const removed = client.journey ? journeys.get(client.journey.sessionId) : null;
             if (client.journey)
                 journeys.delete(client.journey.sessionId);
             if (client.journey)
                 journeySessions.delete(client.journey.resumeCredential);
             client.journey = null;
             sendJson(client, { id: message.id ?? null, type: "journey.disable.result", data: { ok: true }, error: null });
+            if (removed)
+                broadcastJourneyEvent({ type: "removed", state: removed });
             return;
         }
         if (message.type === "preferences.update") {

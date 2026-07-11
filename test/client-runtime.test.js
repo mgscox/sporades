@@ -90,6 +90,26 @@ test("browser client runtime exposes the explicit Journey session lifecycle over
   }
 });
 
+test("Journey subscriptions deliver platform events and unsubscribe without enabling publication", async () => {
+  const calls = [];
+  const browser = installBrowserFakes(anonymousAuth, { handlers: {
+    "journey.subscribe": async (message) => { calls.push(message); return { type: "journey.event", data: { type: "snapshot", states: [] }, error: null }; },
+  }});
+  try {
+    const runtime = await importClientRuntime();
+    const events = [];
+    const subscription = runtime.journey.subscribe((event) => events.push(event));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    assert.deepEqual(events, [{ type: "snapshot", states: [] }]);
+    assert.deepEqual(calls.map(({ type }) => type), ["journey.subscribe"]);
+    browser.sockets[0].emit("message", { data: JSON.stringify({ type: "journey.event", data: { type: "added", state: { sessionId: "j1" } }, error: null }) });
+    assert.equal(events.length, 2);
+    subscription.unsubscribe();
+    browser.sockets[0].emit("message", { data: JSON.stringify({ type: "journey.event", data: { type: "removed", state: { sessionId: "j1" } }, error: null }) });
+    assert.equal(events.length, 2);
+  } finally { browser.cleanup(); }
+});
+
 function installBrowserFakes(auth, options = {}) {
   const storage = new Map();
   const sockets = [];

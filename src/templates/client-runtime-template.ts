@@ -27,6 +27,7 @@ export const journey = {
   enable(options = {}) { return connect().journeyEnable(options); },
   set(state) { return connect().journeySet(state); },
   list() { return connect().journeyList(); },
+  subscribe(listener) { return connect().journeySubscribe(listener); },
   disable() { return connect().journeyDisable(); },
 };
 
@@ -158,6 +159,7 @@ function createConnection() {
   let latestAuthMessage = null;
   let journeyResumeCredential = null;
   let journeyEnabledUserId = null;
+  const journeyListeners = new Set();
   let latestAuthUserId = null;
 
   function syncSessionTokenFromStorage() {
@@ -186,6 +188,7 @@ function createConnection() {
       if (journeyResumeCredential) {
         request("journey.enable", { resumeCredential: journeyResumeCredential });
       }
+      if (journeyListeners.size > 0) send({ id: null, type: "journey.subscribe" });
       for (const subscription of subscriptions.values()) {
         send({
           id: subscription.id,
@@ -202,6 +205,10 @@ function createConnection() {
       if (message.type === "journey.retired") {
         journeyResumeCredential = null;
         journeyEnabledUserId = null;
+        return;
+      }
+      if (message.type === "journey.event") {
+        for (const listener of journeyListeners) listener(message.data);
         return;
       }
       if (message.type === "query.result" && subscriptions.has(message.id)) {
@@ -395,6 +402,15 @@ function createConnection() {
     },
     journeySet(state) { return request("journey.set", { state }); },
     journeyList() { return request("journey.list"); },
+    journeySubscribe(listener) {
+      if (typeof listener !== "function") throw new TypeError("journey.subscribe requires a listener function.");
+      journeyListeners.add(listener);
+      if (journeyListeners.size === 1) {
+        const activeSocket = open();
+        if (activeSocket.readyState === WebSocket.OPEN) send({ id: null, type: "journey.subscribe" });
+      }
+      return { unsubscribe() { journeyListeners.delete(listener); } };
+    },
     journeyDisable() { return request("journey.disable").then((result) => { if (!result.error) { journeyResumeCredential = null; journeyEnabledUserId = null; } return result; }); },
     sendMessage(type, data) {
       return request("app.send", { message: type, data });

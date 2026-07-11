@@ -344,6 +344,7 @@ export const journey = {
   enable(options = {}) { return connect().journeyEnable(options); },
   set(state) { return connect().journeySet(state); },
   list() { return connect().journeyList(); },
+  subscribe(listener) { return connect().journeySubscribe(listener); },
   disable() { return connect().journeyDisable(); },
 };
 
@@ -475,6 +476,7 @@ function createConnection() {
   let latestAuthMessage = null;
   let journeyResumeCredential = null;
   let journeyEnabledUserId = null;
+  const journeyListeners = new Set();
   let latestAuthUserId = null;
 
   function syncSessionTokenFromStorage() {
@@ -503,6 +505,7 @@ function createConnection() {
       if (journeyResumeCredential) {
         request("journey.enable", { resumeCredential: journeyResumeCredential });
       }
+      if (journeyListeners.size > 0) send({ id: null, type: "journey.subscribe" });
       for (const subscription of subscriptions.values()) {
         send({
           id: subscription.id,
@@ -519,6 +522,10 @@ function createConnection() {
       if (message.type === "journey.retired") {
         journeyResumeCredential = null;
         journeyEnabledUserId = null;
+        return;
+      }
+      if (message.type === "journey.event") {
+        for (const listener of journeyListeners) listener(message.data);
         return;
       }
       if (message.type === "query.result" && subscriptions.has(message.id)) {
@@ -712,6 +719,15 @@ function createConnection() {
     },
     journeySet(state) { return request("journey.set", { state }); },
     journeyList() { return request("journey.list"); },
+    journeySubscribe(listener) {
+      if (typeof listener !== "function") throw new TypeError("journey.subscribe requires a listener function.");
+      journeyListeners.add(listener);
+      if (journeyListeners.size === 1) {
+        const activeSocket = open();
+        if (activeSocket.readyState === WebSocket.OPEN) send({ id: null, type: "journey.subscribe" });
+      }
+      return { unsubscribe() { journeyListeners.delete(listener); } };
+    },
     journeyDisable() { return request("journey.disable").then((result) => { if (!result.error) { journeyResumeCredential = null; journeyEnabledUserId = null; } return result; }); },
     sendMessage(type, data) {
       return request("app.send", { message: type, data });
@@ -7439,7 +7455,8 @@ function createWebSocketHub(getDatabase) {
         origin,
         connectedAt: now,
         lastSeenAt: now,
-        journey: null
+        journey: null,
+        journeySubscribed: false
       };
       clients.add(client);
       socket.on("data", (chunk) => {
@@ -7515,10 +7532,22 @@ function createWebSocketHub(getDatabase) {
   }
   function retireJourney(client) {
     if (!client.journey) return;
+    const removed = journeys.get(client.journey.sessionId);
     journeys.delete(client.journey.sessionId);
     journeySessions.delete(client.journey.resumeCredential);
     client.journey = null;
+    if (removed) broadcastJourneyEvent({ type: "removed", state: removed });
     sendJson(client, { id: null, type: "journey.retired", data: { retired: true }, error: null });
+  }
+  function activeJourneys() {
+    const now = Date.now();
+    for (const [id, record] of journeys) if (Date.parse(record.expiresAt) <= now) journeys.delete(id);
+    return [...journeys.values()].sort((a, b) => a.userId.localeCompare(b.userId) || a.sessionId.localeCompare(b.sessionId));
+  }
+  function broadcastJourneyEvent(event) {
+    for (const recipient of clients) {
+      if (recipient.journeySubscribed) sendJson(recipient, { id: null, type: "journey.event", data: event, error: null });
+    }
   }
   function validateConnectionToken(token) {
     pruneConnectionTokens();
@@ -7752,9 +7781,10 @@ function createWebSocketHub(getDatabase) {
         const state = normalizeJourneyState(message.state, database.journeyPolicy.ttlSeconds);
         const now = (/* @__PURE__ */ new Date()).toISOString();
         const previous = journeys.get(client.journey.sessionId);
-        const record = { sessionId: client.journey.sessionId, userId: client.session.auth.userId, status: state.status, ...state.metadata === void 0 ? {} : { metadata: state.metadata }, createdAt: previous?.createdAt ?? now, updatedAt: now, expiresAt: new Date(Date.now() + state.ttlSeconds * 1e3).toISOString() };
+        const record = { sessionId: client.journey.sessionId, userId: client.session.auth.userId, status: state.status, ...state.metadata === void 0 ? {} : { metadata: state.metadata }, updatedAt: now, expiresAt: new Date(Date.now() + state.ttlSeconds * 1e3).toISOString() };
         journeys.set(record.sessionId, record);
         sendJson(client, { id: message.id ?? null, type: "journey.set.result", data: { journey: record }, error: null });
+        broadcastJourneyEvent({ type: previous ? "updated" : "added", state: record });
       } catch (error) {
         sendJson(client, { id: message.id ?? null, type: "error", data: null, error });
       }
@@ -7765,10 +7795,16 @@ function createWebSocketHub(getDatabase) {
         sendJson(client, journeyError(message.id));
         return;
       }
-      const now = Date.now();
-      for (const [id, record] of journeys) if (Date.parse(record.expiresAt) <= now) journeys.delete(id);
-      const records = [...journeys.values()].sort((a, b) => a.sessionId.localeCompare(b.sessionId));
-      sendJson(client, { id: message.id ?? null, type: "journey.list.result", data: { journeys: records }, error: null });
+      sendJson(client, { id: message.id ?? null, type: "journey.list.result", data: { journeys: activeJourneys() }, error: null });
+      return;
+    }
+    if (message.type === "journey.subscribe") {
+      if (!database.journeyPolicy) {
+        sendJson(client, journeyError(message.id));
+        return;
+      }
+      client.journeySubscribed = true;
+      sendJson(client, { id: null, type: "journey.event", data: { type: "snapshot", states: activeJourneys() }, error: null });
       return;
     }
     if (message.type === "journey.disable") {
@@ -7776,10 +7812,12 @@ function createWebSocketHub(getDatabase) {
         sendJson(client, journeyError(message.id));
         return;
       }
+      const removed = client.journey ? journeys.get(client.journey.sessionId) : null;
       if (client.journey) journeys.delete(client.journey.sessionId);
       if (client.journey) journeySessions.delete(client.journey.resumeCredential);
       client.journey = null;
       sendJson(client, { id: message.id ?? null, type: "journey.disable.result", data: { ok: true }, error: null });
+      if (removed) broadcastJourneyEvent({ type: "removed", state: removed });
       return;
     }
     if (message.type === "preferences.update") {

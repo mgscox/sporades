@@ -23,12 +23,15 @@ export type JsonObject = { [key: string]: JsonValue };
 export type JourneyCapture = { navigation?: boolean; focus?: boolean; interactions?: boolean };
 export type JourneyEnableOptions = { capture?: JourneyCapture };
 export type JourneySetInput = { status: string; metadata?: JsonObject; ttlSeconds?: number };
-export type JourneyRecord = { sessionId: string; userId: string; status: string; metadata?: JsonObject; createdAt: string; updatedAt: string; expiresAt: string };
+export type JourneyRecord = { sessionId: string; userId: string; status: string; metadata?: JsonObject; updatedAt: string; expiresAt: string };
 export type JourneyEnableResult = { sessionId: string; userId: string; capture: Required<JourneyCapture> };
+export type JourneyEvent = { type: "snapshot"; states: JourneyRecord[] } | { type: "added" | "updated" | "removed"; state: JourneyRecord };
+export type JourneySubscription = { unsubscribe(): void };
 export type JourneyApi = {
   enable(options?: JourneyEnableOptions): Promise<SporadesResult<JourneyEnableResult>>;
   set(state: JourneySetInput): Promise<SporadesResult<{ journey: JourneyRecord }>>;
   list(): Promise<SporadesResult<{ journeys: JourneyRecord[] }>>;
+  subscribe(listener: (event: JourneyEvent) => void): JourneySubscription;
   disable(): Promise<SporadesResult<{ ok: boolean }>>;
 };
 

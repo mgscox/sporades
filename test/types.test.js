@@ -264,6 +264,8 @@ preferences.update(null);
 journey.enable({ capture: { focus: false } }).then((result) => result.data?.sessionId);
 journey.set({ status: "editing", metadata: { document: "roadmap" }, ttlSeconds: 20 });
 journey.list().then((result) => result.data?.journeys.map((entry) => entry.userId));
+const journeySubscription = journey.subscribe((event) => event.type === "snapshot" ? event.states : event.state);
+journeySubscription.unsubscribe();
 journey.disable();
 // @ts-expect-error journey.set requires an object with a status.
 journey.set(null);
