@@ -6,7 +6,7 @@ Baseline at `5bd74f6`: `npm test` passed 596, failed 0, skipped 8.
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 05 | ready | 04 done | `5bd74f6` | pending | pending | pending | pending | pending | pending | baseline green | pending |
+| 05 | working | 04 done | `af51482` | `codex/user-journey-05-replacement` / `/tmp/sporades-user-journey-swarm/issue-05` | `/root/journey_issue_05` | pending | pending | pending | pending | baseline green | pending |
 | 06 | blocked | 05 must be merged and integration-green | pending | pending | pending | pending | pending | pending | pending | pending | pending |
 
 ## Preserved abandoned attempt
@@ -19,4 +19,3 @@ Baseline at `5bd74f6`: `npm test` passed 596, failed 0, skipped 8.
   uncommitted change to `test/user-journey-expiry.test.js`.
 - Preservation: leave the branch and dirty worktree untouched as evidence for
   the replacement worker; do not review or integrate this stale SHA.
-
