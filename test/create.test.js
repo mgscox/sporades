@@ -357,12 +357,17 @@ test("Campfire automatically prepares fixtures and restores per-Musketeer activi
     assert.equal(result.code, 0, result.stderr);
     const client = await readFile(path.join(dir, "remembering-campfire", "client/index.tsx"), "utf8");
     assert.match(client, /import \{ auth, createHooks, journey, preferences \} from "sporades\/client"/);
-    assert.match(client, /useEffect\(\(\) => \{[\s\S]*prepareFixtures\(\)/);
+    assert.match(client, /prepareFixtures\(musketeers\.filter/);
+    assert.match(client, /if \(!isLocalDemoOrigin\(\)\) return/);
+    assert.match(client, /musketeers\.filter\(\(person\) => !existing\.has\(person\.key\)\)/);
+    assert.match(client, /fixturePreparationActive/);
+    assert.match(client, /expectedGeneration !== activityRestoreGeneration/);
     assert.match(client, /preferences\.get\(\)/);
     assert.match(client, /preferences\.update\(\{ campfireShareActivity: enabled \}\)/);
     assert.match(client, /status: kind === "up" \? "liked" : "disliked"/);
     assert.match(client, /status: "posted"/);
     assert.match(client, /posted a message in/);
+    assert.match(client, /Shares reading, typing, posting, likes, dislikes, and channel/);
   });
 });
 
@@ -411,7 +416,7 @@ test("Campfire auth transitions retire Journey consent and typing timers", async
       setSharing: (value) => calls.push(`sharing:${value}`),
     });
     assert.deepEqual(calls, ["dispose", "disable", "sharing:false"]);
-    assert.equal((client.match(/await retireJourneyConsent/g) ?? []).length, 2, "fixture preparation and identity switching share retirement cleanup");
+    assert.equal((client.match(/await retireJourneyConsent/g) ?? []).length, 3, "fixture preparation, its auth loop, and identity switching share retirement cleanup");
   });
 });
 

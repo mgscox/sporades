@@ -553,6 +553,9 @@ const musketeers = [
 ];
 const fixedChannels = ["general", "ideas", "random", "protect-the-crown"];
 const demoPassword = "all-for-one-campfire";
+let fixturePreparationActive = false;
+let activityRestoreGeneration = 0;
+function isLocalDemoOrigin(hostname = window.location.hostname) { return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1"; }
 
 function App() {
   const session = useAuth();
@@ -578,46 +581,62 @@ function App() {
   useEffect(() => {
     if (fixturesPrepared || !Array.isArray(profiles.data)) return;
     setFixturesPrepared(true);
-    if (profiles.data.length === 0) prepareFixtures();
+    if (!isLocalDemoOrigin()) return;
+    const existing = new Set(profiles.data.map((profile) => profile.key));
+    prepareFixtures(musketeers.filter((person) => !existing.has(person.key)));
   }, [profiles.data, fixturesPrepared]);
   useEffect(() => {
-    if (!session.auth?.userId || session.auth.isGuest) return;
+    if (!session.auth?.userId || session.auth.isGuest || fixturePreparationActive) return;
+    const generation = ++activityRestoreGeneration;
     let cancelled = false;
     (async () => {
       const stored = await preferences.get();
-      if (cancelled || stored.error || stored.data.preferences.campfireShareActivity !== true) return;
-      const enabled = await enableSharing();
+      if (cancelled || generation !== activityRestoreGeneration || stored.error || stored.data.preferences.campfireShareActivity !== true) return;
+      const enabled = await enableSharing(generation);
       if (enabled && !cancelled) setNotice("Activity sharing restored for this Musketeer.");
     })();
-    return () => { cancelled = true; };
+    return () => { cancelled = true; if (generation === activityRestoreGeneration) activityRestoreGeneration += 1; };
   }, [session.auth?.userId]);
 
-  async function prepareFixtures() {
+  async function prepareFixtures(people = musketeers) {
+    if (people.length === 0) {
+      const seeded = await seedCampfire.run();
+      setNotice(seeded.error ? seeded.error.message : \`Fixtures ready: \${seeded.data.created.length} repaired, \${seeded.data.alreadyPresent.length} already present.\`);
+      return;
+    }
+    fixturePreparationActive = true;
+    activityRestoreGeneration += 1;
     await retireJourneyConsent({ typingPublisher, journey, setSharing });
     setNotice("Preparing development-only fixtures…");
-    for (const person of musketeers) {
+    for (const person of people) {
       let result = await auth.signUp("email", { email: person.email, password: demoPassword, name: person.name });
       if (result.error && /already|exists|registered/i.test(result.error.message)) result = await auth.signIn("email", { email: person.email, password: demoPassword });
-      if (result.error) { setNotice(\`Could not prepare \${person.name}: \${result.error.message}\`); return; }
+      if (result.error) { fixturePreparationActive = false; setNotice(\`Could not prepare \${person.name}: \${result.error.message}\`); return; }
       await registerFixture.run(person.key);
+      await retireJourneyConsent({ typingPublisher, journey, setSharing });
       await auth.signOut();
     }
+    fixturePreparationActive = false;
+    activityRestoreGeneration += 1;
     const seeded = await seedCampfire.run();
     setNotice(seeded.error ? seeded.error.message : seeded.data.failed.length ? \`Fixture preparation failed for \${seeded.data.failed.map((item) => item.key).join(", ")}.\` : \`Fixtures ready: \${seeded.data.created.length} created, \${seeded.data.alreadyPresent.length} already present.\`);
   }
 
   async function switchTo(person) {
+    activityRestoreGeneration += 1;
     await retireJourneyConsent({ typingPublisher, journey, setSharing });
     await auth.signOut();
     const result = await auth.signIn("email", { email: person.email, password: demoPassword });
     setNotice(result.error ? result.error.message : \`Signed in as \${person.name}. Restoring activity preference…\`);
   }
 
-  async function enableSharing() {
+  async function enableSharing(expectedGeneration = null) {
     const result = await journey.enable({ capture: { navigation: false, focus: false, interactions: false } });
     if (result.error) { setNotice(result.error.message); return false; }
-    setSharing(true);
+    if (expectedGeneration !== null && expectedGeneration !== activityRestoreGeneration) { await journey.disable(); return false; }
     await journey.set({ status: "reading", metadata: { channel }, ttlSeconds: 12 });
+    if (expectedGeneration !== null && expectedGeneration !== activityRestoreGeneration) { await journey.disable(); return false; }
+    setSharing(true);
     return true;
   }
 
@@ -664,7 +683,7 @@ function App() {
       <ScrollArea ${klass}="flex-1 space-y-4 p-5">{(messages.data ?? []).map((message) => <Message key={message.id} message={message} session={session} react={react} />)}</ScrollArea>
       <form ${klass}="border-t border-amber-900/40 p-5" onSubmit={submit}><label ${klass}="sr-only" htmlFor="message">Message</label><div ${klass}="flex gap-2"><Input id="message" maxLength={500} ${klass}="min-w-0 flex-1" value={draft} placeholder={\`Message #\${channel}\`} ${change}={(event) => compose(event.currentTarget.value)} /><Button ${klass}="bg-amber-700" type="submit">Send</Button></div></form>
     </section>
-    <aside ${klass}="border-l border-amber-900/40 bg-[#1b120d] p-5"><h2 ${klass}="text-lg font-bold">What's happening</h2><div ${klass}="mt-4"><Switch label="Share my activity" checked={sharing} onChange={(event) => setShare(event.currentTarget.checked)} /></div><p ${klass}="mt-2 text-xs text-amber-200/70">Shares only reading/typing and channel. Never drafts, messages, URLs, query strings, emails, passwords, message IDs, or keystrokes.</p>
+    <aside ${klass}="border-l border-amber-900/40 bg-[#1b120d] p-5"><h2 ${klass}="text-lg font-bold">What's happening</h2><div ${klass}="mt-4"><Switch label="Share my activity" checked={sharing} onChange={(event) => setShare(event.currentTarget.checked)} /></div><p ${klass}="mt-2 text-xs text-amber-200/70">Shares reading, typing, posting, likes, dislikes, and channel. Never drafts, messages, URLs, query strings, emails, passwords, message IDs, or keystrokes.</p>
       <ul ${klass}="mt-5 space-y-3">{activities.map((activity) => <li key={activity.sessionId} ${klass}="rounded-md bg-amber-950/60 p-3">{activityText(activity, profiles.data ?? [])}</li>)}</ul>
       <h3 ${klass}="mt-8 font-bold">Switch Musketeer</h3><div ${klass}="mt-3 grid gap-2">{musketeers.map((person) => <Button key={person.key} type="button" ${klass}=\"flex items-center gap-2 bg-stone-800 text-left\" onClick={() => switchTo(person)}><span ${klass}={\`grid h-7 w-7 place-items-center rounded-full \${person.tone}\`}>{person.monogram}</span>{person.name}</Button>)}</div>
     </aside>
