@@ -6429,20 +6429,25 @@ test("a scaffolded Campfire proves fixtures, chat, reactions, and consented Jour
       assert.equal(porthosSignup.error, null);
       assert.equal(aramisSignup.error, null);
       assert.equal(dartagnanSignup.error, null);
+      const athosSecondSession = await openSocket(started.data.url, athosSignup.data.sessionToken);
+      sockets.push(athosSecondSession);
       await request(athos, { id: "register-athos", type: "mutation.run", mutation: "registerFixture", args: ["athos"] });
       await request(porthos, { id: "register-porthos", type: "mutation.run", mutation: "registerFixture", args: ["porthos"] });
       await request(aramis, { id: "register-aramis", type: "mutation.run", mutation: "registerFixture", args: ["aramis"] });
       await request(dartagnan, { id: "register-dartagnan", type: "mutation.run", mutation: "registerFixture", args: ["dartagnan"] });
-      assert.equal((await request(athos, { id: "seed-first", type: "mutation.run", mutation: "seedCampfire", args: [] })).error, null);
-      assert.equal((await request(athos, { id: "seed-second", type: "mutation.run", mutation: "seedCampfire", args: [] })).error, null);
+      const firstSeed = await request(athos, { id: "seed-first", type: "mutation.run", mutation: "seedCampfire", args: [] });
+      const secondSeed = await request(athos, { id: "seed-second", type: "mutation.run", mutation: "seedCampfire", args: [] });
+      assert.deepEqual({ created: firstSeed.data.created.length, alreadyPresent: firstSeed.data.alreadyPresent.length, failed: firstSeed.data.failed.length }, { created: 8, alreadyPresent: 0, failed: 0 });
+      assert.deepEqual({ created: secondSeed.data.created.length, alreadyPresent: secondSeed.data.alreadyPresent.length, failed: secondSeed.data.failed.length }, { created: 0, alreadyPresent: 8, failed: 0 });
       const dump = JSON.parse((await runCli(["db", "dump", "--json"], { cwd: projectDir })).stdout).data.tables;
       assert.equal(dump.find((table) => table.name === "channels").rows.length, 4);
       assert.equal(dump.find((table) => table.name === "messages").rows.length, 4);
       assert.equal(dump.find((table) => table.name === "profiles").rows.length, 4);
 
-      await request(athos, { id: "messages-athos", type: "query.subscribe", query: "messages" });
-      await request(porthos, { id: "messages-porthos", type: "query.subscribe", query: "messages" });
-      const porthosRefresh = waitForSocketMessage(porthos, (message) => message.query === "messages" && message.data?.some((row) => row.body === "Hold the western gate."));
+      const crownBefore = await request(athos, { id: "messages-athos", type: "query.subscribe", query: "messagesProtectTheCrown" });
+      await request(porthos, { id: "messages-porthos", type: "query.subscribe", query: "messagesProtectTheCrown" });
+      assert.ok(crownBefore.data.every((row) => row.channel === "protect-the-crown"), "server query must omit other-channel rows");
+      const porthosRefresh = waitForSocketMessage(porthos, (message) => message.query === "messagesProtectTheCrown" && message.data?.some((row) => row.body === "Hold the western gate."));
       const sent = await request(athos, { id: "send-message", type: "mutation.run", mutation: "sendMessage", args: [{ channel: "protect-the-crown", body: "  Hold the western gate.  ", authorId: porthosSignup.data.auth.userId }] });
       assert.equal(sent.error, null);
       const porthosMessages = await porthosRefresh;
@@ -6471,6 +6476,14 @@ test("a scaffolded Campfire proves fixtures, chat, reactions, and consented Jour
       const porthosUp = await toggle(porthos, "porthos-up", "up");
       assert.equal(porthosUp.rows.filter((row) => row.kind === "up").length, 1);
       assert.equal(porthosUp.rows.find((row) => row.kind === "up").userId, porthosSignup.data.auth.userId);
+      const raced = await Promise.all([
+        request(athos, { id: "race-up-1", type: "mutation.run", mutation: "toggleReaction", args: [{ messageId: durableMessage.id, kind: "up" }] }),
+        request(athosSecondSession, { id: "race-up-2", type: "mutation.run", mutation: "toggleReaction", args: [{ messageId: durableMessage.id, kind: "up" }] }),
+        request(athos, { id: "race-up-3", type: "mutation.run", mutation: "toggleReaction", args: [{ messageId: durableMessage.id, kind: "up" }] }),
+      ]);
+      assert.ok(raced.every((result) => result.error === null));
+      const reactionDump = JSON.parse((await runCli(["db", "dump", "--json"], { cwd: projectDir })).stdout).data.tables.find((table) => table.name === "reactions").rows;
+      assert.equal(reactionDump.filter((row) => row.identity === `${durableMessage.id}:${athosSignup.data.auth.userId}:up`).length, 1, "raced toggles retain at most one durable identity row");
 
       const gated = await request(athos, { id: "journey-gated", type: "journey.set", state: { status: "typing", metadata: { channel: "general" }, ttlSeconds: 1 } });
       assert.equal(gated.error.code, "JOURNEY_NOT_ENABLED");

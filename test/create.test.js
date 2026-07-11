@@ -327,7 +327,14 @@ test("sporades create writes a complete Campfire exemplar", async () => {
     assert.match(readme, /development-only/i);
     assert.match(readme, /separate browser contexts/i);
     assert.match(button, /export function Button/);
-    assert.equal(packageJson.dependencies["lucide-react"], "^0.468.0");
+    assert.equal(packageJson.dependencies["lucide-react"], undefined, "generated dependencies contain no unused icon package");
+    for (const component of ["card", "avatar", "badge", "switch", "input", "separator", "scroll-area"]) {
+      const source = await readFile(path.join(project, `client/components/ui/${component}.tsx`), "utf8");
+      assert.match(source, /export function/);
+      assert.match(client, new RegExp(`components/ui/${component}`));
+      if (component === "switch") assert.match(source, /role="switch"/);
+    }
+    assert.match(client, /aria-label/);
   });
 });
 
@@ -338,6 +345,37 @@ test("sporades create writes Campfire for Preact", async () => {
     const client = await readFile(path.join(dir, "preact-campfire", "client/index.tsx"), "utf8");
     assert.match(client, /from "preact"/);
     assert.match(client, /journey\.subscribe/);
+  });
+});
+
+test("Campfire typing publication is throttled and renewed while input remains active", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "cadence-campfire", "--template", "campfire", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr);
+    const source = await readFile(path.join(dir, "cadence-campfire", "client/journey-typing.ts"), "utf8");
+    const { createTypingPublisher } = await import(`data:text/javascript,${encodeURIComponent(source)}`);
+    let now = 0;
+    let nextTimer = 1;
+    const timers = new Map();
+    const published = [];
+    const publisher = createTypingPublisher((state) => published.push({ at: now, state }), {
+      now: () => now,
+      setTimer: (fn, delay) => { const id = nextTimer++; timers.set(id, { at: now + delay, fn }); return id; },
+      clearTimer: (id) => timers.delete(id),
+    });
+    const advance = (milliseconds) => { now += milliseconds; for (const [id, timer] of [...timers]) if (timer.at <= now) { timers.delete(id); timer.fn(); } };
+    publisher.input("a", "general");
+    publisher.input("ab", "general");
+    publisher.input("abc", "general");
+    assert.equal(published.length, 1, "input bursts publish once immediately");
+    advance(750);
+    assert.equal(published.length, 2, "latest active input publishes after the throttle window");
+    advance(2500);
+    assert.equal(published.length, 3, "active typing renews before its four-second TTL");
+    publisher.stop("general");
+    assert.equal(published.at(-1).state.status, "reading");
+    advance(5000);
+    assert.equal(published.at(-1).state.status, "reading", "stopped typing does not renew");
   });
 });
 
