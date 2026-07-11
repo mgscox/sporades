@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { access, mkdtemp, mkdir, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { access, mkdtemp, mkdir, readdir, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -13,6 +13,7 @@ import {
   createPublicTree,
   discardPublicTree,
   getProcessStartIdentity,
+  publishOwnerHeartbeat,
   readPublicAsset,
   releasePublicTreeLease,
   validatePublicFiles,
@@ -379,6 +380,128 @@ test("unverified ownership uses bounded heartbeats and an old lock token cannot 
       );
       assert.equal(JSON.parse(await readFile(path.join(lockDir, "owner.json"), "utf8")).token, "successor-token");
       await rm(lockDir, { recursive: true, force: true });
+    } finally {
+      child.kill();
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("heartbeat publication remains atomic across a concurrent ownership cleanup", async () => {
+  await withTempDir(async (buildDir) => {
+    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+    await new Promise((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
+    });
+    try {
+      const treesDir = path.join(buildDir, ".public-trees");
+      const leasesDir = path.join(treesDir, ".leases");
+      const heartbeatsDir = path.join(treesDir, ".owner-heartbeats");
+      await mkdir(leasesDir, { recursive: true });
+      const now = Date.now();
+      const treeName = `971-${now}-aaaaaaaaaaaaaaaa`;
+      const treeRoot = path.join(treesDir, treeName);
+      const token = `token-${treeName}`;
+      const leasePath = path.join(leasesDir, `${treeName}.json`);
+      await mkdir(treeRoot);
+      await writeFile(path.join(treeRoot, "index.html"), "atomic");
+      await writeFile(path.join(treeRoot, "client.js"), "atomic client");
+      await writeFile(leasePath, `${JSON.stringify({
+        tree: treeName,
+        pid: child.pid,
+        processStart: null,
+        createdAt: now - 60_000,
+        heartbeatAt: now - 20_000,
+        token,
+      })}\n`);
+      await publishOwnerHeartbeat(leasePath, token, now - 10_000);
+      const finalPath = path.join(heartbeatsDir, `${token}.json`);
+
+      let signalTempWritten;
+      const tempWritten = new Promise((resolve) => { signalTempWritten = resolve; });
+      let allowRename;
+      const renameAllowed = new Promise((resolve) => { allowRename = resolve; });
+      const publishing = publishOwnerHeartbeat(leasePath, token, now, {
+        afterTempWrite: () => {
+          signalTempWritten();
+          return renameAllowed;
+        },
+      });
+      await tempWritten;
+      assert.deepEqual(JSON.parse(await readFile(finalPath, "utf8")), { token, heartbeatAt: now - 10_000 });
+      const inFlightTemps = (await readdir(heartbeatsDir)).filter((entry) => entry.endsWith(".tmp"));
+      assert.equal(inFlightTemps.length, 1);
+
+      const abandonedTemp = path.join(heartbeatsDir, "abandoned.tmp");
+      const futureTemp = path.join(heartbeatsDir, "future.tmp");
+      const youngTemp = path.join(heartbeatsDir, "young.tmp");
+      await writeFile(abandonedTemp, "partial");
+      await writeFile(futureTemp, "partial");
+      await writeFile(youngTemp, "partial");
+      const staleTime = new Date(now - 40_000);
+      await utimes(abandonedTemp, staleTime, staleTime);
+      const futureTime = new Date(now + 60_000);
+      await utimes(futureTemp, futureTime, futureTime);
+      await cleanupPublicTrees(buildDir, { maxCompleted: 0, now: () => now });
+      await access(treeRoot);
+      await assert.rejects(access(abandonedTemp), (error) => error.code === "ENOENT");
+      await assert.rejects(access(futureTemp), (error) => error.code === "ENOENT");
+      await access(youngTemp);
+      await access(path.join(heartbeatsDir, inFlightTemps[0]));
+
+      allowRename();
+      await publishing;
+      assert.deepEqual(JSON.parse(await readFile(finalPath, "utf8")), { token, heartbeatAt: now });
+      await assert.rejects(access(path.join(heartbeatsDir, inFlightTemps[0])), (error) => error.code === "ENOENT");
+
+      let signalObsoleteTemp;
+      const obsoleteTempWritten = new Promise((resolve) => { signalObsoleteTemp = resolve; });
+      let allowObsoleteRename;
+      const obsoleteRenameAllowed = new Promise((resolve) => { allowObsoleteRename = resolve; });
+      const obsoletePublication = publishOwnerHeartbeat(leasePath, token, now + 1_000, {
+        afterTempWrite: () => {
+          signalObsoleteTemp();
+          return obsoleteRenameAllowed;
+        },
+      });
+      await obsoleteTempWritten;
+      const successorToken = `successor-${treeName}`;
+      await writeFile(leasePath, `${JSON.stringify({
+        tree: treeName,
+        pid: child.pid,
+        processStart: null,
+        createdAt: now,
+        heartbeatAt: now,
+        token: successorToken,
+      })}\n`);
+      await publishOwnerHeartbeat(leasePath, successorToken, now);
+      allowObsoleteRename();
+      await assert.rejects(obsoletePublication, /Public tree ownership changed/);
+      assert.deepEqual(JSON.parse(await readFile(path.join(heartbeatsDir, `${successorToken}.json`), "utf8")), {
+        token: successorToken,
+        heartbeatAt: now,
+      });
+      assert.deepEqual(JSON.parse(await readFile(finalPath, "utf8")), { token, heartbeatAt: now });
+
+      const crashedName = `972-${now}-bbbbbbbbbbbbbbbb`;
+      const crashedRoot = path.join(treesDir, crashedName);
+      const crashedToken = `token-${crashedName}`;
+      await mkdir(crashedRoot);
+      await writeFile(path.join(crashedRoot, "index.html"), "crashed");
+      await writeFile(path.join(crashedRoot, "client.js"), "crashed client");
+      await writeFile(path.join(leasesDir, `${crashedName}.json`), `${JSON.stringify({
+        tree: crashedName,
+        pid: child.pid,
+        processStart: null,
+        createdAt: now - 60_000,
+        heartbeatAt: now - 20_000,
+        token: crashedToken,
+      })}\n`);
+      await writeFile(path.join(heartbeatsDir, `${crashedToken}.json`), "{\"token\":");
+      await cleanupPublicTrees(buildDir, { maxCompleted: 0, now: () => now });
+      await assert.rejects(access(crashedRoot), (error) => error.code === "ENOENT");
+      await access(treeRoot);
     } finally {
       child.kill();
       await new Promise((resolve) => child.once("exit", resolve));

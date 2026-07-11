@@ -10643,9 +10643,7 @@ function startOwnerHeartbeat(recordPath, record) {
       clearInterval(timer);
       return;
     }
-    await mkdir2(path2.dirname(heartbeatPath), { recursive: true });
-    await writeFile2(heartbeatPath, `${JSON.stringify({ token: record.token, heartbeatAt: Date.now() })}
-`);
+    await publishOwnerHeartbeat(recordPath, record.token, Date.now());
   };
   const timer = setInterval(() => {
     if (!stopped) inFlight = inFlight.then(refresh).catch(() => {
@@ -10660,6 +10658,23 @@ function startOwnerHeartbeat(recordPath, record) {
       await rm(heartbeatPath, { force: true });
     }
   });
+}
+async function publishOwnerHeartbeat(recordPath, token, heartbeatAt, options = {}) {
+  const heartbeatPath = ownerHeartbeatPath(recordPath, token);
+  await mkdir2(path2.dirname(heartbeatPath), { recursive: true });
+  const temporaryPath = path2.join(path2.dirname(heartbeatPath), `${token}.${randomBytes3(8).toString("hex")}.tmp`);
+  try {
+    await writeFile2(temporaryPath, `${JSON.stringify({ token, heartbeatAt })}
+`, { flag: "wx" });
+    await options.afterTempWrite?.();
+    const currentOwner = await readFile2(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    if (!validOwnerRecord(currentOwner) || currentOwner.token !== token) {
+      throw publicTreeError("Public tree ownership changed.", "Discard the obsolete heartbeat without replacing its successor.");
+    }
+    await rename(temporaryPath, heartbeatPath);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
 }
 function ownerHeartbeatPath(recordPath, token) {
   const ownerDir = path2.dirname(recordPath);
@@ -10693,8 +10708,16 @@ async function removeOrphanedOwnerHeartbeats(treesDir) {
   const heartbeatDir = path2.join(treesDir, ".owner-heartbeats");
   const heartbeatFiles = await readdir(heartbeatDir).catch(() => []);
   for (const entry of heartbeatFiles) {
+    const entryPath = path2.join(heartbeatDir, entry);
+    if (entry.endsWith(".tmp")) {
+      const age = Date.now() - await lstat(entryPath).then((stats) => stats.mtimeMs).catch(() => Date.now());
+      if (age < -OWNER_CLOCK_SKEW_MS || age > UNVERIFIED_OWNER_TTL_MS + OWNER_CLOCK_SKEW_MS) {
+        await rm(entryPath, { recursive: true, force: true });
+      }
+      continue;
+    }
     const token = entry.endsWith(".json") ? entry.slice(0, -5) : "";
-    if (!retained.has(token)) await rm(path2.join(heartbeatDir, entry), { recursive: true, force: true });
+    if (!retained.has(token)) await rm(entryPath, { recursive: true, force: true });
   }
 }
 async function getProcessStartIdentity(pid, options = {}) {

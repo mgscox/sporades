@@ -56,6 +56,9 @@ export declare function cleanupPublicTrees(buildDir: string, options?: {
     now?: () => number;
 }): Promise<void>;
 export declare function readPublicAsset(tree: PublicTree, rawPathname: string): Promise<PublicAsset | null>;
+export declare function publishOwnerHeartbeat(recordPath: string, token: string, heartbeatAt: number, options?: {
+    afterTempWrite?: () => void | Promise<void>;
+}): Promise<void>;
 export declare function getProcessStartIdentity(pid: number, options?: {
     platform?: NodeJS.Platform;
     execFile?: ProcessIdentityExec;
