@@ -6,7 +6,7 @@ Baseline at `5bd74f6`: `npm test` passed 596, failed 0, skipped 8.
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 05 | review | 04 done | `af51482` | `codex/user-journey-05-replacement` / `/tmp/sporades-user-journey-swarm/issue-05` | `/root/journey_issue_05` | `704a37e` | `/root/journey_fix_02` | pending third review; supersedes rejected SHAs | pending | RED 2049th enable exceeded reservation cap; focused 43/43; full 601 pass, 0 fail, 8 skipped | pending |
+| 05 | rework | 04 done | `af51482` | `codex/user-journey-05-replacement` / `/tmp/sporades-user-journey-swarm/issue-05` | `/root/journey_issue_05` | `704a37e` | `/root/journey_fix_02` | REQUEST_CHANGES: full runtime replacement loses capability state | pending | cap fixed; production-equivalent runtime/database replacement regression required | pending |
 | 06 | blocked | 05 must be merged and integration-green | pending | pending | pending | pending | pending | pending | pending | pending | pending |
 
 ## Preserved abandoned attempt
