@@ -6,7 +6,7 @@ Baseline at `5bd74f6`: `npm test` passed 596, failed 0, skipped 8.
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 05 | rework | 04 done | `e08e845` | `codex/user-journey-05-final` / `/tmp/sporades-user-journey-swarm/issue-05-final` | `/root/journey_05_final` | `f9be871` | `/root/journey_fix_02` | REQUEST_CHANGES: runtime replacement retirement, real diagnostics, transport coverage | pending | prior green suite did not exercise required lifecycle surfaces | obsolete evidence branches retained |
+| 05 | review | 04 done | `e08e845` | `codex/user-journey-05-final` / `/tmp/sporades-user-journey-swarm/issue-05-final` | `/root/journey_05_final` | `70c6fa7` | `/root/journey_fix_02` | pending re-review; supersedes rejected `f9be871` | pending | focused 37/37; full 602 pass, 0 fail, 8 skipped; generated parity | obsolete evidence branches retained |
 | 06 | blocked | 05 must be merged and integration-green | pending | pending | pending | pending | pending | pending | pending | not run | not dispatched |
 
 ## Preserved abandoned attempt
