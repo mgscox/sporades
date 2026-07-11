@@ -92,10 +92,11 @@ test("browser client runtime exposes the explicit Journey session lifecycle over
 
 test("client-runtime replacement retires the old page consent exactly once", async () => {
   const calls = [];
+  let enabled = false;
   const browser = installBrowserFakes(anonymousAuth, { handlers: {
-    "journey.enable": async (message) => { calls.push(message); return { type: "journey.enable.result", data: { enabled: true, userId: anonymousAuth.userId, capture: { navigation: true, focus: false, interactions: false } }, error: null }; },
-    "journey.set": async (message) => { calls.push(message); return { type: "journey.set.result", data: { journey: message.state }, error: null }; },
-    "journey.disable": async (message) => { calls.push(message); return { type: "journey.disable.result", data: { ok: true }, error: null }; },
+    "journey.enable": async (message) => { calls.push(message); enabled = true; return { type: "journey.enable.result", data: { enabled: true, userId: anonymousAuth.userId, capture: { navigation: false, focus: false, interactions: false } }, error: null }; },
+    "journey.set": async (message) => { calls.push(message); return enabled ? { type: "journey.set.result", data: { journey: message.state }, error: null } : { type: "error", data: null, error: { code: "JOURNEY_NOT_ENABLED" } }; },
+    "journey.disable": async (message) => { calls.push(message); enabled = false; return { type: "journey.disable.result", data: { ok: true }, error: null }; },
   }});
   const listeners = new Map(); const add = (type, listener) => listeners.set(type, [...(listeners.get(type) ?? []), listener]);
   const remove = (type, listener) => listeners.set(type, (listeners.get(type) ?? []).filter((item) => item !== listener));
@@ -103,9 +104,12 @@ test("client-runtime replacement retires the old page consent exactly once", asy
   window.addEventListener = add; window.removeEventListener = remove; window.history = { pushState() {}, replaceState() {} };
   window.requestAnimationFrame = (callback) => { queueMicrotask(callback); return 1; }; window.cancelAnimationFrame = () => {};
   try {
-    const oldRuntime = await importClientRuntime(); await oldRuntime.journey.enable(); await new Promise((resolve) => setTimeout(resolve, 0));
+    const oldRuntime = await importClientRuntime(); await oldRuntime.journey.enable({ capture: { navigation: false, focus: false, interactions: false } });
+    assert.equal((await oldRuntime.journey.set({ status: "manual" })).error, null);
     const replacement = await importClientRuntime(); replacement.journey.list(); await new Promise((resolve) => setTimeout(resolve, 0));
     assert.equal(calls.filter(({ type }) => type === "journey.disable").length, 1);
+    assert.equal((await oldRuntime.journey.set({ status: "stale" })).error.code, "JOURNEY_NOT_ENABLED");
+    assert.equal(enabled, false, "replacement runtime remains disabled until explicitly enabled");
   } finally { delete globalThis.document; browser.cleanup(); }
 });
 

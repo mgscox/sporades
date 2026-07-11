@@ -657,7 +657,6 @@ function createConnection() {
     if (typeof window === "undefined" || typeof document === "undefined") return;
     const ownerKey = Symbol.for("sporades.journey.capture.teardown");
     if (typeof window[ownerKey] === "function") window[ownerKey]();
-    if (!capture?.navigation && !capture?.focus && !capture?.interactions) return;
     const cleanups = [];
     let routeFrame = null;
     const safePage = () => {
