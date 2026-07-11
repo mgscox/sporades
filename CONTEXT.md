@@ -240,6 +240,26 @@ _Avoid_: useQuery (that's what it produces, not what it is), hooks provider
 An application-defined message sent over the Sporades client transport. App and server code provide an unprefixed type name; Sporades owns adding and reserving the internal `app.` prefix. Client-origin app messages are always mediated by server code. App messages default to the current user's connected clients; app-wide broadcast is a server-code-only capability. App code uses SDK send/subscribe APIs such as `onMessage().filter(...)`, not raw WebSocket objects.
 _Avoid_: raw WebSocket message, custom socket packet, transport frame
 
+**User journey tracker**:
+An opt-in Capsule-wide view of what enabled Sporades users, including Anonymous users, are doing across their live client connections. It converts safe navigation and focus signals, explicitly annotated semantic interactions, and manual updates into short-lived Journey state; all connected Capsule clients receive live updates until future Team-based delivery filtering exists.
+_Avoid_: presence tracker, user analytics, activity log
+
+**Journey session**:
+One enabled browser page runtime operating under explicit Journey consent, identified by a Journey session ID and attached to its Sporades user ID. A user may have multiple simultaneous Journey sessions; same-user transport reconnect preserves the session, while disablement, page reload, or reauthentication ends it.
+_Avoid_: auth session, browser identity, durable activity record
+
+**Journey state**:
+The latest bounded status and metadata published by one Journey session, buffered until its server-calculated expiry. Expiry removes the state; while its Journey session remains connected and enabled, that session can publish again under the same session ID.
+_Avoid_: journey event, durable presence, session record
+
+**Journey signal**:
+A privacy-bounded client event that replaces the current Journey state, produced from navigation, focus/visibility changes, an explicitly annotated semantic interaction, or a manual update. Navigation exposes only a normalized pathname or explicit semantic page name; signals never contain URL origin/query/raw hash, form values, raw DOM text, CSS selectors, pointer coordinates, or raw browser payloads.
+_Avoid_: clickstream event, DOM event dump, analytics event
+
+**Inactive journey state**:
+The derived state of a Sporades user with no unexpired Journey state across their Journey sessions in a Capsule. It is absence of live activity, not a stored Journey state or status event.
+_Avoid_: inactive presence record, offline event, persisted inactivity
+
 **Upload call**:
 A high-level `sporades/client` operation that accepts a browser file/blob and returns Sporades-owned file metadata. It hides upload URL negotiation and byte transfer details from app code. Uploads are addressed by absolute File path; when no File path is provided, Sporades uses the uploaded file name in the Default File bucket. Passing an array is a convenience that runs single-file uploads sequentially.
 _Avoid_: upload URL API, presigned URL flow, storage client
