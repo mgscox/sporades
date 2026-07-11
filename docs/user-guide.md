@@ -111,15 +111,19 @@ interaction:
 
 Navigation captures only a normalized pathname—never origin, query, or raw
 hash. Use the single semantic page-name meta override for sensitive or
-identifier-rich routes. Browser-level History and meta observation samples
-after a render frame, is idempotent across HMR/runtime setup, and is independent
-of React or Preact adapters. Publish manually for locationless view changes.
+identifier-rich routes. React, Preact, Vue, Svelte, SolidJS, Lit, and Inferno
+consume the same framework-neutral Journey stream; route detection does not
+belong to a framework adapter. Sporades uses a browser-level History/meta
+observer, samples after a render frame, and installs idempotently across HMR or
+client-runtime setup. Publish manually for locationless view changes.
 
 `data-sporades-journey` contains one semantic status, not JSON. Delegated
 capture handles annotated click and submit, including keyboard-triggered native
-events, without preventing defaults. It follows the nearest match once, does
-not cross closed Shadow DOM boundaries, and requires manual publication for
-other event types. Use typed manual updates for richer metadata. Raw clicks,
+events, without preventing defaults. It uses `composedPath()` to find the
+nearest annotated match once through nesting and open Shadow DOM. For closed
+Shadow DOM, capture works when the host is annotated; internal nodes are
+not inspectable. Other event types require manual publication. Use typed manual
+updates for richer metadata. Raw clicks,
 DOM content, form values, query strings, session replay, and arbitrary browser
 telemetry are deliberately excluded.
 

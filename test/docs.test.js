@@ -136,6 +136,10 @@ test("docs publish the implemented User journey tracker contract", async () => {
   assert.match(guide, /query|origin/i);
   assert.match(guide, /8 KiB/i);
   assert.match(guide, /no private resume credential/i);
+  assert.match(guide, /React, Preact, Vue, Svelte, SolidJS, Lit, and Inferno/i);
+  assert.match(guide, /framework-neutral Journey stream/i);
+  assert.match(guide, /composedPath\(\)[\s\S]*open Shadow DOM/i);
+  assert.match(guide, /closed\s+Shadow DOM[\s\S]*host is annotated/i);
   assert.match(roadmap, /Recently Implemented[\s\S]*User journey tracker \| implemented/i);
   assert.doesNotMatch(roadmap.match(/## Recommended Next Features[\s\S]*?## Recently Implemented/)?.[0] ?? "", /User journey tracker/i);
   assert.doesNotMatch(roadmap.match(/## Data And Auth Helpers[\s\S]*?## Storage/)?.[0] ?? "", /User journey tracker/i);
