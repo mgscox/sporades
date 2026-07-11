@@ -149,8 +149,9 @@ function connect() {
 }
 
 function createConnection() {
+  const journeyRuntimeOwnerId = Symbol("sporades.journey.runtime-owner");
   const existingJourneyOwnerKey = Symbol.for("sporades.journey.capture.teardown");
-  if (typeof window !== "undefined" && typeof window[existingJourneyOwnerKey] === "function") window[existingJourneyOwnerKey]();
+  if (typeof window !== "undefined" && typeof window[existingJourneyOwnerKey] === "function" && window[existingJourneyOwnerKey].ownerId !== journeyRuntimeOwnerId) window[existingJourneyOwnerKey]();
   let socket = null;
   let nextId = 1;
   let sessionToken = localStorage.getItem("sporades.sessionToken");
@@ -339,7 +340,7 @@ function createConnection() {
     journeyCapture = capture;
     if (typeof window === "undefined" || typeof document === "undefined") return;
     const ownerKey = Symbol.for("sporades.journey.capture.teardown");
-    if (typeof window[ownerKey] === "function") window[ownerKey]();
+    if (typeof window[ownerKey] === "function" && window[ownerKey].ownerId !== journeyRuntimeOwnerId) window[ownerKey]();
     const cleanups = [];
     let routeFrame = null;
     const safePage = () => {
@@ -433,6 +434,7 @@ function createConnection() {
       journeyCapture = null;
       if (window[ownerKey] === retireOwner) delete window[ownerKey];
     };
+    retireOwner.ownerId = journeyRuntimeOwnerId;
     window[ownerKey] = retireOwner;
   }
 

@@ -119,7 +119,7 @@ test("server runtime restart clears buffered state and requires a fresh session"
 
 test("browser SDK automatic reconnect preserves consent but publishes under a new server session", async () => {
   const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
-  await withJourneyRuntime(clock, async ({ browserUrl, connectionToken }) => {
+  await withJourneyRuntime(clock, async ({ browserUrl, connectionToken, journeyDiagnostics }) => {
     const NativeWebSocket = globalThis.WebSocket; const sockets = [];
     class TrackingWebSocket extends NativeWebSocket { constructor(url, protocols) { super(url, protocols); sockets.push(this); } }
     const storage = new Map();
@@ -135,6 +135,11 @@ test("browser SDK automatic reconnect preserves consent but publishes under a ne
       sockets[0].close(); await new Promise((resolve) => setTimeout(resolve, 600)); await eventually(() => sockets.length === 2 && sockets[1].readyState === NativeWebSocket.OPEN);
       const fresh = await runtime.journey.set({ status: "fresh", ttlSeconds: 300 });
       assert.notEqual(fresh.data.journey.sessionId, first.data.journey.sessionId);
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal((await runtime.journey.set({ status: "still-enabled" })).error, null, "same-runtime reconnect must not asynchronously disable restored consent");
+      sockets[1].close(); await new Promise((resolve) => setTimeout(resolve, 600)); await eventually(() => sockets.length === 3 && sockets[2].readyState === NativeWebSocket.OPEN);
+      assert.equal((await runtime.journey.set({ status: "second-reconnect" })).error, null, "narrowed consent survives a second reconnect");
+      assert.equal(journeyDiagnostics().disableRequests, 0, "same-runtime reconnect never sends journey.disable");
       windowListeners.get("pagehide")?.(); await new Promise((resolve) => setTimeout(resolve, 0));
     } finally { globalThis.WebSocket = NativeWebSocket; delete globalThis.window; delete globalThis.localStorage; }
   });
@@ -205,7 +210,7 @@ async function withJourneyRuntime(clock, fn, config = {}) {
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const { port } = server.address();
   try {
-    await fn({ database, browserUrl: `http://127.0.0.1:${port}/`, connectionToken: hub.createConnectionToken(), restartHub: () => { hub.disconnectAll(); hub = createWebSocketHub(() => database); }, open: () => new Promise((resolve, reject) => {
+    await fn({ database, browserUrl: `http://127.0.0.1:${port}/`, connectionToken: hub.createConnectionToken(), journeyDiagnostics: () => hub.journeyDiagnostics(), restartHub: () => { hub.disconnectAll(); hub = createWebSocketHub(() => database); }, open: () => new Promise((resolve, reject) => {
       const ws = new WebSocket(`ws://127.0.0.1:${port}/?connectionToken=${hub.createConnectionToken()}`);
       ws.addEventListener("open", () => resolve(ws), { once: true });
       ws.addEventListener("error", reject, { once: true });

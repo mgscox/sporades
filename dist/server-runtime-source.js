@@ -6747,6 +6747,7 @@ export function createWebSocketHub(getDatabase) {
     let nextClientId = 1;
     const connectionTokenTtlMs = 4 * 60 * 60 * 1000;
     let journeyExpiryTimer = null;
+    let journeyDisableRequests = 0;
     return {
         createConnectionToken() {
             pruneConnectionTokens();
@@ -6824,6 +6825,7 @@ export function createWebSocketHub(getDatabase) {
                 auth: summarizeAuthForClientList(client.session.auth),
             }));
         },
+        journeyDiagnostics() { return { disableRequests: journeyDisableRequests }; },
         notifyFileEvent(userId, event) {
             for (const client of clients) {
                 if (client.session.auth.userId !== userId) {
@@ -7206,6 +7208,7 @@ export function createWebSocketHub(getDatabase) {
             return;
         }
         if (message.type === "journey.disable") {
+            journeyDisableRequests += 1;
             if (!database.journeyPolicy) {
                 sendJson(client, journeyError(message.id));
                 return;

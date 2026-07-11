@@ -466,8 +466,9 @@ function connect() {
 }
 
 function createConnection() {
+  const journeyRuntimeOwnerId = Symbol("sporades.journey.runtime-owner");
   const existingJourneyOwnerKey = Symbol.for("sporades.journey.capture.teardown");
-  if (typeof window !== "undefined" && typeof window[existingJourneyOwnerKey] === "function") window[existingJourneyOwnerKey]();
+  if (typeof window !== "undefined" && typeof window[existingJourneyOwnerKey] === "function" && window[existingJourneyOwnerKey].ownerId !== journeyRuntimeOwnerId) window[existingJourneyOwnerKey]();
   let socket = null;
   let nextId = 1;
   let sessionToken = localStorage.getItem("sporades.sessionToken");
@@ -656,7 +657,7 @@ function createConnection() {
     journeyCapture = capture;
     if (typeof window === "undefined" || typeof document === "undefined") return;
     const ownerKey = Symbol.for("sporades.journey.capture.teardown");
-    if (typeof window[ownerKey] === "function") window[ownerKey]();
+    if (typeof window[ownerKey] === "function" && window[ownerKey].ownerId !== journeyRuntimeOwnerId) window[ownerKey]();
     const cleanups = [];
     let routeFrame = null;
     const safePage = () => {
@@ -750,6 +751,7 @@ function createConnection() {
       journeyCapture = null;
       if (window[ownerKey] === retireOwner) delete window[ownerKey];
     };
+    retireOwner.ownerId = journeyRuntimeOwnerId;
     window[ownerKey] = retireOwner;
   }
 
@@ -7564,6 +7566,7 @@ function createWebSocketHub(getDatabase) {
   let nextClientId = 1;
   const connectionTokenTtlMs = 4 * 60 * 60 * 1e3;
   let journeyExpiryTimer = null;
+  let journeyDisableRequests = 0;
   return {
     createConnectionToken() {
       pruneConnectionTokens();
@@ -7644,6 +7647,9 @@ function createWebSocketHub(getDatabase) {
         lastSeenAt: client.lastSeenAt,
         auth: summarizeAuthForClientList(client.session.auth)
       }));
+    },
+    journeyDiagnostics() {
+      return { disableRequests: journeyDisableRequests };
     },
     notifyFileEvent(userId, event) {
       for (const client of clients) {
@@ -8005,6 +8011,7 @@ function createWebSocketHub(getDatabase) {
       return;
     }
     if (message.type === "journey.disable") {
+      journeyDisableRequests += 1;
       if (!database.journeyPolicy) {
         sendJson(client, journeyError(message.id));
         return;

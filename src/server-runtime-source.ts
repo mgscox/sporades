@@ -7498,6 +7498,7 @@ export function createWebSocketHub(getDatabase: () => any) {
   let nextClientId = 1;
   const connectionTokenTtlMs = 4 * 60 * 60 * 1000;
   let journeyExpiryTimer: any = null;
+  let journeyDisableRequests = 0;
 
   return {
     createConnectionToken() {
@@ -7579,6 +7580,7 @@ export function createWebSocketHub(getDatabase: () => any) {
         auth: summarizeAuthForClientList(client.session.auth),
       }));
     },
+    journeyDiagnostics() { return { disableRequests: journeyDisableRequests }; },
     notifyFileEvent(userId: any, event: any) {
       for (const client of clients) {
         if (client.session.auth.userId !== userId) {
@@ -7956,6 +7958,7 @@ export function createWebSocketHub(getDatabase: () => any) {
     }
 
     if (message.type === "journey.disable") {
+      journeyDisableRequests += 1;
       if (!database.journeyPolicy) { sendJson(client, journeyError(message.id)); return; }
       const removed = client.journey ? [...client.journey.sessionIds].map((sessionId) => journeys.get(sessionId)).filter(Boolean) : [];
       if (client.journey) for (const sessionId of client.journey.sessionIds) journeys.delete(sessionId);
