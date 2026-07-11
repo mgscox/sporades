@@ -410,7 +410,7 @@ npm install
 npm run dev
 \`\`\`
 
-Open the URL and choose **Prepare demo fixtures**. This explicit development-only action uses ordinary public email sign-up and creates Athos (\`athos@campfire.example\`), Porthos (\`porthos@campfire.example\`), Aramis (\`aramis@campfire.example\`), and d'Artagnan (\`dartagnan@campfire.example\`). Their shared demo password is shown in the UI. Repeating preparation is safe. Never expose these known credentials in a public Container session or Hosted Capsule; building, starting, deploying, and hosting never seed them automatically.
+Open the URL and Campfire prepares its demo fixtures automatically when none exist. This development-only browser flow uses ordinary public email sign-up and creates Athos (\`athos@campfire.example\`), Porthos (\`porthos@campfire.example\`), Aramis (\`aramis@campfire.example\`), and d'Artagnan (\`dartagnan@campfire.example\`). Repeating preparation is safe. Never expose these known credentials in a public Container session or Hosted Capsule; building, deploying, and hosting do not seed them server-side.
 
 Use separate browser contexts (for example, a normal and private window) so each Musketeer has an independent Session token. The switcher signs out then signs in through public email auth.
 
@@ -552,7 +552,7 @@ function campfireClientTemplate(framework: string) {
   const change = preact ? "onInput" : "onChange";
   const klass = preact ? "class" : "className";
   return `${imports}
-import { auth, createHooks, journey } from "sporades/client";
+import { auth, createHooks, journey, preferences } from "sporades/client";
 import { Button } from "./components/ui/button";
 import { Card } from "./components/ui/card";
 import { Avatar } from "./components/ui/avatar";
@@ -580,6 +580,7 @@ function App() {
   const [draft, setDraft] = useState("");
   const [notice, setNotice] = useState("");
   const [sharing, setSharing] = useState(false);
+  const [fixturesPrepared, setFixturesPrepared] = useState(false);
   const [activities, setActivities] = useState([]);
   const [typingPublisher] = useState(() => createTypingPublisher((state) => journey.set(state)));
   const messageQuery = { general: "messagesGeneral", ideas: "messagesIdeas", random: "messagesRandom", "protect-the-crown": "messagesProtectTheCrown" }[channel];
@@ -594,14 +595,31 @@ function App() {
     setActivities((current) => applyJourneyEvent(current, event));
   }).unsubscribe, []);
   useEffect(() => () => typingPublisher.dispose(), []);
+  useEffect(() => {
+    if (fixturesPrepared || !Array.isArray(profiles.data)) return;
+    setFixturesPrepared(true);
+    if (profiles.data.length === 0) prepareFixtures();
+  }, [profiles.data, fixturesPrepared]);
+  useEffect(() => {
+    if (!session.auth?.userId || session.auth.isGuest) return;
+    let cancelled = false;
+    (async () => {
+      const stored = await preferences.get();
+      if (cancelled || stored.error || stored.data.preferences.campfireShareActivity !== true) return;
+      const enabled = await enableSharing();
+      if (enabled && !cancelled) setNotice("Activity sharing restored for this Musketeer.");
+    })();
+    return () => { cancelled = true; };
+  }, [session.auth?.userId]);
 
   async function prepareFixtures() {
     await retireJourneyConsent({ typingPublisher, journey, setSharing });
     setNotice("Preparing development-only fixtures…");
     for (const person of musketeers) {
-      const result = await auth.signUp("email", { email: person.email, password: demoPassword, name: person.name });
-      if (result.error && !/already|exists|registered/i.test(result.error.message)) { setNotice(\`Could not prepare \${person.name}: \${result.error.message}\`); return; }
-      if (!result.error) await registerFixture.run(person.key);
+      let result = await auth.signUp("email", { email: person.email, password: demoPassword, name: person.name });
+      if (result.error && /already|exists|registered/i.test(result.error.message)) result = await auth.signIn("email", { email: person.email, password: demoPassword });
+      if (result.error) { setNotice(\`Could not prepare \${person.name}: \${result.error.message}\`); return; }
+      await registerFixture.run(person.key);
       await auth.signOut();
     }
     const seeded = await seedCampfire.run();
@@ -612,16 +630,23 @@ function App() {
     await retireJourneyConsent({ typingPublisher, journey, setSharing });
     await auth.signOut();
     const result = await auth.signIn("email", { email: person.email, password: demoPassword });
-    setNotice(result.error ? result.error.message : \`Signed in as \${person.name}. Activity sharing remains off.\`);
+    setNotice(result.error ? result.error.message : \`Signed in as \${person.name}. Restoring activity preference…\`);
+  }
+
+  async function enableSharing() {
+    const result = await journey.enable({ capture: { navigation: false, focus: false, interactions: false } });
+    if (result.error) { setNotice(result.error.message); return false; }
+    setSharing(true);
+    await journey.set({ status: "reading", metadata: { channel }, ttlSeconds: 12 });
+    return true;
   }
 
   async function setShare(enabled) {
     if (enabled) {
-      const result = await journey.enable({ capture: { navigation: false, focus: false, interactions: false } });
-      if (result.error) { setNotice(result.error.message); return; }
-      setSharing(true);
-      await journey.set({ status: "reading", metadata: { channel }, ttlSeconds: 12 });
+      if (!await enableSharing()) return;
     } else { typingPublisher.dispose(); await journey.disable(); setSharing(false); }
+    const saved = await preferences.update({ campfireShareActivity: enabled });
+    if (saved.error) setNotice(saved.error.message);
   }
 
   async function chooseChannel(next) {
@@ -640,29 +665,35 @@ function App() {
     const result = await sendMessage.run({ channel, body: draft });
     if (result.error) { setNotice(result.error.message); return; }
     setDraft("");
-    if (sharing) typingPublisher.stop(channel);
+    if (sharing) { typingPublisher.dispose(); await journey.set({ status: "posted", metadata: { channel }, ttlSeconds: 8 }); }
+  }
+
+  async function react(messageId, kind) {
+    const result = await toggleReaction.run({ messageId, kind });
+    if (result.error) { setNotice(result.error.message); return; }
+    if (sharing) await journey.set({ status: kind === "up" ? "liked" : "disliked", metadata: { channel }, ttlSeconds: 8 });
   }
 
   return <main ${klass}="min-h-screen bg-[#120d0a] text-amber-50 lg:grid lg:grid-cols-[240px_1fr_300px]">
     <aside ${klass}="border-r border-amber-900/40 bg-[#1b120d] p-5">
       <p ${klass}="text-xs font-bold uppercase tracking-[.28em] text-amber-500">Sporades exemplar</p><h1 ${klass}="mb-8 mt-2 text-3xl font-black">🔥 Campfire</h1>
       <nav aria-label="Channels" ${klass}="space-y-2">{fixedChannels.map((slug) => <button key={slug} type="button" ${klass}={\`block w-full rounded-md px-3 py-2 text-left \${channel === slug ? "bg-amber-700 text-white" : "hover:bg-amber-950"}\`} onClick={() => chooseChannel(slug)}><Badge># {slug}</Badge></button>)}</nav>
-      <Separator ${klass}="my-8"/><div><Button ${klass}="w-full bg-amber-700" type="button" onClick={prepareFixtures}>Prepare demo fixtures</Button><p ${klass}="mt-2 text-xs text-amber-200/70">Development-only. Never enable known credentials publicly.</p></div>
+      <Separator ${klass}="my-8"/><p ${klass}="text-xs text-amber-200/70">Demo fixtures prepare automatically in this development exemplar. Never expose the known credentials publicly.</p>
     </aside>
     <section ${klass}="flex min-h-screen flex-col"><header ${klass}="border-b border-amber-900/40 p-5"><h2 ${klass}="text-xl font-bold"># {channel}</h2><p role="status" ${klass}="text-sm text-amber-300">{notice}</p></header>
-      <ScrollArea ${klass}="flex-1 space-y-4 p-5">{(messages.data ?? []).map((message) => <Message key={message.id} message={message} session={session} toggle={toggleReaction} />)}</ScrollArea>
+      <ScrollArea ${klass}="flex-1 space-y-4 p-5">{(messages.data ?? []).map((message) => <Message key={message.id} message={message} session={session} react={react} />)}</ScrollArea>
       <form ${klass}="border-t border-amber-900/40 p-5" onSubmit={submit}><label ${klass}="sr-only" htmlFor="message">Message</label><div ${klass}="flex gap-2"><Input id="message" maxLength={500} ${klass}="min-w-0 flex-1" value={draft} placeholder={\`Message #\${channel}\`} ${change}={(event) => compose(event.currentTarget.value)} /><Button ${klass}="bg-amber-700" type="submit">Send</Button></div></form>
     </section>
     <aside ${klass}="border-l border-amber-900/40 bg-[#1b120d] p-5"><h2 ${klass}="text-lg font-bold">What's happening</h2><div ${klass}="mt-4"><Switch label="Share my activity" checked={sharing} onChange={(event) => setShare(event.currentTarget.checked)} /></div><p ${klass}="mt-2 text-xs text-amber-200/70">Shares only reading/typing and channel. Never drafts, messages, URLs, query strings, emails, passwords, message IDs, or keystrokes.</p>
-      <ul ${klass}="mt-5 space-y-3">{activities.map((activity) => <li key={activity.sessionId} ${klass}="rounded-md bg-amber-950/60 p-3">{personName(activity.userId, profiles.data ?? [])} is {activity.status} #{activity.metadata?.channel ?? "campfire"}</li>)}</ul>
+      <ul ${klass}="mt-5 space-y-3">{activities.map((activity) => <li key={activity.sessionId} ${klass}="rounded-md bg-amber-950/60 p-3">{activityText(activity, profiles.data ?? [])}</li>)}</ul>
       <h3 ${klass}="mt-8 font-bold">Switch Musketeer</h3><div ${klass}="mt-3 grid gap-2">{musketeers.map((person) => <Button key={person.key} type="button" ${klass}=\"flex items-center gap-2 bg-stone-800 text-left\" onClick={() => switchTo(person)}><span ${klass}={\`grid h-7 w-7 place-items-center rounded-full \${person.tone}\`}>{person.monogram}</span>{person.name}</Button>)}</div>
     </aside>
   </main>;
 }
 
-function Message({ message, session, toggle }) {
+function Message({ message, session, react }) {
   const reactionKeys = Object.keys(message.reactions ?? {});
-  return <Card ${klass}="p-4"><div ${klass}="flex items-baseline gap-3"><Avatar label={message.authorName}/><strong>{message.authorName}</strong><time ${klass}="text-xs text-amber-300/60">{new Date(message.createdAt).toLocaleString()}</time></div><p ${klass}="my-3 whitespace-pre-wrap">{message.body}</p><div ${klass}="flex gap-2">{[["up", "👍"], ["down", "👎"]].map(([kind, emoji]) => { const mine = reactionKeys.includes(\`\${session.auth?.userId}:\${kind}\`); const total = reactionKeys.filter((key) => key.endsWith(\`:\${kind}\`)).length; return <button key={kind} type="button" aria-label={\`\${kind === "up" ? "Thumbs up" : "Thumbs down"}: \${total}; \${mine ? "active" : "inactive"}\`} aria-pressed={mine} ${klass}="rounded-full border border-amber-800 px-3 py-1" onClick={() => toggle.run({ messageId: message.id, kind })}>{emoji} {total}</button>; })}</div></Card>;
+  return <Card ${klass}="p-4"><div ${klass}="flex items-baseline gap-3"><Avatar label={message.authorName}/><strong>{message.authorName}</strong><time ${klass}="text-xs text-amber-300/60">{new Date(message.createdAt).toLocaleString()}</time></div><p ${klass}="my-3 whitespace-pre-wrap">{message.body}</p><div ${klass}="flex gap-2">{[["up", "👍"], ["down", "👎"]].map(([kind, emoji]) => { const mine = reactionKeys.includes(\`\${session.auth?.userId}:\${kind}\`); const total = reactionKeys.filter((key) => key.endsWith(\`:\${kind}\`)).length; return <button key={kind} type="button" aria-label={\`\${kind === "up" ? "Thumbs up" : "Thumbs down"}: \${total}; \${mine ? "active" : "inactive"}\`} aria-pressed={mine} ${klass}="rounded-full border border-amber-800 px-3 py-1" onClick={() => react(message.id, kind)}>{emoji} {total}</button>; })}</div></Card>;
 }
 
 function applyJourneyEvent(current, event) {
@@ -674,6 +705,13 @@ function applyJourneyEvent(current, event) {
   return [...current.filter((item) => item.sessionId !== state.sessionId), state];
 }
 function personName(userId, profiles) { return profiles.find((profile) => profile.userId === userId)?.name ?? "A Musketeer"; }
+function activityText(activity, profiles) {
+  const name = personName(activity.userId, profiles), channel = activity.metadata?.channel ?? "campfire";
+  if (activity.status === "posted") return \`\${name} posted a message in #\${channel}\`;
+  if (activity.status === "liked") return \`\${name} liked a message in #\${channel}\`;
+  if (activity.status === "disliked") return \`\${name} disliked a message in #\${channel}\`;
+  return \`\${name} is \${activity.status} #\${channel}\`;
+}
 ${mount}
 `;
 }

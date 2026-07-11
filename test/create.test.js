@@ -351,6 +351,21 @@ test("sporades create writes Campfire for Preact", async () => {
   });
 });
 
+test("Campfire automatically prepares fixtures and restores per-Musketeer activity sharing", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "remembering-campfire", "--template", "campfire", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr);
+    const client = await readFile(path.join(dir, "remembering-campfire", "client/index.tsx"), "utf8");
+    assert.match(client, /import \{ auth, createHooks, journey, preferences \} from "sporades\/client"/);
+    assert.match(client, /useEffect\(\(\) => \{[\s\S]*prepareFixtures\(\)/);
+    assert.match(client, /preferences\.get\(\)/);
+    assert.match(client, /preferences\.update\(\{ campfireShareActivity: enabled \}\)/);
+    assert.match(client, /status: kind === "up" \? "liked" : "disliked"/);
+    assert.match(client, /status: "posted"/);
+    assert.match(client, /posted a message in/);
+  });
+});
+
 test("Campfire typing publication is throttled and renewed while input remains active", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(["create", "cadence-campfire", "--template", "campfire", "--no-install", "--no-git", "--json"], { cwd: dir });
