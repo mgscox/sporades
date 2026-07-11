@@ -6,7 +6,7 @@ Baseline at `5bd74f6`: `npm test` passed 596, failed 0, skipped 8.
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 05 | ready | 04 done | pending refreshed base | pending replacement worktree | pending | prior `7e416fa` obsolete | pending | none | none | blocker resolved: sessions rotate on connection/inactivity and resume capabilities were removed | obsolete evidence worktree/branch retained until replacement dispatch |
+| 05 | working | 04 done | `e08e845` | `codex/user-journey-05-final` / `/tmp/sporades-user-journey-swarm/issue-05-final` | `/root/journey_05_final` | pending | pending | pending | pending | baseline 596 pass, 0 fail, 8 skipped | obsolete evidence branches retained; fresh worker active |
 | 06 | blocked | 05 must be merged and integration-green | pending | pending | pending | pending | pending | pending | pending | not run | not dispatched |
 
 ## Preserved abandoned attempt
