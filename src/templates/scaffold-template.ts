@@ -1,7 +1,7 @@
 export function scaffoldFiles(options: { sporadesDependency?: any; template?: any; framework?: any; toolchain?: any; name?: any; }) {
   const templateOptions = resolveTemplateOptions(options.template);
   const framework = options.framework ?? templateOptions.framework;
-  const toolchain = options.toolchain ?? (framework === "vue" ? "vite" : "esbuild");
+  const toolchain = options.toolchain ?? (framework === "vue" || framework === "svelte" ? "vite" : "esbuild");
   const renderOptions = { ...options, name: options.name, framework, toolchain };
   const packageName = options.name;
   const sporadesDependency = options.sporadesDependency ?? "sporades";
@@ -15,6 +15,8 @@ export function scaffoldFiles(options: { sporadesDependency?: any; template?: an
           preact: "^10.25.0",
         } : framework === "vue" ? {
           vue: "^3.5.13",
+        } : framework === "svelte" ? {
+          svelte: "^5.0.0",
         } : {};
   const frameworkDevDependencies =
     framework === "react"
@@ -25,10 +27,14 @@ export function scaffoldFiles(options: { sporadesDependency?: any; template?: an
       : framework === "vue" ? {
           "@vitejs/plugin-vue": "^5.2.4",
           "@vue/compiler-sfc": "^3.5.13",
+        } : framework === "svelte" ? {
+          "@sveltejs/vite-plugin-svelte": "^5.1.1",
         } : {};
   const baseTemplateFiles = framework === "vanilla" ? vanillaTemplateFiles(renderOptions) : templateOptions.files(renderOptions);
   const templateFiles = framework === "vue"
     ? vueTemplateFiles(renderOptions, baseTemplateFiles)
+    : framework === "svelte"
+    ? svelteTemplateFiles(renderOptions, baseTemplateFiles)
     : toolchain === "vite" && framework !== "vanilla"
     ? viteTemplateFiles(baseTemplateFiles, framework)
     : baseTemplateFiles;
@@ -87,12 +93,77 @@ export function scaffoldFiles(options: { sporadesDependency?: any; template?: an
   </head>
   <body>
     <div id="app"></div>
-    <script type="module" src="${toolchain === "vite" ? `/client/${framework === "vue" ? "index.ts" : "index.tsx"}` : "/client.js"}"></script>
+    <script type="module" src="${toolchain === "vite" ? `/client/${framework === "vue" || framework === "svelte" ? "index.ts" : "index.tsx"}` : "/client.js"}"></script>
   </body>
 </html>
 `,
     ...templateFiles,
   };
+}
+
+function svelteTemplateFiles(options: { name: any; template?: any }, files: Record<string, string>) {
+  const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));
+  return {
+    ...sharedFiles,
+    "README.md": `${sharedFiles["README.md"] ?? ""}\n## Svelte client\n\nThe browser mounts from \`client/index.ts\`; author the native component in \`client/App.svelte\` and bind Sporades state through the stores in \`client/sporades.ts\`.\n`,
+    "client/index.ts": `import { mount } from "svelte";\nimport App from "./App.svelte";\n\nmount(App, { target: document.getElementById("app")! });\n`,
+    "client/sporades.ts": `import { createSvelteStores } from "sporades/client";\n\nexport const { authStore, mutationStore, queryStore } = createSvelteStores();\n`,
+    "client/App.svelte": options.template === "todo" ? svelteTodoAppTemplate() : svelteBlankAppTemplate(),
+    "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#ff3e00"/></svg>\n`,
+  };
+}
+
+function svelteBlankAppTemplate() {
+  return `<script lang="ts">
+  import { authStore } from "./sporades";
+  import mark from "./sporades-mark.svg";
+  const session = authStore();
+</script>
+
+<main>
+  <img class="mark" src={mark} alt="" />
+  <h1>Blank Sporades Capsule</h1>
+  {#if $session.loading}<p>Connecting…</p>{:else}<p>Start building in server/index.ts and client/App.svelte.</p>{/if}
+</main>
+
+<style>
+  main { max-width: 42rem; margin: 4rem auto; font-family: system-ui, sans-serif; }
+  .mark { width: 2rem; height: 2rem; }
+</style>
+`;
+}
+
+function svelteTodoAppTemplate() {
+  return `<script lang="ts">
+  import { auth } from "sporades/client";
+  import { authStore, mutationStore, queryStore } from "./sporades";
+  import mark from "./sporades-mark.svg";
+  const session = authStore();
+  const todos = queryStore("todos");
+  const addTodo = mutationStore("addTodo");
+  let text = "";
+  async function submit() {
+    const value = text.trim();
+    if (!value) return;
+    const result = await addTodo.run(value);
+    if (!result.error) text = "";
+  }
+</script>
+
+<main>
+  <header><img class="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>
+  {#if $session.providers.google?.enabled && !$session.isAuthenticated()}<button type="button" onclick={() => auth.signIn("google")}>Sign in with Google</button>{/if}
+  <form onsubmit={(event) => { event.preventDefault(); submit(); }}><input bind:value={text} aria-label="Todo" /><button disabled={$addTodo.loading}>Add</button></form>
+  {#if $todos.loading}<p>Loading…</p>{:else if $todos.error}<p role="alert">{$todos.error.message}</p>{:else}<ul>{#each $todos.data ?? [] as todo (todo.id)}<li>{todo.text}</li>{/each}</ul>{/if}
+</main>
+
+<style>
+  main { max-width: 42rem; margin: 3rem auto; font-family: system-ui, sans-serif; }
+  header, form { display: flex; gap: .75rem; align-items: center; }
+  .mark { width: 2rem; height: 2rem; }
+  li { margin-block: .5rem; }
+</style>
+`;
 }
 
 function vueTemplateFiles(options: { name: any; template?: any }, files: Record<string, string>) {
@@ -2096,7 +2167,8 @@ const styles = \`
 function agentsTemplate(template: any, framework: any, toolchain: any) {
   const vanilla = framework === "vanilla";
   const vue = framework === "vue";
-  const clientFiles = framework === "vue" ? "client/*.vue and client/*.ts" : `client/*.${vanilla ? "ts" : "tsx"}`;
+  const svelte = framework === "svelte";
+  const clientFiles = vue ? "client/*.vue and client/*.ts" : svelte ? "client/*.svelte and client/*.ts" : `client/*.${vanilla ? "ts" : "tsx"}`;
   return `# Sporades App Instructions
 
 This directory is for a Sporades app. Sporades is a CLI-first tool for building and running full-stack web apps.
@@ -2132,8 +2204,9 @@ sporades db dump
 ## Structure
 
 - \`server/index.ts\` - schema, queries, mutations
-- \`client/index.${vanilla || vue ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : vue ? "Vue mount entrypoint" : "UI entrypoint"}
+- \`client/index.${vanilla || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
 ${vue ? "- `client/App.vue` - Vue Single-File Component UI\n" : ""}- \`shared/\` - pure TypeScript shared by client and server
+${svelte ? "- `client/App.svelte` - Svelte component UI\n" : ""}
 - \`index.html\` - HTML shell (user-owned)
 - \`sporades.json\` - project configuration
 `;

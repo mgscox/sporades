@@ -123,7 +123,7 @@ type StartCapsuleServicesOptions = {
   wait?: boolean;
 };
 
-const SUPPORTED_FRAMEWORKS = new Set(["react", "preact", "vue", "vanilla"]);
+const SUPPORTED_FRAMEWORKS = new Set(["react", "preact", "vue", "svelte", "vanilla"]);
 const SUPPORTED_CLIENT_TOOLCHAINS = new Set(["esbuild", "vite"]);
 const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
@@ -390,9 +390,9 @@ function parseCreateArgs(args: string[]): LooseRecord {
     throw commandError("Missing scaffold name.", "Use `sporades create <name>`.");
   }
   if (framework !== null && !SUPPORTED_FRAMEWORKS.has(framework)) {
-    throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, vanilla.");
+    throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, svelte, vanilla.");
   }
-  toolchain ??= framework === "vue" ? "vite" : "esbuild";
+  toolchain ??= framework === "vue" || framework === "svelte" ? "vite" : "esbuild";
   if (!SUPPORTED_CLIENT_TOOLCHAINS.has(toolchain)) {
     throw commandError(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
   }
@@ -408,8 +408,14 @@ function parseCreateArgs(args: string[]): LooseRecord {
       "Use Vue with Vite.",
     );
   }
+  if (framework === "svelte" && toolchain !== "vite") {
+    throw commandError(`Unsupported client framework/toolchain combination: svelte/${toolchain}`, "Use Svelte with Vite.");
+  }
   if (!SUPPORTED_TEMPLATES.has(template)) {
     throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
+  }
+  if (framework === "svelte" && template !== "blank" && template !== "todo") {
+    throw commandError(`Unsupported Svelte template: ${template}`, "Use the blank or todo template with Svelte; complete template parity lands separately.");
   }
   return {
     name,
@@ -2095,7 +2101,7 @@ function tagDevRebuildError(
 }
 
 function configuredClientToolchain(config: LooseRecord) {
-  return config.client?.toolchain ?? (config.client?.framework === "vue" ? "vite" : "esbuild");
+  return config.client?.toolchain ?? (["vue", "svelte"].includes(config.client?.framework) ? "vite" : "esbuild");
 }
 
 function reportDevPublicCleanupDegradation(

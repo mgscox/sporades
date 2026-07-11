@@ -770,6 +770,44 @@ test("sporades create rejects unsupported Vue toolchains and admits every comple
   });
 });
 
+test("sporades create admits Svelte Vite blank and todo while rejecting later templates and esbuild", async () => {
+  await withTempDir(async (dir) => {
+    for (const template of ["blank", "todo"]) {
+      const result = await runCli(["create", `svelte-${template}`, "--framework", "svelte", "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(result.code, 0, `${template}: ${result.stderr || result.stdout}`);
+      const project = path.join(dir, `svelte-${template}`);
+      const [config, html, entry, app, packageJson] = await Promise.all([
+        readFile(path.join(project, "sporades.json"), "utf8").then(JSON.parse),
+        readFile(path.join(project, "index.html"), "utf8"),
+        readFile(path.join(project, "client", "index.ts"), "utf8"),
+        readFile(path.join(project, "client", "App.svelte"), "utf8"),
+        readFile(path.join(project, "package.json"), "utf8").then(JSON.parse),
+      ]);
+      assert.deepEqual(config.client, { framework: "svelte", toolchain: "vite" });
+      assert.match(html, /src="\/client\/index\.ts"/);
+      assert.match(entry, /mount\(App/);
+      assert.match(app, /<script lang="ts">/);
+      assert.match(app, /<style>/);
+      assert.equal(packageJson.dependencies.svelte, "^5.0.0");
+      assert.equal(packageJson.devDependencies["@sveltejs/vite-plugin-svelte"], "^5.1.1");
+      assert.equal(packageJson.dependencies.react, undefined);
+      assert.equal(packageJson.dependencies.vue, undefined);
+    }
+    const esbuild = await runCli(["create", "svelte-esbuild", "--framework", "svelte", "--toolchain", "esbuild", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(esbuild.code, 1);
+    assert.deepEqual(JSON.parse(esbuild.stdout).error, {
+      message: "Unsupported client framework/toolchain combination: svelte/esbuild",
+      hint: "Use Svelte with Vite.",
+    });
+    const guestbook = await runCli(["create", "svelte-guestbook", "--framework", "svelte", "--template", "guestbook", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(guestbook.code, 1);
+    assert.deepEqual(JSON.parse(guestbook.stdout).error, {
+      message: "Unsupported Svelte template: guestbook",
+      hint: "Use the blank or todo template with Svelte; complete template parity lands separately.",
+    });
+  });
+});
+
 test("sporades create keeps Vanilla TypeScript on esbuild", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(
@@ -1061,7 +1099,7 @@ test("sporades create rejects unsupported framework values with structured JSON"
       data: null,
       error: {
         message: "Unsupported framework: angular",
-        hint: "Use one of: react, preact, vue, vanilla.",
+        hint: "Use one of: react, preact, vue, svelte, vanilla.",
       },
     });
   });

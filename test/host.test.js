@@ -11,6 +11,7 @@ import { connect } from "node:net";
 
 import { createWebSocketHub, openDevDatabase, prepareHttpSecurity, routeRuntimeHealth } from "../dist/server-runtime-source.js";
 import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
+import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -4203,6 +4204,8 @@ for (const { framework, template } of [
   { framework: "vue", template: "guestbook" },
   { framework: "vue", template: "photo-library" },
   { framework: "vue", template: "campfire" },
+  { framework: "svelte", template: "blank" },
+  { framework: "svelte", template: "todo" },
 ]) test(`sporades host push archives the complete normalized ${framework} Vite ${template} public tree`, async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
@@ -4217,7 +4220,7 @@ for (const { framework, template } of [
     );
     assert.equal(created.code, 0, created.stderr);
     const projectDir = path.join(dir, "vite-hosted");
-    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : installVue)(projectDir);
+    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : framework === "vue" ? installVue : (project) => installProjectSvelteToolchain(project, repoRoot))(projectDir);
     if (template === "photo-library") {
       const configPath = path.join(projectDir, "sporades.json");
       const config = JSON.parse(await readFile(configPath, "utf8"));
@@ -4241,7 +4244,7 @@ for (const { framework, template } of [
     assert(files.includes("public/index.html"));
     assert(files.some((file) => /^public\/assets\/index-[^/]+\.js$/.test(file)));
     assert(files.some((file) => /^public\/assets\/index-[^/]+\.css$/.test(file)));
-    if (framework !== "vue") assert(files.some((file) => /^public\/assets\/vite-scaffold-[^/]+\.js$/.test(file)));
+    if (framework === "react" || framework === "preact") assert(files.some((file) => /^public\/assets\/vite-scaffold-[^/]+\.js$/.test(file)));
     assert(files.some((file) => /^public\/assets\/sporades-mark-[^/]+\.svg$/.test(file)));
     assert(files.some((file) => file.endsWith(".js.map")));
     assert.equal(files.includes("public/client.js"), false);
@@ -4258,6 +4261,7 @@ for (const { framework, template } of [
       blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
       "photo-library": /Photo Library/, campfire: /Campfire/,
     }[template]);
+    if (framework === "svelte") assert.match(publicText, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
   });
 });
 

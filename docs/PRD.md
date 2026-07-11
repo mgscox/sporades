@@ -29,6 +29,7 @@ The repository currently includes:
 - `sporades create` scaffolding with template selection, React, Preact, and
   Vanilla TypeScript framework support, explicit React/Vite and Preact/Vite
   admission, and Vue/Vite admission across every supported template,
+  Svelte/Vite admission for blank and todo Capsules,
   framework support, `AGENTS.md`, `CLAUDE.md`, `index.html`, `sporades.json`,
   Server env, and optional `npm install` / git initialization.
 - `sporades dev` for local Node execution with bundling, file watching,

@@ -27,6 +27,13 @@ const FRAMEWORK_BUNDLE_CONFIG = {
         jsxImportSource: null,
         jsxRuntimeImport: null,
     },
+    svelte: {
+        framework: "svelte",
+        entry: "index.ts",
+        loader: "ts",
+        jsxImportSource: null,
+        jsxRuntimeImport: null,
+    },
     vanilla: {
         framework: "vanilla",
         entry: "index.ts",
@@ -38,7 +45,7 @@ const FRAMEWORK_BUNDLE_CONFIG = {
 const SUPPORTED_AUTH_PROVIDERS = new Set(["anonymous", "google", "email"]);
 export async function createBundle(projectDir, config, options = {}) {
     const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
-    const toolchain = readClientToolchain(config.client?.toolchain ?? (frameworkBundleConfig.framework === "vue" ? "vite" : "esbuild"), frameworkBundleConfig.framework);
+    const toolchain = readClientToolchain(config.client?.toolchain ?? (["vue", "svelte"].includes(frameworkBundleConfig.framework) ? "vite" : "esbuild"), frameworkBundleConfig.framework);
     const buildDir = path.join(projectDir, ".sporades", "build");
     const paths = {
         config: path.join(projectDir, "sporades.json"),
@@ -504,7 +511,7 @@ async function readRequiredFile(filePath, message, hint) {
 }
 function readFrameworkBundleConfig(framework) {
     if (typeof framework !== "string" || !(framework in FRAMEWORK_BUNDLE_CONFIG)) {
-        throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, vanilla.");
+        throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, svelte, vanilla.");
     }
     return FRAMEWORK_BUNDLE_CONFIG[framework];
 }
@@ -517,6 +524,9 @@ function readClientToolchain(toolchain, framework) {
     }
     if (framework === "vue" && toolchain !== "vite") {
         throw commandError("Unsupported client framework/toolchain combination: vue/esbuild", "Use Vue with Vite.");
+    }
+    if (framework === "svelte" && toolchain !== "vite") {
+        throw commandError("Unsupported client framework/toolchain combination: svelte/esbuild", "Use Svelte with Vite.");
     }
     return toolchain;
 }

@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
+import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -783,6 +784,8 @@ for (const { framework, template } of [
   { framework: "vue", template: "guestbook" },
   { framework: "vue", template: "photo-library" },
   { framework: "vue", template: "campfire" },
+  { framework: "svelte", template: "blank" },
+  { framework: "svelte", template: "todo" },
 ]) test(`sporades deploy mounts the complete normalized ${framework} Vite ${template} public tree`, async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(
@@ -791,7 +794,7 @@ for (const { framework, template } of [
     );
     assert.equal(createResult.code, 0, createResult.stderr);
     const projectDir = await realpath(path.join(dir, "vite-release"));
-    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : installVue)(projectDir);
+    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : framework === "vue" ? installVue : (project) => installProjectSvelteToolchain(project, repoRoot))(projectDir);
     await writeFile(path.join(projectDir, ".env.sporades.server"), `${template === "photo-library" ? "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n" : ""}SERVER_ONLY_TOKEN=vite-container-secret\n`);
     const docker = await installFakeDocker(dir, "vite-container");
     const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
@@ -803,7 +806,7 @@ for (const { framework, template } of [
     assert(binding.clientRelease.paths.includes("index.html"));
     assert(binding.clientRelease.paths.some((file) => /^assets\/index-[^/]+\.js$/.test(file)));
     assert(binding.clientRelease.paths.some((file) => /^assets\/index-[^/]+\.css$/.test(file)));
-    if (framework !== "vue") assert(binding.clientRelease.paths.some((file) => /^assets\/vite-scaffold-[^/]+\.js$/.test(file)));
+    if (framework === "react" || framework === "preact") assert(binding.clientRelease.paths.some((file) => /^assets\/vite-scaffold-[^/]+\.js$/.test(file)));
     assert(binding.clientRelease.paths.some((file) => /^assets\/sporades-mark-[^/]+\.svg$/.test(file)));
     assert(binding.clientRelease.paths.some((file) => file.endsWith(".js.map")));
     assert.equal(binding.clientRelease.paths.includes("client.js"), false);
@@ -816,6 +819,7 @@ for (const { framework, template } of [
       blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
       "photo-library": /Photo Library/, campfire: /Campfire/,
     }[template]);
+    if (framework === "svelte") assert.match(output, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
     const runCall = firstDockerRunCall(await docker.calls());
     assertVolume(runCall.args, `${publicRoot}:/app/public:ro`);
   });

@@ -48,11 +48,11 @@ export function validateClientToolchainInput(options: {
   indexHtml: string;
 }) {
   if (options.toolchain !== "vite") return;
-  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "vue" ? "Vue" : "React";
-  if (!new Set(["react", "preact", "vue"]).has(options.frameworkConfig.framework)) {
+  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "vue" ? "Vue" : options.frameworkConfig.framework === "svelte" ? "Svelte" : "React";
+  if (!new Set(["react", "preact", "vue", "svelte"]).has(options.frameworkConfig.framework)) {
     throw clientToolchainError(
       `Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`,
-      "Use React, Preact, or Vue with Vite, or keep Vanilla TypeScript on esbuild.",
+      "Use React, Preact, Vue, or Svelte with Vite, or keep Vanilla TypeScript on esbuild.",
     );
   }
   if (referencesLegacyClientShell(options.indexHtml)) {
@@ -150,6 +150,9 @@ async function buildVite(options: {
     if (options.frameworkConfig.framework === "vue") {
       const { plugin, compiler } = await loadProjectVueToolchain(projectRoot);
       frameworkPlugins.push(plugin({ compiler }));
+    } else if (options.frameworkConfig.framework === "svelte") {
+      const { plugin } = await loadProjectSvelteToolchain(projectRoot);
+      frameworkPlugins.push(plugin());
     }
     const result = await build({
       root: projectRoot,
@@ -208,15 +211,50 @@ async function buildVite(options: {
 }
 
 async function loadProjectVueToolchain(projectRoot: string) {
-  const requiredPackages = [
-    { name: "@vitejs/plugin-vue", major: 5 },
-    { name: "@vue/compiler-sfc", major: 3 },
-  ];
+  const loaded = await loadProjectCompilerToolchain(projectRoot, {
+    framework: "Vue",
+    requiredPackages: [
+      { declaration: "@vitejs/plugin-vue", resolve: "@vitejs/plugin-vue", major: 5 },
+      { declaration: "@vue/compiler-sfc", resolve: "@vue/compiler-sfc", major: 3 },
+    ],
+    installHint: "Run `npm install` in the Vue Capsule to install its declared @vitejs/plugin-vue and @vue/compiler-sfc versions.",
+  });
+  const pluginModule = loaded.get("@vitejs/plugin-vue");
+  const compilerModule = loaded.get("@vue/compiler-sfc");
+  const plugin = pluginModule?.default?.default ?? pluginModule?.default ?? pluginModule;
+  const compiler = compilerModule?.default ?? compilerModule;
+  if (typeof plugin !== "function" || typeof compiler?.parse !== "function") throw projectToolchainError("Vue", "Vue/Vite project compiler packages have incompatible exports.", "Run `npm install` in the Vue Capsule to install its declared @vitejs/plugin-vue and @vue/compiler-sfc versions.");
+  return { plugin, compiler };
+}
+
+async function loadProjectSvelteToolchain(projectRoot: string) {
+  const hint = "Run `npm install` in the Svelte Capsule to install its declared @sveltejs/vite-plugin-svelte and svelte versions.";
+  const loaded = await loadProjectCompilerToolchain(projectRoot, {
+    framework: "Svelte",
+    requiredPackages: [
+      { declaration: "@sveltejs/vite-plugin-svelte", resolve: "@sveltejs/vite-plugin-svelte", major: 5 },
+      { declaration: "svelte", resolve: "svelte/compiler", major: 5 },
+    ],
+    installHint: hint,
+  });
+  const pluginModule = loaded.get("@sveltejs/vite-plugin-svelte");
+  const compilerModule = loaded.get("svelte/compiler");
+  const plugin = pluginModule?.svelte ?? pluginModule?.default?.svelte ?? pluginModule?.default ?? pluginModule;
+  const compiler = compilerModule?.default ?? compilerModule;
+  if (typeof plugin !== "function" || typeof compiler?.compile !== "function") throw projectToolchainError("Svelte", "Svelte/Vite project compiler packages have incompatible exports.", hint);
+  return { plugin, compiler };
+}
+
+async function loadProjectCompilerToolchain(projectRoot: string, spec: {
+  framework: string;
+  requiredPackages: Array<{ declaration: string; resolve: string; major: number }>;
+  installHint: string;
+}) {
   let projectManifest: Record<string, any>;
   try {
     projectManifest = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
   } catch {
-    throw vueProjectToolchainError("Vue/Vite could not read the Capsule package.json.");
+    throw projectToolchainError(spec.framework, `${spec.framework}/Vite could not read the Capsule package.json.`, spec.installHint);
   }
   const declared = { ...(projectManifest.dependencies ?? {}), ...(projectManifest.devDependencies ?? {}) };
   const nodeModulesDir = path.join(projectRoot, "node_modules");
@@ -227,56 +265,57 @@ async function loadProjectVueToolchain(projectRoot: string) {
     canonicalNodeModules = await realpath(nodeModulesDir);
     if (!isCanonicalDescendant(projectRoot, canonicalNodeModules)) throw new Error("node_modules escaped the project root");
   } catch {
-    throw vueProjectToolchainError("Vue/Vite requires node_modules to be a real directory contained by the Capsule project.");
+    throw projectToolchainError(spec.framework, `${spec.framework}/Vite requires node_modules to be a real directory contained by the Capsule project.`, spec.installHint);
   }
   const projectRequire = createRequire(path.join(projectRoot, "package.json"));
   const resolvedPackages = new Map<string, string>();
-  for (const required of requiredPackages) {
-    if (typeof declared[required.name] !== "string") {
-      throw vueProjectToolchainError(`Vue/Vite requires the Capsule to declare ${required.name}.`);
+  for (const required of spec.requiredPackages) {
+    if (typeof declared[required.declaration] !== "string") {
+      throw projectToolchainError(spec.framework, `${spec.framework}/Vite requires the Capsule to declare ${required.declaration}.`, spec.installHint);
     }
-    const packageDir = path.join(projectRoot, "node_modules", ...required.name.split("/"));
+    const packageDir = path.join(projectRoot, "node_modules", ...required.declaration.split("/"));
     let installedManifest: Record<string, any>;
     let resolved: string;
     try {
       installedManifest = JSON.parse(await readFile(path.join(packageDir, "package.json"), "utf8"));
-      resolved = projectRequire.resolve(required.name);
+      try {
+        resolved = projectRequire.resolve(required.resolve);
+      } catch {
+        const subpath = required.resolve === required.declaration ? "." : `.${required.resolve.slice(required.declaration.length)}`;
+        const exported = installedManifest.exports?.[subpath];
+        const importTarget = typeof exported === "string" ? exported : typeof exported?.import === "string" ? exported.import : exported?.import?.default;
+        if (typeof importTarget !== "string") throw new Error("package has no import export");
+        resolved = path.resolve(packageDir, importTarget);
+      }
       const canonicalPackageDir = await realpath(packageDir);
       if (!isCanonicalDescendant(canonicalNodeModules, canonicalPackageDir)) throw new Error("package directory escaped project node_modules");
       const canonicalResolved = await realpath(resolved);
       if (!isCanonicalDescendant(canonicalPackageDir, canonicalResolved)) throw new Error("package entry escaped its project-owned package root");
       resolved = canonicalResolved;
     } catch {
-      throw vueProjectToolchainError(`Vue/Vite could not resolve project-owned ${required.name}.`);
+      throw projectToolchainError(spec.framework, `${spec.framework}/Vite could not resolve project-owned ${required.declaration}.`, spec.installHint);
     }
     const installedMajor = Number.parseInt(String(installedManifest.version).split(".")[0] ?? "", 10);
     if (installedMajor !== required.major) {
-      throw vueProjectToolchainError(
-        `Vue/Vite does not support the installed ${required.name} version.`,
-        { package: required.name, installedVersion: String(installedManifest.version).slice(0, 40), supportedMajor: required.major },
+      throw projectToolchainError(
+        spec.framework, `${spec.framework}/Vite does not support the installed ${required.declaration} version.`, spec.installHint,
+        { package: required.declaration, installedVersion: String(installedManifest.version).slice(0, 40), supportedMajor: required.major },
       );
     }
-    resolvedPackages.set(required.name, resolved);
+    resolvedPackages.set(required.resolve, resolved);
   }
   const loaded = new Map<string, any>();
   for (const [packageName, resolved] of resolvedPackages) {
     try {
       loaded.set(packageName, await import(pathToFileURL(resolved).href));
     } catch (error) {
-      throw vueProjectToolchainError(
-        `Vue/Vite could not load project-owned ${packageName}: ${boundedBuildMessage(error, [projectRoot])}`,
+      throw projectToolchainError(
+        spec.framework, `${spec.framework}/Vite could not load project-owned ${packageName}: ${boundedBuildMessage(error, [projectRoot])}`, spec.installHint,
         { package: packageName },
       );
     }
   }
-  const pluginModule = loaded.get("@vitejs/plugin-vue");
-  const compilerModule = loaded.get("@vue/compiler-sfc");
-  const plugin = pluginModule?.default?.default ?? pluginModule?.default ?? pluginModule;
-  const compiler = compilerModule?.default ?? compilerModule;
-  if (typeof plugin !== "function" || typeof compiler?.parse !== "function") {
-    throw vueProjectToolchainError("Vue/Vite project compiler packages have incompatible exports.");
-  }
-  return { plugin, compiler };
+  return loaded;
 }
 
 function isCanonicalDescendant(parent: string, candidate: string) {
@@ -284,12 +323,8 @@ function isCanonicalDescendant(parent: string, candidate: string) {
   return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
-function vueProjectToolchainError(message: string, diagnostics?: unknown) {
-  return clientToolchainError(
-    message,
-    "Run `npm install` in the Vue Capsule to install its declared @vitejs/plugin-vue and @vue/compiler-sfc versions.",
-    diagnostics,
-  );
+function projectToolchainError(_framework: string, message: string, hint: string, diagnostics?: unknown) {
+  return clientToolchainError(message, hint, diagnostics);
 }
 
 function sporadesEsbuildClientPlugin(): EsbuildPlugin {
@@ -335,7 +370,7 @@ function viteBuildError(error: unknown, projectRoots: string[], framework: strin
   const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectRoots, rawFile) : null;
   return clientToolchainError(
     `Client bundle failed: ${message}`,
-    `Fix the ${framework === "preact" ? "Preact" : framework === "vue" ? "Vue" : "React"}/Vite client source and save again.`,
+    `Fix the ${framework === "preact" ? "Preact" : framework === "vue" ? "Vue" : framework === "svelte" ? "Svelte" : "React"}/Vite client source and save again.`,
     {
       ...(typeof details.code === "string" ? { code: details.code.slice(0, 80) } : {}),
       ...(relativeFile ? { file: relativeFile } : {}),

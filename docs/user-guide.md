@@ -201,20 +201,22 @@ sporades create vue-todo --template todo --framework vue
 sporades create vue-guestbook --template guestbook --framework vue
 sporades create vue-gallery --template photo-library --framework vue
 sporades create vue-campfire --template campfire --framework vue
+sporades create svelte-todo --template todo --framework svelte
 sporades create no-install-yet --no-install --no-git
 ```
 
 Available templates are `blank`, `todo`, `guestbook`, `photo-library`, and
 `campfire`. Campfire demonstrates realtime messaging, durable reactions, email
 fixture identities, and explicitly consented ephemeral Journey activity.
-Available client frameworks are `react`, `preact`, `vue`, and framework-neutral
+Available client frameworks are `react`, `preact`, `vue`, `svelte`, and framework-neutral
 Vanilla TypeScript. esbuild remains the React and Preact default client
 toolchain, and they can explicitly select Vite with `--toolchain vite`. Vue
-selects Vite and supports the complete template set; Vanilla TypeScript remains
-on esbuild.
+selects Vite and supports the complete template set. Svelte also selects Vite
+and currently admits `blank` and `todo`; Vanilla TypeScript remains on esbuild.
 
 React/Vite and Preact/Vite scaffolds reference `/client/index.tsx`; Vue/Vite
-references `/client/index.ts` and compiles native `client/App.vue` SFCs. All
+and Svelte/Vite reference `/client/index.ts` and compile native `client/App.vue`
+or `client/App.svelte` components respectively. All
 keep `index.html` author-owned. Sporades runs Vite as an isolated one-shot build
 with local Vite config and `.env*` loading disabled, then serves transformed HTML and its
 hashed JS, CSS, source-map, and imported-asset tree. Sporades remains the only

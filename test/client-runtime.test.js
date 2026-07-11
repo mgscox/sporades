@@ -109,6 +109,105 @@ test("Vue mutation state is pending-counted and latest-invocation deterministic"
   } finally { browser.cleanup(); }
 });
 
+test("Svelte stores lazily own one query and auth observation across subscribers and resubscribe deterministically", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  try {
+    const runtime = await importClientRuntime();
+    const queryStarts = [], queryStops = [], authStarts = [], authStops = [];
+    runtime.queries.subscribe = (name, publish) => {
+      queryStarts.push(name);
+      publish({ data: [{ id: `todo-${queryStarts.length}` }], error: null, loading: false });
+      return { unsubscribe() { queryStops.push(name); } };
+    };
+    runtime.auth.subscribe = (publish) => {
+      authStarts.push("auth");
+      publish({ auth: anonymousAuth, providers: { anonymous: { enabled: true } }, error: null, loading: false });
+      return { unsubscribe() { authStops.push("auth"); } };
+    };
+    const svelte = runtime.createSvelteStores();
+    const query = svelte.queryStore("todos");
+    const auth = svelte.authStore();
+    assert.deepEqual(queryStarts, []);
+    assert.deepEqual(authStarts, []);
+    const queryStates = [], secondQueryStates = [], authStates = [];
+    const stopQueryA = query.subscribe((state) => queryStates.push(state));
+    const stopQueryB = query.subscribe((state) => secondQueryStates.push(state));
+    const stopAuth = auth.subscribe((state) => authStates.push(state));
+    assert.deepEqual(queryStarts, ["todos"], "first query subscriber starts one transport observation");
+    assert.deepEqual(authStarts, ["auth"]);
+    assert.equal(queryStates.at(-1).data[0].id, "todo-1");
+    assert.equal(authStates.at(-1).isAuthenticated(), false);
+    stopQueryA();
+    stopQueryA();
+    assert.deepEqual(queryStops, [], "duplicate and non-final teardown do not stop shared observation");
+    stopQueryB();
+    stopAuth();
+    assert.deepEqual(queryStops, ["todos"]);
+    assert.deepEqual(authStops, ["auth"]);
+    const stopAgain = query.subscribe((state) => queryStates.push(state));
+    assert.deepEqual(queryStarts, ["todos", "todos"], "resubscribe starts one fresh observation");
+    assert.equal(queryStates.at(-1).data[0].id, "todo-2");
+    stopAgain();
+    assert.deepEqual(queryStops, ["todos", "todos"]);
+  } finally { browser.cleanup(); }
+});
+
+test("Svelte mutation stores expose complete state with pending-counted latest-invocation semantics", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
+  try {
+    const runtime = await importClientRuntime();
+    const calls = [];
+    runtime.mutations.run = (_name, value) => { const call = deferred(); calls.push({ value, ...call }); return call.promise; };
+    const mutation = runtime.createSvelteStores().mutationStore("save");
+    const states = [];
+    const stop = mutation.subscribe((state) => states.push({ ...state }));
+    assert.deepEqual(states.at(-1), { data: null, error: null, loading: false });
+    const first = mutation.run("A");
+    const latest = mutation.run("B");
+    assert.equal(states.at(-1).loading, true);
+    calls[1].resolve({ data: { value: "B" }, error: null });
+    await latest;
+    assert.equal(states.at(-1).loading, true);
+    assert.deepEqual(states.at(-1).data, { value: "B" });
+    calls[0].resolve({ data: { value: "A" }, error: null });
+    await first;
+    assert.equal(states.at(-1).loading, false);
+    assert.deepEqual(states.at(-1).data, { value: "B" });
+    const rejected = mutation.run("C");
+    calls[2].reject(new Error("Svelte transport failed"));
+    await assert.rejects(rejected, /Svelte transport failed/);
+    assert.deepEqual(states.at(-1).error, { message: "Svelte transport failed" });
+    assert.equal(states.at(-1).loading, false);
+    stop();
+  } finally { browser.cleanup(); }
+});
+
+test("actual Svelte derived-store lifecycle starts and stops Sporades observation exactly once", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  try {
+    const [{ derived }, runtime] = await Promise.all([import("svelte/store"), importClientRuntime()]);
+    let starts = 0, stops = 0;
+    runtime.queries.subscribe = (_name, publish) => {
+      starts += 1;
+      publish({ data: [{ id: "svelte-runtime" }], error: null, loading: false });
+      return { unsubscribe() { stops += 1; } };
+    };
+    const query = runtime.createSvelteStores().queryStore("todos");
+    const ids = derived(query, ($query) => ($query.data ?? []).map((item) => item.id));
+    assert.equal(starts, 0);
+    const values = [];
+    const unsubscribeA = ids.subscribe((value) => values.push(value));
+    const unsubscribeB = ids.subscribe((value) => values.push(value));
+    assert.equal(starts, 1);
+    assert.deepEqual(values.at(-1), ["svelte-runtime"]);
+    unsubscribeA();
+    assert.equal(stops, 0);
+    unsubscribeB();
+    assert.equal(stops, 1, "Svelte's final derived subscriber releases the transport once");
+  } finally { browser.cleanup(); }
+});
+
 test("Journey metadata rejects symbol-keyed objects before publication", () => {
   const normalize = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "normalizeJourneyState");
   const metadata = { visible: true, [Symbol("private")]: "lost" };

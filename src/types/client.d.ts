@@ -304,6 +304,30 @@ export type VueMutationState<Result = unknown> = MutationState<Result> & {
   data: Result | null;
 };
 
+/** Minimal Svelte-compatible readable store contract. */
+export type SvelteReadable<State> = {
+  subscribe(listener: (state: State) => void): () => void;
+};
+
+/** Svelte mutation store state; invoke mutations through the store's `run` method. */
+export type SvelteMutationStore<Result = unknown> = SvelteReadable<Omit<MutationState<Result>, "run"> & { data: Result | null }> & {
+  run(...args: unknown[]): Promise<SporadesResult<Result>>;
+};
+
+/** Svelte auth state and commands over one lazily observed auth subscription. */
+export type SvelteAuthStore = SvelteReadable<Omit<UseAuthState, "signUp" | "signIn" | "signOut">> & {
+  signUp: AuthApi["signUp"];
+  signIn: AuthApi["signIn"];
+  signOut: AuthApi["signOut"];
+};
+
+/** Svelte-native stores over the shared framework-neutral client connection. */
+export type SporadesSvelteStores = {
+  queryStore<Data = unknown>(name: string): SvelteReadable<QueryState<Data>>;
+  mutationStore<Result = unknown>(name: string): SvelteMutationStore<Result>;
+  authStore(): SvelteAuthStore;
+};
+
 /** Auth commands for the current browser session. */
 export const auth: AuthApi;
 /** File upload, URL, download, delete, and public URL commands. */
@@ -345,3 +369,5 @@ export function createHooks(primitives: HookPrimitives): SporadesHooks;
 
 /** Bind reactive Sporades state and subscription cleanup to a Vue effect scope or component. */
 export function createVueComposables(primitives: VueComposablePrimitives): SporadesVueComposables;
+/** Create lazily observed Svelte-compatible stores for query, mutation, and auth state. */
+export function createSvelteStores(): SporadesSvelteStores;

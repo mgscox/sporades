@@ -175,7 +175,7 @@ export function createVueComposables(primitives) {
       } catch (error) {
         if (invocation === latestInvocation) {
           state.data = null;
-          state.error = normalizeVueMutationError(error);
+          state.error = normalizeMutationError(error);
         }
         throw error;
       } finally {
@@ -200,7 +200,87 @@ export function createVueComposables(primitives) {
   return { useQuery, useMutation, useAuth };
 }
 
-function normalizeVueMutationError(error) {
+export function createSvelteStores() {
+  function queryStore(name) {
+    return createLazyStore(
+      { data: null, error: null, loading: true },
+      (publish) => queries.subscribe(name, publish).unsubscribe,
+      true,
+    );
+  }
+
+  function mutationStore(name) {
+    let pending = 0;
+    let latestInvocation = 0;
+    const store = createLazyStore({ data: null, error: null, loading: false });
+    const run = async (...args) => {
+      const invocation = ++latestInvocation;
+      pending += 1;
+      store.publish({ data: null, error: null, loading: true });
+      try {
+        const result = await mutations.run(name, ...args);
+        if (invocation === latestInvocation) store.publish({ data: result.error ? null : result.data ?? null, error: result.error ?? null, loading: pending > 1 });
+        return result;
+      } catch (error) {
+        if (invocation === latestInvocation) store.publish({ data: null, error: normalizeMutationError(error), loading: pending > 1 });
+        throw error;
+      } finally {
+        pending -= 1;
+        store.publish({ loading: pending > 0 });
+      }
+    };
+    return { subscribe: store.subscribe, run };
+  }
+
+  function authStore() {
+    const isAuthenticated = () => Boolean(store.value().auth?.isAuthenticated);
+    const store = createLazyStore(
+      { auth: null, providers: {}, loading: true, error: null, isAuthenticated },
+      (publish) => auth.subscribe((nextState) => publish({ ...nextState, isAuthenticated })).unsubscribe,
+      true,
+    );
+    return {
+      subscribe: store.subscribe,
+      signUp: (provider, credentials) => connect().signUp(provider, credentials),
+      signIn: (provider, credentials) => connect().signIn(provider, credentials),
+      signOut: () => connect().signOut(),
+    };
+  }
+
+  return { queryStore, mutationStore, authStore };
+}
+
+function createLazyStore(initialState, start, resetOnStart = false) {
+  let state = initialState;
+  let stop = null;
+  const listeners = new Set();
+  const publish = (nextState) => {
+    state = { ...state, ...nextState };
+    for (const listener of listeners) listener(state);
+  };
+  const subscribe = (listener) => {
+    listeners.add(listener);
+    if (listeners.size === 1 && start) {
+      if (resetOnStart) state = { ...initialState };
+      stop = start(publish) ?? null;
+    }
+    listener(state);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      listeners.delete(listener);
+      if (listeners.size === 0 && stop) {
+        const teardown = stop;
+        stop = null;
+        teardown();
+      }
+    };
+  };
+  return { subscribe, publish, value: () => state };
+}
+
+function normalizeMutationError(error) {
   if (error && typeof error === "object" && typeof error.message === "string") {
     return { message: error.message, ...(typeof error.hint === "string" ? { hint: error.hint } : {}) };
   }

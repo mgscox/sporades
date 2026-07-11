@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
+import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
 import { mountVueTemplate } from "./support/vue-template-harness.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 import { buildClientToolchain } from "../dist/client-toolchain.js";
@@ -336,6 +337,10 @@ async function installFakePreact(projectDir) {
 
 async function installVue(projectDir) {
   await installProjectVueToolchain(projectDir, repoRoot);
+}
+
+async function installSvelte(projectDir) {
+  await installProjectSvelteToolchain(projectDir, repoRoot);
 }
 
 function nodeText(node) {
@@ -1263,6 +1268,33 @@ test("complete Vue exemplars start through Sporades Dev with normalized Vite ass
   });
 });
 
+for (const { template, marker } of [{ template: "blank", marker: "Blank Sporades Capsule" }, { template: "todo", marker: "Sporades Todos" }]) test(`Svelte Vite compiles the ${template} component into an isolated normalized public tree`, async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", `svelte-${template}-build`, "--template", template, "--framework", "svelte", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, `svelte-${template}-build`);
+    await installSvelte(projectDir);
+    await writeFile(path.join(projectDir, ".env"), "VITE_SVELTE_LEAK=browser-secret\n");
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "SVELTE_SERVER_ONLY=server-secret\n");
+    await writeFile(path.join(projectDir, "vite.config.ts"), 'throw new Error("svelte-vite-config-loaded");\n');
+    await writeFile(path.join(projectDir, "postcss.config.mjs"), 'throw new Error("svelte-postcss-config-loaded");\n');
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    const bundle = await createBundle(projectDir, config, { publishLegacy: false });
+    try {
+      const files = Object.keys(await snapshotProjectTree(bundle.staticFiles.publicDir)).filter((file) => !file.endsWith("/"));
+      assert(files.some((file) => /^assets\/index-[^/]+\.js$/.test(file)), JSON.stringify(files));
+      assert(files.some((file) => /^assets\/index-[^/]+\.css$/.test(file)), JSON.stringify(files));
+      assert(files.some((file) => /^assets\/sporades-mark-[^/]+\.svg$/.test(file)), JSON.stringify(files));
+      const output = (await Promise.all(files.map((file) => readFile(path.join(bundle.staticFiles.publicDir, file), "utf8")))).join("\n");
+      assert.match(output, new RegExp(marker));
+      assert.doesNotMatch(output, /browser-secret|server-secret|svelte-(?:vite|postcss)-config-loaded|\/@vite\/client|vite\/hmr/i);
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
 test("Vue Guestbook renders query state and drives mutation loading, errors, and updates", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", "vue-guestbook-behavior", "--template", "guestbook", "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
@@ -1578,6 +1610,43 @@ test("Vue Vite fails closed for missing, unsupported, and unloadable project com
   }
 });
 
+test("Svelte Vite fails closed for missing, unsupported, unloadable, and external project compiler packages", async () => {
+  for (const scenario of ["missing", "version", "load", "external"]) {
+    await withTempDir(async (dir) => {
+      const created = await runCli(["create", `svelte-compiler-${scenario}`, "--framework", "svelte", "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(created.code, 0, created.stderr);
+      const projectDir = path.join(dir, `svelte-compiler-${scenario}`);
+      if (scenario !== "missing") await installSvelte(projectDir);
+      const pluginDir = path.join(projectDir, "node_modules", "@sveltejs", "vite-plugin-svelte");
+      if (scenario === "version" || scenario === "load") {
+        await rm(pluginDir, { recursive: true, force: true });
+        await mkdir(pluginDir, { recursive: true });
+        await writeFile(path.join(pluginDir, "package.json"), `${JSON.stringify({
+          name: "@sveltejs/vite-plugin-svelte", version: scenario === "version" ? "6.0.0" : "5.1.1", type: "module",
+          exports: { ".": { import: { default: "./index.js" } } },
+        })}\n`);
+        await writeFile(path.join(pluginDir, "index.js"), 'throw new Error("svelte-project-plugin-load-failure");\n');
+      } else if (scenario === "external") {
+        await rm(pluginDir, { recursive: true, force: true });
+        await symlink(path.join(repoRoot, "node_modules", "@sveltejs", "vite-plugin-svelte"), pluginDir);
+      }
+      const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+      await assert.rejects(createBundle(projectDir, config), (error) => {
+        assert.equal(error.phase, "client");
+        assert.equal(error.framework, "svelte");
+        assert.equal(error.toolchain, "vite");
+        assert.match(error.hint, /npm install.*vite-plugin-svelte.*svelte/i);
+        if (scenario === "missing") assert.match(error.message, /node_modules.*real directory/i);
+        if (scenario === "version") assert.match(error.message, /does not support.*vite-plugin-svelte version/i);
+        if (scenario === "load") assert.match(error.message, /could not load project-owned.*svelte-project-plugin-load-failure/i);
+        if (scenario === "external") assert.match(error.message, /could not resolve project-owned.*vite-plugin-svelte/i);
+        assert.doesNotMatch(JSON.stringify({ message: error.message, diagnostics: error.diagnostics }), new RegExp(projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        return true;
+      });
+    });
+  }
+});
+
 test("Vue Vite rejects external plugin and compiler package or scope symlinks before build output", async () => {
   for (const scenario of ["plugin-package", "compiler-package", "plugin-scope", "compiler-scope"]) {
     await withTempDir(async (dir) => {
@@ -1794,6 +1863,50 @@ for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good
       socket?.close();
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good Svelte ${template} output and recovers with full-page refresh`, async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "svelte-dev", "--template", template, "--framework", "svelte", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "svelte-dev");
+    await installSvelte(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const appPath = path.join(projectDir, "client", "App.svelte");
+    const original = await readFile(appPath, "utf8");
+    const marker = template === "todo" ? "Sporades Todos" : "Blank Sporades Capsule";
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket;
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url);
+      const refresh = readSocketMessage(socket);
+      await writeFile(appPath, original.replace(marker, "Svelte rebuilt"));
+      const rebuilt = await waitForJsonEvent(child, (event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "svelte", toolchain: "vite" });
+      assert.equal((await refresh).type, "refresh");
+      const scrub = (html) => html.replace(/window\.__SPORADES_CONNECTION_TOKEN="[^"]+"/, 'window.__SPORADES_CONNECTION_TOKEN="<token>"');
+      const lastGood = scrub(await (await fetch(started.data.url)).text());
+      await writeFile(appPath, '<script lang="ts">const broken = </script><main>{broken}</main>\n');
+      const failed = await waitForJsonEvent(child, (event) => !event.ok && event.data?.event === "rebuild");
+      assert.deepEqual(failed.data.build, { phase: "client", framework: "svelte", toolchain: "vite" });
+      assert.match(failed.error.hint, /Svelte\/Vite client source/);
+      assert(JSON.stringify(failed).length < 4096);
+      assert.doesNotMatch(JSON.stringify(failed), new RegExp(projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      assert.equal(scrub(await (await fetch(started.data.url)).text()), lastGood);
+      const recoveredRefresh = readSocketMessage(socket);
+      await writeFile(appPath, original.replace(marker, "Svelte recovered"));
+      const recovered = await waitForJsonEvent(child, (event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(recovered.data.build, { phase: "client", framework: "svelte", toolchain: "vite" });
+      assert.equal((await recoveredRefresh).type, "refresh");
+    } finally {
+      socket?.close(); child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve));
     }
   });
 });

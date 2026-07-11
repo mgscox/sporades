@@ -8,6 +8,7 @@ export const mutations = runtime.mutations;
 export const queries = runtime.queries;
 export const createHooks = runtime.createHooks;
 export const createVueComposables = runtime.createVueComposables;
+export const createSvelteStores = runtime.createSvelteStores;
 export const isAuthenticated = runtime.isAuthenticated;
 export const onMessage = runtime.onMessage;
 export const sendMessage = runtime.sendMessage;

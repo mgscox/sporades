@@ -198,7 +198,7 @@ export function createVueComposables(primitives) {
       } catch (error) {
         if (invocation === latestInvocation) {
           state.data = null;
-          state.error = normalizeVueMutationError(error);
+          state.error = normalizeMutationError(error);
         }
         throw error;
       } finally {
@@ -223,7 +223,87 @@ export function createVueComposables(primitives) {
   return { useQuery, useMutation, useAuth };
 }
 
-function normalizeVueMutationError(error) {
+export function createSvelteStores() {
+  function queryStore(name) {
+    return createLazyStore(
+      { data: null, error: null, loading: true },
+      (publish) => queries.subscribe(name, publish).unsubscribe,
+      true,
+    );
+  }
+
+  function mutationStore(name) {
+    let pending = 0;
+    let latestInvocation = 0;
+    const store = createLazyStore({ data: null, error: null, loading: false });
+    const run = async (...args) => {
+      const invocation = ++latestInvocation;
+      pending += 1;
+      store.publish({ data: null, error: null, loading: true });
+      try {
+        const result = await mutations.run(name, ...args);
+        if (invocation === latestInvocation) store.publish({ data: result.error ? null : result.data ?? null, error: result.error ?? null, loading: pending > 1 });
+        return result;
+      } catch (error) {
+        if (invocation === latestInvocation) store.publish({ data: null, error: normalizeMutationError(error), loading: pending > 1 });
+        throw error;
+      } finally {
+        pending -= 1;
+        store.publish({ loading: pending > 0 });
+      }
+    };
+    return { subscribe: store.subscribe, run };
+  }
+
+  function authStore() {
+    const isAuthenticated = () => Boolean(store.value().auth?.isAuthenticated);
+    const store = createLazyStore(
+      { auth: null, providers: {}, loading: true, error: null, isAuthenticated },
+      (publish) => auth.subscribe((nextState) => publish({ ...nextState, isAuthenticated })).unsubscribe,
+      true,
+    );
+    return {
+      subscribe: store.subscribe,
+      signUp: (provider, credentials) => connect().signUp(provider, credentials),
+      signIn: (provider, credentials) => connect().signIn(provider, credentials),
+      signOut: () => connect().signOut(),
+    };
+  }
+
+  return { queryStore, mutationStore, authStore };
+}
+
+function createLazyStore(initialState, start, resetOnStart = false) {
+  let state = initialState;
+  let stop = null;
+  const listeners = new Set();
+  const publish = (nextState) => {
+    state = { ...state, ...nextState };
+    for (const listener of listeners) listener(state);
+  };
+  const subscribe = (listener) => {
+    listeners.add(listener);
+    if (listeners.size === 1 && start) {
+      if (resetOnStart) state = { ...initialState };
+      stop = start(publish) ?? null;
+    }
+    listener(state);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      listeners.delete(listener);
+      if (listeners.size === 0 && stop) {
+        const teardown = stop;
+        stop = null;
+        teardown();
+      }
+    };
+  };
+  return { subscribe, publish, value: () => state };
+}
+
+function normalizeMutationError(error) {
   if (error && typeof error === "object" && typeof error.message === "string") {
     return { message: error.message, ...(typeof error.hint === "string" ? { hint: error.hint } : {}) };
   }
@@ -828,11 +908,11 @@ async function buildClientToolchain(options) {
 }
 function validateClientToolchainInput(options) {
   if (options.toolchain !== "vite") return;
-  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "vue" ? "Vue" : "React";
-  if (!(/* @__PURE__ */ new Set(["react", "preact", "vue"])).has(options.frameworkConfig.framework)) {
+  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "vue" ? "Vue" : options.frameworkConfig.framework === "svelte" ? "Svelte" : "React";
+  if (!(/* @__PURE__ */ new Set(["react", "preact", "vue", "svelte"])).has(options.frameworkConfig.framework)) {
     throw clientToolchainError(
       `Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`,
-      "Use React, Preact, or Vue with Vite, or keep Vanilla TypeScript on esbuild."
+      "Use React, Preact, Vue, or Svelte with Vite, or keep Vanilla TypeScript on esbuild."
     );
   }
   if (referencesLegacyClientShell(options.indexHtml)) {
@@ -925,6 +1005,9 @@ async function buildVite(options) {
     if (options.frameworkConfig.framework === "vue") {
       const { plugin, compiler } = await loadProjectVueToolchain(projectRoot);
       frameworkPlugins.push(plugin({ compiler }));
+    } else if (options.frameworkConfig.framework === "svelte") {
+      const { plugin } = await loadProjectSvelteToolchain(projectRoot);
+      frameworkPlugins.push(plugin());
     }
     const result = await build({
       root: projectRoot,
@@ -982,15 +1065,44 @@ async function buildVite(options) {
   }
 }
 async function loadProjectVueToolchain(projectRoot) {
-  const requiredPackages = [
-    { name: "@vitejs/plugin-vue", major: 5 },
-    { name: "@vue/compiler-sfc", major: 3 }
-  ];
+  const loaded = await loadProjectCompilerToolchain(projectRoot, {
+    framework: "Vue",
+    requiredPackages: [
+      { declaration: "@vitejs/plugin-vue", resolve: "@vitejs/plugin-vue", major: 5 },
+      { declaration: "@vue/compiler-sfc", resolve: "@vue/compiler-sfc", major: 3 }
+    ],
+    installHint: "Run `npm install` in the Vue Capsule to install its declared @vitejs/plugin-vue and @vue/compiler-sfc versions."
+  });
+  const pluginModule = loaded.get("@vitejs/plugin-vue");
+  const compilerModule = loaded.get("@vue/compiler-sfc");
+  const plugin = pluginModule?.default?.default ?? pluginModule?.default ?? pluginModule;
+  const compiler = compilerModule?.default ?? compilerModule;
+  if (typeof plugin !== "function" || typeof compiler?.parse !== "function") throw projectToolchainError("Vue", "Vue/Vite project compiler packages have incompatible exports.", "Run `npm install` in the Vue Capsule to install its declared @vitejs/plugin-vue and @vue/compiler-sfc versions.");
+  return { plugin, compiler };
+}
+async function loadProjectSvelteToolchain(projectRoot) {
+  const hint = "Run `npm install` in the Svelte Capsule to install its declared @sveltejs/vite-plugin-svelte and svelte versions.";
+  const loaded = await loadProjectCompilerToolchain(projectRoot, {
+    framework: "Svelte",
+    requiredPackages: [
+      { declaration: "@sveltejs/vite-plugin-svelte", resolve: "@sveltejs/vite-plugin-svelte", major: 5 },
+      { declaration: "svelte", resolve: "svelte/compiler", major: 5 }
+    ],
+    installHint: hint
+  });
+  const pluginModule = loaded.get("@sveltejs/vite-plugin-svelte");
+  const compilerModule = loaded.get("svelte/compiler");
+  const plugin = pluginModule?.svelte ?? pluginModule?.default?.svelte ?? pluginModule?.default ?? pluginModule;
+  const compiler = compilerModule?.default ?? compilerModule;
+  if (typeof plugin !== "function" || typeof compiler?.compile !== "function") throw projectToolchainError("Svelte", "Svelte/Vite project compiler packages have incompatible exports.", hint);
+  return { plugin, compiler };
+}
+async function loadProjectCompilerToolchain(projectRoot, spec) {
   let projectManifest;
   try {
     projectManifest = JSON.parse(await readFile(path.join(projectRoot, "package.json"), "utf8"));
   } catch {
-    throw vueProjectToolchainError("Vue/Vite could not read the Capsule package.json.");
+    throw projectToolchainError(spec.framework, `${spec.framework}/Vite could not read the Capsule package.json.`, spec.installHint);
   }
   const declared = { ...projectManifest.dependencies ?? {}, ...projectManifest.devDependencies ?? {} };
   const nodeModulesDir = path.join(projectRoot, "node_modules");
@@ -1001,67 +1113,68 @@ async function loadProjectVueToolchain(projectRoot) {
     canonicalNodeModules = await realpath(nodeModulesDir);
     if (!isCanonicalDescendant(projectRoot, canonicalNodeModules)) throw new Error("node_modules escaped the project root");
   } catch {
-    throw vueProjectToolchainError("Vue/Vite requires node_modules to be a real directory contained by the Capsule project.");
+    throw projectToolchainError(spec.framework, `${spec.framework}/Vite requires node_modules to be a real directory contained by the Capsule project.`, spec.installHint);
   }
   const projectRequire = createRequire(path.join(projectRoot, "package.json"));
   const resolvedPackages = /* @__PURE__ */ new Map();
-  for (const required of requiredPackages) {
-    if (typeof declared[required.name] !== "string") {
-      throw vueProjectToolchainError(`Vue/Vite requires the Capsule to declare ${required.name}.`);
+  for (const required of spec.requiredPackages) {
+    if (typeof declared[required.declaration] !== "string") {
+      throw projectToolchainError(spec.framework, `${spec.framework}/Vite requires the Capsule to declare ${required.declaration}.`, spec.installHint);
     }
-    const packageDir = path.join(projectRoot, "node_modules", ...required.name.split("/"));
+    const packageDir = path.join(projectRoot, "node_modules", ...required.declaration.split("/"));
     let installedManifest;
     let resolved;
     try {
       installedManifest = JSON.parse(await readFile(path.join(packageDir, "package.json"), "utf8"));
-      resolved = projectRequire.resolve(required.name);
+      try {
+        resolved = projectRequire.resolve(required.resolve);
+      } catch {
+        const subpath = required.resolve === required.declaration ? "." : `.${required.resolve.slice(required.declaration.length)}`;
+        const exported = installedManifest.exports?.[subpath];
+        const importTarget = typeof exported === "string" ? exported : typeof exported?.import === "string" ? exported.import : exported?.import?.default;
+        if (typeof importTarget !== "string") throw new Error("package has no import export");
+        resolved = path.resolve(packageDir, importTarget);
+      }
       const canonicalPackageDir = await realpath(packageDir);
       if (!isCanonicalDescendant(canonicalNodeModules, canonicalPackageDir)) throw new Error("package directory escaped project node_modules");
       const canonicalResolved = await realpath(resolved);
       if (!isCanonicalDescendant(canonicalPackageDir, canonicalResolved)) throw new Error("package entry escaped its project-owned package root");
       resolved = canonicalResolved;
     } catch {
-      throw vueProjectToolchainError(`Vue/Vite could not resolve project-owned ${required.name}.`);
+      throw projectToolchainError(spec.framework, `${spec.framework}/Vite could not resolve project-owned ${required.declaration}.`, spec.installHint);
     }
     const installedMajor = Number.parseInt(String(installedManifest.version).split(".")[0] ?? "", 10);
     if (installedMajor !== required.major) {
-      throw vueProjectToolchainError(
-        `Vue/Vite does not support the installed ${required.name} version.`,
-        { package: required.name, installedVersion: String(installedManifest.version).slice(0, 40), supportedMajor: required.major }
+      throw projectToolchainError(
+        spec.framework,
+        `${spec.framework}/Vite does not support the installed ${required.declaration} version.`,
+        spec.installHint,
+        { package: required.declaration, installedVersion: String(installedManifest.version).slice(0, 40), supportedMajor: required.major }
       );
     }
-    resolvedPackages.set(required.name, resolved);
+    resolvedPackages.set(required.resolve, resolved);
   }
   const loaded = /* @__PURE__ */ new Map();
   for (const [packageName, resolved] of resolvedPackages) {
     try {
       loaded.set(packageName, await import(pathToFileURL(resolved).href));
     } catch (error) {
-      throw vueProjectToolchainError(
-        `Vue/Vite could not load project-owned ${packageName}: ${boundedBuildMessage(error, [projectRoot])}`,
+      throw projectToolchainError(
+        spec.framework,
+        `${spec.framework}/Vite could not load project-owned ${packageName}: ${boundedBuildMessage(error, [projectRoot])}`,
+        spec.installHint,
         { package: packageName }
       );
     }
   }
-  const pluginModule = loaded.get("@vitejs/plugin-vue");
-  const compilerModule = loaded.get("@vue/compiler-sfc");
-  const plugin = pluginModule?.default?.default ?? pluginModule?.default ?? pluginModule;
-  const compiler = compilerModule?.default ?? compilerModule;
-  if (typeof plugin !== "function" || typeof compiler?.parse !== "function") {
-    throw vueProjectToolchainError("Vue/Vite project compiler packages have incompatible exports.");
-  }
-  return { plugin, compiler };
+  return loaded;
 }
 function isCanonicalDescendant(parent, candidate) {
   const relative = path.relative(parent, candidate);
   return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
-function vueProjectToolchainError(message, diagnostics) {
-  return clientToolchainError(
-    message,
-    "Run `npm install` in the Vue Capsule to install its declared @vitejs/plugin-vue and @vue/compiler-sfc versions.",
-    diagnostics
-  );
+function projectToolchainError(_framework, message, hint, diagnostics) {
+  return clientToolchainError(message, hint, diagnostics);
 }
 function sporadesEsbuildClientPlugin() {
   return {
@@ -1105,7 +1218,7 @@ function viteBuildError(error, projectRoots, framework) {
   const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectRoots, rawFile) : null;
   return clientToolchainError(
     `Client bundle failed: ${message}`,
-    `Fix the ${framework === "preact" ? "Preact" : framework === "vue" ? "Vue" : "React"}/Vite client source and save again.`,
+    `Fix the ${framework === "preact" ? "Preact" : framework === "vue" ? "Vue" : framework === "svelte" ? "Svelte" : "React"}/Vite client source and save again.`,
     {
       ...typeof details.code === "string" ? { code: details.code.slice(0, 80) } : {},
       ...relativeFile ? { file: relativeFile } : {},
@@ -11524,6 +11637,13 @@ var FRAMEWORK_BUNDLE_CONFIG = {
     jsxImportSource: null,
     jsxRuntimeImport: null
   },
+  svelte: {
+    framework: "svelte",
+    entry: "index.ts",
+    loader: "ts",
+    jsxImportSource: null,
+    jsxRuntimeImport: null
+  },
   vanilla: {
     framework: "vanilla",
     entry: "index.ts",
@@ -11535,7 +11655,7 @@ var FRAMEWORK_BUNDLE_CONFIG = {
 var SUPPORTED_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "google", "email"]);
 async function createBundle(projectDir, config, options = {}) {
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
-  const toolchain = readClientToolchain(config.client?.toolchain ?? (frameworkBundleConfig.framework === "vue" ? "vite" : "esbuild"), frameworkBundleConfig.framework);
+  const toolchain = readClientToolchain(config.client?.toolchain ?? (["vue", "svelte"].includes(frameworkBundleConfig.framework) ? "vite" : "esbuild"), frameworkBundleConfig.framework);
   const buildDir = path4.join(projectDir, ".sporades", "build");
   const paths = {
     config: path4.join(projectDir, "sporades.json"),
@@ -11986,7 +12106,7 @@ async function readRequiredFile(filePath, message, hint) {
 }
 function readFrameworkBundleConfig(framework) {
   if (typeof framework !== "string" || !(framework in FRAMEWORK_BUNDLE_CONFIG)) {
-    throw commandError2(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, vanilla.");
+    throw commandError2(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, svelte, vanilla.");
   }
   return FRAMEWORK_BUNDLE_CONFIG[framework];
 }
@@ -12002,6 +12122,9 @@ function readClientToolchain(toolchain, framework) {
   }
   if (framework === "vue" && toolchain !== "vite") {
     throw commandError2("Unsupported client framework/toolchain combination: vue/esbuild", "Use Vue with Vite.");
+  }
+  if (framework === "svelte" && toolchain !== "vite") {
+    throw commandError2("Unsupported client framework/toolchain combination: svelte/esbuild", "Use Svelte with Vite.");
   }
   return toolchain;
 }
@@ -12163,7 +12286,7 @@ function restartPolicyStatus(mode, overrides = {}) {
 function scaffoldFiles(options) {
   const templateOptions = resolveTemplateOptions(options.template);
   const framework = options.framework ?? templateOptions.framework;
-  const toolchain = options.toolchain ?? (framework === "vue" ? "vite" : "esbuild");
+  const toolchain = options.toolchain ?? (framework === "vue" || framework === "svelte" ? "vite" : "esbuild");
   const renderOptions = { ...options, name: options.name, framework, toolchain };
   const packageName = options.name;
   const sporadesDependency = options.sporadesDependency ?? "sporades";
@@ -12174,6 +12297,8 @@ function scaffoldFiles(options) {
     preact: "^10.25.0"
   } : framework === "vue" ? {
     vue: "^3.5.13"
+  } : framework === "svelte" ? {
+    svelte: "^5.0.0"
   } : {};
   const frameworkDevDependencies = framework === "react" ? {
     "@types/react": "^19.0.0",
@@ -12181,9 +12306,11 @@ function scaffoldFiles(options) {
   } : framework === "vue" ? {
     "@vitejs/plugin-vue": "^5.2.4",
     "@vue/compiler-sfc": "^3.5.13"
+  } : framework === "svelte" ? {
+    "@sveltejs/vite-plugin-svelte": "^5.1.1"
   } : {};
   const baseTemplateFiles = framework === "vanilla" ? vanillaTemplateFiles(renderOptions) : templateOptions.files(renderOptions);
-  const templateFiles = framework === "vue" ? vueTemplateFiles(renderOptions, baseTemplateFiles) : toolchain === "vite" && framework !== "vanilla" ? viteTemplateFiles(baseTemplateFiles, framework) : baseTemplateFiles;
+  const templateFiles = framework === "vue" ? vueTemplateFiles(renderOptions, baseTemplateFiles) : framework === "svelte" ? svelteTemplateFiles(renderOptions, baseTemplateFiles) : toolchain === "vite" && framework !== "vanilla" ? viteTemplateFiles(baseTemplateFiles, framework) : baseTemplateFiles;
   return {
     "sporades.json": `${JSON.stringify(
       {
@@ -12240,12 +12367,86 @@ function scaffoldFiles(options) {
   </head>
   <body>
     <div id="app"></div>
-    <script type="module" src="${toolchain === "vite" ? `/client/${framework === "vue" ? "index.ts" : "index.tsx"}` : "/client.js"}"></script>
+    <script type="module" src="${toolchain === "vite" ? `/client/${framework === "vue" || framework === "svelte" ? "index.ts" : "index.tsx"}` : "/client.js"}"></script>
   </body>
 </html>
 `,
     ...templateFiles
   };
+}
+function svelteTemplateFiles(options, files) {
+  const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));
+  return {
+    ...sharedFiles,
+    "README.md": `${sharedFiles["README.md"] ?? ""}
+## Svelte client
+
+The browser mounts from \`client/index.ts\`; author the native component in \`client/App.svelte\` and bind Sporades state through the stores in \`client/sporades.ts\`.
+`,
+    "client/index.ts": `import { mount } from "svelte";
+import App from "./App.svelte";
+
+mount(App, { target: document.getElementById("app")! });
+`,
+    "client/sporades.ts": `import { createSvelteStores } from "sporades/client";
+
+export const { authStore, mutationStore, queryStore } = createSvelteStores();
+`,
+    "client/App.svelte": options.template === "todo" ? svelteTodoAppTemplate() : svelteBlankAppTemplate(),
+    "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#ff3e00"/></svg>
+`
+  };
+}
+function svelteBlankAppTemplate() {
+  return `<script lang="ts">
+  import { authStore } from "./sporades";
+  import mark from "./sporades-mark.svg";
+  const session = authStore();
+</script>
+
+<main>
+  <img class="mark" src={mark} alt="" />
+  <h1>Blank Sporades Capsule</h1>
+  {#if $session.loading}<p>Connecting\u2026</p>{:else}<p>Start building in server/index.ts and client/App.svelte.</p>{/if}
+</main>
+
+<style>
+  main { max-width: 42rem; margin: 4rem auto; font-family: system-ui, sans-serif; }
+  .mark { width: 2rem; height: 2rem; }
+</style>
+`;
+}
+function svelteTodoAppTemplate() {
+  return `<script lang="ts">
+  import { auth } from "sporades/client";
+  import { authStore, mutationStore, queryStore } from "./sporades";
+  import mark from "./sporades-mark.svg";
+  const session = authStore();
+  const todos = queryStore("todos");
+  const addTodo = mutationStore("addTodo");
+  let text = "";
+  async function submit() {
+    const value = text.trim();
+    if (!value) return;
+    const result = await addTodo.run(value);
+    if (!result.error) text = "";
+  }
+</script>
+
+<main>
+  <header><img class="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>
+  {#if $session.providers.google?.enabled && !$session.isAuthenticated()}<button type="button" onclick={() => auth.signIn("google")}>Sign in with Google</button>{/if}
+  <form onsubmit={(event) => { event.preventDefault(); submit(); }}><input bind:value={text} aria-label="Todo" /><button disabled={$addTodo.loading}>Add</button></form>
+  {#if $todos.loading}<p>Loading\u2026</p>{:else if $todos.error}<p role="alert">{$todos.error.message}</p>{:else}<ul>{#each $todos.data ?? [] as todo (todo.id)}<li>{todo.text}</li>{/each}</ul>{/if}
+</main>
+
+<style>
+  main { max-width: 42rem; margin: 3rem auto; font-family: system-ui, sans-serif; }
+  header, form { display: flex; gap: .75rem; align-items: center; }
+  .mark { width: 2rem; height: 2rem; }
+  li { margin-block: .5rem; }
+</style>
+`;
 }
 function vueTemplateFiles(options, files) {
   const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));
@@ -14246,7 +14447,8 @@ const styles = \`
 function agentsTemplate(template, framework, toolchain) {
   const vanilla = framework === "vanilla";
   const vue = framework === "vue";
-  const clientFiles = framework === "vue" ? "client/*.vue and client/*.ts" : `client/*.${vanilla ? "ts" : "tsx"}`;
+  const svelte = framework === "svelte";
+  const clientFiles = vue ? "client/*.vue and client/*.ts" : svelte ? "client/*.svelte and client/*.ts" : `client/*.${vanilla ? "ts" : "tsx"}`;
   return `# Sporades App Instructions
 
 This directory is for a Sporades app. Sporades is a CLI-first tool for building and running full-stack web apps.
@@ -14282,8 +14484,9 @@ sporades db dump
 ## Structure
 
 - \`server/index.ts\` - schema, queries, mutations
-- \`client/index.${vanilla || vue ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : vue ? "Vue mount entrypoint" : "UI entrypoint"}
+- \`client/index.${vanilla || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
 ${vue ? "- `client/App.vue` - Vue Single-File Component UI\n" : ""}- \`shared/\` - pure TypeScript shared by client and server
+${svelte ? "- `client/App.svelte` - Svelte component UI\n" : ""}
 - \`index.html\` - HTML shell (user-owned)
 - \`sporades.json\` - project configuration
 `;
@@ -14887,7 +15090,7 @@ var HELP_TEXT = {
 Scaffold a new Capsule.
 
 Options:
-  --framework <name>  Client framework: react, preact, vue, or vanilla
+  --framework <name>  Client framework: react, preact, vue, svelte, or vanilla
   --toolchain <name>  Client toolchain: esbuild (default) or vite (React only)
   --template <name>   Template: blank, todo, guestbook, photo-library, or campfire
   --no-install        Skip npm install
@@ -15163,7 +15366,7 @@ import { createHash as createHash3 } from "node:crypto";
 import { chmod, mkdir as mkdir5, readFile as readFile6, writeFile as writeFile5 } from "node:fs/promises";
 import path6 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
-var CLIENT_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "vue", "vanilla"]);
+var CLIENT_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "vue", "svelte", "vanilla"]);
 var CLIENT_TOOLCHAINS = /* @__PURE__ */ new Set(["esbuild", "vite"]);
 var DEFAULT_CSP_DIRECTIVES = {
   "default-src": ["'self'"],
@@ -15220,7 +15423,7 @@ function validateClientConfig(client) {
     throw commandError4("Invalid client configuration.", "Set `client.framework` and optional `client.toolchain` in sporades.json.");
   }
   if (client.framework !== void 0 && !CLIENT_FRAMEWORKS.has(client.framework)) {
-    throw commandError4(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, vue, vanilla.");
+    throw commandError4(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, vue, svelte, vanilla.");
   }
   if (client.toolchain !== void 0 && !CLIENT_TOOLCHAINS.has(client.toolchain)) {
     throw commandError4(`Unsupported client toolchain: ${client.toolchain}`, "Use one of: esbuild, vite.");
@@ -15233,6 +15436,9 @@ function validateClientConfig(client) {
   }
   if (client.framework === "vue" && client.toolchain !== void 0 && client.toolchain !== "vite") {
     throw commandError4("Unsupported client framework/toolchain combination: vue/esbuild", "Use Vue with Vite.");
+  }
+  if (client.framework === "svelte" && client.toolchain !== void 0 && client.toolchain !== "vite") {
+    throw commandError4("Unsupported client framework/toolchain combination: svelte/esbuild", "Use Svelte with Vite.");
   }
 }
 function validateSchedulingConfig(scheduling) {
@@ -17046,7 +17252,7 @@ jobs:
 var CLI_VERSION = "0.3.0";
 
 // src/cli/sporades.ts
-var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "vue", "vanilla"]);
+var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "vue", "svelte", "vanilla"]);
 var SUPPORTED_CLIENT_TOOLCHAINS = /* @__PURE__ */ new Set(["esbuild", "vite"]);
 var SUPPORTED_TEMPLATES = /* @__PURE__ */ new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
 var DEV_SESSION_FILE = path8.join(".sporades", "dev-session.json");
@@ -17278,9 +17484,9 @@ function parseCreateArgs(args) {
     throw commandError4("Missing scaffold name.", "Use `sporades create <name>`.");
   }
   if (framework !== null && !SUPPORTED_FRAMEWORKS.has(framework)) {
-    throw commandError4(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, vanilla.");
+    throw commandError4(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, svelte, vanilla.");
   }
-  toolchain ??= framework === "vue" ? "vite" : "esbuild";
+  toolchain ??= framework === "vue" || framework === "svelte" ? "vite" : "esbuild";
   if (!SUPPORTED_CLIENT_TOOLCHAINS.has(toolchain)) {
     throw commandError4(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
   }
@@ -17296,8 +17502,14 @@ function parseCreateArgs(args) {
       "Use Vue with Vite."
     );
   }
+  if (framework === "svelte" && toolchain !== "vite") {
+    throw commandError4(`Unsupported client framework/toolchain combination: svelte/${toolchain}`, "Use Svelte with Vite.");
+  }
   if (!SUPPORTED_TEMPLATES.has(template)) {
     throw commandError4(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
+  }
+  if (framework === "svelte" && template !== "blank" && template !== "todo") {
+    throw commandError4(`Unsupported Svelte template: ${template}`, "Use the blank or todo template with Svelte; complete template parity lands separately.");
   }
   return {
     name,
@@ -18829,7 +19041,7 @@ function tagDevRebuildError(error, phase, config, options = {}) {
   return tagged;
 }
 function configuredClientToolchain(config) {
-  return config.client?.toolchain ?? (config.client?.framework === "vue" ? "vite" : "esbuild");
+  return config.client?.toolchain ?? (["vue", "svelte"].includes(config.client?.framework) ? "vite" : "esbuild");
 }
 function reportDevPublicCleanupDegradation(options, runtime, url, port, config, error) {
   runtime.database.log.emit({

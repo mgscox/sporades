@@ -65,6 +65,13 @@ const FRAMEWORK_BUNDLE_CONFIG = {
     jsxImportSource: null,
     jsxRuntimeImport: null,
   },
+  svelte: {
+    framework: "svelte",
+    entry: "index.ts",
+    loader: "ts",
+    jsxImportSource: null,
+    jsxRuntimeImport: null,
+  },
   vanilla: {
     framework: "vanilla",
     entry: "index.ts",
@@ -84,7 +91,7 @@ export async function createBundle(
   } = {},
 ) {
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
-  const toolchain = readClientToolchain(config.client?.toolchain ?? (frameworkBundleConfig.framework === "vue" ? "vite" : "esbuild"), frameworkBundleConfig.framework);
+  const toolchain = readClientToolchain(config.client?.toolchain ?? (["vue", "svelte"].includes(frameworkBundleConfig.framework) ? "vite" : "esbuild"), frameworkBundleConfig.framework);
   const buildDir = path.join(projectDir, ".sporades", "build");
 
   const paths = {
@@ -580,7 +587,7 @@ async function readRequiredFile(filePath: PathLike | FileHandle, message: string
 
 function readFrameworkBundleConfig(framework: unknown): FrameworkBundleConfig {
   if (typeof framework !== "string" || !(framework in FRAMEWORK_BUNDLE_CONFIG)) {
-    throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, vanilla.");
+    throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, vue, svelte, vanilla.");
   }
   return FRAMEWORK_BUNDLE_CONFIG[framework as keyof typeof FRAMEWORK_BUNDLE_CONFIG];
 }
@@ -597,6 +604,9 @@ function readClientToolchain(toolchain: unknown, framework: string): ClientToolc
   }
   if (framework === "vue" && toolchain !== "vite") {
     throw commandError("Unsupported client framework/toolchain combination: vue/esbuild", "Use Vue with Vite.");
+  }
+  if (framework === "svelte" && toolchain !== "vite") {
+    throw commandError("Unsupported client framework/toolchain combination: svelte/esbuild", "Use Svelte with Vite.");
   }
   return toolchain;
 }
