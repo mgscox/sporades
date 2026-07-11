@@ -369,6 +369,11 @@ const typingPublisher = createTypingPublisher((state) => journey.set(state));
 let activityRestoreGeneration = 0;
 let fixturePreparationActive = false;
 let unsubscribe = () => {};
+let activityRestoreTail = Promise.resolve();
+
+function restoreIsCurrent(generation: number, userId: string) {
+  return generation === activityRestoreGeneration && session.auth?.userId === userId;
+}
 
 function isLocalDemoOrigin(hostname = window.location.hostname) { return ["localhost", "127.0.0.1", "::1"].includes(hostname); }
 function applyJourneyEvent(current: any[], event: any) {
@@ -407,12 +412,21 @@ watch(() => profiles.data, async (value) => {
 });
 
 watch(() => session.auth?.userId, async (userId, previousUserId) => {
+  const generation = ++activityRestoreGeneration;
   if (previousUserId && previousUserId !== userId) await retireJourneyConsent({ typingPublisher, journey, setSharing: (value) => { sharing.value = value; } });
   if (!userId || session.auth?.isGuest || fixturePreparationActive) return;
-  const generation = ++activityRestoreGeneration;
-  const stored = await preferences.get();
-  if (generation !== activityRestoreGeneration || stored.error || stored.data.preferences.campfireShareActivity !== true) return;
-  if (await enableSharing(generation)) notice.value = "Activity sharing restored for this Musketeer.";
+  const predecessor = activityRestoreTail;
+  let releaseRestore: () => void = () => {};
+  activityRestoreTail = new Promise<void>((resolve) => { releaseRestore = resolve; });
+  await predecessor;
+  try {
+    if (!restoreIsCurrent(generation, userId)) return;
+    const stored = await preferences.get();
+    if (!restoreIsCurrent(generation, userId) || stored.error || stored.data.preferences.campfireShareActivity !== true) return;
+    if (await enableSharing(generation, userId) && restoreIsCurrent(generation, userId)) notice.value = "Activity sharing restored for this Musketeer.";
+  } finally {
+    releaseRestore();
+  }
 });
 
 async function prepareFixtures(people = musketeers) {
@@ -440,11 +454,13 @@ async function switchTo(person: any) {
   notice.value = result.error ? result.error.message : "Signed in as " + person.name + ". Restoring activity preference…";
 }
 
-async function enableSharing(expectedGeneration: number | null = null) {
+async function enableSharing(expectedGeneration: number | null = null, expectedUserId = session.auth?.userId ?? null) {
+  const stale = () => expectedGeneration !== null && (expectedUserId === null || !restoreIsCurrent(expectedGeneration, expectedUserId));
   const result = await journey.enable({ capture: { navigation: false, focus: false, interactions: false } });
   if (result.error) { notice.value = result.error.message; return false; }
-  if (expectedGeneration !== null && expectedGeneration !== activityRestoreGeneration) { await journey.disable(); return false; }
+  if (stale()) { await journey.disable(); return false; }
   await journey.set({ status: "reading", metadata: { channel: channel.value }, ttlSeconds: 12 });
+  if (stale()) { await journey.disable(); return false; }
   sharing.value = true;
   return true;
 }

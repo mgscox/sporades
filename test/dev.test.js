@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
+import { mountVueTemplate } from "./support/vue-template-harness.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 import { buildClientToolchain } from "../dist/client-toolchain.js";
 import { cleanupPublicTrees, discardPublicTree } from "../dist/public-tree.js";
@@ -335,6 +336,66 @@ async function installFakePreact(projectDir) {
 
 async function installVue(projectDir) {
   await installProjectVueToolchain(projectDir, repoRoot);
+}
+
+function nodeText(node) {
+  return `${node?.text ?? ""}${(node?.children ?? []).map(nodeText).join("")}`;
+}
+
+function sessionState() {
+  return {
+    loading: false,
+    auth: null,
+    providers: { anonymous: { enabled: true }, google: { enabled: true } },
+    isAuthenticated() { return Boolean(this.auth && !this.auth.isGuest && this.auth.provider !== "anonymous"); },
+  };
+}
+
+function authStub(overrides = {}) {
+  return {
+    async signIn() { return { data: null, error: null }; },
+    async signOut() { return { data: null, error: null }; },
+    async signUp() { return { data: null, error: null }; },
+    ...overrides,
+  };
+}
+
+async function createVueCampfire(dir, name) {
+  const created = await runCli(["create", name, "--template", "campfire", "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
+  assert.equal(created.code, 0, created.stderr);
+  const projectDir = path.join(dir, name);
+  await installVue(projectDir);
+  return projectDir;
+}
+
+function campfireHarnessState(calls, journeyOverrides = {}) {
+  const mutation = (name) => ({ loading: false, error: null, async run(input) { calls.push([name, input]); return { data: name === "seedCampfire" ? { failed: [], created: [], alreadyPresent: [] } : null, error: null }; } });
+  return {
+    session: sessionState(),
+    queries: {
+      profiles: { loading: false, data: null, error: null },
+      messagesGeneral: { loading: false, data: [{ id: "m1", authorName: "Athos", body: "All for one", createdAt: "2026-07-11T12:00:00.000Z", reactions: {} }], error: null },
+      messagesIdeas: { loading: false, data: [], error: null },
+      messagesRandom: { loading: false, data: [], error: null },
+      messagesProtectTheCrown: { loading: false, data: [], error: null },
+    },
+    mutations: {
+      sendMessage: mutation("sendMessage"), toggleReaction: mutation("toggleReaction"),
+      seedCampfire: mutation("seedCampfire"), registerFixture: mutation("registerFixture"),
+    },
+    auth: authStub(), files: {},
+    journey: {
+      async enable(options) { calls.push(["journey.enable", options]); return { data: null, error: null }; },
+      async disable() { calls.push(["journey.disable"]); return { data: null, error: null }; },
+      async set(value) { calls.push(["journey.set", value]); return { data: null, error: null }; },
+      subscribe() { return { unsubscribe() { calls.push(["unsubscribe"]); } }; },
+      ...journeyOverrides,
+    },
+    preferences: {
+      async get() { calls.push(["preferences.get"]); return { data: { preferences: { campfireShareActivity: true } }, error: null }; },
+      async update(value) { calls.push(["preferences.update", value]); return { data: { preferences: value }, error: null }; },
+    },
+  };
 }
 
 async function writePackage(projectDir, packageName, exports, files) {
@@ -1199,6 +1260,200 @@ test("complete Vue exemplars start through Sporades Dev with normalized Vite ass
         await new Promise((resolve) => child.once("exit", resolve));
       }
     }
+  });
+});
+
+test("Vue Guestbook renders query state and drives mutation loading, errors, and updates", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "vue-guestbook-behavior", "--template", "guestbook", "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "vue-guestbook-behavior");
+    await installVue(projectDir);
+    let finishSign;
+    const signCalls = [];
+    const harness = await mountVueTemplate(projectDir, {
+      session: sessionState(),
+      queries: { entries: { loading: true, data: null, error: null } },
+      mutations: {
+        sign: { loading: false, error: null, async run(body) {
+          signCalls.push(body);
+          const state = globalThis.__SPORADES_VUE_TEMPLATE_HARNESS__.mutations.sign;
+          state.loading = true;
+          const result = await new Promise((resolve) => { finishSign = resolve; });
+          state.loading = false;
+          state.error = result.error;
+          return result;
+        } },
+      },
+      auth: authStub(), files: {}, journey: {}, preferences: {},
+    });
+    try {
+      assert.match(harness.text(), /Loading/);
+      harness.state.queries.entries.loading = false;
+      harness.state.queries.entries.error = new Error("Guestbook unavailable");
+      await harness.settle();
+      assert.match(harness.text(), /Guestbook unavailable/);
+      harness.state.queries.entries.error = null;
+      harness.state.queries.entries.data = [{ id: "entry-1", body: "All for one", authorName: "Athos", authorPicture: "", createdAt: "2026-07-11T12:00:00.000Z" }];
+      await harness.settle();
+      assert.match(harness.text(), /Athos.*All for one/s);
+
+      const textarea = harness.find((node) => node.type === "textarea");
+      const form = harness.find((node) => node.type === "form");
+      await harness.setValue(textarea, "  One for all  ");
+      const submitting = harness.trigger(form, "submit");
+      await harness.settle();
+      assert.deepEqual(signCalls, ["One for all"]);
+      assert.equal(harness.find((node) => node.type === "button" && /Sign guestbook/.test(nodeText(node))).props.disabled, true);
+      finishSign({ error: new Error("Signing failed") });
+      await submitting;
+      assert.match(harness.text(), /Signing failed/);
+      assert.equal(textarea.value, "  One for all  ", "failed mutation preserves the draft");
+
+      const succeeding = harness.trigger(form, "submit");
+      await harness.settle();
+      finishSign({ error: null });
+      await succeeding;
+      assert.equal(textarea.value, "", "successful mutation clears the rendered draft");
+    } finally { harness.unmount(); }
+  });
+});
+
+test("Vue Photo Library enforces private auth uploads and explicit publication lifecycle", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "vue-photo-behavior", "--template", "photo-library", "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "vue-photo-behavior");
+    await installVue(projectDir);
+    const calls = [];
+    const photo = { id: "photo-private", title: "Secret crown", status: "private", fileId: "file-private", imageUrl: "", publicUrlId: "", isPublic: false };
+    const mutations = Object.fromEntries(["recordPhoto", "updatePhotoIsPublic", "updatePhotoImageUrl", "updatePhotoPublicUrlId"].map((name) => [name, {
+      loading: false, error: null, async run(...args) {
+        calls.push([name, ...args]);
+        const livePhoto = globalThis.__SPORADES_VUE_TEMPLATE_HARNESS__.queries.personalPhotos.data.find((candidate) => candidate.id === args[0]);
+        if (name === "updatePhotoIsPublic") livePhoto.isPublic = args[1];
+        if (name === "updatePhotoPublicUrlId") livePhoto.publicUrlId = args[1];
+        if (name === "updatePhotoImageUrl") livePhoto.imageUrl = args[1];
+        return { data: null, error: null };
+      },
+    }]));
+    const harness = await mountVueTemplate(projectDir, {
+      session: sessionState(),
+      queries: { publicPhotos: { loading: false, data: [], error: null }, personalPhotos: { loading: false, data: [photo], error: null } },
+      mutations,
+      auth: authStub(),
+      files: {
+        async upload(file) { calls.push(["upload", file.name]); return { id: `file-${file.name}`, name: file.name, type: file.type, size: file.size }; },
+        async publicUrl(fileId) { calls.push(["publicUrl", fileId]); return { id: `url-${fileId}`, url: `https://files.example/${fileId}` }; },
+        async revokePublicUrl(id) { calls.push(["revokePublicUrl", id]); return { data: null, error: null }; },
+      },
+      journey: {}, preferences: {},
+    });
+    try {
+      const fileInput = harness.find((node) => node.type === "input" && node.props.type === "file");
+      const form = harness.find((node) => node.type === "form");
+      await harness.trigger(fileInput, "change", { files: [{ name: "guest.png", type: "image/png", size: 10 }] });
+      await harness.trigger(form, "submit");
+      assert(calls.some(([name]) => name === "publicUrl"), "anonymous upload receives a public URL");
+
+      calls.length = 0;
+      harness.state.session.auth = { userId: "google-user", provider: "google", displayName: "Aramis", isGuest: false };
+      await harness.settle();
+      await harness.trigger(fileInput, "change", { files: [{ name: "private.png", type: "image/png", size: 11 }] });
+      await harness.trigger(form, "submit");
+      assert(calls.some(([name]) => name === "upload"));
+      assert.equal(calls.some(([name]) => name === "publicUrl"), false, "authenticated upload stays private by default");
+      assert.match(harness.text(), /Photo saved privately/);
+      assert.match(harness.text(), /My library.*Secret crown/s);
+
+      calls.length = 0;
+      await harness.trigger(harness.find((node) => node.type === "button" && nodeText(node) === "Make public"), "click");
+      assert.deepEqual(calls.map(([name]) => name), ["publicUrl", "updatePhotoImageUrl", "updatePhotoPublicUrlId", "updatePhotoIsPublic"]);
+      await harness.settle();
+      calls.length = 0;
+      await harness.trigger(harness.find((node) => node.type === "button" && nodeText(node) === "Make private"), "click");
+      assert.deepEqual(calls.map(([name]) => name), ["revokePublicUrl", "updatePhotoIsPublic", "updatePhotoImageUrl", "updatePhotoPublicUrlId"]);
+      assert.doesNotMatch(harness.text(), /dummy-secret|GOOGLE_CLIENT_SECRET|credential/i);
+    } finally { harness.unmount(); }
+  });
+});
+
+test("Vue Campfire drives messages, preferences, consented TTL activity, and typing disposal", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createVueCampfire(dir, "vue-campfire-behavior");
+    const calls = [];
+    let journeySubscriber = () => {};
+    const harness = await mountVueTemplate(projectDir, campfireHarnessState(calls, {
+      subscribe(callback) { journeySubscriber = callback; return { unsubscribe() { calls.push(["unsubscribe"]); } }; },
+    }));
+    try {
+      harness.state.session.auth = { userId: "athos-user", provider: "email", displayName: "Athos", isGuest: false };
+      await harness.settle();
+      assert(calls.some(([name]) => name === "preferences.get"));
+      assert(calls.some(([name, state]) => name === "journey.set" && state.status === "reading" && state.ttlSeconds === 12));
+      assert.equal(harness.find((node) => node.type === "input" && node.props.type === "checkbox").props.checked, true);
+
+      journeySubscriber({ data: { type: "snapshot", states: [{ sessionId: "p1", userId: "porthos-user", status: "reading", metadata: { channel: "ideas" } }] } });
+      await harness.settle();
+      assert.match(harness.text(), /A Musketeer is reading #ideas/);
+
+      const messageInput = harness.find((node) => node.type === "input" && node.props.id === "message");
+      await harness.setValue(messageInput, "Protect the crown");
+      assert(calls.some(([name, state]) => name === "journey.set" && state.status === "typing" && state.ttlSeconds === 4));
+      await harness.trigger(harness.find((node) => node.type === "form"), "submit");
+      assert(calls.some(([name, input]) => name === "sendMessage" && input.body === "Protect the crown"));
+      assert(calls.some(([name, state]) => name === "journey.set" && state.status === "posted" && state.ttlSeconds === 8));
+
+      const beforeDispose = calls.filter(([name, state]) => name === "journey.set" && state?.status === "typing").length;
+      await harness.trigger(harness.find((node) => node.type === "button" && nodeText(node) === "# ideas"), "click");
+      await new Promise((resolve) => setTimeout(resolve, 2600));
+      assert.equal(calls.filter(([name, state]) => name === "journey.set" && state?.status === "typing").length, beforeDispose, "channel transition disposes typing renewal");
+
+      const share = harness.find((node) => node.type === "input" && node.props.type === "checkbox");
+      await harness.trigger(share, "change", { checked: false });
+      assert(calls.some(([name, value]) => name === "preferences.update" && value.campfireShareActivity === false));
+      harness.state.session.auth = { userId: "porthos-user", provider: "email", displayName: "Porthos", isGuest: false };
+      await harness.settle();
+      assert(calls.some(([name]) => name === "journey.disable"), "auth transition retires Journey consent");
+    } finally { harness.unmount(); }
+  });
+});
+
+test("Vue Campfire stale preference restore retires deferred activity without touching successor state", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createVueCampfire(dir, "vue-campfire-race");
+    const calls = [];
+    let resolveFirstSet;
+    let firstSetStarted;
+    const firstSet = new Promise((resolve) => { firstSetStarted = resolve; });
+    let setCount = 0;
+    const state = campfireHarnessState(calls, {
+      async set(value) {
+        calls.push(["journey.set", value, globalThis.__SPORADES_VUE_TEMPLATE_HARNESS__.session.auth?.userId]);
+        setCount += 1;
+        if (setCount === 1) { firstSetStarted(); await new Promise((resolve) => { resolveFirstSet = resolve; }); }
+        return { data: null, error: null };
+      },
+    });
+    state.preferences.get = async () => {
+      const userId = globalThis.__SPORADES_VUE_TEMPLATE_HARNESS__.session.auth?.userId;
+      calls.push(["preferences.get", userId]);
+      return { data: { preferences: { campfireShareActivity: userId === "athos-user" } }, error: null };
+    };
+    const harness = await mountVueTemplate(projectDir, state);
+    try {
+      harness.state.session.auth = { userId: "athos-user", provider: "email", displayName: "Athos", isGuest: false };
+      await firstSet;
+      harness.state.session.auth = { userId: "porthos-user", provider: "email", displayName: "Porthos", isGuest: false };
+      await harness.settle();
+      const disablesBeforeStaleCompletion = calls.filter(([name]) => name === "journey.disable").length;
+      resolveFirstSet();
+      await harness.settle();
+      assert.equal(calls.filter(([name]) => name === "journey.disable").length, disablesBeforeStaleCompletion + 1, "deferred stale activity is retired exactly once");
+      assert.equal(harness.find((node) => node.type === "input" && node.props.type === "checkbox").props.checked, false, "stale restore never exposes sharing");
+      assert.equal(calls.filter(([name, _value, userId]) => name === "journey.set" && userId === "porthos-user").length, 0, "successor preference state is untouched");
+      assert(calls.some(([name, userId]) => name === "preferences.get" && userId === "porthos-user"));
+    } finally { harness.unmount(); }
   });
 });
 
