@@ -10037,6 +10037,7 @@ database.log.emit({
 });
 const websocketHub = createWebSocketHub(() => database);
 const runtimePublicRoot = resolveRuntimePublicRoot();
+const runtimeUsesLegacyPublicFiles = !existsSync(path.join(runtimePublicRoot, "index.html"));
 
 const server = createServer(async (request, response) => {
   try {
@@ -10061,6 +10062,20 @@ const server = createServer(async (request, response) => {
     }
 
     if (await routePublicAsset(request, response, runtimePublicRoot, websocketHub)) {
+      return;
+    }
+
+    if (runtimeUsesLegacyPublicFiles && (request.url === "/" || request.url === "/index.html")) {
+      const html = await readFile(path.join(process.cwd(), "index.html"), "utf8");
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(injectPageConnectionToken(html, websocketHub.createConnectionToken()));
+      return;
+    }
+
+    if (runtimeUsesLegacyPublicFiles && request.url === "/client.js") {
+      const client = await readFile(path.join(process.cwd(), "client.js"));
+      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
+      response.end(client);
       return;
     }
 
@@ -10277,6 +10292,80 @@ async function releasePublicTreeLease(tree) {
     await releaseLock();
   }
 }
+async function readPublicTreeConsumer(buildDir, consumer) {
+  validateConsumerName(consumer);
+  const recordPath = path2.join(buildDir, ".public-trees", ".consumers", `${consumer}.json`);
+  const record = await readFile2(recordPath, "utf8").then(JSON.parse).catch((error) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  });
+  return validConsumerRecord(record, consumer) ? record : null;
+}
+async function writePublicTreeConsumer(buildDir, consumer, treeRoot, identity) {
+  validateConsumerName(consumer);
+  const treesDir = path2.join(buildDir, ".public-trees");
+  if (path2.dirname(treeRoot) !== treesDir || !isPublicTreeName(path2.basename(treeRoot))) {
+    throw publicTreeError("Invalid public tree consumer.", "Bind consumers only to canonical candidates beneath the Runtime public-tree directory.");
+  }
+  await validatePublicTree(treeRoot);
+  const releaseLock = await acquirePublicTreeLock(treesDir);
+  try {
+    const consumersDir = path2.join(treesDir, ".consumers");
+    await mkdir2(consumersDir, { recursive: true });
+    const record = {
+      consumer,
+      tree: path2.basename(treeRoot),
+      identity,
+      token: randomBytes3(16).toString("hex"),
+      createdAt: Date.now()
+    };
+    await replaceStateFile(path2.join(consumersDir, `${consumer}.json`), `${JSON.stringify(record)}
+`);
+    return record;
+  } finally {
+    await releaseLock();
+  }
+}
+async function restorePublicTreeConsumer(buildDir, consumer, record) {
+  validateConsumerName(consumer);
+  const treesDir = path2.join(buildDir, ".public-trees");
+  await mkdir2(treesDir, { recursive: true });
+  const releaseLock = await acquirePublicTreeLock(treesDir);
+  try {
+    const recordPath = path2.join(treesDir, ".consumers", `${consumer}.json`);
+    if (record === null) {
+      await rm(recordPath, { recursive: true, force: true });
+      return;
+    }
+    if (!validConsumerRecord(record, consumer)) {
+      throw publicTreeError("Invalid public tree consumer.", "Restore only a previously validated consumer record.");
+    }
+    const root = path2.join(treesDir, record.tree);
+    await validatePublicTree(root);
+    await mkdir2(path2.dirname(recordPath), { recursive: true });
+    await replaceStateFile(recordPath, `${JSON.stringify(record)}
+`);
+  } finally {
+    await releaseLock();
+  }
+}
+async function removePublicTreeConsumer(buildDir, consumer, expectedToken) {
+  validateConsumerName(consumer);
+  const treesDir = path2.join(buildDir, ".public-trees");
+  await mkdir2(treesDir, { recursive: true });
+  const releaseLock = await acquirePublicTreeLock(treesDir);
+  try {
+    const recordPath = path2.join(treesDir, ".consumers", `${consumer}.json`);
+    const record = await readFile2(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    if (expectedToken && record?.token !== expectedToken) {
+      throw publicTreeError("Public tree consumer ownership changed.", "Preserve the successor consumer and retry cleanup from its owning lifecycle.");
+    }
+    await rm(recordPath, { recursive: true, force: true });
+    await cleanupPublicTreesUnlocked(buildDir, { maxCompleted: 1 });
+  } finally {
+    await releaseLock();
+  }
+}
 async function validatePublicTree(root) {
   const rootStats = await lstat(root);
   if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
@@ -10373,6 +10462,7 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
   if (typeof activeReference === "string") {
     keepNames.add(activeReference);
   }
+  for (const consumerTree of await publicTreeConsumerNames(treesDir)) keepNames.add(consumerTree);
   const now = options.now ?? Date.now;
   const { live: liveLeaseNames, stale: staleLeaseNames } = await publicTreeLeaseStates(treesDir, now);
   for (const name of liveLeaseNames) keepNames.add(name);
@@ -10388,7 +10478,7 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
   }
   const failures = [];
   for (const entry of entries) {
-    if (entry.name === "active.json" || entry.name === ".leases" || entry.name === ".lifecycle-lock" || entry.name === ".owner-heartbeats") continue;
+    if (entry.name === "active.json" || entry.name === ".leases" || entry.name === ".consumers" || entry.name === ".lifecycle-lock" || entry.name === ".owner-heartbeats") continue;
     if (keepNames.has(entry.name)) continue;
     const entryPath = path2.join(treesDir, entry.name);
     try {
@@ -10760,6 +10850,47 @@ async function removeOrphanedOwnerHeartbeats(treesDir) {
     }
     const token = entry.endsWith(".json") ? entry.slice(0, -5) : "";
     if (!retained.has(token)) await rm(entryPath, { recursive: true, force: true });
+  }
+}
+async function publicTreeConsumerNames(treesDir) {
+  const consumersDir = path2.join(treesDir, ".consumers");
+  const entries = await readdir(consumersDir).catch(() => []);
+  const trees = /* @__PURE__ */ new Set();
+  for (const entry of entries) {
+    const recordPath = path2.join(consumersDir, entry);
+    const consumer = entry.endsWith(".json") ? entry.slice(0, -5) : "";
+    const record = await readFile2(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    if (!validConsumerRecord(record, consumer)) {
+      await rm(recordPath, { recursive: true, force: true });
+      continue;
+    }
+    const root = path2.join(treesDir, record.tree);
+    try {
+      await validatePublicTree(root);
+      trees.add(record.tree);
+    } catch {
+      await rm(recordPath, { force: true });
+    }
+  }
+  return trees;
+}
+function validateConsumerName(consumer) {
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(consumer)) {
+    throw publicTreeError("Invalid public tree consumer.", "Use a short lowercase consumer name.");
+  }
+}
+function validConsumerRecord(record, consumer) {
+  return Boolean(
+    record && record.consumer === consumer && isPublicTreeName(record.tree) && typeof record.identity === "string" && record.identity.length > 0 && typeof record.token === "string" && /^[a-f0-9]{32}$/.test(record.token) && Number.isFinite(record.createdAt)
+  );
+}
+async function replaceStateFile(target, contents) {
+  const temporary = `${target}.${process.pid}-${randomBytes3(8).toString("hex")}.tmp`;
+  try {
+    await writeFile2(temporary, contents, { flag: "wx" });
+    await rename(temporary, target);
+  } finally {
+    await rm(temporary, { force: true });
   }
 }
 async function getProcessStartIdentity(pid, options = {}) {
@@ -13905,7 +14036,7 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
 
 // src/cli/doctor.ts
 import { spawn, spawnSync } from "node:child_process";
-import { lstat as lstat3, readFile as readFile6 } from "node:fs/promises";
+import { lstat as lstat3, readFile as readFile6, realpath } from "node:fs/promises";
 import { connect } from "node:net";
 import path6 from "node:path";
 
@@ -14323,7 +14454,7 @@ async function runDoctorChecks(options) {
       checks.push(...await devSessionChecks(options));
       checks.push(...await localCapsuleServiceChecks(project.config, options));
     } else if (options.session === "container") {
-      checks.push(...await localContainerChecks(options, project.config));
+      checks.push(...await localContainerChecks(options));
       checks.push(...await localCapsuleServiceChecks(project.config, options));
     } else if (options.session === "hosted") {
       checks.push(...await hostedCapsuleDoctorChecks(options));
@@ -15026,7 +15157,7 @@ async function devSessionChecks(options) {
     }
   ];
 }
-async function localContainerChecks(options, config) {
+async function localContainerChecks(options) {
   const bindingPath = path6.join(options.projectDir, ".sporades", "binding.json");
   const binding = await readOptionalJsonFile(bindingPath);
   if (!binding?.containerId) {
@@ -15106,7 +15237,7 @@ async function localContainerChecks(options, config) {
     }
   });
   checks.push(containerRuntimePolicyCheck(container));
-  checks.push(await containerClientReleaseCheck(container, config));
+  checks.push(await containerClientReleaseCheck(container, binding, options.projectDir));
   return checks;
 }
 function containerRuntimePolicyCheck(container) {
@@ -15151,11 +15282,42 @@ function containerRuntimePolicyCheck(container) {
     }
   };
 }
-async function containerClientReleaseCheck(container, config) {
+async function containerClientReleaseCheck(container, binding, projectDir) {
   const mounts = containerInspectMounts(container);
   const publicMount = mounts.find((candidate) => candidate.Target === "/app/public" || candidate.Destination === "/app/public");
-  const framework = config.client?.framework ?? "react";
-  const toolchain = config.client?.toolchain ?? "esbuild";
+  const release = binding.clientRelease;
+  const validRelease = Boolean(
+    release && typeof release.framework === "string" && typeof release.toolchain === "string" && typeof release.publicTree === "string" && /^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(release.publicTree) && release.htmlEntry === "index.html" && typeof release.consumerToken === "string" && /^[a-f0-9]{32}$/.test(release.consumerToken)
+  );
+  const framework = validRelease ? release.framework : null;
+  const toolchain = validRelease ? release.toolchain : null;
+  if (!validRelease) {
+    return {
+      id: "doctor.container.client-release",
+      title: "Container client release",
+      scope: "container",
+      status: "warn",
+      severity: "warning",
+      message: "The Container binding has no valid client-release identity.",
+      hint: "Redeploy the Capsule to record a canonical public tree and consumer identity.",
+      commands: ["sporades deploy", "sporades deploy status"],
+      details: { framework: null, toolchain: null, htmlEntry: null, public: null }
+    };
+  }
+  const consumer = await readPublicTreeConsumer(path6.join(projectDir, ".sporades", "build"), "container").catch(() => null);
+  if (!consumer || consumer.tree !== release.publicTree || consumer.token !== release.consumerToken || consumer.identity !== binding.containerId) {
+    return {
+      id: "doctor.container.client-release",
+      title: "Container client release",
+      scope: "container",
+      status: "warn",
+      severity: "warning",
+      message: "The Container binding and durable public-tree consumer do not match.",
+      hint: "Redeploy or remove the stale Container binding before retrying inspection.",
+      commands: ["sporades deploy", "sporades deploy remove", "sporades deploy status"],
+      details: { framework, toolchain, htmlEntry: "index.html", public: null }
+    };
+  }
   if (!publicMount || !mountIsReadOnly(publicMount)) {
     return {
       id: "doctor.container.client-release",
@@ -15171,7 +15333,17 @@ async function containerClientReleaseCheck(container, config) {
   }
   const source = publicMount.Source ?? publicMount.SourcePath;
   try {
-    const summary = await summarizePublicTree(source);
+    const expected = path6.join(projectDir, ".sporades", "build", ".public-trees", release.publicTree);
+    const [actualRoot, expectedRoot, sourceStats, expectedStats] = await Promise.all([
+      realpath(source),
+      realpath(expected),
+      lstat3(source),
+      lstat3(expected)
+    ]);
+    if (sourceStats.isSymbolicLink() || expectedStats.isSymbolicLink() || !expectedStats.isDirectory() || actualRoot !== expectedRoot) {
+      throw new Error("unsafe-or-mismatched-public-root");
+    }
+    const summary = await summarizePublicTree(expectedRoot);
     return {
       id: "doctor.container.client-release",
       title: "Container client release",
@@ -15193,7 +15365,7 @@ async function containerClientReleaseCheck(container, config) {
       message: "The mounted Container public tree could not be validated from its host source.",
       hint: details.hint ?? "Redeploy the Capsule from a valid bounded public tree.",
       commands: ["sporades deploy", "sporades deploy status"],
-      details: { framework, toolchain, htmlEntry: "index.html", public: null, cause: details.message }
+      details: { framework, toolchain, htmlEntry: "index.html", public: null }
     };
   }
 }
@@ -18702,30 +18874,17 @@ async function startContainerSession(options) {
       { phase: "public", framework: config.client?.framework ?? "react", toolchain: config.client?.toolchain ?? "esbuild", cause: details.message }
     );
   }
-  const rollbackBundlePublication = await bundle.publishLegacy();
-  try {
-    await bundle.releasePublicTreeLease();
-  } catch (error) {
-    await rollbackBundlePublication();
-    throw error;
-  }
-  if (existingBinding?.containerId) {
-    runDockerCleanup(
-      ["stop", existingBinding.containerId],
-      options.projectDir,
-      "Failed to stop the existing container session.",
-      "Check Docker is running. If the bound container was deleted manually, retry with `sporades deploy --force`; through npm, use `npm run deploy -- --force`.",
-      options.force
-    );
-    runDockerCleanup(
-      ["rm", existingBinding.containerId],
-      options.projectDir,
-      "Failed to remove the existing container session.",
-      "Remove the old container manually or retry with `sporades deploy --force`; through npm, use `npm run deploy -- --force`.",
-      options.force
-    );
-  }
   ensureLocalBaseImage(options.projectDir);
+  const previousConsumer = await readPublicTreeConsumer(bundle.buildDir, "container");
+  const existingContainer = existingBinding?.containerId ? inspectDockerContainerOptional(options.projectDir, existingBinding.containerId) : null;
+  if (existingBinding?.containerId && !existingContainer && !options.force) {
+    await discardPublicTree(bundle.staticFiles.publicTree).catch(() => {
+    });
+    throw commandError4(
+      "The existing Container binding is stale.",
+      "Retry with `sporades deploy --force`; through npm, use `npm run deploy -- --force`."
+    );
+  }
   const envArgs = bundle.containerMounts.serverEnv ? [
     "--volume",
     formatMount(bundle.containerMounts.serverEnv),
@@ -18758,64 +18917,148 @@ async function startContainerSession(options) {
     "--env",
     `${key}=${value}`
   ]);
-  const containerId = runDocker(
-    [
-      "run",
-      "--detach",
-      "--name",
-      containerName,
-      "--restart",
-      restartPolicyForMode("container").dockerRestart,
-      "--read-only",
-      "--tmpfs",
-      "/tmp:rw,nosuid,nodev,noexec",
-      "--cap-drop",
-      "ALL",
-      "--security-opt",
-      "no-new-privileges",
-      "--user",
-      runtimeUser,
-      ...capsuleServicesNetworkArgs,
-      ...Object.entries(baseImageLabels(updatePolicyMode)).flatMap(([key, value]) => ["--label", `${key}=${value}`]),
-      "--publish",
-      `${port}:4000`,
-      ...sshArgs,
-      ...bundleMountArgs,
-      ...envArgs,
-      ...sealedEnvArgs,
-      ...capsuleServicesEnvArgs,
-      "--volume",
-      `${dataDir}:/app/data:rw`,
-      "--workdir",
-      "/app",
-      "--env",
-      "PORT=4000",
-      "--env",
-      "SPORADES_LOG_STDOUT=1",
-      SPORADES_BASE_IMAGE.image,
-      ...sshAccess.enabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]
-    ],
-    options.projectDir,
-    "Failed to start the container session.",
-    "Check Docker is running, then retry `sporades deploy`."
-  );
-  const binding = {
-    containerId,
+  const dockerRunArgs = [
+    "run",
+    "--detach",
+    "--name",
     containerName,
-    clientRelease,
-    ...sshAccess.enabled ? {
-      ssh: {
-        enabled: true,
-        user: SPORADES_BASE_IMAGE.runtimeUser,
-        runtimeUser,
-        targetPort: 22,
-        keyCount: sshAccess.keyCount,
-        fingerprints: sshAccess.fingerprints
+    "--restart",
+    restartPolicyForMode("container").dockerRestart,
+    "--read-only",
+    "--tmpfs",
+    "/tmp:rw,nosuid,nodev,noexec",
+    "--cap-drop",
+    "ALL",
+    "--security-opt",
+    "no-new-privileges",
+    "--user",
+    runtimeUser,
+    ...capsuleServicesNetworkArgs,
+    ...Object.entries(baseImageLabels(updatePolicyMode)).flatMap(([key, value]) => ["--label", `${key}=${value}`]),
+    "--publish",
+    `${port}:4000`,
+    ...sshArgs,
+    ...bundleMountArgs,
+    ...envArgs,
+    ...sealedEnvArgs,
+    ...capsuleServicesEnvArgs,
+    "--volume",
+    `${dataDir}:/app/data:rw`,
+    "--workdir",
+    "/app",
+    "--env",
+    "PORT=4000",
+    "--env",
+    "SPORADES_LOG_STDOUT=1",
+    SPORADES_BASE_IMAGE.image,
+    ...sshAccess.enabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]
+  ];
+  const rollbackName = `${containerName}-rollback-${process.pid}-${randomBytes5(4).toString("hex")}`;
+  const oldName = String(existingContainer?.Name ?? existingBinding?.containerName ?? containerName).replace(/^\//, "");
+  const oldWasRunning = Boolean(existingContainer?.State?.Running);
+  let oldRenamed = false;
+  let rollbackBundlePublication = null;
+  let containerId = null;
+  let candidateRunAttempted = false;
+  let binding = null;
+  try {
+    if (existingContainer) {
+      runDocker(["rename", existingBinding.containerId, rollbackName], options.projectDir, "Failed to stage the existing Container for replacement.", "Retry after Docker can rename the bound Container.");
+      oldRenamed = true;
+      if (oldWasRunning) {
+        runDocker(["stop", rollbackName], options.projectDir, "Failed to stop the staged Container replacement.", "Retry after Docker can stop the bound Container.");
       }
-    } : {}
-  };
-  await writeFile6(bindingPath, `${JSON.stringify(binding, null, 2)}
-`);
+    }
+    containerReplacementFault("publication");
+    rollbackBundlePublication = await bundle.publishLegacy();
+    candidateRunAttempted = true;
+    containerId = runDocker(
+      dockerRunArgs,
+      options.projectDir,
+      "Failed to start the container session.",
+      "Check Docker is running, then retry `sporades deploy`."
+    );
+    containerReplacementFault("consumer");
+    const consumer = await writePublicTreeConsumer(bundle.buildDir, "container", bundle.staticFiles.publicDir, containerId);
+    clientRelease.consumerToken = consumer.token;
+    binding = {
+      containerId,
+      containerName,
+      clientRelease,
+      ...sshAccess.enabled ? {
+        ssh: {
+          enabled: true,
+          user: SPORADES_BASE_IMAGE.runtimeUser,
+          runtimeUser,
+          targetPort: 22,
+          keyCount: sshAccess.keyCount,
+          fingerprints: sshAccess.fingerprints
+        }
+      } : {}
+    };
+    containerReplacementFault("binding");
+    await replaceContainerBinding(bindingPath, binding);
+    await bundle.releasePublicTreeLease();
+    if (oldRenamed) {
+      containerReplacementFault("cleanup");
+      runDocker(["rm", rollbackName], options.projectDir, "Failed to finalize Container replacement cleanup.", "Retry deployment after Docker can remove the retained rollback Container.");
+    }
+  } catch (error) {
+    const rollbackFailures = [];
+    if (candidateRunAttempted) {
+      try {
+        runDockerCleanup(["rm", "-f", containerName], options.projectDir, "", "", true);
+      } catch {
+        rollbackFailures.push("candidate-container");
+      }
+    }
+    if (rollbackBundlePublication) {
+      try {
+        await rollbackBundlePublication();
+      } catch {
+        rollbackFailures.push("bundle-publication");
+      }
+    }
+    try {
+      await restorePublicTreeConsumer(bundle.buildDir, "container", previousConsumer);
+    } catch {
+      rollbackFailures.push("consumer");
+    }
+    try {
+      if (existingBinding) await replaceContainerBinding(bindingPath, existingBinding);
+      else await rm4(bindingPath, { force: true });
+    } catch {
+      rollbackFailures.push("binding");
+    }
+    if (oldRenamed) {
+      try {
+        runDocker(["rename", rollbackName, oldName], options.projectDir, "", "");
+      } catch {
+        rollbackFailures.push("container-name");
+      }
+      if (oldWasRunning) {
+        try {
+          runDocker(["start", oldName], options.projectDir, "", "");
+        } catch {
+          rollbackFailures.push("container-start");
+        }
+      }
+    }
+    try {
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    } catch {
+      rollbackFailures.push("candidate-public-tree");
+    }
+    if (rollbackFailures.length > 0) {
+      throw commandError4(
+        "Container replacement recovery is incomplete.",
+        "Inspect the retained Container, binding, and public-tree state before retrying deployment.",
+        { failures: rollbackFailures, cause: errorDetails2(error).message }
+      );
+    }
+    throw error;
+  }
+  if (!containerId || !binding) throw commandError4("Container replacement did not commit.", "Retry deployment.");
   if (sshAccess.enabled || explicitSshConfigured(config)) {
     await emitCliSshAuditEvent(config, options.projectDir, {
       event: sshAccess.enabled ? "ssh.access.enabled" : "ssh.access.disabled",
@@ -18950,6 +19193,12 @@ function inspectDockerContainer(projectDir, containerId) {
     "Check Docker is running and the bound container still exists. If it was removed manually, run `sporades deploy remove` and deploy again."
   );
   return JSON.parse(output);
+}
+function inspectDockerContainerOptional(projectDir, containerId) {
+  const result = spawnSync2("docker", ["inspect", "--format", "{{json .}}", containerId], { cwd: projectDir, encoding: "utf8" });
+  if (result.status === 0) return JSON.parse(result.stdout.trim());
+  if (isMissingDockerContainerError(result)) return null;
+  throw commandError4("Failed to inspect the existing Container session.", "Check Docker is running, then retry deployment.");
 }
 function inspectedSshPort(inspected) {
   const entries = inspected?.NetworkSettings?.Ports?.["22/tcp"];
@@ -20371,6 +20620,11 @@ async function removeLocalContainerSession(options) {
     "Check Docker is running, then retry `sporades deploy remove`.",
     true
   );
+  await removePublicTreeConsumer(
+    path7.join(options.projectDir, ".sporades", "build"),
+    "container",
+    binding.clientRelease?.consumerToken
+  );
   await rm4(bindingPath, { force: true });
   const services = options.stopServices === false ? {} : await stopLocalCapsuleServices({ ...options, silent: true });
   const container = containerLifecycleSummary("removed", binding);
@@ -20928,6 +21182,21 @@ function runDockerCleanup(args, cwd, message, hint, force = false) {
     return "";
   }
   throw commandError4(message, hint);
+}
+async function replaceContainerBinding(bindingPath, binding) {
+  const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes5(8).toString("hex")}.tmp`;
+  try {
+    await writeFile6(temporaryPath, `${JSON.stringify(binding, null, 2)}
+`, { flag: "wx" });
+    await rename3(temporaryPath, bindingPath);
+  } finally {
+    await rm4(temporaryPath, { force: true });
+  }
+}
+function containerReplacementFault(event) {
+  if (process.env.SPORADES_TEST_CONTAINER_REPLACEMENT_FAULT === event) {
+    throw commandError4(`Injected Container replacement ${event} failure.`, "Retry without the test fault.");
+  }
 }
 function formatMount(mount) {
   return `${mount.host}:${mount.container}${mount.mode ? `:${mount.mode}` : ""}`;

@@ -60,6 +60,7 @@ database.log.emit({
 });
 const websocketHub = createWebSocketHub(() => database);
 const runtimePublicRoot = resolveRuntimePublicRoot();
+const runtimeUsesLegacyPublicFiles = !existsSync(path.join(runtimePublicRoot, "index.html"));
 
 const server = createServer(async (request, response) => {
   try {
@@ -84,6 +85,20 @@ const server = createServer(async (request, response) => {
     }
 
     if (await routePublicAsset(request, response, runtimePublicRoot, websocketHub)) {
+      return;
+    }
+
+    if (runtimeUsesLegacyPublicFiles && (request.url === "/" || request.url === "/index.html")) {
+      const html = await readFile(path.join(process.cwd(), "index.html"), "utf8");
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      response.end(injectPageConnectionToken(html, websocketHub.createConnectionToken()));
+      return;
+    }
+
+    if (runtimeUsesLegacyPublicFiles && request.url === "/client.js") {
+      const client = await readFile(path.join(process.cwd(), "client.js"));
+      response.writeHead(200, { "content-type": "text/javascript; charset=utf-8" });
+      response.end(client);
       return;
     }
 

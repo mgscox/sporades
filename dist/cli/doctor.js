@@ -1,10 +1,10 @@
 import { spawn, spawnSync } from "node:child_process";
-import { lstat, readFile } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { connect } from "node:net";
 import path from "node:path";
 import { CAPSULE_SERVICES_COMPOSE_FILE, CAPSULE_SERVICES_STATE_DIR, capsuleServicesComposeModel, } from "../capsule-services.js";
 import { bundleServerCapsuleModule } from "../bundle-pipeline.js";
-import { summarizePublicTree } from "../public-tree.js";
+import { readPublicTreeConsumer, summarizePublicTree } from "../public-tree.js";
 import { schemaFromCapsuleDefinition } from "../server-runtime-source.js";
 import { commandError, errorDetails } from "./cli-support.js";
 import { authorizedKeyFingerprint, readProjectConfig, resolveAuthorizedKeyLines, resolveEffectiveSecurityPolicy, validateProjectConfigShape, } from "./project-config.js";
@@ -43,7 +43,7 @@ export async function runDoctorChecks(options) {
             checks.push(...await localCapsuleServiceChecks(project.config, options));
         }
         else if (options.session === "container") {
-            checks.push(...await localContainerChecks(options, project.config));
+            checks.push(...await localContainerChecks(options));
             checks.push(...await localCapsuleServiceChecks(project.config, options));
         }
         else if (options.session === "hosted") {
@@ -801,7 +801,7 @@ async function devSessionChecks(options) {
         },
     ];
 }
-async function localContainerChecks(options, config) {
+async function localContainerChecks(options) {
     const bindingPath = path.join(options.projectDir, ".sporades", "binding.json");
     const binding = await readOptionalJsonFile(bindingPath);
     if (!binding?.containerId) {
@@ -881,7 +881,7 @@ async function localContainerChecks(options, config) {
         },
     });
     checks.push(containerRuntimePolicyCheck(container));
-    checks.push(await containerClientReleaseCheck(container, config));
+    checks.push(await containerClientReleaseCheck(container, binding, options.projectDir));
     return checks;
 }
 function containerRuntimePolicyCheck(container) {
@@ -936,11 +936,50 @@ function containerRuntimePolicyCheck(container) {
         },
     };
 }
-async function containerClientReleaseCheck(container, config) {
+async function containerClientReleaseCheck(container, binding, projectDir) {
     const mounts = containerInspectMounts(container);
     const publicMount = mounts.find((candidate) => candidate.Target === "/app/public" || candidate.Destination === "/app/public");
-    const framework = config.client?.framework ?? "react";
-    const toolchain = config.client?.toolchain ?? "esbuild";
+    const release = binding.clientRelease;
+    const validRelease = Boolean(release
+        && typeof release.framework === "string"
+        && typeof release.toolchain === "string"
+        && typeof release.publicTree === "string"
+        && /^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(release.publicTree)
+        && release.htmlEntry === "index.html"
+        && typeof release.consumerToken === "string"
+        && /^[a-f0-9]{32}$/.test(release.consumerToken));
+    const framework = validRelease ? release.framework : null;
+    const toolchain = validRelease ? release.toolchain : null;
+    if (!validRelease) {
+        return {
+            id: "doctor.container.client-release",
+            title: "Container client release",
+            scope: "container",
+            status: "warn",
+            severity: "warning",
+            message: "The Container binding has no valid client-release identity.",
+            hint: "Redeploy the Capsule to record a canonical public tree and consumer identity.",
+            commands: ["sporades deploy", "sporades deploy status"],
+            details: { framework: null, toolchain: null, htmlEntry: null, public: null },
+        };
+    }
+    const consumer = await readPublicTreeConsumer(path.join(projectDir, ".sporades", "build"), "container").catch(() => null);
+    if (!consumer
+        || consumer.tree !== release.publicTree
+        || consumer.token !== release.consumerToken
+        || consumer.identity !== binding.containerId) {
+        return {
+            id: "doctor.container.client-release",
+            title: "Container client release",
+            scope: "container",
+            status: "warn",
+            severity: "warning",
+            message: "The Container binding and durable public-tree consumer do not match.",
+            hint: "Redeploy or remove the stale Container binding before retrying inspection.",
+            commands: ["sporades deploy", "sporades deploy remove", "sporades deploy status"],
+            details: { framework, toolchain, htmlEntry: "index.html", public: null },
+        };
+    }
     if (!publicMount || !mountIsReadOnly(publicMount)) {
         return {
             id: "doctor.container.client-release",
@@ -956,7 +995,17 @@ async function containerClientReleaseCheck(container, config) {
     }
     const source = publicMount.Source ?? publicMount.SourcePath;
     try {
-        const summary = await summarizePublicTree(source);
+        const expected = path.join(projectDir, ".sporades", "build", ".public-trees", release.publicTree);
+        const [actualRoot, expectedRoot, sourceStats, expectedStats] = await Promise.all([
+            realpath(source),
+            realpath(expected),
+            lstat(source),
+            lstat(expected),
+        ]);
+        if (sourceStats.isSymbolicLink() || expectedStats.isSymbolicLink() || !expectedStats.isDirectory() || actualRoot !== expectedRoot) {
+            throw new Error("unsafe-or-mismatched-public-root");
+        }
+        const summary = await summarizePublicTree(expectedRoot);
         return {
             id: "doctor.container.client-release",
             title: "Container client release",
@@ -979,7 +1028,7 @@ async function containerClientReleaseCheck(container, config) {
             message: "The mounted Container public tree could not be validated from its host source.",
             hint: details.hint ?? "Redeploy the Capsule from a valid bounded public tree.",
             commands: ["sporades deploy", "sporades deploy status"],
-            details: { framework, toolchain, htmlEntry: "index.html", public: null, cause: details.message },
+            details: { framework, toolchain, htmlEntry: "index.html", public: null },
         };
     }
 }

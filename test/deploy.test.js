@@ -79,9 +79,17 @@ async function installFakeDocker(dir, containerId = "container-new", options = {
   await writeFile(
     dockerPath,
     `#!/usr/bin/env node
-const { appendFileSync } = require("node:fs");
+const { appendFileSync, readFileSync } = require("node:fs");
 const call = { args: process.argv.slice(2), cwd: process.cwd() };
 appendFileSync(process.env.FAKE_DOCKER_LOG, JSON.stringify(call) + "\\n");
+const failOnceActions = new Set((process.env.FAKE_DOCKER_FAIL_ONCE_ACTIONS ?? "").split(",").filter(Boolean));
+if (failOnceActions.has(call.args[0])) {
+  const calls = readFileSync(process.env.FAKE_DOCKER_LOG, "utf8").trim().split("\\n").map(JSON.parse);
+  if (calls.filter((entry) => entry.args[0] === call.args[0]).length === 1) {
+    process.stderr.write("injected one-time " + call.args[0] + " failure\\n");
+    process.exit(1);
+  }
+}
 const missingContainerActions = new Set((process.env.FAKE_DOCKER_MISSING_CONTAINER_ACTIONS ?? "").split(",").filter(Boolean));
 if (missingContainerActions.has(call.args[0])) {
   process.stderr.write("Error response from daemon: No such container: " + call.args[1] + "\\n");
@@ -181,6 +189,7 @@ if (call.args[0] === "run") {
       FAKE_DOCKER_CONTAINER_ID: containerId,
       FAKE_DOCKER_DATA_DIR: options.dataDir ?? "",
       FAKE_DOCKER_MISSING_CONTAINER_ACTIONS: options.missingContainerActions?.join(",") ?? "",
+      FAKE_DOCKER_FAIL_ONCE_ACTIONS: options.failOnceActions?.join(",") ?? "",
       FAKE_DOCKER_IMAGE_INSPECT_STATUS: String(options.imageInspectStatus ?? 0),
       FAKE_DOCKER_PULL_STATUS: String(options.pullStatus ?? 0),
       FAKE_DOCKER_BUILD_STATUS: String(options.buildStatus ?? 0),
@@ -769,6 +778,82 @@ test("Container replacement switches one complete public tree while persistent d
   });
 });
 
+test("Container replacement restores the previous committed state across Docker transaction failures", async (t) => {
+  for (const failedAction of ["rename", "stop", "run", "rm"]) {
+    await t.test(failedAction, async () => {
+      await withTempDir(async (dir) => {
+        const created = await runCli(["create", `rollback-${failedAction}-island`, "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+        assert.equal(created.code, 0, created.stderr);
+        const projectDir = await realpath(path.join(dir, `rollback-${failedAction}-island`));
+        await installFakeReact(projectDir);
+        const initialDocker = await installFakeDocker(path.join(dir, "initial"), `container-old-${failedAction}`);
+        const initial = await runCli(["deploy", "--json"], { cwd: projectDir, env: initialDocker.env });
+        assert.equal(initial.code, 0, initial.stderr);
+        const buildDir = path.join(projectDir, ".sporades", "build");
+        const statePaths = {
+          binding: path.join(projectDir, ".sporades", "binding.json"),
+          active: path.join(buildDir, ".public-trees", "active.json"),
+          consumer: path.join(buildDir, ".public-trees", ".consumers", "container.json"),
+          server: path.join(buildDir, "server.mjs"),
+          client: path.join(buildDir, "client.js"),
+        };
+        const before = Object.fromEntries(await Promise.all(Object.entries(statePaths).map(async ([key, value]) => [key, await readFile(value, "utf8")])));
+        const entry = path.join(projectDir, "client", "index.tsx");
+        await writeFile(entry, `${await readFile(entry, "utf8")}\nconsole.log('candidate-${failedAction}');\n`);
+        const failingDocker = await installFakeDocker(path.join(dir, "failure"), `container-new-${failedAction}`, { failOnceActions: [failedAction] });
+        const failed = await runCli(["deploy", "--json"], { cwd: projectDir, env: failingDocker.env });
+        assert.equal(failed.code, 1, `${failedAction}: ${failed.stderr}\n${failed.stdout}`);
+        for (const [key, value] of Object.entries(statePaths)) {
+          assert.equal(await readFile(value, "utf8"), before[key], `${failedAction} changed ${key}`);
+        }
+        const calls = await failingDocker.calls();
+        if (failedAction === "rename") {
+          assert.equal(calls.some((call) => call.args[0] === "rm"), false, "rename failure must not remove the old canonical Container");
+        } else {
+          assert.ok(calls.some((call) => call.args[0] === "rename" && call.args.at(-1) === `sporades-rollback-${failedAction}-island`));
+          assert.ok(calls.some((call) => call.args[0] === "start" && call.args[1] === `sporades-rollback-${failedAction}-island`));
+        }
+      });
+    });
+  }
+});
+
+test("Container replacement restores publication, consumer, binding, and cleanup faults", async (t) => {
+  for (const fault of ["publication", "consumer", "binding", "cleanup"]) {
+    await t.test(fault, async () => {
+      await withTempDir(async (dir) => {
+        const created = await runCli(["create", `rollback-${fault}-state`, "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+        assert.equal(created.code, 0, created.stderr);
+        const projectDir = await realpath(path.join(dir, `rollback-${fault}-state`));
+        await installFakeReact(projectDir);
+        const initialDocker = await installFakeDocker(path.join(dir, "initial"), `container-old-${fault}`);
+        assert.equal((await runCli(["deploy", "--json"], { cwd: projectDir, env: initialDocker.env })).code, 0);
+        const buildDir = path.join(projectDir, ".sporades", "build");
+        const paths = [
+          path.join(projectDir, ".sporades", "binding.json"),
+          path.join(buildDir, ".public-trees", "active.json"),
+          path.join(buildDir, ".public-trees", ".consumers", "container.json"),
+          path.join(buildDir, "server.mjs"),
+          path.join(buildDir, "client.js"),
+        ];
+        const before = await Promise.all(paths.map((file) => readFile(file, "utf8")));
+        const entry = path.join(projectDir, "client", "index.tsx");
+        await writeFile(entry, `${await readFile(entry, "utf8")}\nconsole.log('fault-${fault}');\n`);
+        const docker = await installFakeDocker(path.join(dir, "failure"), `container-new-${fault}`);
+        const failed = await runCli(["deploy", "--json"], {
+          cwd: projectDir,
+          env: { ...docker.env, SPORADES_TEST_CONTAINER_REPLACEMENT_FAULT: fault },
+        });
+        assert.equal(failed.code, 1, failed.stdout);
+        assert.deepEqual(await Promise.all(paths.map((file) => readFile(file, "utf8"))), before);
+        const calls = await docker.calls();
+        assert.ok(calls.some((call) => call.args[0] === "rename" && call.args.at(-1) === `sporades-rollback-${fault}-state`));
+        assert.ok(calls.some((call) => call.args[0] === "start" && call.args[1] === `sporades-rollback-${fault}-state`));
+      });
+    });
+  }
+});
+
 test("unsafe Container public output fails validation before replacing the running session", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", "unsafe-public-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
@@ -1268,6 +1353,41 @@ test("sporades deploy writes a server bundle that serves the capsule", async () 
       assert.match(await rootResponse.text(), /<div id="app"><\/div>/);
       const clientResponse = await waitForHttp(`http://127.0.0.1:${port}/client.js`, child);
       assert.match(await clientResponse.text(), /Sporades Todos/);
+    } finally {
+      await stopChild(child);
+    }
+  });
+});
+
+test("generated runtime preserves current Hosted index.html and client.js mount fallback", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "hosted-legacy-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "hosted-legacy-island"));
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "container-hosted-legacy");
+    const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deployed.code, 0, deployed.stderr);
+
+    const legacyRoot = path.join(dir, "legacy-hosted-mounts");
+    await mkdir(legacyRoot);
+    await writeFile(path.join(legacyRoot, "index.html"), "<html><body>legacy hosted html</body></html>");
+    await writeFile(path.join(legacyRoot, "client.js"), "console.log('legacy hosted client');\n");
+    const port = await getAvailablePort();
+    const child = spawn(process.execPath, [path.join(projectDir, ".sporades", "build", "server.mjs")], {
+      cwd: legacyRoot,
+      env: { ...process.env, PORT: String(port), SPORADES_DATABASE_PATH: path.join(legacyRoot, "data.db") },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    try {
+      const root = await waitForHttp(`http://127.0.0.1:${port}/`, child);
+      const html = await root.text();
+      assert.match(html, /legacy hosted html/);
+      assert.match(html, /window\.__SPORADES_CONNECTION_TOKEN=/);
+      const client = await waitForHttp(`http://127.0.0.1:${port}/client.js`, child);
+      const javascript = await client.text();
+      assert.equal(javascript, "console.log('legacy hosted client');\n");
+      assert.doesNotMatch(javascript, /SPORADES_CONNECTION_TOKEN/);
     } finally {
       await stopChild(child);
     }
@@ -2352,7 +2472,7 @@ test("sporades deploy writes a server bundle that applies additive table migrati
         env: {
           ...docker.env,
           FAKE_DOCKER_CONTAINER_ID: "container-second",
-          FAKE_DOCKER_MISSING_CONTAINER_ACTIONS: "stop,rm",
+          FAKE_DOCKER_MISSING_CONTAINER_ACTIONS: "inspect",
         },
       });
       assert.equal(redeployResult.code, 0, redeployResult.stderr);
@@ -3666,6 +3786,29 @@ test("sporades deploy remove clears a stale binding when the bound container is 
   });
 });
 
+test("Container remove and reset release durable public-tree consumers", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "consumer-lifecycle-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "consumer-lifecycle-island"));
+    await installFakeReact(projectDir);
+    const consumerPath = path.join(projectDir, ".sporades", "build", ".public-trees", ".consumers", "container.json");
+    const bindingPath = path.join(projectDir, ".sporades", "binding.json");
+    const docker = await installFakeDocker(dir, "consumer-container");
+    assert.equal((await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env })).code, 0);
+    await stat(consumerPath);
+    assert.equal((await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: docker.env })).code, 0);
+    await assert.rejects(stat(consumerPath), (error) => error.code === "ENOENT");
+    await assert.rejects(stat(bindingPath), (error) => error.code === "ENOENT");
+
+    assert.equal((await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env })).code, 0);
+    await stat(consumerPath);
+    assert.equal((await runCli(["deploy", "reset", "--json"], { cwd: projectDir, env: docker.env })).code, 0);
+    await assert.rejects(stat(consumerPath), (error) => error.code === "ENOENT");
+    await assert.rejects(stat(bindingPath), (error) => error.code === "ENOENT");
+  });
+});
+
 test("sporades deploy replaces the existing container binding before starting a new one", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -3691,15 +3834,11 @@ test("sporades deploy replaces the existing container binding before starting a 
     assert.equal(JSON.parse(deployResult.stdout).data.containerId, "container-replacement");
 
     const calls = await docker.calls();
-    assert.deepEqual(
-      calls.map((call) => call.args),
-      [
-        ["stop", "container-old"],
-        ["rm", "container-old"],
-        ["image", "inspect", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"],
-        firstDockerRunCall(calls).args,
-      ],
-    );
+    assert.deepEqual(calls.map((call) => call.args[0]), ["image", "inspect", "rename", "stop", "run", "rm"]);
+    assert.equal(calls[2].args[1], "container-old");
+    assert.match(calls[2].args[2], /^sporades-todo-island-rollback-/);
+    assert.equal(calls[3].args[1], calls[2].args[2]);
+    assert.equal(calls[5].args[1], calls[2].args[2]);
     assert.equal(firstDockerRunCall(calls).args[0], "run");
 
     const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
@@ -3724,7 +3863,7 @@ test("sporades deploy --force ignores stale container bindings when the containe
       `${JSON.stringify({ containerId: "container-deleted", containerName: "sporades-todo-island" }, null, 2)}\n`,
     );
     const docker = await installFakeDocker(dir, "container-replacement", {
-      missingContainerActions: ["stop", "rm"],
+      missingContainerActions: ["inspect"],
     });
 
     const deployResult = await runCli(["deploy", "--force", "--json"], {
@@ -3736,10 +3875,7 @@ test("sporades deploy --force ignores stale container bindings when the containe
     assert.equal(JSON.parse(deployResult.stdout).data.containerId, "container-replacement");
 
     const calls = await docker.calls();
-    assert.deepEqual(
-      calls.map((call) => call.args[0]),
-      ["stop", "rm", "image", "run"],
-    );
+    assert.deepEqual(calls.map((call) => call.args[0]), ["image", "inspect", "run"]);
 
     const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
     assert.equal(binding.containerId, "container-replacement");
@@ -3800,7 +3936,7 @@ test("sporades deploy fails on stale container bindings without --force", async 
       `${JSON.stringify({ containerId: "container-deleted", containerName: "sporades-todo-island" }, null, 2)}\n`,
     );
     const docker = await installFakeDocker(dir, "container-replacement", {
-      missingContainerActions: ["stop"],
+      missingContainerActions: ["inspect"],
     });
 
     const deployResult = await runCli(["deploy", "--json"], {
@@ -3813,16 +3949,15 @@ test("sporades deploy fails on stale container bindings without --force", async 
       ok: false,
       data: null,
       error: {
-        message: "Failed to stop the existing container session.",
-        hint:
-          "Check Docker is running. If the bound container was deleted manually, retry with `sporades deploy --force`; through npm, use `npm run deploy -- --force`.",
+        message: "The existing Container binding is stale.",
+        hint: "Retry with `sporades deploy --force`; through npm, use `npm run deploy -- --force`.",
       },
     });
 
     const calls = await docker.calls();
     assert.deepEqual(
       calls.map((call) => call.args[0]),
-      ["stop"],
+      ["image", "inspect"],
     );
   });
 });

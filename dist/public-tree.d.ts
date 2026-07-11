@@ -18,6 +18,13 @@ export type PublicTree = {
         token: string;
     };
 };
+export type PublicTreeConsumer = {
+    consumer: string;
+    tree: string;
+    identity: string;
+    token: string;
+    createdAt: number;
+};
 type PublicFile = {
     path: string;
     contents: string | Uint8Array;
@@ -40,6 +47,10 @@ export declare function createPublicTree(buildDir: string, files: ReadonlyArray<
 }>;
 export declare function discardPublicTree(tree: PublicTree): Promise<void>;
 export declare function releasePublicTreeLease(tree: PublicTree): Promise<void>;
+export declare function readPublicTreeConsumer(buildDir: string, consumer: string): Promise<PublicTreeConsumer | null>;
+export declare function writePublicTreeConsumer(buildDir: string, consumer: string, treeRoot: string, identity: string): Promise<PublicTreeConsumer>;
+export declare function restorePublicTreeConsumer(buildDir: string, consumer: string, record: PublicTreeConsumer | null): Promise<void>;
+export declare function removePublicTreeConsumer(buildDir: string, consumer: string, expectedToken?: string): Promise<void>;
 export declare function validatePublicTree(root: string): Promise<{
     fileCount: number;
     totalBytes: number;

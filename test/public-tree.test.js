@@ -15,9 +15,12 @@ import {
   getProcessStartIdentity,
   publishOwnerHeartbeat,
   readPublicAsset,
+  readPublicTreeConsumer,
   releasePublicTreeLease,
+  removePublicTreeConsumer,
   validatePublicFiles,
   validatePublicTree,
+  writePublicTreeConsumer,
 } from "../dist/public-tree.js";
 
 async function withTempDir(fn) {
@@ -70,6 +73,48 @@ test("creating a replacement never removes or mutates the active public tree", a
     assert.notEqual(replacement.root, active.root);
     assert.equal((await readPublicAsset(active, "/client.js")).body.toString("utf8"), "old client");
     assert.equal((await readPublicAsset(replacement, "/client.js")).body.toString("utf8"), "new client");
+  });
+});
+
+test("a durable Container consumer protects its mounted tree until replacement and removal", async () => {
+  await withTempDir(async (buildDir) => {
+    const treesDir = path.join(buildDir, ".public-trees");
+    const mounted = await createPublicTree(buildDir, [
+      { path: "index.html", contents: "mounted html" },
+      { path: "client.js", contents: "mounted client" },
+    ]);
+    await writeFile(path.join(treesDir, "active.json"), `${JSON.stringify({ tree: path.basename(mounted.root) })}\n`);
+    const firstConsumer = await writePublicTreeConsumer(buildDir, "container", mounted.root, "container-first");
+    await releasePublicTreeLease(mounted);
+
+    for (let index = 0; index < 4; index += 1) {
+      const standalone = await createPublicTree(buildDir, [
+        { path: "index.html", contents: `standalone ${index}` },
+        { path: "client.js", contents: `standalone client ${index}` },
+      ]);
+      await releasePublicTreeLease(standalone);
+      await cleanupPublicTrees(buildDir);
+      assert.equal(await readFile(path.join(mounted.root, "client.js"), "utf8"), "mounted client");
+    }
+
+    const replacement = await createPublicTree(buildDir, [
+      { path: "index.html", contents: "replacement html" },
+      { path: "client.js", contents: "replacement client" },
+    ]);
+    const secondConsumer = await writePublicTreeConsumer(buildDir, "container", replacement.root, "container-second");
+    await writeFile(path.join(treesDir, "active.json"), `${JSON.stringify({ tree: path.basename(replacement.root) })}\n`);
+    await releasePublicTreeLease(replacement);
+    await cleanupPublicTrees(buildDir, { maxCompleted: 0 });
+    await assert.rejects(access(mounted.root), (error) => error.code === "ENOENT");
+    assert.equal((await readPublicTreeConsumer(buildDir, "container")).token, secondConsumer.token);
+    await access(replacement.root);
+
+    await assert.rejects(
+      removePublicTreeConsumer(buildDir, "container", firstConsumer.token),
+      /consumer ownership changed/,
+    );
+    await removePublicTreeConsumer(buildDir, "container", secondConsumer.token);
+    assert.equal(await readPublicTreeConsumer(buildDir, "container"), null);
   });
 });
 

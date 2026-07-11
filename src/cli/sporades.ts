@@ -8,7 +8,15 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../bundle-pipeline.js";
-import { discardPublicTree, readPublicAsset, summarizePublicTree } from "../public-tree.js";
+import {
+  discardPublicTree,
+  readPublicAsset,
+  readPublicTreeConsumer,
+  removePublicTreeConsumer,
+  restorePublicTreeConsumer,
+  summarizePublicTree,
+  writePublicTreeConsumer,
+} from "../public-tree.js";
 import {
   SPORADES_BASE_IMAGE,
   baseImageLabels,
@@ -3341,7 +3349,7 @@ async function startContainerSession(options: LooseRecord) {
     wait: true,
   });
 
-  let clientRelease;
+  let clientRelease: LooseRecord;
   try {
     clientRelease = {
       framework: config.client?.framework ?? "react",
@@ -3359,32 +3367,18 @@ async function startContainerSession(options: LooseRecord) {
     );
   }
 
-  const rollbackBundlePublication = await bundle.publishLegacy();
-  try {
-    await bundle.releasePublicTreeLease();
-  } catch (error) {
-    await rollbackBundlePublication();
-    throw error;
-  }
-
-  if (existingBinding?.containerId) {
-    runDockerCleanup(
-      ["stop", existingBinding.containerId],
-      options.projectDir,
-      "Failed to stop the existing container session.",
-      "Check Docker is running. If the bound container was deleted manually, retry with `sporades deploy --force`; through npm, use `npm run deploy -- --force`.",
-      options.force,
-    );
-    runDockerCleanup(
-      ["rm", existingBinding.containerId],
-      options.projectDir,
-      "Failed to remove the existing container session.",
-      "Remove the old container manually or retry with `sporades deploy --force`; through npm, use `npm run deploy -- --force`.",
-      options.force,
-    );
-  }
-
   ensureLocalBaseImage(options.projectDir);
+  const previousConsumer = await readPublicTreeConsumer(bundle.buildDir, "container");
+  const existingContainer = existingBinding?.containerId
+    ? inspectDockerContainerOptional(options.projectDir, existingBinding.containerId)
+    : null;
+  if (existingBinding?.containerId && !existingContainer && !options.force) {
+    await discardPublicTree(bundle.staticFiles.publicTree).catch(() => {});
+    throw commandError(
+      "The existing Container binding is stale.",
+      "Retry with `sporades deploy --force`; through npm, use `npm run deploy -- --force`.",
+    );
+  }
 
   const envArgs = bundle.containerMounts.serverEnv
     ? [
@@ -3424,8 +3418,7 @@ async function startContainerSession(options: LooseRecord) {
     "--env",
     `${key}=${value}`,
   ]);
-  const containerId = runDocker(
-    [
+  const dockerRunArgs = [
       "run",
       "--detach",
       "--name",
@@ -3460,28 +3453,89 @@ async function startContainerSession(options: LooseRecord) {
       "SPORADES_LOG_STDOUT=1",
       SPORADES_BASE_IMAGE.image,
       ...(sshAccess.enabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]),
-    ],
-    options.projectDir,
-    "Failed to start the container session.",
-    "Check Docker is running, then retry `sporades deploy`.",
-  );
+    ];
+  const rollbackName = `${containerName}-rollback-${process.pid}-${randomBytes(4).toString("hex")}`;
+  const oldName = String(existingContainer?.Name ?? existingBinding?.containerName ?? containerName).replace(/^\//, "");
+  const oldWasRunning = Boolean(existingContainer?.State?.Running);
+  let oldRenamed = false;
+  let rollbackBundlePublication: null | (() => Promise<void>) = null;
+  let containerId: string | null = null;
+  let candidateRunAttempted = false;
+  let binding: LooseRecord | null = null;
+  try {
+    if (existingContainer) {
+      runDocker(["rename", existingBinding.containerId, rollbackName], options.projectDir, "Failed to stage the existing Container for replacement.", "Retry after Docker can rename the bound Container.");
+      oldRenamed = true;
+      if (oldWasRunning) {
+        runDocker(["stop", rollbackName], options.projectDir, "Failed to stop the staged Container replacement.", "Retry after Docker can stop the bound Container.");
+      }
+    }
 
-  const binding = {
-    containerId,
-    containerName,
-    clientRelease,
-    ...(sshAccess.enabled ? {
-      ssh: {
-        enabled: true,
-        user: SPORADES_BASE_IMAGE.runtimeUser,
-        runtimeUser,
-        targetPort: 22,
-        keyCount: sshAccess.keyCount,
-        fingerprints: sshAccess.fingerprints,
-      },
-    } : {}),
-  };
-  await writeFile(bindingPath, `${JSON.stringify(binding, null, 2)}\n`);
+    containerReplacementFault("publication");
+    rollbackBundlePublication = await bundle.publishLegacy();
+    candidateRunAttempted = true;
+    containerId = runDocker(
+      dockerRunArgs,
+      options.projectDir,
+      "Failed to start the container session.",
+      "Check Docker is running, then retry `sporades deploy`.",
+    );
+    containerReplacementFault("consumer");
+    const consumer = await writePublicTreeConsumer(bundle.buildDir, "container", bundle.staticFiles.publicDir, containerId);
+    clientRelease.consumerToken = consumer.token;
+    binding = {
+      containerId,
+      containerName,
+      clientRelease,
+      ...(sshAccess.enabled ? {
+        ssh: {
+          enabled: true,
+          user: SPORADES_BASE_IMAGE.runtimeUser,
+          runtimeUser,
+          targetPort: 22,
+          keyCount: sshAccess.keyCount,
+          fingerprints: sshAccess.fingerprints,
+        },
+      } : {}),
+    };
+    containerReplacementFault("binding");
+    await replaceContainerBinding(bindingPath, binding);
+    await bundle.releasePublicTreeLease();
+    if (oldRenamed) {
+      containerReplacementFault("cleanup");
+      runDocker(["rm", rollbackName], options.projectDir, "Failed to finalize Container replacement cleanup.", "Retry deployment after Docker can remove the retained rollback Container.");
+    }
+  } catch (error) {
+    const rollbackFailures: string[] = [];
+    if (candidateRunAttempted) {
+      try { runDockerCleanup(["rm", "-f", containerName], options.projectDir, "", "", true); } catch { rollbackFailures.push("candidate-container"); }
+    }
+    if (rollbackBundlePublication) {
+      try { await rollbackBundlePublication(); } catch { rollbackFailures.push("bundle-publication"); }
+    }
+    try { await restorePublicTreeConsumer(bundle.buildDir, "container", previousConsumer); } catch { rollbackFailures.push("consumer"); }
+    try {
+      if (existingBinding) await replaceContainerBinding(bindingPath, existingBinding);
+      else await rm(bindingPath, { force: true });
+    } catch { rollbackFailures.push("binding"); }
+    if (oldRenamed) {
+      try { runDocker(["rename", rollbackName, oldName], options.projectDir, "", ""); } catch { rollbackFailures.push("container-name"); }
+      if (oldWasRunning) {
+        try { runDocker(["start", oldName], options.projectDir, "", ""); } catch { rollbackFailures.push("container-start"); }
+      }
+    }
+    try { await discardPublicTree(bundle.staticFiles.publicTree); } catch { rollbackFailures.push("candidate-public-tree"); }
+    if (rollbackFailures.length > 0) {
+      throw commandError(
+        "Container replacement recovery is incomplete.",
+        "Inspect the retained Container, binding, and public-tree state before retrying deployment.",
+        { failures: rollbackFailures, cause: errorDetails(error).message },
+      );
+    }
+    throw error;
+  }
+
+  if (!containerId || !binding) throw commandError("Container replacement did not commit.", "Retry deployment.");
   if (sshAccess.enabled || explicitSshConfigured(config)) {
     await emitCliSshAuditEvent(config, options.projectDir, {
       event: sshAccess.enabled ? "ssh.access.enabled" : "ssh.access.disabled",
@@ -3621,6 +3675,13 @@ function inspectDockerContainer(projectDir: string, containerId: string) {
     "Check Docker is running and the bound container still exists. If it was removed manually, run `sporades deploy remove` and deploy again.",
   );
   return JSON.parse(output);
+}
+
+function inspectDockerContainerOptional(projectDir: string, containerId: string) {
+  const result = spawnSync("docker", ["inspect", "--format", "{{json .}}", containerId], { cwd: projectDir, encoding: "utf8" });
+  if (result.status === 0) return JSON.parse(result.stdout.trim());
+  if (isMissingDockerContainerError(result)) return null;
+  throw commandError("Failed to inspect the existing Container session.", "Check Docker is running, then retry deployment.");
 }
 
 function inspectedSshPort(inspected: LooseRecord) {
@@ -5218,6 +5279,11 @@ async function removeLocalContainerSession(options: LooseRecord) {
     "Check Docker is running, then retry `sporades deploy remove`.",
     true,
   );
+  await removePublicTreeConsumer(
+    path.join(options.projectDir, ".sporades", "build"),
+    "container",
+    binding.clientRelease?.consumerToken,
+  );
   await rm(bindingPath, { force: true });
   const services = options.stopServices === false ? {} : await stopLocalCapsuleServices({ ...options, silent: true });
   const container = containerLifecycleSummary("removed", binding);
@@ -5824,6 +5890,22 @@ function runDockerCleanup(args: any[] | readonly string[], cwd: any, message: st
     return "";
   }
   throw commandError(message, hint);
+}
+
+async function replaceContainerBinding(bindingPath: string, binding: LooseRecord) {
+  const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(binding, null, 2)}\n`, { flag: "wx" });
+    await rename(temporaryPath, bindingPath);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
+}
+
+function containerReplacementFault(event: "publication" | "consumer" | "binding" | "cleanup") {
+  if (process.env.SPORADES_TEST_CONTAINER_REPLACEMENT_FAULT === event) {
+    throw commandError(`Injected Container replacement ${event} failure.`, "Retry without the test fault.");
+  }
 }
 
 function formatMount(mount: LooseRecord) {

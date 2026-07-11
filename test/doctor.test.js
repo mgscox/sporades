@@ -286,6 +286,18 @@ async function writeContainerBinding(projectDir, overrides = {}) {
   );
 }
 
+async function writeContainerConsumer(projectDir, tree, token, identity = "container-doctor") {
+  const consumersDir = path.join(projectDir, ".sporades", "build", ".public-trees", ".consumers");
+  await mkdir(consumersDir, { recursive: true });
+  await writeFile(path.join(consumersDir, "container.json"), `${JSON.stringify({
+    consumer: "container",
+    tree,
+    identity,
+    token,
+    createdAt: Date.now(),
+  })}\n`);
+}
+
 async function createProject(dir, name = "doctor-island") {
   const result = await runCli(["create", name, "--no-install", "--no-git", "--json"], { cwd: dir });
   assert.equal(result.code, 0, result.stderr);
@@ -989,13 +1001,24 @@ test("sporades doctor reports healthy local Container runtime hardening with fak
 test("Container doctor reports a bounded public-tree summary without requiring client.js", async () => {
   await withTempDir(async (dir) => {
     const projectDir = await createProject(dir, "container-public-island");
-    await writeContainerBinding(projectDir);
-    const publicDir = path.join(projectDir, ".sporades", "build", ".public-trees", "candidate");
+    await updateSporadesConfig(projectDir, (config) => { config.client.framework = "preact"; });
+    const publicTree = `123-${Date.now()}-aaaaaaaaaaaaaaaa`;
+    const publicDir = path.join(projectDir, ".sporades", "build", ".public-trees", publicTree);
     await mkdir(path.join(publicDir, "assets"), { recursive: true });
     await writeFile(path.join(publicDir, "index.html"), "<script type=module src=/assets/app-hash.js></script>\n");
     for (let index = 0; index < 24; index += 1) {
       await writeFile(path.join(publicDir, "assets", `asset-${String(index).padStart(2, "0")}.js`), `export default ${index};\n`);
     }
+    await writeContainerBinding(projectDir, {
+      clientRelease: {
+        framework: "react",
+        toolchain: "esbuild",
+        publicTree,
+        htmlEntry: "index.html",
+        consumerToken: "a".repeat(32),
+      },
+    });
+    await writeContainerConsumer(projectDir, publicTree, "a".repeat(32));
     const docker = await installFakeDocker(dir, {
       inspectJson: {
         State: { Running: true },
@@ -1029,6 +1052,41 @@ test("Container doctor reports a bounded public-tree summary without requiring c
     assert.equal(check.details.public.paths.length, 20);
     assert.equal(check.details.public.truncated, true);
     assert.equal(check.details.public.paths.includes("client.js"), false);
+  });
+});
+
+test("Container doctor rejects mismatched public mount sources without leaking host paths", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createProject(dir, "container-mismatch-island");
+    const publicTree = `124-${Date.now()}-bbbbbbbbbbbbbbbb`;
+    const expected = path.join(projectDir, ".sporades", "build", ".public-trees", publicTree);
+    const outside = path.join(dir, "sensitive-outside-public");
+    for (const root of [expected, outside]) {
+      await mkdir(root, { recursive: true });
+      await writeFile(path.join(root, "index.html"), "safe html");
+    }
+    await writeContainerBinding(projectDir, {
+      clientRelease: { framework: "react", toolchain: "esbuild", publicTree, htmlEntry: "index.html", consumerToken: "b".repeat(32) },
+    });
+    await writeContainerConsumer(projectDir, publicTree, "b".repeat(32));
+    const docker = await installFakeDocker(dir, {
+      inspectJson: {
+        State: { Running: true },
+        Config: { User: "501:20", Labels: {} },
+        HostConfig: { ReadonlyRootfs: true, RestartPolicy: { Name: "unless-stopped" } },
+        Mounts: [{ Source: outside, Destination: "/app/public", Mode: "ro", RW: false }],
+        NetworkSettings: { Ports: {} },
+      },
+    });
+    const result = await runCli(["doctor", "--session", "container", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(result.code, 0, result.stderr);
+    const raw = result.stdout;
+    const check = findCheck(JSON.parse(raw), "doctor.container.client-release");
+    assert.equal(check.status, "warn");
+    assert.equal(check.details.framework, "react");
+    assert.equal(check.details.public, null);
+    assert.doesNotMatch(raw, /sensitive-outside-public/);
+    assert.doesNotMatch(raw, new RegExp(outside.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   });
 });
 

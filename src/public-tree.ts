@@ -24,6 +24,14 @@ export type PublicTree = {
   lease: { path: string; token: string };
 };
 
+export type PublicTreeConsumer = {
+  consumer: string;
+  tree: string;
+  identity: string;
+  token: string;
+  createdAt: number;
+};
+
 type PublicFile = { path: string; contents: string | Uint8Array };
 type CleanupFault = (event: "before-remove", entryPath: string) => void;
 const LIVE_PUBLIC_TREE_LEASES = new Set<string>();
@@ -106,6 +114,91 @@ export async function releasePublicTreeLease(tree: PublicTree) {
   try {
     await removePublicTreeLease(tree.lease);
     await cleanupPublicTreesUnlocked(path.dirname(treesDir), { maxCompleted: 1 });
+  } finally {
+    await releaseLock();
+  }
+}
+
+export async function readPublicTreeConsumer(buildDir: string, consumer: string): Promise<PublicTreeConsumer | null> {
+  validateConsumerName(consumer);
+  const recordPath = path.join(buildDir, ".public-trees", ".consumers", `${consumer}.json`);
+  const record = await readFile(recordPath, "utf8").then(JSON.parse).catch((error) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  });
+  return validConsumerRecord(record, consumer) ? record : null;
+}
+
+export async function writePublicTreeConsumer(
+  buildDir: string,
+  consumer: string,
+  treeRoot: string,
+  identity: string,
+) {
+  validateConsumerName(consumer);
+  const treesDir = path.join(buildDir, ".public-trees");
+  if (path.dirname(treeRoot) !== treesDir || !isPublicTreeName(path.basename(treeRoot))) {
+    throw publicTreeError("Invalid public tree consumer.", "Bind consumers only to canonical candidates beneath the Runtime public-tree directory.");
+  }
+  await validatePublicTree(treeRoot);
+  const releaseLock = await acquirePublicTreeLock(treesDir);
+  try {
+    const consumersDir = path.join(treesDir, ".consumers");
+    await mkdir(consumersDir, { recursive: true });
+    const record: PublicTreeConsumer = {
+      consumer,
+      tree: path.basename(treeRoot),
+      identity,
+      token: randomBytes(16).toString("hex"),
+      createdAt: Date.now(),
+    };
+    await replaceStateFile(path.join(consumersDir, `${consumer}.json`), `${JSON.stringify(record)}\n`);
+    return record;
+  } finally {
+    await releaseLock();
+  }
+}
+
+export async function restorePublicTreeConsumer(
+  buildDir: string,
+  consumer: string,
+  record: PublicTreeConsumer | null,
+) {
+  validateConsumerName(consumer);
+  const treesDir = path.join(buildDir, ".public-trees");
+  await mkdir(treesDir, { recursive: true });
+  const releaseLock = await acquirePublicTreeLock(treesDir);
+  try {
+    const recordPath = path.join(treesDir, ".consumers", `${consumer}.json`);
+    if (record === null) {
+      await rm(recordPath, { recursive: true, force: true });
+      return;
+    }
+    if (!validConsumerRecord(record, consumer)) {
+      throw publicTreeError("Invalid public tree consumer.", "Restore only a previously validated consumer record.");
+    }
+    const root = path.join(treesDir, record.tree);
+    await validatePublicTree(root);
+    await mkdir(path.dirname(recordPath), { recursive: true });
+    await replaceStateFile(recordPath, `${JSON.stringify(record)}\n`);
+  } finally {
+    await releaseLock();
+  }
+}
+
+export async function removePublicTreeConsumer(buildDir: string, consumer: string, expectedToken?: string) {
+  validateConsumerName(consumer);
+  const treesDir = path.join(buildDir, ".public-trees");
+  await mkdir(treesDir, { recursive: true });
+  const releaseLock = await acquirePublicTreeLock(treesDir);
+  try {
+    const recordPath = path.join(treesDir, ".consumers", `${consumer}.json`);
+    const record = await readFile(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    if (expectedToken && record?.token !== expectedToken) {
+      throw publicTreeError("Public tree consumer ownership changed.", "Preserve the successor consumer and retry cleanup from its owning lifecycle.");
+    }
+    await rm(recordPath, { recursive: true, force: true });
+    await cleanupPublicTreesUnlocked(buildDir, { maxCompleted: 1 });
   } finally {
     await releaseLock();
   }
@@ -236,6 +329,7 @@ async function cleanupPublicTreesUnlocked(
   if (typeof activeReference === "string") {
     keepNames.add(activeReference);
   }
+  for (const consumerTree of await publicTreeConsumerNames(treesDir)) keepNames.add(consumerTree);
   const now = options.now ?? Date.now;
   const { live: liveLeaseNames, stale: staleLeaseNames } = await publicTreeLeaseStates(treesDir, now);
   for (const name of liveLeaseNames) keepNames.add(name);
@@ -254,7 +348,7 @@ async function cleanupPublicTreesUnlocked(
 
   const failures: string[] = [];
   for (const entry of entries) {
-    if (entry.name === "active.json" || entry.name === ".leases" || entry.name === ".lifecycle-lock" || entry.name === ".owner-heartbeats") continue;
+    if (entry.name === "active.json" || entry.name === ".leases" || entry.name === ".consumers" || entry.name === ".lifecycle-lock" || entry.name === ".owner-heartbeats") continue;
     if (keepNames.has(entry.name)) continue;
     const entryPath = path.join(treesDir, entry.name);
     try {
@@ -657,6 +751,58 @@ async function removeOrphanedOwnerHeartbeats(treesDir: string) {
     }
     const token = entry.endsWith(".json") ? entry.slice(0, -5) : "";
     if (!retained.has(token)) await rm(entryPath, { recursive: true, force: true });
+  }
+}
+
+async function publicTreeConsumerNames(treesDir: string) {
+  const consumersDir = path.join(treesDir, ".consumers");
+  const entries = await readdir(consumersDir).catch(() => []);
+  const trees = new Set<string>();
+  for (const entry of entries) {
+    const recordPath = path.join(consumersDir, entry);
+    const consumer = entry.endsWith(".json") ? entry.slice(0, -5) : "";
+    const record = await readFile(recordPath, "utf8").then(JSON.parse).catch(() => null);
+    if (!validConsumerRecord(record, consumer)) {
+      await rm(recordPath, { recursive: true, force: true });
+      continue;
+    }
+    const root = path.join(treesDir, record.tree);
+    try {
+      await validatePublicTree(root);
+      trees.add(record.tree);
+    } catch {
+      await rm(recordPath, { force: true });
+    }
+  }
+  return trees;
+}
+
+function validateConsumerName(consumer: string) {
+  if (!/^[a-z][a-z0-9-]{0,31}$/.test(consumer)) {
+    throw publicTreeError("Invalid public tree consumer.", "Use a short lowercase consumer name.");
+  }
+}
+
+function validConsumerRecord(record: any, consumer: string): record is PublicTreeConsumer {
+  return Boolean(
+    record
+    && record.consumer === consumer
+    && isPublicTreeName(record.tree)
+    && typeof record.identity === "string"
+    && record.identity.length > 0
+    && typeof record.token === "string"
+    && /^[a-f0-9]{32}$/.test(record.token)
+    && Number.isFinite(record.createdAt),
+  );
+}
+
+async function replaceStateFile(target: string, contents: string) {
+  const temporary = `${target}.${process.pid}-${randomBytes(8).toString("hex")}.tmp`;
+  try {
+    await writeFile(temporary, contents, { flag: "wx" });
+    await rename(temporary, target);
+  } finally {
+    await rm(temporary, { force: true });
   }
 }
 
