@@ -10301,17 +10301,19 @@ async function readPublicTreeConsumer(buildDir, consumer) {
   });
   return validConsumerRecord(record, consumer) ? record : null;
 }
-async function writePublicTreeConsumer(buildDir, consumer, treeRoot, identity) {
+async function writePublicTreeConsumer(buildDir, consumer, treeRoot, identity, expectedCurrent) {
   validateConsumerName(consumer);
   const treesDir = path2.join(buildDir, ".public-trees");
   if (path2.dirname(treeRoot) !== treesDir || !isPublicTreeName(path2.basename(treeRoot))) {
     throw publicTreeError("Invalid public tree consumer.", "Bind consumers only to canonical candidates beneath the Runtime public-tree directory.");
   }
-  await validatePublicTree(treeRoot);
   const releaseLock = await acquirePublicTreeLock(treesDir);
   try {
     const consumersDir = path2.join(treesDir, ".consumers");
     await mkdir2(consumersDir, { recursive: true });
+    const recordPath = path2.join(consumersDir, `${consumer}.json`);
+    await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
+    await validatePublicTree(treeRoot);
     const record = {
       consumer,
       tree: path2.basename(treeRoot),
@@ -10319,20 +10321,21 @@ async function writePublicTreeConsumer(buildDir, consumer, treeRoot, identity) {
       token: randomBytes3(16).toString("hex"),
       createdAt: Date.now()
     };
-    await replaceStateFile(path2.join(consumersDir, `${consumer}.json`), `${JSON.stringify(record)}
+    await replaceStateFile(recordPath, `${JSON.stringify(record)}
 `);
     return record;
   } finally {
     await releaseLock();
   }
 }
-async function restorePublicTreeConsumer(buildDir, consumer, record) {
+async function restorePublicTreeConsumer(buildDir, consumer, record, expectedCurrent) {
   validateConsumerName(consumer);
   const treesDir = path2.join(buildDir, ".public-trees");
   await mkdir2(treesDir, { recursive: true });
   const releaseLock = await acquirePublicTreeLock(treesDir);
   try {
     const recordPath = path2.join(treesDir, ".consumers", `${consumer}.json`);
+    await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
     if (record === null) {
       await rm(recordPath, { recursive: true, force: true });
       return;
@@ -10349,21 +10352,35 @@ async function restorePublicTreeConsumer(buildDir, consumer, record) {
     await releaseLock();
   }
 }
-async function removePublicTreeConsumer(buildDir, consumer, expectedToken) {
+async function removePublicTreeConsumer(buildDir, consumer, expectedCurrent) {
   validateConsumerName(consumer);
   const treesDir = path2.join(buildDir, ".public-trees");
   await mkdir2(treesDir, { recursive: true });
   const releaseLock = await acquirePublicTreeLock(treesDir);
   try {
     const recordPath = path2.join(treesDir, ".consumers", `${consumer}.json`);
-    const record = await readFile2(recordPath, "utf8").then(JSON.parse).catch(() => null);
-    if (expectedToken && record?.token !== expectedToken) {
-      throw publicTreeError("Public tree consumer ownership changed.", "Preserve the successor consumer and retry cleanup from its owning lifecycle.");
-    }
+    await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
     await rm(recordPath, { recursive: true, force: true });
     await cleanupPublicTreesUnlocked(buildDir, { maxCompleted: 1 });
   } finally {
     await releaseLock();
+  }
+}
+async function verifyConsumerExpectation(recordPath, consumer, expected) {
+  const raw = await readFile2(recordPath, "utf8").catch((error) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  });
+  const current = raw === null ? null : (() => {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return void 0;
+    }
+  })();
+  const matches = expected === null ? current === null : validConsumerRecord(current, consumer) && current.token === expected.token && current.identity === expected.identity;
+  if (!matches) {
+    throw publicTreeError("Public tree consumer ownership changed.", "Preserve the successor consumer and retry from its owning Container lifecycle.");
   }
 }
 async function validatePublicTree(root) {
@@ -17036,6 +17053,15 @@ function defaultSporadesDependency() {
   return "sporades";
 }
 async function manageLocalLifecycle(surface, options) {
+  const mutating = surface === "deploy" && !["status", "ssh", "jobs", "schedules"].includes(options.subcommand);
+  const release = mutating ? await acquireContainerLifecycleLock(options.projectDir) : null;
+  try {
+    return await manageLocalLifecycleUnlocked(surface, options);
+  } finally {
+    await release?.();
+  }
+}
+async function manageLocalLifecycleUnlocked(surface, options) {
   switch (options.subcommand) {
     case "status":
       await printLocalCapsuleServiceStatus(options, surface);
@@ -18912,6 +18938,7 @@ async function startContainerSession(options) {
     "127.0.0.1::22"
   ] : [];
   const bundleMountArgs = bundle.containerMounts.files.flatMap((mount) => ["--volume", formatMount(mount)]);
+  const containerTransactionToken = randomBytes5(16).toString("hex");
   const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
   const capsuleServicesEnvArgs = Object.entries(containerCapsuleServices.env ?? {}).flatMap(([key, value]) => [
     "--env",
@@ -18935,6 +18962,8 @@ async function startContainerSession(options) {
     runtimeUser,
     ...capsuleServicesNetworkArgs,
     ...Object.entries(baseImageLabels(updatePolicyMode)).flatMap(([key, value]) => ["--label", `${key}=${value}`]),
+    "--label",
+    `com.sporades.container-transaction=${containerTransactionToken}`,
     "--publish",
     `${port}:4000`,
     ...sshArgs,
@@ -18959,7 +18988,8 @@ async function startContainerSession(options) {
   let oldRenamed = false;
   let rollbackBundlePublication = null;
   let containerId = null;
-  let candidateRunAttempted = false;
+  let candidateOwnershipProven = false;
+  let committedConsumer = null;
   let binding = null;
   try {
     if (existingContainer) {
@@ -18971,15 +19001,28 @@ async function startContainerSession(options) {
     }
     containerReplacementFault("publication");
     rollbackBundlePublication = await bundle.publishLegacy();
-    candidateRunAttempted = true;
     containerId = runDocker(
       dockerRunArgs,
       options.projectDir,
       "Failed to start the container session.",
       "Check Docker is running, then retry `sporades deploy`."
     );
+    const candidateContainer = inspectDockerContainer(options.projectDir, containerId);
+    candidateOwnershipProven = Boolean(
+      candidateContainer?.Config?.Labels?.["com.sporades.container-transaction"] === containerTransactionToken && String(candidateContainer?.Name ?? "").replace(/^\//, "") === containerName
+    );
+    if (!candidateOwnershipProven) {
+      throw commandError4("Container candidate ownership could not be verified.", "Inspect the returned Container ID before retrying deployment.");
+    }
     containerReplacementFault("consumer");
-    const consumer = await writePublicTreeConsumer(bundle.buildDir, "container", bundle.staticFiles.publicDir, containerId);
+    const consumer = await writePublicTreeConsumer(
+      bundle.buildDir,
+      "container",
+      bundle.staticFiles.publicDir,
+      containerId,
+      previousConsumer ? { token: previousConsumer.token, identity: previousConsumer.identity } : null
+    );
+    committedConsumer = consumer;
     clientRelease.consumerToken = consumer.token;
     binding = {
       containerId,
@@ -19005,9 +19048,9 @@ async function startContainerSession(options) {
     }
   } catch (error) {
     const rollbackFailures = [];
-    if (candidateRunAttempted) {
+    if (containerId && candidateOwnershipProven) {
       try {
-        runDockerCleanup(["rm", "-f", containerName], options.projectDir, "", "", true);
+        runDockerCleanup(["rm", "-f", containerId], options.projectDir, "", "", true);
       } catch {
         rollbackFailures.push("candidate-container");
       }
@@ -19019,10 +19062,17 @@ async function startContainerSession(options) {
         rollbackFailures.push("bundle-publication");
       }
     }
-    try {
-      await restorePublicTreeConsumer(bundle.buildDir, "container", previousConsumer);
-    } catch {
-      rollbackFailures.push("consumer");
+    if (committedConsumer) {
+      try {
+        await restorePublicTreeConsumer(
+          bundle.buildDir,
+          "container",
+          previousConsumer,
+          { token: committedConsumer.token, identity: committedConsumer.identity }
+        );
+      } catch {
+        rollbackFailures.push("consumer");
+      }
     }
     try {
       if (existingBinding) await replaceContainerBinding(bindingPath, existingBinding);
@@ -20613,17 +20663,46 @@ async function removeLocalContainerSession(options) {
       "Run `sporades deploy` before `sporades deploy remove`."
     );
   }
-  runDockerCleanup(
-    ["rm", "-f", binding.containerId],
-    options.projectDir,
-    "Failed to remove the local Container session.",
-    "Check Docker is running, then retry `sporades deploy remove`.",
-    true
-  );
+  const buildDir = path7.join(options.projectDir, ".sporades", "build");
+  const currentConsumer = await readPublicTreeConsumer(buildDir, "container");
+  const bindingExpectation = binding.clientRelease?.consumerToken ? { token: binding.clientRelease.consumerToken, identity: binding.containerId } : null;
+  let claimedConsumer = null;
+  if (currentConsumer || bindingExpectation) {
+    if (!currentConsumer || !bindingExpectation) {
+      throw commandError4("Container consumer ownership changed.", "Inspect the current binding and retry from its owning Container lifecycle.");
+    }
+    claimedConsumer = await writePublicTreeConsumer(
+      buildDir,
+      "container",
+      path7.join(buildDir, ".public-trees", currentConsumer.tree),
+      currentConsumer.identity,
+      bindingExpectation
+    );
+  }
+  try {
+    runDockerCleanup(
+      ["rm", "-f", binding.containerId],
+      options.projectDir,
+      "Failed to remove the local Container session.",
+      "Check Docker is running, then retry `sporades deploy remove`.",
+      true
+    );
+  } catch (error) {
+    if (claimedConsumer && currentConsumer) {
+      await restorePublicTreeConsumer(
+        buildDir,
+        "container",
+        currentConsumer,
+        { token: claimedConsumer.token, identity: claimedConsumer.identity }
+      ).catch(() => {
+      });
+    }
+    throw error;
+  }
   await removePublicTreeConsumer(
-    path7.join(options.projectDir, ".sporades", "build"),
+    buildDir,
     "container",
-    binding.clientRelease?.consumerToken
+    claimedConsumer ? { token: claimedConsumer.token, identity: claimedConsumer.identity } : null
   );
   await rm4(bindingPath, { force: true });
   const services = options.stopServices === false ? {} : await stopLocalCapsuleServices({ ...options, silent: true });
@@ -21191,6 +21270,52 @@ async function replaceContainerBinding(bindingPath, binding) {
     await rename3(temporaryPath, bindingPath);
   } finally {
     await rm4(temporaryPath, { force: true });
+  }
+}
+async function acquireContainerLifecycleLock(projectDir) {
+  const lockDir = path7.join(projectDir, ".sporades", ".container-lifecycle-lock");
+  await mkdir6(path7.dirname(lockDir), { recursive: true });
+  const token = randomBytes5(16).toString("hex");
+  const ownerPath = path7.join(lockDir, "owner.json");
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    try {
+      await mkdir6(lockDir);
+      await writeFile6(ownerPath, `${JSON.stringify({ pid: process.pid, processStart: await getProcessStartIdentity(process.pid), token })}
+`);
+      return async () => {
+        const owner = await readFile7(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+        if (owner?.token !== token) throw commandError4("Container lifecycle lock ownership changed.", "Preserve the successor lifecycle lock.");
+        await rm4(lockDir, { recursive: true, force: true });
+      };
+    } catch (error) {
+      if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
+      const owner = await readFile7(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+      if (owner === null) {
+        const age = Date.now() - await lstat4(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
+        if (age <= 1e3) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          continue;
+        }
+      }
+      const actualStart = Number.isInteger(owner?.pid) ? await getProcessStartIdentity(owner.pid) : null;
+      const live = Boolean(
+        owner && Number.isInteger(owner.pid) && owner.pid > 0 && typeof owner.token === "string" && (actualStart !== null && owner.processStart === actualStart || actualStart === null && processIsLiveForContainerLock(owner.pid))
+      );
+      if (!live) {
+        await rm4(lockDir, { recursive: true, force: true });
+        continue;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw commandError4("Container lifecycle is busy.", "Retry after the other Container operation completes.");
+}
+function processIsLiveForContainerLock(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return Boolean(error && typeof error === "object" && "code" in error && error.code === "EPERM");
   }
 }
 function containerReplacementFault(event) {

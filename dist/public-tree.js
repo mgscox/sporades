@@ -92,17 +92,19 @@ export async function readPublicTreeConsumer(buildDir, consumer) {
     });
     return validConsumerRecord(record, consumer) ? record : null;
 }
-export async function writePublicTreeConsumer(buildDir, consumer, treeRoot, identity) {
+export async function writePublicTreeConsumer(buildDir, consumer, treeRoot, identity, expectedCurrent) {
     validateConsumerName(consumer);
     const treesDir = path.join(buildDir, ".public-trees");
     if (path.dirname(treeRoot) !== treesDir || !isPublicTreeName(path.basename(treeRoot))) {
         throw publicTreeError("Invalid public tree consumer.", "Bind consumers only to canonical candidates beneath the Runtime public-tree directory.");
     }
-    await validatePublicTree(treeRoot);
     const releaseLock = await acquirePublicTreeLock(treesDir);
     try {
         const consumersDir = path.join(treesDir, ".consumers");
         await mkdir(consumersDir, { recursive: true });
+        const recordPath = path.join(consumersDir, `${consumer}.json`);
+        await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
+        await validatePublicTree(treeRoot);
         const record = {
             consumer,
             tree: path.basename(treeRoot),
@@ -110,20 +112,21 @@ export async function writePublicTreeConsumer(buildDir, consumer, treeRoot, iden
             token: randomBytes(16).toString("hex"),
             createdAt: Date.now(),
         };
-        await replaceStateFile(path.join(consumersDir, `${consumer}.json`), `${JSON.stringify(record)}\n`);
+        await replaceStateFile(recordPath, `${JSON.stringify(record)}\n`);
         return record;
     }
     finally {
         await releaseLock();
     }
 }
-export async function restorePublicTreeConsumer(buildDir, consumer, record) {
+export async function restorePublicTreeConsumer(buildDir, consumer, record, expectedCurrent) {
     validateConsumerName(consumer);
     const treesDir = path.join(buildDir, ".public-trees");
     await mkdir(treesDir, { recursive: true });
     const releaseLock = await acquirePublicTreeLock(treesDir);
     try {
         const recordPath = path.join(treesDir, ".consumers", `${consumer}.json`);
+        await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
         if (record === null) {
             await rm(recordPath, { recursive: true, force: true });
             return;
@@ -140,22 +143,38 @@ export async function restorePublicTreeConsumer(buildDir, consumer, record) {
         await releaseLock();
     }
 }
-export async function removePublicTreeConsumer(buildDir, consumer, expectedToken) {
+export async function removePublicTreeConsumer(buildDir, consumer, expectedCurrent) {
     validateConsumerName(consumer);
     const treesDir = path.join(buildDir, ".public-trees");
     await mkdir(treesDir, { recursive: true });
     const releaseLock = await acquirePublicTreeLock(treesDir);
     try {
         const recordPath = path.join(treesDir, ".consumers", `${consumer}.json`);
-        const record = await readFile(recordPath, "utf8").then(JSON.parse).catch(() => null);
-        if (expectedToken && record?.token !== expectedToken) {
-            throw publicTreeError("Public tree consumer ownership changed.", "Preserve the successor consumer and retry cleanup from its owning lifecycle.");
-        }
+        await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
         await rm(recordPath, { recursive: true, force: true });
         await cleanupPublicTreesUnlocked(buildDir, { maxCompleted: 1 });
     }
     finally {
         await releaseLock();
+    }
+}
+async function verifyConsumerExpectation(recordPath, consumer, expected) {
+    const raw = await readFile(recordPath, "utf8").catch((error) => {
+        if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
+            return null;
+        throw error;
+    });
+    const current = raw === null ? null : (() => { try {
+        return JSON.parse(raw);
+    }
+    catch {
+        return undefined;
+    } })();
+    const matches = expected === null
+        ? current === null
+        : validConsumerRecord(current, consumer) && current.token === expected.token && current.identity === expected.identity;
+    if (!matches) {
+        throw publicTreeError("Public tree consumer ownership changed.", "Preserve the successor consumer and retry from its owning Container lifecycle.");
     }
 }
 export async function validatePublicTree(root) {

@@ -7,7 +7,7 @@ import { appendFile, chmod, lstat, mkdir, readdir, readFile, rename, rm, writeFi
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../bundle-pipeline.js";
-import { discardPublicTree, readPublicAsset, readPublicTreeConsumer, removePublicTreeConsumer, restorePublicTreeConsumer, summarizePublicTree, writePublicTreeConsumer, } from "../public-tree.js";
+import { discardPublicTree, getProcessStartIdentity, readPublicAsset, readPublicTreeConsumer, removePublicTreeConsumer, restorePublicTreeConsumer, summarizePublicTree, writePublicTreeConsumer, } from "../public-tree.js";
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageRuntimeUser, } from "../base-image.js";
 import { ensureSealedServerEnvKeyPair, envelopeSummary, exportedEnvelope, readKeyPair, readSealedServerEnv, sealServerEnv, sealedServerEnvPaths, unsealServerEnv, writeSealedServerEnv, } from "../sealed-server-env.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
@@ -1070,6 +1070,16 @@ function defaultSporadesDependency() {
     return "sporades";
 }
 async function manageLocalLifecycle(surface, options) {
+    const mutating = surface === "deploy" && !["status", "ssh", "jobs", "schedules"].includes(options.subcommand);
+    const release = mutating ? await acquireContainerLifecycleLock(options.projectDir) : null;
+    try {
+        return await manageLocalLifecycleUnlocked(surface, options);
+    }
+    finally {
+        await release?.();
+    }
+}
+async function manageLocalLifecycleUnlocked(surface, options) {
     switch (options.subcommand) {
         case "status":
             await printLocalCapsuleServiceStatus(options, surface);
@@ -2880,6 +2890,7 @@ async function startContainerSession(options) {
         ]
         : [];
     const bundleMountArgs = bundle.containerMounts.files.flatMap((mount) => ["--volume", formatMount(mount)]);
+    const containerTransactionToken = randomBytes(16).toString("hex");
     const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
     const capsuleServicesEnvArgs = Object.entries(containerCapsuleServices.env ?? {}).flatMap(([key, value]) => [
         "--env",
@@ -2903,6 +2914,8 @@ async function startContainerSession(options) {
         runtimeUser,
         ...capsuleServicesNetworkArgs,
         ...Object.entries(baseImageLabels(updatePolicyMode)).flatMap(([key, value]) => ["--label", `${key}=${value}`]),
+        "--label",
+        `com.sporades.container-transaction=${containerTransactionToken}`,
         "--publish",
         `${port}:4000`,
         ...sshArgs,
@@ -2927,7 +2940,8 @@ async function startContainerSession(options) {
     let oldRenamed = false;
     let rollbackBundlePublication = null;
     let containerId = null;
-    let candidateRunAttempted = false;
+    let candidateOwnershipProven = false;
+    let committedConsumer = null;
     let binding = null;
     try {
         if (existingContainer) {
@@ -2939,10 +2953,16 @@ async function startContainerSession(options) {
         }
         containerReplacementFault("publication");
         rollbackBundlePublication = await bundle.publishLegacy();
-        candidateRunAttempted = true;
         containerId = runDocker(dockerRunArgs, options.projectDir, "Failed to start the container session.", "Check Docker is running, then retry `sporades deploy`.");
+        const candidateContainer = inspectDockerContainer(options.projectDir, containerId);
+        candidateOwnershipProven = Boolean(candidateContainer?.Config?.Labels?.["com.sporades.container-transaction"] === containerTransactionToken
+            && String(candidateContainer?.Name ?? "").replace(/^\//, "") === containerName);
+        if (!candidateOwnershipProven) {
+            throw commandError("Container candidate ownership could not be verified.", "Inspect the returned Container ID before retrying deployment.");
+        }
         containerReplacementFault("consumer");
-        const consumer = await writePublicTreeConsumer(bundle.buildDir, "container", bundle.staticFiles.publicDir, containerId);
+        const consumer = await writePublicTreeConsumer(bundle.buildDir, "container", bundle.staticFiles.publicDir, containerId, previousConsumer ? { token: previousConsumer.token, identity: previousConsumer.identity } : null);
+        committedConsumer = consumer;
         clientRelease.consumerToken = consumer.token;
         binding = {
             containerId,
@@ -2969,9 +2989,9 @@ async function startContainerSession(options) {
     }
     catch (error) {
         const rollbackFailures = [];
-        if (candidateRunAttempted) {
+        if (containerId && candidateOwnershipProven) {
             try {
-                runDockerCleanup(["rm", "-f", containerName], options.projectDir, "", "", true);
+                runDockerCleanup(["rm", "-f", containerId], options.projectDir, "", "", true);
             }
             catch {
                 rollbackFailures.push("candidate-container");
@@ -2985,11 +3005,13 @@ async function startContainerSession(options) {
                 rollbackFailures.push("bundle-publication");
             }
         }
-        try {
-            await restorePublicTreeConsumer(bundle.buildDir, "container", previousConsumer);
-        }
-        catch {
-            rollbackFailures.push("consumer");
+        if (committedConsumer) {
+            try {
+                await restorePublicTreeConsumer(bundle.buildDir, "container", previousConsumer, { token: committedConsumer.token, identity: committedConsumer.identity });
+            }
+            catch {
+                rollbackFailures.push("consumer");
+            }
         }
         try {
             if (existingBinding)
@@ -4510,8 +4532,28 @@ async function removeLocalContainerSession(options) {
         }
         throw commandError("No local Container session binding found.", "Run `sporades deploy` before `sporades deploy remove`.");
     }
-    runDockerCleanup(["rm", "-f", binding.containerId], options.projectDir, "Failed to remove the local Container session.", "Check Docker is running, then retry `sporades deploy remove`.", true);
-    await removePublicTreeConsumer(path.join(options.projectDir, ".sporades", "build"), "container", binding.clientRelease?.consumerToken);
+    const buildDir = path.join(options.projectDir, ".sporades", "build");
+    const currentConsumer = await readPublicTreeConsumer(buildDir, "container");
+    const bindingExpectation = binding.clientRelease?.consumerToken
+        ? { token: binding.clientRelease.consumerToken, identity: binding.containerId }
+        : null;
+    let claimedConsumer = null;
+    if (currentConsumer || bindingExpectation) {
+        if (!currentConsumer || !bindingExpectation) {
+            throw commandError("Container consumer ownership changed.", "Inspect the current binding and retry from its owning Container lifecycle.");
+        }
+        claimedConsumer = await writePublicTreeConsumer(buildDir, "container", path.join(buildDir, ".public-trees", currentConsumer.tree), currentConsumer.identity, bindingExpectation);
+    }
+    try {
+        runDockerCleanup(["rm", "-f", binding.containerId], options.projectDir, "Failed to remove the local Container session.", "Check Docker is running, then retry `sporades deploy remove`.", true);
+    }
+    catch (error) {
+        if (claimedConsumer && currentConsumer) {
+            await restorePublicTreeConsumer(buildDir, "container", currentConsumer, { token: claimedConsumer.token, identity: claimedConsumer.identity }).catch(() => { });
+        }
+        throw error;
+    }
+    await removePublicTreeConsumer(buildDir, "container", claimedConsumer ? { token: claimedConsumer.token, identity: claimedConsumer.identity } : null);
     await rm(bindingPath, { force: true });
     const services = options.stopServices === false ? {} : await stopLocalCapsuleServices({ ...options, silent: true });
     const container = containerLifecycleSummary("removed", binding);
@@ -5046,6 +5088,57 @@ async function replaceContainerBinding(bindingPath, binding) {
     }
     finally {
         await rm(temporaryPath, { force: true });
+    }
+}
+async function acquireContainerLifecycleLock(projectDir) {
+    const lockDir = path.join(projectDir, ".sporades", ".container-lifecycle-lock");
+    await mkdir(path.dirname(lockDir), { recursive: true });
+    const token = randomBytes(16).toString("hex");
+    const ownerPath = path.join(lockDir, "owner.json");
+    for (let attempt = 0; attempt < 500; attempt += 1) {
+        try {
+            await mkdir(lockDir);
+            await writeFile(ownerPath, `${JSON.stringify({ pid: process.pid, processStart: await getProcessStartIdentity(process.pid), token })}\n`);
+            return async () => {
+                const owner = await readFile(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+                if (owner?.token !== token)
+                    throw commandError("Container lifecycle lock ownership changed.", "Preserve the successor lifecycle lock.");
+                await rm(lockDir, { recursive: true, force: true });
+            };
+        }
+        catch (error) {
+            if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST"))
+                throw error;
+            const owner = await readFile(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+            if (owner === null) {
+                const age = Date.now() - await lstat(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
+                if (age <= 1_000) {
+                    await new Promise((resolve) => setTimeout(resolve, 10));
+                    continue;
+                }
+            }
+            const actualStart = Number.isInteger(owner?.pid) ? await getProcessStartIdentity(owner.pid) : null;
+            const live = Boolean(owner
+                && Number.isInteger(owner.pid)
+                && owner.pid > 0
+                && typeof owner.token === "string"
+                && ((actualStart !== null && owner.processStart === actualStart) || (actualStart === null && processIsLiveForContainerLock(owner.pid))));
+            if (!live) {
+                await rm(lockDir, { recursive: true, force: true });
+                continue;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+    }
+    throw commandError("Container lifecycle is busy.", "Retry after the other Container operation completes.");
+}
+function processIsLiveForContainerLock(pid) {
+    try {
+        process.kill(pid, 0);
+        return true;
+    }
+    catch (error) {
+        return Boolean(error && typeof error === "object" && "code" in error && error.code === "EPERM");
     }
 }
 function containerReplacementFault(event) {

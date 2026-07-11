@@ -82,10 +82,10 @@ async function installFakeDocker(dir, containerId = "container-new", options = {
 const { appendFileSync, readFileSync } = require("node:fs");
 const call = { args: process.argv.slice(2), cwd: process.cwd() };
 appendFileSync(process.env.FAKE_DOCKER_LOG, JSON.stringify(call) + "\\n");
+const recordedCalls = readFileSync(process.env.FAKE_DOCKER_LOG, "utf8").trim().split("\\n").map(JSON.parse);
 const failOnceActions = new Set((process.env.FAKE_DOCKER_FAIL_ONCE_ACTIONS ?? "").split(",").filter(Boolean));
 if (failOnceActions.has(call.args[0])) {
-  const calls = readFileSync(process.env.FAKE_DOCKER_LOG, "utf8").trim().split("\\n").map(JSON.parse);
-  if (calls.filter((entry) => entry.args[0] === call.args[0]).length === 1) {
+  if (recordedCalls.filter((entry) => entry.args[0] === call.args[0]).length === 1) {
     process.stderr.write("injected one-time " + call.args[0] + " failure\\n");
     process.exit(1);
   }
@@ -93,6 +93,11 @@ if (failOnceActions.has(call.args[0])) {
 const missingContainerActions = new Set((process.env.FAKE_DOCKER_MISSING_CONTAINER_ACTIONS ?? "").split(",").filter(Boolean));
 if (missingContainerActions.has(call.args[0])) {
   process.stderr.write("Error response from daemon: No such container: " + call.args[1] + "\\n");
+  process.exit(1);
+}
+const missingInspectIds = new Set((process.env.FAKE_DOCKER_MISSING_INSPECT_IDS ?? "").split(",").filter(Boolean));
+if (call.args[0] === "inspect" && missingInspectIds.has(call.args.at(-1))) {
+  process.stderr.write("Error response from daemon: No such container: " + call.args.at(-1) + "\\n");
   process.exit(1);
 }
 if (call.args[0] === "ps") {
@@ -106,9 +111,20 @@ if (call.args[0] === "inspect" && call.args.includes("{{json .Mounts}}")) {
   process.exit(0);
 }
 if (call.args[0] === "inspect" && call.args.includes("{{json .}}")) {
-  process.stdout.write((process.env.FAKE_DOCKER_INSPECT_JSON || JSON.stringify({
+  const latestRun = recordedCalls.filter((entry) => entry.args[0] === "run").at(-1);
+  const runLabels = {};
+  if (latestRun) {
+    for (let index = 0; index < latestRun.args.length; index += 1) {
+      if (latestRun.args[index] !== "--label") continue;
+      const [key, ...value] = latestRun.args[index + 1].split("=");
+      runLabels[key] = value.join("=");
+    }
+  }
+  const inspected = process.env.FAKE_DOCKER_INSPECT_JSON ? JSON.parse(process.env.FAKE_DOCKER_INSPECT_JSON) : {
+    Id: call.args.at(-1),
+    Name: latestRun ? "/" + latestRun.args[latestRun.args.indexOf("--name") + 1] : null,
     State: { Running: true },
-    Config: { User: process.env.FAKE_DOCKER_CONFIG_USER || "10001:10001" },
+    Config: { User: process.env.FAKE_DOCKER_CONFIG_USER || "10001:10001", Labels: runLabels },
     NetworkSettings: {
       Ports: {
         "22/tcp": [
@@ -116,7 +132,13 @@ if (call.args[0] === "inspect" && call.args.includes("{{json .}}")) {
         ]
       }
     }
-  })) + "\\n");
+  };
+  if (latestRun && call.args.at(-1) === process.env.FAKE_DOCKER_CONTAINER_ID) {
+    inspected.Id = call.args.at(-1);
+    inspected.Name = "/" + latestRun.args[latestRun.args.indexOf("--name") + 1];
+    inspected.Config = { ...(inspected.Config || {}), Labels: { ...(inspected.Config?.Labels || {}), ...runLabels } };
+  }
+  process.stdout.write(JSON.stringify(inspected) + "\\n");
   process.exit(0);
 }
 if (call.args[0] === "logs") {
@@ -189,6 +211,7 @@ if (call.args[0] === "run") {
       FAKE_DOCKER_CONTAINER_ID: containerId,
       FAKE_DOCKER_DATA_DIR: options.dataDir ?? "",
       FAKE_DOCKER_MISSING_CONTAINER_ACTIONS: options.missingContainerActions?.join(",") ?? "",
+      FAKE_DOCKER_MISSING_INSPECT_IDS: options.missingInspectIds?.join(",") ?? "",
       FAKE_DOCKER_FAIL_ONCE_ACTIONS: options.failOnceActions?.join(",") ?? "",
       FAKE_DOCKER_IMAGE_INSPECT_STATUS: String(options.imageInspectStatus ?? 0),
       FAKE_DOCKER_PULL_STATUS: String(options.pullStatus ?? 0),
@@ -852,6 +875,23 @@ test("Container replacement restores publication, consumer, binding, and cleanup
       });
     });
   }
+});
+
+test("ambiguous docker run failure never removes an unrelated canonical-name container", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "name-conflict-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "name-conflict-island"));
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "unrelated-container", { failOnceActions: ["run"] });
+    const failed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(failed.code, 1);
+    assert.equal(JSON.parse(failed.stdout).error.message, "Failed to start the container session.");
+    const calls = await docker.calls();
+    assert.equal(calls.some((call) => call.args[0] === "rm"), false);
+    assert.equal(calls.some((call) => call.args[0] === "inspect" && call.args.at(-1) === "unrelated-container"), false);
+    await assert.rejects(stat(path.join(projectDir, ".sporades", "binding.json")), (error) => error.code === "ENOENT");
+  });
 });
 
 test("unsafe Container public output fails validation before replacing the running session", async () => {
@@ -2472,7 +2512,7 @@ test("sporades deploy writes a server bundle that applies additive table migrati
         env: {
           ...docker.env,
           FAKE_DOCKER_CONTAINER_ID: "container-second",
-          FAKE_DOCKER_MISSING_CONTAINER_ACTIONS: "inspect",
+          FAKE_DOCKER_MISSING_INSPECT_IDS: "container-first",
         },
       });
       assert.equal(redeployResult.code, 0, redeployResult.stderr);
@@ -3809,6 +3849,38 @@ test("Container remove and reset release durable public-tree consumers", async (
   });
 });
 
+test("stale and tokenless remove callers cannot delete a successor consumer, Container, or binding", async (t) => {
+  for (const mode of ["stale", "tokenless"]) {
+    await t.test(mode, async () => {
+      await withTempDir(async (dir) => {
+        const created = await runCli(["create", `consumer-${mode}-island`, "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+        assert.equal(created.code, 0, created.stderr);
+        const projectDir = await realpath(path.join(dir, `consumer-${mode}-island`));
+        await installFakeReact(projectDir);
+        const initialDocker = await installFakeDocker(path.join(dir, "initial"), `container-${mode}`);
+        assert.equal((await runCli(["deploy", "--json"], { cwd: projectDir, env: initialDocker.env })).code, 0);
+        const bindingPath = path.join(projectDir, ".sporades", "binding.json");
+        const consumerPath = path.join(projectDir, ".sporades", "build", ".public-trees", ".consumers", "container.json");
+        const binding = JSON.parse(await readFile(bindingPath, "utf8"));
+        const successor = { ...JSON.parse(await readFile(consumerPath, "utf8")), token: "f".repeat(32), identity: "successor-container" };
+        await writeFile(consumerPath, `${JSON.stringify(successor)}\n`);
+        if (mode === "tokenless") {
+          delete binding.clientRelease.consumerToken;
+          await writeFile(bindingPath, `${JSON.stringify(binding, null, 2)}\n`);
+        }
+        const beforeBinding = await readFile(bindingPath, "utf8");
+        const beforeConsumer = await readFile(consumerPath, "utf8");
+        const docker = await installFakeDocker(path.join(dir, "remove"), `container-${mode}`);
+        const removed = await runCli(["deploy", "remove", "--json"], { cwd: projectDir, env: docker.env });
+        assert.equal(removed.code, 1);
+        assert.equal((await docker.calls()).some((call) => call.args[0] === "rm"), false);
+        assert.equal(await readFile(bindingPath, "utf8"), beforeBinding);
+        assert.equal(await readFile(consumerPath, "utf8"), beforeConsumer);
+      });
+    });
+  }
+});
+
 test("sporades deploy replaces the existing container binding before starting a new one", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -3834,11 +3906,11 @@ test("sporades deploy replaces the existing container binding before starting a 
     assert.equal(JSON.parse(deployResult.stdout).data.containerId, "container-replacement");
 
     const calls = await docker.calls();
-    assert.deepEqual(calls.map((call) => call.args[0]), ["image", "inspect", "rename", "stop", "run", "rm"]);
+    assert.deepEqual(calls.map((call) => call.args[0]), ["image", "inspect", "rename", "stop", "run", "inspect", "rm"]);
     assert.equal(calls[2].args[1], "container-old");
     assert.match(calls[2].args[2], /^sporades-todo-island-rollback-/);
     assert.equal(calls[3].args[1], calls[2].args[2]);
-    assert.equal(calls[5].args[1], calls[2].args[2]);
+    assert.equal(calls[6].args[1], calls[2].args[2]);
     assert.equal(firstDockerRunCall(calls).args[0], "run");
 
     const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
@@ -3863,7 +3935,7 @@ test("sporades deploy --force ignores stale container bindings when the containe
       `${JSON.stringify({ containerId: "container-deleted", containerName: "sporades-todo-island" }, null, 2)}\n`,
     );
     const docker = await installFakeDocker(dir, "container-replacement", {
-      missingContainerActions: ["inspect"],
+      missingInspectIds: ["container-deleted"],
     });
 
     const deployResult = await runCli(["deploy", "--force", "--json"], {
@@ -3875,7 +3947,7 @@ test("sporades deploy --force ignores stale container bindings when the containe
     assert.equal(JSON.parse(deployResult.stdout).data.containerId, "container-replacement");
 
     const calls = await docker.calls();
-    assert.deepEqual(calls.map((call) => call.args[0]), ["image", "inspect", "run"]);
+    assert.deepEqual(calls.map((call) => call.args[0]), ["image", "inspect", "run", "inspect"]);
 
     const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
     assert.equal(binding.containerId, "container-replacement");
@@ -3907,7 +3979,7 @@ test("sporades deploy builds the bundled Base image when pull is unavailable", a
     assert.equal(JSON.parse(deployResult.stdout).data.containerId, "container-built-base-image");
 
     const calls = await docker.calls();
-    assert.deepEqual(calls.map((call) => call.args[0]), ["image", "pull", "build", "run"]);
+    assert.deepEqual(calls.map((call) => call.args[0]), ["image", "pull", "build", "run", "inspect"]);
     assert.deepEqual(calls[0].args, ["image", "inspect", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"]);
     assert.deepEqual(calls[1].args, ["pull", "ghcr.io/sporades/sporades-base:0.1.0-node22-alpine"]);
     assert.deepEqual(calls[2].args.slice(0, 5), [
@@ -3936,7 +4008,7 @@ test("sporades deploy fails on stale container bindings without --force", async 
       `${JSON.stringify({ containerId: "container-deleted", containerName: "sporades-todo-island" }, null, 2)}\n`,
     );
     const docker = await installFakeDocker(dir, "container-replacement", {
-      missingContainerActions: ["inspect"],
+      missingInspectIds: ["container-deleted"],
     });
 
     const deployResult = await runCli(["deploy", "--json"], {
