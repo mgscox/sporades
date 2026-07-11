@@ -4,7 +4,7 @@
 
 **Blocked by:** 04 — Capture Safe Browser Journey Signals.
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## Parent
 
