@@ -335,6 +335,9 @@ test("sporades create writes a complete Campfire exemplar", async () => {
       if (component === "switch") assert.match(source, /role="switch"/);
     }
     assert.match(client, /aria-label/);
+    assert.match(client, /fixedChannels\.map\(\(slug\) => <button key=\{slug\}/);
+    assert.match(client, /musketeers\.map\(\(person\) => <Button key=\{person\.key\}/);
+    assert.match(client, /return <button key=\{kind\}/);
   });
 });
 

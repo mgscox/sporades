@@ -11274,7 +11274,7 @@ function App() {
   return <main ${klass}="min-h-screen bg-[#120d0a] text-amber-50 lg:grid lg:grid-cols-[240px_1fr_300px]">
     <aside ${klass}="border-r border-amber-900/40 bg-[#1b120d] p-5">
       <p ${klass}="text-xs font-bold uppercase tracking-[.28em] text-amber-500">Sporades exemplar</p><h1 ${klass}="mb-8 mt-2 text-3xl font-black">\u{1F525} Campfire</h1>
-      <nav aria-label="Channels" ${klass}="space-y-2">{fixedChannels.map((slug) => <button type="button" ${klass}={\`block w-full rounded-md px-3 py-2 text-left \${channel === slug ? "bg-amber-700 text-white" : "hover:bg-amber-950"}\`} onClick={() => chooseChannel(slug)}><Badge># {slug}</Badge></button>)}</nav>
+      <nav aria-label="Channels" ${klass}="space-y-2">{fixedChannels.map((slug) => <button key={slug} type="button" ${klass}={\`block w-full rounded-md px-3 py-2 text-left \${channel === slug ? "bg-amber-700 text-white" : "hover:bg-amber-950"}\`} onClick={() => chooseChannel(slug)}><Badge># {slug}</Badge></button>)}</nav>
       <Separator ${klass}="my-8"/><div><Button ${klass}="w-full bg-amber-700" type="button" onClick={prepareFixtures}>Prepare demo fixtures</Button><p ${klass}="mt-2 text-xs text-amber-200/70">Development-only. Never enable known credentials publicly.</p></div>
     </aside>
     <section ${klass}="flex min-h-screen flex-col"><header ${klass}="border-b border-amber-900/40 p-5"><h2 ${klass}="text-xl font-bold"># {channel}</h2><p role="status" ${klass}="text-sm text-amber-300">{notice}</p></header>
@@ -11283,14 +11283,14 @@ function App() {
     </section>
     <aside ${klass}="border-l border-amber-900/40 bg-[#1b120d] p-5"><h2 ${klass}="text-lg font-bold">What's happening</h2><div ${klass}="mt-4"><Switch label="Share my activity" checked={sharing} onChange={(event) => setShare(event.currentTarget.checked)} /></div><p ${klass}="mt-2 text-xs text-amber-200/70">Shares only reading/typing and channel. Never drafts, messages, URLs, query strings, emails, passwords, message IDs, or keystrokes.</p>
       <ul ${klass}="mt-5 space-y-3">{activities.map((activity) => <li key={activity.sessionId} ${klass}="rounded-md bg-amber-950/60 p-3">{personName(activity.userId, profiles.data ?? [])} is {activity.status} #{activity.metadata?.channel ?? "campfire"}</li>)}</ul>
-      <h3 ${klass}="mt-8 font-bold">Switch Musketeer</h3><div ${klass}="mt-3 grid gap-2">{musketeers.map((person) => <Button type="button" ${klass}="flex items-center gap-2 bg-stone-800 text-left" onClick={() => switchTo(person)}><span ${klass}={\`grid h-7 w-7 place-items-center rounded-full \${person.tone}\`}>{person.monogram}</span>{person.name}</Button>)}</div>
+      <h3 ${klass}="mt-8 font-bold">Switch Musketeer</h3><div ${klass}="mt-3 grid gap-2">{musketeers.map((person) => <Button key={person.key} type="button" ${klass}="flex items-center gap-2 bg-stone-800 text-left" onClick={() => switchTo(person)}><span ${klass}={\`grid h-7 w-7 place-items-center rounded-full \${person.tone}\`}>{person.monogram}</span>{person.name}</Button>)}</div>
     </aside>
   </main>;
 }
 
 function Message({ message, session, toggle }) {
   const reactionKeys = Object.keys(message.reactions ?? {});
-  return <Card ${klass}="p-4"><div ${klass}="flex items-baseline gap-3"><Avatar label={message.authorName}/><strong>{message.authorName}</strong><time ${klass}="text-xs text-amber-300/60">{new Date(message.createdAt).toLocaleString()}</time></div><p ${klass}="my-3 whitespace-pre-wrap">{message.body}</p><div ${klass}="flex gap-2">{[["up", "\u{1F44D}"], ["down", "\u{1F44E}"]].map(([kind, emoji]) => { const mine = reactionKeys.includes(\`\${session.auth?.userId}:\${kind}\`); const total = reactionKeys.filter((key) => key.endsWith(\`:\${kind}\`)).length; return <button type="button" aria-label={\`\${kind === "up" ? "Thumbs up" : "Thumbs down"}: \${total}; \${mine ? "active" : "inactive"}\`} aria-pressed={mine} ${klass}="rounded-full border border-amber-800 px-3 py-1" onClick={() => toggle.run({ messageId: message.id, kind })}>{emoji} {total}</button>; })}</div></Card>;
+  return <Card ${klass}="p-4"><div ${klass}="flex items-baseline gap-3"><Avatar label={message.authorName}/><strong>{message.authorName}</strong><time ${klass}="text-xs text-amber-300/60">{new Date(message.createdAt).toLocaleString()}</time></div><p ${klass}="my-3 whitespace-pre-wrap">{message.body}</p><div ${klass}="flex gap-2">{[["up", "\u{1F44D}"], ["down", "\u{1F44E}"]].map(([kind, emoji]) => { const mine = reactionKeys.includes(\`\${session.auth?.userId}:\${kind}\`); const total = reactionKeys.filter((key) => key.endsWith(\`:\${kind}\`)).length; return <button key={kind} type="button" aria-label={\`\${kind === "up" ? "Thumbs up" : "Thumbs down"}: \${total}; \${mine ? "active" : "inactive"}\`} aria-pressed={mine} ${klass}="rounded-full border border-amber-800 px-3 py-1" onClick={() => toggle.run({ messageId: message.id, kind })}>{emoji} {total}</button>; })}</div></Card>;
 }
 
 function applyJourneyEvent(current, event) {
