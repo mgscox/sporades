@@ -770,17 +770,20 @@ test("sporades create rejects unsupported Vue toolchains and admits every comple
   });
 });
 
-test("sporades create admits Svelte Vite blank and todo while rejecting later templates and esbuild", async () => {
+test("sporades create admits the complete Svelte Vite template set while rejecting esbuild", async () => {
   await withTempDir(async (dir) => {
-    for (const template of ["blank", "todo"]) {
+    for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire"]) {
       const result = await runCli(["create", `svelte-${template}`, "--framework", "svelte", "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
       assert.equal(result.code, 0, `${template}: ${result.stderr || result.stdout}`);
       const project = path.join(dir, `svelte-${template}`);
-      const [config, html, entry, app, packageJson] = await Promise.all([
+      const [config, html, entry, app, client, agents, readme, packageJson] = await Promise.all([
         readFile(path.join(project, "sporades.json"), "utf8").then(JSON.parse),
         readFile(path.join(project, "index.html"), "utf8"),
         readFile(path.join(project, "client", "index.ts"), "utf8"),
         readFile(path.join(project, "client", "App.svelte"), "utf8"),
+        readFile(path.join(project, "client", "sporades.ts"), "utf8"),
+        readFile(path.join(project, "AGENTS.md"), "utf8"),
+        readFile(path.join(project, "README.md"), "utf8"),
         readFile(path.join(project, "package.json"), "utf8").then(JSON.parse),
       ]);
       assert.deepEqual(config.client, { framework: "svelte", toolchain: "vite" });
@@ -788,22 +791,30 @@ test("sporades create admits Svelte Vite blank and todo while rejecting later te
       assert.match(entry, /mount\(App/);
       assert.match(app, /<script lang="ts">/);
       assert.match(app, /<style>/);
+      assert.match(client, /createSvelteStores/);
+      assert.match(agents, /client\/App\.svelte.*Svelte component UI/);
+      assert.match(readme, /native component in `client\/App\.svelte`/);
       assert.equal(packageJson.dependencies.svelte, "^5.0.0");
       assert.equal(packageJson.devDependencies["@sveltejs/vite-plugin-svelte"], "^5.1.1");
       assert.equal(packageJson.dependencies.react, undefined);
       assert.equal(packageJson.dependencies.vue, undefined);
+      assert.equal((await readdir(path.join(project, "client"), { recursive: true })).some((file) => String(file).endsWith(".tsx")), false);
+      if (template === "guestbook") assert.match(app, /queryStore\("entries"\).*mutationStore\("sign"\)/s);
+      if (template === "photo-library") assert.match(app, /files\.upload.*files\.publicUrl.*files\.revokePublicUrl/s);
+      if (template === "campfire") {
+        assert.match(app, /preferences\.get.*preferences\.update/s);
+        assert.match(app, /journey\.enable/);
+        assert.match(app, /journey\.set/);
+        assert.match(app, /journey\.disable/);
+        assert.match(app, /seedCampfire.*registerFixture/s);
+        assert.doesNotMatch(html, /tailwindcss/);
+      }
     }
     const esbuild = await runCli(["create", "svelte-esbuild", "--framework", "svelte", "--toolchain", "esbuild", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(esbuild.code, 1);
     assert.deepEqual(JSON.parse(esbuild.stdout).error, {
       message: "Unsupported client framework/toolchain combination: svelte/esbuild",
       hint: "Use Svelte with Vite.",
-    });
-    const guestbook = await runCli(["create", "svelte-guestbook", "--framework", "svelte", "--template", "guestbook", "--no-install", "--no-git", "--json"], { cwd: dir });
-    assert.equal(guestbook.code, 1);
-    assert.deepEqual(JSON.parse(guestbook.stdout).error, {
-      message: "Unsupported Svelte template: guestbook",
-      hint: "Use the blank or todo template with Svelte; complete template parity lands separately.",
     });
   });
 });

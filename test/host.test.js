@@ -4206,6 +4206,9 @@ for (const { framework, template } of [
   { framework: "vue", template: "campfire" },
   { framework: "svelte", template: "blank" },
   { framework: "svelte", template: "todo" },
+  { framework: "svelte", template: "guestbook" },
+  { framework: "svelte", template: "photo-library" },
+  { framework: "svelte", template: "campfire" },
 ]) test(`sporades host push archives the complete normalized ${framework} Vite ${template} public tree`, async () => {
   await withTempDir(async (dir) => {
     const configDir = path.join(dir, "machine-config");
@@ -4261,7 +4264,10 @@ for (const { framework, template } of [
       blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
       "photo-library": /Photo Library/, campfire: /Campfire/,
     }[template]);
-    if (framework === "svelte") assert.match(publicText, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+    if (framework === "svelte") assert.match(publicText, {
+      blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
+      "photo-library": /Photo Library/, campfire: /Campfire/,
+    }[template]);
   });
 });
 

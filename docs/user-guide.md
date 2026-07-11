@@ -202,6 +202,9 @@ sporades create vue-guestbook --template guestbook --framework vue
 sporades create vue-gallery --template photo-library --framework vue
 sporades create vue-campfire --template campfire --framework vue
 sporades create svelte-todo --template todo --framework svelte
+sporades create svelte-guestbook --template guestbook --framework svelte
+sporades create svelte-gallery --template photo-library --framework svelte
+sporades create svelte-campfire --template campfire --framework svelte
 sporades create no-install-yet --no-install --no-git
 ```
 
@@ -212,7 +215,7 @@ Available client frameworks are `react`, `preact`, `vue`, `svelte`, and framewor
 Vanilla TypeScript. esbuild remains the React and Preact default client
 toolchain, and they can explicitly select Vite with `--toolchain vite`. Vue
 selects Vite and supports the complete template set. Svelte also selects Vite
-and currently admits `blank` and `todo`; Vanilla TypeScript remains on esbuild.
+and supports the complete template set; Vanilla TypeScript remains on esbuild.
 
 React/Vite and Preact/Vite scaffolds reference `/client/index.tsx`; Vue/Vite
 and Svelte/Vite reference `/client/index.ts` and compile native `client/App.vue`

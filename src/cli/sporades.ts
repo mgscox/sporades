@@ -414,9 +414,6 @@ function parseCreateArgs(args: string[]): LooseRecord {
   if (!SUPPORTED_TEMPLATES.has(template)) {
     throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
   }
-  if (framework === "svelte" && template !== "blank" && template !== "todo") {
-    throw commandError(`Unsupported Svelte template: ${template}`, "Use the blank or todo template with Svelte; complete template parity lands separately.");
-  }
   return {
     name,
     framework,

@@ -786,6 +786,9 @@ for (const { framework, template } of [
   { framework: "vue", template: "campfire" },
   { framework: "svelte", template: "blank" },
   { framework: "svelte", template: "todo" },
+  { framework: "svelte", template: "guestbook" },
+  { framework: "svelte", template: "photo-library" },
+  { framework: "svelte", template: "campfire" },
 ]) test(`sporades deploy mounts the complete normalized ${framework} Vite ${template} public tree`, async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(
@@ -819,7 +822,10 @@ for (const { framework, template } of [
       blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
       "photo-library": /Photo Library/, campfire: /Campfire/,
     }[template]);
-    if (framework === "svelte") assert.match(output, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+    if (framework === "svelte") assert.match(output, {
+      blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
+      "photo-library": /Photo Library/, campfire: /Campfire/,
+    }[template]);
     const runCall = firstDockerRunCall(await docker.calls());
     assertVolume(runCall.args, `${publicRoot}:/app/public:ro`);
   });

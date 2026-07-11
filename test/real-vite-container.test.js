@@ -54,6 +54,9 @@ for (const { framework, template } of [
   { framework: "vue", template: "campfire" },
   { framework: "svelte", template: "blank" },
   { framework: "svelte", template: "todo" },
+  { framework: "svelte", template: "guestbook" },
+  { framework: "svelte", template: "photo-library" },
+  { framework: "svelte", template: "campfire" },
 ]) test(`real Container serves a complete ${framework} Vite ${template} public tree from the actual Base image`, {
   skip: enabled ? false : "Set SPORADES_REAL_VITE_CONTAINER=1 to run the disposable Docker acceptance test.",
   timeout: 300_000,
@@ -148,7 +151,7 @@ for (const { framework, template } of [
       fetched[kind] = { path: publicPath, bytes: Buffer.byteLength(body), mime: response.headers.get("content-type") };
     }
     const output = bodies.join("\n");
-    assert.match(output, framework === "vue" ? {
+    assert.match(output, ["vue", "svelte"].includes(framework) ? {
       blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
       "photo-library": /Photo Library/, campfire: /Campfire/,
     }[template] : template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);

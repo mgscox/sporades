@@ -13,6 +13,7 @@ import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-servic
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
+import { mountSvelteTemplate } from "./support/svelte-template-harness.js";
 import { mountVueTemplate } from "./support/vue-template-harness.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 import { buildClientToolchain } from "../dist/client-toolchain.js";
@@ -370,6 +371,14 @@ async function createVueCampfire(dir, name) {
   assert.equal(created.code, 0, created.stderr);
   const projectDir = path.join(dir, name);
   await installVue(projectDir);
+  return projectDir;
+}
+
+async function createSvelteTemplate(dir, name, template) {
+  const created = await runCli(["create", name, "--template", template, "--framework", "svelte", "--no-install", "--no-git", "--json"], { cwd: dir });
+  assert.equal(created.code, 0, created.stderr);
+  const projectDir = path.join(dir, name);
+  await installSvelte(projectDir);
   return projectDir;
 }
 
@@ -1268,14 +1277,14 @@ test("complete Vue exemplars start through Sporades Dev with normalized Vite ass
   });
 });
 
-for (const { template, marker } of [{ template: "blank", marker: "Blank Sporades Capsule" }, { template: "todo", marker: "Sporades Todos" }]) test(`Svelte Vite compiles the ${template} component into an isolated normalized public tree`, async () => {
+for (const { template, marker } of [{ template: "blank", marker: "Blank Sporades Capsule" }, { template: "todo", marker: "Sporades Todos" }, { template: "guestbook", marker: "Leave a note from this island" }, { template: "photo-library", marker: "Photo Library" }, { template: "campfire", marker: "Campfire" }]) test(`Svelte Vite compiles the ${template} component into an isolated normalized public tree`, async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", `svelte-${template}-build`, "--template", template, "--framework", "svelte", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(created.code, 0, created.stderr);
     const projectDir = path.join(dir, `svelte-${template}-build`);
     await installSvelte(projectDir);
     await writeFile(path.join(projectDir, ".env"), "VITE_SVELTE_LEAK=browser-secret\n");
-    await writeFile(path.join(projectDir, ".env.sporades.server"), "SVELTE_SERVER_ONLY=server-secret\n");
+    await writeFile(path.join(projectDir, ".env.sporades.server"), `${template === "photo-library" ? "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n" : ""}SVELTE_SERVER_ONLY=server-secret\n`);
     await writeFile(path.join(projectDir, "vite.config.ts"), 'throw new Error("svelte-vite-config-loaded");\n');
     await writeFile(path.join(projectDir, "postcss.config.mjs"), 'throw new Error("svelte-postcss-config-loaded");\n');
     const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
@@ -1292,6 +1301,176 @@ for (const { template, marker } of [{ template: "blank", marker: "Blank Sporades
       await bundle.releasePublicTreeLease();
       await discardPublicTree(bundle.staticFiles.publicTree);
     }
+  });
+});
+
+test("Svelte Guestbook renders query state and drives mutation loading, errors, and updates", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createSvelteTemplate(dir, "svelte-guestbook-behavior", "guestbook");
+    let finishSign;
+    const signCalls = [];
+    const sign = { loading: false, error: null, async run(body) {
+      signCalls.push(body);
+      globalThis.__SPORADES_SVELTE_TEMPLATE_HARNESS__.stores.mutations.sign.set({ ...sign, loading: true });
+      const result = await new Promise((resolve) => { finishSign = resolve; });
+      sign.error = result.error;
+      globalThis.__SPORADES_SVELTE_TEMPLATE_HARNESS__.stores.mutations.sign.set({ ...sign, loading: false });
+      return result;
+    } };
+    const harness = await mountSvelteTemplate(projectDir, {
+      session: sessionState(), queries: { entries: { loading: true, data: null, error: null } }, mutations: { sign },
+      auth: authStub(), files: {}, journey: {}, preferences: {},
+    });
+    try {
+      assert.match(harness.text(), /Loading/);
+      harness.setQuery("entries", { loading: false, data: null, error: new Error("Guestbook unavailable") });
+      await harness.settle();
+      assert.match(harness.text(), /Guestbook unavailable/);
+      harness.setQuery("entries", { loading: false, error: null, data: [{ id: "entry-1", body: "All for one", authorName: "Athos", authorPicture: "", createdAt: "2026-07-11T12:00:00.000Z" }] });
+      await harness.settle();
+      assert.match(harness.text(), /Athos.*All for one/s);
+
+      const textarea = harness.find("textarea");
+      await harness.setValue(textarea, "  One for all  ");
+      await harness.trigger(harness.find("form"), "submit");
+      assert.deepEqual(signCalls, ["One for all"]);
+      assert.equal(harness.find("form button").disabled, true);
+      finishSign({ data: null, error: new Error("Signing failed") });
+      await harness.settle();
+      assert.match(harness.text(), /Signing failed/);
+      assert.equal(textarea.value, "  One for all  ");
+
+      await harness.trigger(harness.find("form"), "submit");
+      finishSign({ data: null, error: null });
+      await harness.settle();
+      assert.equal(textarea.value, "");
+    } finally {
+      await harness.unmount();
+      assert.equal(harness.state.counts.session.active, 0);
+      assert.equal(harness.state.counts.queries.entries.active, 0);
+      assert.equal(harness.state.counts.mutations.sign.active, 0);
+    }
+  });
+});
+
+test("Svelte Photo Library keeps authenticated uploads private and drives explicit publication", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createSvelteTemplate(dir, "svelte-photo-behavior", "photo-library");
+    const calls = [];
+    const photo = { id: "photo-private", title: "Secret crown", status: "private", fileId: "file-private", imageUrl: "", publicUrlId: "", isPublic: false };
+    const personal = { loading: false, data: [photo], error: null };
+    const mutation = (name) => ({ loading: false, error: null, async run(...args) {
+      calls.push([name, ...args]);
+      if (name === "updatePhotoIsPublic") photo.isPublic = args[1];
+      if (name === "updatePhotoPublicUrlId") photo.publicUrlId = args[1];
+      if (name === "updatePhotoImageUrl") photo.imageUrl = args[1];
+      globalThis.__SPORADES_SVELTE_TEMPLATE_HARNESS__.stores.queries.personalPhotos.set({ ...personal, data: [{ ...photo }] });
+      return { data: null, error: null };
+    } });
+    const mutations = Object.fromEntries(["recordPhoto", "updatePhotoIsPublic", "updatePhotoImageUrl", "updatePhotoPublicUrlId"].map((name) => [name, mutation(name)]));
+    const harness = await mountSvelteTemplate(projectDir, {
+      session: sessionState(), queries: { publicPhotos: { loading: false, data: [], error: null }, personalPhotos: personal }, mutations,
+      auth: authStub(), journey: {}, preferences: {},
+      files: {
+        async upload(file) { calls.push(["upload", file.name]); return { id: `file-${file.name}`, name: file.name, type: file.type, size: file.size }; },
+        async publicUrl(fileId) { calls.push(["publicUrl", fileId]); return { id: `url-${fileId}`, url: `https://files.example/${fileId}` }; },
+        async revokePublicUrl(id) { calls.push(["revokePublicUrl", id]); return { data: null, error: null }; },
+      },
+    });
+    try {
+      const fileInput = harness.find('input[type="file"]');
+      await harness.trigger(fileInput, "change", { files: [{ name: "guest.png", type: "image/png", size: 10 }] });
+      await harness.trigger(harness.find("form"), "submit");
+      assert(calls.some(([name]) => name === "publicUrl"));
+
+      calls.length = 0;
+      harness.setSession({ ...sessionState(), auth: { userId: "google-user", provider: "google", displayName: "Aramis", isGuest: false } });
+      await harness.settle();
+      await harness.trigger(fileInput, "change", { files: [{ name: "private.png", type: "image/png", size: 11 }] });
+      await harness.trigger(harness.find("form"), "submit");
+      assert(calls.some(([name]) => name === "upload"));
+      assert.equal(calls.some(([name]) => name === "publicUrl"), false);
+      assert.match(harness.text(), /Photo saved privately.*My library.*Secret crown/s);
+
+      calls.length = 0;
+      await harness.trigger([...harness.findAll("button")].find((button) => button.textContent === "Make public"), "click");
+      assert.deepEqual(calls.map(([name]) => name), ["publicUrl", "updatePhotoImageUrl", "updatePhotoPublicUrlId", "updatePhotoIsPublic"]);
+      calls.length = 0;
+      await harness.trigger([...harness.findAll("button")].find((button) => button.textContent === "Make private"), "click");
+      assert.deepEqual(calls.map(([name]) => name), ["revokePublicUrl", "updatePhotoIsPublic", "updatePhotoImageUrl", "updatePhotoPublicUrlId"]);
+      assert.doesNotMatch(harness.text(), /dummy-secret|GOOGLE_CLIENT_SECRET|credential/i);
+    } finally { await harness.unmount(); }
+  });
+});
+
+test("Svelte Campfire executes messages, preferences, consented TTL activity, and same-store cleanup", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createSvelteTemplate(dir, "svelte-campfire-behavior", "campfire");
+    const calls = [];
+    let journeySubscriber = () => {};
+    const state = campfireHarnessState(calls, { subscribe(callback) { journeySubscriber = callback; return { unsubscribe() { calls.push(["unsubscribe"]); } }; } });
+    state.session.auth = { userId: "athos-user", provider: "email", displayName: "Athos", isGuest: false };
+    const harness = await mountSvelteTemplate(projectDir, state);
+    try {
+      assert(calls.some(([name]) => name === "preferences.get"));
+      assert(calls.some(([name, value]) => name === "journey.set" && value.status === "reading" && value.ttlSeconds === 12));
+      assert.equal(harness.find('input[type="checkbox"]').checked, true);
+      assert.equal(harness.state.counts.session.started, 2, "auto-subscription and identity watcher share one store identity");
+
+      journeySubscriber({ data: { type: "snapshot", states: [{ sessionId: "p1", userId: "porthos-user", status: "reading", metadata: { channel: "ideas" } }] } });
+      await harness.settle();
+      assert.match(harness.text(), /A Musketeer is reading #ideas/);
+      await harness.setValue(harness.find("#message"), "Protect the crown");
+      assert(calls.some(([name, value]) => name === "journey.set" && value.status === "typing" && value.ttlSeconds === 4));
+      await harness.trigger(harness.find("form"), "submit");
+      assert(calls.some(([name, input]) => name === "sendMessage" && input.body === "Protect the crown"));
+      assert(calls.some(([name, value]) => name === "journey.set" && value.status === "posted" && value.ttlSeconds === 8));
+      const share = harness.find('input[type="checkbox"]');
+      await harness.trigger(share, "change", { checked: false });
+      assert(calls.some(([name, value]) => name === "preferences.update" && value.campfireShareActivity === false));
+      harness.setSession({ ...sessionState(), auth: { userId: "porthos-user", provider: "email", displayName: "Porthos", isGuest: false } });
+      await harness.settle();
+      assert(calls.some(([name]) => name === "journey.disable"));
+    } finally {
+      await harness.unmount();
+      assert.equal(harness.state.counts.session.active, 0);
+      assert.equal(harness.state.counts.session.stopped, 2, "both same-store subscriptions dispose deterministically");
+    }
+  });
+});
+
+test("Svelte Campfire serializes direct consent against an auth successor", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createSvelteTemplate(dir, "svelte-campfire-race", "campfire");
+    const calls = [];
+    let releaseEnable;
+    let markEnableStarted;
+    const enableStarted = new Promise((resolve) => { markEnableStarted = resolve; });
+    const state = campfireHarnessState(calls, {
+      async enable(options) {
+        const userId = globalThis.__SPORADES_SVELTE_TEMPLATE_HARNESS__.stores.session.get().auth?.userId;
+        calls.push(["journey.enable", options, userId]);
+        markEnableStarted();
+        await new Promise((resolve) => { releaseEnable = resolve; });
+        return { data: null, error: null };
+      },
+    });
+    state.session.auth = { userId: "athos-user", provider: "email", displayName: "Athos", isGuest: false };
+    state.preferences.get = async () => ({ data: { preferences: { campfireShareActivity: false } }, error: null });
+    const harness = await mountSvelteTemplate(projectDir, state);
+    try {
+      const share = harness.find('input[type="checkbox"]');
+      await harness.trigger(share, "change", { checked: true });
+      await enableStarted;
+      harness.setSession({ ...sessionState(), auth: { userId: "porthos-user", provider: "email", displayName: "Porthos", isGuest: false } });
+      await harness.settle();
+      assert.equal(share.checked, false);
+      releaseEnable();
+      await harness.settle();
+      assert.equal(share.checked, false);
+      assert.equal(calls.filter(([name]) => name === "journey.disable").length, 1);
+      assert.equal(calls.some(([name]) => name === "preferences.update"), false);
+    } finally { await harness.unmount(); }
   });
 });
 
@@ -1867,7 +2046,7 @@ for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good
   });
 });
 
-for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good Svelte ${template} output and recovers with full-page refresh`, async () => {
+for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire"]) test(`sporades dev preserves last-good Svelte ${template} output and recovers with full-page refresh`, async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", "svelte-dev", "--template", template, "--framework", "svelte", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(created.code, 0, created.stderr);
@@ -1877,9 +2056,10 @@ for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good
     const config = JSON.parse(await readFile(configPath, "utf8"));
     config.dev.port = 0;
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    if (template === "photo-library") await writeFile(path.join(projectDir, ".env.sporades.server"), "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n");
     const appPath = path.join(projectDir, "client", "App.svelte");
     const original = await readFile(appPath, "utf8");
-    const marker = template === "todo" ? "Sporades Todos" : "Blank Sporades Capsule";
+    const marker = { blank: "Blank Sporades Capsule", todo: "Sporades Todos", guestbook: "Leave a note from this island", "photo-library": "Photo Library", campfire: "Campfire" }[template];
     const child = startCli(["dev", "--json"], { cwd: projectDir });
     let socket;
     try {

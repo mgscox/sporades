@@ -88,7 +88,7 @@ export function scaffoldFiles(options: { sporadesDependency?: any; template?: an
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${escapeHtml(options.name)}</title>${options.template === "campfire" && framework !== "vue" ? `
+    <title>${escapeHtml(options.name)}</title>${options.template === "campfire" && !["vue", "svelte"].includes(framework) ? `
     <script src="https://cdn.tailwindcss.com"></script>` : ""}
   </head>
   <body>
@@ -103,12 +103,22 @@ export function scaffoldFiles(options: { sporadesDependency?: any; template?: an
 
 function svelteTemplateFiles(options: { name: any; template?: any }, files: Record<string, string>) {
   const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));
+  const apps: Record<string, () => string> = {
+    todo: svelteTodoAppTemplate,
+    guestbook: svelteGuestbookAppTemplate,
+    "photo-library": sveltePhotoLibraryAppTemplate,
+    campfire: svelteCampfireAppTemplate,
+  };
+  const readme = `${sharedFiles["README.md"] ?? ""}\n## Svelte client\n\nThe browser mounts from \`client/index.ts\`; author the native component in \`client/App.svelte\` and bind Sporades state through the stores in \`client/sporades.ts\`.\n`.replace(
+    /Tailwind is loaded from its browser CDN[^\n]+\n/,
+    "Campfire's Svelte component owns its CSS and needs no browser CDN or React component package.\n",
+  );
   return {
     ...sharedFiles,
-    "README.md": `${sharedFiles["README.md"] ?? ""}\n## Svelte client\n\nThe browser mounts from \`client/index.ts\`; author the native component in \`client/App.svelte\` and bind Sporades state through the stores in \`client/sporades.ts\`.\n`,
+    "README.md": readme,
     "client/index.ts": `import { mount } from "svelte";\nimport App from "./App.svelte";\n\nmount(App, { target: document.getElementById("app")! });\n`,
     "client/sporades.ts": `import { createSvelteStores } from "sporades/client";\n\nexport const { authStore, mutationStore, queryStore } = createSvelteStores();\n`,
-    "client/App.svelte": options.template === "todo" ? svelteTodoAppTemplate() : svelteBlankAppTemplate(),
+    "client/App.svelte": (apps[options.template] ?? svelteBlankAppTemplate)(),
     "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#ff3e00"/></svg>\n`,
   };
 }
@@ -163,6 +173,99 @@ function svelteTodoAppTemplate() {
   .mark { width: 2rem; height: 2rem; }
   li { margin-block: .5rem; }
 </style>
+`;
+}
+
+function svelteGuestbookAppTemplate() {
+  return `<script lang="ts">
+  import { auth } from "sporades/client";
+  import { authStore, mutationStore, queryStore } from "./sporades";
+  import mark from "./sporades-mark.svg";
+  const session = authStore();
+  const entries = queryStore("entries");
+  const sign = mutationStore("sign");
+  const maxLength = 280;
+  let body = "";
+  let authError = "";
+  async function signIn() { authError = ""; const result = await auth.signIn("google"); if (result.error) authError = result.error.message; }
+  async function signOut() { authError = ""; const result = await auth.signOut(); if (result.error) authError = result.error.message; }
+  async function submit() { const message = body.trim(); if (!message || message.length > maxLength) return; const result = await $sign.run(message); if (!result.error) body = ""; }
+  function initials(name: string) { return name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?"; }
+</script>
+
+<main class="shell">
+  <section class="intro"><div><img class="mark" src={mark} alt="" /><p class="eyebrow">Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div class="auth-panel"><span>{$session.auth?.displayName ?? "Anonymous"}</span>{#if !$session.isAuthenticated()}<button type="button" onclick={signIn}>Sign in with Google</button>{:else}<button class="secondary" type="button" onclick={signOut}>Sign out</button>{/if}{#if authError}<p class="error">{authError}</p>{/if}</div></section>
+  <form onsubmit={(event) => { event.preventDefault(); submit(); }}><textarea bind:value={body} maxlength={maxLength} placeholder="Write something kind, sharp, or strangely memorable."></textarea><div class="row"><span>{maxLength - body.length} characters left</span><button disabled={!body.trim() || $sign.loading}>Sign guestbook</button></div>{#if $sign.error}<p class="error">{$sign.error.message}</p>{/if}</form>
+  {#if $entries.loading}<p>Loading…</p>{:else if $entries.error}<p class="error" role="alert">{$entries.error.message}</p>{:else}<section class="entries">{#each $entries.data ?? [] as entry (entry.id)}<article><span class="badge">{entry.authorPicture ? "" : initials(entry.authorName)}</span>{#if entry.authorPicture}<img src={entry.authorPicture} alt="" />{/if}<div><strong>{entry.authorName}</strong><time datetime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time><p>{entry.body}</p></div></article>{/each}</section>{/if}
+</main>
+<style>
+  :global(body){margin:0;background:#f6f3ed;color:#25211b;font-family:system-ui,sans-serif}.shell{width:min(920px,calc(100% - 32px));margin:auto;padding:48px 0}.intro,.row,.auth-panel{display:flex;justify-content:space-between;gap:16px;align-items:center}.mark{width:2rem}.eyebrow{color:#7a4b28;font-weight:700}h1{font-size:clamp(2rem,6vw,4.8rem);margin:0}form,article{background:white;border:1px solid #ded6ca;border-radius:8px;padding:16px;margin-top:24px}textarea{width:100%;min-height:116px;box-sizing:border-box}button{border:0;border-radius:8px;background:#176b61;color:white;padding:12px 16px;font-weight:700}.secondary{background:#51483d}.entries{display:grid;gap:12px}.entries article{display:grid;grid-template-columns:48px 1fr;gap:14px}.badge{display:grid;place-items:center;background:#25211b;color:white;border-radius:50%;width:48px;height:48px}.error{color:#a33b28}time{margin-left:10px;color:#73695b}
+</style>
+`;
+}
+
+function sveltePhotoLibraryAppTemplate() {
+  return `<script lang="ts">
+  import { auth, files } from "sporades/client";
+  import { authStore, mutationStore, queryStore } from "./sporades";
+  import mark from "./sporades-mark.svg";
+  const session = authStore();
+  const publicPhotos = queryStore("publicPhotos"); const personalPhotos = queryStore("personalPhotos");
+  const recordPhoto = mutationStore("recordPhoto"); const updatePhotoIsPublic = mutationStore("updatePhotoIsPublic"); const updatePhotoImageUrl = mutationStore("updatePhotoImageUrl"); const updatePhotoPublicUrlId = mutationStore("updatePhotoPublicUrlId");
+  let title = "", selectedFile: File | null = null, publish = false, message = "";
+  $: isGoogleUser = $session.auth?.provider === "google";
+  async function signIn() { message = ""; const result = await auth.signIn("google"); if (result.error) message = result.error.message; }
+  async function signOut() { message = ""; const result = await auth.signOut(); if (result.error) message = result.error.message; }
+  async function submit() { if (!selectedFile) return; message = "Uploading..."; try { const file = await files.upload(selectedFile); const shouldPublish = !$session.isAuthenticated() || publish; const publicUrl = shouldPublish ? await files.publicUrl(file.id,{noExpiry:true}) : null; const result = await $recordPhoto.run({title,file,isPublic:shouldPublish,publicUrl}); if (result.error) { message=result.error.message; return; } title="";selectedFile=null;publish=false;message=shouldPublish?"Photo added to the public gallery.":"Photo saved privately."; } catch(error){message=error instanceof Error?error.message:"Upload failed.";} }
+  async function makePublic(photo: any){ try{const publicUrl=await files.publicUrl(photo.fileId,{noExpiry:true});await $updatePhotoImageUrl.run(photo.id,publicUrl.url);await $updatePhotoPublicUrlId.run(photo.id,publicUrl.id);await $updatePhotoIsPublic.run(photo.id,true);}catch(error){message=error instanceof Error?error.message:"Could not publish photo.";} }
+  async function makePrivate(photo: any){ try{if(photo.publicUrlId)await files.revokePublicUrl(photo.publicUrlId);await $updatePhotoIsPublic.run(photo.id,false);await $updatePhotoImageUrl.run(photo.id,"");await $updatePhotoPublicUrlId.run(photo.id,"");}catch(error){message=error instanceof Error?error.message:"Could not hide photo.";} }
+</script>
+<main class="shell"><header><div><img class="mark" src={mark} alt=""/><p>Sporades Storage</p><h1>Photo Library</h1></div><div><span>{$session.auth?.displayName??"Anonymous"}</span>{#if isGoogleUser}<button onclick={signOut}>Sign out</button>{:else}<button onclick={signIn}>Sign in with Google</button>{/if}</div></header>
+<form onsubmit={(event)=>{event.preventDefault();submit();}}><input bind:value={title} placeholder="Caption"/><input type="file" accept="image/*" onchange={(event)=>selectedFile=event.currentTarget.files?.[0]??null}/><label><input type="checkbox" bind:checked={publish} disabled={!$session.isAuthenticated()}/>{$session.isAuthenticated()?"Publish to gallery":"Anonymous uploads are public"}</label><button disabled={!selectedFile||$recordPhoto.loading}>Upload photo</button>{#if message}<p>{message}</p>{/if}</form>
+<section><h2>Public gallery</h2><div class="grid">{#each $publicPhotos.data??[] as photo(photo.id)}<article><img src={photo.imageUrl} alt={photo.title}/><strong>{photo.title}</strong><span>{photo.ownerName}</span></article>{/each}</div></section>
+{#if isGoogleUser}<section><h2>My library</h2>{#each $personalPhotos.data??[] as photo(photo.id)}<article class="library"><div><strong>{photo.title}</strong><span>{photo.status}</span></div>{#if photo.isPublic}<button onclick={()=>makePrivate(photo)}>Make private</button>{:else}<button onclick={()=>makePublic(photo)}>Make public</button>{/if}</article>{/each}</section>{/if}</main>
+<style>:global(body){margin:0;background:#f7f7f2;font-family:system-ui,sans-serif}.shell{width:min(1080px,calc(100% - 32px));margin:auto;padding:40px 0}header,header div,form,.library{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.mark{width:2rem}h1{font-size:clamp(2.2rem,7vw,5rem);margin:0}form,.library{background:white;border:1px solid #d8ddd2;border-radius:8px;padding:14px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}.grid article{background:white}.grid img{width:100%;aspect-ratio:4/3;object-fit:cover}button{background:#245f73;color:white;border:0;border-radius:8px;padding:12px}</style>
+`;
+}
+
+function svelteCampfireAppTemplate() {
+  return `<script lang="ts">
+  import { onMount } from "svelte";
+  import { auth, journey, preferences } from "sporades/client";
+  import { authStore, mutationStore, queryStore } from "./sporades";
+  import { createTypingPublisher } from "./journey-typing";
+  import mark from "./sporades-mark.svg";
+  const session=authStore(), profiles=queryStore("profiles"), general=queryStore("messagesGeneral"), ideas=queryStore("messagesIdeas"), random=queryStore("messagesRandom"), crown=queryStore("messagesProtectTheCrown");
+  const sendMessage=mutationStore("sendMessage"),toggleReaction=mutationStore("toggleReaction"),seedCampfire=mutationStore("seedCampfire"),registerFixture=mutationStore("registerFixture");
+  const musketeers=[{key:"athos",name:"Athos",email:"athos@campfire.example"},{key:"porthos",name:"Porthos",email:"porthos@campfire.example"},{key:"aramis",name:"Aramis",email:"aramis@campfire.example"},{key:"dartagnan",name:"d'Artagnan",email:"dartagnan@campfire.example"}];
+  const channels=["general","ideas","random","protect-the-crown"],password="all-for-one-campfire";
+  let channel="general",draft="",notice="",sharing=false,activities:any[]=[],fixturesPrepared=false,fixturePreparationActive=false;
+  $: messages=channel==="general"?$general:channel==="ideas"?$ideas:channel==="random"?$random:$crown;
+  $: if(!fixturesPrepared&&Array.isArray($profiles.data)){fixturesPrepared=true;if(isLocalDemoOrigin())void prepareFixtures(musketeers.filter((person)=>!new Set(($profiles.data??[]).map((profile:any)=>profile.key)).has(person.key)));}
+  const typingPublisher=createTypingPublisher((state)=>journey.set(state));
+  let generation=0,owner:number|null=null,tail=Promise.resolve(),previousUserId:string|undefined;
+  const current=(value:number,userId:string)=>value===generation&&$session.auth?.userId===userId;
+  async function lane<T>(action:()=>Promise<T>){const before=tail;let release=()=>{};tail=new Promise<void>((resolve)=>release=resolve);await before;try{return await action();}finally{release();}}
+  async function retire(expected:number|null=null){typingPublisher.dispose();sharing=false;if(owner===null||(expected!==null&&owner!==expected))return;owner=null;const result=await journey.disable();if(result?.error)notice=result.error.message;}
+  async function enable(value:number,userId:string,expose=true){const result=await journey.enable({capture:{navigation:false,focus:false,interactions:false}});if(result.error){notice=result.error.message;return false;}owner=value;if(!current(value,userId)){await retire(value);return false;}const published=await journey.set({status:"reading",metadata:{channel},ttlSeconds:12});if(published?.error){notice=published.error.message;await retire(value);return false;}if(!current(value,userId)){await retire(value);return false;}if(expose)sharing=true;return true;}
+  async function authChanged(userId:string|undefined,oldUserId:string|undefined){const value=++generation;await lane(async()=>{if(oldUserId&&oldUserId!==userId)await retire();if(!userId||$session.auth?.isGuest||fixturePreparationActive||!current(value,userId))return;const stored=await preferences.get();if(!current(value,userId)||stored.error||stored.data.preferences.campfireShareActivity!==true)return;if(await enable(value,userId)&&current(value,userId))notice="Activity sharing restored for this Musketeer.";});}
+  function isLocalDemoOrigin(hostname=window.location.hostname){return["localhost","127.0.0.1","::1"].includes(hostname);}
+  async function prepareFixtures(people=musketeers){fixturePreparationActive=true;++generation;await lane(()=>retire());for(const person of people){let result=await auth.signUp("email",{email:person.email,password,name:person.name});if(result.error&&/already|exists|registered/i.test(result.error.message))result=await auth.signIn("email",{email:person.email,password});if(result.error){notice="Could not prepare "+person.name+": "+result.error.message;fixturePreparationActive=false;return;}await $registerFixture.run(person.key);await lane(()=>retire());await auth.signOut();}fixturePreparationActive=false;const seeded=await $seedCampfire.run();notice=seeded.error?seeded.error.message:"Development-only fixtures ready.";}
+  async function setShare(enabled:boolean){const userId=$session.auth?.userId,value=++generation;sharing=false;if(!userId){notice="Sign in before sharing activity.";return;}await lane(async()=>{if(!current(value,userId))return;if(enabled){if(!await enable(value,userId,false)||!current(value,userId)){await retire(value);return;}}else{await retire();if(!current(value,userId))return;}const saved=await preferences.update({campfireShareActivity:enabled});if(saved?.error){notice=saved.error.message;if(enabled)await retire(value);return;}if(!current(value,userId)){if(enabled)await retire(value);return;}sharing=enabled;});}
+  async function choose(next:string){typingPublisher.dispose();channel=next;if(sharing)await journey.set({status:"reading",metadata:{channel:next},ttlSeconds:12});}
+  function compose(){if(sharing)typingPublisher.input(draft,channel);}
+  async function submit(){const result=await $sendMessage.run({channel,body:draft});if(result.error){notice=result.error.message;return;}draft="";if(sharing){typingPublisher.dispose();await journey.set({status:"posted",metadata:{channel},ttlSeconds:8});}}
+  async function react(messageId:string,kind:string){const result=await $toggleReaction.run({messageId,kind});if(result.error){notice=result.error.message;return;}if(sharing)await journey.set({status:kind==="up"?"liked":"disliked",metadata:{channel},ttlSeconds:8});}
+  async function switchTo(person:any){++generation;await lane(()=>retire());await auth.signOut();const result=await auth.signIn("email",{email:person.email,password});notice=result.error?result.error.message:"Signed in as "+person.name+". Restoring activity preference…";}
+  function apply(event:any){const data=event?.data??event;if(data?.type==="snapshot")return data.states??[];if(data?.type==="removed"||data?.type==="expired")return activities.filter((item)=>item.sessionId!==data.state?.sessionId);return data?.state?[...activities.filter((item)=>item.sessionId!==data.state.sessionId),data.state]:activities;}
+  function activityText(item:any){const name=($profiles.data??[]).find((profile:any)=>profile.userId===item.userId)?.name??"A Musketeer",place=item.metadata?.channel??"campfire";return item.status==="posted"?name+" posted a message in #"+place:item.status==="liked"?name+" liked a message in #"+place:item.status==="disliked"?name+" disliked a message in #"+place:name+" is "+item.status+" #"+place;}
+  function reactionCount(message:any,kind:string){return Object.keys(message.reactions??{}).filter((key)=>key.endsWith(":"+kind)).length;}
+  onMount(()=>{const stopAuth=session.subscribe((state)=>{const userId=state.auth?.userId;if(userId!==previousUserId){const old=previousUserId;previousUserId=userId;void authChanged(userId,old);}});const stopJourney=journey.subscribe((event)=>activities=apply(event)).unsubscribe;return()=>{stopAuth();stopJourney();++generation;void lane(()=>retire());};});
+</script>
+<main class="campfire"><aside><img class="mark" src={mark} alt=""/><h1>🔥 Campfire</h1><nav>{#each channels as slug}<button class:active={channel===slug} onclick={()=>choose(slug)}># {slug}</button>{/each}</nav><p>Development-only Musketeer identities. Never expose known credentials publicly.</p></aside>
+<section class="conversation"><header><h2># {channel}</h2><p role="status">{notice}</p></header><div class="messages">{#each messages.data??[] as message(message.id)}<article><strong>{message.authorName}</strong><time>{new Date(message.createdAt).toLocaleString()}</time><p>{message.body}</p><button aria-label={"Thumbs up: "+reactionCount(message,"up")} onclick={()=>react(message.id,"up")}>👍 {reactionCount(message,"up")}</button><button aria-label={"Thumbs down: "+reactionCount(message,"down")} onclick={()=>react(message.id,"down")}>👎 {reactionCount(message,"down")}</button></article>{/each}</div><form onsubmit={(event)=>{event.preventDefault();submit();}}><input id="message" bind:value={draft} oninput={compose} placeholder={"Message #"+channel}/><button>Send</button></form></section>
+<aside><h2>What's happening</h2><label><input type="checkbox" bind:checked={sharing} onchange={(event)=>setShare(event.currentTarget.checked)}/>Share my activity</label><p>Shares reading, typing, posting, likes, dislikes, and channel. Never drafts, messages, URLs, query strings, emails, passwords, message IDs, or keystrokes.</p><ul>{#each activities as item(item.sessionId)}<li>{activityText(item)}</li>{/each}</ul><h3>Switch Musketeer</h3>{#each musketeers as person(person.key)}<button onclick={()=>switchTo(person)}>{person.name}</button>{/each}</aside></main>
+<style>:global(body){margin:0;background:#120d0a;color:#fff7ed;font-family:system-ui,sans-serif}.campfire{min-height:100vh;display:grid;grid-template-columns:240px minmax(0,1fr) 300px}.campfire>aside,.conversation>header,.conversation>form{padding:20px;background:#1b120d}.mark{width:2rem}nav,.campfire>aside{display:grid;align-content:start;gap:9px}button,input{border:1px solid #92400e;border-radius:7px;padding:9px 12px;background:#29211d;color:inherit}.active{background:#b45309}.conversation{display:flex;flex-direction:column}.messages{flex:1;padding:20px;display:grid;align-content:start;gap:14px}.messages article{padding:16px;border:1px solid #78350f;border-radius:9px}.messages time{margin-left:10px;color:#fde68a99}.conversation form{display:flex;gap:8px}.conversation input{flex:1}@media(max-width:900px){.campfire{grid-template-columns:1fr}}</style>
 `;
 }
 
