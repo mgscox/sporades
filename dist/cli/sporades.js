@@ -7,7 +7,7 @@ import { appendFile, chmod, lstat, mkdir, readdir, readFile, rm, writeFile } fro
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../bundle-pipeline.js";
-import { readPublicAsset } from "../public-tree.js";
+import { discardPublicTree, readPublicAsset } from "../public-tree.js";
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageRuntimeUser, } from "../base-image.js";
 import { ensureSealedServerEnvKeyPair, envelopeSummary, exportedEnvelope, readKeyPair, readSealedServerEnv, sealServerEnv, sealedServerEnvPaths, unsealServerEnv, writeSealedServerEnv, } from "../sealed-server-env.js";
 import { restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
@@ -1387,7 +1387,7 @@ async function startDevSession(options) {
                 return;
             }
             const rawPublicPathname = (request.url ?? "/").split("?", 1)[0];
-            const publicAsset = await readPublicAsset(bundle.staticFiles.publicDir, rawPublicPathname);
+            const publicAsset = await readPublicAsset(bundle.staticFiles.publicTree, rawPublicPathname);
             if (publicAsset) {
                 response.writeHead(200, { "content-type": publicAsset.contentType });
                 response.end(publicAsset.html
@@ -1532,24 +1532,29 @@ async function startDevSession(options) {
     process.on("unhandledRejection", onUnhandledRejection);
     process.on("uncaughtException", onUncaughtException);
     const watchers = watchDevInputs(options.projectDir, async (change) => {
+        let rebuild = null;
+        let rollbackLegacy = null;
         try {
             const nextConfig = await readProjectConfig(options.projectDir);
             const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
             const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
-            const rebuild = await createBundle(options.projectDir, nextConfig);
+            rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false });
             const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
                 wait: true,
                 emit: (data, error) => emitDevEvent(options, data, error),
-            });
+            }).catch((error) => { throw tagDevRebuildError(error, "services", nextConfig); });
             const affectsServerRuntime = change.affectsServerRuntime || (change.configChanged && configChangeAffectsServerRuntime(config, nextConfig));
+            rollbackLegacy = await rebuild.publishLegacy();
             if (affectsServerRuntime) {
-                await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, nextCapsuleServiceEnv, rebuild.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(nextConfig, session));
-                bundle = rebuild;
+                await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, nextCapsuleServiceEnv, rebuild.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(nextConfig, session)).catch((error) => { throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true }); });
                 runtimeServiceEnv = nextCapsuleServiceEnv;
                 await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
                 fatalRestartAttempts = 0;
                 websocketHub.disconnectAll();
             }
+            const previousBundle = bundle;
+            bundle = rebuild;
+            discardPublicTree(previousBundle.staticFiles.publicTree).catch(() => { });
             config = nextConfig;
             security = nextSecurity;
             emitDevEvent(options, {
@@ -1566,7 +1571,19 @@ async function startDevSession(options) {
             });
         }
         catch (error) {
-            const details = errorDetails(error);
+            let rebuildError = error;
+            if (rollbackLegacy) {
+                try {
+                    await rollbackLegacy();
+                }
+                catch (rollbackError) {
+                    rebuildError = tagDevRebuildError(rollbackError, "publish", config);
+                }
+            }
+            if (rebuild && rebuild !== bundle) {
+                await discardPublicTree(rebuild.staticFiles.publicTree).catch(() => { });
+            }
+            const details = errorDetails(rebuildError);
             runtime.database.log.emit({
                 category: "platform",
                 event: "dev.rebuild.failed",
@@ -1613,6 +1630,19 @@ async function startDevSession(options) {
     };
     process.on("SIGTERM", shutdown);
     process.on("SIGINT", shutdown);
+}
+function tagDevRebuildError(error, phase, config, options = {}) {
+    const details = errorDetails(error);
+    if (options.preserveSchemaErrors && details.message === "Unsupported Capsule schema change.") {
+        return error;
+    }
+    const tagged = (error instanceof Error
+        ? error
+        : commandError(String(error), "Fix the rebuild error and save again."));
+    tagged.phase = phase;
+    tagged.framework = config.client?.framework ?? "react";
+    tagged.toolchain = "esbuild";
+    return tagged;
 }
 async function createDevRuntime(options) {
     let database = await openDevDatabase(options.databasePath, options.serverSource, options.serverEnv, options.config, await importCapsuleDefinition(options.capsuleModuleSource), { serviceEnv: options.serviceEnv });

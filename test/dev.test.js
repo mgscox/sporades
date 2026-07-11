@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, mkdir, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -68,7 +68,9 @@ const { appendFileSync } = require("node:fs");
 const call = { args: process.argv.slice(2), cwd: process.cwd() };
 appendFileSync(process.env.FAKE_DOCKER_LOG, JSON.stringify(call) + "\\n");
 if (call.args[0] === "compose" && call.args.includes("ps")) {
-  const status = process.env.FAKE_DOCKER_COMPOSE_STATUS || "healthy";
+  const status = process.env.FAKE_DOCKER_STATUS_FILE
+    ? require("node:fs").readFileSync(process.env.FAKE_DOCKER_STATUS_FILE, "utf8").trim()
+    : process.env.FAKE_DOCKER_COMPOSE_STATUS || "healthy";
   const output = {
     Service: call.args[call.args.length - 1],
     State: status === "exited" ? "exited" : "running",
@@ -88,6 +90,7 @@ if (call.args[0] === "compose" && call.args.includes("port")) {
   await chmod(dockerPath, 0o755);
 
   return {
+    statusPath: path.join(dir, "fake-docker-status.txt"),
     env: {
       PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
       FAKE_DOCKER_LOG: logPath,
@@ -741,6 +744,50 @@ test("sporades dev injects database Capsule service connection details into serv
   });
 });
 
+test("sporades dev reports service activation failures without publishing candidate client output", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "service-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "service-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    config.services = { database: { kind: "database", engine: "libsql" } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir);
+    await writeFile(docker.statusPath, "healthy\n");
+
+    await withFakeLibsqlService(path.join(dir, "service.db"), async ({ url: serviceUrl }) => {
+      const child = startCli(["dev", "--json"], {
+        cwd: projectDir,
+        env: {
+          ...docker.env,
+          FAKE_DOCKER_STATUS_FILE: docker.statusPath,
+          FAKE_DOCKER_SERVICE_PORT: new URL(serviceUrl).port,
+        },
+      });
+      try {
+        await waitForJsonLine(child);
+        const started = await waitForJsonEvent(child, (event) => event.data?.event === "started");
+        const before = await (await fetch(`${started.data.url}/client.js`)).text();
+        await writeFile(docker.statusPath, "unhealthy\n");
+        const clientPath = path.join(projectDir, "client", "index.tsx");
+        const source = await readFile(clientPath, "utf8");
+        await writeFile(clientPath, source.replace("Blank Sporades Capsule", "Premature Service Capsule"));
+
+        const failed = await waitForJsonEvent(child, (event) => !event.ok && event.data?.event === "rebuild");
+        assert.deepEqual(failed.data.build, { phase: "services", framework: "react", toolchain: "esbuild" });
+        assert.equal(failed.error.message, "Capsule database service did not become ready.");
+        assert.equal(await (await fetch(`${started.data.url}/client.js`)).text(), before);
+      } finally {
+        child.kill("SIGTERM");
+        await new Promise((resolve) => child.once("exit", resolve));
+      }
+    });
+  });
+});
+
 test("sporades dev bundles and serves the default blank React capsule", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "blank-island", "--no-install", "--no-git", "--json"], {
@@ -796,7 +843,10 @@ test("sporades dev builds and safely serves the normalized public tree", async (
       const started = await waitForJsonLine(child);
       assert.equal(started.ok, true, JSON.stringify(started.error));
 
-      const publicDir = path.join(projectDir, ".sporades", "build", "public");
+      const publicTreesDir = path.join(projectDir, ".sporades", "build", ".public-trees");
+      const publicTreeNames = (await readdir(publicTreesDir)).filter((name) => !name.startsWith(".staging-"));
+      assert.equal(publicTreeNames.length, 1);
+      const publicDir = path.join(publicTreesDir, publicTreeNames[0]);
       const sourceHtml = await readFile(path.join(projectDir, "index.html"), "utf8");
       assert.equal(await readFile(path.join(publicDir, "index.html"), "utf8"), sourceHtml);
       assert.equal(await readFile(path.join(publicDir, "client.js"), "utf8"), await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8"));
@@ -805,22 +855,134 @@ test("sporades dev builds and safely serves the normalized public tree", async (
       assert.match(servedHtml, /window\.__SPORADES_CONNECTION_TOKEN=/);
       assert.doesNotMatch(sourceHtml, /__SPORADES_CONNECTION_TOKEN/);
 
-      await mkdir(path.join(publicDir, "assets"), { recursive: true });
-      await writeFile(path.join(publicDir, "assets", "capsule.css"), "body { color: teal; }\n");
-      const css = await fetch(`${started.data.url}/assets/capsule.css`);
-      assert.equal(css.status, 200);
-      assert.equal(css.headers.get("content-type"), "text/css; charset=utf-8");
-      assert.equal(await css.text(), "body { color: teal; }\n");
-
       await writeFile(path.join(projectDir, "outside.css"), "body { color: red; }\n");
-      await symlink(path.join(projectDir, "outside.css"), path.join(publicDir, "assets", "linked.css"));
-      assert.equal((await fetch(`${started.data.url}/assets/linked.css`)).status, 404);
+      await rm(path.join(publicDir, "client.js"));
+      await symlink(path.join(projectDir, "outside.css"), path.join(publicDir, "client.js"));
+      assert.doesNotMatch(await (await fetch(`${started.data.url}/client.js`)).text(), /color: red/);
 
       assert.equal((await fetch(`${started.data.url}/assets/missing.css`)).status, 404);
       assert.equal((await fetch(`${started.data.url}/%2e%2e/sporades.json`)).status, 404);
       assert.equal(await rawHttpStatus(started.data.url, "/assets/%2e%2e/client.js"), 404);
-      assert.equal(await rawHttpStatus(started.data.url, "/assets%2fcapsule.css"), 404);
+      assert.equal(await rawHttpStatus(started.data.url, "/assets%2fmissing.css"), 404);
       assert.equal((await fetch(`${started.data.url}/assets%2f..%2f..%2fsporades.json`)).status, 404);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev does not activate a client tree when legacy Bundle publication fails", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "publish-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "publish-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      const before = await (await fetch(`${started.data.url}/client.js`)).text();
+      const legacyClientPath = path.join(projectDir, ".sporades", "build", "client.js");
+      const legacyClientBefore = await readFile(legacyClientPath, "utf8");
+      const serverBundle = path.join(projectDir, ".sporades", "build", "server.mjs");
+      const savedServerBundle = `${serverBundle}.saved`;
+      await rename(serverBundle, savedServerBundle);
+      await mkdir(serverBundle);
+
+      const clientPath = path.join(projectDir, "client", "index.tsx");
+      const clientSource = await readFile(clientPath, "utf8");
+      await writeFile(clientPath, clientSource.replace("Blank Sporades Capsule", "Leaked Candidate Capsule"));
+      const failed = await waitForJsonEvent(child, (event) => !event.ok && event.data.event === "rebuild");
+      assert.deepEqual(failed.data.build, { phase: "publish", framework: "react", toolchain: "esbuild" });
+      assert.match(failed.error.message, /EISDIR|directory/i);
+      assert.equal(await (await fetch(`${started.data.url}/client.js`)).text(), before);
+      assert.equal(await readFile(legacyClientPath, "utf8"), legacyClientBefore);
+      const treeNames = (await readdir(path.join(projectDir, ".sporades", "build", ".public-trees")))
+        .filter((name) => !name.startsWith(".staging-"));
+      assert.equal(treeNames.length, 1);
+
+      await rm(serverBundle, { recursive: true });
+      await rename(savedServerBundle, serverBundle);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev reports public candidate failures without changing the active tree", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "public-failure-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "public-failure-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      const before = await (await fetch(`${started.data.url}/client.js`)).text();
+      const treesDir = path.join(projectDir, ".sporades", "build", ".public-trees");
+      const savedTreesDir = `${treesDir}.saved`;
+      await rename(treesDir, savedTreesDir);
+      await writeFile(treesDir, "blocks public candidate creation\n");
+
+      const clientPath = path.join(projectDir, "client", "index.tsx");
+      const source = await readFile(clientPath, "utf8");
+      await writeFile(clientPath, source.replace("Blank Sporades Capsule", "Invalid Public Candidate"));
+      const failed = await waitForJsonEvent(child, (event) => !event.ok && event.data.event === "rebuild");
+      assert.deepEqual(failed.data.build, { phase: "public", framework: "react", toolchain: "esbuild" });
+      assert.equal(await (await fetch(`${started.data.url}/client.js`)).text(), before);
+
+      await rm(treesDir);
+      await rename(savedTreesDir, treesDir);
+    } finally {
+      child.kill("SIGTERM");
+      await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+test("sporades dev activates client output only after the replacement Runtime starts", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "activation-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "activation-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      const before = await (await fetch(`${started.data.url}/client.js`)).text();
+      const legacyServerPath = path.join(projectDir, ".sporades", "build", "server.mjs");
+      const legacyClientPath = path.join(projectDir, ".sporades", "build", "client.js");
+      const legacyServerBefore = await readFile(legacyServerPath, "utf8");
+      const legacyClientBefore = await readFile(legacyClientPath, "utf8");
+      const serverPath = path.join(projectDir, "server", "index.ts");
+      const clientPath = path.join(projectDir, "client", "index.tsx");
+      const serverSource = await readFile(serverPath, "utf8");
+      const clientSource = await readFile(clientPath, "utf8");
+      await writeFile(serverPath, `${serverSource}\nthrow new Error("replacement Runtime failed");\n`);
+      await writeFile(clientPath, clientSource.replace("Blank Sporades Capsule", "Premature Runtime Capsule"));
+
+      const failed = await waitForJsonEvent(child, (event) => !event.ok && event.data.event === "rebuild");
+      assert.deepEqual(failed.data.build, { phase: "runtime", framework: "react", toolchain: "esbuild" });
+      assert.match(failed.error.message, /replacement Runtime failed/);
+      assert.equal(await (await fetch(`${started.data.url}/client.js`)).text(), before);
+      assert.equal(await readFile(legacyServerPath, "utf8"), legacyServerBefore);
+      assert.equal(await readFile(legacyClientPath, "utf8"), legacyClientBefore);
     } finally {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
@@ -2551,7 +2713,10 @@ test("sporades dev streams rebuild failure events and keeps serving the last cli
       const lastSuccessfulClient = await clientResponse.text();
       const clientPath = path.join(projectDir, "client", "index.tsx");
       const originalClient = await readFile(clientPath, "utf8");
-      const lastSuccessfulPublic = await readFile(path.join(projectDir, ".sporades", "build", "public", "client.js"), "utf8");
+      const publicTreesDir = path.join(projectDir, ".sporades", "build", ".public-trees");
+      const activeTreeName = (await readdir(publicTreesDir)).find((name) => !name.startsWith(".staging-"));
+      const activeClientPath = path.join(publicTreesDir, activeTreeName, "client.js");
+      const lastSuccessfulPublic = await readFile(activeClientPath, "utf8");
 
       await rm(clientPath);
 
@@ -2566,7 +2731,7 @@ test("sporades dev streams rebuild failure events and keeps serving the last cli
       const afterFailureResponse = await fetch(`${started.data.url}/client.js`);
       assert.equal(afterFailureResponse.status, 200);
       assert.equal(await afterFailureResponse.text(), lastSuccessfulClient);
-      assert.equal(await readFile(path.join(projectDir, ".sporades", "build", "public", "client.js"), "utf8"), lastSuccessfulPublic);
+      assert.equal(await readFile(activeClientPath, "utf8"), lastSuccessfulPublic);
 
       await writeFile(clientPath, originalClient.replace("Sporades Todos", "Sporades Recovered Todos"));
       const recovered = await waitForJsonEvent(

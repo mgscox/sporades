@@ -1,10 +1,10 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv } from "./sealed-server-env.js";
 import { serverRuntimeModuleSource } from "./server.js";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 import { createServerBundleSource } from "./templates/server-bundle-template.js";
-import { replacePublicTree } from "./public-tree.js";
+import { createPublicTree, discardPublicTree } from "./public-tree.js";
 const FRAMEWORK_BUNDLE_CONFIG = {
     react: {
         jsxImportSource: "react",
@@ -16,7 +16,7 @@ const FRAMEWORK_BUNDLE_CONFIG = {
     },
 };
 const SUPPORTED_AUTH_PROVIDERS = new Set(["anonymous", "google", "email"]);
-export async function createBundle(projectDir, config) {
+export async function createBundle(projectDir, config, options = {}) {
     const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
     const buildDir = path.join(projectDir, ".sporades", "build");
     await mkdir(buildDir, { recursive: true });
@@ -52,32 +52,72 @@ export async function createBundle(projectDir, config) {
         clientSourcePath: paths.clientEntry,
         frameworkBundleConfig,
     }).catch((error) => { throw tagBuildError(error, "client", frameworkBundleConfig.jsxImportSource); });
-    const publicDir = await replacePublicTree(buildDir, [
+    const serverBundle = createServerBundleSource({
+        config,
+        serverEnv: sealedEnvelope ? {} : serverEnv,
+        sealedServerEnv: sealedEnvelope ? { enabled: true } : { enabled: false },
+        serverSource,
+        serverModuleSource: serverCapsuleModule,
+    });
+    const publicTree = await createPublicTree(buildDir, [
         { path: "index.html", contents: indexHtml },
         { path: "client.js", contents: clientBundle },
-    ]);
-    await Promise.all([
-        writeFile(paths.serverBundle, createServerBundleSource({
-            config,
-            serverEnv: sealedEnvelope ? {} : serverEnv,
-            sealedServerEnv: sealedEnvelope ? { enabled: true } : { enabled: false },
-            serverSource,
-            serverModuleSource: serverCapsuleModule,
-        })),
-        writeFile(paths.clientBundle, clientBundle),
-    ]);
+    ]).catch((error) => { throw tagBuildError(error, "public", frameworkBundleConfig.jsxImportSource); });
+    const legacyFiles = [
+        { target: paths.serverBundle, contents: serverBundle },
+        { target: paths.clientBundle, contents: clientBundle },
+    ];
+    let legacyPublished = false;
+    const publishLegacy = async () => {
+        if (legacyPublished) {
+            throw tagBuildError(new Error("Legacy Bundles are already published."), "publish", frameworkBundleConfig.jsxImportSource);
+        }
+        let previous;
+        try {
+            previous = await Promise.all(legacyFiles.map(async (file) => ({
+                target: file.target,
+                contents: await readFile(file.target).catch((error) => {
+                    if (errorDetails(error).code === "ENOENT")
+                        return null;
+                    throw error;
+                }),
+            })));
+            await publishLegacyBundles(buildDir, legacyFiles);
+            legacyPublished = true;
+        }
+        catch (error) {
+            throw tagBuildError(error, "publish", frameworkBundleConfig.jsxImportSource);
+        }
+        return async () => {
+            const existing = previous.filter((file) => file.contents !== null);
+            await publishLegacyBundles(buildDir, existing);
+            await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm(file.target, { force: true })));
+            legacyPublished = false;
+        };
+    };
+    if (options.publishLegacy !== false) {
+        try {
+            await publishLegacy();
+        }
+        catch (error) {
+            await discardPublicTree(publicTree);
+            throw error;
+        }
+    }
     return {
         paths,
         buildDir,
+        publishLegacy,
         serverRuntime: {
             source: serverSource,
             env: serverEnv,
             capsuleModuleSource: serverCapsuleModule,
         },
         staticFiles: {
-            publicDir,
-            indexHtml: path.join(publicDir, "index.html"),
-            clientBundle: path.join(publicDir, "client.js"),
+            publicTree,
+            publicDir: publicTree.root,
+            indexHtml: path.join(publicTree.root, "index.html"),
+            clientBundle: path.join(publicTree.root, "client.js"),
         },
         containerMounts: {
             files: [
@@ -97,6 +137,55 @@ export async function createBundle(projectDir, config) {
                 : null,
         },
     };
+}
+async function publishLegacyBundles(buildDir, files) {
+    const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const stagingDir = path.join(buildDir, `.legacy-staging-${nonce}`);
+    const states = [];
+    await mkdir(stagingDir, { recursive: false });
+    try {
+        for (const [index, file] of files.entries()) {
+            const stats = await lstat(file.target).catch((error) => {
+                if (errorDetails(error).code === "ENOENT")
+                    return null;
+                throw error;
+            });
+            if (stats && (!stats.isFile() || stats.isSymbolicLink())) {
+                throw commandError("Legacy Bundle publication failed.", `${file.target} must be a regular file.`);
+            }
+            const candidate = path.join(stagingDir, `candidate-${index}`);
+            await writeFile(candidate, file.contents);
+            states.push({ target: file.target, candidate, backup: path.join(stagingDir, `backup-${index}`), moved: false, published: false });
+        }
+        try {
+            for (const state of states) {
+                try {
+                    await rename(state.target, state.backup);
+                    state.moved = true;
+                }
+                catch (error) {
+                    if (errorDetails(error).code !== "ENOENT")
+                        throw error;
+                }
+            }
+            for (const state of states) {
+                await rename(state.candidate, state.target);
+                state.published = true;
+            }
+        }
+        catch (error) {
+            for (const state of [...states].reverse()) {
+                if (state.published)
+                    await rm(state.target, { force: true });
+                if (state.moved)
+                    await rename(state.backup, state.target);
+            }
+            throw error;
+        }
+    }
+    finally {
+        await rm(stagingDir, { recursive: true, force: true });
+    }
 }
 async function readRequiredSealedPrivateKey(paths) {
     const keyPair = await readKeyPair(paths);

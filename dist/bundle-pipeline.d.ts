@@ -38,7 +38,9 @@ export type FrameworkBundleConfig = {
     jsxImportSource: string;
     jsxRuntimeImport: string;
 };
-export declare function createBundle(projectDir: string, config: ProjectConfig): Promise<{
+export declare function createBundle(projectDir: string, config: ProjectConfig, options?: {
+    publishLegacy?: boolean;
+}): Promise<{
     paths: {
         config: string;
         serverEntry: string;
@@ -49,12 +51,22 @@ export declare function createBundle(projectDir: string, config: ProjectConfig):
         clientBundle: string;
     };
     buildDir: string;
+    publishLegacy: () => Promise<() => Promise<void>>;
     serverRuntime: {
         source: string;
         env: Record<string, string>;
         capsuleModuleSource: string;
     };
     staticFiles: {
+        publicTree: {
+            root: string;
+            assets: ReadonlyMap<string, {
+                body: Buffer;
+                contentType: string;
+                relativePath: string;
+                html: boolean;
+            }>;
+        };
         publicDir: string;
         indexHtml: string;
         clientBundle: string;

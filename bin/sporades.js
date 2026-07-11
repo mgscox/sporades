@@ -6,12 +6,12 @@ import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes4, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { appendFile, chmod as chmod2, lstat as lstat3, mkdir as mkdir6, readdir as readdir2, readFile as readFile7, rm as rm3, writeFile as writeFile6 } from "node:fs/promises";
+import { appendFile, chmod as chmod2, lstat as lstat4, mkdir as mkdir6, readdir as readdir2, readFile as readFile7, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
 import path7 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/bundle-pipeline.ts
-import { mkdir as mkdir3, readFile as readFile3, writeFile as writeFile3 } from "node:fs/promises";
+import { lstat as lstat2, mkdir as mkdir3, readFile as readFile3, rename as rename2, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
 import path3 from "node:path";
 
 // src/sealed-server-env.ts
@@ -2201,21 +2201,21 @@ function createLocalFileStorageAdapter({ storagePath }) {
       return await readFile8(localFileVersionPath(storagePath, fileId, version));
     },
     async deleteFileVersion({ fileId, version }) {
-      const { rm: rm4 } = await import("node:fs/promises");
-      await rm4(localFileVersionPath(storagePath, fileId, version), { force: true });
+      const { rm: rm5 } = await import("node:fs/promises");
+      await rm5(localFileVersionPath(storagePath, fileId, version), { force: true });
     },
     async checkHealth() {
-      const { mkdir: mkdir7, rm: rm4, writeFile: writeFile7 } = await import("node:fs/promises");
+      const { mkdir: mkdir7, rm: rm5, writeFile: writeFile7 } = await import("node:fs/promises");
       const path8 = await import("node:path");
       const probeDirectory = path8.join(storagePath, ".sporades-health");
       const probeFile = path8.join(probeDirectory, `${randomUUID()}.tmp`);
       try {
         await mkdir7(probeDirectory, { recursive: true });
         await writeFile7(probeFile, "");
-        await rm4(probeFile, { force: true });
+        await rm5(probeFile, { force: true });
         return { ok: true };
       } catch {
-        await rm4(probeFile, { force: true }).catch(() => {
+        await rm5(probeFile, { force: true }).catch(() => {
         });
         return { ok: false };
       }
@@ -10173,13 +10173,13 @@ var PUBLIC_TREE_LIMITS = {
   totalBytes: 64 * 1024 * 1024,
   pathBytes: 240
 };
-async function replacePublicTree(buildDir, files) {
-  const publicDir = path2.join(buildDir, "public");
+async function createPublicTree(buildDir, files) {
   const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const stagingDir = path2.join(buildDir, `.public-staging-${nonce}`);
-  const previousDir = path2.join(buildDir, `.public-previous-${nonce}`);
-  let previousMoved = false;
+  const treesDir = path2.join(buildDir, ".public-trees");
+  const stagingDir = path2.join(treesDir, `.staging-${nonce}`);
+  const publicDir = path2.join(treesDir, nonce);
   const inputPaths = /* @__PURE__ */ new Map();
+  await mkdir2(treesDir, { recursive: true });
   await mkdir2(stagingDir, { recursive: false });
   try {
     for (const file of files) {
@@ -10197,24 +10197,15 @@ async function replacePublicTree(buildDir, files) {
       await mkdir2(path2.dirname(destination), { recursive: true });
       await writeFile2(destination, file.contents);
     }
-    await validatePublicTree(stagingDir);
-    try {
-      await rename(publicDir, previousDir);
-      previousMoved = true;
-    } catch (error) {
-      if (errorCode2(error) !== "ENOENT") throw error;
-    }
-    try {
-      await rename(stagingDir, publicDir);
-    } catch (error) {
-      if (previousMoved) await rename(previousDir, publicDir);
-      throw error;
-    }
-    if (previousMoved) await rm(previousDir, { recursive: true, force: true });
+    const tree = await snapshotPublicTree(stagingDir);
+    await rename(stagingDir, publicDir);
+    return { ...tree, root: publicDir };
   } finally {
     await rm(stagingDir, { recursive: true, force: true });
   }
-  return publicDir;
+}
+async function discardPublicTree(tree) {
+  await rm(tree.root, { recursive: true, force: true });
 }
 async function validatePublicTree(root) {
   const rootStats = await lstat(root);
@@ -10270,31 +10261,30 @@ async function validatePublicTree(root) {
   }
   return { fileCount, totalBytes };
 }
-async function readPublicAsset(root, rawPathname) {
-  const rootStats = await lstat(root).catch((error) => {
-    if (errorCode2(error) === "ENOENT" || errorCode2(error) === "ENOTDIR") return null;
-    throw error;
-  });
-  if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) return null;
-  const relativePath = publicPathFromRequest(rawPathname);
-  if (!relativePath) return null;
-  let current = root;
-  for (const segment of relativePath.split("/")) {
-    current = path2.join(current, segment);
-    const stats2 = await lstat(current).catch((error) => {
-      if (errorCode2(error) === "ENOENT" || errorCode2(error) === "ENOTDIR") return null;
-      throw error;
-    });
-    if (!stats2 || stats2.isSymbolicLink()) return null;
+async function snapshotPublicTree(root) {
+  await validatePublicTree(root);
+  const assets = /* @__PURE__ */ new Map();
+  async function visit(directory, prefix = "") {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await visit(path2.join(directory, entry.name), relativePath);
+      } else {
+        assets.set(relativePath, {
+          body: await readFile2(path2.join(directory, entry.name)),
+          contentType: publicContentType(relativePath),
+          relativePath,
+          html: relativePath === "index.html"
+        });
+      }
+    }
   }
-  const stats = await lstat(current);
-  if (!stats.isFile() || stats.size > PUBLIC_TREE_LIMITS.fileBytes) return null;
-  return {
-    body: await readFile2(current),
-    contentType: publicContentType(relativePath),
-    relativePath,
-    html: relativePath === "index.html"
-  };
+  await visit(root);
+  return { root, assets };
+}
+async function readPublicAsset(tree, rawPathname) {
+  const relativePath = publicPathFromRequest(rawPathname);
+  return relativePath ? tree.assets.get(relativePath) ?? null : null;
 }
 function publicPathFromRequest(rawPathname) {
   if (/%2f|%5c/i.test(rawPathname)) return null;
@@ -10364,9 +10354,6 @@ function publicContentType(relativePath) {
 function publicTreeError(message, hint) {
   return Object.assign(new Error(message), { hint });
 }
-function errorCode2(error) {
-  return error && typeof error === "object" && "code" in error ? error.code : void 0;
-}
 
 // src/bundle-pipeline.ts
 var FRAMEWORK_BUNDLE_CONFIG = {
@@ -10380,7 +10367,7 @@ var FRAMEWORK_BUNDLE_CONFIG = {
   }
 };
 var SUPPORTED_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "google", "email"]);
-async function createBundle(projectDir, config) {
+async function createBundle(projectDir, config, options = {}) {
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
   const buildDir = path3.join(projectDir, ".sporades", "build");
   await mkdir3(buildDir, { recursive: true });
@@ -10421,35 +10408,71 @@ async function createBundle(projectDir, config) {
   }).catch((error) => {
     throw tagBuildError(error, "client", frameworkBundleConfig.jsxImportSource);
   });
-  const publicDir = await replacePublicTree(buildDir, [
+  const serverBundle = createServerBundleSource({
+    config,
+    serverEnv: sealedEnvelope ? {} : serverEnv,
+    sealedServerEnv: sealedEnvelope ? { enabled: true } : { enabled: false },
+    serverSource,
+    serverModuleSource: serverCapsuleModule
+  });
+  const publicTree = await createPublicTree(buildDir, [
     { path: "index.html", contents: indexHtml },
     { path: "client.js", contents: clientBundle }
-  ]);
-  await Promise.all([
-    writeFile3(
-      paths.serverBundle,
-      createServerBundleSource({
-        config,
-        serverEnv: sealedEnvelope ? {} : serverEnv,
-        sealedServerEnv: sealedEnvelope ? { enabled: true } : { enabled: false },
-        serverSource,
-        serverModuleSource: serverCapsuleModule
-      })
-    ),
-    writeFile3(paths.clientBundle, clientBundle)
-  ]);
+  ]).catch((error) => {
+    throw tagBuildError(error, "public", frameworkBundleConfig.jsxImportSource);
+  });
+  const legacyFiles = [
+    { target: paths.serverBundle, contents: serverBundle },
+    { target: paths.clientBundle, contents: clientBundle }
+  ];
+  let legacyPublished = false;
+  const publishLegacy = async () => {
+    if (legacyPublished) {
+      throw tagBuildError(new Error("Legacy Bundles are already published."), "publish", frameworkBundleConfig.jsxImportSource);
+    }
+    let previous;
+    try {
+      previous = await Promise.all(legacyFiles.map(async (file) => ({
+        target: file.target,
+        contents: await readFile3(file.target).catch((error) => {
+          if (errorDetails(error).code === "ENOENT") return null;
+          throw error;
+        })
+      })));
+      await publishLegacyBundles(buildDir, legacyFiles);
+      legacyPublished = true;
+    } catch (error) {
+      throw tagBuildError(error, "publish", frameworkBundleConfig.jsxImportSource);
+    }
+    return async () => {
+      const existing = previous.filter((file) => file.contents !== null);
+      await publishLegacyBundles(buildDir, existing);
+      await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm2(file.target, { force: true })));
+      legacyPublished = false;
+    };
+  };
+  if (options.publishLegacy !== false) {
+    try {
+      await publishLegacy();
+    } catch (error) {
+      await discardPublicTree(publicTree);
+      throw error;
+    }
+  }
   return {
     paths,
     buildDir,
+    publishLegacy,
     serverRuntime: {
       source: serverSource,
       env: serverEnv,
       capsuleModuleSource: serverCapsuleModule
     },
     staticFiles: {
-      publicDir,
-      indexHtml: path3.join(publicDir, "index.html"),
-      clientBundle: path3.join(publicDir, "client.js")
+      publicTree,
+      publicDir: publicTree.root,
+      indexHtml: path3.join(publicTree.root, "index.html"),
+      clientBundle: path3.join(publicTree.root, "client.js")
     },
     containerMounts: {
       files: [
@@ -10465,6 +10488,48 @@ async function createBundle(projectDir, config) {
       } : null
     }
   };
+}
+async function publishLegacyBundles(buildDir, files) {
+  const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const stagingDir = path3.join(buildDir, `.legacy-staging-${nonce}`);
+  const states = [];
+  await mkdir3(stagingDir, { recursive: false });
+  try {
+    for (const [index, file] of files.entries()) {
+      const stats = await lstat2(file.target).catch((error) => {
+        if (errorDetails(error).code === "ENOENT") return null;
+        throw error;
+      });
+      if (stats && (!stats.isFile() || stats.isSymbolicLink())) {
+        throw commandError2("Legacy Bundle publication failed.", `${file.target} must be a regular file.`);
+      }
+      const candidate = path3.join(stagingDir, `candidate-${index}`);
+      await writeFile3(candidate, file.contents);
+      states.push({ target: file.target, candidate, backup: path3.join(stagingDir, `backup-${index}`), moved: false, published: false });
+    }
+    try {
+      for (const state of states) {
+        try {
+          await rename2(state.target, state.backup);
+          state.moved = true;
+        } catch (error) {
+          if (errorDetails(error).code !== "ENOENT") throw error;
+        }
+      }
+      for (const state of states) {
+        await rename2(state.candidate, state.target);
+        state.published = true;
+      }
+    } catch (error) {
+      for (const state of [...states].reverse()) {
+        if (state.published) await rm2(state.target, { force: true });
+        if (state.moved) await rename2(state.backup, state.target);
+      }
+      throw error;
+    }
+  } finally {
+    await rm2(stagingDir, { recursive: true, force: true });
+  }
 }
 async function readRequiredSealedPrivateKey(paths) {
   const keyPair = await readKeyPair(paths);
@@ -12439,7 +12504,7 @@ function escapeHtml(value) {
 
 // src/capsule-services.ts
 import { randomBytes as randomBytes3 } from "node:crypto";
-import { mkdir as mkdir4, readFile as readFile4, rm as rm2, writeFile as writeFile4 } from "node:fs/promises";
+import { mkdir as mkdir4, readFile as readFile4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
 import path4 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
 var SUPPORTED_DATABASE_ENGINES = /* @__PURE__ */ new Set(["libsql", "postgres"]);
@@ -12481,7 +12546,7 @@ function validateCapsuleServicesConfig(services) {
 async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
   const composePath = path4.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   if (!hasDeclaredCapsuleServices(config)) {
-    await rm2(composePath, { force: true });
+    await rm3(composePath, { force: true });
     return null;
   }
   validateCapsuleServicesConfig(config.services);
@@ -13269,7 +13334,7 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
 
 // src/cli/doctor.ts
 import { spawn, spawnSync } from "node:child_process";
-import { lstat as lstat2, readFile as readFile6 } from "node:fs/promises";
+import { lstat as lstat3, readFile as readFile6 } from "node:fs/promises";
 import { connect } from "node:net";
 import path6 from "node:path";
 
@@ -14767,7 +14832,7 @@ async function readOptionalJsonFile(filePath) {
 }
 async function pathExists(targetPath) {
   try {
-    await lstat2(targetPath);
+    await lstat3(targetPath);
     return true;
   } catch (error) {
     if (errorDetails2(error).code === "ENOENT") {
@@ -16494,7 +16559,7 @@ async function startDevSession(options) {
         return;
       }
       const rawPublicPathname = (request.url ?? "/").split("?", 1)[0];
-      const publicAsset = await readPublicAsset(bundle.staticFiles.publicDir, rawPublicPathname);
+      const publicAsset = await readPublicAsset(bundle.staticFiles.publicTree, rawPublicPathname);
       if (publicAsset) {
         response.writeHead(200, { "content-type": publicAsset.contentType });
         response.end(publicAsset.html ? injectPageConnectionToken(publicAsset.body.toString("utf8"), websocketHub.createConnectionToken()) : publicAsset.body);
@@ -16656,16 +16721,21 @@ async function startDevSession(options) {
   process.on("unhandledRejection", onUnhandledRejection);
   process.on("uncaughtException", onUncaughtException);
   const watchers = watchDevInputs(options.projectDir, async (change) => {
+    let rebuild = null;
+    let rollbackLegacy = null;
     try {
       const nextConfig = await readProjectConfig(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
       const nextCapsuleServices = await writeCapsuleServicesCompose(options.projectDir, nextConfig, { publishPorts: true });
-      const rebuild = await createBundle(options.projectDir, nextConfig);
+      rebuild = await createBundle(options.projectDir, nextConfig, { publishLegacy: false });
       const nextCapsuleServiceEnv = await startCapsuleServices(nextCapsuleServices, options.projectDir, {
         wait: true,
         emit: (data, error) => emitDevEvent(options, data, error)
+      }).catch((error) => {
+        throw tagDevRebuildError(error, "services", nextConfig);
       });
       const affectsServerRuntime = change.affectsServerRuntime || change.configChanged && configChangeAffectsServerRuntime(config, nextConfig);
+      rollbackLegacy = await rebuild.publishLegacy();
       if (affectsServerRuntime) {
         await runtime.restart(
           rebuild.serverRuntime.source,
@@ -16673,13 +16743,18 @@ async function startDevSession(options) {
           nextCapsuleServiceEnv,
           rebuild.serverRuntime.capsuleModuleSource,
           withRuntimeSecuritySession(nextConfig, session)
-        );
-        bundle = rebuild;
+        ).catch((error) => {
+          throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true });
+        });
         runtimeServiceEnv = nextCapsuleServiceEnv;
         await writeActiveDevDatabaseServiceEnv(options.projectDir, runtimeServiceEnv);
         fatalRestartAttempts = 0;
         websocketHub.disconnectAll();
       }
+      const previousBundle = bundle;
+      bundle = rebuild;
+      discardPublicTree(previousBundle.staticFiles.publicTree).catch(() => {
+      });
       config = nextConfig;
       security = nextSecurity;
       emitDevEvent(options, {
@@ -16695,7 +16770,19 @@ async function startDevSession(options) {
         }
       });
     } catch (error) {
-      const details = errorDetails2(error);
+      let rebuildError = error;
+      if (rollbackLegacy) {
+        try {
+          await rollbackLegacy();
+        } catch (rollbackError) {
+          rebuildError = tagDevRebuildError(rollbackError, "publish", config);
+        }
+      }
+      if (rebuild && rebuild !== bundle) {
+        await discardPublicTree(rebuild.staticFiles.publicTree).catch(() => {
+        });
+      }
+      const details = errorDetails2(rebuildError);
       runtime.database.log.emit({
         category: "platform",
         event: "dev.rebuild.failed",
@@ -16733,12 +16820,12 @@ async function startDevSession(options) {
     for (const watcher of watchers) {
       watcher.close();
     }
-    rm3(path7.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
+    rm4(path7.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
     });
     websocketHub.disconnectAll();
     await runtime.shutdown();
     server.close(async () => {
-      await rm3(sessionFilePath, { force: true });
+      await rm4(sessionFilePath, { force: true });
       process.off("unhandledRejection", onUnhandledRejection);
       process.off("uncaughtException", onUncaughtException);
       process.exit(0);
@@ -16746,6 +16833,17 @@ async function startDevSession(options) {
   };
   process.on("SIGTERM", shutdown);
   process.on("SIGINT", shutdown);
+}
+function tagDevRebuildError(error, phase, config, options = {}) {
+  const details = errorDetails2(error);
+  if (options.preserveSchemaErrors && details.message === "Unsupported Capsule schema change.") {
+    return error;
+  }
+  const tagged = error instanceof Error ? error : commandError4(String(error), "Fix the rebuild error and save again.");
+  tagged.phase = phase;
+  tagged.framework = config.client?.framework ?? "react";
+  tagged.toolchain = "esbuild";
+  return tagged;
 }
 async function createDevRuntime(options) {
   let database = await openDevDatabase(
@@ -18842,7 +18940,7 @@ async function createHostReleaseArchive(options) {
     sshAccess: options.sshAccess,
     updatePolicyMode: readBaseImageUpdatePolicy(options.projectConfig)
   });
-  await rm3(packageDir, { recursive: true, force: true });
+  await rm4(packageDir, { recursive: true, force: true });
   await mkdir6(path7.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
   await mkdir6(path7.join(packageDir, ".sporades", "ssh"), { recursive: true });
   const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
@@ -19555,7 +19653,7 @@ async function removeLocalContainerSession(options) {
     "Check Docker is running, then retry `sporades deploy remove`.",
     true
   );
-  await rm3(bindingPath, { force: true });
+  await rm4(bindingPath, { force: true });
   const services = options.stopServices === false ? {} : await stopLocalCapsuleServices({ ...options, silent: true });
   const container = containerLifecycleSummary("removed", binding);
   if (options.silent) {
@@ -19605,7 +19703,7 @@ async function resetLocalCapsuleServices(options) {
     );
     await Promise.all(
       Object.values(capsuleServices.services).map(
-        (service) => rm3(service.stateDir, { recursive: true, force: true })
+        (service) => rm4(service.stateDir, { recursive: true, force: true })
       )
     );
     const removedImages = removeSporadesOwnedCapsuleImages(capsuleServices, options.projectDir);
@@ -19703,7 +19801,7 @@ function dockerResourceExists(args, cwd) {
 }
 async function pathExists2(targetPath) {
   try {
-    await lstat3(targetPath);
+    await lstat4(targetPath);
     return true;
   } catch (error) {
     if (errorDetails2(error).code === "ENOENT") {
@@ -20119,7 +20217,7 @@ function formatMount(mount) {
 async function prepareRuntimeDataPath(targetPath) {
   let stats;
   try {
-    stats = await lstat3(targetPath);
+    stats = await lstat4(targetPath);
   } catch (error) {
     if (errorDetails2(error).code === "ENOENT") {
       return;

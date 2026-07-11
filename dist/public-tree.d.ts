@@ -10,14 +10,23 @@ type PublicAsset = {
     relativePath: string;
     html: boolean;
 };
-export declare function replacePublicTree(buildDir: string, files: ReadonlyArray<{
+export type PublicTree = {
+    root: string;
+    assets: ReadonlyMap<string, PublicAsset>;
+};
+export declare function createPublicTree(buildDir: string, files: ReadonlyArray<{
     path: string;
     contents: string | Uint8Array;
-}>): Promise<string>;
+}>): Promise<{
+    root: string;
+    assets: ReadonlyMap<string, PublicAsset>;
+}>;
+export declare function discardPublicTree(tree: PublicTree): Promise<void>;
 export declare function validatePublicTree(root: string): Promise<{
     fileCount: number;
     totalBytes: number;
 }>;
-export declare function readPublicAsset(root: string, rawPathname: string): Promise<PublicAsset | null>;
+export declare function snapshotPublicTree(root: string): Promise<PublicTree>;
+export declare function readPublicAsset(tree: PublicTree, rawPathname: string): Promise<PublicAsset | null>;
 export {};
 //# sourceMappingURL=public-tree.d.ts.map

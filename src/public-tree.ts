@@ -15,17 +15,22 @@ type PublicAsset = {
   html: boolean;
 };
 
-export async function replacePublicTree(
+export type PublicTree = {
+  root: string;
+  assets: ReadonlyMap<string, PublicAsset>;
+};
+
+export async function createPublicTree(
   buildDir: string,
   files: ReadonlyArray<{ path: string; contents: string | Uint8Array }>,
 ) {
-  const publicDir = path.join(buildDir, "public");
   const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  const stagingDir = path.join(buildDir, `.public-staging-${nonce}`);
-  const previousDir = path.join(buildDir, `.public-previous-${nonce}`);
-  let previousMoved = false;
+  const treesDir = path.join(buildDir, ".public-trees");
+  const stagingDir = path.join(treesDir, `.staging-${nonce}`);
+  const publicDir = path.join(treesDir, nonce);
   const inputPaths = new Map<string, string>();
 
+  await mkdir(treesDir, { recursive: true });
   await mkdir(stagingDir, { recursive: false });
   try {
     for (const file of files) {
@@ -43,27 +48,16 @@ export async function replacePublicTree(
       await mkdir(path.dirname(destination), { recursive: true });
       await writeFile(destination, file.contents);
     }
-    await validatePublicTree(stagingDir);
-
-    try {
-      await rename(publicDir, previousDir);
-      previousMoved = true;
-    } catch (error) {
-      if (errorCode(error) !== "ENOENT") throw error;
-    }
-
-    try {
-      await rename(stagingDir, publicDir);
-    } catch (error) {
-      if (previousMoved) await rename(previousDir, publicDir);
-      throw error;
-    }
-    if (previousMoved) await rm(previousDir, { recursive: true, force: true });
+    const tree = await snapshotPublicTree(stagingDir);
+    await rename(stagingDir, publicDir);
+    return { ...tree, root: publicDir };
   } finally {
     await rm(stagingDir, { recursive: true, force: true });
   }
+}
 
-  return publicDir;
+export async function discardPublicTree(tree: PublicTree) {
+  await rm(tree.root, { recursive: true, force: true });
 }
 
 export async function validatePublicTree(root: string) {
@@ -126,33 +120,33 @@ export async function validatePublicTree(root: string) {
   return { fileCount, totalBytes };
 }
 
-export async function readPublicAsset(root: string, rawPathname: string): Promise<PublicAsset | null> {
-  const rootStats = await lstat(root).catch((error) => {
-    if (errorCode(error) === "ENOENT" || errorCode(error) === "ENOTDIR") return null;
-    throw error;
-  });
-  if (!rootStats?.isDirectory() || rootStats.isSymbolicLink()) return null;
-  const relativePath = publicPathFromRequest(rawPathname);
-  if (!relativePath) return null;
+export async function snapshotPublicTree(root: string): Promise<PublicTree> {
+  await validatePublicTree(root);
+  const assets = new Map<string, PublicAsset>();
 
-  let current = root;
-  for (const segment of relativePath.split("/")) {
-    current = path.join(current, segment);
-    const stats = await lstat(current).catch((error) => {
-      if (errorCode(error) === "ENOENT" || errorCode(error) === "ENOTDIR") return null;
-      throw error;
-    });
-    if (!stats || stats.isSymbolicLink()) return null;
+  async function visit(directory: string, prefix = "") {
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await visit(path.join(directory, entry.name), relativePath);
+      } else {
+        assets.set(relativePath, {
+          body: await readFile(path.join(directory, entry.name)),
+          contentType: publicContentType(relativePath),
+          relativePath,
+          html: relativePath === "index.html",
+        });
+      }
+    }
   }
-  const stats = await lstat(current);
-  if (!stats.isFile() || stats.size > PUBLIC_TREE_LIMITS.fileBytes) return null;
 
-  return {
-    body: await readFile(current),
-    contentType: publicContentType(relativePath),
-    relativePath,
-    html: relativePath === "index.html",
-  };
+  await visit(root);
+  return { root, assets };
+}
+
+export async function readPublicAsset(tree: PublicTree, rawPathname: string): Promise<PublicAsset | null> {
+  const relativePath = publicPathFromRequest(rawPathname);
+  return relativePath ? tree.assets.get(relativePath) ?? null : null;
 }
 
 function publicPathFromRequest(rawPathname: string) {
@@ -208,8 +202,4 @@ function publicContentType(relativePath: string) {
 
 function publicTreeError(message: string, hint: string) {
   return Object.assign(new Error(message), { hint });
-}
-
-function errorCode(error: unknown) {
-  return error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : undefined;
 }
