@@ -918,11 +918,13 @@ test("client performs one full-page refresh from the Sporades transport without 
     assert.equal(browser.sockets.length, 1);
     assert.equal(browser.sent.filter((message) => message.type === "dev.refresh.subscribe").length, 1, "the sole page transport explicitly joins the Dev refresh broadcast set");
     assert.equal(browser.sockets[0].listeners.get("message")?.length, 1);
-    browser.sockets[0].emit("message", {
-      data: JSON.stringify({ id: null, type: "refresh", data: { mode: "full-page", sequence: 1 }, error: null }),
-    });
+    const refreshFrame = { data: JSON.stringify({ id: null, type: "refresh", data: { mode: "full-page", sequence: 1 }, error: null }) };
+    browser.sockets[0].emit("message", refreshFrame);
+    browser.sockets[0].emit("message", refreshFrame);
     assert.equal(reloads, 1);
-    assert.deepEqual(browser.sent.find((message) => message.type === "dev.refresh.received"), { id: null, type: "dev.refresh.received", sequence: 1, sessionToken: "session-token" });
+    const receipts = browser.sent.filter((message) => message.type === "dev.refresh.received");
+    assert.equal(receipts.length, 2, "duplicate delivery is acknowledged again so the server can stop resending");
+    assert.deepEqual(receipts[0], { id: null, type: "dev.refresh.received", sequence: 1, sessionToken: "session-token" });
     assert.equal(browser.sockets.length, 1, "refresh reuses the sole Sporades page transport");
   } finally {
     browser.cleanup();

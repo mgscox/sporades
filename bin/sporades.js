@@ -355,6 +355,7 @@ function createConnection() {
   const journeySubscriptions = new Map();
   let latestAuthUserId = null;
   let pageRetired = false;
+  ${options.devRefresh ? "let latestDevRefreshSequence = 0;" : ""}
   let journeyRetireOwner = null;
   window.addEventListener?.("pagehide", () => {
     pageRetired = true;
@@ -403,8 +404,14 @@ function createConnection() {
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
       ${options.devRefresh ? `if (message.type === "refresh" && message.data?.mode === "full-page") {
-        send({ id: null, type: "dev.refresh.received", sequence: message.data.sequence });
-        window.location.reload();
+        const refreshSequence = message.data.sequence;
+        if (Number.isSafeInteger(refreshSequence) && refreshSequence >= 1) {
+          send({ id: null, type: "dev.refresh.received", sequence: refreshSequence });
+          if (refreshSequence > latestDevRefreshSequence) {
+            latestDevRefreshSequence = refreshSequence;
+            window.location.reload();
+          }
+        }
         return;
       }` : ""}
       if (message.type === "auth.result" || message.type === "auth.session.replace") {
@@ -1951,7 +1958,9 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createWebSocketHub,
   drainWebSocketFrames,
   closeWebSocketClient,
+  encodeWebSocketJson,
   sendJson,
+  sendJsonWithCompletion,
   routeEndpoint,
   runEndpoint,
   writeEndpointResult,
@@ -8164,7 +8173,7 @@ function validateJourneyJson(value, depth, seen) {
 function journeyError(id, code = "JOURNEY_NOT_ENABLED", message = "User journey tracking is not enabled for this Capsule.", hint = "Declare journey: { enabled: true } on capsule().") {
   return { id: id ?? null, type: "error", data: null, error: { code, message, hint } };
 }
-function createWebSocketHub(getDatabase, trustedTransport = null) {
+function createWebSocketHub(getDatabase, trustedRefresh = null) {
   const clients = /* @__PURE__ */ new Set();
   const journeys = /* @__PURE__ */ new Map();
   const connectionTokens = /* @__PURE__ */ new Map();
@@ -8224,7 +8233,6 @@ function createWebSocketHub(getDatabase, trustedTransport = null) {
         journeySubscriptions: /* @__PURE__ */ new Set()
       };
       clients.add(client);
-      trustedTransport?.connected?.(client, (message) => sendJson(client, message));
       socket.on("data", (chunk) => {
         client.lastSeenAt = (/* @__PURE__ */ new Date()).toISOString();
         client.buffer = Buffer.concat([client.buffer, chunk]);
@@ -8232,7 +8240,7 @@ function createWebSocketHub(getDatabase, trustedTransport = null) {
       });
       const removeClient = () => {
         clients.delete(client);
-        trustedTransport?.disconnected?.(client);
+        trustedRefresh?.disconnected(client.id);
         client.subscriptions.clear();
         client.journeySubscriptions.clear();
         client.journey = null;
@@ -8244,7 +8252,7 @@ function createWebSocketHub(getDatabase, trustedTransport = null) {
       if (journeyExpiryTimer !== null) getDatabase().clock.clearTimer(journeyExpiryTimer);
       journeyExpiryTimer = null;
       for (const client of clients) {
-        trustedTransport?.disconnected?.(client);
+        trustedRefresh?.disconnected(client.id);
         closeWebSocketClient(client);
       }
       clients.clear();
@@ -8438,7 +8446,15 @@ function createWebSocketHub(getDatabase, trustedTransport = null) {
       });
       return;
     }
-    if (await trustedTransport?.message?.(client, message)) return;
+    if (trustedRefresh && message.type === trustedRefresh.subscribeType) {
+      const requestId = typeof message.id === "string" && message.id.length <= 128 ? message.id : null;
+      await trustedRefresh.subscribe(client.id, requestId, (outgoing) => sendJsonWithCompletion(client, outgoing));
+      return;
+    }
+    if (trustedRefresh && message.type === trustedRefresh.receivedType) {
+      if (Number.isSafeInteger(message.sequence) && message.sequence >= 1) trustedRefresh.received(client.id, message.sequence);
+      return;
+    }
     const database = getDatabase();
     const messageSessionToken = typeof message.sessionToken === "string" && message.sessionToken.length > 0 ? message.sessionToken : client.session.token;
     const resolvedSession = await resolveAnonymousSession(database, messageSessionToken ?? null);
@@ -9651,7 +9667,7 @@ function closeWebSocketClient(client) {
     client.socket.destroy();
   }
 }
-function sendJson(client, message) {
+function encodeWebSocketJson(message) {
   const payload = Buffer.from(JSON.stringify(message));
   let header;
   if (payload.length < 126) {
@@ -9667,7 +9683,28 @@ function sendJson(client, message) {
     header[1] = 127;
     header.writeBigUInt64BE(BigInt(payload.length), 2);
   }
-  client.socket.write(Buffer.concat([header, payload]));
+  return Buffer.concat([header, payload]);
+}
+function sendJson(client, message) {
+  client.socket.write(encodeWebSocketJson(message));
+}
+function sendJsonWithCompletion(client, message, timeoutMs = 250) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let backpressured = false;
+    const finish = (status) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ status, backpressured });
+    };
+    const timer = setTimeout(() => finish("write-timeout"), timeoutMs);
+    try {
+      backpressured = !client.socket.write(encodeWebSocketJson(message), (error) => finish(error ? "write-failed" : "written"));
+    } catch {
+      finish("write-failed");
+    }
+  });
 }
 async function runQuery(database, auth, queryName) {
   let context;
@@ -17376,6 +17413,7 @@ var DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";
 var CONTAINER_BINDING_FILE = path8.join(".sporades", "binding.json");
 var REMOTE_BINDING_FILE = path8.join(".sporades", "remote-binding.json");
 var DEV_REBUILD_DEBOUNCE_MS = 100;
+var DEV_WATCH_SIGNATURE_POLL_MS = 250;
 var DEFAULT_HOST_SCHEME = "https";
 var DEFAULT_HOST_REMOTE_ROOT = "/srv/sporades";
 var DEFAULT_HOST_TLS_MODE2 = "automatic";
@@ -18689,68 +18727,70 @@ async function inspectContainerSchedules(options) {
 }
 function createDevRefreshController(timeoutMs = 1e3) {
   let sequence = 0;
+  const resendMs = 100;
   const clients = /* @__PURE__ */ new Map();
   const settle = (pending, outcome) => {
     if (pending.settled) return;
     pending.settled = true;
     clearTimeout(pending.timer);
-    pending.resolve(outcome);
+    clearTimeout(pending.resendTimer);
+    pending.resolve({ outcome, attempts: pending.attempts, written: pending.written, backpressured: pending.backpressured, failed: pending.failed });
   };
-  const disconnected = (client) => {
-    const state = clients.get(client);
+  const disconnected = (connectionId) => {
+    const state = clients.get(connectionId);
     if (!state) return;
-    clients.delete(client);
+    clients.delete(connectionId);
     for (const pending of state.pending.values()) settle(pending, "disconnected");
     state.pending.clear();
   };
   const transport = {
-    connected(client, send) {
-      clients.set(client, { send, subscribed: false, pending: /* @__PURE__ */ new Map() });
-    },
+    subscribeType: "dev.refresh.subscribe",
+    receivedType: "dev.refresh.received",
     disconnected,
-    message(client, message) {
-      const state = clients.get(client);
-      if (!state) return false;
-      if (message.type === "dev.refresh.subscribe") {
-        state.subscribed = true;
-        state.send({ id: message.id ?? null, type: "dev.refresh.ready", data: { mode: "full-page", sequence }, error: null });
-        return true;
-      }
-      if (message.type === "dev.refresh.received") {
-        const acknowledged = Number.isInteger(message.sequence) ? state.pending.get(message.sequence) : null;
-        if (acknowledged) {
-          state.pending.delete(message.sequence);
-          settle(acknowledged, "delivered");
-        }
-        return true;
-      }
-      return false;
+    async subscribe(connectionId, requestId, send) {
+      const existing = clients.get(connectionId);
+      clients.set(connectionId, { send, pending: existing?.pending ?? /* @__PURE__ */ new Map() });
+      await send({ id: requestId, type: "dev.refresh.ready", data: { mode: "full-page", sequence }, error: null });
+    },
+    received(connectionId, receivedSequence) {
+      const state = clients.get(connectionId);
+      const acknowledged = state?.pending.get(receivedSequence);
+      if (!state || !acknowledged) return;
+      state.pending.delete(receivedSequence);
+      settle(acknowledged, "delivered");
     }
   };
   const broadcast = async () => {
     const currentSequence = ++sequence;
-    const targets = [...clients.values()].filter((client) => client.subscribed);
+    const targets = [...clients.values()];
     const outcomes = await Promise.all(targets.map((client) => new Promise((resolve) => {
-      const pending = { resolve, settled: false, timer: null };
+      const pending = { resolve, settled: false, timer: null, resendTimer: null, attempts: 0, written: 0, backpressured: 0, failed: 0 };
       pending.timer = setTimeout(() => {
         client.pending.delete(currentSequence);
         settle(pending, "timed-out");
       }, timeoutMs);
       client.pending.set(currentSequence, pending);
-      try {
-        client.send({ id: null, type: "refresh", data: { mode: "full-page", sequence: currentSequence }, error: null });
-      } catch {
-        client.pending.delete(currentSequence);
-        settle(pending, "send-failed");
-      }
+      const sendAttempt = async () => {
+        if (pending.settled) return;
+        pending.attempts += 1;
+        const result = await client.send({ id: null, type: "refresh", data: { mode: "full-page", sequence: currentSequence }, error: null }).catch(() => ({ status: "write-failed", backpressured: false }));
+        if (result.status === "written") pending.written += 1;
+        else pending.failed += 1;
+        if (result.backpressured) pending.backpressured += 1;
+        if (!pending.settled) pending.resendTimer = setTimeout(sendAttempt, resendMs);
+      };
+      void sendAttempt();
     })));
     return {
       sequence: currentSequence,
       clientsAttempted: targets.length,
-      clientsDelivered: outcomes.filter((outcome) => outcome === "delivered").length,
-      clientsTimedOut: outcomes.filter((outcome) => outcome === "timed-out").length,
-      clientsDisconnected: outcomes.filter((outcome) => outcome === "disconnected").length,
-      clientsSendFailed: outcomes.filter((outcome) => outcome === "send-failed").length
+      clientsDelivered: outcomes.filter((result) => result.outcome === "delivered").length,
+      clientsTimedOut: outcomes.filter((result) => result.outcome === "timed-out").length,
+      clientsDisconnected: outcomes.filter((result) => result.outcome === "disconnected").length,
+      framesAttempted: outcomes.reduce((total, result) => total + result.attempts, 0),
+      framesWritten: outcomes.reduce((total, result) => total + result.written, 0),
+      framesBackpressured: outcomes.reduce((total, result) => total + result.backpressured, 0),
+      framesFailed: outcomes.reduce((total, result) => total + result.failed, 0)
     };
   };
   return { transport, broadcast };
@@ -19075,6 +19115,13 @@ async function startDevSession(options) {
     let rollbackLegacy = null;
     let rollbackServiceEnv = null;
     let refresh = null;
+    emitDevEvent(options, {
+      event: "rebuild",
+      status: "started",
+      url,
+      port: actualPort,
+      build: { phase: change.affectsServerRuntime ? "bundle" : "client", framework: config.client?.framework ?? "react", toolchain: configuredClientToolchain(config) }
+    });
     try {
       const nextConfig = await readProjectConfig(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
@@ -19327,17 +19374,17 @@ function watchDevInputs(projectDir, onChange) {
   let pendingChange = null;
   let rebuildInFlight = false;
   let lastHandledSignature = null;
+  const observedSignatures = /* @__PURE__ */ new Map();
+  const handledSignatures = /* @__PURE__ */ new Map();
   const schedule = (change) => {
     pendingChange = {
       affectsServerRuntime: Boolean(pendingChange?.affectsServerRuntime || change.affectsServerRuntime),
       configChanged: Boolean(pendingChange?.configChanged || change.configChanged)
     };
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-    }
-    debounceTimer = setTimeout(runPendingChange, DEV_REBUILD_DEBOUNCE_MS);
+    if (!debounceTimer) debounceTimer = setTimeout(runPendingChange, DEV_REBUILD_DEBOUNCE_MS);
   };
   const runPendingChange = async () => {
+    debounceTimer = null;
     if (rebuildInFlight) {
       return;
     }
@@ -19351,25 +19398,40 @@ function watchDevInputs(projectDir, onChange) {
     try {
       await onChange(currentChange);
       lastHandledSignature = currentSignature;
+      for (const watchedPath of watchedPaths) handledSignatures.set(watchedPath.path, readDevInputSignature([watchedPath]));
     } finally {
       rebuildInFlight = false;
       if (pendingChange) {
-        if (debounceTimer) {
-          clearTimeout(debounceTimer);
-        }
-        debounceTimer = setTimeout(runPendingChange, DEV_REBUILD_DEBOUNCE_MS);
+        if (!debounceTimer) debounceTimer = setTimeout(runPendingChange, DEV_REBUILD_DEBOUNCE_MS);
       }
     }
   };
+  const observe = (watchedPath) => {
+    const signature = readDevInputSignature([watchedPath]);
+    if (observedSignatures.get(watchedPath.path) === signature) return;
+    observedSignatures.set(watchedPath.path, signature);
+    schedule(watchedPath);
+  };
   for (const watchedPath of watchedPaths) {
+    const signature = readDevInputSignature([watchedPath]);
+    observedSignatures.set(watchedPath.path, signature);
+    handledSignatures.set(watchedPath.path, signature);
     try {
-      watchers.push(watch(watchedPath.path, { recursive: true }, () => schedule(watchedPath)));
+      watchers.push(watch(watchedPath.path, { recursive: true }, () => observe(watchedPath)));
     } catch (error) {
       if (errorDetails3(error).code !== "ENOENT") {
         throw error;
       }
     }
   }
+  lastHandledSignature = readDevInputSignature(watchedPaths);
+  const signaturePoll = setInterval(() => {
+    for (const watchedPath of watchedPaths) {
+      observe(watchedPath);
+      if (handledSignatures.get(watchedPath.path) !== readDevInputSignature([watchedPath])) schedule(watchedPath);
+    }
+  }, DEV_WATCH_SIGNATURE_POLL_MS);
+  watchers.push({ close: () => clearInterval(signaturePoll) });
   return watchers;
 }
 function configChangeAffectsServerRuntime(currentConfig, nextConfig) {
@@ -19389,7 +19451,7 @@ function readDevInputSignature(watchedPaths) {
 function collectPathSignature(filePath, entries) {
   let stats;
   try {
-    stats = statSync(filePath);
+    stats = statSync(filePath, { bigint: true });
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       entries.push(`${filePath}:missing`);
@@ -19408,7 +19470,7 @@ function collectPathSignature(filePath, entries) {
     }
     return;
   }
-  entries.push(`${filePath}:file:${stats.size}:${stats.mtimeMs}`);
+  entries.push(`${filePath}:file:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`);
 }
 function emitDevEvent(options, data, error = null) {
   if (options.json) {
@@ -19424,6 +19486,14 @@ function emitDevEvent(options, data, error = null) {
       process.stdout.write(`Sporades dev session started at ${data.url}
 `);
       return;
+    case "rebuild":
+      if (data.status === "started") return;
+      if (data.status === "success") {
+        process.stdout.write(`Sporades dev session rebuilt at ${data.url}
+`);
+        return;
+      }
+      break;
     case "service":
       return;
     case "fatal":

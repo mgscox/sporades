@@ -369,7 +369,9 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     createWebSocketHub,
     drainWebSocketFrames,
     closeWebSocketClient,
+    encodeWebSocketJson,
     sendJson,
+    sendJsonWithCompletion,
     routeEndpoint,
     runEndpoint,
     writeEndpointResult,
@@ -6742,7 +6744,7 @@ function validateJourneyJson(value, depth, seen) {
 function journeyError(id, code = "JOURNEY_NOT_ENABLED", message = "User journey tracking is not enabled for this Capsule.", hint = "Declare journey: { enabled: true } on capsule().") {
     return { id: id ?? null, type: "error", data: null, error: { code, message, hint } };
 }
-export function createWebSocketHub(getDatabase, trustedTransport = null) {
+export function createWebSocketHub(getDatabase, trustedRefresh = null) {
     const clients = new Set();
     const journeys = new Map();
     const connectionTokens = new Map();
@@ -6800,7 +6802,6 @@ export function createWebSocketHub(getDatabase, trustedTransport = null) {
                 journeySubscriptions: new Set(),
             };
             clients.add(client);
-            trustedTransport?.connected?.(client, (message) => sendJson(client, message));
             socket.on("data", (chunk) => {
                 client.lastSeenAt = new Date().toISOString();
                 client.buffer = Buffer.concat([client.buffer, chunk]);
@@ -6808,7 +6809,7 @@ export function createWebSocketHub(getDatabase, trustedTransport = null) {
             });
             const removeClient = () => {
                 clients.delete(client);
-                trustedTransport?.disconnected?.(client);
+                trustedRefresh?.disconnected(client.id);
                 client.subscriptions.clear();
                 client.journeySubscriptions.clear();
                 client.journey = null;
@@ -6821,7 +6822,7 @@ export function createWebSocketHub(getDatabase, trustedTransport = null) {
                 getDatabase().clock.clearTimer(journeyExpiryTimer);
             journeyExpiryTimer = null;
             for (const client of clients) {
-                trustedTransport?.disconnected?.(client);
+                trustedRefresh?.disconnected(client.id);
                 closeWebSocketClient(client);
             }
             clients.clear();
@@ -7029,8 +7030,16 @@ export function createWebSocketHub(getDatabase, trustedTransport = null) {
             });
             return;
         }
-        if (await trustedTransport?.message?.(client, message))
+        if (trustedRefresh && message.type === trustedRefresh.subscribeType) {
+            const requestId = typeof message.id === "string" && message.id.length <= 128 ? message.id : null;
+            await trustedRefresh.subscribe(client.id, requestId, (outgoing) => sendJsonWithCompletion(client, outgoing));
             return;
+        }
+        if (trustedRefresh && message.type === trustedRefresh.receivedType) {
+            if (Number.isSafeInteger(message.sequence) && message.sequence >= 1)
+                trustedRefresh.received(client.id, message.sequence);
+            return;
+        }
         const database = getDatabase();
         const messageSessionToken = typeof message.sessionToken === "string" && message.sessionToken.length > 0 ? message.sessionToken : client.session.token;
         const resolvedSession = await resolveAnonymousSession(database, messageSessionToken ?? null);
@@ -8281,7 +8290,7 @@ function closeWebSocketClient(client) {
         client.socket.destroy();
     }
 }
-function sendJson(client, message) {
+function encodeWebSocketJson(message) {
     const payload = Buffer.from(JSON.stringify(message));
     let header;
     if (payload.length < 126) {
@@ -8299,7 +8308,30 @@ function sendJson(client, message) {
         header[1] = 127;
         header.writeBigUInt64BE(BigInt(payload.length), 2);
     }
-    client.socket.write(Buffer.concat([header, payload]));
+    return Buffer.concat([header, payload]);
+}
+function sendJson(client, message) {
+    client.socket.write(encodeWebSocketJson(message));
+}
+function sendJsonWithCompletion(client, message, timeoutMs = 250) {
+    return new Promise((resolve) => {
+        let settled = false;
+        let backpressured = false;
+        const finish = (status) => {
+            if (settled)
+                return;
+            settled = true;
+            clearTimeout(timer);
+            resolve({ status, backpressured });
+        };
+        const timer = setTimeout(() => finish("write-timeout"), timeoutMs);
+        try {
+            backpressured = !client.socket.write(encodeWebSocketJson(message), (error) => finish(error ? "write-failed" : "written"));
+        }
+        catch {
+            finish("write-failed");
+        }
+    });
 }
 export async function runQuery(database, auth, queryName) {
     let context;

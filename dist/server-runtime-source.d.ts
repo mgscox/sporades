@@ -1309,7 +1309,14 @@ export declare function validateReadOnlyInspectionSql(sql: any): {
     ok: true;
 };
 export declare function simulateLocalIdentitySession(database: LooseRecord, options?: LooseRecord): Promise<any>;
-export declare function createWebSocketHub(getDatabase: () => any, trustedTransport?: any): {
+type TrustedRefreshTransport = {
+    subscribeType: "dev.refresh.subscribe";
+    receivedType: "dev.refresh.received";
+    subscribe(connectionId: string, requestId: string | null, send: (message: LooseRecord) => Promise<LooseRecord>): Promise<void> | void;
+    received(connectionId: string, sequence: number): void;
+    disconnected(connectionId: string): void;
+};
+export declare function createWebSocketHub(getDatabase: () => any, trustedRefresh?: TrustedRefreshTransport | null): {
     createConnectionToken(): string;
     accept(request: IncomingMessage, socket: Duplex): Promise<void>;
     disconnectAll(): void;

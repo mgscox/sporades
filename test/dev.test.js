@@ -309,6 +309,18 @@ function captureJsonEvents(child) {
   };
 }
 
+function assertDevRefreshDelivery(refresh, sequence) {
+  assert.equal(refresh.sequence, sequence);
+  assert.equal(refresh.clientsAttempted, 1);
+  assert.equal(refresh.clientsDelivered, 1);
+  assert.equal(refresh.clientsTimedOut, 0);
+  assert.equal(refresh.clientsDisconnected, 0);
+  assert(refresh.framesAttempted >= 1, JSON.stringify(refresh));
+  assert(refresh.framesWritten >= 0 && refresh.framesWritten <= refresh.framesAttempted, JSON.stringify(refresh));
+  assert(refresh.framesBackpressured >= 0 && refresh.framesBackpressured <= refresh.framesAttempted, JSON.stringify(refresh));
+  assert(refresh.framesFailed >= 0 && refresh.framesFailed <= refresh.framesAttempted, JSON.stringify(refresh));
+}
+
 async function waitForStdoutLine(child, predicate) {
   return new Promise((resolve, reject) => {
     let stdout = "";
@@ -2167,7 +2179,10 @@ for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire
       assert.notEqual(rebuiltSource, original, `${template} edit must change generated output`);
       const refresh = messages.next((message) => message.type === "refresh");
       await writeFile(appPath, rebuiltSource);
-      const refreshMessage = await refresh;
+      const refreshMessage = await refresh.catch((error) => {
+        error.message += ` Captured process events: ${JSON.stringify(events.events)}`;
+        throw error;
+      });
       assert.deepEqual(refreshMessage, { id: null, type: "refresh", data: { mode: "full-page", sequence: 1 }, error: null });
       assert.equal(events.events.some((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success"), false, "rebuild success waits for refresh receipt");
       if (foreignSocket) {
@@ -2180,7 +2195,7 @@ for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire
       socket.send(JSON.stringify({ id: null, type: "dev.refresh.received", sequence: refreshMessage.data.sequence }));
       const rebuilt = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
       assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "svelte", toolchain: "vite" });
-      assert.deepEqual(rebuilt.data.refresh, { sequence: 1, clientsAttempted: 1, clientsDelivered: 1, clientsTimedOut: 0, clientsDisconnected: 0, clientsSendFailed: 0 }, "success is emitted after sequenced delivery acknowledgment");
+      assertDevRefreshDelivery(rebuilt.data.refresh, 1);
       assert.equal(messages.history.filter((message) => message.type === "refresh").length, 1, "one successful edit emits exactly one full-page refresh");
       const lastGood = scrub(await (await fetch(started.data.url)).text());
       assert.notEqual(lastGood, initialHtml, "the successful edit changes the served Vite output tree");
@@ -2202,13 +2217,12 @@ for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire
       socket.send(JSON.stringify({ id: null, type: "dev.refresh.received", sequence: recoveredMessage.data.sequence }));
       const recovered = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
       assert.deepEqual(recovered.data.build, { phase: "client", framework: "svelte", toolchain: "vite" });
-      assert.deepEqual(recovered.data.refresh, { sequence: 2, clientsAttempted: 1, clientsDelivered: 1, clientsTimedOut: 0, clientsDisconnected: 0, clientsSendFailed: 0 });
+      assertDevRefreshDelivery(recovered.data.refresh, 2);
       assert.equal(messages.history.filter((message) => message.type === "refresh").length, 2, "recovery emits one additional full-page refresh");
     } finally {
       messages?.dispose();
       foreignMessages?.dispose();
-      foreignSocket?.close();
-      socket?.close();
+      await Promise.all([closeSocketGracefully(foreignSocket), closeSocketGracefully(socket)]);
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
       events.dispose();
@@ -2244,13 +2258,18 @@ test("Dev refresh delivery reports bounded timeout and disconnect outcomes witho
       await writeFile(appPath, original.replace("</main>", "<p>Partial refresh delivery</p></main>"));
       await Promise.all(captures.map((capture) => capture.next((message) => message.type === "refresh")));
       sockets[1].close();
+      const resent = await captures[0].next((message) => message.type === "refresh");
+      assert.equal(resent.data.sequence, 1, "an unacknowledged sequence is resent without advancing");
       const rebuilt = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
-      assert.deepEqual(rebuilt.data.refresh, {
-        sequence: 1, clientsAttempted: 2, clientsDelivered: 0, clientsTimedOut: 1, clientsDisconnected: 1, clientsSendFailed: 0,
-      });
+      assert.equal(rebuilt.data.refresh.sequence, 1);
+      assert.equal(rebuilt.data.refresh.clientsAttempted, 2);
+      assert.equal(rebuilt.data.refresh.clientsDelivered, 0);
+      assert.equal(rebuilt.data.refresh.clientsTimedOut, 1);
+      assert.equal(rebuilt.data.refresh.clientsDisconnected, 1);
+      assert(rebuilt.data.refresh.framesAttempted >= 3, JSON.stringify(rebuilt.data.refresh));
     } finally {
       captures.forEach((capture) => capture.dispose());
-      sockets.forEach((socket) => socket.close());
+      await Promise.all(sockets.map(closeSocketGracefully));
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
       events.dispose();
@@ -11324,6 +11343,16 @@ function waitForSocketClose(socket) {
     socket.addEventListener("close", onClose);
     socket.addEventListener("error", onError);
   });
+}
+
+async function closeSocketGracefully(socket) {
+  if (!socket || socket.readyState === WebSocket.CLOSED) return;
+  const closed = new Promise((resolve) => {
+    const timeout = setTimeout(resolve, 1_000);
+    socket.addEventListener("close", () => { clearTimeout(timeout); resolve(); }, { once: true });
+  });
+  if (socket.readyState !== WebSocket.CLOSING) socket.close();
+  await closed;
 }
 
 async function openWebSocket(url) {

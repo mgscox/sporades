@@ -332,6 +332,7 @@ function createConnection() {
   const journeySubscriptions = new Map();
   let latestAuthUserId = null;
   let pageRetired = false;
+  ${options.devRefresh ? "let latestDevRefreshSequence = 0;" : ""}
   let journeyRetireOwner = null;
   window.addEventListener?.("pagehide", () => {
     pageRetired = true;
@@ -380,8 +381,14 @@ function createConnection() {
     socket.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
       ${options.devRefresh ? `if (message.type === "refresh" && message.data?.mode === "full-page") {
-        send({ id: null, type: "dev.refresh.received", sequence: message.data.sequence });
-        window.location.reload();
+        const refreshSequence = message.data.sequence;
+        if (Number.isSafeInteger(refreshSequence) && refreshSequence >= 1) {
+          send({ id: null, type: "dev.refresh.received", sequence: refreshSequence });
+          if (refreshSequence > latestDevRefreshSequence) {
+            latestDevRefreshSequence = refreshSequence;
+            window.location.reload();
+          }
+        }
         return;
       }` : ""}
       if (message.type === "auth.result" || message.type === "auth.session.replace") {

@@ -411,7 +411,9 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   createWebSocketHub,
   drainWebSocketFrames,
   closeWebSocketClient,
+  encodeWebSocketJson,
   sendJson,
+  sendJsonWithCompletion,
   routeEndpoint,
   runEndpoint,
   writeEndpointResult,
@@ -7492,7 +7494,15 @@ function journeyError(id: any, code = "JOURNEY_NOT_ENABLED", message = "User jou
   return { id: id ?? null, type: "error", data: null, error: { code, message, hint } };
 }
 
-export function createWebSocketHub(getDatabase: () => any, trustedTransport: any = null) {
+type TrustedRefreshTransport = {
+  subscribeType: "dev.refresh.subscribe";
+  receivedType: "dev.refresh.received";
+  subscribe(connectionId: string, requestId: string | null, send: (message: LooseRecord) => Promise<LooseRecord>): Promise<void> | void;
+  received(connectionId: string, sequence: number): void;
+  disconnected(connectionId: string): void;
+};
+
+export function createWebSocketHub(getDatabase: () => any, trustedRefresh: TrustedRefreshTransport | null = null) {
   const clients = new Set<any>();
   const journeys = new Map<string, any>();
   const connectionTokens = new Map<string, number>();
@@ -7555,7 +7565,6 @@ export function createWebSocketHub(getDatabase: () => any, trustedTransport: any
         journeySubscriptions: new Set(),
       };
       clients.add(client);
-      trustedTransport?.connected?.(client, (message: any) => sendJson(client, message));
       socket.on("data", (chunk: Uint8Array<ArrayBufferLike>) => {
         client.lastSeenAt = new Date().toISOString();
         client.buffer = Buffer.concat([client.buffer, chunk]);
@@ -7563,7 +7572,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedTransport: any
       });
       const removeClient = () => {
         clients.delete(client);
-        trustedTransport?.disconnected?.(client);
+        trustedRefresh?.disconnected(client.id);
         client.subscriptions.clear();
         client.journeySubscriptions.clear();
         client.journey = null;
@@ -7575,7 +7584,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedTransport: any
       if (journeyExpiryTimer !== null) getDatabase().clock.clearTimer(journeyExpiryTimer);
       journeyExpiryTimer = null;
       for (const client of clients) {
-        trustedTransport?.disconnected?.(client);
+        trustedRefresh?.disconnected(client.id);
         closeWebSocketClient(client);
       }
       clients.clear();
@@ -7790,7 +7799,15 @@ export function createWebSocketHub(getDatabase: () => any, trustedTransport: any
       return;
     }
 
-    if (await trustedTransport?.message?.(client, message)) return;
+    if (trustedRefresh && message.type === trustedRefresh.subscribeType) {
+      const requestId = typeof message.id === "string" && message.id.length <= 128 ? message.id : null;
+      await trustedRefresh.subscribe(client.id, requestId, (outgoing: LooseRecord) => sendJsonWithCompletion(client, outgoing));
+      return;
+    }
+    if (trustedRefresh && message.type === trustedRefresh.receivedType) {
+      if (Number.isSafeInteger(message.sequence) && message.sequence >= 1) trustedRefresh.received(client.id, message.sequence);
+      return;
+    }
 
     const database = getDatabase();
     const messageSessionToken =
@@ -9118,7 +9135,7 @@ function closeWebSocketClient(client: LooseRecord) {
   }
 }
 
-function sendJson(client: LooseRecord, message: LooseRecord) {
+function encodeWebSocketJson(message: LooseRecord) {
   const payload = Buffer.from(JSON.stringify(message));
   let header;
   if (payload.length < 126) {
@@ -9134,7 +9151,30 @@ function sendJson(client: LooseRecord, message: LooseRecord) {
     header[1] = 127;
     header.writeBigUInt64BE(BigInt(payload.length), 2);
   }
-  client.socket.write(Buffer.concat([header, payload]));
+  return Buffer.concat([header, payload]);
+}
+
+function sendJson(client: LooseRecord, message: LooseRecord) {
+  client.socket.write(encodeWebSocketJson(message));
+}
+
+function sendJsonWithCompletion(client: LooseRecord, message: LooseRecord, timeoutMs = 250): Promise<LooseRecord> {
+  return new Promise((resolve) => {
+    let settled = false;
+    let backpressured = false;
+    const finish = (status: string) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve({ status, backpressured });
+    };
+    const timer = setTimeout(() => finish("write-timeout"), timeoutMs);
+    try {
+      backpressured = !client.socket.write(encodeWebSocketJson(message), (error: Error | null | undefined) => finish(error ? "write-failed" : "written"));
+    } catch {
+      finish("write-failed");
+    }
+  });
 }
 
 export async function runQuery(database: LooseRecord, auth: any, queryName: string): Promise<any> {

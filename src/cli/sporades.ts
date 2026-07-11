@@ -132,6 +132,7 @@ const DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";
 const CONTAINER_BINDING_FILE = path.join(".sporades", "binding.json");
 const REMOTE_BINDING_FILE = path.join(".sporades", "remote-binding.json");
 const DEV_REBUILD_DEBOUNCE_MS = 100;
+const DEV_WATCH_SIGNATURE_POLL_MS = 250;
 const DEFAULT_HOST_SCHEME = "https";
 const DEFAULT_HOST_REMOTE_ROOT = "/srv/sporades";
 const DEFAULT_HOST_TLS_MODE = "automatic";
@@ -1602,68 +1603,69 @@ async function inspectContainerSchedules(options: LooseRecord) {
 
 function createDevRefreshController(timeoutMs = 1_000) {
   let sequence = 0;
-  const clients = new Map<any, { send: (message: LooseRecord) => void; subscribed: boolean; pending: Map<number, LooseRecord> }>();
+  const resendMs = 100;
+  const clients = new Map<string, { send: (message: LooseRecord) => Promise<LooseRecord>; pending: Map<number, LooseRecord> }>();
   const settle = (pending: LooseRecord, outcome: string) => {
     if (pending.settled) return;
     pending.settled = true;
     clearTimeout(pending.timer);
-    pending.resolve(outcome);
+    clearTimeout(pending.resendTimer);
+    pending.resolve({ outcome, attempts: pending.attempts, written: pending.written, backpressured: pending.backpressured, failed: pending.failed });
   };
-  const disconnected = (client: any) => {
-    const state = clients.get(client);
+  const disconnected = (connectionId: string) => {
+    const state = clients.get(connectionId);
     if (!state) return;
-    clients.delete(client);
+    clients.delete(connectionId);
     for (const pending of state.pending.values()) settle(pending, "disconnected");
     state.pending.clear();
   };
   const transport = {
-    connected(client: any, send: (message: LooseRecord) => void) {
-      clients.set(client, { send, subscribed: false, pending: new Map() });
-    },
+    subscribeType: "dev.refresh.subscribe" as const,
+    receivedType: "dev.refresh.received" as const,
     disconnected,
-    message(client: any, message: LooseRecord) {
-      const state = clients.get(client);
-      if (!state) return false;
-      if (message.type === "dev.refresh.subscribe") {
-        state.subscribed = true;
-        state.send({ id: message.id ?? null, type: "dev.refresh.ready", data: { mode: "full-page", sequence }, error: null });
-        return true;
-      }
-      if (message.type === "dev.refresh.received") {
-        const acknowledged = Number.isInteger(message.sequence) ? state.pending.get(message.sequence) : null;
-        if (acknowledged) {
-          state.pending.delete(message.sequence);
-          settle(acknowledged, "delivered");
-        }
-        return true;
-      }
-      return false;
+    async subscribe(connectionId: string, requestId: string | null, send: (message: LooseRecord) => Promise<LooseRecord>) {
+      const existing = clients.get(connectionId);
+      clients.set(connectionId, { send, pending: existing?.pending ?? new Map() });
+      await send({ id: requestId, type: "dev.refresh.ready", data: { mode: "full-page", sequence }, error: null });
+    },
+    received(connectionId: string, receivedSequence: number) {
+      const state = clients.get(connectionId);
+      const acknowledged = state?.pending.get(receivedSequence);
+      if (!state || !acknowledged) return;
+      state.pending.delete(receivedSequence);
+      settle(acknowledged, "delivered");
     },
   };
   const broadcast = async () => {
     const currentSequence = ++sequence;
-    const targets = [...clients.values()].filter((client) => client.subscribed);
-    const outcomes = await Promise.all(targets.map((client) => new Promise<string>((resolve) => {
-      const pending: LooseRecord = { resolve, settled: false, timer: null };
+    const targets = [...clients.values()];
+    const outcomes = await Promise.all(targets.map((client) => new Promise<any>((resolve) => {
+      const pending: LooseRecord = { resolve, settled: false, timer: null, resendTimer: null, attempts: 0, written: 0, backpressured: 0, failed: 0 };
       pending.timer = setTimeout(() => {
         client.pending.delete(currentSequence);
         settle(pending, "timed-out");
       }, timeoutMs);
       client.pending.set(currentSequence, pending);
-      try {
-        client.send({ id: null, type: "refresh", data: { mode: "full-page", sequence: currentSequence }, error: null });
-      } catch {
-        client.pending.delete(currentSequence);
-        settle(pending, "send-failed");
-      }
+      const sendAttempt = async () => {
+        if (pending.settled) return;
+        pending.attempts += 1;
+        const result = await client.send({ id: null, type: "refresh", data: { mode: "full-page", sequence: currentSequence }, error: null }).catch(() => ({ status: "write-failed", backpressured: false }));
+        if (result.status === "written") pending.written += 1; else pending.failed += 1;
+        if (result.backpressured) pending.backpressured += 1;
+        if (!pending.settled) pending.resendTimer = setTimeout(sendAttempt, resendMs);
+      };
+      void sendAttempt();
     })));
     return {
       sequence: currentSequence,
       clientsAttempted: targets.length,
-      clientsDelivered: outcomes.filter((outcome) => outcome === "delivered").length,
-      clientsTimedOut: outcomes.filter((outcome) => outcome === "timed-out").length,
-      clientsDisconnected: outcomes.filter((outcome) => outcome === "disconnected").length,
-      clientsSendFailed: outcomes.filter((outcome) => outcome === "send-failed").length,
+      clientsDelivered: outcomes.filter((result: any) => result.outcome === "delivered").length,
+      clientsTimedOut: outcomes.filter((result: any) => result.outcome === "timed-out").length,
+      clientsDisconnected: outcomes.filter((result: any) => result.outcome === "disconnected").length,
+      framesAttempted: outcomes.reduce((total: number, result: any) => total + result.attempts, 0),
+      framesWritten: outcomes.reduce((total: number, result: any) => total + result.written, 0),
+      framesBackpressured: outcomes.reduce((total: number, result: any) => total + result.backpressured, 0),
+      framesFailed: outcomes.reduce((total: number, result: any) => total + result.failed, 0),
     };
   };
   return { transport, broadcast };
@@ -2012,6 +2014,13 @@ async function startDevSession(options: LooseRecord) {
     let rollbackLegacy: (() => Promise<void>) | null = null;
     let rollbackServiceEnv: (() => Promise<void>) | null = null;
     let refresh: Awaited<ReturnType<typeof devRefresh.broadcast>> | null = null;
+    emitDevEvent(options, {
+      event: "rebuild",
+      status: "started",
+      url,
+      port: actualPort,
+      build: { phase: change.affectsServerRuntime ? "bundle" : "client", framework: config.client?.framework ?? "react", toolchain: configuredClientToolchain(config) },
+    });
     try {
       const nextConfig = await readProjectConfig(options.projectDir);
       const nextSecurity = resolveEffectiveSecurityPolicy(nextConfig, session);
@@ -2288,19 +2297,19 @@ function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<v
   let pendingChange: { affectsServerRuntime: boolean; configChanged?: boolean } | null = null;
   let rebuildInFlight = false;
   let lastHandledSignature: string | null = null;
+  const observedSignatures = new Map<string, string>();
+  const handledSignatures = new Map<string, string>();
 
   const schedule = (change: { path: string; affectsServerRuntime: boolean; configChanged?: undefined; } | { path: string; affectsServerRuntime: boolean; configChanged: boolean; }) => {
     pendingChange = {
       affectsServerRuntime: Boolean(pendingChange?.affectsServerRuntime || change.affectsServerRuntime),
       configChanged: Boolean(pendingChange?.configChanged || change.configChanged),
     };
-    if (debounceTimer) {
-      clearTimeout(debounceTimer);
-    }
-    debounceTimer = setTimeout(runPendingChange, DEV_REBUILD_DEBOUNCE_MS);
+    if (!debounceTimer) debounceTimer = setTimeout(runPendingChange, DEV_REBUILD_DEBOUNCE_MS);
   };
 
   const runPendingChange = async () => {
+    debounceTimer = null;
     if (rebuildInFlight) {
       return;
     }
@@ -2315,26 +2324,42 @@ function watchDevInputs(projectDir: string, onChange: { (change: any): Promise<v
     try {
       await onChange(currentChange);
       lastHandledSignature = currentSignature;
+      for (const watchedPath of watchedPaths) handledSignatures.set(watchedPath.path, readDevInputSignature([watchedPath]));
     } finally {
       rebuildInFlight = false;
       if (pendingChange) {
-        if (debounceTimer) {
-          clearTimeout(debounceTimer);
-        }
-        debounceTimer = setTimeout(runPendingChange, DEV_REBUILD_DEBOUNCE_MS);
+        if (!debounceTimer) debounceTimer = setTimeout(runPendingChange, DEV_REBUILD_DEBOUNCE_MS);
       }
     }
   };
 
+  const observe = (watchedPath: (typeof watchedPaths)[number]) => {
+    const signature = readDevInputSignature([watchedPath]);
+    if (observedSignatures.get(watchedPath.path) === signature) return;
+    observedSignatures.set(watchedPath.path, signature);
+    schedule(watchedPath);
+  };
+
   for (const watchedPath of watchedPaths) {
+    const signature = readDevInputSignature([watchedPath]);
+    observedSignatures.set(watchedPath.path, signature);
+    handledSignatures.set(watchedPath.path, signature);
     try {
-      watchers.push(watch(watchedPath.path, { recursive: true }, () => schedule(watchedPath)));
+      watchers.push(watch(watchedPath.path, { recursive: true }, () => observe(watchedPath)));
     } catch (error) {
       if (errorDetails(error).code !== "ENOENT") {
         throw error;
       }
     }
   }
+  lastHandledSignature = readDevInputSignature(watchedPaths);
+  const signaturePoll = setInterval(() => {
+    for (const watchedPath of watchedPaths) {
+      observe(watchedPath);
+      if (handledSignatures.get(watchedPath.path) !== readDevInputSignature([watchedPath])) schedule(watchedPath);
+    }
+  }, DEV_WATCH_SIGNATURE_POLL_MS);
+  watchers.push({ close: () => clearInterval(signaturePoll) });
 
   return watchers;
 }
@@ -2361,7 +2386,7 @@ function readDevInputSignature(watchedPaths: LooseRecord[]) {
 function collectPathSignature(filePath: string, entries: any[]) {
   let stats;
   try {
-    stats = statSync(filePath);
+    stats = statSync(filePath, { bigint: true });
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") {
       entries.push(`${filePath}:missing`);
@@ -2382,7 +2407,7 @@ function collectPathSignature(filePath: string, entries: any[]) {
     return;
   }
 
-  entries.push(`${filePath}:file:${stats.size}:${stats.mtimeMs}`);
+  entries.push(`${filePath}:file:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`);
 }
 
 function emitDevEvent(options: LooseRecord, data: LooseRecord, error: any = null) {
@@ -2399,6 +2424,14 @@ function emitDevEvent(options: LooseRecord, data: LooseRecord, error: any = null
     case "started":
       process.stdout.write(`Sporades dev session started at ${data.url}\n`);
       return;
+
+    case "rebuild":
+      if (data.status === "started") return;
+      if (data.status === "success") {
+        process.stdout.write(`Sporades dev session rebuilt at ${data.url}\n`);
+        return;
+      }
+      break;
 
     case "service":
       return;
