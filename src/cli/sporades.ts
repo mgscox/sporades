@@ -3341,7 +3341,6 @@ function readProjectConfigSync(projectDir: string) {
 
 async function startContainerSession(options: LooseRecord) {
   const config = await readProjectConfig(options.projectDir);
-  const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
   const port = options.port ?? config.deploy?.port ?? 4000;
   const runtimeDir = path.join(options.projectDir, ".sporades");
   const containerName = `sporades-${config.name ?? path.basename(options.projectDir)}`;
@@ -3349,6 +3348,7 @@ async function startContainerSession(options: LooseRecord) {
   const existingBinding = await readContainerBinding(bindingPath);
   const previousConsumer = await readPublicTreeConsumer(path.join(runtimeDir, "build"), "container");
   verifyContainerReplacementOwnership(existingBinding, previousConsumer, containerName);
+  const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
 
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const bundle = await createBundle(options.projectDir, config, { publishLegacy: false });

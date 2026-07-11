@@ -971,6 +971,58 @@ test("Container replacement fails closed before mutation when binding and consum
   }
 });
 
+test("Container ownership preflight rejects configured SSH changes before access or audit mutation", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "ssh-ownership-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, "ssh-ownership-island"));
+    await installFakeReact(projectDir);
+    await updateSporadesConfig(projectDir, (config) => {
+      config.ssh = { authorizedKeys: [{ key: TEST_PUBLIC_KEY }] };
+    });
+    await deployOwnedContainer(projectDir, dir, "ssh-owned-container");
+
+    const buildDir = path.join(projectDir, ".sporades", "build");
+    const bindingPath = path.join(projectDir, ".sporades", "binding.json");
+    const consumerPath = path.join(buildDir, ".public-trees", ".consumers", "container.json");
+    const authorizedKeysPath = path.join(projectDir, ".sporades", "ssh", "authorized_keys");
+    const auditPath = path.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
+    const lockPath = path.join(projectDir, ".sporades", ".container-lifecycle-lock");
+    const consumer = JSON.parse(await readFile(consumerPath, "utf8"));
+    consumer.token = "c".repeat(32);
+    consumer.identity = "ssh-successor-container";
+    await writeFile(consumerPath, `${JSON.stringify(consumer)}\n`);
+    await updateSporadesConfig(projectDir, (config) => {
+      config.ssh.authorizedKeys = [{ key: TEST_PUBLIC_KEY.replace("test@example", "changed@example") }];
+    });
+
+    const observedPaths = {
+      authorizedKeys: authorizedKeysPath,
+      audit: auditPath,
+      binding: bindingPath,
+      consumer: consumerPath,
+      active: path.join(buildDir, ".public-trees", "active.json"),
+      server: path.join(buildDir, "server.mjs"),
+      client: path.join(buildDir, "client.js"),
+    };
+    const before = Object.fromEntries(await Promise.all(Object.entries(observedPaths).map(async ([key, file]) => [key, await readOptional(file)])));
+    const beforeFiles = await relativeFiles(buildDir);
+    const docker = await installFakeDocker(path.join(dir, "replacement"), "ssh-candidate-container");
+
+    const replacement = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+
+    assert.equal(replacement.code, 1, `${replacement.stderr}\n${replacement.stdout}`);
+    assert.equal(JSON.parse(replacement.stdout).error.message, "Container replacement ownership could not be verified.");
+    assert.deepEqual(await docker.calls(), []);
+    assert.deepEqual(
+      Object.fromEntries(await Promise.all(Object.entries(observedPaths).map(async ([key, file]) => [key, await readOptional(file)]))),
+      before,
+    );
+    assert.deepEqual(await relativeFiles(buildDir), beforeFiles);
+    await assert.rejects(stat(lockPath), (error) => error.code === "ENOENT");
+  });
+});
+
 test("ambiguous docker run failure never removes an unrelated canonical-name container", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", "name-conflict-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
@@ -1114,6 +1166,7 @@ test("sporades deploy rejects invalid SSH keys before replacing the existing Con
 
     const projectDir = await realpath(path.join(dir, "invalid-ssh-island"));
     await installFakeReact(projectDir);
+    await deployOwnedContainer(projectDir, dir, "container-existing");
     await updateSporadesConfig(projectDir, (config) => {
       config.ssh = {
         authorizedKeys: [
@@ -1121,11 +1174,6 @@ test("sporades deploy rejects invalid SSH keys before replacing the existing Con
         ],
       };
     });
-    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
-    await writeFile(
-      path.join(projectDir, ".sporades", "binding.json"),
-      `${JSON.stringify({ containerId: "container-existing", containerName: "sporades-invalid-ssh-island" }, null, 2)}\n`,
-    );
     const docker = await installFakeDocker(dir, "container-new");
 
     const deployResult = await runCli(["deploy", "--json"], {
@@ -1154,6 +1202,7 @@ test("sporades deploy rejects malformed SSH key blobs before replacing the exist
 
     const projectDir = await realpath(path.join(dir, "bad-blob-island"));
     await installFakeReact(projectDir);
+    await deployOwnedContainer(projectDir, dir, "container-existing");
     await updateSporadesConfig(projectDir, (config) => {
       config.ssh = {
         authorizedKeys: [
@@ -1161,11 +1210,6 @@ test("sporades deploy rejects malformed SSH key blobs before replacing the exist
         ],
       };
     });
-    await mkdir(path.join(projectDir, ".sporades"), { recursive: true });
-    await writeFile(
-      path.join(projectDir, ".sporades", "binding.json"),
-      `${JSON.stringify({ containerId: "container-existing", containerName: "sporades-bad-blob-island" }, null, 2)}\n`,
-    );
     const docker = await installFakeDocker(dir, "container-new");
 
     const deployResult = await runCli(["deploy", "--json"], {
