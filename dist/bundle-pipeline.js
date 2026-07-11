@@ -4,7 +4,7 @@ import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv
 import { serverRuntimeModuleSource } from "./server.js";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 import { createServerBundleSource } from "./templates/server-bundle-template.js";
-import { createPublicTree, discardPublicTree } from "./public-tree.js";
+import { createPublicTree, discardPublicTree, releasePublicTreeLease } from "./public-tree.js";
 const FRAMEWORK_BUNDLE_CONFIG = {
     react: {
         jsxImportSource: "react",
@@ -75,6 +75,7 @@ export async function createBundle(projectDir, config, options = {}) {
         }
         let previous;
         const activeTreePath = path.join(buildDir, ".public-trees", "active.json");
+        const candidateTreeName = path.basename(publicTree.root);
         let previousActiveTree;
         try {
             previous = await Promise.all(legacyFiles.map(async (file) => ({
@@ -92,11 +93,18 @@ export async function createBundle(projectDir, config, options = {}) {
             });
             await publishLegacyBundles(buildDir, legacyFiles);
             try {
-                await replaceBundleStateFile(activeTreePath, `${JSON.stringify({ tree: path.basename(publicTree.root) })}\n`);
+                options.activeReferenceFault?.("before-active-write");
+                await replaceBundleStateFile(activeTreePath, `${JSON.stringify({ tree: candidateTreeName })}\n`);
+                options.activeReferenceFault?.("after-active-write");
             }
             catch (error) {
-                await publishLegacyBundles(buildDir, previous.filter((file) => file.contents !== null));
-                await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm(file.target, { force: true })));
+                const activeState = await inspectActiveTreeState(activeTreePath);
+                const previousState = previousActiveTree === null
+                    ? { kind: "missing" }
+                    : parseActiveTreeState(previousActiveTree.toString("utf8"));
+                if (!activeTreeStatesEqual(activeState, previousState))
+                    throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
+                await restoreLegacyBundleFiles(buildDir, previous);
                 throw error;
             }
             legacyPublished = true;
@@ -105,22 +113,42 @@ export async function createBundle(projectDir, config, options = {}) {
             throw tagBuildError(error, "publish", frameworkBundleConfig.jsxImportSource);
         }
         return async () => {
-            const existing = previous.filter((file) => file.contents !== null);
-            await publishLegacyBundles(buildDir, existing);
-            await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm(file.target, { force: true })));
-            if (previousActiveTree === null)
-                await rm(activeTreePath, { force: true });
-            else
-                await replaceBundleStateFile(activeTreePath, previousActiveTree);
+            try {
+                options.activeReferenceFault?.("before-active-restore");
+                if (previousActiveTree === null)
+                    await rm(activeTreePath, { force: true });
+                else
+                    await replaceBundleStateFile(activeTreePath, previousActiveTree);
+                options.activeReferenceFault?.("after-active-restore");
+            }
+            catch {
+                const activeState = await inspectActiveTreeState(activeTreePath);
+                const previousState = previousActiveTree === null
+                    ? { kind: "missing" }
+                    : parseActiveTreeState(previousActiveTree.toString("utf8"));
+                if (!activeTreeStatesEqual(activeState, previousState))
+                    throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
+            }
+            await restoreLegacyBundleFiles(buildDir, previous);
             legacyPublished = false;
         };
     };
     if (options.publishLegacy !== false) {
         try {
-            await publishLegacy();
+            const rollback = await publishLegacy();
+            try {
+                await releasePublicTreeLease(publicTree);
+            }
+            catch (error) {
+                await rollback();
+                throw error;
+            }
         }
         catch (error) {
-            await discardPublicTree(publicTree);
+            if (candidateDiscardIsForbidden(error))
+                await releasePublicTreeLease(publicTree).catch(() => { });
+            else
+                await discardPublicTree(publicTree);
             throw error;
         }
     }
@@ -128,6 +156,7 @@ export async function createBundle(projectDir, config, options = {}) {
         paths,
         buildDir,
         publishLegacy,
+        releasePublicTreeLease: () => releasePublicTreeLease(publicTree),
         serverRuntime: {
             source: serverSource,
             env: serverEnv,
@@ -157,6 +186,38 @@ export async function createBundle(projectDir, config, options = {}) {
                 : null,
         },
     };
+}
+async function restoreLegacyBundleFiles(buildDir, previous) {
+    const existing = previous.filter((file) => file.contents !== null);
+    await publishLegacyBundles(buildDir, existing);
+    await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm(file.target, { force: true })));
+}
+async function inspectActiveTreeState(filePath) {
+    try {
+        return parseActiveTreeState(await readFile(filePath, "utf8"));
+    }
+    catch (error) {
+        if (errorDetails(error).code === "ENOENT")
+            return { kind: "missing" };
+        return { kind: "invalid" };
+    }
+}
+function parseActiveTreeState(raw) {
+    try {
+        const tree = JSON.parse(raw)?.tree;
+        return typeof tree === "string" && !tree.includes("/") && !tree.includes("\\")
+            ? { kind: "valid", tree }
+            : { kind: "invalid" };
+    }
+    catch {
+        return { kind: "invalid" };
+    }
+}
+function activeTreeStatesEqual(left, right) {
+    return left.kind === right.kind && (left.kind !== "valid" || (right.kind === "valid" && left.tree === right.tree));
+}
+function activeReferenceRecoveryError(candidateTree, activeState) {
+    return commandError("Active public tree recovery is incomplete.", "Preserved the candidate public tree and matching legacy Bundles for deterministic recovery.", { candidateDiscard: "forbidden", candidateTree, activeState });
 }
 async function replaceBundleStateFile(filePath, contents) {
     const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -517,6 +578,10 @@ function errorDetails(error) {
         return {};
     }
     return typeof error === "object" ? error : { message: String(error) };
+}
+function candidateDiscardIsForbidden(error) {
+    const diagnostics = errorDetails(error).diagnostics;
+    return isRecord(diagnostics) && diagnostics.candidateDiscard === "forbidden";
 }
 function bundleErrorMessage(error) {
     const details = errorDetails(error);

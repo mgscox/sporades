@@ -1579,6 +1579,9 @@ async function startDevSession(options) {
             }
             const previousBundle = bundle;
             bundle = rebuild;
+            rebuild.releasePublicTreeLease().catch((error) => {
+                reportDevPublicCleanupDegradation(options, runtime, url, actualPort, nextConfig, error);
+            });
             discardPublicTree(previousBundle.staticFiles.publicTree).catch((error) => {
                 reportDevPublicCleanupDegradation(options, runtime, url, actualPort, nextConfig, error);
             });
@@ -1616,9 +1619,16 @@ async function startDevSession(options) {
                 }
             }
             if (rebuild && rebuild !== bundle) {
-                await discardPublicTree(rebuild.staticFiles.publicTree).catch((cleanupError) => {
-                    reportDevPublicCleanupDegradation(options, runtime, url, actualPort, config, cleanupError);
-                });
+                if (errorDetails(rebuildError).diagnostics?.candidateDiscard === "forbidden") {
+                    await rebuild.releasePublicTreeLease().catch((cleanupError) => {
+                        reportDevPublicCleanupDegradation(options, runtime, url, actualPort, config, cleanupError);
+                    });
+                }
+                else {
+                    await discardPublicTree(rebuild.staticFiles.publicTree).catch((cleanupError) => {
+                        reportDevPublicCleanupDegradation(options, runtime, url, actualPort, config, cleanupError);
+                    });
+                }
             }
             const details = errorDetails(rebuildError);
             runtime.database.log.emit({

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdtemp, mkdir, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, mkdir, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -11,6 +11,8 @@ import { fileURLToPath } from "node:url";
 
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
+import { createBundle } from "../dist/bundle-pipeline.js";
+import { cleanupPublicTrees, discardPublicTree } from "../dist/public-tree.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -844,7 +846,7 @@ test("sporades dev builds and safely serves the normalized public tree", async (
       assert.equal(started.ok, true, JSON.stringify(started.error));
 
       const publicTreesDir = path.join(projectDir, ".sporades", "build", ".public-trees");
-      const publicTreeNames = (await readdir(publicTreesDir)).filter((name) => !name.startsWith(".staging-") && name !== "active.json");
+      const publicTreeNames = (await readdir(publicTreesDir)).filter((name) => !name.startsWith(".") && name !== "active.json");
       assert.equal(publicTreeNames.length, 1);
       const publicDir = path.join(publicTreesDir, publicTreeNames[0]);
       const sourceHtml = await readFile(path.join(projectDir, "index.html"), "utf8");
@@ -936,7 +938,7 @@ test("sporades dev does not activate a client tree when legacy Bundle publicatio
       assert.equal(await (await fetch(`${started.data.url}/client.js`)).text(), before);
       assert.equal(await readFile(legacyClientPath, "utf8"), legacyClientBefore);
       const treeNames = (await readdir(path.join(projectDir, ".sporades", "build", ".public-trees"), { withFileTypes: true }))
-        .filter((entry) => entry.isDirectory() && !entry.name.startsWith(".staging-"));
+        .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."));
       assert.equal(treeNames.length, 1);
 
       await rm(serverBundle, { recursive: true });
@@ -1069,6 +1071,47 @@ test("sporades dev keeps the old Runtime active when service-env state cannot be
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
     }
+  });
+});
+
+test("active-reference rollback failure preserves the referenced candidate and matching legacy Bundles", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "reference-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "reference-island");
+    await installFakeReact(projectDir);
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    await createBundle(projectDir, config);
+
+    const clientPath = path.join(projectDir, "client", "index.tsx");
+    const source = await readFile(clientPath, "utf8");
+    await writeFile(clientPath, source.replace("Blank Sporades Capsule", "Recoverable Candidate Capsule"));
+    let failRestoreOnce = true;
+    const candidate = await createBundle(projectDir, config, {
+      publishLegacy: false,
+      activeReferenceFault: (event) => {
+        if (event === "before-active-restore" && failRestoreOnce) {
+          failRestoreOnce = false;
+          throw new Error("injected active-reference restore failure");
+        }
+      },
+    });
+    const rollback = await candidate.publishLegacy();
+    await assert.rejects(rollback(), (error) => (
+      error.message === "Active public tree recovery is incomplete."
+      && error.diagnostics.candidateDiscard === "forbidden"
+    ));
+    const activePath = path.join(projectDir, ".sporades", "build", ".public-trees", "active.json");
+    assert.equal(JSON.parse(await readFile(activePath, "utf8")).tree, path.basename(candidate.staticFiles.publicDir));
+    assert.match(await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8"), /Recoverable Candidate Capsule/);
+    await access(candidate.staticFiles.publicDir);
+    await assert.rejects(discardPublicTree(candidate.staticFiles.publicTree), (error) => error.diagnostics.candidateDiscard === "forbidden");
+    await rm(activePath);
+    await mkdir(activePath);
+    await assert.rejects(rollback(), (error) => error.diagnostics.candidateDiscard === "forbidden");
+    await assert.rejects(cleanupPublicTrees(path.join(projectDir, ".sporades", "build")), /Public tree cleanup degraded/);
+    await access(candidate.staticFiles.publicDir);
+    assert.match(await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8"), /Recoverable Candidate Capsule/);
   });
 });
 
@@ -2796,7 +2839,7 @@ test("sporades dev streams rebuild failure events and keeps serving the last cli
       const clientPath = path.join(projectDir, "client", "index.tsx");
       const originalClient = await readFile(clientPath, "utf8");
       const publicTreesDir = path.join(projectDir, ".sporades", "build", ".public-trees");
-      const activeTreeName = (await readdir(publicTreesDir)).find((name) => !name.startsWith(".staging-") && name !== "active.json");
+      const activeTreeName = (await readdir(publicTreesDir)).find((name) => !name.startsWith(".") && name !== "active.json");
       const activeClientPath = path.join(publicTreesDir, activeTreeName, "client.js");
       const lastSuccessfulPublic = await readFile(activeClientPath, "utf8");
 

@@ -3,7 +3,7 @@
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes4, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes5, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
 import { appendFile, chmod as chmod2, lstat as lstat4, mkdir as mkdir6, readdir as readdir2, readFile as readFile7, rename as rename3, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
@@ -10166,6 +10166,7 @@ function unsealRuntimeServerEnv(envelope, privateKey) {
 
 // src/public-tree.ts
 import { lstat, mkdir as mkdir2, readdir, readFile as readFile2, rename, rm, writeFile as writeFile2 } from "node:fs/promises";
+import { randomBytes as randomBytes3 } from "node:crypto";
 import path2 from "node:path";
 var PUBLIC_TREE_LIMITS = {
   files: 512,
@@ -10173,6 +10174,7 @@ var PUBLIC_TREE_LIMITS = {
   totalBytes: 64 * 1024 * 1024,
   pathBytes: 240
 };
+var LIVE_PUBLIC_TREE_LEASES = /* @__PURE__ */ new Set();
 async function createPublicTree(buildDir, files, options = {}) {
   const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   const treesDir = path2.join(buildDir, ".public-trees");
@@ -10180,32 +10182,62 @@ async function createPublicTree(buildDir, files, options = {}) {
   const publicDir = path2.join(treesDir, nonce);
   const normalizedFiles = normalizePublicFiles(files);
   await mkdir2(treesDir, { recursive: true });
-  await cleanupPublicTrees(buildDir, { maxCompleted: 2, fault: options.cleanupFault });
-  await mkdir2(stagingDir, { recursive: false });
+  const releaseLock = await acquirePublicTreeLock(treesDir);
   let published = false;
+  let lease = null;
   try {
+    await cleanupPublicTreesUnlocked(buildDir, { maxCompleted: 1, fault: options.cleanupFault });
+    await mkdir2(stagingDir, { recursive: false });
     for (const file of normalizedFiles) {
       const destination = path2.join(stagingDir, ...file.path.split("/"));
       await mkdir2(path2.dirname(destination), { recursive: true });
       await writeFile2(destination, file.contents);
     }
     await validatePublicTree(stagingDir);
+    lease = await createPublicTreeLease(treesDir, nonce);
     await rename(stagingDir, publicDir);
     published = true;
-    await cleanupPublicTrees(buildDir, { keepRoots: [publicDir], maxCompleted: 2, fault: options.cleanupFault });
+    await cleanupPublicTreesUnlocked(buildDir, { keepRoots: [publicDir], maxCompleted: 1, fault: options.cleanupFault });
     return {
       root: publicDir,
-      assets: new Map(normalizedFiles.map((file) => [file.path, publicAsset(file.path, file.contents)]))
+      assets: new Map(normalizedFiles.map((file) => [file.path, publicAsset(file.path, file.contents)])),
+      lease
     };
   } catch (error) {
     if (published) await rm(publicDir, { recursive: true, force: true });
+    if (lease) await removePublicTreeLease(lease).catch(() => {
+    });
     throw error;
   } finally {
     await rm(stagingDir, { recursive: true, force: true });
+    await releaseLock();
   }
 }
 async function discardPublicTree(tree) {
-  await rm(tree.root, { recursive: true, force: true });
+  const treesDir = path2.dirname(tree.root);
+  const releaseLock = await acquirePublicTreeLock(treesDir);
+  try {
+    const activeReference = await readActivePublicTreeReference(treesDir);
+    if (activeReference === path2.basename(tree.root)) {
+      throw publicTreeError(
+        "Active public tree cannot be discarded.",
+        "Preserve the referenced candidate until the active public tree reference is repaired.",
+        { candidateDiscard: "forbidden", activeTree: activeReference }
+      );
+    }
+    await removePublicTreeLease(tree.lease);
+    await rm(tree.root, { recursive: true, force: true });
+  } finally {
+    await releaseLock();
+  }
+}
+async function releasePublicTreeLease(tree) {
+  const releaseLock = await acquirePublicTreeLock(path2.dirname(tree.root));
+  try {
+    await removePublicTreeLease(tree.lease);
+  } finally {
+    await releaseLock();
+  }
 }
 async function validatePublicTree(root) {
   const rootStats = await lstat(root);
@@ -10261,45 +10293,32 @@ async function validatePublicTree(root) {
   }
   return { fileCount, totalBytes };
 }
-async function cleanupPublicTrees(buildDir, options = {}) {
+async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
   const treesDir = path2.join(buildDir, ".public-trees");
   const entries = await readdir(treesDir, { withFileTypes: true }).catch((error) => {
     if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
     throw error;
   });
   const keepNames = new Set((options.keepRoots ?? []).filter((root) => path2.dirname(root) === treesDir).map((root) => path2.basename(root)));
-  let activeReference = null;
-  let activeReferenceExists = false;
-  try {
-    const activeReferenceRaw = await readFile2(path2.join(treesDir, "active.json"), "utf8");
-    activeReferenceExists = true;
-    activeReference = JSON.parse(activeReferenceRaw)?.tree;
-  } catch (error) {
-    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
-      throw publicTreeError(
-        "Public tree cleanup degraded.",
-        "The active public tree reference could not be read safely; no completed public trees were removed."
-      );
-    }
-  }
-  if (activeReferenceExists && !(typeof activeReference === "string" && !activeReference.includes("/") && !activeReference.includes("\\"))) {
-    throw publicTreeError(
-      "Public tree cleanup degraded.",
-      "The active public tree reference is invalid; no completed public trees were removed."
-    );
-  }
+  const activeReference = await readActivePublicTreeReference(treesDir);
   if (typeof activeReference === "string") {
     keepNames.add(activeReference);
   }
+  const { live: liveLeaseNames, stale: staleLeaseNames } = await publicTreeLeaseStates(treesDir);
+  for (const name of liveLeaseNames) keepNames.add(name);
   const completed = await Promise.all(entries.filter((entry) => entry.isDirectory() && !entry.name.startsWith(".staging-")).map(async (entry) => ({ entry, modifiedAt: (await lstat(path2.join(treesDir, entry.name))).mtimeMs })));
   completed.sort((left, right) => right.modifiedAt - left.modifiedAt);
+  let recoverableCount = 0;
   for (const item of completed) {
-    if (keepNames.size >= (options.maxCompleted ?? 2)) break;
+    if (keepNames.has(item.entry.name)) continue;
+    if (staleLeaseNames.has(item.entry.name)) continue;
+    if (recoverableCount >= (options.maxCompleted ?? 1)) break;
     keepNames.add(item.entry.name);
+    recoverableCount += 1;
   }
   const failures = [];
   for (const entry of entries) {
-    if (entry.name === "active.json") continue;
+    if (entry.name === "active.json" || entry.name === ".leases" || entry.name === ".lifecycle-lock") continue;
     if (keepNames.has(entry.name)) continue;
     const entryPath = path2.join(treesDir, entry.name);
     try {
@@ -10315,6 +10334,7 @@ async function cleanupPublicTrees(buildDir, options = {}) {
       `Could not remove ${failures.length} stale public tree entr${failures.length === 1 ? "y" : "ies"}; the active and recoverable trees were preserved.`
     );
   }
+  await removeStalePublicTreeLeases(treesDir, new Set(completed.map((item) => item.entry.name)));
 }
 async function readPublicAsset(tree, rawPathname) {
   const relativePath = publicPathFromRequest(rawPathname);
@@ -10422,8 +10442,135 @@ function publicContentType(relativePath) {
       return "application/octet-stream";
   }
 }
-function publicTreeError(message, hint) {
-  return Object.assign(new Error(message), { hint });
+async function createPublicTreeLease(treesDir, treeName) {
+  const leasesDir = path2.join(treesDir, ".leases");
+  await mkdir2(leasesDir, { recursive: true });
+  const token = randomBytes3(16).toString("hex");
+  const leasePath = path2.join(leasesDir, `${treeName}.json`);
+  await writeFile2(leasePath, `${JSON.stringify({ tree: treeName, pid: process.pid, token })}
+`, { flag: "wx" });
+  LIVE_PUBLIC_TREE_LEASES.add(token);
+  return { path: leasePath, token };
+}
+async function removePublicTreeLease(lease) {
+  const record = await readFile2(lease.path, "utf8").then(JSON.parse).catch((error) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+    throw error;
+  });
+  if (record && record.token !== lease.token) {
+    throw publicTreeError("Public tree lease ownership changed.", "Preserve the candidate and retry cleanup from its owning build.");
+  }
+  await rm(lease.path, { force: true });
+  LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
+}
+async function publicTreeLeaseStates(treesDir) {
+  const leasesDir = path2.join(treesDir, ".leases");
+  const entries = await readdir(leasesDir).catch((error) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
+    throw error;
+  });
+  const live = /* @__PURE__ */ new Set();
+  const stale = /* @__PURE__ */ new Set();
+  for (const entry of entries) {
+    try {
+      const lease = JSON.parse(await readFile2(path2.join(leasesDir, entry), "utf8"));
+      if (validLeaseRecord(lease)) {
+        if (leaseIsLive(lease)) live.add(lease.tree);
+        else stale.add(lease.tree);
+      } else if (entry.endsWith(".json")) stale.add(entry.slice(0, -5));
+    } catch {
+      if (entry.endsWith(".json")) stale.add(entry.slice(0, -5));
+    }
+  }
+  return { live, stale };
+}
+async function removeStalePublicTreeLeases(treesDir, completedNames) {
+  const leasesDir = path2.join(treesDir, ".leases");
+  const entries = await readdir(leasesDir).catch((error) => {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
+    throw error;
+  });
+  for (const entry of entries) {
+    const leasePath = path2.join(leasesDir, entry);
+    let lease = null;
+    try {
+      lease = JSON.parse(await readFile2(leasePath, "utf8"));
+    } catch {
+    }
+    if (!validLeaseRecord(lease) || !completedNames.has(lease.tree) || !leaseIsLive(lease)) {
+      if (validLeaseRecord(lease)) LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
+      await rm(leasePath, { force: true });
+    }
+  }
+}
+function validLeaseRecord(lease) {
+  return Boolean(
+    lease && typeof lease.tree === "string" && !lease.tree.includes("/") && !lease.tree.includes("\\") && Number.isInteger(lease.pid) && typeof lease.token === "string"
+  );
+}
+function leaseIsLive(lease) {
+  if (lease.pid === process.pid) return LIVE_PUBLIC_TREE_LEASES.has(lease.token);
+  try {
+    process.kill(lease.pid, 0);
+    return true;
+  } catch (error) {
+    return Boolean(error && typeof error === "object" && "code" in error && error.code === "EPERM");
+  }
+}
+async function readActivePublicTreeReference(treesDir) {
+  try {
+    const reference = JSON.parse(await readFile2(path2.join(treesDir, "active.json"), "utf8"))?.tree;
+    if (!(typeof reference === "string" && !reference.includes("/") && !reference.includes("\\"))) throw new Error("invalid reference");
+    return reference;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+    throw publicTreeError(
+      "Public tree cleanup degraded.",
+      "The active public tree reference is invalid; no referenced candidate may be discarded.",
+      { candidateDiscard: "forbidden" }
+    );
+  }
+}
+async function acquirePublicTreeLock(treesDir) {
+  const lockDir = path2.join(treesDir, ".lifecycle-lock");
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    try {
+      await mkdir2(lockDir);
+      await writeFile2(path2.join(lockDir, "owner.json"), `${JSON.stringify({ pid: process.pid })}
+`);
+      return async () => {
+        await rm(lockDir, { recursive: true, force: true });
+      };
+    } catch (error) {
+      if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
+      const ownerPid = await readFile2(path2.join(lockDir, "owner.json"), "utf8").then((raw) => JSON.parse(raw)?.pid).catch(() => null);
+      if (typeof ownerPid === "number" && !processIsLive(ownerPid)) {
+        await rm(lockDir, { recursive: true, force: true });
+        continue;
+      }
+      if (ownerPid === null) {
+        const ageMs = Date.now() - await lstat(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
+        if (ageMs > 1e3) {
+          await rm(lockDir, { recursive: true, force: true });
+          continue;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw publicTreeError("Public tree lifecycle is busy.", "Retry after the other Bundle operation completes.");
+}
+function processIsLive(pid) {
+  if (pid === process.pid) return true;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return Boolean(error && typeof error === "object" && "code" in error && error.code === "EPERM");
+  }
+}
+function publicTreeError(message, hint, diagnostics) {
+  return Object.assign(new Error(message), { hint, ...diagnostics === void 0 ? {} : { diagnostics } });
 }
 
 // src/bundle-pipeline.ts
@@ -10504,6 +10651,7 @@ async function createBundle(projectDir, config, options = {}) {
     }
     let previous;
     const activeTreePath = path3.join(buildDir, ".public-trees", "active.json");
+    const candidateTreeName = path3.basename(publicTree.root);
     let previousActiveTree;
     try {
       previous = await Promise.all(legacyFiles.map(async (file) => ({
@@ -10519,11 +10667,15 @@ async function createBundle(projectDir, config, options = {}) {
       });
       await publishLegacyBundles(buildDir, legacyFiles);
       try {
-        await replaceBundleStateFile(activeTreePath, `${JSON.stringify({ tree: path3.basename(publicTree.root) })}
+        options.activeReferenceFault?.("before-active-write");
+        await replaceBundleStateFile(activeTreePath, `${JSON.stringify({ tree: candidateTreeName })}
 `);
+        options.activeReferenceFault?.("after-active-write");
       } catch (error) {
-        await publishLegacyBundles(buildDir, previous.filter((file) => file.contents !== null));
-        await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm2(file.target, { force: true })));
+        const activeState = await inspectActiveTreeState(activeTreePath);
+        const previousState = previousActiveTree === null ? { kind: "missing" } : parseActiveTreeState(previousActiveTree.toString("utf8"));
+        if (!activeTreeStatesEqual(activeState, previousState)) throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
+        await restoreLegacyBundleFiles(buildDir, previous);
         throw error;
       }
       legacyPublished = true;
@@ -10531,19 +10683,33 @@ async function createBundle(projectDir, config, options = {}) {
       throw tagBuildError(error, "publish", frameworkBundleConfig.jsxImportSource);
     }
     return async () => {
-      const existing = previous.filter((file) => file.contents !== null);
-      await publishLegacyBundles(buildDir, existing);
-      await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm2(file.target, { force: true })));
-      if (previousActiveTree === null) await rm2(activeTreePath, { force: true });
-      else await replaceBundleStateFile(activeTreePath, previousActiveTree);
+      try {
+        options.activeReferenceFault?.("before-active-restore");
+        if (previousActiveTree === null) await rm2(activeTreePath, { force: true });
+        else await replaceBundleStateFile(activeTreePath, previousActiveTree);
+        options.activeReferenceFault?.("after-active-restore");
+      } catch {
+        const activeState = await inspectActiveTreeState(activeTreePath);
+        const previousState = previousActiveTree === null ? { kind: "missing" } : parseActiveTreeState(previousActiveTree.toString("utf8"));
+        if (!activeTreeStatesEqual(activeState, previousState)) throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
+      }
+      await restoreLegacyBundleFiles(buildDir, previous);
       legacyPublished = false;
     };
   };
   if (options.publishLegacy !== false) {
     try {
-      await publishLegacy();
+      const rollback = await publishLegacy();
+      try {
+        await releasePublicTreeLease(publicTree);
+      } catch (error) {
+        await rollback();
+        throw error;
+      }
     } catch (error) {
-      await discardPublicTree(publicTree);
+      if (candidateDiscardIsForbidden(error)) await releasePublicTreeLease(publicTree).catch(() => {
+      });
+      else await discardPublicTree(publicTree);
       throw error;
     }
   }
@@ -10551,6 +10717,7 @@ async function createBundle(projectDir, config, options = {}) {
     paths,
     buildDir,
     publishLegacy,
+    releasePublicTreeLease: () => releasePublicTreeLease(publicTree),
     serverRuntime: {
       source: serverSource,
       env: serverEnv,
@@ -10576,6 +10743,37 @@ async function createBundle(projectDir, config, options = {}) {
       } : null
     }
   };
+}
+async function restoreLegacyBundleFiles(buildDir, previous) {
+  const existing = previous.filter((file) => file.contents !== null);
+  await publishLegacyBundles(buildDir, existing);
+  await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm2(file.target, { force: true })));
+}
+async function inspectActiveTreeState(filePath) {
+  try {
+    return parseActiveTreeState(await readFile3(filePath, "utf8"));
+  } catch (error) {
+    if (errorDetails(error).code === "ENOENT") return { kind: "missing" };
+    return { kind: "invalid" };
+  }
+}
+function parseActiveTreeState(raw) {
+  try {
+    const tree = JSON.parse(raw)?.tree;
+    return typeof tree === "string" && !tree.includes("/") && !tree.includes("\\") ? { kind: "valid", tree } : { kind: "invalid" };
+  } catch {
+    return { kind: "invalid" };
+  }
+}
+function activeTreeStatesEqual(left, right) {
+  return left.kind === right.kind && (left.kind !== "valid" || right.kind === "valid" && left.tree === right.tree);
+}
+function activeReferenceRecoveryError(candidateTree, activeState) {
+  return commandError2(
+    "Active public tree recovery is incomplete.",
+    "Preserved the candidate public tree and matching legacy Bundles for deterministic recovery.",
+    { candidateDiscard: "forbidden", candidateTree, activeState }
+  );
 }
 async function replaceBundleStateFile(filePath, contents) {
   const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -10934,6 +11132,10 @@ function errorDetails(error) {
     return {};
   }
   return typeof error === "object" ? error : { message: String(error) };
+}
+function candidateDiscardIsForbidden(error) {
+  const diagnostics = errorDetails(error).diagnostics;
+  return isRecord2(diagnostics) && diagnostics.candidateDiscard === "forbidden";
 }
 function bundleErrorMessage(error) {
   const details = errorDetails(error);
@@ -12640,7 +12842,7 @@ function escapeHtml(value) {
 }
 
 // src/capsule-services.ts
-import { randomBytes as randomBytes3 } from "node:crypto";
+import { randomBytes as randomBytes4 } from "node:crypto";
 import { mkdir as mkdir4, readFile as readFile4, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
 import path4 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
@@ -12714,9 +12916,9 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
   }
   const credentials = {
     databaseUser: typeof existing.databaseUser === "string" && existing.databaseUser ? existing.databaseUser : POSTGRES_USER,
-    databasePassword: typeof existing.databasePassword === "string" && existing.databasePassword ? existing.databasePassword : randomBytes3(24).toString("base64url"),
+    databasePassword: typeof existing.databasePassword === "string" && existing.databasePassword ? existing.databasePassword : randomBytes4(24).toString("base64url"),
     storageAccessKey: typeof existing.storageAccessKey === "string" && existing.storageAccessKey ? existing.storageAccessKey : MINIO_ROOT_USER,
-    storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes3(24).toString("base64url")
+    storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes4(24).toString("base64url")
   };
   if (credentials.databaseUser !== existing.databaseUser || credentials.databasePassword !== existing.databasePassword || credentials.storageAccessKey !== existing.storageAccessKey || credentials.storageSecretKey !== existing.storageSecretKey) {
     await mkdir4(path4.dirname(credentialsPath), { recursive: true });
@@ -16912,6 +17114,9 @@ async function startDevSession(options) {
       }
       const previousBundle = bundle;
       bundle = rebuild;
+      rebuild.releasePublicTreeLease().catch((error) => {
+        reportDevPublicCleanupDegradation(options, runtime, url, actualPort, nextConfig, error);
+      });
       discardPublicTree(previousBundle.staticFiles.publicTree).catch((error) => {
         reportDevPublicCleanupDegradation(options, runtime, url, actualPort, nextConfig, error);
       });
@@ -16946,9 +17151,15 @@ async function startDevSession(options) {
         }
       }
       if (rebuild && rebuild !== bundle) {
-        await discardPublicTree(rebuild.staticFiles.publicTree).catch((cleanupError) => {
-          reportDevPublicCleanupDegradation(options, runtime, url, actualPort, config, cleanupError);
-        });
+        if (errorDetails2(rebuildError).diagnostics?.candidateDiscard === "forbidden") {
+          await rebuild.releasePublicTreeLease().catch((cleanupError) => {
+            reportDevPublicCleanupDegradation(options, runtime, url, actualPort, config, cleanupError);
+          });
+        } else {
+          await discardPublicTree(rebuild.staticFiles.publicTree).catch((cleanupError) => {
+            reportDevPublicCleanupDegradation(options, runtime, url, actualPort, config, cleanupError);
+          });
+        }
       }
       const details = errorDetails2(rebuildError);
       runtime.database.log.emit({
@@ -17072,7 +17283,7 @@ async function createDevRuntime(options) {
   };
 }
 function createDevInspectionToken() {
-  return randomBytes4(32).toString("hex");
+  return randomBytes5(32).toString("hex");
 }
 function requireDevInspectionToken(request, response, expectedToken) {
   if (devInspectionTokenMatches(request.headers[DEV_INSPECTION_TOKEN_HEADER], expectedToken)) {
@@ -19280,7 +19491,7 @@ function uploadHostReleaseArchive(options) {
 }
 function createHostReleaseId(now = /* @__PURE__ */ new Date()) {
   const timestamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-  return `${timestamp}-${randomBytes4(4).toString("hex")}`;
+  return `${timestamp}-${randomBytes5(4).toString("hex")}`;
 }
 function normaliseHostLogEntries(data) {
   if (!Array.isArray(data?.entries)) {

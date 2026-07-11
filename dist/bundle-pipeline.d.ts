@@ -40,6 +40,7 @@ export type FrameworkBundleConfig = {
 };
 export declare function createBundle(projectDir: string, config: ProjectConfig, options?: {
     publishLegacy?: boolean;
+    activeReferenceFault?: (event: "before-active-write" | "after-active-write" | "before-active-restore" | "after-active-restore") => void;
 }): Promise<{
     paths: {
         config: string;
@@ -52,6 +53,7 @@ export declare function createBundle(projectDir: string, config: ProjectConfig, 
     };
     buildDir: string;
     publishLegacy: () => Promise<() => Promise<void>>;
+    releasePublicTreeLease: () => Promise<void>;
     serverRuntime: {
         source: string;
         env: Record<string, string>;
@@ -66,6 +68,10 @@ export declare function createBundle(projectDir: string, config: ProjectConfig, 
                 relativePath: string;
                 html: boolean;
             }>;
+            lease: {
+                path: string;
+                token: string;
+            };
         };
         publicDir: string;
         indexHtml: string;

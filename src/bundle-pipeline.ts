@@ -8,7 +8,7 @@ import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv
 import { serverRuntimeModuleSource } from "./server.js";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 import { createServerBundleSource } from "./templates/server-bundle-template.js";
-import { createPublicTree, discardPublicTree } from "./public-tree.js";
+import { createPublicTree, discardPublicTree, releasePublicTreeLease } from "./public-tree.js";
 
 export type JsonRecord = Record<string, unknown>;
 export type ServerEnv = Record<string, string>;
@@ -53,7 +53,14 @@ const FRAMEWORK_BUNDLE_CONFIG = {
 } satisfies Record<string, FrameworkBundleConfig>;
 const SUPPORTED_AUTH_PROVIDERS = new Set(["anonymous", "google", "email"]);
 
-export async function createBundle(projectDir: string, config: ProjectConfig, options: { publishLegacy?: boolean } = {}) {
+export async function createBundle(
+  projectDir: string,
+  config: ProjectConfig,
+  options: {
+    publishLegacy?: boolean;
+    activeReferenceFault?: (event: "before-active-write" | "after-active-write" | "before-active-restore" | "after-active-restore") => void;
+  } = {},
+) {
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
   const buildDir = path.join(projectDir, ".sporades", "build");
   await mkdir(buildDir, { recursive: true });
@@ -117,6 +124,7 @@ export async function createBundle(projectDir: string, config: ProjectConfig, op
     }
     let previous: Array<{ target: string; contents: Buffer | null }>;
     const activeTreePath = path.join(buildDir, ".public-trees", "active.json");
+    const candidateTreeName = path.basename(publicTree.root);
     let previousActiveTree: Buffer | null;
     try {
       previous = await Promise.all(legacyFiles.map(async (file) => ({
@@ -132,10 +140,16 @@ export async function createBundle(projectDir: string, config: ProjectConfig, op
       });
       await publishLegacyBundles(buildDir, legacyFiles);
       try {
-        await replaceBundleStateFile(activeTreePath, `${JSON.stringify({ tree: path.basename(publicTree.root) })}\n`);
+        options.activeReferenceFault?.("before-active-write");
+        await replaceBundleStateFile(activeTreePath, `${JSON.stringify({ tree: candidateTreeName })}\n`);
+        options.activeReferenceFault?.("after-active-write");
       } catch (error) {
-        await publishLegacyBundles(buildDir, previous.filter((file): file is { target: string; contents: Buffer } => file.contents !== null));
-        await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm(file.target, { force: true })));
+        const activeState = await inspectActiveTreeState(activeTreePath);
+        const previousState = previousActiveTree === null
+          ? { kind: "missing" as const }
+          : parseActiveTreeState(previousActiveTree.toString("utf8"));
+        if (!activeTreeStatesEqual(activeState, previousState)) throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
+        await restoreLegacyBundleFiles(buildDir, previous);
         throw error;
       }
       legacyPublished = true;
@@ -143,20 +157,35 @@ export async function createBundle(projectDir: string, config: ProjectConfig, op
       throw tagBuildError(error, "publish", frameworkBundleConfig.jsxImportSource);
     }
     return async () => {
-      const existing = previous.filter((file): file is { target: string; contents: Buffer } => file.contents !== null);
-      await publishLegacyBundles(buildDir, existing);
-      await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm(file.target, { force: true })));
-      if (previousActiveTree === null) await rm(activeTreePath, { force: true });
-      else await replaceBundleStateFile(activeTreePath, previousActiveTree);
+      try {
+        options.activeReferenceFault?.("before-active-restore");
+        if (previousActiveTree === null) await rm(activeTreePath, { force: true });
+        else await replaceBundleStateFile(activeTreePath, previousActiveTree);
+        options.activeReferenceFault?.("after-active-restore");
+      } catch {
+        const activeState = await inspectActiveTreeState(activeTreePath);
+        const previousState = previousActiveTree === null
+          ? { kind: "missing" as const }
+          : parseActiveTreeState(previousActiveTree.toString("utf8"));
+        if (!activeTreeStatesEqual(activeState, previousState)) throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
+      }
+      await restoreLegacyBundleFiles(buildDir, previous);
       legacyPublished = false;
     };
   };
 
   if (options.publishLegacy !== false) {
     try {
-      await publishLegacy();
+      const rollback = await publishLegacy();
+      try {
+        await releasePublicTreeLease(publicTree);
+      } catch (error) {
+        await rollback();
+        throw error;
+      }
     } catch (error) {
-      await discardPublicTree(publicTree);
+      if (candidateDiscardIsForbidden(error)) await releasePublicTreeLease(publicTree).catch(() => {});
+      else await discardPublicTree(publicTree);
       throw error;
     }
   }
@@ -165,6 +194,7 @@ export async function createBundle(projectDir: string, config: ProjectConfig, op
     paths,
     buildDir,
     publishLegacy,
+    releasePublicTreeLease: () => releasePublicTreeLease(publicTree),
     serverRuntime: {
       source: serverSource,
       env: serverEnv,
@@ -194,6 +224,47 @@ export async function createBundle(projectDir: string, config: ProjectConfig, op
         : null,
     },
   };
+}
+
+async function restoreLegacyBundleFiles(buildDir: string, previous: Array<{ target: string; contents: Buffer | null }>) {
+  const existing = previous.filter((file): file is { target: string; contents: Buffer } => file.contents !== null);
+  await publishLegacyBundles(buildDir, existing);
+  await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm(file.target, { force: true })));
+}
+
+async function inspectActiveTreeState(filePath: string): Promise<{ kind: "missing" } | { kind: "invalid" } | { kind: "valid"; tree: string }> {
+  try {
+    return parseActiveTreeState(await readFile(filePath, "utf8"));
+  } catch (error) {
+    if (errorDetails(error).code === "ENOENT") return { kind: "missing" };
+    return { kind: "invalid" };
+  }
+}
+
+function parseActiveTreeState(raw: string): { kind: "invalid" } | { kind: "valid"; tree: string } {
+  try {
+    const tree = JSON.parse(raw)?.tree;
+    return typeof tree === "string" && !tree.includes("/") && !tree.includes("\\")
+      ? { kind: "valid", tree }
+      : { kind: "invalid" };
+  } catch {
+    return { kind: "invalid" };
+  }
+}
+
+function activeTreeStatesEqual(
+  left: { kind: "missing" } | { kind: "invalid" } | { kind: "valid"; tree: string },
+  right: { kind: "missing" } | { kind: "invalid" } | { kind: "valid"; tree: string },
+) {
+  return left.kind === right.kind && (left.kind !== "valid" || (right.kind === "valid" && left.tree === right.tree));
+}
+
+function activeReferenceRecoveryError(candidateTree: string, activeState: string) {
+  return commandError(
+    "Active public tree recovery is incomplete.",
+    "Preserved the candidate public tree and matching legacy Bundles for deterministic recovery.",
+    { candidateDiscard: "forbidden", candidateTree, activeState },
+  );
 }
 
 async function replaceBundleStateFile(filePath: string, contents: string | Uint8Array) {
@@ -589,6 +660,11 @@ function errorDetails(error: unknown): JsonRecord {
     return {};
   }
   return typeof error === "object" ? (error as JsonRecord) : { message: String(error) };
+}
+
+function candidateDiscardIsForbidden(error: unknown) {
+  const diagnostics = errorDetails(error).diagnostics;
+  return isRecord(diagnostics) && diagnostics.candidateDiscard === "forbidden";
 }
 
 function bundleErrorMessage(error: unknown): string {

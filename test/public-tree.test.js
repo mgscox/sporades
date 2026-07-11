@@ -9,7 +9,9 @@ import {
   PUBLIC_TREE_LIMITS,
   cleanupPublicTrees,
   createPublicTree,
+  discardPublicTree,
   readPublicAsset,
+  releasePublicTreeLease,
   validatePublicFiles,
   validatePublicTree,
 } from "../dist/public-tree.js";
@@ -118,16 +120,18 @@ test("public tree cleanup stays bounded and preserves the newest recoverable tre
     ]);
     const treesDir = path.join(buildDir, ".public-trees");
     await writeFile(path.join(treesDir, "active.json"), `${JSON.stringify({ tree: path.basename(active.root) })}\n`);
+    await releasePublicTreeLease(active);
     let newest = active;
     for (let index = 0; index < 5; index += 1) {
       newest = await createPublicTree(buildDir, [
         { path: "index.html", contents: `tree ${index}` },
         { path: "client.js", contents: `client ${index}` },
       ]);
+      await writeFile(path.join(treesDir, "active.json"), `${JSON.stringify({ tree: path.basename(newest.root) })}\n`);
+      await releasePublicTreeLease(newest);
     }
-    const completed = (await readdir(treesDir)).filter((name) => !name.startsWith(".staging-") && name !== "active.json");
+    const completed = (await readdir(treesDir)).filter((name) => !name.startsWith(".") && name !== "active.json");
     assert.equal(completed.length, 2);
-    await access(active.root);
     await access(newest.root);
 
     const staleStaging = path.join(treesDir, ".staging-stale");
@@ -143,6 +147,43 @@ test("public tree cleanup stays bounded and preserves the newest recoverable tre
     );
     await access(newest.root);
     await access(staleStaging);
+  });
+});
+
+test("live candidate leases survive interleaved cleanup and released or crashed leases are reclaimed", async () => {
+  await withTempDir(async (buildDir) => {
+    const active = await createPublicTree(buildDir, [
+      { path: "index.html", contents: "active" },
+      { path: "client.js", contents: "active client" },
+    ]);
+    const treesDir = path.join(buildDir, ".public-trees");
+    await writeFile(path.join(treesDir, "active.json"), `${JSON.stringify({ tree: path.basename(active.root) })}\n`);
+    await releasePublicTreeLease(active);
+
+    const candidateA = await createPublicTree(buildDir, [
+      { path: "index.html", contents: "candidate A" },
+      { path: "client.js", contents: "client A" },
+    ]);
+    const candidateB = await createPublicTree(buildDir, [
+      { path: "index.html", contents: "candidate B" },
+      { path: "client.js", contents: "client B" },
+    ]);
+    assert.equal(await readFile(path.join(candidateA.root, "client.js"), "utf8"), "client A");
+
+    await writeFile(path.join(treesDir, "active.json"), `${JSON.stringify({ tree: path.basename(candidateA.root) })}\n`);
+    await releasePublicTreeLease(candidateA);
+    await discardPublicTree(candidateB);
+    await cleanupPublicTrees(buildDir, { keepRoots: [candidateA.root] });
+    await access(candidateA.root);
+
+    const crashed = await createPublicTree(buildDir, [
+      { path: "index.html", contents: "crashed" },
+      { path: "client.js", contents: "crashed client" },
+    ]);
+    await writeFile(crashed.lease.path, `${JSON.stringify({ tree: path.basename(crashed.root), pid: 99999999, token: crashed.lease.token })}\n`);
+    await cleanupPublicTrees(buildDir, { keepRoots: [candidateA.root] });
+    await assert.rejects(access(crashed.root), (error) => error.code === "ENOENT");
+    await access(candidateA.root);
   });
 });
 

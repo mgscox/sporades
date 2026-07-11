@@ -13,6 +13,10 @@ type PublicAsset = {
 export type PublicTree = {
     root: string;
     assets: ReadonlyMap<string, PublicAsset>;
+    lease: {
+        path: string;
+        token: string;
+    };
 };
 type PublicFile = {
     path: string;
@@ -24,8 +28,13 @@ export declare function createPublicTree(buildDir: string, files: ReadonlyArray<
 }): Promise<{
     root: string;
     assets: Map<string, PublicAsset>;
+    lease: {
+        path: string;
+        token: string;
+    };
 }>;
 export declare function discardPublicTree(tree: PublicTree): Promise<void>;
+export declare function releasePublicTreeLease(tree: PublicTree): Promise<void>;
 export declare function validatePublicTree(root: string): Promise<{
     fileCount: number;
     totalBytes: number;
