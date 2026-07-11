@@ -6,7 +6,7 @@ observation for creation, replacement, and removal.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## Parent
 
@@ -22,4 +22,3 @@ observation for creation, replacement, and removal.
 - [ ] Observer setup and teardown remain idempotent.
 - [ ] Source and generated client runtime artifacts remain aligned.
 - [ ] Focused browser-runtime tests pass.
-

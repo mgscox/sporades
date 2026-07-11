@@ -7,7 +7,7 @@ artifacts.
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## Parent
 
@@ -22,4 +22,3 @@ artifacts.
   `null`.
 - [ ] Source and generated runtime artifacts remain aligned.
 - [ ] Focused runtime, client, and type tests pass.
-
