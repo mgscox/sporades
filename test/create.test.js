@@ -299,6 +299,48 @@ test("sporades create writes a runnable React guestbook scaffold when requested"
   });
 });
 
+test("sporades create writes a complete Campfire exemplar", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "campfire-island", "--template", "campfire", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr);
+    const project = path.join(dir, "campfire-island");
+    const [config, packageJson, html, server, client, readme, button] = await Promise.all([
+      readFile(path.join(project, "sporades.json"), "utf8").then(JSON.parse),
+      readFile(path.join(project, "package.json"), "utf8").then(JSON.parse),
+      readFile(path.join(project, "index.html"), "utf8"),
+      readFile(path.join(project, "server/index.ts"), "utf8"),
+      readFile(path.join(project, "client/index.tsx"), "utf8"),
+      readFile(path.join(project, "README.md"), "utf8"),
+      readFile(path.join(project, "client/components/ui/button.tsx"), "utf8"),
+    ]);
+    assert.equal(config.template, "campfire");
+    assert.deepEqual(config.auth.providers, { anonymous: true, email: true });
+    assert.match(html, /cdn\.tailwindcss\.com/);
+    assert.match(server, /journey:\s*\{\s*enabled:\s*true/);
+    for (const channel of ["general", "ideas", "random", "protect-the-crown"]) assert.match(client, new RegExp(channel));
+    for (const musketeer of ["Athos", "Porthos", "Aramis", "d'Artagnan"]) assert.match(client + readme, new RegExp(musketeer.replace("'", "\\\\?['’]"), "i"));
+    assert.match(client, /journey\.enable/);
+    assert.match(client, /journey\.disable/);
+    assert.match(client, /journey\.subscribe/);
+    assert.match(server, /toggleReaction/);
+    assert.match(server, /ctx\.auth\.userId/);
+    assert.match(readme, /development-only/i);
+    assert.match(readme, /separate browser contexts/i);
+    assert.match(button, /export function Button/);
+    assert.equal(packageJson.dependencies["lucide-react"], "^0.468.0");
+  });
+});
+
+test("sporades create writes Campfire for Preact", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "preact-campfire", "--template", "campfire", "--framework", "preact", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(result.code, 0, result.stderr);
+    const client = await readFile(path.join(dir, "preact-campfire", "client/index.tsx"), "utf8");
+    assert.match(client, /from "preact"/);
+    assert.match(client, /journey\.subscribe/);
+  });
+});
+
 test("sporades create writes a minimal React photo library scaffold when requested", async () => {
   await withTempDir(async (dir) => {
     const result = await runCli(

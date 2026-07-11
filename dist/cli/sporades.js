@@ -22,7 +22,7 @@ import { SECURITY_SESSIONS, authorizedKeyFingerprint, readBaseImageUpdatePolicy,
 import { commandError, errorDetails, writeResult } from "./cli-support.js";
 import { CLI_VERSION } from "./cli-version.js";
 const SUPPORTED_FRAMEWORKS = new Set(["react", "preact"]);
-const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library"]);
+const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
 const DEV_DATABASE_ENV_FILE = path.join(".sporades", "dev-database-env.json");
 const DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";

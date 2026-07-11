@@ -10685,7 +10685,7 @@ function scaffoldFiles(options) {
           dev: "sporades dev",
           deploy: "sporades deploy"
         },
-        dependencies: frameworkDependencies,
+        dependencies: { ...frameworkDependencies, ...templateOptions.dependencies ?? {} },
         devDependencies: {
           ...frameworkDevDependencies,
           sporades: sporadesDependency,
@@ -10705,7 +10705,8 @@ function scaffoldFiles(options) {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${escapeHtml(options.name)}</title>
+    <title>${escapeHtml(options.name)}</title>${options.template === "campfire" ? `
+    <script src="https://cdn.tailwindcss.com"></script>` : ""}
   </head>
   <body>
     <div id="app"></div>
@@ -10746,6 +10747,14 @@ function resolveTemplateOptions(template) {
         },
         serverEnv: "# Server-only environment variables for Sporades.\nGOOGLE_CLIENT_ID=replace-with-google-client-id\nGOOGLE_CLIENT_SECRET=replace-with-google-client-secret\n",
         files: photoLibraryTemplateFiles
+      };
+    case "campfire":
+      return {
+        framework: "react",
+        auth: { providers: { anonymous: true, email: true } },
+        serverEnv: "# Server-only environment variables for Sporades.\n",
+        dependencies: { "lucide-react": "^0.468.0" },
+        files: campfireTemplateFiles
       };
     case "blank":
     default:
@@ -11021,6 +11030,214 @@ export default capsule({
 };
 `
   };
+}
+function campfireTemplateFiles(options) {
+  return {
+    "README.md": `# ${options.name}
+
+Campfire is the complete Sporades User journey tracker exemplar: realtime chat, durable reactions, and consented ephemeral activity for the four Musketeers.
+
+## Run the campfire
+
+\`\`\`sh
+npm install
+npm run dev
+\`\`\`
+
+Open the URL and choose **Prepare demo fixtures**. This explicit development-only action uses ordinary public email sign-up and creates Athos (\`athos@campfire.example\`), Porthos (\`porthos@campfire.example\`), Aramis (\`aramis@campfire.example\`), and d'Artagnan (\`dartagnan@campfire.example\`). Their shared demo password is shown in the UI. Repeating preparation is safe. Never expose these known credentials in a public Container session or Hosted Capsule; building, starting, deploying, and hosting never seed them automatically.
+
+Use separate browser contexts (for example, a normal and private window) so each Musketeer has an independent Session token. The switcher signs out then signs in through public email auth.
+
+Channels, messages, and reactions are durable Capsule data. \u201CWhat's happening\u201D is ephemeral, latest-only Journey state: it is off until each page explicitly consents, typing expires naturally, and reload/auth transitions retire consent. Draft text, message text, raw URLs, query strings, emails, passwords, message IDs, and keystrokes are never shared.
+
+Tailwind is loaded from its browser CDN under Sporades' current fixed client-Bundle contract, so the browser needs network access. A production Capsule can compile Tailwind once first-class CSS assets are available. Shadcn/UI-style component source belongs to this Capsule and needs no Shadcn CLI after generation.
+`,
+    "server/index.ts": campfireServerTemplate(options.name),
+    "client/index.tsx": campfireClientTemplate(options.framework),
+    "client/components/ui/button.tsx": `export function Button({ className = "", ...props }) {
+  return <button className={\`rounded-md px-3 py-2 font-semibold focus:outline-none focus:ring-2 focus:ring-amber-400 disabled:opacity-50 \${className}\`} {...props} />;
+}
+`,
+    "shared/types.ts": `export type ReactionKind = "up" | "down";
+export type CampfireChannel = "general" | "ideas" | "random" | "protect-the-crown";
+`
+  };
+}
+function campfireServerTemplate(name) {
+  return `import { capsule, mutation, query, String, table } from "sporades/server";
+
+const channels = ["general", "ideas", "random", "protect-the-crown"];
+const fixtureNames = { athos: "Athos", porthos: "Porthos", aramis: "Aramis", dartagnan: "d'Artagnan" };
+
+export default capsule({
+  name: ${JSON.stringify(name)},
+  journey: { enabled: true, ttlSeconds: 12, capture: { navigation: false, focus: false, interactions: false } },
+  schema: {
+    channels: table({ slug: String(), name: String() }),
+    profiles: table({ userId: String(), key: String(), name: String() }),
+    messages: table({ channel: String(), body: String(), authorId: String(), authorName: String() }),
+    reactions: table({ messageId: String(), userId: String(), kind: String() }),
+  },
+  queries: {
+    channels: query((ctx) => ctx.db.channels.orderBy("createdAt", "asc").all()),
+    messages: query((ctx) => ctx.db.messages.orderBy("createdAt", "asc").limit(400).all()),
+    reactions: query((ctx) => ctx.db.reactions.all()),
+    profiles: query((ctx) => ctx.db.profiles.all()),
+  },
+  mutations: {
+    seedCampfire: mutation((ctx) => {
+      for (const slug of channels) if (!ctx.db.channels.where("slug", slug).all().length) ctx.db.channels.insert({ slug, name: slug });
+      if (!ctx.db.messages.where("channel", "general").all().length) ctx.db.messages.insert({ channel: "general", body: "The Queen requires discretion.", authorId: "fixture:athos", authorName: fixtureNames.athos });
+      if (!ctx.db.messages.where("channel", "ideas").all().length) ctx.db.messages.insert({ channel: "ideas", body: "And refreshments.", authorId: "fixture:porthos", authorName: fixtureNames.porthos });
+      if (!ctx.db.messages.where("channel", "random").all().length) ctx.db.messages.insert({ channel: "random", body: "Mostly discretion.", authorId: "fixture:aramis", authorName: fixtureNames.aramis });
+      if (!ctx.db.messages.where("channel", "protect-the-crown").all().length) ctx.db.messages.insert({ channel: "protect-the-crown", body: "Is the crown adequately protected? \u{1F44D} All for one \xB7 \u{1F44E} One more guard, perhaps", authorId: "fixture:dartagnan", authorName: fixtureNames.dartagnan });
+      return { channels: channels.length, seeded: true };
+    }),
+    registerFixture: mutation((ctx, key: any) => {
+      if (!Object.prototype.hasOwnProperty.call(fixtureNames, key)) throw new Error("Unknown Musketeer.");
+      if (!ctx.db.profiles.where("userId", ctx.auth.userId).all().length) ctx.db.profiles.insert({ userId: ctx.auth.userId, key, name: fixtureNames[key] });
+    }),
+    sendMessage: mutation((ctx, input: any) => {
+      const channel = globalThis.String(input?.channel ?? "");
+      const body = globalThis.String(input?.body ?? "").trim();
+      if (!channels.includes(channel)) throw new Error("Choose a Campfire channel.");
+      if (!body) throw new Error("Write a message before sending.");
+      if (body.length > 500) throw new Error("Messages must be 500 characters or fewer.");
+      return ctx.db.messages.insert({ channel, body, authorId: ctx.auth.userId, authorName: ctx.auth.displayName });
+    }),
+    toggleReaction: mutation((ctx, input: any) => {
+      const kind = input?.kind;
+      if (kind !== "up" && kind !== "down") throw new Error("Choose thumbs up or thumbs down.");
+      if (!ctx.db.messages.where("id", input?.messageId).all().length) throw new Error("Message not found.");
+      const existing = ctx.db.reactions.where("messageId", input.messageId).where("userId", ctx.auth.userId).where("kind", kind).all()[0];
+      if (existing) { ctx.db.reactions.delete(existing.id); return { active: false }; }
+      ctx.db.reactions.insert({ messageId: input.messageId, userId: ctx.auth.userId, kind });
+      return { active: true };
+    }),
+  },
+});
+`;
+}
+function campfireClientTemplate(framework) {
+  const preact = framework === "preact";
+  const imports = preact ? `import { render } from "preact";
+import { useEffect, useState } from "preact/hooks";` : `import { useEffect, useState } from "react";
+import { createRoot } from "react-dom/client";`;
+  const mount = preact ? `render(<App />, document.getElementById("app")!);` : `createRoot(document.getElementById("app")!).render(<App />);`;
+  const change = preact ? "onInput" : "onChange";
+  const klass = preact ? "class" : "className";
+  return `${imports}
+import { auth, createHooks, journey } from "sporades/client";
+import { Button } from "./components/ui/button";
+
+const { useAuth, useMutation, useQuery } = createHooks({ useState, useEffect });
+const musketeers = [
+  { key: "athos", name: "Athos", email: "athos@campfire.example", monogram: "A", tone: "bg-slate-600" },
+  { key: "porthos", name: "Porthos", email: "porthos@campfire.example", monogram: "P", tone: "bg-rose-800" },
+  { key: "aramis", name: "Aramis", email: "aramis@campfire.example", monogram: "Ar", tone: "bg-indigo-800" },
+  { key: "dartagnan", name: "d'Artagnan", email: "dartagnan@campfire.example", monogram: "dA", tone: "bg-amber-800" },
+];
+const fixedChannels = ["general", "ideas", "random", "protect-the-crown"];
+const demoPassword = "all-for-one-campfire";
+
+function App() {
+  const session = useAuth();
+  const [channel, setChannel] = useState("general");
+  const [draft, setDraft] = useState("");
+  const [notice, setNotice] = useState("");
+  const [sharing, setSharing] = useState(false);
+  const [activities, setActivities] = useState([]);
+  const messages = useQuery("messages");
+  const reactions = useQuery("reactions");
+  const profiles = useQuery("profiles");
+  const sendMessage = useMutation("sendMessage");
+  const toggleReaction = useMutation("toggleReaction");
+  const seedCampfire = useMutation("seedCampfire");
+  const registerFixture = useMutation("registerFixture");
+
+  useEffect(() => journey.subscribe((event) => {
+    setActivities((current) => applyJourneyEvent(current, event));
+  }).unsubscribe, []);
+
+  async function prepareFixtures() {
+    setNotice("Preparing development-only fixtures\u2026");
+    for (const person of musketeers) {
+      const result = await auth.signUp("email", { email: person.email, password: demoPassword, name: person.name });
+      if (result.error && !/already|exists|registered/i.test(result.error.message)) { setNotice(\`Could not prepare \${person.name}: \${result.error.message}\`); return; }
+      if (!result.error) await registerFixture.run(person.key);
+      await auth.signOut();
+    }
+    const seeded = await seedCampfire.run();
+    setNotice(seeded.error ? seeded.error.message : "Fixtures ready \u2014 choose a Musketeer.");
+  }
+
+  async function switchTo(person) {
+    if (sharing) { await journey.disable(); setSharing(false); }
+    await auth.signOut();
+    const result = await auth.signIn("email", { email: person.email, password: demoPassword });
+    setNotice(result.error ? result.error.message : \`Signed in as \${person.name}. Activity sharing remains off.\`);
+  }
+
+  async function setShare(enabled) {
+    if (enabled) {
+      const result = await journey.enable({ capture: { navigation: false, focus: false, interactions: false } });
+      if (result.error) { setNotice(result.error.message); return; }
+      setSharing(true);
+      await journey.set({ status: "reading", metadata: { channel }, ttlSeconds: 12 });
+    } else { await journey.disable(); setSharing(false); }
+  }
+
+  async function chooseChannel(next) {
+    setChannel(next);
+    if (sharing) await journey.set({ status: "reading", metadata: { channel: next }, ttlSeconds: 12 });
+  }
+
+  async function compose(value) {
+    setDraft(value);
+    if (sharing) await journey.set({ status: value ? "typing" : "reading", metadata: { channel }, ttlSeconds: value ? 4 : 12 });
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    const result = await sendMessage.run({ channel, body: draft });
+    if (result.error) { setNotice(result.error.message); return; }
+    setDraft("");
+    if (sharing) await journey.set({ status: "reading", metadata: { channel }, ttlSeconds: 12 });
+  }
+
+  return <main ${klass}="min-h-screen bg-[#120d0a] text-amber-50 lg:grid lg:grid-cols-[240px_1fr_300px]">
+    <aside ${klass}="border-r border-amber-900/40 bg-[#1b120d] p-5">
+      <p ${klass}="text-xs font-bold uppercase tracking-[.28em] text-amber-500">Sporades exemplar</p><h1 ${klass}="mb-8 mt-2 text-3xl font-black">\u{1F525} Campfire</h1>
+      <nav aria-label="Channels" ${klass}="space-y-2">{fixedChannels.map((slug) => <button type="button" ${klass}={\`block w-full rounded-md px-3 py-2 text-left \${channel === slug ? "bg-amber-700 text-white" : "hover:bg-amber-950"}\`} onClick={() => chooseChannel(slug)}># {slug}</button>)}</nav>
+      <div ${klass}="mt-8 border-t border-amber-900/40 pt-5"><Button ${klass}="w-full bg-amber-700" type="button" onClick={prepareFixtures}>Prepare demo fixtures</Button><p ${klass}="mt-2 text-xs text-amber-200/70">Development-only. Never enable known credentials publicly.</p></div>
+    </aside>
+    <section ${klass}="flex min-h-screen flex-col"><header ${klass}="border-b border-amber-900/40 p-5"><h2 ${klass}="text-xl font-bold"># {channel}</h2><p role="status" ${klass}="text-sm text-amber-300">{notice}</p></header>
+      <div ${klass}="flex-1 space-y-4 overflow-auto p-5">{(messages.data ?? []).filter((message) => message.channel === channel).map((message) => <Message key={message.id} message={message} session={session} toggle={toggleReaction} reactions={reactions.data ?? []} />)}</div>
+      <form ${klass}="border-t border-amber-900/40 p-5" onSubmit={submit}><label ${klass}="sr-only" htmlFor="message">Message</label><div ${klass}="flex gap-2"><input id="message" maxLength={500} ${klass}="min-w-0 flex-1 rounded-md border border-amber-900 bg-[#211710] px-4 py-3" value={draft} placeholder={\`Message #\${channel}\`} ${change}={(event) => compose(event.currentTarget.value)} /><Button ${klass}="bg-amber-700" type="submit">Send</Button></div></form>
+    </section>
+    <aside ${klass}="border-l border-amber-900/40 bg-[#1b120d] p-5"><h2 ${klass}="text-lg font-bold">What's happening</h2><label ${klass}="mt-4 flex gap-3"><input type="checkbox" checked={sharing} onChange={(event) => setShare(event.currentTarget.checked)} /> Share my activity</label><p ${klass}="mt-2 text-xs text-amber-200/70">Shares only reading/typing and channel. Never drafts, messages, URLs, query strings, emails, passwords, message IDs, or keystrokes.</p>
+      <ul ${klass}="mt-5 space-y-3">{activities.map((activity) => <li key={activity.sessionId} ${klass}="rounded-md bg-amber-950/60 p-3">{personName(activity.userId, profiles.data ?? [])} is {activity.status} #{activity.metadata?.channel ?? "campfire"}</li>)}</ul>
+      <h3 ${klass}="mt-8 font-bold">Switch Musketeer</h3><div ${klass}="mt-3 grid gap-2">{musketeers.map((person) => <Button type="button" ${klass}="flex items-center gap-2 bg-stone-800 text-left" onClick={() => switchTo(person)}><span ${klass}={\`grid h-7 w-7 place-items-center rounded-full \${person.tone}\`}>{person.monogram}</span>{person.name}</Button>)}</div>
+    </aside>
+  </main>;
+}
+
+function Message({ message, session, toggle, reactions }) {
+  const rows = reactions.filter((row) => row.messageId === message.id);
+  return <article ${klass}="rounded-lg bg-[#211710] p-4"><div ${klass}="flex items-baseline gap-3"><strong>{message.authorName}</strong><time ${klass}="text-xs text-amber-300/60">{new Date(message.createdAt).toLocaleString()}</time></div><p ${klass}="my-3 whitespace-pre-wrap">{message.body}</p><div ${klass}="flex gap-2">{[["up", "\u{1F44D}"], ["down", "\u{1F44E}"]].map(([kind, emoji]) => { const mine = rows.some((row) => row.kind === kind && row.userId === session.auth?.userId); const total = rows.filter((row) => row.kind === kind).length; return <button type="button" aria-label={\`\${kind === "up" ? "Thumbs up" : "Thumbs down"}: \${total}; \${mine ? "active" : "inactive"}\`} aria-pressed={mine} ${klass}="rounded-full border border-amber-800 px-3 py-1" onClick={() => toggle.run({ messageId: message.id, kind })}>{emoji} {total}</button>; })}</div></article>;
+}
+
+function applyJourneyEvent(current, event) {
+  const data = event?.data ?? event;
+  if (data?.type === "snapshot") return data.states ?? [];
+  if (data?.type === "removed" || data?.type === "expired") return current.filter((item) => item.sessionId !== data.state?.sessionId);
+  const state = data?.state;
+  if (!state) return current;
+  return [...current.filter((item) => item.sessionId !== state.sessionId), state];
+}
+function personName(userId, profiles) { return profiles.find((profile) => profile.userId === userId)?.name ?? "A Musketeer"; }
+${mount}
+`;
 }
 function blankClientTemplate(framework) {
   if (framework === "preact") {
@@ -12461,7 +12678,7 @@ Scaffold a new Capsule.
 
 Options:
   --framework <name>  Client framework: react or preact
-  --template <name>   Template: blank, todo, guestbook, or photo-library
+  --template <name>   Template: blank, todo, guestbook, photo-library, or campfire
   --no-install        Skip npm install
   --no-git            Skip git initialization
   --json              Write JSON output
@@ -14507,7 +14724,7 @@ var CLI_VERSION = "0.3.0";
 
 // src/cli/sporades.ts
 var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact"]);
-var SUPPORTED_TEMPLATES = /* @__PURE__ */ new Set(["blank", "todo", "guestbook", "photo-library"]);
+var SUPPORTED_TEMPLATES = /* @__PURE__ */ new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
 var DEV_SESSION_FILE = path6.join(".sporades", "dev-session.json");
 var DEV_DATABASE_ENV_FILE = path6.join(".sporades", "dev-database-env.json");
 var DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";

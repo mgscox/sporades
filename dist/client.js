@@ -3,6 +3,7 @@ const runtime = await import(`data:text/javascript,${encodeURIComponent(createCl
 export const auth = runtime.auth;
 export const files = runtime.files;
 export const preferences = runtime.preferences;
+export const journey = runtime.journey;
 export const createHooks = runtime.createHooks;
 export const isAuthenticated = runtime.isAuthenticated;
 export const onMessage = runtime.onMessage;

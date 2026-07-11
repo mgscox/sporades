@@ -192,11 +192,14 @@ Useful create options:
 sporades create notes --template blank
 sporades create guestbook --template guestbook
 sporades create gallery --template photo-library
+sporades create campfire --template campfire
 sporades create tiny --framework preact
 sporades create no-install-yet --no-install --no-git
 ```
 
-Available templates are `blank`, `todo`, `guestbook`, and `photo-library`.
+Available templates are `blank`, `todo`, `guestbook`, `photo-library`, and
+`campfire`. Campfire demonstrates realtime messaging, durable reactions, email
+fixture identities, and explicitly consented ephemeral Journey activity.
 Available client frameworks are `react` and `preact`.
 
 ### 2. Start a Dev Session

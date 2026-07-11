@@ -5,7 +5,7 @@ Scaffold a new Capsule.
 
 Options:
   --framework <name>  Client framework: react or preact
-  --template <name>   Template: blank, todo, guestbook, or photo-library
+  --template <name>   Template: blank, todo, guestbook, photo-library, or campfire
   --no-install        Skip npm install
   --no-git            Skip git initialization
   --json              Write JSON output
