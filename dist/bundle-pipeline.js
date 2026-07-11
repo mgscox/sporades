@@ -4,7 +4,7 @@ import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv
 import { serverRuntimeModuleSource } from "./server.js";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 import { createServerBundleSource } from "./templates/server-bundle-template.js";
-import { createPublicTree, discardPublicTree, releasePublicTreeLease } from "./public-tree.js";
+import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateActivePublicTreeReference } from "./public-tree.js";
 const FRAMEWORK_BUNDLE_CONFIG = {
     react: {
         jsxImportSource: "react",
@@ -101,7 +101,7 @@ export async function createBundle(projectDir, config, options = {}) {
                 const activeState = await inspectActiveTreeState(activeTreePath);
                 const previousState = previousActiveTree === null
                     ? { kind: "missing" }
-                    : parseActiveTreeState(previousActiveTree.toString("utf8"));
+                    : await parseActiveTreeState(previousActiveTree.toString("utf8"), path.dirname(activeTreePath));
                 if (!activeTreeStatesEqual(activeState, previousState))
                     throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
                 await restoreLegacyBundleFiles(buildDir, previous);
@@ -125,7 +125,7 @@ export async function createBundle(projectDir, config, options = {}) {
                 const activeState = await inspectActiveTreeState(activeTreePath);
                 const previousState = previousActiveTree === null
                     ? { kind: "missing" }
-                    : parseActiveTreeState(previousActiveTree.toString("utf8"));
+                    : await parseActiveTreeState(previousActiveTree.toString("utf8"), path.dirname(activeTreePath));
                 if (!activeTreeStatesEqual(activeState, previousState))
                     throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
             }
@@ -194,7 +194,7 @@ async function restoreLegacyBundleFiles(buildDir, previous) {
 }
 async function inspectActiveTreeState(filePath) {
     try {
-        return parseActiveTreeState(await readFile(filePath, "utf8"));
+        return await parseActiveTreeState(await readFile(filePath, "utf8"), path.dirname(filePath));
     }
     catch (error) {
         if (errorDetails(error).code === "ENOENT")
@@ -202,19 +202,18 @@ async function inspectActiveTreeState(filePath) {
         return { kind: "invalid" };
     }
 }
-function parseActiveTreeState(raw) {
+async function parseActiveTreeState(raw, treesDir) {
     try {
-        const tree = JSON.parse(raw)?.tree;
-        return typeof tree === "string" && !tree.includes("/") && !tree.includes("\\")
-            ? { kind: "valid", tree }
-            : { kind: "invalid" };
+        return { kind: "valid", tree: await validateActivePublicTreeReference(treesDir, raw) };
     }
     catch {
         return { kind: "invalid" };
     }
 }
 function activeTreeStatesEqual(left, right) {
-    return left.kind === right.kind && (left.kind !== "valid" || (right.kind === "valid" && left.tree === right.tree));
+    if (left.kind === "missing" && right.kind === "missing")
+        return true;
+    return left.kind === "valid" && right.kind === "valid" && left.tree === right.tree;
 }
 function activeReferenceRecoveryError(candidateTree, activeState) {
     return commandError("Active public tree recovery is incomplete.", "Preserved the candidate public tree and matching legacy Bundles for deterministic recovery.", { candidateDiscard: "forbidden", candidateTree, activeState });

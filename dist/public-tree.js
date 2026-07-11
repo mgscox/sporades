@@ -1,5 +1,7 @@
 import { lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { randomBytes } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 export const PUBLIC_TREE_LIMITS = {
     files: 512,
@@ -8,8 +10,10 @@ export const PUBLIC_TREE_LIMITS = {
     pathBytes: 240,
 };
 const LIVE_PUBLIC_TREE_LEASES = new Set();
+const execFileAsync = promisify(execFile);
+const UNVERIFIED_OWNER_TTL_MS = 30_000;
 export async function createPublicTree(buildDir, files, options = {}) {
-    const nonce = `${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const nonce = `${process.pid}-${Date.now()}-${randomBytes(8).toString("hex")}`;
     const treesDir = path.join(buildDir, ".public-trees");
     const stagingDir = path.join(treesDir, `.staging-${nonce}`);
     const publicDir = path.join(treesDir, nonce);
@@ -65,9 +69,11 @@ export async function discardPublicTree(tree) {
     }
 }
 export async function releasePublicTreeLease(tree) {
-    const releaseLock = await acquirePublicTreeLock(path.dirname(tree.root));
+    const treesDir = path.dirname(tree.root);
+    const releaseLock = await acquirePublicTreeLock(treesDir);
     try {
         await removePublicTreeLease(tree.lease);
+        await cleanupPublicTreesUnlocked(path.dirname(treesDir), { maxCompleted: 1 });
     }
     finally {
         await releaseLock();
@@ -124,6 +130,25 @@ export async function validatePublicTree(root) {
     }
     return { fileCount, totalBytes };
 }
+export async function validateActivePublicTreeReference(treesDir, raw) {
+    let tree;
+    try {
+        tree = JSON.parse(raw)?.tree;
+    }
+    catch {
+        tree = null;
+    }
+    if (!(typeof tree === "string" && isPublicTreeName(tree))) {
+        throw publicTreeError("Invalid active public tree reference.", "The active tree name is unsafe or malformed.");
+    }
+    const root = path.join(treesDir, tree);
+    const stats = await lstat(root).catch(() => null);
+    if (!stats?.isDirectory() || stats.isSymbolicLink()) {
+        throw publicTreeError("Invalid active public tree reference.", "The active tree must reference an existing real public-tree directory.");
+    }
+    await validatePublicTree(root);
+    return tree;
+}
 export function validatePublicFiles(files) {
     const normalized = normalizePublicFiles(files);
     return {
@@ -158,7 +183,7 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
     for (const name of liveLeaseNames)
         keepNames.add(name);
     const completed = await Promise.all(entries
-        .filter((entry) => entry.isDirectory() && !entry.name.startsWith(".staging-"))
+        .filter((entry) => entry.isDirectory() && isPublicTreeName(entry.name))
         .map(async (entry) => ({ entry, modifiedAt: (await lstat(path.join(treesDir, entry.name))).mtimeMs })));
     completed.sort((left, right) => right.modifiedAt - left.modifiedAt);
     let recoverableCount = 0;
@@ -295,7 +320,13 @@ async function createPublicTreeLease(treesDir, treeName) {
     await mkdir(leasesDir, { recursive: true });
     const token = randomBytes(16).toString("hex");
     const leasePath = path.join(leasesDir, `${treeName}.json`);
-    await writeFile(leasePath, `${JSON.stringify({ tree: treeName, pid: process.pid, token })}\n`, { flag: "wx" });
+    await writeFile(leasePath, `${JSON.stringify({
+        tree: treeName,
+        pid: process.pid,
+        processStart: await getProcessStartIdentity(process.pid),
+        createdAt: Date.now(),
+        token,
+    })}\n`, { flag: "wx" });
     LIVE_PUBLIC_TREE_LEASES.add(token);
     return { path: leasePath, token };
 }
@@ -324,7 +355,7 @@ async function publicTreeLeaseStates(treesDir) {
         try {
             const lease = JSON.parse(await readFile(path.join(leasesDir, entry), "utf8"));
             if (validLeaseRecord(lease)) {
-                if (leaseIsLive(lease))
+                if (await leaseIsLive(lease))
                     live.add(lease.tree);
                 else
                     stale.add(lease.tree);
@@ -353,7 +384,7 @@ async function removeStalePublicTreeLeases(treesDir, completedNames) {
             lease = JSON.parse(await readFile(leasePath, "utf8"));
         }
         catch { }
-        if (!validLeaseRecord(lease) || !completedNames.has(lease.tree) || !leaseIsLive(lease)) {
+        if (!validLeaseRecord(lease) || !completedNames.has(lease.tree) || !(await leaseIsLive(lease))) {
             if (validLeaseRecord(lease))
                 LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
             await rm(leasePath, { force: true });
@@ -366,25 +397,22 @@ function validLeaseRecord(lease) {
         && !lease.tree.includes("/")
         && !lease.tree.includes("\\")
         && Number.isInteger(lease.pid)
+        && lease.pid > 0
+        && (typeof lease.processStart === "string" || lease.processStart === null)
+        && Number.isFinite(lease.createdAt)
         && typeof lease.token === "string");
 }
-function leaseIsLive(lease) {
-    if (lease.pid === process.pid)
-        return LIVE_PUBLIC_TREE_LEASES.has(lease.token);
-    try {
-        process.kill(lease.pid, 0);
-        return true;
-    }
-    catch (error) {
-        return Boolean(error && typeof error === "object" && "code" in error && error.code === "EPERM");
-    }
+async function leaseIsLive(lease) {
+    if (lease.pid === process.pid && !LIVE_PUBLIC_TREE_LEASES.has(lease.token))
+        return false;
+    const actualStart = await getProcessStartIdentity(lease.pid);
+    if (actualStart !== null && lease.processStart !== null)
+        return actualStart === lease.processStart;
+    return processIsLive(lease.pid) && Date.now() - lease.createdAt <= UNVERIFIED_OWNER_TTL_MS;
 }
 async function readActivePublicTreeReference(treesDir) {
     try {
-        const reference = JSON.parse(await readFile(path.join(treesDir, "active.json"), "utf8"))?.tree;
-        if (!(typeof reference === "string" && !reference.includes("/") && !reference.includes("\\")))
-            throw new Error("invalid reference");
-        return reference;
+        return await validateActivePublicTreeReference(treesDir, await readFile(path.join(treesDir, "active.json"), "utf8"));
     }
     catch (error) {
         if (error && typeof error === "object" && "code" in error && error.code === "ENOENT")
@@ -392,25 +420,32 @@ async function readActivePublicTreeReference(treesDir) {
         throw publicTreeError("Public tree cleanup degraded.", "The active public tree reference is invalid; no referenced candidate may be discarded.", { candidateDiscard: "forbidden" });
     }
 }
+function isPublicTreeName(value) {
+    return /^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(value);
+}
 async function acquirePublicTreeLock(treesDir) {
     const lockDir = path.join(treesDir, ".lifecycle-lock");
     for (let attempt = 0; attempt < 500; attempt += 1) {
         try {
             await mkdir(lockDir);
-            await writeFile(path.join(lockDir, "owner.json"), `${JSON.stringify({ pid: process.pid })}\n`);
+            await writeFile(path.join(lockDir, "owner.json"), `${JSON.stringify({
+                pid: process.pid,
+                processStart: await getProcessStartIdentity(process.pid),
+                createdAt: Date.now(),
+            })}\n`);
             return async () => { await rm(lockDir, { recursive: true, force: true }); };
         }
         catch (error) {
             if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST"))
                 throw error;
-            const ownerPid = await readFile(path.join(lockDir, "owner.json"), "utf8")
-                .then((raw) => JSON.parse(raw)?.pid)
+            const owner = await readFile(path.join(lockDir, "owner.json"), "utf8")
+                .then((raw) => JSON.parse(raw))
                 .catch(() => null);
-            if (typeof ownerPid === "number" && !processIsLive(ownerPid)) {
+            if (owner !== null && !(await ownerIdentityIsLive(owner))) {
                 await rm(lockDir, { recursive: true, force: true });
                 continue;
             }
-            if (ownerPid === null) {
+            if (owner === null) {
                 const ageMs = Date.now() - await lstat(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
                 if (ageMs > 1_000) {
                     await rm(lockDir, { recursive: true, force: true });
@@ -421,6 +456,39 @@ async function acquirePublicTreeLock(treesDir) {
         }
     }
     throw publicTreeError("Public tree lifecycle is busy.", "Retry after the other Bundle operation completes.");
+}
+async function ownerIdentityIsLive(owner) {
+    if (!(owner && Number.isInteger(owner.pid) && owner.pid > 0 && Number.isFinite(owner.createdAt)))
+        return false;
+    const actualStart = await getProcessStartIdentity(owner.pid);
+    if (actualStart !== null && typeof owner.processStart === "string")
+        return actualStart === owner.processStart;
+    return processIsLive(owner.pid) && Date.now() - owner.createdAt <= UNVERIFIED_OWNER_TTL_MS;
+}
+export async function getProcessStartIdentity(pid) {
+    if (!(Number.isInteger(pid) && pid > 0))
+        return null;
+    if (process.platform === "linux") {
+        try {
+            const stat = await readFile(`/proc/${pid}/stat`, "utf8");
+            const fields = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+            return fields[19] ? `linux:${fields[19]}` : null;
+        }
+        catch {
+            return null;
+        }
+    }
+    if (process.platform === "darwin") {
+        try {
+            const { stdout } = await execFileAsync("/bin/ps", ["-o", "lstart=", "-p", String(pid)]);
+            const started = stdout.trim().replace(/\s+/g, " ");
+            return started ? `darwin:${started}` : null;
+        }
+        catch {
+            return null;
+        }
+    }
+    return null;
 }
 function processIsLive(pid) {
     if (pid === process.pid)

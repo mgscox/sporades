@@ -8,7 +8,7 @@ import { readKeyPair, readSealedServerEnv, sealedServerEnvPaths, unsealServerEnv
 import { serverRuntimeModuleSource } from "./server.js";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
 import { createServerBundleSource } from "./templates/server-bundle-template.js";
-import { createPublicTree, discardPublicTree, releasePublicTreeLease } from "./public-tree.js";
+import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateActivePublicTreeReference } from "./public-tree.js";
 
 export type JsonRecord = Record<string, unknown>;
 export type ServerEnv = Record<string, string>;
@@ -147,7 +147,7 @@ export async function createBundle(
         const activeState = await inspectActiveTreeState(activeTreePath);
         const previousState = previousActiveTree === null
           ? { kind: "missing" as const }
-          : parseActiveTreeState(previousActiveTree.toString("utf8"));
+          : await parseActiveTreeState(previousActiveTree.toString("utf8"), path.dirname(activeTreePath));
         if (!activeTreeStatesEqual(activeState, previousState)) throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
         await restoreLegacyBundleFiles(buildDir, previous);
         throw error;
@@ -166,7 +166,7 @@ export async function createBundle(
         const activeState = await inspectActiveTreeState(activeTreePath);
         const previousState = previousActiveTree === null
           ? { kind: "missing" as const }
-          : parseActiveTreeState(previousActiveTree.toString("utf8"));
+          : await parseActiveTreeState(previousActiveTree.toString("utf8"), path.dirname(activeTreePath));
         if (!activeTreeStatesEqual(activeState, previousState)) throw activeReferenceRecoveryError(candidateTreeName, activeState.kind);
       }
       await restoreLegacyBundleFiles(buildDir, previous);
@@ -234,19 +234,16 @@ async function restoreLegacyBundleFiles(buildDir: string, previous: Array<{ targ
 
 async function inspectActiveTreeState(filePath: string): Promise<{ kind: "missing" } | { kind: "invalid" } | { kind: "valid"; tree: string }> {
   try {
-    return parseActiveTreeState(await readFile(filePath, "utf8"));
+    return await parseActiveTreeState(await readFile(filePath, "utf8"), path.dirname(filePath));
   } catch (error) {
     if (errorDetails(error).code === "ENOENT") return { kind: "missing" };
     return { kind: "invalid" };
   }
 }
 
-function parseActiveTreeState(raw: string): { kind: "invalid" } | { kind: "valid"; tree: string } {
+async function parseActiveTreeState(raw: string, treesDir: string): Promise<{ kind: "invalid" } | { kind: "valid"; tree: string }> {
   try {
-    const tree = JSON.parse(raw)?.tree;
-    return typeof tree === "string" && !tree.includes("/") && !tree.includes("\\")
-      ? { kind: "valid", tree }
-      : { kind: "invalid" };
+    return { kind: "valid", tree: await validateActivePublicTreeReference(treesDir, raw) };
   } catch {
     return { kind: "invalid" };
   }
@@ -256,7 +253,8 @@ function activeTreeStatesEqual(
   left: { kind: "missing" } | { kind: "invalid" } | { kind: "valid"; tree: string },
   right: { kind: "missing" } | { kind: "invalid" } | { kind: "valid"; tree: string },
 ) {
-  return left.kind === right.kind && (left.kind !== "valid" || (right.kind === "valid" && left.tree === right.tree));
+  if (left.kind === "missing" && right.kind === "missing") return true;
+  return left.kind === "valid" && right.kind === "valid" && left.tree === right.tree;
 }
 
 function activeReferenceRecoveryError(candidateTree: string, activeState: string) {

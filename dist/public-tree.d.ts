@@ -39,6 +39,7 @@ export declare function validatePublicTree(root: string): Promise<{
     fileCount: number;
     totalBytes: number;
 }>;
+export declare function validateActivePublicTreeReference(treesDir: string, raw: string): Promise<string>;
 export declare function validatePublicFiles(files: ReadonlyArray<PublicFile>): {
     fileCount: number;
     totalBytes: number;
@@ -49,5 +50,6 @@ export declare function cleanupPublicTrees(buildDir: string, options?: {
     fault?: CleanupFault;
 }): Promise<void>;
 export declare function readPublicAsset(tree: PublicTree, rawPathname: string): Promise<PublicAsset | null>;
+export declare function getProcessStartIdentity(pid: number): Promise<string | null>;
 export {};
 //# sourceMappingURL=public-tree.d.ts.map

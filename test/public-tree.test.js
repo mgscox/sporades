@@ -10,6 +10,7 @@ import {
   cleanupPublicTrees,
   createPublicTree,
   discardPublicTree,
+  getProcessStartIdentity,
   readPublicAsset,
   releasePublicTreeLease,
   validatePublicFiles,
@@ -130,6 +131,7 @@ test("public tree cleanup stays bounded and preserves the newest recoverable tre
       await writeFile(path.join(treesDir, "active.json"), `${JSON.stringify({ tree: path.basename(newest.root) })}\n`);
       await releasePublicTreeLease(newest);
     }
+    await cleanupPublicTrees(buildDir);
     const completed = (await readdir(treesDir)).filter((name) => !name.startsWith(".") && name !== "active.json");
     assert.equal(completed.length, 2);
     await access(newest.root);
@@ -184,6 +186,111 @@ test("live candidate leases survive interleaved cleanup and released or crashed 
     await cleanupPublicTrees(buildDir, { keepRoots: [candidateA.root] });
     await assert.rejects(access(crashed.root), (error) => error.code === "ENOENT");
     await access(candidateA.root);
+  });
+});
+
+test("cleanup keeps the active and previous public trees without counting metadata directories", async () => {
+  await withTempDir(async (buildDir) => {
+    const treesDir = path.join(buildDir, ".public-trees");
+    const activeA = await createPublicTree(buildDir, [
+      { path: "index.html", contents: "A" },
+      { path: "client.js", contents: "client A" },
+    ]);
+    await writeFile(path.join(treesDir, "active.json"), `${JSON.stringify({ tree: path.basename(activeA.root) })}\n`);
+    await releasePublicTreeLease(activeA);
+    const activeB = await createPublicTree(buildDir, [
+      { path: "index.html", contents: "B" },
+      { path: "client.js", contents: "client B" },
+    ]);
+    await writeFile(path.join(treesDir, "active.json"), `${JSON.stringify({ tree: path.basename(activeB.root) })}\n`);
+    await releasePublicTreeLease(activeB);
+    await cleanupPublicTrees(buildDir);
+    await access(activeA.root);
+    await access(activeB.root);
+
+    const activeC = await createPublicTree(buildDir, [
+      { path: "index.html", contents: "C" },
+      { path: "client.js", contents: "client C" },
+    ]);
+    await writeFile(path.join(treesDir, "active.json"), `${JSON.stringify({ tree: path.basename(activeC.root) })}\n`);
+    await releasePublicTreeLease(activeC);
+    await cleanupPublicTrees(buildDir);
+    await assert.rejects(access(activeA.root), (error) => error.code === "ENOENT");
+    await access(activeB.root);
+    await access(activeC.root);
+  });
+});
+
+test("unsafe or missing active references fail closed without deleting public trees", async () => {
+  await withTempDir(async (buildDir) => {
+    const tree = await createPublicTree(buildDir, [
+      { path: "index.html", contents: "active" },
+      { path: "client.js", contents: "active client" },
+    ]);
+    const treesDir = path.join(buildDir, ".public-trees");
+    await releasePublicTreeLease(tree);
+    const symlinkName = `999-${Date.now()}-aaaaaaaaaaaaaaaa`;
+    const fileName = `998-${Date.now()}-bbbbbbbbbbbbbbbb`;
+    await symlink(tree.root, path.join(treesDir, symlinkName));
+    await writeFile(path.join(treesDir, fileName), "not a directory");
+    const invalidNames = ["", ".", "..", ".leases", `997-${Date.now()}-cccccccccccccccc`, symlinkName, fileName];
+    for (const invalidName of invalidNames) {
+      await writeFile(path.join(treesDir, "active.json"), `${JSON.stringify({ tree: invalidName })}\n`);
+      await assert.rejects(cleanupPublicTrees(buildDir), /Public tree cleanup degraded/);
+      await access(tree.root);
+      await access(path.join(treesDir, symlinkName));
+      await access(path.join(treesDir, fileName));
+    }
+  });
+});
+
+test("lease and lock ownership rejects PID reuse and non-positive owners without stealing a matching owner", async () => {
+  await withTempDir(async (buildDir) => {
+    const active = await createPublicTree(buildDir, [
+      { path: "index.html", contents: "active" },
+      { path: "client.js", contents: "active client" },
+    ]);
+    const treesDir = path.join(buildDir, ".public-trees");
+    await writeFile(path.join(treesDir, "active.json"), `${JSON.stringify({ tree: path.basename(active.root) })}\n`);
+    await releasePublicTreeLease(active);
+    const leasesDir = path.join(treesDir, ".leases");
+    const abandoned = [
+      { name: `991-${Date.now()}-aaaaaaaaaaaaaaaa`, pid: process.pid, processStart: "forged:start" },
+      { name: `992-${Date.now()}-bbbbbbbbbbbbbbbb`, pid: 0, processStart: "forged:start" },
+      { name: `993-${Date.now()}-cccccccccccccccc`, pid: -1, processStart: "forged:start" },
+    ];
+    for (const owner of abandoned) {
+      const root = path.join(treesDir, owner.name);
+      await mkdir(root);
+      await writeFile(path.join(root, "index.html"), "abandoned");
+      await writeFile(path.join(root, "client.js"), "abandoned client");
+      await writeFile(path.join(leasesDir, `${owner.name}.json`), `${JSON.stringify({
+        tree: owner.name,
+        pid: owner.pid,
+        processStart: owner.processStart,
+        createdAt: Date.now(),
+        token: `token-${owner.name}`,
+      })}\n`);
+    }
+    await cleanupPublicTrees(buildDir);
+    for (const owner of abandoned) await assert.rejects(access(path.join(treesDir, owner.name)), (error) => error.code === "ENOENT");
+    await access(active.root);
+
+    const processStart = await getProcessStartIdentity(process.pid);
+    assert.ok(processStart, "Expected a process-start identity on supported macOS/Linux.");
+    const lockDir = path.join(treesDir, ".lifecycle-lock");
+    await mkdir(lockDir);
+    await writeFile(path.join(lockDir, "owner.json"), `${JSON.stringify({ pid: process.pid, processStart: "forged:start", createdAt: Date.now() })}\n`);
+    await cleanupPublicTrees(buildDir);
+
+    await mkdir(lockDir);
+    await writeFile(path.join(lockDir, "owner.json"), `${JSON.stringify({ pid: process.pid, processStart, createdAt: Date.now() })}\n`);
+    const waitingCleanup = cleanupPublicTrees(buildDir);
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await access(lockDir);
+    await rm(lockDir, { recursive: true });
+    await waitingCleanup;
+    await access(active.root);
   });
 });
 
