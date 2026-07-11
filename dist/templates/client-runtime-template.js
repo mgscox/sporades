@@ -253,24 +253,40 @@ export function createSvelteStores() {
 function createLazyStore(initialState, start, resetOnStart = false) {
   let state = initialState;
   let stop = null;
-  const listeners = new Set();
+  const subscriptions = new Set();
   const publish = (nextState) => {
     state = { ...state, ...nextState };
-    for (const listener of listeners) listener(state);
+    let firstError = null;
+    for (const subscription of [...subscriptions]) {
+      if (!subscription.active) continue;
+      try { subscription.listener(state); } catch (error) { firstError ??= error; }
+    }
+    if (firstError) throw firstError;
   };
   const subscribe = (listener) => {
-    listeners.add(listener);
-    if (listeners.size === 1 && start) {
+    const subscription = { listener, active: true };
+    if (subscriptions.size === 0 && start) {
       if (resetOnStart) state = { ...initialState };
       stop = start(publish) ?? null;
     }
-    listener(state);
-    let active = true;
+    subscriptions.add(subscription);
+    try {
+      listener(state);
+    } catch (error) {
+      subscription.active = false;
+      subscriptions.delete(subscription);
+      if (subscriptions.size === 0 && stop) {
+        const teardown = stop;
+        stop = null;
+        teardown();
+      }
+      throw error;
+    }
     return () => {
-      if (!active) return;
-      active = false;
-      listeners.delete(listener);
-      if (listeners.size === 0 && stop) {
+      if (!subscription.active) return;
+      subscription.active = false;
+      subscriptions.delete(subscription);
+      if (subscriptions.size === 0 && stop) {
         const teardown = stop;
         stop = null;
         teardown();

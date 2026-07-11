@@ -208,6 +208,74 @@ test("actual Svelte derived-store lifecycle starts and stops Sporades observatio
   } finally { browser.cleanup(); }
 });
 
+test("Svelte query and auth stores give repeated callback objects independent ownership handles", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  try {
+    const runtime = await importClientRuntime();
+    let queryPublish, authPublish;
+    let queryStarts = 0, queryStops = 0, authStarts = 0, authStops = 0;
+    runtime.queries.subscribe = (_name, publish) => { queryStarts += 1; queryPublish = publish; return { unsubscribe() { queryStops += 1; } }; };
+    runtime.auth.subscribe = (publish) => { authStarts += 1; authPublish = publish; return { unsubscribe() { authStops += 1; } }; };
+    const stores = runtime.createSvelteStores();
+    const query = stores.queryStore("todos");
+    const auth = stores.authStore();
+    const queryStates = [], authStates = [];
+    const sameQueryCallback = (state) => queryStates.push(state);
+    const sameAuthCallback = (state) => authStates.push(state);
+    const stopQueryA = query.subscribe(sameQueryCallback);
+    const stopQueryB = query.subscribe(sameQueryCallback);
+    const stopAuthA = auth.subscribe(sameAuthCallback);
+    const stopAuthB = auth.subscribe(sameAuthCallback);
+    assert.equal(queryStates.length, 2, "native initial delivery occurs once for each subscription record");
+    assert.equal(authStates.length, 2);
+    queryPublish({ data: [{ id: "update-1" }], error: null, loading: false });
+    authPublish({ auth: anonymousAuth, providers: {}, error: null, loading: false });
+    assert.equal(queryStates.length, 4, "one update is delivered to both handles sharing a callback object");
+    assert.equal(authStates.length, 4);
+    stopQueryA(); stopQueryA(); stopAuthA(); stopAuthA();
+    assert.equal(queryStops, 0); assert.equal(authStops, 0);
+    queryPublish({ data: [{ id: "update-2" }], error: null, loading: false });
+    authPublish({ auth: anonymousAuth, providers: {}, error: null, loading: false });
+    assert.equal(queryStates.length, 5, "first unsubscribe leaves the second callback record active");
+    assert.equal(authStates.length, 5);
+    stopQueryB(); stopAuthB();
+    assert.equal(queryStops, 1); assert.equal(authStops, 1);
+    const stopQueryAgain = query.subscribe(sameQueryCallback);
+    const stopAuthAgain = auth.subscribe(sameAuthCallback);
+    assert.equal(queryStarts, 2); assert.equal(authStarts, 2);
+    stopQueryAgain(); stopAuthAgain();
+    assert.equal(queryStops, 2); assert.equal(authStops, 2);
+  } finally { browser.cleanup(); }
+});
+
+test("Svelte store publication survives reentrant unsubscribe and preserves ownership after callback errors", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  try {
+    const runtime = await importClientRuntime();
+    let publish, stops = 0;
+    runtime.queries.subscribe = (_name, next) => { publish = next; return { unsubscribe() { stops += 1; } }; };
+    const store = runtime.createSvelteStores().queryStore("todos");
+    let stopReentrant = () => {};
+    let armed = false;
+    let reentrantDeliveries = 0;
+    stopReentrant = store.subscribe(() => { reentrantDeliveries += 1; if (armed) stopReentrant(); });
+    let survivorDeliveries = 0;
+    const stopSurvivor = store.subscribe(() => { survivorDeliveries += 1; });
+    armed = true;
+    publish({ data: [], error: null, loading: false });
+    assert.equal(reentrantDeliveries, 2);
+    assert.equal(survivorDeliveries, 2, "reentrant removal does not skip the next active record");
+    assert.equal(stops, 0);
+    let shouldThrow = false;
+    const stopThrowing = store.subscribe(() => { if (shouldThrow) throw new Error("subscriber failed"); });
+    shouldThrow = true;
+    assert.throws(() => publish({ data: [{ id: "safe" }], error: null, loading: false }), /subscriber failed/);
+    assert.equal(survivorDeliveries, 3, "throwing callback does not prevent other active deliveries");
+    stopThrowing(); stopSurvivor();
+    assert.equal(stops, 1, "ownership remains valid and final active record tears down once");
+  } finally { browser.cleanup(); }
+});
+
 test("Journey metadata rejects symbol-keyed objects before publication", () => {
   const normalize = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "normalizeJourneyState");
   const metadata = { visible: true, [Symbol("private")]: "lost" };
