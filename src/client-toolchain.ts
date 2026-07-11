@@ -1,5 +1,5 @@
 import path from "node:path";
-import { readFile, realpath } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import type { Plugin as EsbuildPlugin } from "esbuild";
@@ -219,8 +219,18 @@ async function loadProjectVueToolchain(projectRoot: string) {
     throw vueProjectToolchainError("Vue/Vite could not read the Capsule package.json.");
   }
   const declared = { ...(projectManifest.dependencies ?? {}), ...(projectManifest.devDependencies ?? {}) };
+  const nodeModulesDir = path.join(projectRoot, "node_modules");
+  let canonicalNodeModules: string;
+  try {
+    const nodeModulesMetadata = await lstat(nodeModulesDir);
+    if (!nodeModulesMetadata.isDirectory() || nodeModulesMetadata.isSymbolicLink()) throw new Error("node_modules is not a real directory");
+    canonicalNodeModules = await realpath(nodeModulesDir);
+    if (!isCanonicalDescendant(projectRoot, canonicalNodeModules)) throw new Error("node_modules escaped the project root");
+  } catch {
+    throw vueProjectToolchainError("Vue/Vite requires node_modules to be a real directory contained by the Capsule project.");
+  }
   const projectRequire = createRequire(path.join(projectRoot, "package.json"));
-  const loaded = new Map<string, any>();
+  const resolvedPackages = new Map<string, string>();
   for (const required of requiredPackages) {
     if (typeof declared[required.name] !== "string") {
       throw vueProjectToolchainError(`Vue/Vite requires the Capsule to declare ${required.name}.`);
@@ -232,9 +242,9 @@ async function loadProjectVueToolchain(projectRoot: string) {
       installedManifest = JSON.parse(await readFile(path.join(packageDir, "package.json"), "utf8"));
       resolved = projectRequire.resolve(required.name);
       const canonicalPackageDir = await realpath(packageDir);
+      if (!isCanonicalDescendant(canonicalNodeModules, canonicalPackageDir)) throw new Error("package directory escaped project node_modules");
       const canonicalResolved = await realpath(resolved);
-      const relativeResolved = path.relative(canonicalPackageDir, canonicalResolved);
-      if (!relativeResolved || relativeResolved.startsWith("..") || path.isAbsolute(relativeResolved)) throw new Error("package entry escaped its project-owned package root");
+      if (!isCanonicalDescendant(canonicalPackageDir, canonicalResolved)) throw new Error("package entry escaped its project-owned package root");
       resolved = canonicalResolved;
     } catch {
       throw vueProjectToolchainError(`Vue/Vite could not resolve project-owned ${required.name}.`);
@@ -246,12 +256,16 @@ async function loadProjectVueToolchain(projectRoot: string) {
         { package: required.name, installedVersion: String(installedManifest.version).slice(0, 40), supportedMajor: required.major },
       );
     }
+    resolvedPackages.set(required.name, resolved);
+  }
+  const loaded = new Map<string, any>();
+  for (const [packageName, resolved] of resolvedPackages) {
     try {
-      loaded.set(required.name, await import(pathToFileURL(resolved).href));
+      loaded.set(packageName, await import(pathToFileURL(resolved).href));
     } catch (error) {
       throw vueProjectToolchainError(
-        `Vue/Vite could not load project-owned ${required.name}: ${boundedBuildMessage(error, [projectRoot])}`,
-        { package: required.name },
+        `Vue/Vite could not load project-owned ${packageName}: ${boundedBuildMessage(error, [projectRoot])}`,
+        { package: packageName },
       );
     }
   }
@@ -263,6 +277,11 @@ async function loadProjectVueToolchain(projectRoot: string) {
     throw vueProjectToolchainError("Vue/Vite project compiler packages have incompatible exports.");
   }
   return { plugin, compiler };
+}
+
+function isCanonicalDescendant(parent: string, candidate: string) {
+  const relative = path.relative(parent, candidate);
+  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
 function vueProjectToolchainError(message: string, diagnostics?: unknown) {

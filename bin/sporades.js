@@ -6,17 +6,17 @@ import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes5, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { appendFile, chmod as chmod2, cp, lstat as lstat4, mkdir as mkdir6, readdir as readdir2, readFile as readFile8, rename as rename3, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
+import { appendFile, chmod as chmod2, cp, lstat as lstat5, mkdir as mkdir6, readdir as readdir2, readFile as readFile8, rename as rename3, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
 import path8 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/bundle-pipeline.ts
-import { lstat as lstat2, mkdir as mkdir3, readFile as readFile4, rename as rename2, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
+import { lstat as lstat3, mkdir as mkdir3, readFile as readFile4, rename as rename2, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
 import path4 from "node:path";
 
 // src/client-toolchain.ts
 import path from "node:path";
-import { readFile, realpath } from "node:fs/promises";
+import { lstat, readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 
@@ -993,8 +993,18 @@ async function loadProjectVueToolchain(projectRoot) {
     throw vueProjectToolchainError("Vue/Vite could not read the Capsule package.json.");
   }
   const declared = { ...projectManifest.dependencies ?? {}, ...projectManifest.devDependencies ?? {} };
+  const nodeModulesDir = path.join(projectRoot, "node_modules");
+  let canonicalNodeModules;
+  try {
+    const nodeModulesMetadata = await lstat(nodeModulesDir);
+    if (!nodeModulesMetadata.isDirectory() || nodeModulesMetadata.isSymbolicLink()) throw new Error("node_modules is not a real directory");
+    canonicalNodeModules = await realpath(nodeModulesDir);
+    if (!isCanonicalDescendant(projectRoot, canonicalNodeModules)) throw new Error("node_modules escaped the project root");
+  } catch {
+    throw vueProjectToolchainError("Vue/Vite requires node_modules to be a real directory contained by the Capsule project.");
+  }
   const projectRequire = createRequire(path.join(projectRoot, "package.json"));
-  const loaded = /* @__PURE__ */ new Map();
+  const resolvedPackages = /* @__PURE__ */ new Map();
   for (const required of requiredPackages) {
     if (typeof declared[required.name] !== "string") {
       throw vueProjectToolchainError(`Vue/Vite requires the Capsule to declare ${required.name}.`);
@@ -1006,9 +1016,9 @@ async function loadProjectVueToolchain(projectRoot) {
       installedManifest = JSON.parse(await readFile(path.join(packageDir, "package.json"), "utf8"));
       resolved = projectRequire.resolve(required.name);
       const canonicalPackageDir = await realpath(packageDir);
+      if (!isCanonicalDescendant(canonicalNodeModules, canonicalPackageDir)) throw new Error("package directory escaped project node_modules");
       const canonicalResolved = await realpath(resolved);
-      const relativeResolved = path.relative(canonicalPackageDir, canonicalResolved);
-      if (!relativeResolved || relativeResolved.startsWith("..") || path.isAbsolute(relativeResolved)) throw new Error("package entry escaped its project-owned package root");
+      if (!isCanonicalDescendant(canonicalPackageDir, canonicalResolved)) throw new Error("package entry escaped its project-owned package root");
       resolved = canonicalResolved;
     } catch {
       throw vueProjectToolchainError(`Vue/Vite could not resolve project-owned ${required.name}.`);
@@ -1020,12 +1030,16 @@ async function loadProjectVueToolchain(projectRoot) {
         { package: required.name, installedVersion: String(installedManifest.version).slice(0, 40), supportedMajor: required.major }
       );
     }
+    resolvedPackages.set(required.name, resolved);
+  }
+  const loaded = /* @__PURE__ */ new Map();
+  for (const [packageName, resolved] of resolvedPackages) {
     try {
-      loaded.set(required.name, await import(pathToFileURL(resolved).href));
+      loaded.set(packageName, await import(pathToFileURL(resolved).href));
     } catch (error) {
       throw vueProjectToolchainError(
-        `Vue/Vite could not load project-owned ${required.name}: ${boundedBuildMessage(error, [projectRoot])}`,
-        { package: required.name }
+        `Vue/Vite could not load project-owned ${packageName}: ${boundedBuildMessage(error, [projectRoot])}`,
+        { package: packageName }
       );
     }
   }
@@ -1037,6 +1051,10 @@ async function loadProjectVueToolchain(projectRoot) {
     throw vueProjectToolchainError("Vue/Vite project compiler packages have incompatible exports.");
   }
   return { plugin, compiler };
+}
+function isCanonicalDescendant(parent, candidate) {
+  const relative = path.relative(parent, candidate);
+  return Boolean(relative) && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 function vueProjectToolchainError(message, diagnostics) {
   return clientToolchainError(
@@ -10779,7 +10797,7 @@ function unsealRuntimeServerEnv(envelope, privateKey) {
 }
 
 // src/public-tree.ts
-import { lstat, mkdir as mkdir2, readdir, readFile as readFile3, rename, rm, writeFile as writeFile2 } from "node:fs/promises";
+import { lstat as lstat2, mkdir as mkdir2, readdir, readFile as readFile3, rename, rm, writeFile as writeFile2 } from "node:fs/promises";
 import { randomBytes as randomBytes3 } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -10948,7 +10966,7 @@ async function verifyConsumerExpectation(recordPath, consumer, expected) {
   }
 }
 async function validatePublicTree(root) {
-  const rootStats = await lstat(root);
+  const rootStats = await lstat2(root);
   if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
     throw publicTreeError("Invalid public tree.", "The public output root must be a real directory.");
   }
@@ -10971,7 +10989,7 @@ async function validatePublicTree(root) {
       }
       canonicalPaths.set(canonicalPath, relativePath);
       const absolutePath = path3.join(directory, entry.name);
-      const stats = await lstat(absolutePath);
+      const stats = await lstat2(absolutePath);
       if (stats.isSymbolicLink()) {
         throw publicTreeError("Invalid public tree.", `Replace the symbolic link at ${relativePath} with a regular file.`);
       }
@@ -10997,7 +11015,7 @@ async function validatePublicTree(root) {
     }
   }
   await visit(root);
-  const indexStats = await lstat(path3.join(root, "index.html")).catch(() => null);
+  const indexStats = await lstat2(path3.join(root, "index.html")).catch(() => null);
   if (!indexStats?.isFile() || indexStats.isSymbolicLink()) {
     throw publicTreeError("Invalid public tree.", "Client output must contain a regular index.html file.");
   }
@@ -11025,7 +11043,7 @@ async function validateActivePublicTreeReference(treesDir, raw) {
     throw publicTreeError("Invalid active public tree reference.", "The active tree name is unsafe or malformed.");
   }
   const root = path3.join(treesDir, tree);
-  const stats = await lstat(root).catch(() => null);
+  const stats = await lstat2(root).catch(() => null);
   if (!stats?.isDirectory() || stats.isSymbolicLink()) {
     throw publicTreeError("Invalid active public tree reference.", "The active tree must reference an existing real public-tree directory.");
   }
@@ -11047,7 +11065,7 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
   const now = options.now ?? Date.now;
   const { live: liveLeaseNames, stale: staleLeaseNames } = await publicTreeLeaseStates(treesDir, now);
   for (const name of liveLeaseNames) keepNames.add(name);
-  const completed = await Promise.all(entries.filter((entry) => entry.isDirectory() && isPublicTreeName(entry.name)).map(async (entry) => ({ entry, modifiedAt: (await lstat(path3.join(treesDir, entry.name))).mtimeMs })));
+  const completed = await Promise.all(entries.filter((entry) => entry.isDirectory() && isPublicTreeName(entry.name)).map(async (entry) => ({ entry, modifiedAt: (await lstat2(path3.join(treesDir, entry.name))).mtimeMs })));
   completed.sort((left, right) => right.modifiedAt - left.modifiedAt);
   let recoverableCount = 0;
   for (const item of completed) {
@@ -11288,7 +11306,7 @@ async function acquirePublicTreeLock(treesDir) {
         continue;
       }
       if (owner === null) {
-        const ageMs = Date.now() - await lstat(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
+        const ageMs = Date.now() - await lstat2(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
         if (ageMs > 1e3) {
           await rm(lockDir, { recursive: true, force: true });
           continue;
@@ -11389,7 +11407,7 @@ async function removeOrphanedOwnerHeartbeats(treesDir) {
   for (const entry of heartbeatFiles) {
     const entryPath = path3.join(heartbeatDir, entry);
     if (entry.endsWith(".tmp")) {
-      const age = Date.now() - await lstat(entryPath).then((stats) => stats.mtimeMs).catch(() => Date.now());
+      const age = Date.now() - await lstat2(entryPath).then((stats) => stats.mtimeMs).catch(() => Date.now());
       if (age < -OWNER_CLOCK_SKEW_MS || age > UNVERIFIED_OWNER_TTL_MS + OWNER_CLOCK_SKEW_MS) {
         await rm(entryPath, { recursive: true, force: true });
       }
@@ -11728,7 +11746,7 @@ async function publishLegacyBundles(buildDir, files, options = {}) {
   await mkdir3(stagingDir, { recursive: false });
   try {
     for (const [index, file] of files.entries()) {
-      const stats = await lstat2(file.target).catch((error) => {
+      const stats = await lstat3(file.target).catch((error) => {
         if (errorDetails2(error).code === "ENOENT") return null;
         throw error;
       });
@@ -14726,7 +14744,7 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
 
 // src/cli/doctor.ts
 import { spawn, spawnSync } from "node:child_process";
-import { lstat as lstat3, readFile as readFile7, realpath as realpath2 } from "node:fs/promises";
+import { lstat as lstat4, readFile as readFile7, realpath as realpath2 } from "node:fs/promises";
 import { connect } from "node:net";
 import path7 from "node:path";
 
@@ -16051,8 +16069,8 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
     const [actualRoot, expectedRoot, sourceStats, expectedStats] = await Promise.all([
       realpath2(source),
       realpath2(expected),
-      lstat3(source),
-      lstat3(expected)
+      lstat4(source),
+      lstat4(expected)
     ]);
     if (sourceStats.isSymbolicLink() || expectedStats.isSymbolicLink() || !expectedStats.isDirectory() || actualRoot !== expectedRoot) {
       throw new Error("unsafe-or-mismatched-public-root");
@@ -16336,7 +16354,7 @@ async function readOptionalJsonFile(filePath) {
 }
 async function pathExists(targetPath) {
   try {
-    await lstat3(targetPath);
+    await lstat4(targetPath);
     return true;
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
@@ -21593,7 +21611,7 @@ function dockerResourceExists(args, cwd) {
 }
 async function pathExists2(targetPath) {
   try {
-    await lstat4(targetPath);
+    await lstat5(targetPath);
     return true;
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
@@ -22044,7 +22062,7 @@ async function acquireContainerLifecycleLock(projectDir) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
       const owner = await readFile8(ownerPath, "utf8").then(JSON.parse).catch(() => null);
       if (owner === null) {
-        const age = Date.now() - await lstat4(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
+        const age = Date.now() - await lstat5(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
         if (age <= 1e3) {
           await new Promise((resolve) => setTimeout(resolve, 10));
           continue;
@@ -22082,7 +22100,7 @@ function formatMount(mount) {
 async function prepareRuntimeDataPath(targetPath) {
   let stats;
   try {
-    stats = await lstat4(targetPath);
+    stats = await lstat5(targetPath);
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       return;

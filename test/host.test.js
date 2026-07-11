@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { connect } from "node:net";
 
 import { createWebSocketHub, openDevDatabase, prepareHttpSecurity, routeRuntimeHealth } from "../dist/server-runtime-source.js";
+import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -1209,11 +1210,7 @@ async function installFakePreact(projectDir) {
 }
 
 async function installVue(projectDir) {
-  for (const packageName of ["vue", "@vitejs/plugin-vue", "@vue/compiler-sfc"]) {
-    const target = path.join(projectDir, "node_modules", ...packageName.split("/"));
-    await mkdir(path.dirname(target), { recursive: true });
-    await symlink(path.join(repoRoot, "node_modules", ...packageName.split("/")), target);
-  }
+  await installProjectVueToolchain(projectDir, repoRoot);
 }
 
 async function writePackage(projectDir, packageName, exports, files) {

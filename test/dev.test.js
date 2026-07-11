@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
+import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 import { buildClientToolchain } from "../dist/client-toolchain.js";
 import { cleanupPublicTrees, discardPublicTree } from "../dist/public-tree.js";
@@ -333,11 +334,7 @@ async function installFakePreact(projectDir) {
 }
 
 async function installVue(projectDir) {
-  for (const packageName of ["vue", "@vitejs/plugin-vue", "@vue/compiler-sfc"]) {
-    const target = path.join(projectDir, "node_modules", ...packageName.split("/"));
-    await mkdir(path.dirname(target), { recursive: true });
-    await symlink(path.join(repoRoot, "node_modules", ...packageName.split("/")), target);
-  }
+  await installProjectVueToolchain(projectDir, repoRoot);
 }
 
 async function writePackage(projectDir, packageName, exports, files) {
@@ -1152,7 +1149,9 @@ test("Vue Vite fails closed for missing, unsupported, and unloadable project com
       assert.equal(created.code, 0, created.stderr);
       const projectDir = path.join(dir, `vue-compiler-${scenario}`);
       if (scenario !== "missing") {
+        if (scenario === "load") await installVue(projectDir);
         const pluginDir = path.join(projectDir, "node_modules", "@vitejs", "plugin-vue");
+        await rm(pluginDir, { recursive: true, force: true });
         await mkdir(pluginDir, { recursive: true });
         await writeFile(path.join(pluginDir, "package.json"), `${JSON.stringify({
           name: "@vitejs/plugin-vue",
@@ -1168,7 +1167,7 @@ test("Vue Vite fails closed for missing, unsupported, and unloadable project com
         assert.equal(error.framework, "vue");
         assert.equal(error.toolchain, "vite");
         assert.match(error.hint, /npm install.*@vitejs\/plugin-vue.*@vue\/compiler-sfc/i);
-        if (scenario === "missing") assert.match(error.message, /could not resolve project-owned @vitejs\/plugin-vue/i);
+        if (scenario === "missing") assert.match(error.message, /node_modules.*real directory.*Capsule project/i);
         if (scenario === "version") assert.match(error.message, /does not support.*@vitejs\/plugin-vue version/i);
         if (scenario === "load") assert.match(error.message, /could not load project-owned @vitejs\/plugin-vue.*project-plugin-load-failure/i);
         assert.doesNotMatch(JSON.stringify({ message: error.message, diagnostics: error.diagnostics, stack: error.stack }), new RegExp(projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
@@ -1176,6 +1175,56 @@ test("Vue Vite fails closed for missing, unsupported, and unloadable project com
       });
     });
   }
+});
+
+test("Vue Vite rejects external plugin and compiler package or scope symlinks before build output", async () => {
+  for (const scenario of ["plugin-package", "compiler-package", "plugin-scope", "compiler-scope"]) {
+    await withTempDir(async (dir) => {
+      const created = await runCli(["create", `vue-external-${scenario}`, "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(created.code, 0, created.stderr);
+      const projectDir = path.join(dir, `vue-external-${scenario}`);
+      await installVue(projectDir);
+      const plugin = scenario.startsWith("plugin");
+      const scope = plugin ? "@vitejs" : "@vue";
+      const packageName = plugin ? "plugin-vue" : "compiler-sfc";
+      const linkPath = scenario.endsWith("scope")
+        ? path.join(projectDir, "node_modules", scope)
+        : path.join(projectDir, "node_modules", scope, packageName);
+      const externalTarget = scenario.endsWith("scope")
+        ? path.join(repoRoot, "node_modules", scope)
+        : path.join(repoRoot, "node_modules", scope, packageName);
+      await rm(linkPath, { recursive: true, force: true });
+      await symlink(externalTarget, linkPath);
+
+      const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+      await assert.rejects(createBundle(projectDir, config), (error) => {
+        assert.equal(error.phase, "client");
+        assert.match(error.message, new RegExp(`could not resolve project-owned ${scope}/${packageName}`, "i"));
+        assert.match(error.hint, /npm install/i);
+        const diagnostics = JSON.stringify({ message: error.message, diagnostics: error.diagnostics });
+        assert.doesNotMatch(diagnostics, new RegExp(externalTarget.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+        return true;
+      });
+      await assert.rejects(access(path.join(projectDir, ".sporades")), (error) => error.code === "ENOENT");
+    });
+  }
+});
+
+test("Vue Vite rejects a symlinked node_modules root before resolving compiler packages", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "vue-external-node-modules", "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "vue-external-node-modules");
+    await symlink(path.join(repoRoot, "node_modules"), path.join(projectDir, "node_modules"));
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    await assert.rejects(createBundle(projectDir, config), (error) => {
+      assert.match(error.message, /node_modules.*real directory.*Capsule project/i);
+      assert.match(error.hint, /npm install/i);
+      assert.doesNotMatch(JSON.stringify({ message: error.message, diagnostics: error.diagnostics }), new RegExp(repoRoot.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      return true;
+    });
+    await assert.rejects(access(path.join(projectDir, ".sporades")), (error) => error.code === "ENOENT");
+  });
 });
 
 test("sporades dev owns React Vite rebuilds, preserves last-good output, and requests full-page refresh", async () => {
