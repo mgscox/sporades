@@ -7,7 +7,7 @@ Baseline at `5bd74f6`: `npm test` passed 596, failed 0, skipped 8.
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 05 | done | 04 done | `e08e845` | `codex/user-journey-05-final` / `/tmp/sporades-user-journey-swarm/issue-05-final` | `/root/journey_05_final` | `b32481a` | `/root/journey_fix_02` | ACCEPT | `d19a080` | reviewer 45/45; integration 45/45, build, typecheck, generated parity | accepted worktree pending removal; obsolete evidence branches retained |
-| 06 | review | 05 merged and integration-green | `f1a084d` | `codex/user-journey-06` / `/tmp/sporades-user-journey-swarm/issue-06` | `/root/journey_issue_06` | `159caef` | `/root/journey_fix_02` | pending re-review; prior verdict void | pending | focused docs, docs:api, typecheck, diff hygiene green | pending |
+| 06 | merged | 05 merged and integration-green | `f1a084d` | `codex/user-journey-06` / `/tmp/sporades-user-journey-swarm/issue-06` | `/root/journey_issue_06` | `159caef` | `/root/journey_fix_02` | ACCEPT | `28d55cb` | focused docs, docs:api, typecheck green; integration regenerated main-branch source links | pending integrated-result re-review and final gate |
 
 ## Preserved abandoned attempt
 

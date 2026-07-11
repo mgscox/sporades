@@ -4,7 +4,7 @@
 
 **Blocked by:** 05 — Retire Journey State At Connection And Auth Boundaries.
 
-**Status:** ready-for-agent
+**Status:** done
 
 ## Parent
 
