@@ -11,7 +11,7 @@ hero:
       link: /user-guide
     - theme: alt
       text: API reference
-      link: /api/
+      link: https://mgscox.github.io/sporades/api/
 
 features:
   - title: One CLI

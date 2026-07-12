@@ -55,17 +55,17 @@ sporades host push --restart
 
 ## Documentation
 
-- [User guide](docs/user-guide.md): build, run, inspect, deploy, auth,
+- [User guide](https://mgscox.github.io/sporades/user-guide): build, run, inspect, deploy, auth,
   preferences, files, endpoints, messages, and common workflows.
-- [Architecture](docs/architecture.md): platform model, runtime modes, Host
+- [Architecture](https://mgscox.github.io/sporades/architecture): platform model, runtime modes, Host
   server design, and ownership boundaries.
-- [Runtime layout](docs/runtime-layout.md): generated files, mounts, Host
+- [Runtime layout](https://mgscox.github.io/sporades/runtime-layout): generated files, mounts, Host
   directories, and persistent data locations.
-- [Host server installation](docs/server-installation.md): prepare a Linux Host
+- [Host server installation](https://mgscox.github.io/sporades/server-installation): prepare a Linux Host
   server for Hosted Capsules.
-- [Product requirements](docs/PRD.md): implemented scope, deferred scope, and
+- [Product requirements](https://mgscox.github.io/sporades/PRD): implemented scope, deferred scope, and
   core product principles.
-- [Roadmap](docs/ROADMAP.md): candidate features and promotion status.
+- [Roadmap](https://mgscox.github.io/sporades/ROADMAP): candidate features and promotion status.
 
 ## A Tiny Capsule - the entire server code for a real-time 'to-do' app
 

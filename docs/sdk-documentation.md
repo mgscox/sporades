@@ -15,7 +15,7 @@ property in the SDK.
 
 ## Generated API Reference
 
-Current release: [SDK documentation](/api/).
+Current release: [SDK documentation](https://mgscox.github.io/sporades/api/).
 
 For developers, the generated API reference is built from the public TypeScript declaration
 files for `sporades/server` and `sporades/client`:

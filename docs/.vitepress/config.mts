@@ -17,7 +17,7 @@ export default defineConfig({
     nav: [
       { text: "Guide", link: "/user-guide" },
       { text: "Architecture", link: "/architecture" },
-      { text: "API", link: "/api/" },
+      { text: "API", link: "https://mgscox.github.io/sporades/api/" },
     ],
     sidebar: [
       {
@@ -29,7 +29,7 @@ export default defineConfig({
           { text: "Host server installation", link: "/server-installation" },
           { text: "Product requirements", link: "/PRD" },
           { text: "Roadmap", link: "/ROADMAP" },
-          { text: "API reference", link: "/api/" },
+          { text: "API reference", link: "https://mgscox.github.io/sporades/api/" },
         ],
       },
     ],
