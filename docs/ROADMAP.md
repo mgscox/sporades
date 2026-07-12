@@ -22,6 +22,8 @@ and whether the work belongs in one release or separate tracks.
 
 | Feature | Status | Why it matters | Planning |
 | --- | --- | --- | --- |
+| Automated backups | candidate | Back up SQLite data and uploaded file bytes for deployed Container sessions and Hosted Capsules. Needs restore semantics, retention, encryption, and CLI inspection. Backup/restore is for transient data to support redeployment or restore after deletion; i.e. the mapped Docker paths. Can be just `tar` or similar. |
+| Host backup and restore | candidate | Back up and restore Host-server-owned state, including Hosted Capsule registry data, persistent Capsule data, uploaded file bytes, Host-generated sealed env keys, release metadata, and route/proxy state. Needs retention, encryption, restore authorization, and disaster-recovery semantics. |
 
 ## Recently Implemented
 
@@ -45,8 +47,8 @@ no longer belong in the next-feature queue.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Capsule roles | design | Define Capsule-scoped user authorization labels, such as app-defined admin roles, for use in normal ACL rules over one Capsule's DB, files, and storage resources. Capsule roles are separate from the Privileged server role per ADR 0027: they do not create userless system-owned execution, do not grant platform/runtime authority, and should not become a global role on runtime-owned Sporades auth users. Needs a separate PRD before implementation. |
-| Teams for ACL | deferred | Add team membership as a platform concept after Database and storage ACL rules are designed. Creator is team admin; admins can invite, approve requests, promote admins, revoke membership; users can request membership, list pending requests, list teams, and leave teams. |
+| Capsule roles | candidate | Define Capsule-scoped user authorization labels, such as app-defined admin roles, for use in normal ACL rules over one Capsule's DB, files, and storage resources. Capsule roles are separate from the Privileged server role per ADR 0027: they do not create userless system-owned execution, do not grant platform/runtime authority, and should not become a global role on runtime-owned Sporades auth users. Needs a separate PRD before implementation. |
+| Teams for ACL | candidate | Add team membership as a platform concept after Database and storage ACL rules are designed. Creator is team admin; admins can invite, approve requests, promote admins, revoke membership; users can request membership, list pending requests, list teams, and leave teams. |
 
 ## Storage, Database, And Extension Plugins
 
@@ -59,8 +61,6 @@ no longer belong in the next-feature queue.
 
 | Feature | Status | Notes |
 | --- | --- | --- |
-| Automated backups | candidate | Back up SQLite data and uploaded file bytes for deployed Container sessions and Hosted Capsules. Needs restore semantics, retention, encryption, and CLI inspection. Backup/restore is for transient data to support redeployment or restore after deletion; i.e. the mapped Docker paths. Can be just `tar` or similar. Likely dependent on Job scheduling. |
-| Host backup and restore | candidate | Back up and restore Host-server-owned state, including Hosted Capsule registry data, persistent Capsule data, uploaded file bytes, Host-generated sealed env keys, release metadata, and route/proxy state. Needs retention, encryption, restore authorization, and disaster-recovery semantics. |
 | OpenTelemetry hooks | candidate | Add hooks or default instrumentation points for traces, metrics, and logs without requiring app code to import OpenTelemetry directly. |
 | Log index retry queue | candidate | Add a bounded in-memory retry queue for Log index writes or pruning that fail while the JSONL log stream remains the durable append stream. Needs clear caps, flush timing, duplicate handling, shutdown behavior, and inspection of degraded indexing without making Log index availability part of app/auth/file workflow success. |
 | Mail sending | candidate | Add SMTP or third-party mail provider support for server-side mail sending. Likely useful for auth, invites, notifications, and team workflows. |
