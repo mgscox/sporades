@@ -44,7 +44,7 @@ async function fetchEventually(url, timeoutMs = 10_000) {
   throw lastError;
 }
 
-for (const { framework, template } of [
+for (const { framework, template, toolchain } of [
   { framework: "react", template: "blank" },
   { framework: "preact", template: "blank" },
   { framework: "lit", template: "blank" },
@@ -67,11 +67,14 @@ for (const { framework, template } of [
   { framework: "svelte", template: "guestbook" },
   { framework: "svelte", template: "photo-library" },
   { framework: "svelte", template: "campfire" },
-]) test(`real Container serves a complete ${framework} Vite ${template} public tree from the actual Base image`, {
+  { framework: "inferno", template: "blank", toolchain: "esbuild" },
+  { framework: "inferno", template: "todo", toolchain: "esbuild" },
+]) test(`real Container serves a complete ${framework} ${toolchain ?? "vite"} ${template} public tree from the actual Base image`, {
   skip: enabled ? false : "Set SPORADES_REAL_VITE_CONTAINER=1 to run the disposable Docker acceptance test.",
   timeout: 300_000,
 }, async (t) => {
   const root = await mkdtemp(path.join(tmpdir(), "sporades-real-vite-container-"));
+  const selectedToolchain = toolchain ?? "vite";
   const projectName = `real-${framework}-${template}-vite-container`;
   const projectDir = path.join(root, projectName);
   let deployAttempted = false;
@@ -81,7 +84,7 @@ for (const { framework, template } of [
     assert.match(docker.stdout.trim(), /^\d+\./, docker.stderr);
 
     const created = await runCli([
-      "create", projectName, "--template", template, "--framework", framework, "--toolchain", "vite",
+      "create", projectName, "--template", template, "--framework", framework, "--toolchain", selectedToolchain,
       "--no-install", "--no-git", "--json",
     ], root);
     assert.equal(created.code, 0, created.stderr);
@@ -90,11 +93,11 @@ for (const { framework, template } of [
       timeout: 120_000,
       maxBuffer: 10 * 1024 * 1024,
     });
-    if (["preact", "lit", "solid", "vue", "svelte"].includes(framework)) {
+    if (["preact", "inferno", "lit", "solid", "vue", "svelte"].includes(framework)) {
       await assert.rejects(access(path.join(projectDir, "node_modules", "react")), (error) => error.code === "ENOENT");
       await assert.rejects(access(path.join(projectDir, "node_modules", "react-dom")), (error) => error.code === "ENOENT");
       const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
-      assert.equal(packageJson.dependencies[framework === "solid" ? "solid-js" : framework], { preact: "^10.25.0", lit: "^3.2.1", solid: "^1.9.0", vue: "^3.5.13", svelte: "^5.0.0" }[framework]);
+      assert.equal(packageJson.dependencies[framework === "solid" ? "solid-js" : framework], { preact: "^10.25.0", inferno: "^9.1.0", lit: "^3.2.1", solid: "^1.9.0", vue: "^3.5.13", svelte: "^5.0.0" }[framework]);
       if (framework === "vue") assert.equal(packageJson.devDependencies["@vue/compiler-sfc"], "^3.5.13");
       assert.equal(packageJson.dependencies.react, undefined);
       assert.equal(packageJson.dependencies["react-dom"], undefined);
@@ -130,7 +133,7 @@ for (const { framework, template } of [
     await writeFile(path.join(projectDir, ".env"), "VITE_REAL_CONTAINER_LEAK=browser-secret-must-not-ship\n");
     await writeFile(path.join(projectDir, ".env.sporades.server"), `${template === "photo-library" ? "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n" : ""}SERVER_REAL_CONTAINER_LEAK=server-secret-must-not-ship\n`);
     const clientPath = path.join(projectDir, "client", ["lit", "vue", "svelte"].includes(framework) ? "index.ts" : "index.tsx");
-    await writeFile(
+    if (selectedToolchain === "vite") await writeFile(
       clientPath,
       `${await readFile(clientPath, "utf8")}\nconsole.log(import.meta.env.VITE_REAL_CONTAINER_LEAK);\n`,
     );
@@ -150,10 +153,10 @@ for (const { framework, template } of [
     const paths = binding.clientRelease.paths;
     const representatives = {
       html: "index.html",
-      js: paths.find((file) => /^assets\/index-[^/]+\.js$/.test(file)),
-      css: paths.find((file) => /^assets\/index-[^/]+\.css$/.test(file)),
+      js: paths.find((file) => selectedToolchain === "esbuild" ? file === "client.js" : /^assets\/index-[^/]+\.js$/.test(file)),
+      css: paths.find((file) => selectedToolchain === "esbuild" ? file === "assets/client.css" : /^assets\/index-[^/]+\.css$/.test(file)),
       svg: paths.find((file) => /^assets\/sporades-mark-[^/]+\.svg$/.test(file)),
-      map: paths.find((file) => /^assets\/index-[^/]+\.js\.map$/.test(file)),
+      map: paths.find((file) => selectedToolchain === "esbuild" ? file === "client.js.map" : /^assets\/index-[^/]+\.js\.map$/.test(file)),
     };
     const fetched = {};
     for (const [kind, publicPath] of Object.entries(representatives)) assert.ok(publicPath, `missing ${kind}: ${JSON.stringify(paths)}`);
@@ -183,13 +186,14 @@ for (const { framework, template } of [
     assert.doesNotMatch(output, /browser-secret-must-not-ship|server-secret-must-not-ship/);
     assert.doesNotMatch(output, /\/@vite\/client|react-refresh|vite\/hmr/i);
     assert.doesNotMatch(output, /dev\.refresh\.(?:subscribe|ready|received)/, "Base-image client output omits Dev refresh protocol");
-    if (framework === "solid" || framework === "lit") assert.doesNotMatch(output, /react-dom|react\/jsx-runtime|node_modules\/react/);
-    assert.equal((await fetchEventually(`${url}/client.js`)).status, 404);
-    t.diagnostic(JSON.stringify({ framework, template, baseImage: inspectedImage.stdout.trim(), url, fetched, clientJsStatus: 404 }));
+    if (["solid", "lit", "inferno"].includes(framework)) assert.doesNotMatch(output, /react-dom|react\/jsx-runtime|node_modules\/react/);
+    const clientJsStatus = (await fetchEventually(`${url}/client.js`)).status;
+    assert.equal(clientJsStatus, selectedToolchain === "esbuild" ? 200 : 404);
+    t.diagnostic(JSON.stringify({ framework, template, baseImage: inspectedImage.stdout.trim(), url, fetched, clientJsStatus }));
   } finally {
     if (deployAttempted) {
       const removed = await runCli(["deploy", "remove", "--json"], projectDir).catch(() => null);
-      if (["solid", "lit"].includes(framework) && deploySucceeded) {
+      if (["solid", "lit", "inferno"].includes(framework) && deploySucceeded) {
         assert.equal(removed?.code, 0, removed?.stderr ?? "Solid Base-image cleanup did not complete.");
         t.diagnostic(JSON.stringify({ framework, template, cleanup: "container-removed" }));
       }

@@ -5,7 +5,7 @@ import { normaliseBaseImageUpdatePolicy } from "../base-image.js";
 import { validateCapsuleServicesConfig } from "../capsule-services.js";
 import { commandError, errorDetails } from "./cli-support.js";
 export const SECURITY_SESSIONS = new Set(["dev", "public-dev", "container", "hosted"]);
-const CLIENT_FRAMEWORKS = new Set(["react", "preact", "lit", "solid", "vue", "svelte", "vanilla"]);
+const CLIENT_FRAMEWORKS = new Set(["react", "preact", "inferno", "lit", "solid", "vue", "svelte", "vanilla"]);
 const CLIENT_TOOLCHAINS = new Set(["esbuild", "vite"]);
 const DEFAULT_CSP_DIRECTIVES = {
     "default-src": ["'self'"],
@@ -60,7 +60,7 @@ export function validateClientConfig(client) {
         throw commandError("Invalid client configuration.", "Set `client.framework` and optional `client.toolchain` in sporades.json.");
     }
     if (client.framework !== undefined && !CLIENT_FRAMEWORKS.has(client.framework)) {
-        throw commandError(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, lit, solid, vue, svelte, vanilla.");
+        throw commandError(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, inferno, lit, solid, vue, svelte, vanilla.");
     }
     if (client.toolchain !== undefined && !CLIENT_TOOLCHAINS.has(client.toolchain)) {
         throw commandError(`Unsupported client toolchain: ${client.toolchain}`, "Use one of: esbuild, vite.");
@@ -79,6 +79,9 @@ export function validateClientConfig(client) {
     }
     if (client.framework === "lit" && client.toolchain !== undefined && client.toolchain !== "vite") {
         throw commandError("Unsupported client framework/toolchain combination: lit/esbuild", "Use Lit with Vite.");
+    }
+    if (client.framework === "inferno" && client.toolchain !== undefined && client.toolchain !== "esbuild") {
+        throw commandError("Unsupported client framework/toolchain combination: inferno/vite", "Use Inferno with esbuild.");
     }
 }
 export function validateSchedulingConfig(scheduling) {

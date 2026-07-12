@@ -382,6 +382,23 @@ export type SporadesLitControllers = {
   authController(host: LitReactiveControllerHost): LitAuthController;
 };
 
+/** Minimal Inferno class-component update contract consumed by Sporades adapters. */
+export type InfernoAdapterHost = { forceUpdate(): void };
+/** Native Inferno mount and unmount lifecycle owned by an observed adapter. */
+export type InfernoObservedAdapter = { componentDidMount(): void; componentWillUnmount(): void };
+/** Inferno query state bound to a class component lifecycle. */
+export type InfernoQueryAdapter<Data = unknown> = InfernoObservedAdapter & { state: QueryState<Data> };
+/** Inferno mutation state with pending-counted latest-invocation behavior. */
+export type InfernoMutationAdapter<Result = unknown> = { state: SolidMutationState<Result>; run(...args: unknown[]): Promise<SporadesResult<Result>> };
+/** Inferno auth observation and direct auth commands. */
+export type InfernoAuthAdapter = InfernoObservedAdapter & { state: AuthObserverState; isAuthenticated(): boolean; signUp: AuthApi["signUp"]; signIn: AuthApi["signIn"]; signOut: AuthApi["signOut"] };
+/** Inferno-native lifecycle adapters over the shared framework-neutral client connection. */
+export type SporadesInfernoAdapters = {
+  queryAdapter<Data = unknown>(host: InfernoAdapterHost, name: string): InfernoQueryAdapter<Data>;
+  mutationAdapter<Result = unknown>(host: InfernoAdapterHost, name: string): InfernoMutationAdapter<Result>;
+  authAdapter(host: InfernoAdapterHost): InfernoAuthAdapter;
+};
+
 /** Minimal Svelte-compatible readable store contract. */
 export type SvelteReadable<State> = {
   subscribe(listener: (state: State) => void): () => void;
@@ -451,5 +468,7 @@ export function createVueComposables(primitives: VueComposablePrimitives): Spora
 export function createSolidPrimitives(primitives: SolidPrimitiveInputs): SporadesSolidPrimitives;
 /** Create Lit reactive controllers bound to their host element lifecycle. */
 export function createLitControllers(): SporadesLitControllers;
+/** Create query, mutation, and auth adapters for Inferno class-component lifecycle. */
+export function createInfernoAdapters(): SporadesInfernoAdapters;
 /** Create lazily observed Svelte-compatible stores for query, mutation, and auth state. */
 export function createSvelteStores(): SporadesSvelteStores;

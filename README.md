@@ -113,7 +113,7 @@ export default capsule({
 ```
 
 Client scaffolds wire `sporades/client` into React or Preact hooks, Vue
-composables, Svelte stores, SolidJS signals, Lit reactive controllers, or framework-neutral subscriptions
+composables, Svelte stores, SolidJS signals, Lit reactive controllers, native Inferno lifecycle adapters, or framework-neutral subscriptions
 so the UI can consume queries, mutations, and auth without hand-rolled fetch plumbing.
 
 ## What You Get
@@ -131,6 +131,8 @@ Sporades currently includes:
 - Lit/Vite Web Component scaffolds across the complete template set, with
   component styles and host-lifecycle reactive controllers. Campfire preserves
   serialized identity-safe consent, explicit Journey TTLs, and cleanup.
+- Inferno/esbuild `blank` and `todo` scaffolds, using native class-component
+  lifecycle and classic Inferno JSX without React compatibility packages.
 - Local Dev sessions with rebuilds, WebSocket reconnects, SQLite persistence,
   logs, database inspection, auth helpers, and file storage.
 - Local Docker Container sessions for production-like staging tests.

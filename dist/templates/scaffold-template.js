@@ -12,6 +12,9 @@ export function scaffoldFiles(options) {
         }
         : framework === "preact" ? {
             preact: "^10.25.0",
+        } : framework === "inferno" ? {
+            inferno: "^9.1.0",
+            "inferno-create-element": "^9.1.0",
         } : framework === "lit" ? {
             lit: "^3.2.1",
         } : framework === "vue" ? {
@@ -43,9 +46,11 @@ export function scaffoldFiles(options) {
                 ? solidTemplateFiles(renderOptions, baseTemplateFiles)
                 : framework === "lit"
                     ? litTemplateFiles(renderOptions, baseTemplateFiles)
-                    : toolchain === "vite" && framework !== "vanilla"
-                        ? viteTemplateFiles(baseTemplateFiles, framework)
-                        : baseTemplateFiles;
+                    : framework === "inferno"
+                        ? infernoTemplateFiles(renderOptions, baseTemplateFiles)
+                        : toolchain === "vite" && framework !== "vanilla"
+                            ? viteTemplateFiles(baseTemplateFiles, framework)
+                            : baseTemplateFiles;
     return {
         "sporades.json": `${JSON.stringify({
             name: options.name,
@@ -87,7 +92,8 @@ export function scaffoldFiles(options) {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${escapeHtml(options.name)}</title>${options.template === "campfire" && !["lit", "solid", "vue", "svelte"].includes(framework) ? `
+    <title>${escapeHtml(options.name)}</title>${framework === "inferno" ? `
+    <link rel="stylesheet" href="/assets/client.css" />` : ""}${options.template === "campfire" && !["lit", "solid", "vue", "svelte"].includes(framework) ? `
     <script src="https://cdn.tailwindcss.com"></script>` : ""}
   </head>
   <body>
@@ -98,6 +104,56 @@ export function scaffoldFiles(options) {
 `,
         ...templateFiles,
     };
+}
+function infernoTemplateFiles(options, files) {
+    const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));
+    return {
+        ...sharedFiles,
+        "README.md": `${sharedFiles["README.md"] ?? ""}\n## Inferno client\n\nThe author-owned HTML loads the esbuild-owned \`/client.js\` compatibility entry. Author native Inferno class components in \`client/index.tsx\`; lifecycle adapters bind Sporades state without React compatibility packages.\n`,
+        "tsconfig.json": `${JSON.stringify({ compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true, noEmit: true, jsx: "react", jsxFactory: "createElement", lib: ["ES2022", "DOM", "DOM.Iterable"], skipLibCheck: true } }, null, 2)}\n`,
+        "client/index.tsx": options.template === "todo" ? infernoTodoTemplate() : infernoBlankTemplate(),
+        "client/assets.d.ts": 'declare module "*.svg" { const url: string; export default url; }\ndeclare module "*.css" {}\n',
+        "client/styles.css": `:root{font-family:system-ui,sans-serif;background:#f4f2ff;color:#211a35}body{margin:0}.shell{width:min(42rem,calc(100% - 2rem));margin:4rem auto}.mark{width:2rem;height:2rem}header,form{display:flex;gap:.75rem;align-items:center}li{margin-block:.5rem}\n`,
+        "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#8b5cf6"/></svg>\n`,
+    };
+}
+function infernoBlankTemplate() {
+    return `import { Component, render } from "inferno";
+import { createElement } from "inferno-create-element";
+import { createInfernoAdapters } from "sporades/client";
+import mark from "./sporades-mark.svg";
+import "./styles.css";
+
+const { authAdapter } = createInfernoAdapters();
+export class App extends Component {
+  session = authAdapter(this);
+  componentDidMount() { this.session.componentDidMount(); }
+  componentWillUnmount() { this.session.componentWillUnmount(); }
+  render() { return <main className="shell"><img className="mark" src={mark} alt="" /><h1>Blank Sporades Capsule</h1>{this.session.state.loading ? <p>Connecting…</p> : <p>Start building in server/index.ts and client/index.tsx.</p>}</main>; }
+}
+export function mountInfernoApp(target: Element) { render(<App />, target); }
+mountInfernoApp(document.getElementById("app")!);
+`;
+}
+function infernoTodoTemplate() {
+    return `import { Component, render } from "inferno";
+import { createElement } from "inferno-create-element";
+import { auth, createInfernoAdapters } from "sporades/client";
+import type { Todo } from "../shared/types";
+import mark from "./sporades-mark.svg";
+import "./styles.css";
+
+const { authAdapter, mutationAdapter, queryAdapter } = createInfernoAdapters();
+export class App extends Component {
+  session = authAdapter(this); todos = queryAdapter<Todo[]>(this, "todos"); addTodo = mutationAdapter(this, "addTodo"); text = "";
+  componentDidMount() { this.session.componentDidMount(); this.todos.componentDidMount(); }
+  componentWillUnmount() { this.todos.componentWillUnmount(); this.session.componentWillUnmount(); }
+  async submit(event: Event) { event.preventDefault(); const value = this.text.trim(); if (!value) return; const result = await this.addTodo.run(value); if (!result.error) { this.text = ""; this.forceUpdate(); } }
+  render() { const query = this.todos.state; return <main className="shell"><header><img className="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>{this.session.state.providers.google?.enabled && !this.session.isAuthenticated() ? <button type="button" onClick={() => auth.signIn("google")}>Sign in with Google</button> : null}<form onSubmit={(event) => this.submit(event)}><input aria-label="Todo" value={this.text} onInput={(event) => { this.text = (event.currentTarget as HTMLInputElement).value; this.forceUpdate(); }} /><button disabled={this.addTodo.state.loading || !this.text.trim()}>Add</button></form>{query.loading ? <p>Loading…</p> : query.error ? <p role="alert">{query.error.message}</p> : <ul>{(query.data ?? []).map((todo) => <li key={todo.id}>{todo.text}</li>)}</ul>}</main>; }
+}
+export function mountInfernoApp(target: Element) { render(<App />, target); }
+mountInfernoApp(document.getElementById("app")!);
+`;
 }
 function litTemplateFiles(options, files) {
     const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));
@@ -2524,6 +2580,7 @@ function agentsTemplate(template, framework, toolchain) {
     const lit = framework === "lit";
     const vue = framework === "vue";
     const svelte = framework === "svelte";
+    const inferno = framework === "inferno";
     const clientFiles = vue ? "client/*.vue and client/*.ts" : svelte ? "client/*.svelte and client/*.ts" : `client/*.${vanilla || lit ? "ts" : "tsx"}`;
     return `# Sporades App Instructions
 
@@ -2543,7 +2600,7 @@ Client toolchain: ${toolchain}
 - No file-based routing. Use the router included in the scaffold template.
 - All imports must be from Sporades, the configured framework, or relative paths.
 - Do not use Node built-ins in client code.
-- Auth is available via \`ctx.auth\` on the server, ${vanilla ? "`auth.get()` and `auth.subscribe()` in the framework-neutral client" : lit ? "`authController(this)` in the Lit client" : solid ? "`createAuth()` in the SolidJS client" : "`useAuth()` on the client"}.
+- Auth is available via \`ctx.auth\` on the server, ${vanilla ? "`auth.get()` and `auth.subscribe()` in the framework-neutral client" : lit ? "`authController(this)` in the Lit client" : solid ? "`createAuth()` in the SolidJS client" : inferno ? "`authAdapter(this)` in a native Inferno class component" : "`useAuth()` on the client"}.
 - Server env vars: define in \`.env.sporades.server\`, access via \`ctx.env\`.
 - Keep \`shared/\` free of DOM, Node, env, and Sporades runtime imports.
 
@@ -2560,7 +2617,7 @@ sporades db dump
 ## Structure
 
 - \`server/index.ts\` - schema, queries, mutations
-- \`client/index.${vanilla || lit || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : lit ? "Lit Web Component definition" : solid ? "SolidJS render entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
+- \`client/index.${vanilla || lit || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : lit ? "Lit Web Component definition" : solid ? "SolidJS render entrypoint" : inferno ? "native Inferno class-component entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
 ${solid ? "- `client/App.tsx` - native SolidJS component UI\n" : ""}${vue ? "- `client/App.vue` - Vue Single-File Component UI\n" : ""}- \`shared/\` - pure TypeScript shared by client and server
 ${svelte ? "- `client/App.svelte` - Svelte component UI\n" : ""}
 - \`index.html\` - HTML shell (user-owned)

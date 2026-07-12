@@ -41,6 +41,7 @@ export type FrameworkBundleConfig = {
     loader: "ts" | "tsx";
     jsxImportSource: string | null;
     jsxRuntimeImport: string | null;
+    jsxFactory?: string;
 };
 export declare function createBundle(projectDir: string, config: ProjectConfig, options?: {
     publishLegacy?: boolean;

@@ -285,6 +285,38 @@ test("Lit mutation controller is pending-counted and latest-invocation determini
   } finally { browser.cleanup(); }
 });
 
+test("Inferno adapters own complete query and auth state through native component lifecycle", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  try {
+    const runtime = await importClientRuntime();
+    const queryCallbacks = [], authCallbacks = []; let queryStarts = 0, queryStops = 0, authStarts = 0, authStops = 0, updates = 0;
+    runtime.queries.subscribe = (_name, listener) => { queryStarts += 1; queryCallbacks.push(listener); listener({ data: [{ id: `q${queryStarts}` }], error: null, loading: false }); return { unsubscribe() { queryStops += 1; } }; };
+    runtime.auth.subscribe = (listener) => { authStarts += 1; authCallbacks.push(listener); listener({ auth: anonymousAuth, providers: {}, error: null, loading: false }); return { unsubscribe() { authStops += 1; } }; };
+    const host = { forceUpdate() { updates += 1; } }, inferno = runtime.createInfernoAdapters();
+    const query = inferno.queryAdapter(host, "todos"), session = inferno.authAdapter(host);
+    assert.deepEqual(query.state, { data: null, error: null, loading: true }); assert.equal(session.state.loading, true);
+    query.componentDidMount(); query.componentDidMount(); session.componentDidMount(); session.componentDidMount();
+    assert.deepEqual([queryStarts, authStarts], [1, 1]); assert.equal(query.state.data[0].id, "q1"); assert.equal(session.isAuthenticated(), false);
+    query.componentWillUnmount(); query.componentWillUnmount(); session.componentWillUnmount(); session.componentWillUnmount(); assert.deepEqual([queryStops, authStops], [1, 1]);
+    query.componentDidMount(); session.componentDidMount(); assert.deepEqual([queryStarts, authStarts], [2, 2]);
+    const stateBefore = [query.state, session.state], updatesBefore = updates; queryCallbacks[0]({ data: [{ id: "stale" }], error: null, loading: false }); authCallbacks[0]({ auth: { ...anonymousAuth, userId: "stale" }, providers: {}, error: null, loading: false });
+    assert.deepEqual([query.state, session.state], stateBefore); assert.equal(updates, updatesBefore, "retired publications are inert");
+    queryCallbacks[1]({ data: [{ id: "fresh" }], error: null, loading: false }); authCallbacks[1]({ auth: { ...anonymousAuth, userId: "fresh" }, providers: {}, error: null, loading: false });
+    assert.equal(query.state.data[0].id, "fresh"); assert.equal(session.state.auth.userId, "fresh");
+    query.componentWillUnmount(); session.componentWillUnmount(); assert.deepEqual([queryStops, authStops], [2, 2]);
+  } finally { browser.cleanup(); }
+});
+
+test("Inferno mutation adapter is pending-counted, latest-invocation deterministic, and update-safe", async () => {
+  const browser = installBrowserFakes(anonymousAuth); const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
+  try {
+    const runtime = await importClientRuntime(), calls = []; runtime.mutations.run = (_name, value) => { const call = deferred(); calls.push({ value, ...call }); return call.promise; };
+    const mutation = runtime.createInfernoAdapters().mutationAdapter({ forceUpdate() { throw new Error("host update failed"); } }, "save");
+    const first = mutation.run("A"), latest = mutation.run("B"); assert.equal(mutation.state.loading, true); calls[1].resolve({ data: { value: "B" }, error: null }); await latest; assert.equal(mutation.state.loading, true); calls[0].resolve({ data: { value: "A" }, error: null }); await first; assert.deepEqual(mutation.state, { data: { value: "B" }, error: null, loading: false });
+    const rejected = mutation.run("C"); calls[2].reject(new Error("Inferno transport failed")); await assert.rejects(rejected, /Inferno transport failed/); assert.deepEqual(mutation.state, { data: null, error: { message: "Inferno transport failed" }, loading: false });
+  } finally { browser.cleanup(); }
+});
+
 test("Svelte stores lazily own one query and auth observation across subscribers and resubscribe deterministically", async () => {
   const browser = installBrowserFakes(anonymousAuth);
   try {

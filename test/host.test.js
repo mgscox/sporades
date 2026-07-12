@@ -14,6 +14,7 @@ import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
 import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
 import { installProjectLitToolchain } from "./support/project-lit-toolchain.js";
+import { installProjectInfernoToolchain } from "./support/project-inferno-toolchain.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -4198,7 +4199,7 @@ process.exit(0);
   });
 });
 
-for (const { framework, template } of [
+for (const { framework, template, toolchain } of [
   { framework: "react", template: "blank" },
   { framework: "preact", template: "blank" },
   { framework: "lit", template: "blank" },
@@ -4221,8 +4222,11 @@ for (const { framework, template } of [
   { framework: "svelte", template: "guestbook" },
   { framework: "svelte", template: "photo-library" },
   { framework: "svelte", template: "campfire" },
-]) test(`sporades host push archives the complete normalized ${framework} Vite ${template} public tree`, async () => {
+  { framework: "inferno", template: "blank", toolchain: "esbuild" },
+  { framework: "inferno", template: "todo", toolchain: "esbuild" },
+]) test(`sporades host push archives the complete normalized ${framework} ${toolchain ?? "vite"} ${template} public tree`, async () => {
   await withTempDir(async (dir) => {
+    const selectedToolchain = toolchain ?? "vite";
     const configDir = path.join(dir, "machine-config");
     const fakeSsh = await installContractFakeSsh(
       path.join(dir, "fake-ssh"),
@@ -4230,12 +4234,12 @@ for (const { framework, template } of [
     );
     const fakeScp = await installFakeScp(path.join(dir, "fake-scp"));
     const created = await runCli(
-      ["create", "vite-hosted", "--template", template, "--framework", framework, "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      ["create", "vite-hosted", "--template", template, "--framework", framework, "--toolchain", selectedToolchain, "--no-install", "--no-git", "--json"],
       { cwd: dir },
     );
     assert.equal(created.code, 0, created.stderr);
     const projectDir = path.join(dir, "vite-hosted");
-    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : framework === "lit" ? (project) => installProjectLitToolchain(project, repoRoot) : framework === "solid" ? (project) => installProjectSolidToolchain(project, repoRoot) : framework === "vue" ? installVue : (project) => installProjectSvelteToolchain(project, repoRoot))(projectDir);
+    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : framework === "inferno" ? (project) => installProjectInfernoToolchain(project, repoRoot) : framework === "lit" ? (project) => installProjectLitToolchain(project, repoRoot) : framework === "solid" ? (project) => installProjectSolidToolchain(project, repoRoot) : framework === "vue" ? installVue : (project) => installProjectSvelteToolchain(project, repoRoot))(projectDir);
     if (template === "photo-library") {
       const configPath = path.join(projectDir, "sporades.json");
       const config = JSON.parse(await readFile(configPath, "utf8"));
@@ -4257,12 +4261,12 @@ for (const { framework, template } of [
     const output = JSON.parse(push.stdout);
     const files = output.data.release.files;
     assert(files.includes("public/index.html"));
-    assert(files.some((file) => /^public\/assets\/index-[^/]+\.js$/.test(file)));
-    assert(files.some((file) => /^public\/assets\/index-[^/]+\.css$/.test(file)));
+    assert(files.some((file) => selectedToolchain === "esbuild" ? file === "public/client.js" : /^public\/assets\/index-[^/]+\.js$/.test(file)));
+    assert(files.some((file) => selectedToolchain === "esbuild" ? file === "public/assets/client.css" : /^public\/assets\/index-[^/]+\.css$/.test(file)));
     if (framework === "react" || framework === "preact") assert(files.some((file) => /^public\/assets\/vite-scaffold-[^/]+\.js$/.test(file)));
-    assert(files.some((file) => /^public\/assets\/sporades-mark-[^/]+\.svg$/.test(file)));
+    assert(files.some((file) => selectedToolchain === "esbuild" ? /public\/assets\/sporades-mark-[^/]+\.svg$/.test(file) : /^public\/assets\/sporades-mark-[^/]+\.svg$/.test(file)));
     assert(files.some((file) => file.endsWith(".js.map")));
-    assert.equal(files.includes("public/client.js"), false);
+    assert.equal(files.includes("public/client.js"), selectedToolchain === "esbuild");
 
     const [scpCall] = await readJsonl(fakeScp.logPath);
     const entries = await listArchiveEntries(scpCall.copiedTo, projectDir);
@@ -4291,6 +4295,10 @@ for (const { framework, template } of [
       blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
       "photo-library": /Photo Library/, campfire: /Campfire/,
     }[template]);
+    if (framework === "inferno") {
+      assert.match(publicText, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+      assert.doesNotMatch(publicText, /react-dom|react\/jsx-runtime|node_modules\/react/);
+    }
   });
 });
 

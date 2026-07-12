@@ -15,10 +15,12 @@ import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
 import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
 import { installProjectLitToolchain } from "./support/project-lit-toolchain.js";
+import { installProjectInfernoToolchain } from "./support/project-inferno-toolchain.js";
 import { mountLitTemplate } from "./support/lit-template-harness.js";
 import { mountSvelteTemplate } from "./support/svelte-template-harness.js";
 import { mountSolidTemplate } from "./support/solid-template-harness.js";
 import { mountVueTemplate } from "./support/vue-template-harness.js";
+import { mountInfernoTemplate } from "./support/inferno-template-harness.js";
 import { createBundle } from "../dist/bundle-pipeline.js";
 import { buildClientToolchain } from "../dist/client-toolchain.js";
 import { cleanupPublicTrees, discardPublicTree } from "../dist/public-tree.js";
@@ -541,6 +543,57 @@ async function runProjectTsc(projectDir) {
     let stdout = "", stderr = ""; child.stdout.on("data", (chunk) => stdout += chunk); child.stderr.on("data", (chunk) => stderr += chunk); child.on("close", (code) => resolve({ code, stdout, stderr }));
   });
 }
+
+async function createInfernoTemplate(dir, name, template, { omitToolchain = false } = {}) {
+  const created = await runCli(["create", name, "--framework", "inferno", "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
+  assert.equal(created.code, 0, created.stderr || created.stdout);
+  const projectDir = path.join(dir, name);
+  if (omitToolchain) {
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    delete config.client.toolchain;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+  }
+  await installProjectInfernoToolchain(projectDir, repoRoot);
+  return projectDir;
+}
+
+test("every admitted Inferno template passes its emitted strict TypeScript project", async () => {
+  for (const template of ["blank", "todo"]) await withTempDir(async (dir) => {
+    const projectDir = await createInfernoTemplate(dir, `inferno-strict-${template}`, template);
+    const result = await runProjectTsc(projectDir);
+    assert.equal(result.code, 0, `${template}\n${result.stdout}\n${result.stderr}`);
+  });
+});
+
+test("real Inferno todo renders, mutates, and reconnects native component lifecycle", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createInfernoTemplate(dir, "inferno-todo-behavior", "todo");
+    const calls = [], queryListeners = new Set(), sessionListeners = new Set();
+    const counts = { queryStarts: 0, queryStops: 0, sessionStarts: 0, sessionStops: 0 };
+    const source = (listeners, starts, stops, initial) => ({ subscribe(listener) { counts[starts] += 1; listeners.add(listener); listener(initial); return { unsubscribe() { if (listeners.delete(listener)) counts[stops] += 1; } }; } });
+    const harness = await mountInfernoTemplate(projectDir, {
+      auth: authStub(),
+      session: source(sessionListeners, "sessionStarts", "sessionStops", { auth: null, providers: {}, loading: false, error: null }),
+      queries: { todos: source(queryListeners, "queryStarts", "queryStops", { data: [{ id: "i1", text: "Cross the native lifecycle seam" }], error: null, loading: false }) },
+      mutations: { addTodo: { async run(value) { calls.push(value); return { data: { id: "i2" }, error: null }; } } },
+    });
+    try {
+      assert.match(harness.text(), /Sporades Todos.*Cross the native lifecycle seam/s);
+      assert.deepEqual(counts, { queryStarts: 1, queryStops: 0, sessionStarts: 1, sessionStops: 0 });
+      const input = harness.find('input[aria-label="Todo"]');
+      input.value = "  Ship Inferno  "; input.dispatchEvent(new harness.window.Event("input", { bubbles: true })); await harness.settle();
+      assert.equal(harness.find("button").disabled, false);
+      harness.find("form").dispatchEvent(new harness.window.Event("submit", { bubbles: true, cancelable: true })); await harness.settle();
+      assert.deepEqual(calls, ["Ship Inferno"]); assert.equal(harness.find('input[aria-label="Todo"]').value, "");
+      await harness.disconnect(); await harness.disconnect();
+      assert.deepEqual(counts, { queryStarts: 1, queryStops: 1, sessionStarts: 1, sessionStops: 1 });
+      await harness.reconnect();
+      assert.deepEqual(counts, { queryStarts: 2, queryStops: 1, sessionStarts: 2, sessionStops: 1 });
+    } finally { await harness.unmount(); }
+    assert.deepEqual(counts, { queryStarts: 2, queryStops: 2, sessionStarts: 2, sessionStops: 2 });
+  });
+});
 
 test("every generated Lit template passes its emitted strict TypeScript project", async () => {
   for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire"]) await withTempDir(async (dir) => {
@@ -4869,6 +4922,34 @@ test("sporades dev builds and rebuilds the Vanilla TypeScript client without fra
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
     }
+  });
+});
+
+for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good Inferno ${template} output and recovers`, async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createInfernoTemplate(dir, `inferno-dev-${template}`, template, { omitToolchain: template === "blank" });
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8")); config.dev.port = 0; await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child); assert.equal(started.ok, true, JSON.stringify(started));
+      const clientPath = path.join(projectDir, "client", "index.tsx");
+      const original = await readFile(clientPath, "utf8");
+      const label = template === "todo" ? "Sporades Todos" : "Blank Sporades Capsule";
+      await writeFile(clientPath, original.replace(label, `Rebuilt Inferno ${template}`));
+      const rebuilt = await waitForJsonEvent(child, (event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "inferno", toolchain: "esbuild" });
+      const lastGood = await (await fetch(`${started.data.url}/client.js`)).text(); assert.match(lastGood, new RegExp(`Rebuilt Inferno ${template}`));
+      await writeFile(clientPath, "export const = ;\n");
+      const failed = await waitForJsonEvent(child, (event) => !event.ok && event.data?.event === "rebuild" && event.data.status === "failed");
+      assert.deepEqual(failed.data.build, { phase: "client", framework: "inferno", toolchain: "esbuild" });
+      assert.match(failed.error.message, /Client bundle failed/); assert(JSON.stringify(failed).length < 4096);
+      assert.equal(await (await fetch(`${started.data.url}/client.js`)).text(), lastGood);
+      await writeFile(clientPath, original.replace(label, `Recovered Inferno ${template}`));
+      const recovered = await waitForJsonEvent(child, (event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(recovered.data.build, { phase: "client", framework: "inferno", toolchain: "esbuild" });
+      assert.match(await (await fetch(`${started.data.url}/client.js`)).text(), new RegExp(`Recovered Inferno ${template}`));
+    } finally { child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve)); }
   });
 });
 

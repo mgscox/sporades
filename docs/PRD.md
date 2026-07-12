@@ -12,7 +12,7 @@ and `sporades host ...`.
 
 Apps run as real Node.js code with SQLite-backed persistence. The CLI keeps the
 Server Bundle on esbuild and builds clients through a framework/toolchain
-adapter: esbuild remains the React/Preact default, while those frameworks can
+adapter: esbuild remains the React/Preact/Inferno default, while React and Preact can
 explicitly select Vite and Vue uses Vite for native Single-File Components.
 The normalized release runs unchanged in a local Dev session, a local Docker
 Container session, or a Hosted Capsule on a Host server.
@@ -26,11 +26,12 @@ LLM systems that need a scriptable build, deploy, inspect, and repair loop.
 
 The repository currently includes:
 
-- `sporades create` scaffolding with template selection, React, Preact, Lit, SolidJS, and
+- `sporades create` scaffolding with template selection, React, Preact, Inferno, Lit, SolidJS, and
   Vanilla TypeScript framework support, explicit React/Vite and Preact/Vite
   admission, and Vue/Vite admission across every supported template,
   Svelte/Vite and SolidJS/Vite admission across every supported template, plus
   Lit/Vite admission across every supported template with native Web Components,
+  Inferno/esbuild admission for native `blank` and `todo` class-component scaffolds,
   framework support, `AGENTS.md`, `CLAUDE.md`, `index.html`, `sporades.json`,
   Server env, and optional `npm install` / git initialization.
 - `sporades dev` for local Node execution with bundling, file watching,
@@ -264,8 +265,8 @@ transport remain the default application path.
 
 `sporades/client` exports framework-neutral query, mutation, auth, current-user
 preferences and file APIs, app-message helpers, a `createHooks` factory,
-Vue-native composables, Svelte stores, SolidJS signals, and Lit reactive
-controllers over the same connection.
+Vue-native composables, Svelte stores, SolidJS signals, Lit reactive
+controllers, and Inferno lifecycle adapters over the same connection.
 Vanilla TypeScript clients can use the transport primitives directly:
 
 ```ts
@@ -337,6 +338,24 @@ class TodoApp extends LitElement {
   session = authController(this);
   todos = queryController(this, "todos");
   addTodo = mutationController(this, "addTodo");
+}
+```
+
+Inferno clients bind that complete state to native class-component lifecycle.
+Observed adapters mount and dispose idempotently, while mutation state remains
+pending-counted and latest-invocation deterministic:
+
+```tsx
+import { Component } from "inferno";
+import { createInfernoAdapters } from "sporades/client";
+
+const { authAdapter, mutationAdapter, queryAdapter } = createInfernoAdapters();
+class TodoApp extends Component {
+  session = authAdapter(this);
+  todos = queryAdapter(this, "todos");
+  addTodo = mutationAdapter(this, "addTodo");
+  componentDidMount() { this.session.componentDidMount(); this.todos.componentDidMount(); }
+  componentWillUnmount() { this.todos.componentWillUnmount(); this.session.componentWillUnmount(); }
 }
 ```
 

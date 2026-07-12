@@ -146,6 +146,19 @@ test("published docs and API reference describe the admitted Lit controller cont
   assert.match(api, /Create Lit reactive controllers bound to their host element lifecycle/);
 });
 
+test("published docs and API reference describe the admitted Inferno lifecycle contract", async () => {
+  const [readme, prd, guide, clientTypes, api] = await Promise.all([
+    readProjectFile("README.md"), readProjectFile("docs/PRD.md"), readProjectFile("docs/user-guide.md"),
+    readProjectFile("src/types/client.d.ts"), readProjectFile("docs/api/functions/client.createInfernoAdapters.html"),
+  ]);
+  assert.match(readme, /Inferno\/esbuild `blank` and `todo` scaffolds/);
+  assert.match(prd, /Inferno\/esbuild admission for native `blank` and `todo`/);
+  assert.match(prd, /createInfernoAdapters/);
+  assert.match(guide, /`inferno`[\s\S]*Inferno admits `blank` and `todo` on esbuild only/);
+  assert.match(clientTypes, /createInfernoAdapters[\s\S]*SporadesInfernoAdapters/);
+  assert.match(api, /Create query, mutation, and auth adapters for Inferno class-component lifecycle/);
+});
+
 test("docs publish the implemented User journey tracker contract", async () => {
   const [guide, roadmap, clientTypes, serverTypes] = await Promise.all([
     readProjectFile("docs/user-guide.md"),

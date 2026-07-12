@@ -41,6 +41,7 @@ export type FrameworkBundleConfig = {
   loader: "ts" | "tsx";
   jsxImportSource: string | null;
   jsxRuntimeImport: string | null;
+  jsxFactory?: string;
 };
 
 const FRAMEWORK_BUNDLE_CONFIG = {
@@ -57,6 +58,14 @@ const FRAMEWORK_BUNDLE_CONFIG = {
     loader: "tsx",
     jsxImportSource: "preact",
     jsxRuntimeImport: "preact/jsx-runtime",
+  },
+  inferno: {
+    framework: "inferno",
+    entry: "index.tsx",
+    loader: "tsx",
+    jsxImportSource: null,
+    jsxRuntimeImport: null,
+    jsxFactory: "createElement",
   },
   solid: {
     framework: "solid",
@@ -603,7 +612,7 @@ async function readRequiredFile(filePath: PathLike | FileHandle, message: string
 
 function readFrameworkBundleConfig(framework: unknown): FrameworkBundleConfig {
   if (typeof framework !== "string" || !(framework in FRAMEWORK_BUNDLE_CONFIG)) {
-    throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, lit, solid, vue, svelte, vanilla.");
+    throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, inferno, lit, solid, vue, svelte, vanilla.");
   }
   return FRAMEWORK_BUNDLE_CONFIG[framework as keyof typeof FRAMEWORK_BUNDLE_CONFIG];
 }
@@ -629,6 +638,9 @@ function readClientToolchain(toolchain: unknown, framework: string): ClientToolc
   }
   if (framework === "lit" && toolchain !== "vite") {
     throw commandError("Unsupported client framework/toolchain combination: lit/esbuild", "Use Lit with Vite.");
+  }
+  if (framework === "inferno" && toolchain !== "esbuild") {
+    throw commandError("Unsupported client framework/toolchain combination: inferno/vite", "Use Inferno with esbuild.");
   }
   return toolchain;
 }

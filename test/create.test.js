@@ -738,6 +738,25 @@ test("sporades create admits every Lit/Vite template with project-owned Lit and 
   });
 });
 
+test("sporades create admits native Inferno/esbuild blank and todo with strict boundaries", async () => {
+  await withTempDir(async (dir) => {
+    for (const template of ["blank", "todo"]) {
+      const result = await runCli(["create", `inferno-${template}`, "--framework", "inferno", "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(result.code, 0, result.stderr || result.stdout);
+      const project = path.join(dir, `inferno-${template}`);
+      const [config, html, client, packageJson, tsconfig, readme, agents] = await Promise.all([
+        readFile(path.join(project, "sporades.json"), "utf8").then(JSON.parse), readFile(path.join(project, "index.html"), "utf8"), readFile(path.join(project, "client/index.tsx"), "utf8"), readFile(path.join(project, "package.json"), "utf8").then(JSON.parse), readFile(path.join(project, "tsconfig.json"), "utf8").then(JSON.parse), readFile(path.join(project, "README.md"), "utf8"), readFile(path.join(project, "AGENTS.md"), "utf8"),
+      ]);
+      assert.deepEqual(config.client, { framework: "inferno", toolchain: "esbuild" }); assert.match(html, /assets\/client\.css[\s\S]*src="\/client\.js"/);
+      assert.match(client, /from "inferno"/); assert.match(client, /from "inferno-create-element"/); assert.match(client, /createInfernoAdapters/); assert.match(client, /componentDidMount[\s\S]*componentWillUnmount/);
+      assert.equal(packageJson.dependencies.inferno, "^9.1.0"); assert.equal(packageJson.dependencies["inferno-create-element"], "^9.1.0"); assert.equal(packageJson.dependencies.react, undefined); assert.equal(packageJson.dependencies["react-dom"], undefined);
+      assert.equal(tsconfig.compilerOptions.jsxFactory, "createElement"); assert.match(readme, /native Inferno class components/); assert.match(agents, /inferno/i); assert.doesNotMatch(client, /react|react-dom|inferno-compat/i);
+    }
+    const vite = await runCli(["create", "inferno-vite", "--framework", "inferno", "--toolchain", "vite", "--no-install", "--no-git", "--json"], { cwd: dir }); assert.deepEqual(JSON.parse(vite.stdout).error, { message: "Unsupported client framework/toolchain combination: inferno/vite", hint: "Use Inferno with esbuild." });
+    const richer = await runCli(["create", "inferno-guestbook", "--framework", "inferno", "--template", "guestbook", "--no-install", "--no-git", "--json"], { cwd: dir }); assert.deepEqual(JSON.parse(richer.stdout).error, { message: "Unsupported client template for Inferno: guestbook", hint: "Use Inferno with the blank or todo template." });
+  });
+});
+
 test("sporades create admits every Solid/Vite template and rejects the unsupported toolchain structurally", async () => {
   await withTempDir(async (dir) => {
     const todo = await runCli(["create", "solid-todo", "--framework", "solid", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
@@ -1218,7 +1237,7 @@ test("sporades create rejects unsupported framework values with structured JSON"
       data: null,
       error: {
         message: "Unsupported framework: angular",
-        hint: "Use one of: react, preact, lit, solid, vue, svelte, vanilla.",
+        hint: "Use one of: react, preact, inferno, lit, solid, vue, svelte, vanilla.",
       },
     });
   });

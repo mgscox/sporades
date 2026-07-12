@@ -26,6 +26,7 @@ type FrameworkBuildConfig = {
   loader: "ts" | "tsx";
   jsxImportSource: string | null;
   jsxRuntimeImport: string | null;
+  jsxFactory?: string;
 };
 
 export async function buildClientToolchain(options: {
@@ -96,7 +97,8 @@ async function buildEsbuild(options: {
         ".svg": "file", ".png": "file", ".jpg": "file", ".jpeg": "file", ".gif": "file",
         ".webp": "file", ".ico": "file", ".woff": "file", ".woff2": "file",
       },
-      jsx: "automatic",
+      jsx: options.frameworkConfig.framework === "inferno" ? "transform" : "automatic",
+      ...(options.frameworkConfig.jsxFactory ? { jsxFactory: options.frameworkConfig.jsxFactory } : {}),
       ...(options.frameworkConfig.jsxImportSource ? { jsxImportSource: options.frameworkConfig.jsxImportSource } : {}),
       stdin: {
         contents: options.clientSource,

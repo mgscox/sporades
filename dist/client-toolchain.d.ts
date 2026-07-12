@@ -19,6 +19,7 @@ type FrameworkBuildConfig = {
     loader: "ts" | "tsx";
     jsxImportSource: string | null;
     jsxRuntimeImport: string | null;
+    jsxFactory?: string;
 };
 export declare function buildClientToolchain(options: {
     projectDir: string;

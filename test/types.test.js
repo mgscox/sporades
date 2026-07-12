@@ -68,7 +68,7 @@ test("sporades api bindings compile representative strict TypeScript app code", 
     await writeFile(
       path.join(dir, "app.ts"),
       `import { Boolean, Date, Json, Number, Reference, String, capsule, endpoint, job, message, mutation, query, requireAuth, schedule, table } from "sporades/server";
-import { auth, createHooks, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, type JourneyRecord } from "sporades/client";
+import { auth, createHooks, createInfernoAdapters, createLitControllers, createSolidPrimitives, createSvelteStores, createVueComposables, files, isAuthenticated, journey, mutations, onMessage, preferences, queries, sendMessage, type JourneyRecord } from "sporades/client";
 
 const app = capsule({
   name: "typed island",
@@ -272,6 +272,12 @@ const lit = createLitControllers();
 lit.queryController<Array<{ id: string }>>(litHost, "todos").state.data?.map((todo) => todo.id);
 lit.mutationController<{ id: string }>(litHost, "addTodo").run("Ship Lit types");
 lit.authController(litHost).state.auth?.userId.toUpperCase();
+const infernoHost = { forceUpdate() {} };
+const inferno = createInfernoAdapters();
+const infernoQuery = inferno.queryAdapter<Array<{ id: string }>>(infernoHost, "todos");
+infernoQuery.componentDidMount(); infernoQuery.state.data?.map((todo) => todo.id); infernoQuery.componentWillUnmount();
+inferno.mutationAdapter<{ id: string }>(infernoHost, "addTodo").run("Ship Inferno types");
+inferno.authAdapter(infernoHost).state.auth?.userId.toUpperCase();
 const svelte = createSvelteStores();
 const stopSvelteQuery = svelte.queryStore<Array<{ id: string }>>("todos").subscribe((state) => state.data?.map((todo) => todo.id));
 svelte.mutationStore<{ id: string }>("addTodo").run("Ship Svelte types");

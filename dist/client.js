@@ -10,6 +10,7 @@ export const createHooks = runtime.createHooks;
 export const createVueComposables = runtime.createVueComposables;
 export const createSolidPrimitives = runtime.createSolidPrimitives;
 export const createLitControllers = runtime.createLitControllers;
+export const createInfernoAdapters = runtime.createInfernoAdapters;
 export const createSvelteStores = runtime.createSvelteStores;
 export const isAuthenticated = runtime.isAuthenticated;
 export const onMessage = runtime.onMessage;

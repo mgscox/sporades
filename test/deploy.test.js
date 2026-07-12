@@ -15,6 +15,7 @@ import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
 import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
 import { installProjectLitToolchain } from "./support/project-lit-toolchain.js";
+import { installProjectInfernoToolchain } from "./support/project-inferno-toolchain.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -775,6 +776,26 @@ test("sporades deploy assembles a Vanilla TypeScript release without leaking Ser
     const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
     assert.match(clientBundle, /Vanilla Sporades/);
     assert.doesNotMatch(clientBundle, /vanilla-server-only|SECRET_TOKEN/);
+  });
+});
+
+for (const template of ["blank", "todo"]) test(`sporades deploy mounts native Inferno/esbuild ${template} output without Server env`, async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", `inferno-${template}-release`, "--template", template, "--framework", "inferno", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, `inferno-${template}-release`));
+    await installProjectInfernoToolchain(projectDir, repoRoot);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "INFERNO_SERVER_ONLY=inferno-container-secret\n");
+    const docker = await installFakeDocker(dir, `inferno-${template}-container`);
+    const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env }); assert.equal(deployed.code, 0, deployed.stderr);
+    const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
+    assert.equal(binding.clientRelease.framework, "inferno"); assert.equal(binding.clientRelease.toolchain, "esbuild");
+    assert(binding.clientRelease.paths.includes("client.js")); assert(binding.clientRelease.paths.includes("client.js.map")); assert(binding.clientRelease.paths.includes("assets/client.css"));
+    const publicRoot = path.join(projectDir, ".sporades", "build", ".public-trees", binding.clientRelease.publicTree);
+    const output = (await Promise.all(binding.clientRelease.paths.map((file) => readFile(path.join(publicRoot, file), "utf8")))).join("\n");
+    assert.match(output, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+    assert.doesNotMatch(output, /inferno-container-secret|INFERNO_SERVER_ONLY|react-dom|react\/jsx-runtime|node_modules\/react/);
+    const runCall = firstDockerRunCall(await docker.calls()); assertVolume(runCall.args, `${publicRoot}:/app/public:ro`);
   });
 });
 

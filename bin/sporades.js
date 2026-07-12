@@ -371,6 +371,77 @@ export function createLitControllers() {
   return { queryController, mutationController, authController };
 }
 
+export function createInfernoAdapters() {
+  const update = (host) => { try { host.forceUpdate(); } catch {} };
+  function observedAdapter(host, initialState, subscribe) {
+    let subscription = null, mounted = false, generation = 0;
+    const adapter = {
+      state: initialState,
+      componentDidMount() {
+        if (mounted) return;
+        mounted = true;
+        const ownedGeneration = ++generation;
+        let next;
+        try {
+          next = subscribe((state) => {
+            if (!mounted || generation !== ownedGeneration) return;
+            adapter.state = state;
+            update(host);
+          });
+        } catch (error) {
+          mounted = false;
+          generation += 1;
+          throw error;
+        }
+        if (!mounted || generation !== ownedGeneration) { next.unsubscribe(); return; }
+        subscription = next;
+      },
+      componentWillUnmount() {
+        if (!mounted) return;
+        mounted = false;
+        generation += 1;
+        if (!subscription) return;
+        const owned = subscription;
+        subscription = null;
+        owned.unsubscribe();
+      },
+    };
+    return adapter;
+  }
+  const queryAdapter = (host, name) => observedAdapter(host, { data: null, error: null, loading: true }, (publish) => queries.subscribe(name, publish));
+  function mutationAdapter(host, name) {
+    let pending = 0, latestInvocation = 0;
+    const adapter = { state: { data: null, error: null, loading: false }, async run(...args) {
+      const invocation = ++latestInvocation;
+      pending += 1;
+      adapter.state = { data: null, error: null, loading: true };
+      update(host);
+      try {
+        const result = await mutations.run(name, ...args);
+        if (invocation === latestInvocation) { adapter.state = { data: result.error ? null : result.data ?? null, error: result.error ?? null, loading: pending > 1 }; update(host); }
+        return result;
+      } catch (error) {
+        if (invocation === latestInvocation) { adapter.state = { data: null, error: normalizeMutationError(error), loading: pending > 1 }; update(host); }
+        throw error;
+      } finally {
+        pending -= 1;
+        adapter.state = { ...adapter.state, loading: pending > 0 };
+        update(host);
+      }
+    } };
+    return adapter;
+  }
+  function authAdapter(host) {
+    const adapter = observedAdapter(host, { auth: null, providers: {}, loading: true, error: null }, (publish) => auth.subscribe(publish));
+    adapter.isAuthenticated = () => Boolean(adapter.state.auth?.isAuthenticated);
+    adapter.signUp = (provider, credentials) => connect().signUp(provider, credentials);
+    adapter.signIn = (provider, credentials) => connect().signIn(provider, credentials);
+    adapter.signOut = () => connect().signOut();
+    return adapter;
+  }
+  return { queryAdapter, mutationAdapter, authAdapter };
+}
+
 export function createSvelteStores() {
   function queryStore(name) {
     return createLazyStore(
@@ -1128,7 +1199,8 @@ async function buildEsbuild(options) {
         ".woff": "file",
         ".woff2": "file"
       },
-      jsx: "automatic",
+      jsx: options.frameworkConfig.framework === "inferno" ? "transform" : "automatic",
+      ...options.frameworkConfig.jsxFactory ? { jsxFactory: options.frameworkConfig.jsxFactory } : {},
       ...options.frameworkConfig.jsxImportSource ? { jsxImportSource: options.frameworkConfig.jsxImportSource } : {},
       stdin: {
         contents: options.clientSource,
@@ -11849,6 +11921,14 @@ var FRAMEWORK_BUNDLE_CONFIG = {
     jsxImportSource: "preact",
     jsxRuntimeImport: "preact/jsx-runtime"
   },
+  inferno: {
+    framework: "inferno",
+    entry: "index.tsx",
+    loader: "tsx",
+    jsxImportSource: null,
+    jsxRuntimeImport: null,
+    jsxFactory: "createElement"
+  },
   solid: {
     framework: "solid",
     entry: "index.tsx",
@@ -12340,7 +12420,7 @@ async function readRequiredFile(filePath, message, hint) {
 }
 function readFrameworkBundleConfig(framework) {
   if (typeof framework !== "string" || !(framework in FRAMEWORK_BUNDLE_CONFIG)) {
-    throw commandError2(`Unsupported framework: ${framework}`, "Use one of: react, preact, lit, solid, vue, svelte, vanilla.");
+    throw commandError2(`Unsupported framework: ${framework}`, "Use one of: react, preact, inferno, lit, solid, vue, svelte, vanilla.");
   }
   return FRAMEWORK_BUNDLE_CONFIG[framework];
 }
@@ -12365,6 +12445,9 @@ function readClientToolchain(toolchain, framework) {
   }
   if (framework === "lit" && toolchain !== "vite") {
     throw commandError2("Unsupported client framework/toolchain combination: lit/esbuild", "Use Lit with Vite.");
+  }
+  if (framework === "inferno" && toolchain !== "esbuild") {
+    throw commandError2("Unsupported client framework/toolchain combination: inferno/vite", "Use Inferno with esbuild.");
   }
   return toolchain;
 }
@@ -12535,6 +12618,9 @@ function scaffoldFiles(options) {
     "react-dom": "^19.0.0"
   } : framework === "preact" ? {
     preact: "^10.25.0"
+  } : framework === "inferno" ? {
+    inferno: "^9.1.0",
+    "inferno-create-element": "^9.1.0"
   } : framework === "lit" ? {
     lit: "^3.2.1"
   } : framework === "vue" ? {
@@ -12556,7 +12642,7 @@ function scaffoldFiles(options) {
     "vite-plugin-solid": "^2.11.0"
   } : {};
   const baseTemplateFiles = framework === "vanilla" ? vanillaTemplateFiles(renderOptions) : templateOptions.files(renderOptions);
-  const templateFiles = framework === "vue" ? vueTemplateFiles(renderOptions, baseTemplateFiles) : framework === "svelte" ? svelteTemplateFiles(renderOptions, baseTemplateFiles) : framework === "solid" ? solidTemplateFiles(renderOptions, baseTemplateFiles) : framework === "lit" ? litTemplateFiles(renderOptions, baseTemplateFiles) : toolchain === "vite" && framework !== "vanilla" ? viteTemplateFiles(baseTemplateFiles, framework) : baseTemplateFiles;
+  const templateFiles = framework === "vue" ? vueTemplateFiles(renderOptions, baseTemplateFiles) : framework === "svelte" ? svelteTemplateFiles(renderOptions, baseTemplateFiles) : framework === "solid" ? solidTemplateFiles(renderOptions, baseTemplateFiles) : framework === "lit" ? litTemplateFiles(renderOptions, baseTemplateFiles) : framework === "inferno" ? infernoTemplateFiles(renderOptions, baseTemplateFiles) : toolchain === "vite" && framework !== "vanilla" ? viteTemplateFiles(baseTemplateFiles, framework) : baseTemplateFiles;
   return {
     "sporades.json": `${JSON.stringify(
       {
@@ -12608,7 +12694,8 @@ function scaffoldFiles(options) {
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${escapeHtml(options.name)}</title>${options.template === "campfire" && !["lit", "solid", "vue", "svelte"].includes(framework) ? `
+    <title>${escapeHtml(options.name)}</title>${framework === "inferno" ? `
+    <link rel="stylesheet" href="/assets/client.css" />` : ""}${options.template === "campfire" && !["lit", "solid", "vue", "svelte"].includes(framework) ? `
     <script src="https://cdn.tailwindcss.com"></script>` : ""}
   </head>
   <body>
@@ -12619,6 +12706,63 @@ function scaffoldFiles(options) {
 `,
     ...templateFiles
   };
+}
+function infernoTemplateFiles(options, files) {
+  const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));
+  return {
+    ...sharedFiles,
+    "README.md": `${sharedFiles["README.md"] ?? ""}
+## Inferno client
+
+The author-owned HTML loads the esbuild-owned \`/client.js\` compatibility entry. Author native Inferno class components in \`client/index.tsx\`; lifecycle adapters bind Sporades state without React compatibility packages.
+`,
+    "tsconfig.json": `${JSON.stringify({ compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true, noEmit: true, jsx: "react", jsxFactory: "createElement", lib: ["ES2022", "DOM", "DOM.Iterable"], skipLibCheck: true } }, null, 2)}
+`,
+    "client/index.tsx": options.template === "todo" ? infernoTodoTemplate() : infernoBlankTemplate(),
+    "client/assets.d.ts": 'declare module "*.svg" { const url: string; export default url; }\ndeclare module "*.css" {}\n',
+    "client/styles.css": `:root{font-family:system-ui,sans-serif;background:#f4f2ff;color:#211a35}body{margin:0}.shell{width:min(42rem,calc(100% - 2rem));margin:4rem auto}.mark{width:2rem;height:2rem}header,form{display:flex;gap:.75rem;align-items:center}li{margin-block:.5rem}
+`,
+    "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#8b5cf6"/></svg>
+`
+  };
+}
+function infernoBlankTemplate() {
+  return `import { Component, render } from "inferno";
+import { createElement } from "inferno-create-element";
+import { createInfernoAdapters } from "sporades/client";
+import mark from "./sporades-mark.svg";
+import "./styles.css";
+
+const { authAdapter } = createInfernoAdapters();
+export class App extends Component {
+  session = authAdapter(this);
+  componentDidMount() { this.session.componentDidMount(); }
+  componentWillUnmount() { this.session.componentWillUnmount(); }
+  render() { return <main className="shell"><img className="mark" src={mark} alt="" /><h1>Blank Sporades Capsule</h1>{this.session.state.loading ? <p>Connecting\u2026</p> : <p>Start building in server/index.ts and client/index.tsx.</p>}</main>; }
+}
+export function mountInfernoApp(target: Element) { render(<App />, target); }
+mountInfernoApp(document.getElementById("app")!);
+`;
+}
+function infernoTodoTemplate() {
+  return `import { Component, render } from "inferno";
+import { createElement } from "inferno-create-element";
+import { auth, createInfernoAdapters } from "sporades/client";
+import type { Todo } from "../shared/types";
+import mark from "./sporades-mark.svg";
+import "./styles.css";
+
+const { authAdapter, mutationAdapter, queryAdapter } = createInfernoAdapters();
+export class App extends Component {
+  session = authAdapter(this); todos = queryAdapter<Todo[]>(this, "todos"); addTodo = mutationAdapter(this, "addTodo"); text = "";
+  componentDidMount() { this.session.componentDidMount(); this.todos.componentDidMount(); }
+  componentWillUnmount() { this.todos.componentWillUnmount(); this.session.componentWillUnmount(); }
+  async submit(event: Event) { event.preventDefault(); const value = this.text.trim(); if (!value) return; const result = await this.addTodo.run(value); if (!result.error) { this.text = ""; this.forceUpdate(); } }
+  render() { const query = this.todos.state; return <main className="shell"><header><img className="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>{this.session.state.providers.google?.enabled && !this.session.isAuthenticated() ? <button type="button" onClick={() => auth.signIn("google")}>Sign in with Google</button> : null}<form onSubmit={(event) => this.submit(event)}><input aria-label="Todo" value={this.text} onInput={(event) => { this.text = (event.currentTarget as HTMLInputElement).value; this.forceUpdate(); }} /><button disabled={this.addTodo.state.loading || !this.text.trim()}>Add</button></form>{query.loading ? <p>Loading\u2026</p> : query.error ? <p role="alert">{query.error.message}</p> : <ul>{(query.data ?? []).map((todo) => <li key={todo.id}>{todo.text}</li>)}</ul>}</main>; }
+}
+export function mountInfernoApp(target: Element) { render(<App />, target); }
+mountInfernoApp(document.getElementById("app")!);
+`;
 }
 function litTemplateFiles(options, files) {
   const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));
@@ -15171,6 +15315,7 @@ function agentsTemplate(template, framework, toolchain) {
   const lit = framework === "lit";
   const vue = framework === "vue";
   const svelte = framework === "svelte";
+  const inferno = framework === "inferno";
   const clientFiles = vue ? "client/*.vue and client/*.ts" : svelte ? "client/*.svelte and client/*.ts" : `client/*.${vanilla || lit ? "ts" : "tsx"}`;
   return `# Sporades App Instructions
 
@@ -15190,7 +15335,7 @@ Client toolchain: ${toolchain}
 - No file-based routing. Use the router included in the scaffold template.
 - All imports must be from Sporades, the configured framework, or relative paths.
 - Do not use Node built-ins in client code.
-- Auth is available via \`ctx.auth\` on the server, ${vanilla ? "`auth.get()` and `auth.subscribe()` in the framework-neutral client" : lit ? "`authController(this)` in the Lit client" : solid ? "`createAuth()` in the SolidJS client" : "`useAuth()` on the client"}.
+- Auth is available via \`ctx.auth\` on the server, ${vanilla ? "`auth.get()` and `auth.subscribe()` in the framework-neutral client" : lit ? "`authController(this)` in the Lit client" : solid ? "`createAuth()` in the SolidJS client" : inferno ? "`authAdapter(this)` in a native Inferno class component" : "`useAuth()` on the client"}.
 - Server env vars: define in \`.env.sporades.server\`, access via \`ctx.env\`.
 - Keep \`shared/\` free of DOM, Node, env, and Sporades runtime imports.
 
@@ -15207,7 +15352,7 @@ sporades db dump
 ## Structure
 
 - \`server/index.ts\` - schema, queries, mutations
-- \`client/index.${vanilla || lit || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : lit ? "Lit Web Component definition" : solid ? "SolidJS render entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
+- \`client/index.${vanilla || lit || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : lit ? "Lit Web Component definition" : solid ? "SolidJS render entrypoint" : inferno ? "native Inferno class-component entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
 ${solid ? "- `client/App.tsx` - native SolidJS component UI\n" : ""}${vue ? "- `client/App.vue` - Vue Single-File Component UI\n" : ""}- \`shared/\` - pure TypeScript shared by client and server
 ${svelte ? "- `client/App.svelte` - Svelte component UI\n" : ""}
 - \`index.html\` - HTML shell (user-owned)
@@ -15813,7 +15958,7 @@ var HELP_TEXT = {
 Scaffold a new Capsule.
 
 Options:
-  --framework <name>  Client framework: react, preact, lit, solid, vue, svelte, or vanilla
+  --framework <name>  Client framework: react, preact, inferno, lit, solid, vue, svelte, or vanilla
   --toolchain <name>  Client toolchain: esbuild or Vite (framework-dependent)
   --template <name>   Template: blank, todo, guestbook, photo-library, or campfire
   --no-install        Skip npm install
@@ -16089,7 +16234,7 @@ import { createHash as createHash3 } from "node:crypto";
 import { chmod, mkdir as mkdir5, readFile as readFile6, writeFile as writeFile5 } from "node:fs/promises";
 import path6 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
-var CLIENT_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "lit", "solid", "vue", "svelte", "vanilla"]);
+var CLIENT_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "inferno", "lit", "solid", "vue", "svelte", "vanilla"]);
 var CLIENT_TOOLCHAINS = /* @__PURE__ */ new Set(["esbuild", "vite"]);
 var DEFAULT_CSP_DIRECTIVES = {
   "default-src": ["'self'"],
@@ -16146,7 +16291,7 @@ function validateClientConfig(client) {
     throw commandError4("Invalid client configuration.", "Set `client.framework` and optional `client.toolchain` in sporades.json.");
   }
   if (client.framework !== void 0 && !CLIENT_FRAMEWORKS.has(client.framework)) {
-    throw commandError4(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, lit, solid, vue, svelte, vanilla.");
+    throw commandError4(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, inferno, lit, solid, vue, svelte, vanilla.");
   }
   if (client.toolchain !== void 0 && !CLIENT_TOOLCHAINS.has(client.toolchain)) {
     throw commandError4(`Unsupported client toolchain: ${client.toolchain}`, "Use one of: esbuild, vite.");
@@ -16168,6 +16313,9 @@ function validateClientConfig(client) {
   }
   if (client.framework === "lit" && client.toolchain !== void 0 && client.toolchain !== "vite") {
     throw commandError4("Unsupported client framework/toolchain combination: lit/esbuild", "Use Lit with Vite.");
+  }
+  if (client.framework === "inferno" && client.toolchain !== void 0 && client.toolchain !== "esbuild") {
+    throw commandError4("Unsupported client framework/toolchain combination: inferno/vite", "Use Inferno with esbuild.");
   }
 }
 function validateSchedulingConfig(scheduling) {
@@ -17981,7 +18129,7 @@ jobs:
 var CLI_VERSION = "0.3.0";
 
 // src/cli/sporades.ts
-var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "lit", "solid", "vue", "svelte", "vanilla"]);
+var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "inferno", "lit", "solid", "vue", "svelte", "vanilla"]);
 var SUPPORTED_CLIENT_TOOLCHAINS = /* @__PURE__ */ new Set(["esbuild", "vite"]);
 var SUPPORTED_TEMPLATES = /* @__PURE__ */ new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
 var DEV_SESSION_FILE = path8.join(".sporades", "dev-session.json");
@@ -18214,7 +18362,7 @@ function parseCreateArgs(args) {
     throw commandError4("Missing scaffold name.", "Use `sporades create <name>`.");
   }
   if (framework !== null && !SUPPORTED_FRAMEWORKS.has(framework)) {
-    throw commandError4(`Unsupported framework: ${framework}`, "Use one of: react, preact, lit, solid, vue, svelte, vanilla.");
+    throw commandError4(`Unsupported framework: ${framework}`, "Use one of: react, preact, inferno, lit, solid, vue, svelte, vanilla.");
   }
   toolchain ??= framework === "lit" || framework === "solid" || framework === "vue" || framework === "svelte" ? "vite" : "esbuild";
   if (!SUPPORTED_CLIENT_TOOLCHAINS.has(toolchain)) {
@@ -18240,6 +18388,12 @@ function parseCreateArgs(args) {
   }
   if (framework === "lit" && toolchain !== "vite") {
     throw commandError4(`Unsupported client framework/toolchain combination: lit/${toolchain}`, "Use Lit with Vite.");
+  }
+  if (framework === "inferno" && toolchain !== "esbuild") {
+    throw commandError4(`Unsupported client framework/toolchain combination: inferno/${toolchain}`, "Use Inferno with esbuild.");
+  }
+  if (framework === "inferno" && !["blank", "todo"].includes(template)) {
+    throw commandError4(`Unsupported client template for Inferno: ${template}`, "Use Inferno with the blank or todo template.");
   }
   if (!SUPPORTED_TEMPLATES.has(template)) {
     throw commandError4(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");

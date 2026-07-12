@@ -348,6 +348,77 @@ export function createLitControllers() {
   return { queryController, mutationController, authController };
 }
 
+export function createInfernoAdapters() {
+  const update = (host) => { try { host.forceUpdate(); } catch {} };
+  function observedAdapter(host, initialState, subscribe) {
+    let subscription = null, mounted = false, generation = 0;
+    const adapter = {
+      state: initialState,
+      componentDidMount() {
+        if (mounted) return;
+        mounted = true;
+        const ownedGeneration = ++generation;
+        let next;
+        try {
+          next = subscribe((state) => {
+            if (!mounted || generation !== ownedGeneration) return;
+            adapter.state = state;
+            update(host);
+          });
+        } catch (error) {
+          mounted = false;
+          generation += 1;
+          throw error;
+        }
+        if (!mounted || generation !== ownedGeneration) { next.unsubscribe(); return; }
+        subscription = next;
+      },
+      componentWillUnmount() {
+        if (!mounted) return;
+        mounted = false;
+        generation += 1;
+        if (!subscription) return;
+        const owned = subscription;
+        subscription = null;
+        owned.unsubscribe();
+      },
+    };
+    return adapter;
+  }
+  const queryAdapter = (host, name) => observedAdapter(host, { data: null, error: null, loading: true }, (publish) => queries.subscribe(name, publish));
+  function mutationAdapter(host, name) {
+    let pending = 0, latestInvocation = 0;
+    const adapter = { state: { data: null, error: null, loading: false }, async run(...args) {
+      const invocation = ++latestInvocation;
+      pending += 1;
+      adapter.state = { data: null, error: null, loading: true };
+      update(host);
+      try {
+        const result = await mutations.run(name, ...args);
+        if (invocation === latestInvocation) { adapter.state = { data: result.error ? null : result.data ?? null, error: result.error ?? null, loading: pending > 1 }; update(host); }
+        return result;
+      } catch (error) {
+        if (invocation === latestInvocation) { adapter.state = { data: null, error: normalizeMutationError(error), loading: pending > 1 }; update(host); }
+        throw error;
+      } finally {
+        pending -= 1;
+        adapter.state = { ...adapter.state, loading: pending > 0 };
+        update(host);
+      }
+    } };
+    return adapter;
+  }
+  function authAdapter(host) {
+    const adapter = observedAdapter(host, { auth: null, providers: {}, loading: true, error: null }, (publish) => auth.subscribe(publish));
+    adapter.isAuthenticated = () => Boolean(adapter.state.auth?.isAuthenticated);
+    adapter.signUp = (provider, credentials) => connect().signUp(provider, credentials);
+    adapter.signIn = (provider, credentials) => connect().signIn(provider, credentials);
+    adapter.signOut = () => connect().signOut();
+    return adapter;
+  }
+  return { queryAdapter, mutationAdapter, authAdapter };
+}
+
 export function createSvelteStores() {
   function queryStore(name) {
     return createLazyStore(
