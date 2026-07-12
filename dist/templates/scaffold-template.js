@@ -1,7 +1,8 @@
+import { defaultClientToolchain } from "../client-capabilities.js";
 export function scaffoldFiles(options) {
     const templateOptions = resolveTemplateOptions(options.template);
     const framework = options.framework ?? templateOptions.framework;
-    const toolchain = options.toolchain ?? (["lit", "solid", "vue", "svelte"].includes(framework) ? "vite" : "esbuild");
+    const toolchain = options.toolchain ?? defaultClientToolchain(framework) ?? "esbuild";
     const renderOptions = { ...options, name: options.name, framework, toolchain };
     const packageName = options.name;
     const sporadesDependency = options.sporadesDependency ?? "sporades";

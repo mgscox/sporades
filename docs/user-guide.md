@@ -222,6 +222,22 @@ to esbuild, and accepts explicit `--toolchain vite`; both paths use native class
 components and lifecycle adapters without React compatibility packages. Inferno/Vite
 emits normalized hashed assets and uses Sporades full-page Dev refresh rather than HMR.
 
+The authoritative client capability matrix is:
+
+| Framework | Default | Also admitted | Templates |
+| --- | --- | --- | --- |
+| Vanilla TypeScript | esbuild | — | blank, todo, guestbook, photo-library, campfire |
+| React | esbuild | Vite | blank, todo, guestbook, photo-library, campfire |
+| Preact | esbuild | Vite | blank, todo, guestbook, photo-library, campfire |
+| Vue | Vite | — | blank, todo, guestbook, photo-library, campfire |
+| Svelte | Vite | — | blank, todo, guestbook, photo-library, campfire |
+| SolidJS | Vite | — | blank, todo, guestbook, photo-library, campfire |
+| Lit | Vite | — | blank, todo, guestbook, photo-library, campfire |
+| Inferno | esbuild | Vite | blank, todo, guestbook, photo-library, campfire |
+
+Angular and server-owning meta-frameworks remain outside the Capsule runtime
+contract: they fail before scaffold output rather than entering a partial path.
+
 React/Vite, Preact/Vite, and SolidJS/Vite scaffolds reference `/client/index.tsx`; Lit/Vite,
 Vue/Vite, and Svelte/Vite reference `/client/index.ts`. Lit defines the
 `<sporades-app>` Web Component directly, while Vue and Svelte compile native `client/App.vue`

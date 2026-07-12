@@ -159,6 +159,17 @@ test("published docs and API reference describe the admitted Inferno lifecycle c
   assert.match(api, /Create query, mutation, and auth adapters for Inferno class-component lifecycle/);
 });
 
+test("canonical docs publish the implemented client capability matrix and ADR succession", async () => {
+  const [guide, roadmap, oldAdr, activeAdr] = await Promise.all([
+    readProjectFile("docs/user-guide.md"), readProjectFile("docs/ROADMAP.md"), readProjectFile("docs/adr/0010-user-owned-index-html.md"), readProjectFile("docs/adr/0032-user-owned-html-builds-to-a-normalized-public-tree.md"),
+  ]);
+  for (const row of ["Vanilla TypeScript | esbuild", "React | esbuild | Vite", "Preact | esbuild | Vite", "Vue | Vite", "Svelte | Vite", "SolidJS | Vite", "Lit | Vite", "Inferno | esbuild | Vite"]) assert.match(guide, new RegExp(row.replaceAll("|", "\\|")));
+  assert.match(guide, /Angular and server-owning meta-frameworks remain outside/);
+  assert.match(oldAdr, /Status: Superseded by ADR-0032/); assert.match(activeAdr, /Status: Accepted/); assert.match(activeAdr, /supersedes ADR 0010/);
+  assert.match(roadmap, /Recently Implemented[\s\S]*Multi-framework client toolchains \| implemented/);
+  assert.doesNotMatch(roadmap.match(/## Recommended Next Features[\s\S]*?## Recently Implemented/)?.[0] ?? "", /Multi-framework client toolchains/);
+});
+
 test("docs publish the implemented User journey tracker contract", async () => {
   const [guide, roadmap, clientTypes, serverTypes] = await Promise.all([
     readProjectFile("docs/user-guide.md"),

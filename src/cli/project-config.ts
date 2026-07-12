@@ -4,11 +4,12 @@ import path from "node:path";
 
 import { normaliseBaseImageUpdatePolicy } from "../base-image.js";
 import { validateCapsuleServicesConfig } from "../capsule-services.js";
+import { CLIENT_FRAMEWORKS, CLIENT_TOOLCHAINS, supportsClientCapability } from "../client-capabilities.js";
 import { commandError, errorDetails, type LooseRecord } from "./cli-support.js";
 
 export const SECURITY_SESSIONS = new Set(["dev", "public-dev", "container", "hosted"]);
-const CLIENT_FRAMEWORKS = new Set(["react", "preact", "inferno", "lit", "solid", "vue", "svelte", "vanilla"]);
-const CLIENT_TOOLCHAINS = new Set(["esbuild", "vite"]);
+const CLIENT_FRAMEWORK_SET = new Set(CLIENT_FRAMEWORKS);
+const CLIENT_TOOLCHAIN_SET = new Set(CLIENT_TOOLCHAINS);
 
 const DEFAULT_CSP_DIRECTIVES = {
   "default-src": ["'self'"],
@@ -67,10 +68,10 @@ export function validateClientConfig(client: LooseRecord) {
   if (!client || typeof client !== "object" || Array.isArray(client) || Object.keys(client).some((key) => key !== "framework" && key !== "toolchain")) {
     throw commandError("Invalid client configuration.", "Set `client.framework` and optional `client.toolchain` in sporades.json.");
   }
-  if (client.framework !== undefined && !CLIENT_FRAMEWORKS.has(client.framework)) {
+  if (client.framework !== undefined && !CLIENT_FRAMEWORK_SET.has(client.framework as any)) {
     throw commandError(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, inferno, lit, solid, vue, svelte, vanilla.");
   }
-  if (client.toolchain !== undefined && !CLIENT_TOOLCHAINS.has(client.toolchain)) {
+  if (client.toolchain !== undefined && !CLIENT_TOOLCHAIN_SET.has(client.toolchain as any)) {
     throw commandError(`Unsupported client toolchain: ${client.toolchain}`, "Use one of: esbuild, vite.");
   }
   if (client.toolchain === "vite" && (client.framework ?? "react") === "vanilla") {
@@ -91,6 +92,7 @@ export function validateClientConfig(client: LooseRecord) {
   if (client.framework === "lit" && client.toolchain !== undefined && client.toolchain !== "vite") {
     throw commandError("Unsupported client framework/toolchain combination: lit/esbuild", "Use Lit with Vite.");
   }
+  if (client.framework !== undefined && client.toolchain !== undefined && !supportsClientCapability(client.framework, client.toolchain)) throw commandError(`Unsupported client framework/toolchain combination: ${client.framework}/${client.toolchain}`, "Choose an admitted pair from the client capability matrix in docs/user-guide.md.");
 }
 
 export function validateSchedulingConfig(scheduling: LooseRecord) {

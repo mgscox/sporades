@@ -12517,6 +12517,29 @@ function tagBuildError(error, phase, framework, toolchain) {
   return tagged;
 }
 
+// src/client-capabilities.ts
+var CLIENT_CAPABILITIES = Object.freeze([
+  { framework: "vanilla", toolchain: "esbuild", default: true },
+  { framework: "react", toolchain: "esbuild", default: true },
+  { framework: "react", toolchain: "vite", default: false },
+  { framework: "preact", toolchain: "esbuild", default: true },
+  { framework: "preact", toolchain: "vite", default: false },
+  { framework: "vue", toolchain: "vite", default: true },
+  { framework: "svelte", toolchain: "vite", default: true },
+  { framework: "solid", toolchain: "vite", default: true },
+  { framework: "lit", toolchain: "vite", default: true },
+  { framework: "inferno", toolchain: "esbuild", default: true },
+  { framework: "inferno", toolchain: "vite", default: false }
+]);
+var CLIENT_FRAMEWORKS = [...new Set(CLIENT_CAPABILITIES.map(({ framework }) => framework))];
+var CLIENT_TOOLCHAINS = [...new Set(CLIENT_CAPABILITIES.map(({ toolchain }) => toolchain))];
+function supportsClientCapability(framework, toolchain) {
+  return CLIENT_CAPABILITIES.some((cell) => cell.framework === framework && cell.toolchain === toolchain);
+}
+function defaultClientToolchain(framework) {
+  return CLIENT_CAPABILITIES.find((cell) => cell.framework === framework && cell.default)?.toolchain ?? null;
+}
+
 // src/base-image.ts
 var SPORADES_BASE_IMAGE = {
   name: "sporades-base",
@@ -12625,7 +12648,7 @@ function restartPolicyStatus(mode, overrides = {}) {
 function scaffoldFiles(options) {
   const templateOptions = resolveTemplateOptions(options.template);
   const framework = options.framework ?? templateOptions.framework;
-  const toolchain = options.toolchain ?? (["lit", "solid", "vue", "svelte"].includes(framework) ? "vite" : "esbuild");
+  const toolchain = options.toolchain ?? defaultClientToolchain(framework) ?? "esbuild";
   const renderOptions = { ...options, name: options.name, framework, toolchain };
   const packageName = options.name;
   const sporadesDependency = options.sporadesDependency ?? "sporades";
@@ -16312,8 +16335,8 @@ import { createHash as createHash3 } from "node:crypto";
 import { chmod, mkdir as mkdir5, readFile as readFile6, writeFile as writeFile5 } from "node:fs/promises";
 import path6 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
-var CLIENT_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "inferno", "lit", "solid", "vue", "svelte", "vanilla"]);
-var CLIENT_TOOLCHAINS = /* @__PURE__ */ new Set(["esbuild", "vite"]);
+var CLIENT_FRAMEWORK_SET = new Set(CLIENT_FRAMEWORKS);
+var CLIENT_TOOLCHAIN_SET = new Set(CLIENT_TOOLCHAINS);
 var DEFAULT_CSP_DIRECTIVES = {
   "default-src": ["'self'"],
   "script-src": ["'self'", "'unsafe-inline'"],
@@ -16368,10 +16391,10 @@ function validateClientConfig(client) {
   if (!client || typeof client !== "object" || Array.isArray(client) || Object.keys(client).some((key) => key !== "framework" && key !== "toolchain")) {
     throw commandError4("Invalid client configuration.", "Set `client.framework` and optional `client.toolchain` in sporades.json.");
   }
-  if (client.framework !== void 0 && !CLIENT_FRAMEWORKS.has(client.framework)) {
+  if (client.framework !== void 0 && !CLIENT_FRAMEWORK_SET.has(client.framework)) {
     throw commandError4(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, inferno, lit, solid, vue, svelte, vanilla.");
   }
-  if (client.toolchain !== void 0 && !CLIENT_TOOLCHAINS.has(client.toolchain)) {
+  if (client.toolchain !== void 0 && !CLIENT_TOOLCHAIN_SET.has(client.toolchain)) {
     throw commandError4(`Unsupported client toolchain: ${client.toolchain}`, "Use one of: esbuild, vite.");
   }
   if (client.toolchain === "vite" && (client.framework ?? "react") === "vanilla") {
@@ -16392,6 +16415,7 @@ function validateClientConfig(client) {
   if (client.framework === "lit" && client.toolchain !== void 0 && client.toolchain !== "vite") {
     throw commandError4("Unsupported client framework/toolchain combination: lit/esbuild", "Use Lit with Vite.");
   }
+  if (client.framework !== void 0 && client.toolchain !== void 0 && !supportsClientCapability(client.framework, client.toolchain)) throw commandError4(`Unsupported client framework/toolchain combination: ${client.framework}/${client.toolchain}`, "Choose an admitted pair from the client capability matrix in docs/user-guide.md.");
 }
 function validateSchedulingConfig(scheduling) {
   if (scheduling === void 0) return;
@@ -18204,8 +18228,8 @@ jobs:
 var CLI_VERSION = "0.3.0";
 
 // src/cli/sporades.ts
-var SUPPORTED_FRAMEWORKS = /* @__PURE__ */ new Set(["react", "preact", "inferno", "lit", "solid", "vue", "svelte", "vanilla"]);
-var SUPPORTED_CLIENT_TOOLCHAINS = /* @__PURE__ */ new Set(["esbuild", "vite"]);
+var SUPPORTED_FRAMEWORKS = new Set(CLIENT_FRAMEWORKS);
+var SUPPORTED_CLIENT_TOOLCHAINS = new Set(CLIENT_TOOLCHAINS);
 var SUPPORTED_TEMPLATES = /* @__PURE__ */ new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
 var DEV_SESSION_FILE = path8.join(".sporades", "dev-session.json");
 var DEV_DATABASE_ENV_FILE = path8.join(".sporades", "dev-database-env.json");
@@ -18439,7 +18463,7 @@ function parseCreateArgs(args) {
   if (framework !== null && !SUPPORTED_FRAMEWORKS.has(framework)) {
     throw commandError4(`Unsupported framework: ${framework}`, "Use one of: react, preact, inferno, lit, solid, vue, svelte, vanilla.");
   }
-  toolchain ??= framework === "lit" || framework === "solid" || framework === "vue" || framework === "svelte" ? "vite" : "esbuild";
+  toolchain ??= defaultClientToolchain(framework) ?? "esbuild";
   if (!SUPPORTED_CLIENT_TOOLCHAINS.has(toolchain)) {
     throw commandError4(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
   }
@@ -18464,6 +18488,7 @@ function parseCreateArgs(args) {
   if (framework === "lit" && toolchain !== "vite") {
     throw commandError4(`Unsupported client framework/toolchain combination: lit/${toolchain}`, "Use Lit with Vite.");
   }
+  if (framework !== null && !supportsClientCapability(framework, toolchain)) throw commandError4(`Unsupported client framework/toolchain combination: ${framework}/${toolchain}`, "Choose an admitted pair from the client capability matrix in docs/user-guide.md.");
   if (!SUPPORTED_TEMPLATES.has(template)) {
     throw commandError4(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
   }

@@ -7,6 +7,7 @@ import { appendFile, chmod, cp, lstat, mkdir, readdir, readFile, rename, rm, wri
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../bundle-pipeline.js";
+import { CLIENT_FRAMEWORKS, CLIENT_TOOLCHAINS, defaultClientToolchain, supportsClientCapability } from "../client-capabilities.js";
 import { discardPublicTree, getProcessStartIdentity, readPublicAsset, readPublicTreeConsumer, removePublicTreeConsumer, restorePublicTreeConsumer, summarizePublicTree, writePublicTreeConsumer, } from "../public-tree.js";
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageRuntimeUser, } from "../base-image.js";
 import { ensureSealedServerEnvKeyPair, envelopeSummary, exportedEnvelope, readKeyPair, readSealedServerEnv, sealServerEnv, sealedServerEnvPaths, unsealServerEnv, writeSealedServerEnv, } from "../sealed-server-env.js";
@@ -22,8 +23,8 @@ import { createGithubAutodeployWorkflow } from "./github-autodeploy-workflow.js"
 import { SECURITY_SESSIONS, authorizedKeyFingerprint, readBaseImageUpdatePolicy, readOptionalProjectSecurity, readProjectConfig, resolveAuthorizedKeyLines, resolveEffectiveSecurityPolicy, resolveLocalContainerSshAccess, withRuntimeSecuritySession, } from "./project-config.js";
 import { commandError, errorDetails, writeResult } from "./cli-support.js";
 import { CLI_VERSION } from "./cli-version.js";
-const SUPPORTED_FRAMEWORKS = new Set(["react", "preact", "inferno", "lit", "solid", "vue", "svelte", "vanilla"]);
-const SUPPORTED_CLIENT_TOOLCHAINS = new Set(["esbuild", "vite"]);
+const SUPPORTED_FRAMEWORKS = new Set(CLIENT_FRAMEWORKS);
+const SUPPORTED_CLIENT_TOOLCHAINS = new Set(CLIENT_TOOLCHAINS);
 const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
 const DEV_DATABASE_ENV_FILE = path.join(".sporades", "dev-database-env.json");
@@ -255,7 +256,7 @@ function parseCreateArgs(args) {
     if (framework !== null && !SUPPORTED_FRAMEWORKS.has(framework)) {
         throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, inferno, lit, solid, vue, svelte, vanilla.");
     }
-    toolchain ??= framework === "lit" || framework === "solid" || framework === "vue" || framework === "svelte" ? "vite" : "esbuild";
+    toolchain ??= defaultClientToolchain(framework) ?? "esbuild";
     if (!SUPPORTED_CLIENT_TOOLCHAINS.has(toolchain)) {
         throw commandError(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
     }
@@ -274,6 +275,8 @@ function parseCreateArgs(args) {
     if (framework === "lit" && toolchain !== "vite") {
         throw commandError(`Unsupported client framework/toolchain combination: lit/${toolchain}`, "Use Lit with Vite.");
     }
+    if (framework !== null && !supportsClientCapability(framework, toolchain))
+        throw commandError(`Unsupported client framework/toolchain combination: ${framework}/${toolchain}`, "Choose an admitted pair from the client capability matrix in docs/user-guide.md.");
     if (!SUPPORTED_TEMPLATES.has(template)) {
         throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
     }
