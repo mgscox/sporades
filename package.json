@@ -27,6 +27,9 @@
   },
   "scripts": {
     "build": "node ./scripts/write-cli-version.mjs && tsc --project tsconfig.json && node ./scripts/build-bin.mjs",
+    "docs:build": "node ./scripts/build-docs.mjs",
+    "docs:dev": "vitepress dev docs",
+    "docs:preview": "vitepress preview docs",
     "docs:api": "typedoc",
     "package": "node ./scripts/package.mjs",
     "typecheck": "tsc --project tsconfig.json --noEmit",
@@ -55,7 +58,8 @@
     "svelte": "^5.56.4",
     "typedoc": "^0.28.20",
     "typescript": "^5.9.3",
-    "vite-plugin-solid": "^2.11.12"
+    "vite-plugin-solid": "^2.11.12",
+    "vitepress": "^1.6.4"
   },
   "allowScripts": {
     "esbuild@0.25.12": true

@@ -4,6 +4,8 @@ sporades-host.env
 sporades-*-host.env
 .playwright-mcp/
 node_modules/
+docs/.vitepress/cache/
+docs/.vitepress/dist/
 client_secret_*
 dummy/
 *.env*
