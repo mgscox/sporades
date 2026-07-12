@@ -1,36 +1,286 @@
 # Changes
 
-## Unreleased - 2026-07-07
+## Unreleased - 2026-07-12
 
-Changes since v0.2.0.
+Changes since v0.3.0.
 
 ### 🚀 Features
 
-- Add doctor hosted capsule checks (5eb39af).
-- Add doctor local runtime checks (36d1d66).
-- Add doctor capsule authoring checks (3561a09).
-- Add doctor project security checks (a474750).
-- Add doctor command envelope (3786aa2).
+- Contract client capability matrix (a118bef).
+- Complete Inferno client parity (2bd4313).
+- Admit Inferno esbuild capsules (425bd02).
+- Complete Lit template parity (a456eb2).
+- Admit Lit with reactive controllers (967652e).
+- Complete Solid template parity (64950f4).
+- Admit SolidJS Vite clients (f6923eb).
+- Complete Svelte template parity (e4570fa).
+- Admit Svelte Vite capsules (b2a4f68).
+- Complete Vue template parity (3885368).
+- Admit Vue Vite client framework (905fe68).
+- Admit Preact Vite client toolchain (c58e276).
+- Admit React Vite client toolchain (3cb977e).
+- Add vanilla TypeScript client framework (7fc8cdb).
+- Host complete public tree releases (b2e4485).
+- Mount container public trees (10408cf).
+- Build normalized public tree (4449de9).
+- Add stable keys to Campfire lists (df5130d).
+- Add Campfire realtime journey exemplar (fe2682b).
+- Finalize journey session boundaries (8cd7245).
+- Capture safe browser journey signals (e3b39d9).
+- Implement Journey TTL buffering and expiry (49941ce).
+- Observe capsule journey changes (337ba97).
+- Add explicit user journey sessions (4a304b6).
+- Timestamp photo template names every minute (be38452).
+- Inspect remote capsule schedules (91477a3).
+- Add Dev schedule inspection command (9156101).
+- Implement durable schedule recovery (85344de).
+- Apply schedule timezone semantics (5f519dc).
+- Add dynamic schedule payload factories (9c33cbc).
+- Run static recurring privileged jobs (29160ba).
+- Add controllable runtime clock (ef1a6fd).
+- Add cross-runtime job inspection (9c98b2e).
+- Filter job inspection lists (0a2160b).
+- Recover expired job leases (9897c78).
+- Add job delays retries and cancellation (0946b9c).
+- Add privileged job execution (b46b35e).
+- Add current-user job queue (c39658a).
+- Add version and host upgrade to CLI (01e28ac).
+- Implement security hardening (d6713fc).
+- Implement privileged server role (01ace81).
+- Implement privileged audit contract (20ac917).
 
 ### 🐛 Bug Fixes
 
-- Fix generated server upload helpers (8d310be).
+- Plan next feature (7c60c3e).
+- Make client capability matrix authoritative (96813f5).
+- Harden Inferno exemplar workflows (5380318).
+- Verify strict Lit scaffold behavior (c75591d).
+- Harden Lit lifecycle and defaults (52da69e).
+- Harden Dev refresh delivery (e0f5703).
+- Scope Dev refresh delivery receipts (b35c2c3).
+- Sequence Dev refresh subscriptions (378769a).
+- Honor Svelte mutation store contract (c5803b0).
+- Isolate Svelte store subscriptions (223bac3).
+- Serialize Campfire activity consent (162836c).
+- Contain project Vue compiler resolution (db2e924).
+- Harden Vue mutation and compiler ownership (3448d1d).
+- Harden React Vite toolchain admission (8884b09).
+- Let query unsubscribe overtake initial work (1d6f44d).
+- Harden vanilla client runtime boundaries (20eff80).
+- Harden public tree selection (a74183e).
+- Secure hosted release identity (34403a4).
+- Authorize container before SSH setup (eb3191a).
+- Preflight container replacement ownership (6e5756a).
+- Enforce container release ownership (3e4e4a4).
+- Transact container public releases (3971f89).
+- Publish ownership heartbeats atomically (7a45807).
+- Heartbeat public tree ownership (a14881b).
+- Validate public tree ownership (95aa2b9).
+- Lease public tree candidates (676ee78).
+- Harden public tree activation (642fc6b).
+- Activate public trees after runtime readiness (f16e81b).
+- Retire journey state on pagehide (d19a080).
+- Preserve journey consent across reconnect (c718f96).
+- Retire manual-only journey consent (0e68b3f).
+- Close journey lifecycle review gaps (0778487).
+- Fix journey meta observation targeting (852bfa8).
+- Stabilize journey record metadata (ef80a9c).
+- Dedupe native journey submit activation (9216466).
+- Correlate journey capture structurally (06e0ce4).
+- Harden journey browser capture (cff82ea).
+- Make journey subscriptions lifecycle-safe (200e5b5).
+- Clear journey consent on identity changes (53d757c).
+- Retire journeys on auth transitions (80fbd9f).
+- Preserve journey consent across reconnects (23171ad).
+- Roadmap status (3f35545).
+- Include scheduler recovery in generated runtime (9294ee3).
+- Sanitize container schedule inspection (09fc9bd).
+- Bound hosted schedule inspection (5e552f5).
+- Complete schedule timezone semantics (fdc2d77).
+- Serialize schedule payload factories by schedule (d1d30c5).
+- Make schedule provenance private (f232241).
+- Harden static schedule lifecycle (945fe4c).
+- Narrow inspection adapter declaration (be5939c).
+- Make job inspection storage read-only (6382292).
+- Secure active dev job inspection config (ea62ff4).
+- Harden job inspection boundaries (c2847c1).
+- Filter privileged job inspection (875e413).
+- Order expired lease recovery (3d58b91).
+- Delay expired lease recovery (57c22a0).
+- Cancel privileged jobs and clear wake timers (40a48be).
+- Wake delayed jobs and cancel privileged jobs (15f7a33).
+- Deduplicate privileged pending jobs (0fef839).
+- Seal privileged job capabilities (5463788).
+- Deduplicate pending job enqueues (d1664d0).
+- Persist jobs from trusted server handlers (8b89aa5).
+- Harden current-user job queue (0f958a5).
+
+### 🔧 Improvements
+
+- Plan Campfire exemplar template (780debd).
+- Complete user journey tracker swarm (4959116).
+- Re-review journey framework guidance (a8b0840).
+- Rework journey framework guidance (860e738).
+- Review journey contract publication (b1498a7).
+- Dispatch journey contract publication (85000bc).
+- Complete journey lifecycle issue (f1a084d).
+- Re-review journey pagehide retirement (bfd66a0).
+- Rework journey pagehide retirement (d08ff6e).
+- Re-review journey reconnect ownership (c23e59a).
+- Rework journey reconnect ownership (d9a9a5c).
+- Re-review manual-only journey replacement (2a6b0d2).
+- Rework manual-only journey replacement (e185bf8).
+- Rework simplified journey lifecycle (fdbada1).
+- Review simplified journey lifecycle (54776fd).
+- Dispatch simplified journey lifecycle (eed1dca).
+- Block journey lifecycle on capability lifetime (87bcc52).
+- Rework journey capability persistence (ad87f1e).
+- Review durable journey capabilities (d0d203f).
+- Rework journey runtime replacement (ecc58d9).
+- Re-review bounded journey retirement (aaac45b).
+- Bound journey retirement rework (0bb84aa).
+- Re-review journey lifecycle issue (4e466f1).
+- Rework journey lifecycle retirement (4d7ef6f).
+- Review journey lifecycle issue (68921a8).
+- Dispatch journey lifecycle issue (e26fa01).
+- Resume user journey tracker swarm (af51482).
+- Record journey fix swarm verification (5bd74f6).
+- Complete journey review fix swarm (d92705e).
+- Review journey record metadata fix (b657195).
+- Review journey meta observer fix (a7d9c0c).
+- Dispatch journey review fix swarm (967466c).
+- Plan user journey tracker review fixes (1fc56f7).
+- Complete user journey tracker issue 04 (6763e62).
+- Complete user journey tracker issue 03 (bba2e57).
+- Complete user journey tracker issue 02 (6cf3c80).
+- Complete user journey tracker issue 01 (4799ebd).
+- Record job scheduling final verification (275e780).
+- Complete job scheduling issue 10 (d2e8c0a).
+- Rereview job scheduling issue 10 (4ab304d).
+- Rework job scheduling issue 10 (2cad09d).
+- Review job scheduling issue 10 (9f6777c).
+- Dispatch job scheduling issue 10 (5fd0e5f).
+- Complete job scheduling issue 09 (c3b4ec2).
+- Final review job scheduling issue 09 (f76e36d).
+- Harden container schedule inspection (39c980a).
+- Rereview job scheduling issue 09 (ff5fce7).
+- Rework job scheduling issue 09 (71632d6).
+- Review job scheduling issue 09 (1ce4f4b).
+- Dispatch job scheduling issue 09 (e55eebf).
+- Complete job scheduling issue 08 (8816c97).
+- Review job scheduling issue 08 (09b7575).
+- Dispatch job scheduling issue 08 (d443acf).
+- Complete job scheduling issue 07 (37334f0).
+- Final review job scheduling issue 07 (021f16f).
+- Harden schedule timestamp inspection (07ee2b8).
+- Rereview job scheduling issue 07 (53cccf7).
+- Rework job scheduling issue 07 (7f39f88).
+- Review job scheduling issue 07 (17eb0d3).
+- Dispatch job scheduling issue 07 (468c6d1).
+- Complete job scheduling issue 06 (413b122).
+- Rereview job scheduling issue 06 (7159e64).
+- Rework job scheduling issue 06 (5f2cb2f).
+- Review job scheduling issue 06 (286470c).
+- Dispatch job scheduling issue 06 (c5ad802).
+- Complete job scheduling issue 05 (37be3d4).
+- Rereview job scheduling issue 05 (4b0e010).
+- Rework job scheduling issue 05 (e32381d).
+- Review job scheduling issue 05 (97663dc).
+- Dispatch job scheduling issue 05 (88f455d).
+- Complete job scheduling issue 04 (be8c33f).
+- Final review job scheduling issue 04 (8c7a66e).
+- Rereview job scheduling issue 04 (6ad08bf).
+- Rework job scheduling issue 04 (c6b109e).
+- Review job scheduling issue 04 (3f77a8f).
+- Dispatch job scheduling issue 04 (87fac67).
+- Complete job scheduling issue 03 (6581e2b).
+- Rereview job scheduling issue 03 (5ea3e02).
+- Rework job scheduling issue 03 (c7702f5).
+- Review job scheduling issue 03 (07b7373).
+- Dispatch job scheduling issue 03 (74c7b61).
+- Complete job scheduling issue 02 (391f849).
+- Rereview hardened scheduling provenance (1b70069).
+- Harden job scheduling issue 02 provenance (35f8f9a).
+- Rereview job scheduling issue 02 (ed203a1).
+- Rework job scheduling issue 02 (a2c4252).
+- Review job scheduling issue 02 (9d57fc6).
+- Dispatch job scheduling issue 02 (5266d0b).
+- Complete job scheduling issue 01 (96675ce).
+- Review job scheduling issue 01 (110d084).
+- Dispatch job scheduling issue 01 (5b8ae0f).
+- Start job scheduling swarm ledger (4b33165).
+- Preserve schedule recovery blockers (4377ca2).
+- Link job scheduling issue graph (93ff0f1).
+- Normalize job scheduling blockers (98c96c6).
+- Normalize job scheduling issue status (7b5e100).
+- Complete job queue issue set (ad11361).
+- Record job inspection completion (2397009).
+- Record job queue inspection blocker (9c83866).
+- Record job queue issue 04 completion (175dd66).
+- Record job queue issue 03 completion (0995023).
+- Record job queue issue 02 completion (34a02ae).
+- Record job queue issue 01 completion (a1ab904).
 
 ### 📝 Documentation
 
-- MD formatting (223cd5c).
-- Harden database transaction coverage (a68beb2).
-- Update roadmap for current/next features (6a72e1d).
-- Plan transaction coverage audit (85a3bcc).
-- Document doctor workflow and roadmap status (ff2eb9c).
-- Plan sporades doctor diagnostics (f52f67a).
-- Update documentation files in the working tree: docs/api/functions/client.createHooks.html, docs/api/functions/client.isAuthenticated.html, docs/api/functions/client.onMessage.html, docs/api/functions/client.sendMessage.html, docs/api/functions/server.Boolean.html, docs/api/functions/server.capsule.html, docs/api/functions/server.Date.html, docs/api/functions/server.endpoint.html, docs/api/functions/server.Json.html, docs/api/functions/server.message.html, docs/api/functions/server.mutation.html, docs/api/functions/server.Number.html, docs/api/functions/server.query.html, docs/api/functions/server.Reference.html, docs/api/functions/server.requireAuth.html, docs/api/functions/server.String.html, docs/api/functions/server.table.html, docs/api/types/client.AppMessage.html, docs/api/types/client.AppMessageStream.html, docs/api/types/client.AuthApi.html, docs/api/types/client.AuthProviders.html, docs/api/types/client.AuthState.html, docs/api/types/client.EmailCredentials.html, docs/api/types/client.FileMetadata.html, docs/api/types/client.FileReference.html, docs/api/types/client.FilesApi.html, docs/api/types/client.HookPrimitives.html, docs/api/types/client.JsonObject.html, docs/api/types/client.JsonValue.html, docs/api/types/client.MutationState.html, docs/api/types/client.PreferencesApi.html, docs/api/types/client.PreferencesResult.html, docs/api/types/client.ProviderState.html, docs/api/types/client.PublicFileUrl.html, docs/api/types/client.PublicUrlOptions.html, docs/api/types/client.QueryState.html, docs/api/types/client.SporadesError.html, docs/api/types/client.SporadesHooks.html, docs/api/types/client.SporadesResult.html, docs/api/types/client.Subscription.html, docs/api/types/client.UploadCompleteEvent.html, docs/api/types/client.UploadOptions.html, docs/api/types/client.UploadProgressEvent.html, docs/api/types/client.UseAuthState.html, docs/api/types/server.AclDatabaseHelpers.html, docs/api/types/server.AclHelpers.html, docs/api/types/server.AclStorageFileMetadata.html, docs/api/types/server.AclStorageHelpers.html, docs/api/types/server.AnyFieldDefinition.html, docs/api/types/server.AuthContext.html, docs/api/types/server.AutoFields.html, docs/api/types/server.Capsule.html, docs/api/types/server.CapsuleContext.html, docs/api/types/server.CapsuleDefinition.html, docs/api/types/server.CapsuleHooks.html, docs/api/types/server.ContextKind.html, docs/api/types/server.ContextMiddleware.html, docs/api/types/server.DatabaseFromSchema.html, docs/api/types/server.EndpointContext.html, docs/api/types/server.EndpointDefinition.html, docs/api/types/server.EndpointHandler.html, docs/api/types/server.EndpointOptions.html, docs/api/types/server.EndpointRequest.html, docs/api/types/server.FieldBuilder.html, docs/api/types/server.FieldDefinition.html, docs/api/types/server.FieldKind.html, docs/api/types/server.FieldValue.html, docs/api/types/server.InsertValues.html, docs/api/types/server.JsonValue.html, docs/api/types/server.Logger.html, docs/api/types/server.MaybePromise.html, docs/api/types/server.MessageApi.html, docs/api/types/server.MessageDefinition.html, docs/api/types/server.MessageHandler.html, docs/api/types/server.MessageScope.html, docs/api/types/server.MiddlewareContext.html, docs/api/types/server.MutationDefinition.html, docs/api/types/server.MutationHandler.html, docs/api/types/server.MutationHook.html, docs/api/types/server.MutationHookEvent.html, docs/api/types/server.MutationResult.html, docs/api/types/server.OrderDirection.html, docs/api/types/server.QueryDefinition.html, docs/api/types/server.QueryHandler.html, docs/api/types/server.ReferenceFieldBuilder.html, docs/api/types/server.ReferenceFieldDefinition.html, docs/api/types/server.RequireAuthOptions.html, docs/api/types/server.RowFromFields.html, docs/api/types/server.SchemaDefinition.html, docs/api/types/server.TableAclContext.html, docs/api/types/server.TableAclOperation.html, docs/api/types/server.TableAclRule.html, docs/api/types/server.TableAclRuleInput.html, docs/api/types/server.TableAclRules.html, docs/api/types/server.TableApi.html, docs/api/types/server.TableDefinition.html, docs/api/types/server.UpdateValues.html, docs/api/variables/client.auth.html, docs/api/variables/client.files.html, docs/api/variables/client.preferences.html.
+- Include framework list in intro (70a8997).
+- Prove client matrix runtime conformance (83e28a3).
+- Contract fixed client file infrastructure (808132a).
+- Specify multi-framework client toolchains (69ef70a).
+- Finalize journey contract publication (b7d7856).
+- Clarify Journey framework and Shadow DOM guidance (28d55cb).
+- Document User journey tracker contract (6c19643).
+- Simplify journey session boundaries (e08e845).
+- Plan user journey tracker (0fe2834).
+- Stabilize API source links (7965ff7).
+- Refresh API source links after integration (ba89bfd).
+- Resolve scheduling publication contradictions (3c6f411).
+- Publish job scheduling contract (febf4c9).
+- Clarify implemented scheduling scope (35e3457).
+- Align job scheduling PRD status (9c87d98).
+- Add multi-framework toolchain tickets (18a7af4).
+- Plan Job Scheduling (ba53888).
+- Plan multi-framework client toolchains (bb4f611).
+- Align job queue inspection expectations (ad13e2f).
+- Restore API source links (2faa48b).
+- Complete job queue documentation (b51ef32).
+- Record job queue docs alignment (ac4d85e).
+- Align implemented job queue scope (4f7263c).
+- Refresh job queue docs alignment scope (83261ad).
+- Refine job queue inspection issue graph (aaa73b9).
+- Cover exhausted job lease recovery (9cf771b).
+- Plan Job Queue (0e78191).
+- Plan privileged server role (5932535).
 
 ### 🧪 Tests
 
-- Audit transaction boundary coverage (f6268ef).
+- Prove Lit stale publications are inert (5e13107).
+- Exercise Vue template behavior (f6ccfcf).
+- Harden Campfire fixture automation (50fc000).
+- Refine Campfire activity sharing (638f485).
+- Close Campfire lifecycle and durability gaps (609b0d4).
+- Harden Campfire exemplar contracts (b254a52).
+- Prove Campfire multi-user realtime behavior (56066ef).
+- Re-review journey lifecycle coverage (b0adf0b).
+- Prove journey browser capture contract (f43465b).
+- Test Journey Capsule capacity (34662fe).
+- Require canonical schedule inspection timestamps (28abf9d).
+- Harden schedule inspection correlations (e4589f5).
+- Inspect schedules through privileged server context (25bf0c4).
+- Recover scheduled occurrences after claim expiry (740a944).
+- Make scheduled occurrence creation crash-safe (e12208b).
+- Validate schedule reconciliation before writes (2f04c38).
+- Cover job inspection filters (8bde7f3).
+- Cover atomic job claims (c932161).
+- Cover job idempotency restart (0ac7ec8).
+- Cover queued job cancellation (44459dc).
+- Cover delayed wake timer cleanup (231ced6).
+- Cover delayed ordering and privileged cancellation signal (0ecca6a).
+- Cover running job cancellation outcomes (fb75562).
+- Cover delayed wake and retry exhaustion (c38b5b9).
+- Cover captured job actor boundaries (1ffebf8).
+- Cover privileged job types (32d0ced).
 
 ### 📦 Packaging
 
-- Align scaffold version tests with package version (d3dc529).
-- Clean up npm package tarballs (6303628).
+- Bake CLI version into host helper (0cda575).
