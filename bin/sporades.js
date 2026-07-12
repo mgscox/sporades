@@ -1290,7 +1290,7 @@ async function buildEsbuild(options) {
     ].join("\n");
     return {
       legacyClientBundle: clientBundle,
-      diagnostics: { framework: options.frameworkConfig.framework, toolchain: "esbuild", refresh: "none" },
+      diagnostics: { framework: options.frameworkConfig.framework, toolchain: "esbuild", refresh: options.devRefresh ? "full-page" : "none" },
       publicFiles: [
         { path: "index.html", contents: options.indexHtml },
         ...outputs.map((output) => {
@@ -19921,7 +19921,7 @@ async function startDevSession(options) {
         });
         runtimeServiceEnv = nextCapsuleServiceEnv;
         fatalRestartAttempts = 0;
-        if (configuredClientToolchain(nextConfig) === "vite") refresh = await devRefresh.broadcast();
+        refresh = await devRefresh.broadcast();
         websocketHub.disconnectAll();
       }
       const previousBundle = bundle;
@@ -19934,7 +19934,7 @@ async function startDevSession(options) {
       });
       config = nextConfig;
       security = nextSecurity;
-      if (!affectsServerRuntime && configuredClientToolchain(nextConfig) === "vite") refresh = await devRefresh.broadcast();
+      if (!affectsServerRuntime) refresh = await devRefresh.broadcast();
       emitDevEvent(options, {
         event: "rebuild",
         status: "success",

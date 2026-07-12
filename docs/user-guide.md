@@ -248,6 +248,8 @@ with local Vite config and `.env*` loading disabled, then serves transformed HTM
 hashed JS, CSS, source-map, and imported-asset tree. Sporades remains the only
 Dev watcher/server and requests a full-page refresh after successful rebuilds;
 none uses a Vite dev server, HMR, framework refresh plugin, or another socket.
+The same acknowledged Sporades full-page refresh protocol covers admitted
+esbuild pairs, so toolchain selection never changes the Dev transport contract.
 Migrating an existing React or Preact esbuild Capsule requires replacing the
 `/client.js` script in author-owned `index.html` with `/client/index.tsx`. A
 Vue source shell uses `/client/index.ts`. Sporades reports a mismatched source

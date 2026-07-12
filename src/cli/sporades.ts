@@ -2035,7 +2035,7 @@ async function startDevSession(options: LooseRecord) {
         ).catch((error: unknown) => { throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true }); });
         runtimeServiceEnv = nextCapsuleServiceEnv;
         fatalRestartAttempts = 0;
-        if (configuredClientToolchain(nextConfig) === "vite") refresh = await devRefresh.broadcast();
+        refresh = await devRefresh.broadcast();
         websocketHub.disconnectAll();
       }
       const previousBundle = bundle;
@@ -2048,7 +2048,7 @@ async function startDevSession(options: LooseRecord) {
       });
       config = nextConfig;
       security = nextSecurity;
-      if (!affectsServerRuntime && configuredClientToolchain(nextConfig) === "vite") refresh = await devRefresh.broadcast();
+      if (!affectsServerRuntime) refresh = await devRefresh.broadcast();
       emitDevEvent(options, {
         event: "rebuild",
         status: "success",

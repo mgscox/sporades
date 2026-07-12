@@ -135,7 +135,9 @@ Sporades currently includes:
   lifecycle and classic Inferno JSX without React compatibility packages. esbuild
   remains the default; Vite is available explicitly with full-page Dev refresh.
 - Local Dev sessions with rebuilds, WebSocket reconnects, SQLite persistence,
-  logs, database inspection, auth helpers, and file storage.
+  logs, database inspection, auth helpers, and file storage. Every admitted
+  esbuild/Vite pair uses the same acknowledged Sporades full-page refresh
+  protocol after a successful client rebuild; no pair promises HMR.
 - Local Docker Container sessions for production-like staging tests.
 - Hosted Capsules on SSH-reachable Host servers, routed through Caddy and run in
   hardened Docker containers.

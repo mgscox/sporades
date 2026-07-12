@@ -5036,7 +5036,7 @@ test("sporades dev builds and rebuilds the Vanilla TypeScript client without fra
 for (const capability of CLIENT_CAPABILITIES) test(`matrix Dev conformance preserves last-good output and recovers for ${capability.framework}/${capability.toolchain}`, async () => {
   await withTempDir(async (dir) => {
     const name = `matrix-${capability.framework}-${capability.toolchain}`;
-    const created = await runCli(["create", name, "--template", "blank", "--framework", capability.framework, "--toolchain", capability.toolchain, "--no-install", "--no-git", "--json"], { cwd: dir });
+    const created = await runCli(["create", name, "--template", "todo", "--framework", capability.framework, "--toolchain", capability.toolchain, "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(created.code, 0, created.stderr);
     const projectDir = path.join(dir, name);
     await (capability.framework === "vanilla" ? async () => {}
@@ -5047,33 +5047,80 @@ for (const capability of CLIENT_CAPABILITIES) test(`matrix Dev conformance prese
       : capability.framework === "solid" ? (project) => installProjectSolidToolchain(project, repoRoot)
       : capability.framework === "vue" ? installVue
       : installSvelte)(projectDir);
+    const clientPath = path.join(projectDir, "client", capability.build.entry);
+    const authored = await readFile(clientPath, "utf8");
+    await Promise.all([
+      writeFile(path.join(projectDir, "client", "matrix-nested.ts"), 'import icon from "./matrix.svg"; import font from "./matrix.woff2"; export const matrixAsset = `${icon}:${font}`;\n'),
+      writeFile(path.join(projectDir, "client", "matrix.css"), '@font-face{font-family:Matrix;src:url("./matrix.woff2")} .matrix-proof{background:url("./matrix.svg")}\n'),
+      writeFile(path.join(projectDir, "client", "matrix.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>\n'),
+      writeFile(path.join(projectDir, "client", "matrix.woff2"), "matrix-font-bytes\n"),
+    ]);
+    const original = `${authored}\nimport "./matrix.css"; import("./matrix-nested.ts").then(({ matrixAsset }) => console.log(matrixAsset));\n`;
+    await writeFile(clientPath, original);
     const configPath = path.join(projectDir, "sporades.json");
     const config = JSON.parse(await readFile(configPath, "utf8")); config.dev.port = 0;
     await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     const child = startCli(["dev", "--json"], { cwd: projectDir });
+    let socket, messages;
     try {
       const started = await waitForJsonLine(child);
       assert.equal(started.ok, true, JSON.stringify(started));
+      socket = await openSocket(started.data.url); messages = captureSocketMessages(socket);
+      const behavior = capability.framework === "vanilla" ? { query: "notes", mutation: "addNote" } : { query: "todos", mutation: "addTodo" };
+      socket.send(JSON.stringify({ id: "matrix-auth", type: "auth.get" }));
+      assert.equal((await messages.next((message) => message.id === "matrix-auth")).type, "auth.result");
+      socket.send(JSON.stringify({ id: "matrix-query", type: "query.subscribe", query: behavior.query }));
+      assert.deepEqual((await messages.next((message) => message.id === "matrix-query")).data, []);
+      socket.send(JSON.stringify({ id: "matrix-mutation", type: "mutation.run", mutation: behavior.mutation, args: [`matrix ${capability.framework}/${capability.toolchain}`] }));
+      assert.equal((await messages.next((message) => message.id === "matrix-mutation")).type, "mutation.result");
+      assert.equal((await messages.next((message) => message.id === "matrix-query")).data[0].text, `matrix ${capability.framework}/${capability.toolchain}`);
+      socket.send(JSON.stringify({ id: "matrix-refresh", type: "dev.refresh.subscribe" }));
+      assert.deepEqual((await messages.next((message) => message.id === "matrix-refresh")).data, { mode: "full-page", sequence: 0 });
       const entryUrl = capability.toolchain === "esbuild" ? `${started.data.url}/client.js` : started.data.url;
       const first = await fetch(entryUrl);
       assert.equal(first.status, 200);
       assert.match(first.headers.get("content-type") ?? "", capability.toolchain === "esbuild" ? /javascript/ : /text\/html/);
       const normalize = (text) => text.replace(/window\.__SPORADES_CONNECTION_TOKEN="[^"]+"/, 'window.__SPORADES_CONNECTION_TOKEN="<token>"');
       const lastGood = normalize(await first.text());
+      const active = JSON.parse(await readFile(path.join(projectDir, ".sporades", "build", ".public-trees", "active.json"), "utf8"));
+      const publicRoot = path.join(projectDir, ".sporades", "build", ".public-trees", active.tree);
+      const visit = async (root, current = root) => (await Promise.all((await readdir(current, { withFileTypes: true })).map(async (entry) => {
+        const target = path.join(current, entry.name);
+        return entry.isDirectory() ? visit(root, target) : path.relative(root, target).split(path.sep).join("/");
+      }))).flat().sort();
+      const publicFiles = await visit(publicRoot);
+      assert(publicFiles.some((file) => file.includes("/") && file.endsWith(".js")), JSON.stringify(publicFiles));
+      for (const extension of [".js", ".js.map", ".css", ".svg", ".woff2"]) assert(publicFiles.some((file) => file.endsWith(extension)), `${capability.framework}/${capability.toolchain} emits ${extension}: ${publicFiles}`);
+      const mime = { ".html": /text\/html/, ".js": /javascript/, ".map": /json/, ".css": /text\/css/, ".svg": /image\/svg\+xml/, ".woff": /font\/woff/, ".woff2": /font\/woff2/ };
+      for (const file of publicFiles) {
+        assert(!file.startsWith("/") && !file.split("/").includes("..") && !file.includes("\\"), file);
+        const response = await fetch(`${started.data.url}/${file}`);
+        assert.equal(response.status, 200, file);
+        const extension = file.endsWith(".js.map") ? ".map" : path.extname(file);
+        if (mime[extension]) assert.match(response.headers.get("content-type") ?? "", mime[extension], file);
+        assert((await response.arrayBuffer()).byteLength > 0, file);
+      }
       const nested = await fetch(`${started.data.url}/nested/route`);
       assert.equal(nested.status, 404); assert.match(nested.headers.get("content-type") ?? "", /text\/plain/);
       assert.equal((await fetch(`${started.data.url}/%2e%2e/server/index.ts`)).status, 404);
-      const clientPath = path.join(projectDir, "client", capability.build.entry);
-      const original = await readFile(clientPath, "utf8");
       await writeFile(clientPath, `${original}\nexport const = ;\n`);
       const failed = await waitForJsonEvent(child, (event) => !event.ok && event.data?.event === "rebuild" && event.data.status === "failed");
       assert.deepEqual(failed.data.build, { phase: "client", framework: capability.framework, toolchain: capability.toolchain });
+      assert.equal(messages.history.filter((message) => message.type === "refresh").length, 0, "failed edits never request refresh");
       assert.equal(normalize(await (await fetch(entryUrl)).text()), lastGood);
+      const refresh = messages.next((message) => message.type === "refresh");
       await writeFile(clientPath, `${original}\n// matrix recovery\n`);
+      const refreshMessage = await refresh;
+      assert.equal(refreshMessage.data.mode, "full-page");
+      socket.send(JSON.stringify({ id: null, type: "dev.refresh.received", sequence: refreshMessage.data.sequence }));
       const recovered = await waitForJsonEvent(child, (event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
       assert.deepEqual(recovered.data.build, { phase: "client", framework: capability.framework, toolchain: capability.toolchain });
-      assert.doesNotMatch(await (await fetch(entryUrl)).text(), /SERVER_ONLY|server-only/i);
+      assert.equal(recovered.data.refresh.clientsAttempted, 1);
+      assert.equal(recovered.data.refresh.clientsDelivered, 1);
+      assert.equal(recovered.data.refresh.clientsTimedOut, 0);
+      assert.doesNotMatch(await (await fetch(entryUrl)).text(), /SERVER_ONLY|server-only|\/@vite\/client|react-refresh|vite\/hmr/i);
     } finally {
+      messages?.dispose(); socket?.close();
       child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve));
     }
   });

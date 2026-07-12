@@ -11,6 +11,7 @@ import { connect } from "node:net";
 
 import { createWebSocketHub, openDevDatabase, prepareHttpSecurity, routeRuntimeHealth } from "../dist/server-runtime-source.js";
 import { CLIENT_CAPABILITIES, CLIENT_TEMPLATES } from "../dist/client-capabilities.js";
+import { validateReleaseArchive } from "../dist/cli/host-helper-archive.js";
 import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
 import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
@@ -4200,8 +4201,8 @@ process.exit(0);
   });
 });
 
-for (const { framework, template, toolchain } of CLIENT_CAPABILITIES.flatMap((capability) =>
-  CLIENT_TEMPLATES.map((template) => ({ framework: capability.framework, toolchain: capability.toolchain, template })),
+for (const { framework, template, toolchain, build } of CLIENT_CAPABILITIES.flatMap((capability) =>
+  CLIENT_TEMPLATES.map((template) => ({ framework: capability.framework, toolchain: capability.toolchain, build: capability.build, template })),
 )) test(`sporades host push archives the complete normalized ${framework} ${toolchain} ${template} public tree`, async () => {
   await withTempDir(async (dir) => {
     const selectedToolchain = toolchain;
@@ -4218,6 +4219,15 @@ for (const { framework, template, toolchain } of CLIENT_CAPABILITIES.flatMap((ca
     assert.equal(created.code, 0, created.stderr);
     const projectDir = path.join(dir, "vite-hosted");
     await (framework === "vanilla" ? async () => {} : framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : framework === "inferno" ? (project) => installProjectInfernoToolchain(project, repoRoot) : framework === "lit" ? (project) => installProjectLitToolchain(project, repoRoot) : framework === "solid" ? (project) => installProjectSolidToolchain(project, repoRoot) : framework === "vue" ? installVue : (project) => installProjectSvelteToolchain(project, repoRoot))(projectDir);
+    const clientPath = path.join(projectDir, "client", build.entry);
+    const clientSource = await readFile(clientPath, "utf8");
+    await Promise.all([
+      writeFile(path.join(projectDir, "client", "matrix-nested.ts"), 'import icon from "./matrix.svg"; import font from "./matrix.woff2"; export const matrixAsset = `${icon}:${font}`;\n'),
+      writeFile(path.join(projectDir, "client", "matrix.css"), '@font-face{font-family:Matrix;src:url("./matrix.woff2")} .matrix-proof{background:url("./matrix.svg")}\n'),
+      writeFile(path.join(projectDir, "client", "matrix.svg"), '<svg xmlns="http://www.w3.org/2000/svg"><circle r="4"/></svg>\n'),
+      writeFile(path.join(projectDir, "client", "matrix.woff2"), "matrix-font-bytes\n"),
+      writeFile(clientPath, `${clientSource}\nimport "./matrix.css"; import("./matrix-nested.ts").then(({ matrixAsset }) => console.log(matrixAsset));\n`),
+    ]);
     if (template === "photo-library") {
       const configPath = path.join(projectDir, "sporades.json");
       const config = JSON.parse(await readFile(configPath, "utf8"));
@@ -4240,14 +4250,28 @@ for (const { framework, template, toolchain } of CLIENT_CAPABILITIES.flatMap((ca
     const files = output.data.release.files;
     assert(files.includes("public/index.html"));
     assert(files.some((file) => selectedToolchain === "esbuild" ? file === "public/client.js" : /^public\/assets\/index-[^/]+\.js$/.test(file)));
+    assert(files.some((file) => /^public\/assets\/.+\.js$/.test(file) && !/^public\/assets\/index-/.test(file)), JSON.stringify(files));
     if (selectedToolchain === "vite" && (framework === "react" || framework === "preact")) assert(files.some((file) => /^public\/assets\/vite-scaffold-[^/]+\.js$/.test(file)));
     assert(files.filter((file) => file.startsWith("public/")).every((file) => !file.includes("..") && !file.includes("\\") && /\.(?:html|js|map|css|svg|png|jpe?g|gif|webp|ico|woff2?)$/.test(file)), "Hosted public paths stay bounded to supported MIME assets");
     assert(files.some((file) => file.endsWith(".js.map")));
+    for (const extension of [".css", ".svg", ".woff2"]) assert(files.some((file) => file.endsWith(extension)), `${framework}/${toolchain}/${template} emits ${extension}`);
     assert.equal(files.includes("public/client.js"), selectedToolchain === "esbuild");
 
     const [scpCall] = await readJsonl(fakeScp.logPath);
+    const [sshCall] = await readJsonl(fakeSsh.logPath);
+    const helperRequest = JSON.parse(sshCall.stdin);
+    const validated = validateReleaseArchive(helperRequest, scpCall.copiedTo);
     const entries = await listArchiveEntries(scpCall.copiedTo, projectDir);
     assert.deepEqual(entries, [...files.filter((file) => file.startsWith("public/")), "server.mjs", "sporades.json"].sort());
+    assert.deepEqual(validated.files.map(({ path }) => path).sort(), [...entries].sort());
+    assert(validated.files.every(({ path, size }) => Number.isSafeInteger(size) && size > 0 && !path.includes("..") && !path.includes("\\")));
+    const hostedConfig = JSON.parse(await extractArchiveFile(scpCall.copiedTo, "sporades.json", projectDir));
+    assert.deepEqual(hostedConfig.client, { framework, toolchain });
+    for (const extension of [".html", ".js", ".js.map", ".css", ".svg", ".woff2"]) {
+      const representative = entries.find((file) => file.endsWith(extension));
+      assert(representative, `${framework}/${toolchain}/${template} archive contains ${extension}`);
+      assert((await extractArchiveFile(scpCall.copiedTo, representative, projectDir)).length > 0, representative);
+    }
     const publicEntries = entries.filter((file) => file.startsWith("public/"));
     const publicRoot = path.join(projectDir, ".sporades", "build", ".public-trees", JSON.parse(await readFile(path.join(projectDir, ".sporades", "build", ".public-trees", "active.json"), "utf8")).tree);
     const publicText = (await Promise.all(publicEntries.map((file) => readFile(path.join(publicRoot, file.slice("public/".length)), "utf8")))).join("\n");

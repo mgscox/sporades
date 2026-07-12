@@ -123,7 +123,7 @@ async function buildEsbuild(options: {
     ].join("\n");
     return {
       legacyClientBundle: clientBundle,
-      diagnostics: { framework: options.frameworkConfig.framework, toolchain: "esbuild" as const, refresh: "none" as const },
+      diagnostics: { framework: options.frameworkConfig.framework, toolchain: "esbuild" as const, refresh: options.devRefresh ? "full-page" as const : "none" as const },
       publicFiles: [
         { path: "index.html", contents: options.indexHtml },
         ...outputs.map((output) => {

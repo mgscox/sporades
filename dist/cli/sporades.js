@@ -1687,8 +1687,7 @@ async function startDevSession(options) {
                 await runtime.restart(rebuild.serverRuntime.source, rebuild.serverRuntime.env, nextCapsuleServiceEnv, rebuild.serverRuntime.capsuleModuleSource, withRuntimeSecuritySession(nextConfig, session)).catch((error) => { throw tagDevRebuildError(error, "runtime", nextConfig, { preserveSchemaErrors: true }); });
                 runtimeServiceEnv = nextCapsuleServiceEnv;
                 fatalRestartAttempts = 0;
-                if (configuredClientToolchain(nextConfig) === "vite")
-                    refresh = await devRefresh.broadcast();
+                refresh = await devRefresh.broadcast();
                 websocketHub.disconnectAll();
             }
             const previousBundle = bundle;
@@ -1701,7 +1700,7 @@ async function startDevSession(options) {
             });
             config = nextConfig;
             security = nextSecurity;
-            if (!affectsServerRuntime && configuredClientToolchain(nextConfig) === "vite")
+            if (!affectsServerRuntime)
                 refresh = await devRefresh.broadcast();
             emitDevEvent(options, {
                 event: "rebuild",
