@@ -27,145 +27,6 @@ bottom. Use the task pages in the sidebar for a guided workflow. Sections here
 stand independently and preserve detailed operational contracts that would
 overwhelm those workflows.
 
-## User Journey Tracker
-
-The User journey tracker is opt-in, transient current state for answering “what
-are consenting users doing now?” It is not analytics, an audit log, an App
-message stream, a Capsule app table, or durable current-user preferences.
-
-First declare the expandable Capsule-wide feature and its safe automatic
-capture ceiling:
-
-```ts
-export default capsule({
-  name: "support",
-  journey: {
-    enabled: true,
-    ttlSeconds: 30,
-    capture: { navigation: true, focus: true, interactions: true },
-  },
-});
-```
-
-All three capture sources default on when omitted. A page may narrow them in
-`journey.enable({ capture: ... })`, including turning all three off for
-manual-only use, but may not broaden the Capsule policy. Declaration permits
-the feature; it does not publish anything. Reading or subscribing never enables
-the caller.
-
-```ts
-import { journey } from "sporades/client";
-
-const enabled = await journey.enable({ capture: { interactions: false } });
-const saved = await journey.set({
-  status: "reviewing-order",
-  metadata: { section: "delivery" },
-  ttlSeconds: 60,
-});
-const current = await journey.list();
-const subscription = journey.subscribe((event) => {
-  if (event.type === "snapshot") console.log(event.states);
-  else console.log(event.type, event.state);
-});
-subscription.unsubscribe();
-await journey.disable();
-```
-
-`journey.enable()` establishes page-runtime consent and returns the enabled
-user and effective capture policy; it does not return a `sessionId` or create a
-server session. With navigation capture active it immediately samples and
-publishes the current page. `journey.set(...)` publishes a bounded semantic
-status and optional JSON metadata, replacing rather than merging the current
-record. `journey.disable()` clears consent and immediately removes the current
-connection's live state. `journey.list()` returns all live records. A
-subscription receives a snapshot first, then `added`, `updated`, and `removed`
-events; removal includes the complete last state. Unsubscribe stops delivery.
-
-Consent belongs to the page runtime, not a Journey session. An ordinary
-transport reconnect automatically re-enables with the retained narrowed policy,
-but a new transport connection always gets a new server-owned Journey session
-on its first accepted publication. Explicit disablement, an authentication
-transition, or page reload/replacement clears consent. Apps that want a durable
-user choice may store that choice separately in current-user preferences and
-call `journey.enable()` in each new page runtime.
-
-Sessions are created lazily and only accepted manual or automatic publications
-count as activity. A publication after the configured inactivity boundary also
-starts a new session. Configure segmentation in `sporades.json`:
-
-```json
-{ "journey": { "sessionInactivityMinutes": 30 } }
-```
-
-The default is 30 minutes. Numeric values are rounded and clamped to 1–1,440
-minutes; missing or malformed values fall back to 30. This session boundary is
-independent of Journey state TTL. The public `sessionId` groups records; it is
-not a bearer credential. Journey has no private resume credential, durable
-capability registry, or retirement tombstone.
-
-Automatic capture publishes `viewing` for navigation, `focused` or `away` for
-focus/visibility changes, and the semantic status on the nearest annotated
-interaction:
-
-```html
-<meta name="sporades-journey" content="checkout">
-<button data-sporades-journey="confirming-order">Confirm</button>
-```
-
-Navigation captures only a normalized pathname—never origin, query, or raw
-hash. Use the single semantic page-name meta override for sensitive or
-identifier-rich routes. React, Preact, Vue, Svelte, SolidJS, Lit, and Inferno
-consume the same framework-neutral Journey stream; route detection does not
-belong to a framework adapter. Sporades uses a browser-level History/meta
-observer, samples after a render frame, and installs idempotently across HMR or
-client-runtime setup. Publish manually for locationless view changes.
-
-`data-sporades-journey` contains one semantic status, not JSON. Delegated
-capture handles annotated click and submit, including keyboard-triggered native
-events, without preventing defaults. It uses `composedPath()` to find the
-nearest annotated match once through nesting and open Shadow DOM. For closed
-Shadow DOM, capture works when the host is annotated; internal nodes are
-not inspectable. Other event types require manual publication. Use typed manual
-updates for richer metadata. Raw clicks,
-DOM content, form values, query strings, session replay, and arbitrary browser
-telemetry are deliberately excluded.
-
-Statuses and annotation values are at most 256 characters. Metadata is JSON-safe
-and bounded to 8 KiB, depth 8, 64 object keys, and 64 array items; unsupported,
-cyclic, non-finite, prototype-sensitive, or otherwise invalid values receive a
-structured validation error. Keep even accepted metadata privacy-safe.
-
-Journey state defaults to a Capsule-wide 30-second TTL. The declaration accepts
-1–300 seconds, and manual updates may choose an override in the same range;
-automatic signals use the Capsule default. The caller renews state by publishing.
-Disconnect leaves the last state buffered only until its existing expiry, so a
-late subscriber can still receive it. Expiry means derived `inactive`; it is not
-a publishable status. Disablement and authentication transitions remove current
-state immediately. Server replacement clears every buffered record and session;
-a still-consenting page reconnects and publishes only fresh state under a new ID.
-There is no permanent Journey state.
-
-Records have the flat shape
-`{ sessionId, userId, status, metadata, updatedAt, expiresAt }`. Lists and
-snapshots are deterministically ordered by `(userId, sessionId)`; group them on
-the client when presenting users. One user may have multiple live sessions,
-just like multiple tabs, browsers, or devices.
-
-Immediate `set` results and `list()` reflect accepted state. Realtime delivery
-coalesces each session to its latest state over 100 milliseconds while
-preserving coherent change order; intermediate states are not guaranteed.
-Capacity is 32 live states per user and 1,000 live states per Capsule. Expired
-records are pruned before admission, replacement remains allowed at capacity,
-and a new over-capacity record receives a structured rejection without evicting
-live state.
-
-Every connected Capsule client receives Journey snapshots and changes in V1.
-Publisher-selected record permissions do not exist; future shared-Team
-receiver-side filtering is deferred. Publication, reads, and subscriptions are
-client-only. Capsule server handlers and the Privileged server role cannot
-impersonate user activity, and transient client claims must not become
-authoritative server business-logic inputs.
-
 ## Create a Capsule
 
 ```sh
@@ -257,350 +118,6 @@ Migrating an existing React or Preact esbuild Capsule requires replacing the
 `/client.js` script in author-owned `index.html` with `/client/index.tsx`. A
 Vue source shell uses `/client/index.ts`. Sporades reports a mismatched source
 entry as a write-free preflight error and never rewrites the source shell.
-
-## Start a Dev Session
-
-```sh
-sporades dev
-```
-
-The command prints a local URL, usually `http://localhost:4000`. Open that URL
-in a browser.
-
-During a Dev session, Sporades watches `server/`, `client/`, `shared/`,
-`index.html`, and `sporades.json`. Client-only changes rebuild the client
-Bundle. Server or shared changes restart the server runtime and reconnect the
-browser transport. If a rebuild fails, Sporades keeps serving the last
-successful Bundle while showing the error.
-
-To choose a port:
-
-```sh
-sporades dev --port 3000
-```
-
-For automation, use JSONL streaming:
-
-```sh
-sporades dev --json
-```
-
-## Make a Server Change
-
-Open `server/index.ts`. A typical Capsule defines a schema, queries, and
-mutations:
-
-```ts
-import { Boolean, capsule, mutation, query, String, table } from "sporades/server";
-
-export default capsule({
-  name: "notes",
-
-  schema: {
-    todos: table({
-      text: String(),
-      done: Boolean().default(false),
-      ownerId: String(),
-    }),
-  },
-
-  queries: {
-    todos: query((ctx) =>
-      ctx.db.todos
-        .where("ownerId", ctx.auth.userId)
-        .orderBy("createdAt", "desc")
-        .all(),
-    ),
-  },
-
-  mutations: {
-    addTodo: mutation((ctx, text: string) => {
-      ctx.db.todos.insert({ text, ownerId: ctx.auth.userId });
-    }),
-  },
-});
-```
-
-Use queries for data the UI reads. Use mutations for changes. Keep ownership and
-validation on the server; the client should not be trusted to send fields such
-as `ownerId`.
-
-## Current-user Jobs
-
-Declare durable server-only work with `job()` and enqueue it from a trusted
-mutation, Custom endpoint, or App message handler through `ctx.jobs`. Enqueue
-captures the current Sporades user; browser credentials are not stored with the
-Job.
-
-```ts
-import { capsule, job, mutation } from "sporades/server";
-
-export default capsule({
-  name: "notes",
-  jobs: {
-    indexNote: job(async (ctx, input: { id: string }) => {
-      // Runs later as the captured current user.
-      return { indexed: input.id };
-    }),
-  },
-  mutations: {
-    index: mutation((ctx, id: string) =>
-      ctx.jobs.enqueue("indexNote", { id }, { idempotencyKey: id }),
-    ),
-  },
-});
-```
-
-Enqueue is a durable runtime side effect, not part of the Capsule mutation
-Transaction boundary: it is not atomic with `ctx.db` writes. Supply an
-idempotency key when callers can retry a cross-boundary workflow; repeating the
-same key for the same handler and captured user returns the retained Job.
-
-Jobs may use a one-time future `availableAt` and become `delayed` until then;
-this is not recurring scheduling. A bounded `retry` policy records attempts and
-uses a deterministic delay. `ctx.jobs.cancel(id)` cancels queued or delayed
-work, or cooperatively requests cancellation of running work through its signal.
-
-The lifecycle states are `delayed`, `queued`, `running`, `succeeded`, `failed`,
-and `cancelled`. Only `queued` Jobs are ready to run; `delayed` Jobs wait until
-their `availableAt` time. The initial runtime uses a single worker. A running
-attempt holds a lease, and lease recovery after interruption may execute that
-attempt again.
-
-Job delivery is **at least once**, not exactly once: an interrupted leased
-attempt can be recovered and run again under the same Job ID. Make handlers
-duplicate-safe and use idempotency keys for cross-boundary caller retries.
-
-`ctx.jobs.get(id)` reads one known Job. `ctx.jobs.list(...)` supports bounded,
-cursor-based listing by actor. Current-user inspection sees only Jobs for its
-captured execution actor. Privileged inspection through an explicit
-`ctx.privileged.run(...)` may see all Jobs. In either view, `enqueuedBy` is
-provenance—the user who caused the Job to be created—and is distinct from the
-captured current-user or Privileged server role actor under which the handler
-executes.
-
-One-time delayed availability is Job Queue behavior. For recurring work,
-Capsule server code declares a named Schedule alongside its named Jobs:
-
-```ts
-import { capsule, job, schedule } from "sporades/server";
-
-export default capsule({
-  name: "reports",
-  jobs: {
-    sendDigest: job(async (_ctx, input: { audience: string }) => {
-      return { audience: input.audience, sent: true };
-    }),
-  },
-  schedules: {
-    weekdayDigest: schedule({
-      expression: "0 9 * * 1-5",
-      timezone: "Europe/London",
-      job: "sendDigest",
-      payload: { audience: "subscribers" },
-      retry: { maxAttempts: 3, delayMs: 60_000 },
-      missedRun: "latest",
-    }),
-  },
-});
-```
-
-Schedules use numeric five-field cron expressions. An explicit `timezone` must
-be an IANA timezone available through the Node runtime. When it is omitted,
-Sporades resolves the server timezone at each runtime startup. Dev, Container,
-and Hosted environments can have different server timezone defaults, so pin a
-timezone when recurrence must be portable. A changed server default affects
-future occurrence calculation only; Sporades does not backfill under the old
-timezone.
-
-Cron fields are matched against local wall-clock time in the effective
-timezone. When day-of-month and day-of-week are both restricted, either field
-may match (conventional cron OR behavior). A local time skipped by a daylight-
-saving spring transition produces no occurrence. During a repeated fall hour,
-both matching UTC instants are eligible and have distinct occurrence identities.
-Use `UTC` when recurrence must not skip or repeat because of daylight-saving
-transitions.
-
-The five fields are minute, hour, day-of-month, month, and day-of-week. Numeric
-lists, ranges, and positive steps are supported; seconds, years, nicknames such
-as `@daily`, and implementation-specific extensions are rejected. Schedule
-declarations are server-only: browser code cannot create or invoke recurring
-Privileged work. `payload` is either a JSON-safe value (defaulting to `null`) or
-an async-capable payload factory evaluated for each occurrence. Payload
-factories may run more than once during crash recovery, so any explicitly
-privileged side effects must tolerate repetition. `retry` is the ordinary Job
-Queue retry policy applied after enqueue; a failed payload factory is skipped
-and is not retried as a Job.
-
-The default missed-run policy is `skip`, which resumes at the next future
-occurrence after downtime. `latest` enqueues at most the most recent missed
-occurrence, then resumes normal recurrence; it never replays an unbounded
-backlog. Schedule state and pending occurrences survive runtime restarts through
-the configured Database adapter. A deterministic identity based on Capsule,
-Schedule name, and scheduled UTC instant prevents overlapping starts or crash
-recovery from creating duplicate Jobs for one occurrence.
-
-Changing an expression, timezone, payload, retry policy, or enabled state affects
-future occurrences only and does not rewrite historical Jobs. Removing a
-Schedule forgets its runtime state while retaining its Jobs; adding the same name
-again or renaming a Schedule creates a fresh identity. Disabling or cancelling a
-created Job does not disable its Schedule.
-
-Every successfully created Scheduled occurrence becomes an ordinary Job that
-executes as the Privileged server role. It retains Job Queue **at least once**
-attempt semantics: retries and lease recovery can repeat the same Job attempt,
-so handlers must remain duplicate-safe. Schedule duplicate protection prevents
-two Job records for one occurrence; it does not promise exactly-once execution.
-
-## Inspect Schedules from the CLI
-
-Administrators inspect bounded, read-only Schedule state with the JSON-only
-command for the target runtime:
-
-```sh
-sporades schedules
-sporades deploy schedules
-sporades host schedules --host <alias> --subname <name>
-```
-
-These commands target an active Dev session, running local Container session,
-or running Hosted Capsule. They return schedules ordered by name, including the
-effective timezone, policy, next occurrence, and latest safe outcome and Job
-correlation. They omit payloads and secrets, do not evaluate or advance a
-Schedule, and return `schedules: []` when no schedules exist. V1 has no human
-renderer, filters, pagination, or offline inspection.
-
-## Inspect Jobs from the CLI
-
-Administrators can inspect all Jobs for an active Capsule with one explicit
-JSON-only command for each runtime location:
-
-```sh
-sporades jobs
-sporades deploy jobs
-sporades host jobs --host <alias> --subname <name>
-```
-
-The commands target an active Dev session, running local Container session, or
-running Hosted Capsule respectively. Each returns the same structured JSON
-envelope with the Capsule name and all Jobs ordered newest first. The bounded
-operational state includes handler, status, actor, provenance, attempts, retry
-policy, lifecycle timestamps, and safe result or failure metadata. Input
-payloads and idempotency-key values are omitted.
-
-This first operator surface intentionally has no filters, cursor, pagination,
-human renderer, or offline inspection. Pipe the JSON through tools such as
-`jq` when you need to filter or reshape it.
-
-## Make a Client Change
-
-Open `client/index.tsx`. The scaffold wires the framework primitives into
-Sporades hooks:
-
-```tsx
-import { useEffect, useState } from "react";
-import { createHooks } from "sporades/client";
-
-const { useAuth, useQuery, useMutation } = createHooks({ useState, useEffect });
-```
-
-Read data with `useQuery("queryName")`:
-
-```tsx
-const todos = useQuery("todos");
-```
-
-Run changes with `useMutation("mutationName")`:
-
-```tsx
-const addTodo = useMutation("addTodo");
-await addTodo.run("Buy coffee");
-```
-
-For Vue, open `client/App.vue`. The scaffold binds native reactive state and
-scope disposal to the same framework-neutral connection in `client/sporades.ts`:
-
-```ts
-import { onScopeDispose, reactive } from "vue";
-import { createVueComposables } from "sporades/client";
-
-export const { useAuth, useMutation, useQuery } = createVueComposables({ reactive, onScopeDispose });
-```
-
-Vue mutation composables keep `loading` true until every concurrent invocation
-settles. Reactive `data` and `error` follow the latest invocation, so an older
-completion cannot overwrite newer state; each `run()` promise still resolves
-or rejects with its own outcome.
-
-The Vue Guestbook uses those composables for auth, queries, and mutations. The
-Photo Library keeps authenticated uploads private until publication is
-explicit, and the Campfire uses the shared preferences and consented Journey
-APIs directly from `sporades/client`.
-
-Queries stay subscribed over the Sporades client transport, so successful
-mutations refresh connected clients without you writing manual fetch code.
-
-For Vanilla TypeScript, open `client/index.ts` and use the same transport
-without a UI framework:
-
-```ts
-import { auth, mutations, queries } from "sporades/client";
-
-const subscription = queries.subscribe("todos", (state) => render(state));
-await mutations.run("addTodo", "Buy coffee");
-const current = await auth.get();
-const authSubscription = auth.subscribe((state) => renderAuth(state));
-```
-
-Both subscriptions deliver their latest state immediately, reconnect and
-resubscribe automatically, and expose an idempotent `unsubscribe()` method.
-
-## Inspect Logs and Data
-
-In **another** terminal, from the Capsule directory:
-
-```sh
-sporades logs
-sporades db list
-sporades db dump --json
-sporades db query "select * from todos" --json
-```
-
-`sporades db query` is read-only. Use it to inspect state, not to patch around
-application logic.
-
-## Try a Container Session
-
-When the Capsule works locally, test it in Docker:
-
-```sh
-sporades deploy
-```
-
-This starts a local Container session by bundling the Capsule, mounting the
-Bundle files and Server env into a Node container, and persisting SQLite data in
-the Runtime directory. Re-running `sporades deploy` replaces the previous local
-container for this project.
-
-Use a different port when needed, e.g. if 'dev' is running at same time:
-
-```sh
-sporades deploy --port 5000
-```
-
-Inspect a running local Container session by passing its port to the same log
-and database commands:
-
-```sh
-sporades logs --port 4000
-sporades logs tail --port 4000 --json
-sporades db list --port 4000
-sporades db dump --port 4000 --json
-sporades db query "select * from todos" --port 4000 --json
-```
-
-Use the port from `sporades deploy --json` if you do not know which port the
-Container session is using.
 
 ## How Sporades Projects Fit Together
 
@@ -875,6 +392,73 @@ Migration note: existing Capsules without a `security` object continue to use
 the same defaults as new scaffolds. Add `security.cors.allowedOrigins` only for
 known cross-origin callers, and prefer testing active CSP with `report-only`
 before switching to `enforce`.
+
+## Start a Dev Session
+
+```sh
+sporades dev
+```
+
+The command prints a local URL, usually `http://localhost:4000`. Open that URL
+in a browser.
+
+During a Dev session, Sporades watches `server/`, `client/`, `shared/`,
+`index.html`, and `sporades.json`. Client-only changes rebuild the client
+Bundle. Server or shared changes restart the server runtime and reconnect the
+browser transport. If a rebuild fails, Sporades keeps serving the last
+successful Bundle while showing the error.
+
+To choose a port:
+
+```sh
+sporades dev --port 3000
+```
+
+For automation, use JSONL streaming:
+
+```sh
+sporades dev --json
+```
+
+## Make a Server Change
+
+Open `server/index.ts`. A typical Capsule defines a schema, queries, and
+mutations:
+
+```ts
+import { Boolean, capsule, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: "notes",
+
+  schema: {
+    todos: table({
+      text: String(),
+      done: Boolean().default(false),
+      ownerId: String(),
+    }),
+  },
+
+  queries: {
+    todos: query((ctx) =>
+      ctx.db.todos
+        .where("ownerId", ctx.auth.userId)
+        .orderBy("createdAt", "desc")
+        .all(),
+    ),
+  },
+
+  mutations: {
+    addTodo: mutation((ctx, text: string) => {
+      ctx.db.todos.insert({ text, ownerId: ctx.auth.userId });
+    }),
+  },
+});
+```
+
+Use queries for data the UI reads. Use mutations for changes. Keep ownership and
+validation on the server; the client should not be trusted to send fields such
+as `ownerId`.
 
 ## Building the Server Side
 
@@ -1260,6 +844,269 @@ explicitly enqueues system-owned work. That does not turn the Job into a Capsule
 role, app admin, user session, or browser authority; the Job records its
 Privileged server role actor separately from who enqueued it.
 
+## Custom HTTP Endpoints
+
+Most app behavior should use queries and mutations. Use endpoints for HTTP
+integrations such as webhooks:
+
+```ts
+import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  endpoints: {
+    webhook: endpoint({ method: "POST", path: "/integrations/webhook" }, (ctx) => {
+      ctx.log.info("Webhook received", {
+        path: ctx.request.path,
+        body: ctx.request.body,
+      });
+
+      return {
+        status: 202,
+        headers: { "x-sporades-endpoint": "accepted" },
+        body: {
+          received: true,
+          userId: ctx.auth.userId,
+        },
+      };
+    }),
+  },
+});
+```
+
+Endpoint context includes `ctx.db`, `ctx.auth`, `ctx.env`, `ctx.log`,
+`ctx.messages`, and `ctx.request`. `ctx.request` contains method, path, headers,
+query parameters, and parsed body data.
+
+## Current-user Jobs
+
+Declare durable server-only work with `job()` and enqueue it from a trusted
+mutation, Custom endpoint, or App message handler through `ctx.jobs`. Enqueue
+captures the current Sporades user; browser credentials are not stored with the
+Job.
+
+```ts
+import { capsule, job, mutation } from "sporades/server";
+
+export default capsule({
+  name: "notes",
+  jobs: {
+    indexNote: job(async (ctx, input: { id: string }) => {
+      // Runs later as the captured current user.
+      return { indexed: input.id };
+    }),
+  },
+  mutations: {
+    index: mutation((ctx, id: string) =>
+      ctx.jobs.enqueue("indexNote", { id }, { idempotencyKey: id }),
+    ),
+  },
+});
+```
+
+Enqueue is a durable runtime side effect, not part of the Capsule mutation
+Transaction boundary: it is not atomic with `ctx.db` writes. Supply an
+idempotency key when callers can retry a cross-boundary workflow; repeating the
+same key for the same handler and captured user returns the retained Job.
+
+Jobs may use a one-time future `availableAt` and become `delayed` until then;
+this is not recurring scheduling. A bounded `retry` policy records attempts and
+uses a deterministic delay. `ctx.jobs.cancel(id)` cancels queued or delayed
+work, or cooperatively requests cancellation of running work through its signal.
+
+The lifecycle states are `delayed`, `queued`, `running`, `succeeded`, `failed`,
+and `cancelled`. Only `queued` Jobs are ready to run; `delayed` Jobs wait until
+their `availableAt` time. The initial runtime uses a single worker. A running
+attempt holds a lease, and lease recovery after interruption may execute that
+attempt again.
+
+Job delivery is **at least once**, not exactly once: an interrupted leased
+attempt can be recovered and run again under the same Job ID. Make handlers
+duplicate-safe and use idempotency keys for cross-boundary caller retries.
+
+`ctx.jobs.get(id)` reads one known Job. `ctx.jobs.list(...)` supports bounded,
+cursor-based listing by actor. Current-user inspection sees only Jobs for its
+captured execution actor. Privileged inspection through an explicit
+`ctx.privileged.run(...)` may see all Jobs. In either view, `enqueuedBy` is
+provenance—the user who caused the Job to be created—and is distinct from the
+captured current-user or Privileged server role actor under which the handler
+executes.
+
+One-time delayed availability is Job Queue behavior. For recurring work,
+Capsule server code declares a named Schedule alongside its named Jobs:
+
+```ts
+import { capsule, job, schedule } from "sporades/server";
+
+export default capsule({
+  name: "reports",
+  jobs: {
+    sendDigest: job(async (_ctx, input: { audience: string }) => {
+      return { audience: input.audience, sent: true };
+    }),
+  },
+  schedules: {
+    weekdayDigest: schedule({
+      expression: "0 9 * * 1-5",
+      timezone: "Europe/London",
+      job: "sendDigest",
+      payload: { audience: "subscribers" },
+      retry: { maxAttempts: 3, delayMs: 60_000 },
+      missedRun: "latest",
+    }),
+  },
+});
+```
+
+Schedules use numeric five-field cron expressions. An explicit `timezone` must
+be an IANA timezone available through the Node runtime. When it is omitted,
+Sporades resolves the server timezone at each runtime startup. Dev, Container,
+and Hosted environments can have different server timezone defaults, so pin a
+timezone when recurrence must be portable. A changed server default affects
+future occurrence calculation only; Sporades does not backfill under the old
+timezone.
+
+Cron fields are matched against local wall-clock time in the effective
+timezone. When day-of-month and day-of-week are both restricted, either field
+may match (conventional cron OR behavior). A local time skipped by a daylight-
+saving spring transition produces no occurrence. During a repeated fall hour,
+both matching UTC instants are eligible and have distinct occurrence identities.
+Use `UTC` when recurrence must not skip or repeat because of daylight-saving
+transitions.
+
+The five fields are minute, hour, day-of-month, month, and day-of-week. Numeric
+lists, ranges, and positive steps are supported; seconds, years, nicknames such
+as `@daily`, and implementation-specific extensions are rejected. Schedule
+declarations are server-only: browser code cannot create or invoke recurring
+Privileged work. `payload` is either a JSON-safe value (defaulting to `null`) or
+an async-capable payload factory evaluated for each occurrence. Payload
+factories may run more than once during crash recovery, so any explicitly
+privileged side effects must tolerate repetition. `retry` is the ordinary Job
+Queue retry policy applied after enqueue; a failed payload factory is skipped
+and is not retried as a Job.
+
+The default missed-run policy is `skip`, which resumes at the next future
+occurrence after downtime. `latest` enqueues at most the most recent missed
+occurrence, then resumes normal recurrence; it never replays an unbounded
+backlog. Schedule state and pending occurrences survive runtime restarts through
+the configured Database adapter. A deterministic identity based on Capsule,
+Schedule name, and scheduled UTC instant prevents overlapping starts or crash
+recovery from creating duplicate Jobs for one occurrence.
+
+Changing an expression, timezone, payload, retry policy, or enabled state affects
+future occurrences only and does not rewrite historical Jobs. Removing a
+Schedule forgets its runtime state while retaining its Jobs; adding the same name
+again or renaming a Schedule creates a fresh identity. Disabling or cancelling a
+created Job does not disable its Schedule.
+
+Every successfully created Scheduled occurrence becomes an ordinary Job that
+executes as the Privileged server role. It retains Job Queue **at least once**
+attempt semantics: retries and lease recovery can repeat the same Job attempt,
+so handlers must remain duplicate-safe. Schedule duplicate protection prevents
+two Job records for one occurrence; it does not promise exactly-once execution.
+
+## Inspect Jobs from the CLI
+
+Administrators can inspect all Jobs for an active Capsule with one explicit
+JSON-only command for each runtime location:
+
+```sh
+sporades jobs
+sporades deploy jobs
+sporades host jobs --host <alias> --subname <name>
+```
+
+The commands target an active Dev session, running local Container session, or
+running Hosted Capsule respectively. Each returns the same structured JSON
+envelope with the Capsule name and all Jobs ordered newest first. The bounded
+operational state includes handler, status, actor, provenance, attempts, retry
+policy, lifecycle timestamps, and safe result or failure metadata. Input
+payloads and idempotency-key values are omitted.
+
+This first operator surface intentionally has no filters, cursor, pagination,
+human renderer, or offline inspection. Pipe the JSON through tools such as
+`jq` when you need to filter or reshape it.
+
+## Inspect Schedules from the CLI
+
+Administrators inspect bounded, read-only Schedule state with the JSON-only
+command for the target runtime:
+
+```sh
+sporades schedules
+sporades deploy schedules
+sporades host schedules --host <alias> --subname <name>
+```
+
+These commands target an active Dev session, running local Container session,
+or running Hosted Capsule. They return schedules ordered by name, including the
+effective timezone, policy, next occurrence, and latest safe outcome and Job
+correlation. They omit payloads and secrets, do not evaluate or advance a
+Schedule, and return `schedules: []` when no schedules exist. V1 has no human
+renderer, filters, pagination, or offline inspection.
+
+## Make a Client Change
+
+Open `client/index.tsx`. The scaffold wires the framework primitives into
+Sporades hooks:
+
+```tsx
+import { useEffect, useState } from "react";
+import { createHooks } from "sporades/client";
+
+const { useAuth, useQuery, useMutation } = createHooks({ useState, useEffect });
+```
+
+Read data with `useQuery("queryName")`:
+
+```tsx
+const todos = useQuery("todos");
+```
+
+Run changes with `useMutation("mutationName")`:
+
+```tsx
+const addTodo = useMutation("addTodo");
+await addTodo.run("Buy coffee");
+```
+
+For Vue, open `client/App.vue`. The scaffold binds native reactive state and
+scope disposal to the same framework-neutral connection in `client/sporades.ts`:
+
+```ts
+import { onScopeDispose, reactive } from "vue";
+import { createVueComposables } from "sporades/client";
+
+export const { useAuth, useMutation, useQuery } = createVueComposables({ reactive, onScopeDispose });
+```
+
+Vue mutation composables keep `loading` true until every concurrent invocation
+settles. Reactive `data` and `error` follow the latest invocation, so an older
+completion cannot overwrite newer state; each `run()` promise still resolves
+or rejects with its own outcome.
+
+The Vue Guestbook uses those composables for auth, queries, and mutations. The
+Photo Library keeps authenticated uploads private until publication is
+explicit, and the Campfire uses the shared preferences and consented Journey
+APIs directly from `sporades/client`.
+
+Queries stay subscribed over the Sporades client transport, so successful
+mutations refresh connected clients without you writing manual fetch code.
+
+For Vanilla TypeScript, open `client/index.ts` and use the same transport
+without a UI framework:
+
+```ts
+import { auth, mutations, queries } from "sporades/client";
+
+const subscription = queries.subscribe("todos", (state) => render(state));
+await mutations.run("addTodo", "Buy coffee");
+const current = await auth.get();
+const authSubscription = auth.subscribe((state) => renderAuth(state));
+```
+
+Both subscriptions deliver their latest state immediately, reconnect and
+resubscribe automatically, and expose an idempotent `unsubscribe()` method.
+
 ## Building the Client Side
 
 ### Use Queries
@@ -1524,86 +1371,6 @@ App code should still use app tables for domain data such as notes, projects,
 memberships, and records. Preferences are for small durable UI and behavior
 settings.
 
-## Container SSH Access
-
-Container SSH access is an explicit, opt-in compatibility and emergency access
-path for local Container sessions and Hosted Capsules. It is not the primary
-Sporades management interface. Keep using the structured CLI surfaces for
-deployment, logs, stats, restarts, Host registration, and recovery; use
-Portainer or similar container tooling when you want a broader container
-management UI.
-
-Configure Container SSH access in `sporades.json` with a top-level `ssh` object
-and `authorizedKeys` entries. Each entry is an object with exactly one source:
-`key` for one inline public authorized-key line, or `file` for public
-authorized-key material read by the CLI.
-
-```json
-{
-  "name": "notes",
-  "ssh": {
-    "authorizedKeys": [
-      { "key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample developer@workstation" },
-      { "file": "~/.ssh/id_ed25519.pub" },
-      { "file": "ops/authorized_keys.pub" }
-    ]
-  }
-}
-```
-
-`file` entries resolve on the CLI machine before a local Container session
-starts or a Hosted Capsule release is packaged. Supported file references
-include absolute paths, `~`, and project-relative paths. Absolute paths are
-used as-is, `~` expands to the CLI user's home directory, and project-relative
-paths resolve from the directory containing `sporades.json`. Hosted Capsule
-releases include only generated public authorized-key material. Original file
-paths are not retained: original source paths are not copied into Hosted Capsule releases.
-Those source paths are also omitted from Host registries and container metadata.
-
-Sporades preserves OpenSSH `authorized_keys` semantics. A `key` entry provides
-one authorized-key line. A `file` entry may contain normal authorized-key file
-content, including multiple public-key lines, comments, blank lines, key
-options, and OpenSSH-supported public-key algorithms. Private-key-looking or
-malformed material is rejected before container startup or release packaging
-where possible. Empty effective key sets leave SSH disabled.
-
-When SSH is enabled, sessions log in as the `sporades` user with key-based
-authentication only. Sporades does not provide root login, sudoers access,
-passwords, custom SSH ports, or public SSH port exposure. Release files remain
-read-only; Capsule data remains the writable runtime area. Hosted Capsule SSH
-ports are Docker-assigned and loopback-only on the Host server, separate from
-Caddy HTTP routing.
-
-Use explicit inspection commands for effective SSH state. `sporades deploy ssh`
-inspects the local Container session, and `sporades host ssh` inspects a Hosted
-Capsule through the configured Host server:
-
-```sh
-sporades deploy ssh
-sporades deploy ssh --json
-sporades host ssh team-notes --host personal
-sporades host ssh team-notes --host personal --json
-```
-
-These commands report connection facts such as enabled state, user, host, port,
-target port, key count, fingerprints, running state, and reason codes. Normal
-`sporades deploy`, `sporades host push`, list, stats, and lifecycle output do
-not include SSH state unless validation fails.
-
-Indicative examples: Client SSH commands vary by OS, key agent, local SSH config, and tunneling
-setup. Treat the examples as shape, not a contract.
-
-```sh
-# Local Container session: first inspect the Docker-assigned loopback port.
-sporades deploy ssh --json
-ssh -p <local-port> sporades@127.0.0.1
-
-# Hosted Capsule: create an SSH tunnel to the loopback-only port on the Host server.
-sporades host ssh team-notes --host personal --json
-ssh -N -L <local-port>:127.0.0.1:<host-loopback-port> <host-profile-ssh-target>
-ssh -p <local-port> sporades@127.0.0.1
-```
-
 ## File Uploads
 
 Use the `files` API from `sporades/client` for browser `File` or `Blob` values:
@@ -1696,39 +1463,6 @@ app tables and ACLs can store stable references; it must not expose filesystem
 locations, object keys, Object buckets, MinIO connection details, or generated
 runtime read URLs as storage locations.
 
-## Custom HTTP Endpoints
-
-Most app behavior should use queries and mutations. Use endpoints for HTTP
-integrations such as webhooks:
-
-```ts
-import { capsule, endpoint } from "sporades/server";
-
-export default capsule({
-  endpoints: {
-    webhook: endpoint({ method: "POST", path: "/integrations/webhook" }, (ctx) => {
-      ctx.log.info("Webhook received", {
-        path: ctx.request.path,
-        body: ctx.request.body,
-      });
-
-      return {
-        status: 202,
-        headers: { "x-sporades-endpoint": "accepted" },
-        body: {
-          received: true,
-          userId: ctx.auth.userId,
-        },
-      };
-    }),
-  },
-});
-```
-
-Endpoint context includes `ctx.db`, `ctx.auth`, `ctx.env`, `ctx.log`,
-`ctx.messages`, and `ctx.request`. `ctx.request` contains method, path, headers,
-query parameters, and parsed body data.
-
 ## App Messages
 
 Use app messages for ephemeral real-time events, such as typing indicators or
@@ -1776,6 +1510,159 @@ subscription.unsubscribe();
 ```
 
 Client-origin messages always run through declared server handlers.
+
+## User Journey Tracker
+
+The User journey tracker is opt-in, transient current state for answering “what
+are consenting users doing now?” It is not analytics, an audit log, an App
+message stream, a Capsule app table, or durable current-user preferences.
+
+First declare the expandable Capsule-wide feature and its safe automatic
+capture ceiling:
+
+```ts
+export default capsule({
+  name: "support",
+  journey: {
+    enabled: true,
+    ttlSeconds: 30,
+    capture: { navigation: true, focus: true, interactions: true },
+  },
+});
+```
+
+All three capture sources default on when omitted. A page may narrow them in
+`journey.enable({ capture: ... })`, including turning all three off for
+manual-only use, but may not broaden the Capsule policy. Declaration permits
+the feature; it does not publish anything. Reading or subscribing never enables
+the caller.
+
+```ts
+import { journey } from "sporades/client";
+
+const enabled = await journey.enable({ capture: { interactions: false } });
+const saved = await journey.set({
+  status: "reviewing-order",
+  metadata: { section: "delivery" },
+  ttlSeconds: 60,
+});
+const current = await journey.list();
+const subscription = journey.subscribe((event) => {
+  if (event.type === "snapshot") console.log(event.states);
+  else console.log(event.type, event.state);
+});
+subscription.unsubscribe();
+await journey.disable();
+```
+
+`journey.enable()` establishes page-runtime consent and returns the enabled
+user and effective capture policy; it does not return a `sessionId` or create a
+server session. With navigation capture active it immediately samples and
+publishes the current page. `journey.set(...)` publishes a bounded semantic
+status and optional JSON metadata, replacing rather than merging the current
+record. `journey.disable()` clears consent and immediately removes the current
+connection's live state. `journey.list()` returns all live records. A
+subscription receives a snapshot first, then `added`, `updated`, and `removed`
+events; removal includes the complete last state. Unsubscribe stops delivery.
+
+Consent belongs to the page runtime, not a Journey session. An ordinary
+transport reconnect automatically re-enables with the retained narrowed policy,
+but a new transport connection always gets a new server-owned Journey session
+on its first accepted publication. Explicit disablement, an authentication
+transition, or page reload/replacement clears consent. Apps that want a durable
+user choice may store that choice separately in current-user preferences and
+call `journey.enable()` in each new page runtime.
+
+Sessions are created lazily and only accepted manual or automatic publications
+count as activity. A publication after the configured inactivity boundary also
+starts a new session. Configure segmentation in `sporades.json`:
+
+```json
+{ "journey": { "sessionInactivityMinutes": 30 } }
+```
+
+The default is 30 minutes. Numeric values are rounded and clamped to 1–1,440
+minutes; missing or malformed values fall back to 30. This session boundary is
+independent of Journey state TTL. The public `sessionId` groups records; it is
+not a bearer credential. Journey has no private resume credential, durable
+capability registry, or retirement tombstone.
+
+Automatic capture publishes `viewing` for navigation, `focused` or `away` for
+focus/visibility changes, and the semantic status on the nearest annotated
+interaction:
+
+```html
+<meta name="sporades-journey" content="checkout">
+<button data-sporades-journey="confirming-order">Confirm</button>
+```
+
+Navigation captures only a normalized pathname—never origin, query, or raw
+hash. Use the single semantic page-name meta override for sensitive or
+identifier-rich routes. React, Preact, Vue, Svelte, SolidJS, Lit, and Inferno
+consume the same framework-neutral Journey stream; route detection does not
+belong to a framework adapter. Sporades uses a browser-level History/meta
+observer, samples after a render frame, and installs idempotently across HMR or
+client-runtime setup. Publish manually for locationless view changes.
+
+`data-sporades-journey` contains one semantic status, not JSON. Delegated
+capture handles annotated click and submit, including keyboard-triggered native
+events, without preventing defaults. It uses `composedPath()` to find the
+nearest annotated match once through nesting and open Shadow DOM. For closed
+Shadow DOM, capture works when the host is annotated; internal nodes are
+not inspectable. Other event types require manual publication. Use typed manual
+updates for richer metadata. Raw clicks,
+DOM content, form values, query strings, session replay, and arbitrary browser
+telemetry are deliberately excluded.
+
+Statuses and annotation values are at most 256 characters. Metadata is JSON-safe
+and bounded to 8 KiB, depth 8, 64 object keys, and 64 array items; unsupported,
+cyclic, non-finite, prototype-sensitive, or otherwise invalid values receive a
+structured validation error. Keep even accepted metadata privacy-safe.
+
+Journey state defaults to a Capsule-wide 30-second TTL. The declaration accepts
+1–300 seconds, and manual updates may choose an override in the same range;
+automatic signals use the Capsule default. The caller renews state by publishing.
+Disconnect leaves the last state buffered only until its existing expiry, so a
+late subscriber can still receive it. Expiry means derived `inactive`; it is not
+a publishable status. Disablement and authentication transitions remove current
+state immediately. Server replacement clears every buffered record and session;
+a still-consenting page reconnects and publishes only fresh state under a new ID.
+There is no permanent Journey state.
+
+Records have the flat shape
+`{ sessionId, userId, status, metadata, updatedAt, expiresAt }`. Lists and
+snapshots are deterministically ordered by `(userId, sessionId)`; group them on
+the client when presenting users. One user may have multiple live sessions,
+just like multiple tabs, browsers, or devices.
+
+Immediate `set` results and `list()` reflect accepted state. Realtime delivery
+coalesces each session to its latest state over 100 milliseconds while
+preserving coherent change order; intermediate states are not guaranteed.
+Capacity is 32 live states per user and 1,000 live states per Capsule. Expired
+records are pruned before admission, replacement remains allowed at capacity,
+and a new over-capacity record receives a structured rejection without evicting
+live state.
+
+Every connected Capsule client receives Journey snapshots and changes in V1.
+Publisher-selected record permissions do not exist; future shared-Team
+receiver-side filtering is deferred. Publication, reads, and subscriptions are
+client-only. Capsule server handlers and the Privileged server role cannot
+impersonate user activity, and transient client claims must not become
+authoritative server business-logic inputs.
+
+## Inspect Logs and Data
+
+In **another** terminal, from the Capsule directory:
+
+```sh
+sporades logs
+sporades db list
+sporades db dump --json
+sporades db query "select * from todos" --json
+```
+
+`sporades db query` is read-only. Use it to inspect state, not to patch around
+application logic.
 
 ## Inspecting and Debugging
 
@@ -1908,6 +1795,39 @@ Errors use the same envelope and exit with code `1`:
 Use `--json` for scripts and agents. Use plain output when you are working by
 hand.
 
+## Try a Container Session
+
+When the Capsule works locally, test it in Docker:
+
+```sh
+sporades deploy
+```
+
+This starts a local Container session by bundling the Capsule, mounting the
+Bundle files and Server env into a Node container, and persisting SQLite data in
+the Runtime directory. Re-running `sporades deploy` replaces the previous local
+container for this project.
+
+Use a different port when needed, e.g. if 'dev' is running at same time:
+
+```sh
+sporades deploy --port 5000
+```
+
+Inspect a running local Container session by passing its port to the same log
+and database commands:
+
+```sh
+sporades logs --port 4000
+sporades logs tail --port 4000 --json
+sporades db list --port 4000
+sporades db dump --port 4000 --json
+sporades db query "select * from todos" --port 4000 --json
+```
+
+Use the port from `sporades deploy --json` if you do not know which port the
+Container session is using.
+
 ## Local Container Sessions
 
 `sporades deploy` is for production-like local testing:
@@ -1950,6 +1870,86 @@ When running through the scaffolded npm script, pass flags after `--`:
 
 ```sh
 npm run deploy -- --force
+```
+
+## Container SSH Access
+
+Container SSH access is an explicit, opt-in compatibility and emergency access
+path for local Container sessions and Hosted Capsules. It is not the primary
+Sporades management interface. Keep using the structured CLI surfaces for
+deployment, logs, stats, restarts, Host registration, and recovery; use
+Portainer or similar container tooling when you want a broader container
+management UI.
+
+Configure Container SSH access in `sporades.json` with a top-level `ssh` object
+and `authorizedKeys` entries. Each entry is an object with exactly one source:
+`key` for one inline public authorized-key line, or `file` for public
+authorized-key material read by the CLI.
+
+```json
+{
+  "name": "notes",
+  "ssh": {
+    "authorizedKeys": [
+      { "key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExample developer@workstation" },
+      { "file": "~/.ssh/id_ed25519.pub" },
+      { "file": "ops/authorized_keys.pub" }
+    ]
+  }
+}
+```
+
+`file` entries resolve on the CLI machine before a local Container session
+starts or a Hosted Capsule release is packaged. Supported file references
+include absolute paths, `~`, and project-relative paths. Absolute paths are
+used as-is, `~` expands to the CLI user's home directory, and project-relative
+paths resolve from the directory containing `sporades.json`. Hosted Capsule
+releases include only generated public authorized-key material. Original file
+paths are not retained: original source paths are not copied into Hosted Capsule releases.
+Those source paths are also omitted from Host registries and container metadata.
+
+Sporades preserves OpenSSH `authorized_keys` semantics. A `key` entry provides
+one authorized-key line. A `file` entry may contain normal authorized-key file
+content, including multiple public-key lines, comments, blank lines, key
+options, and OpenSSH-supported public-key algorithms. Private-key-looking or
+malformed material is rejected before container startup or release packaging
+where possible. Empty effective key sets leave SSH disabled.
+
+When SSH is enabled, sessions log in as the `sporades` user with key-based
+authentication only. Sporades does not provide root login, sudoers access,
+passwords, custom SSH ports, or public SSH port exposure. Release files remain
+read-only; Capsule data remains the writable runtime area. Hosted Capsule SSH
+ports are Docker-assigned and loopback-only on the Host server, separate from
+Caddy HTTP routing.
+
+Use explicit inspection commands for effective SSH state. `sporades deploy ssh`
+inspects the local Container session, and `sporades host ssh` inspects a Hosted
+Capsule through the configured Host server:
+
+```sh
+sporades deploy ssh
+sporades deploy ssh --json
+sporades host ssh team-notes --host personal
+sporades host ssh team-notes --host personal --json
+```
+
+These commands report connection facts such as enabled state, user, host, port,
+target port, key count, fingerprints, running state, and reason codes. Normal
+`sporades deploy`, `sporades host push`, list, stats, and lifecycle output do
+not include SSH state unless validation fails.
+
+Indicative examples: Client SSH commands vary by OS, key agent, local SSH config, and tunneling
+setup. Treat the examples as shape, not a contract.
+
+```sh
+# Local Container session: first inspect the Docker-assigned loopback port.
+sporades deploy ssh --json
+ssh -p <local-port> sporades@127.0.0.1
+
+# Hosted Capsule: create an SSH tunnel to the loopback-only port on the Host server.
+sporades host ssh team-notes --host personal --json
+ssh -N -L <local-port>:127.0.0.1:<host-loopback-port> <host-profile-ssh-target>
+ssh -p <local-port> sporades@127.0.0.1
 ```
 
 ## Hosted Capsules
