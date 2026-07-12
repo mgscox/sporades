@@ -210,20 +210,21 @@ test("Lit observed controllers contain throwing host updates without leaking own
   const browser = installBrowserFakes(anonymousAuth);
   try {
     const runtime = await importClientRuntime();
-    const queryListeners = new Set(), authListeners = new Set();
+    const queryListeners = new Set(), authListeners = new Set(), queryCallbacks = [], authCallbacks = [];
     let queryStarts = 0, queryStops = 0, authStarts = 0, authStops = 0;
     runtime.queries.subscribe = (_name, listener) => {
-      queryStarts += 1; queryListeners.add(listener);
+      queryStarts += 1; queryListeners.add(listener); queryCallbacks.push(listener);
       listener({ data: [{ id: `initial-${queryStarts}` }], error: null, loading: false });
       return { unsubscribe() { if (queryListeners.delete(listener)) queryStops += 1; } };
     };
     runtime.auth.subscribe = (listener) => {
-      authStarts += 1; authListeners.add(listener);
+      authStarts += 1; authListeners.add(listener); authCallbacks.push(listener);
       listener({ auth: anonymousAuth, providers: {}, error: null, loading: false });
       return { unsubscribe() { if (authListeners.delete(listener)) authStops += 1; } };
     };
     const throwingControllers = [], healthyControllers = [], healthyUpdates = [];
-    const throwingHost = { addController(controller) { throwingControllers.push(controller); }, requestUpdate() { throw new Error("host update failed"); } };
+    let throwingUpdateAttempts = 0;
+    const throwingHost = { addController(controller) { throwingControllers.push(controller); }, requestUpdate() { throwingUpdateAttempts += 1; throw new Error("host update failed"); } };
     const healthyHost = { addController(controller) { healthyControllers.push(controller); }, requestUpdate() { healthyUpdates.push("update"); } };
     const lit = runtime.createLitControllers();
     const throwingQuery = lit.queryController(throwingHost, "todos"), throwingAuth = lit.authController(throwingHost);
@@ -244,6 +245,18 @@ test("Lit observed controllers contain throwing host updates without leaking own
     assert.deepEqual([queryStops, authStops], [1, 1], "throwing host still releases exact ownership");
     assert.doesNotThrow(() => throwingControllers.forEach((controller) => controller.hostConnected()));
     assert.deepEqual([queryStarts, authStarts], [3, 3], "same throwing host reconnects without leaked predecessors");
+    const successorQueryState = throwingQuery.state, successorAuthState = throwingAuth.state;
+    const attemptsBeforeStalePublication = throwingUpdateAttempts;
+    queryCallbacks[0]({ data: [{ id: "retired-query" }], error: null, loading: false });
+    authCallbacks[0]({ auth: { ...anonymousAuth, userId: "retired-auth" }, providers: {}, error: null, loading: false });
+    assert.equal(throwingQuery.state, successorQueryState, "retired query callback cannot replace successor state");
+    assert.equal(throwingAuth.state, successorAuthState, "retired auth callback cannot replace successor state");
+    assert.equal(throwingUpdateAttempts, attemptsBeforeStalePublication, "retired callbacks cannot request host updates");
+    queryCallbacks[2]({ data: [{ id: "successor-query" }], error: null, loading: false });
+    authCallbacks[2]({ auth: { ...anonymousAuth, userId: "successor-auth" }, providers: {}, error: null, loading: false });
+    assert.equal(throwingQuery.state.data[0].id, "successor-query");
+    assert.equal(throwingAuth.state.auth.userId, "successor-auth");
+    assert.equal(throwingUpdateAttempts, attemptsBeforeStalePublication + 2, "successor callbacks remain live");
     throwingControllers.forEach((controller) => controller.hostDisconnected());
     healthyControllers.forEach((controller) => controller.hostDisconnected());
     assert.deepEqual([queryStops, authStops], [3, 3]);
