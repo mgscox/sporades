@@ -9,6 +9,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - "scripts/build-docs.mjs"
+      - "scripts/generate-llms-docs.mjs"
       - "src/types/**"
       - "typedoc.json"
   workflow_dispatch:
