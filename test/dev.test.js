@@ -544,8 +544,8 @@ async function runProjectTsc(projectDir) {
   });
 }
 
-async function createInfernoTemplate(dir, name, template, { omitToolchain = false } = {}) {
-  const created = await runCli(["create", name, "--framework", "inferno", "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
+async function createInfernoTemplate(dir, name, template, { omitToolchain = false, toolchain = "esbuild" } = {}) {
+  const created = await runCli(["create", name, "--framework", "inferno", "--toolchain", toolchain, "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
   assert.equal(created.code, 0, created.stderr || created.stdout);
   const projectDir = path.join(dir, name);
   if (omitToolchain) {
@@ -559,10 +559,25 @@ async function createInfernoTemplate(dir, name, template, { omitToolchain = fals
 }
 
 test("every admitted Inferno template passes its emitted strict TypeScript project", async () => {
-  for (const template of ["blank", "todo"]) await withTempDir(async (dir) => {
-    const projectDir = await createInfernoTemplate(dir, `inferno-strict-${template}`, template);
+  for (const toolchain of ["esbuild", "vite"]) for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire"]) await withTempDir(async (dir) => {
+    const projectDir = await createInfernoTemplate(dir, `inferno-${toolchain}-strict-${template}`, template, { toolchain });
     const result = await runProjectTsc(projectDir);
-    assert.equal(result.code, 0, `${template}\n${result.stdout}\n${result.stderr}`);
+    assert.equal(result.code, 0, `${toolchain}/${template}\n${result.stdout}\n${result.stderr}`);
+  });
+});
+
+test("Inferno Vite fails closed when project-owned Inferno compiler packages are unavailable", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "inferno-vite-missing", "--framework", "inferno", "--toolchain", "vite", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "inferno-vite-missing");
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    await assert.rejects(createBundle(projectDir, config), (error) => {
+      assert.equal(error.phase, "client"); assert.equal(error.framework, "inferno"); assert.equal(error.toolchain, "vite");
+      assert.match(error.message, /node_modules.*real directory.*Capsule project/i); assert.match(error.hint, /npm install.*inferno.*inferno-create-element/i);
+      assert.doesNotMatch(JSON.stringify(error), new RegExp(projectDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+      return true;
+    });
   });
 });
 
@@ -592,6 +607,73 @@ test("real Inferno todo renders, mutates, and reconnects native component lifecy
       assert.deepEqual(counts, { queryStarts: 2, queryStops: 1, sessionStarts: 2, sessionStops: 1 });
     } finally { await harness.unmount(); }
     assert.deepEqual(counts, { queryStarts: 2, queryStops: 2, sessionStarts: 2, sessionStops: 2 });
+  });
+});
+
+test("real Inferno Guestbook renders, mutates, handles auth errors, and cleans lifecycle", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createInfernoTemplate(dir, "inferno-guestbook-behavior", "guestbook", { toolchain: "vite" });
+    const calls = [], entries = litSource({ data: [{ id: "e1", authorName: "Athos", body: "All for one", createdAt: "2026-07-12T12:00:00Z" }], error: null, loading: false });
+    const session = litSource({ auth: null, providers: { google: { enabled: true } }, error: null, loading: false });
+    const harness = await mountInfernoTemplate(projectDir, { auth: { ...authStub(), async signIn() { return { data: null, error: { message: "Auth refused" } }; } }, session, queries: { entries }, mutations: { sign: { async run(value) { calls.push(value); return { data: null, error: null }; } } } });
+    try {
+      assert.match(harness.text(), /Leave a note from this island.*All for one/s);
+      const textarea = harness.find("textarea"); textarea.value = "  One for all  "; textarea.dispatchEvent(new harness.window.Event("input", { bubbles: true }));
+      harness.find("form").dispatchEvent(new harness.window.Event("submit", { bubbles: true, cancelable: true })); await harness.settle();
+      assert.deepEqual(calls, ["One for all"]); assert.equal(harness.find("textarea").value, "");
+      harness.find('button[type="button"]').click(); await harness.settle(); assert.match(harness.text(), /Auth refused/);
+    } finally { await harness.unmount(); }
+    assert.deepEqual([session.counts.starts, session.counts.stops, entries.counts.starts, entries.counts.stops], [1, 1, 1, 1]);
+  });
+});
+
+test("real Inferno Photo Library keeps authenticated uploads private and publishes explicitly", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createInfernoTemplate(dir, "inferno-photo-behavior", "photo-library");
+    const calls = [], session = litSource({ auth: { userId: "athos", provider: "google", displayName: "Athos", isAuthenticated: true }, providers: {}, error: null, loading: false });
+    const publicPhotos = litSource({ data: [], error: null, loading: false }), personalPhotos = litSource({ data: [], error: null, loading: false });
+    const mutation = (name) => ({ async run(...args) { calls.push([name, ...args]); return { data: null, error: null }; } });
+    const harness = await mountInfernoTemplate(projectDir, { auth: authStub(), session, queries: { publicPhotos, personalPhotos }, files: { async upload(file) { calls.push(["upload", file.name]); return { id: "f1" }; }, async publicUrl() { calls.push(["publicUrl"]); return { id: "u1", url: "/public/f1" }; }, async revokePublicUrl() {} }, mutations: { recordPhoto: mutation("recordPhoto"), updatePhotoIsPublic: mutation("updatePhotoIsPublic"), updatePhotoImageUrl: mutation("updatePhotoImageUrl"), updatePhotoPublicUrlId: mutation("updatePhotoPublicUrlId") } });
+    try {
+      const inputs = [...harness.window.document.querySelectorAll("input")];
+      inputs[0].value = "Crown"; inputs[0].dispatchEvent(new harness.window.Event("input", { bubbles: true }));
+      Object.defineProperty(inputs[1], "files", { configurable: true, value: [new harness.window.File(["photo"], "crown.png", { type: "image/png" })] }); inputs[1].dispatchEvent(new harness.window.Event("change", { bubbles: true }));
+      harness.find("form").dispatchEvent(new harness.window.Event("submit", { bubbles: true, cancelable: true })); await harness.settle();
+      assert.deepEqual(calls.map(([name]) => name), ["upload", "recordPhoto"]); assert.match(harness.text(), /Photo saved privately/);
+    } finally { await harness.unmount(); }
+    assert.deepEqual([session.counts.stops, publicPhotos.counts.stops, personalPhotos.counts.stops], [1, 1, 1]);
+  });
+});
+
+test("real Inferno Campfire owns consent, typing, preferences, messages, and teardown", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createInfernoTemplate(dir, "inferno-campfire-behavior", "campfire", { toolchain: "vite" });
+    const calls = [], session = litSource({ auth: { userId: "athos", provider: "email", displayName: "Athos", isAuthenticated: true }, providers: {}, error: null, loading: false });
+    const query = () => litSource({ data: [{ id: "m1", authorName: "Porthos", body: "All for one", createdAt: "2026-07-12T12:00:00Z", reactions: {} }], error: null, loading: false });
+    const queries = { messagesGeneral: query(), messagesIdeas: query(), messagesRandom: query(), messagesProtectTheCrown: query() };
+    let journeyStops = 0;
+    const journey = { async enable() { calls.push(["journey.enable"]); return { data: { enabled: true }, error: null }; }, async set(value) { calls.push(["journey.set", value]); return { data: null, error: null }; }, async disable() { calls.push(["journey.disable"]); return { data: null, error: null }; }, subscribe(listener) { listener({ type: "snapshot", states: [] }); return { unsubscribe() { journeyStops += 1; } }; } };
+    const mutation = (name) => ({ async run(...args) { calls.push([name, ...args]); return { data: null, error: null }; } });
+    const harness = await mountInfernoTemplate(projectDir, { auth: authStub(), session, queries, journey, preferences: { async update(value) { calls.push(["preferences.update", value]); return { data: { preferences: value }, error: null }; } }, mutations: { sendMessage: mutation("sendMessage"), toggleReaction: mutation("toggleReaction") } });
+    try {
+      const share = harness.find('input[role="switch"]'); share.checked = true; share.dispatchEvent(new harness.window.Event("change", { bubbles: true })); await harness.settle();
+      const message = harness.find("#message"); message.value = "  Protect the crown  "; message.dispatchEvent(new harness.window.Event("input", { bubbles: true })); await harness.settle();
+      harness.find("form").dispatchEvent(new harness.window.Event("submit", { bubbles: true, cancelable: true })); await harness.settle();
+      assert(calls.some(([name]) => name === "journey.enable")); assert(calls.some(([name]) => name === "preferences.update")); assert(calls.some(([name]) => name === "sendMessage")); assert(calls.some(([name, value]) => name === "journey.set" && value.status === "typing"));
+      const disables = calls.filter(([name]) => name === "journey.disable").length; session.publish({ auth: { userId: "porthos", provider: "email", displayName: "Porthos", isAuthenticated: true }, providers: {}, error: null, loading: false }); await harness.settle();
+      assert.equal(calls.filter(([name]) => name === "journey.disable").length, disables + 1, "auth identity replacement retires page consent");
+    } finally { await harness.unmount(); }
+    assert.equal(journeyStops, 1); assert(calls.some(([name]) => name === "journey.disable")); assert.equal(session.counts.stops, 1);
+  });
+});
+
+test("real Inferno Campfire fails consent closed before persisting preference", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createInfernoTemplate(dir, "inferno-campfire-consent-error", "campfire"); let preferenceWrites = 0;
+    const session = litSource({ auth: { userId: "athos", provider: "email", isAuthenticated: true }, providers: {}, error: null, loading: false });
+    const messagesGeneral = litSource({ data: [], error: null, loading: false });
+    const harness = await mountInfernoTemplate(projectDir, { auth: authStub(), session, queries: { messagesGeneral }, journey: { async enable() { return { data: null, error: { message: "Consent refused" } }; }, async set() { return { data: null, error: null }; }, async disable() { return { data: null, error: null }; }, subscribe(listener) { listener({ type: "snapshot", states: [] }); return { unsubscribe() {} }; } }, preferences: { async update() { preferenceWrites += 1; return { data: null, error: null }; } }, mutations: { sendMessage: { async run() { return { data: null, error: null }; } }, toggleReaction: { async run() { return { data: null, error: null }; } } } });
+    try { const share = harness.find('input[role="switch"]'); share.checked = true; share.dispatchEvent(new harness.window.Event("change", { bubbles: true })); await harness.settle(); assert.match(harness.text(), /Consent refused/); assert.equal(preferenceWrites, 0); assert.equal(share.checked, false); } finally { await harness.unmount(); }
   });
 });
 
@@ -4925,9 +5007,10 @@ test("sporades dev builds and rebuilds the Vanilla TypeScript client without fra
   });
 });
 
-for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good Inferno ${template} output and recovers`, async () => {
+for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire"]) test(`sporades dev preserves last-good Inferno esbuild ${template} output and recovers`, async () => {
   await withTempDir(async (dir) => {
     const projectDir = await createInfernoTemplate(dir, `inferno-dev-${template}`, template, { omitToolchain: template === "blank" });
+    if (template === "photo-library") await writeFile(path.join(projectDir, ".env.sporades.server"), "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n");
     const configPath = path.join(projectDir, "sporades.json");
     const config = JSON.parse(await readFile(configPath, "utf8")); config.dev.port = 0; await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     const child = startCli(["dev", "--json"], { cwd: projectDir });
@@ -4935,7 +5018,7 @@ for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good
       const started = await waitForJsonLine(child); assert.equal(started.ok, true, JSON.stringify(started));
       const clientPath = path.join(projectDir, "client", "index.tsx");
       const original = await readFile(clientPath, "utf8");
-      const label = template === "todo" ? "Sporades Todos" : "Blank Sporades Capsule";
+      const label = { blank: "Blank Sporades Capsule", todo: "Sporades Todos", guestbook: "Leave a note from this island.", "photo-library": "Photo Library", campfire: "Campfire" }[template];
       await writeFile(clientPath, original.replace(label, `Rebuilt Inferno ${template}`));
       const rebuilt = await waitForJsonEvent(child, (event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
       assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "inferno", toolchain: "esbuild" });
@@ -4950,6 +5033,29 @@ for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good
       assert.deepEqual(recovered.data.build, { phase: "client", framework: "inferno", toolchain: "esbuild" });
       assert.match(await (await fetch(`${started.data.url}/client.js`)).text(), new RegExp(`Recovered Inferno ${template}`));
     } finally { child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve)); }
+  });
+});
+
+for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire"]) test(`sporades dev preserves last-good Inferno Vite ${template} output through acknowledged full-page refresh`, async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createInfernoTemplate(dir, `inferno-vite-dev-${template}`, template, { toolchain: "vite" });
+    if (template === "photo-library") await writeFile(path.join(projectDir, ".env.sporades.server"), "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n");
+    const configPath = path.join(projectDir, "sporades.json"); const config = JSON.parse(await readFile(configPath, "utf8")); config.dev.port = 0; await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const clientPath = path.join(projectDir, "client", "index.tsx"), original = await readFile(clientPath, "utf8");
+    const child = startCli(["dev", "--json"], { cwd: projectDir }); const events = captureJsonEvents(child); let socket, messages;
+    try {
+      const scrub = (html) => html.replace(/window\.__SPORADES_CONNECTION_TOKEN="[^"]+"/, 'window.__SPORADES_CONNECTION_TOKEN="<token>"');
+      const started = await events.next((event) => event.ok && event.data?.event === "started"); socket = await openSocket(started.data.url); messages = captureSocketMessages(socket);
+      socket.send(JSON.stringify({ id: "inferno-ready", type: "dev.refresh.subscribe" })); await messages.next((message) => message.id === "inferno-ready");
+      const refresh = messages.next((message) => message.type === "refresh"); await writeFile(clientPath, original.replace("</main>}", '<p data-probe="rebuilt">Inferno rebuilt</p></main>}'));
+      const refreshMessage = await refresh; socket.send(JSON.stringify({ id: null, type: "dev.refresh.received", sequence: refreshMessage.data.sequence }));
+      const rebuilt = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success"); assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "inferno", toolchain: "vite" });
+      const lastGood = scrub(await (await fetch(started.data.url)).text());
+      await writeFile(clientPath, "export const = ;\n"); const failed = await events.next((event) => !event.ok && event.data?.event === "rebuild");
+      assert.deepEqual(failed.data.build, { phase: "client", framework: "inferno", toolchain: "vite" }); assert.match(failed.error.message, /Client bundle failed/); assert.equal(scrub(await (await fetch(started.data.url)).text()), lastGood);
+      const recoveredRefresh = messages.next((message) => message.type === "refresh"); await writeFile(clientPath, original); const recoveredMessage = await recoveredRefresh; socket.send(JSON.stringify({ id: null, type: "dev.refresh.received", sequence: recoveredMessage.data.sequence }));
+      const recovered = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success"); assert.deepEqual(recovered.data.build, { phase: "client", framework: "inferno", toolchain: "vite" });
+    } finally { messages?.dispose(); await closeSocketGracefully(socket); child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve)); }
   });
 });
 

@@ -13,7 +13,7 @@ export async function mountInfernoTemplate(projectDir, initial) {
   const entry = path.join(harnessDir, "entry.ts");
   const bundle = path.join(harnessDir, "bundle.mjs");
   await Promise.all([
-    writeFile(clientStub, `const state=globalThis.__SPORADES_INFERNO_HARNESS__;export const auth=state.auth;
+    writeFile(clientStub, `const state=globalThis.__SPORADES_INFERNO_HARNESS__;export const auth=state.auth;export const files=state.files;export const journey=state.journey;export const preferences=state.preferences;export const onMessage=state.onMessage;export const sendMessage=state.sendMessage;
 export function createInfernoAdapters(){
  const observed=(host,initial,subscribe)=>{let owned=null;const adapter={state:initial,componentDidMount(){if(owned)return;owned=subscribe(value=>{adapter.state=value;try{host.forceUpdate();}catch{}});},componentWillUnmount(){if(!owned)return;const current=owned;owned=null;current.unsubscribe();}};return adapter;};
  const queryAdapter=(host,name)=>observed(host,{data:null,error:null,loading:true},publish=>state.queries[name].subscribe(publish));
@@ -43,7 +43,7 @@ export function createInfernoAdapters(){
 }
 
 function installGlobals(window) {
-  const names = ["window", "document", "navigator", "Node", "Element", "HTMLElement", "HTMLInputElement", "HTMLFormElement", "SVGElement", "Event", "CustomEvent", "Text", "Comment", "Document", "DocumentFragment", "MutationObserver", "requestAnimationFrame", "cancelAnimationFrame", "getComputedStyle"];
+  const names = ["window", "document", "navigator", "Node", "Element", "HTMLElement", "HTMLInputElement", "HTMLTextAreaElement", "HTMLFormElement", "SVGElement", "File", "Blob", "Event", "CustomEvent", "Text", "Comment", "Document", "DocumentFragment", "MutationObserver", "requestAnimationFrame", "cancelAnimationFrame", "getComputedStyle"];
   const originals = new Map(names.map((name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)]));
   for (const name of names) { const value = name === "window" ? window : window[name]; if (value !== undefined) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: typeof value === "function" && ["requestAnimationFrame", "cancelAnimationFrame", "getComputedStyle"].includes(name) ? value.bind(window) : value }); }
   return () => { for (const [name, descriptor] of originals) { if (descriptor) Object.defineProperty(globalThis, name, descriptor); else delete globalThis[name]; } };

@@ -1,7 +1,7 @@
 import { cp, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-const PACKAGES = ["@esbuild", "csstype", "esbuild", "inferno", "inferno-create-element", "inferno-vnode-flags", "opencollective-postinstall", "typescript"];
+const PACKAGES = ["@esbuild", "@rollup", "csstype", "esbuild", "fdir", "inferno", "inferno-create-element", "inferno-vnode-flags", "nanoid", "opencollective-postinstall", "picocolors", "picomatch", "postcss", "rollup", "source-map-js", "tinyglobby", "typescript", "vite"];
 
 export async function installProjectInfernoToolchain(projectDir, repoRoot) {
   const nodeModules = path.join(projectDir, "node_modules");

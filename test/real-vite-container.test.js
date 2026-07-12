@@ -69,6 +69,12 @@ for (const { framework, template, toolchain } of [
   { framework: "svelte", template: "campfire" },
   { framework: "inferno", template: "blank", toolchain: "esbuild" },
   { framework: "inferno", template: "todo", toolchain: "esbuild" },
+  { framework: "inferno", template: "guestbook", toolchain: "esbuild" },
+  { framework: "inferno", template: "photo-library", toolchain: "esbuild" },
+  { framework: "inferno", template: "campfire", toolchain: "esbuild" },
+  { framework: "inferno", template: "guestbook", toolchain: "vite" },
+  { framework: "inferno", template: "photo-library", toolchain: "vite" },
+  { framework: "inferno", template: "campfire", toolchain: "vite" },
 ]) test(`real Container serves a complete ${framework} ${toolchain ?? "vite"} ${template} public tree from the actual Base image`, {
   skip: enabled ? false : "Set SPORADES_REAL_VITE_CONTAINER=1 to run the disposable Docker acceptance test.",
   timeout: 300_000,
@@ -179,7 +185,7 @@ for (const { framework, template, toolchain } of [
       fetched[kind] = { path: publicPath, bytes: Buffer.byteLength(body), mime: response.headers.get("content-type") };
     }
     const output = bodies.join("\n");
-    assert.match(output, ["lit", "solid", "vue", "svelte"].includes(framework) ? {
+    assert.match(output, ["lit", "solid", "vue", "svelte", "inferno"].includes(framework) ? {
       blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,
       "photo-library": /Photo Library/, campfire: /Campfire/,
     }[template] : template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);

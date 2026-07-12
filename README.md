@@ -131,8 +131,9 @@ Sporades currently includes:
 - Lit/Vite Web Component scaffolds across the complete template set, with
   component styles and host-lifecycle reactive controllers. Campfire preserves
   serialized identity-safe consent, explicit Journey TTLs, and cleanup.
-- Inferno/esbuild `blank` and `todo` scaffolds, using native class-component
-  lifecycle and classic Inferno JSX without React compatibility packages.
+- Inferno scaffolds across the complete template set, using native class-component
+  lifecycle and classic Inferno JSX without React compatibility packages. esbuild
+  remains the default; Vite is available explicitly with full-page Dev refresh.
 - Local Dev sessions with rebuilds, WebSocket reconnects, SQLite persistence,
   logs, database inspection, auth helpers, and file storage.
 - Local Docker Container sessions for production-like staging tests.

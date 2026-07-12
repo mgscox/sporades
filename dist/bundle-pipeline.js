@@ -557,9 +557,6 @@ function readClientToolchain(toolchain, framework) {
     if (framework === "lit" && toolchain !== "vite") {
         throw commandError("Unsupported client framework/toolchain combination: lit/esbuild", "Use Lit with Vite.");
     }
-    if (framework === "inferno" && toolchain !== "esbuild") {
-        throw commandError("Unsupported client framework/toolchain combination: inferno/vite", "Use Inferno with esbuild.");
-    }
     return toolchain;
 }
 function sporadesServerPlugin() {

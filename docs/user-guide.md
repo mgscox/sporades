@@ -217,8 +217,10 @@ toolchain, and they can explicitly select Vite with `--toolchain vite`. Vue
 selects Vite and supports the complete template set. Svelte and SolidJS also
 select Vite and support the complete template set. Lit also selects Vite and
 supports the complete template set with native Web Components; Vanilla
-TypeScript remains on esbuild. Inferno admits `blank` and `todo` on esbuild only,
-using native class components and lifecycle adapters without React compatibility packages.
+TypeScript remains on esbuild. Inferno supports the complete template set, defaults
+to esbuild, and accepts explicit `--toolchain vite`; both paths use native class
+components and lifecycle adapters without React compatibility packages. Inferno/Vite
+emits normalized hashed assets and uses Sporades full-page Dev refresh rather than HMR.
 
 React/Vite, Preact/Vite, and SolidJS/Vite scaffolds reference `/client/index.tsx`; Lit/Vite,
 Vue/Vite, and Svelte/Vite reference `/client/index.ts`. Lit defines the

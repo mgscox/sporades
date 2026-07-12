@@ -4224,6 +4224,14 @@ for (const { framework, template, toolchain } of [
   { framework: "svelte", template: "campfire" },
   { framework: "inferno", template: "blank", toolchain: "esbuild" },
   { framework: "inferno", template: "todo", toolchain: "esbuild" },
+  { framework: "inferno", template: "guestbook", toolchain: "esbuild" },
+  { framework: "inferno", template: "photo-library", toolchain: "esbuild" },
+  { framework: "inferno", template: "campfire", toolchain: "esbuild" },
+  { framework: "inferno", template: "blank", toolchain: "vite" },
+  { framework: "inferno", template: "todo", toolchain: "vite" },
+  { framework: "inferno", template: "guestbook", toolchain: "vite" },
+  { framework: "inferno", template: "photo-library", toolchain: "vite" },
+  { framework: "inferno", template: "campfire", toolchain: "vite" },
 ]) test(`sporades host push archives the complete normalized ${framework} ${toolchain ?? "vite"} ${template} public tree`, async () => {
   await withTempDir(async (dir) => {
     const selectedToolchain = toolchain ?? "vite";
@@ -4296,7 +4304,7 @@ for (const { framework, template, toolchain } of [
       "photo-library": /Photo Library/, campfire: /Campfire/,
     }[template]);
     if (framework === "inferno") {
-      assert.match(publicText, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+      assert.match(publicText, { blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/, "photo-library": /Photo Library/, campfire: /Campfire/ }[template]);
       assert.doesNotMatch(publicText, /react-dom|react\/jsx-runtime|node_modules\/react/);
     }
   });

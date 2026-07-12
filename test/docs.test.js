@@ -151,10 +151,10 @@ test("published docs and API reference describe the admitted Inferno lifecycle c
     readProjectFile("README.md"), readProjectFile("docs/PRD.md"), readProjectFile("docs/user-guide.md"),
     readProjectFile("src/types/client.d.ts"), readProjectFile("docs/api/functions/client.createInfernoAdapters.html"),
   ]);
-  assert.match(readme, /Inferno\/esbuild `blank` and `todo` scaffolds/);
-  assert.match(prd, /Inferno\/esbuild admission for native `blank` and `todo`/);
+  assert.match(readme, /Inferno scaffolds across the complete template set/);
+  assert.match(prd, /Inferno admission across every supported template through esbuild or explicit Vite/);
   assert.match(prd, /createInfernoAdapters/);
-  assert.match(guide, /`inferno`[\s\S]*Inferno admits `blank` and `todo` on esbuild only/);
+  assert.match(guide, /`inferno`[\s\S]*Inferno supports the complete template set[\s\S]*explicit `--toolchain vite`/);
   assert.match(clientTypes, /createInfernoAdapters[\s\S]*SporadesInfernoAdapters/);
   assert.match(api, /Create query, mutation, and auth adapters for Inferno class-component lifecycle/);
 });

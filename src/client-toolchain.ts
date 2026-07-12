@@ -50,11 +50,11 @@ export function validateClientToolchainInput(options: {
   indexHtml: string;
 }) {
   if (options.toolchain !== "vite") return;
-  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "lit" ? "Lit" : options.frameworkConfig.framework === "solid" ? "SolidJS" : options.frameworkConfig.framework === "vue" ? "Vue" : options.frameworkConfig.framework === "svelte" ? "Svelte" : "React";
-  if (!new Set(["react", "preact", "lit", "solid", "vue", "svelte"]).has(options.frameworkConfig.framework)) {
+  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "inferno" ? "Inferno" : options.frameworkConfig.framework === "lit" ? "Lit" : options.frameworkConfig.framework === "solid" ? "SolidJS" : options.frameworkConfig.framework === "vue" ? "Vue" : options.frameworkConfig.framework === "svelte" ? "Svelte" : "React";
+  if (!new Set(["react", "preact", "inferno", "lit", "solid", "vue", "svelte"]).has(options.frameworkConfig.framework)) {
     throw clientToolchainError(
       `Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`,
-      "Use React, Preact, Lit, SolidJS, Vue, or Svelte with Vite, or keep Vanilla TypeScript on esbuild.",
+      "Use React, Preact, Inferno, Lit, SolidJS, Vue, or Svelte with Vite, or keep Vanilla TypeScript on esbuild.",
     );
   }
   if (referencesLegacyClientShell(options.indexHtml)) {
@@ -161,6 +161,8 @@ async function buildVite(options: {
     } else if (options.frameworkConfig.framework === "solid") {
       const { plugin } = await loadProjectSolidToolchain(projectRoot);
       frameworkPlugins.push(plugin());
+    } else if (options.frameworkConfig.framework === "inferno") {
+      frameworkPlugins.push(await loadProjectInfernoToolchain(projectRoot));
     }
     const result = await build({
       root: projectRoot,
@@ -175,7 +177,9 @@ async function buildVite(options: {
       appType: "mpa",
       clearScreen: false,
       logLevel: "silent",
-      esbuild: { jsx: "automatic", jsxImportSource: options.frameworkConfig.jsxImportSource ?? undefined },
+      esbuild: options.frameworkConfig.framework === "inferno"
+        ? { jsx: "transform", jsxFactory: "createElement" }
+        : { jsx: "automatic", jsxImportSource: options.frameworkConfig.jsxImportSource ?? undefined },
       css: { postcss: { plugins: [] } },
       plugins: [...frameworkPlugins, sporadesViteClientPlugin(options.devRefresh === true)],
       build: {
@@ -270,6 +274,24 @@ async function loadProjectSolidToolchain(projectRoot: string) {
     throw projectToolchainError("SolidJS", "SolidJS/Vite project compiler packages have incompatible exports.", hint);
   }
   return { plugin };
+}
+
+async function loadProjectInfernoToolchain(projectRoot: string): Promise<VitePlugin> {
+  const hint = "Run `npm install` in the Inferno Capsule to install its declared inferno and inferno-create-element versions.";
+  const loaded = await loadProjectCompilerToolchain(projectRoot, {
+    framework: "Inferno",
+    requiredPackages: [
+      { declaration: "inferno", resolve: "inferno", major: 9 },
+      { declaration: "inferno-create-element", resolve: "inferno-create-element", major: 9 },
+    ],
+    installHint: hint,
+  });
+  const inferno = loaded.get("inferno");
+  const elements = loaded.get("inferno-create-element");
+  if (typeof inferno?.render !== "function" || typeof elements?.createElement !== "function") {
+    throw projectToolchainError("Inferno", "Inferno/Vite project compiler packages have incompatible exports.", hint);
+  }
+  return { name: "sporades-inferno-project-jsx", enforce: "pre" };
 }
 
 async function loadProjectCompilerToolchain(projectRoot: string, spec: {

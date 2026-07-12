@@ -418,12 +418,6 @@ function parseCreateArgs(args: string[]): LooseRecord {
   if (framework === "lit" && toolchain !== "vite") {
     throw commandError(`Unsupported client framework/toolchain combination: lit/${toolchain}`, "Use Lit with Vite.");
   }
-  if (framework === "inferno" && toolchain !== "esbuild") {
-    throw commandError(`Unsupported client framework/toolchain combination: inferno/${toolchain}`, "Use Inferno with esbuild.");
-  }
-  if (framework === "inferno" && !["blank", "todo"].includes(template)) {
-    throw commandError(`Unsupported client template for Inferno: ${template}`, "Use Inferno with the blank or todo template.");
-  }
   if (!SUPPORTED_TEMPLATES.has(template)) {
     throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
   }

@@ -103,8 +103,8 @@ export function scaffoldFiles(options: { sporadesDependency?: any; template?: an
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>${escapeHtml(options.name)}</title>${framework === "inferno" ? `
-    <link rel="stylesheet" href="/assets/client.css" />` : ""}${options.template === "campfire" && !["lit", "solid", "vue", "svelte"].includes(framework) ? `
+    <title>${escapeHtml(options.name)}</title>${framework === "inferno" && toolchain === "esbuild" ? `
+    <link rel="stylesheet" href="/assets/client.css" />` : ""}${options.template === "campfire" && !["inferno", "lit", "solid", "vue", "svelte"].includes(framework) ? `
     <script src="https://cdn.tailwindcss.com"></script>` : ""}
   </head>
   <body>
@@ -117,13 +117,14 @@ export function scaffoldFiles(options: { sporadesDependency?: any; template?: an
   };
 }
 
-function infernoTemplateFiles(options: { name: any; template?: any }, files: Record<string, string>) {
+function infernoTemplateFiles(options: { name: any; template?: any; toolchain?: any }, files: Record<string, string>) {
   const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));
+  const apps: Record<string, () => string> = { todo: infernoTodoTemplate, guestbook: infernoGuestbookTemplate, "photo-library": infernoPhotoLibraryTemplate, campfire: infernoCampfireTemplate };
   return {
     ...sharedFiles,
-    "README.md": `${sharedFiles["README.md"] ?? ""}\n## Inferno client\n\nThe author-owned HTML loads the esbuild-owned \`/client.js\` compatibility entry. Author native Inferno class components in \`client/index.tsx\`; lifecycle adapters bind Sporades state without React compatibility packages.\n`,
+    "README.md": `${sharedFiles["README.md"] ?? ""}\n## Inferno client\n\nAuthor native Inferno class components in \`client/index.tsx\`; lifecycle adapters bind Sporades state without React compatibility packages. ${options.toolchain === "vite" ? "Vite transforms the author-owned HTML into a normalized hashed public tree and Sporades requests full-page refreshes after successful Dev rebuilds." : "The author-owned HTML loads the esbuild-owned `/client.js` compatibility entry."}\n`.replace(/Tailwind is loaded from its browser CDN[^\n]+\n/, "Campfire's Inferno component owns its CSS and needs no browser CDN or React compatibility package.\n"),
     "tsconfig.json": `${JSON.stringify({ compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true, noEmit: true, jsx: "react", jsxFactory: "createElement", lib: ["ES2022", "DOM", "DOM.Iterable"], skipLibCheck: true } }, null, 2)}\n`,
-    "client/index.tsx": options.template === "todo" ? infernoTodoTemplate() : infernoBlankTemplate(),
+    "client/index.tsx": (apps[options.template] ?? infernoBlankTemplate)(),
     "client/assets.d.ts": 'declare module "*.svg" { const url: string; export default url; }\ndeclare module "*.css" {}\n',
     "client/styles.css": `:root{font-family:system-ui,sans-serif;background:#f4f2ff;color:#211a35}body{margin:0}.shell{width:min(42rem,calc(100% - 2rem));margin:4rem auto}.mark{width:2rem;height:2rem}header,form{display:flex;gap:.75rem;align-items:center}li{margin-block:.5rem}\n`,
     "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#8b5cf6"/></svg>\n`,
@@ -170,6 +171,62 @@ mountInfernoApp(document.getElementById("app")!);
 `;
 }
 
+function infernoGuestbookTemplate() {
+  return `import { Component, render } from "inferno";
+import { createElement } from "inferno-create-element";
+import { auth, createInfernoAdapters } from "sporades/client";
+import mark from "./sporades-mark.svg";
+import "./styles.css";
+type Entry={id:string;authorName:string;authorPicture?:string;createdAt:string;body:string};
+const {authAdapter,mutationAdapter,queryAdapter}=createInfernoAdapters();const maxLength=280;export const infernoMark=mark;
+export class App extends Component { session=authAdapter(this);entries=queryAdapter<Entry[]>(this,"entries");sign=mutationAdapter(this,"sign");body="";notice="";
+componentDidMount(){this.session.componentDidMount();this.entries.componentDidMount();} componentWillUnmount(){this.entries.componentWillUnmount();this.session.componentWillUnmount();}
+async signIn(){this.notice="";const r=await auth.signIn("google");if(r.error)this.notice=r.error.message;this.forceUpdate();} async signOut(){this.notice="";const r=await auth.signOut();if(r.error)this.notice=r.error.message;this.forceUpdate();}
+async submit(e:Event){e.preventDefault();const value=this.body.trim();if(!value||value.length>maxLength)return;const r=await this.sign.run(value);if(!r.error)this.body="";this.forceUpdate();}
+render(){const remaining=maxLength-this.body.length;return <main className="shell"><header><div><p>Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div><span>{this.session.state.auth?.displayName??"Anonymous"}</span>{this.session.isAuthenticated()?<button type="button" onClick={()=>this.signOut()}>Sign out</button>:<button type="button" onClick={()=>this.signIn()}>Sign in with Google</button>}{this.notice?<p role="alert">{this.notice}</p>:null}</div></header><form onSubmit={(e)=>this.submit(e)}><textarea value={this.body} maxLength={maxLength} onInput={(e)=>{this.body=(e.currentTarget as HTMLTextAreaElement).value;this.forceUpdate();}}/><span>{remaining} characters left</span><button disabled={!this.body.trim()||this.sign.state.loading}>Sign guestbook</button>{this.sign.state.error?<p role="alert">{this.sign.state.error.message}</p>:null}</form><section>{(this.entries.state.data??[]).map(entry=><article key={entry.id}><strong>{entry.authorName}</strong><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time><p>{entry.body}</p></article>)}</section></main>}}
+export function mountInfernoApp(target:Element){render(<App/>,target);} mountInfernoApp(document.getElementById("app")!);
+`;
+}
+
+function infernoPhotoLibraryTemplate() {
+  return `import { Component, render } from "inferno";
+import { createElement } from "inferno-create-element";
+import { auth, createInfernoAdapters, files } from "sporades/client";
+import mark from "./sporades-mark.svg";
+import "./styles.css";
+type Photo={id:string;title:string;fileId:string;imageUrl:string;ownerName:string;publicUrlId?:string;isPublic:boolean;status:string};
+const {authAdapter,mutationAdapter,queryAdapter}=createInfernoAdapters();export const infernoMark=mark;
+export class App extends Component {session=authAdapter(this);publicPhotos=queryAdapter<Photo[]>(this,"publicPhotos");personalPhotos=queryAdapter<Photo[]>(this,"personalPhotos");record=mutationAdapter(this,"recordPhoto");setPublic=mutationAdapter(this,"updatePhotoIsPublic");setImage=mutationAdapter(this,"updatePhotoImageUrl");setPublicId=mutationAdapter(this,"updatePhotoPublicUrlId");title="";selected:File|null=null;publish=false;message="";
+componentDidMount(){this.session.componentDidMount();this.publicPhotos.componentDidMount();this.personalPhotos.componentDidMount();}componentWillUnmount(){this.personalPhotos.componentWillUnmount();this.publicPhotos.componentWillUnmount();this.session.componentWillUnmount();}
+async signIn(){this.message="";const r=await auth.signIn("google");if(r.error)this.message=r.error.message;this.forceUpdate();}async signOut(){this.message="";const r=await auth.signOut();if(r.error)this.message=r.error.message;this.forceUpdate();}
+async submit(e:Event){e.preventDefault();if(!this.selected)return;this.message="Uploading...";this.forceUpdate();try{const file=await files.upload(this.selected);const shouldPublish=!this.session.isAuthenticated()||this.publish;const publicUrl=shouldPublish?await files.publicUrl(file.id,{noExpiry:true}):null;const r=await this.record.run({title:this.title,file,isPublic:shouldPublish,publicUrl});if(r.error){this.message=r.error.message;return;}this.title="";this.selected=null;this.publish=false;this.message=shouldPublish?"Photo added to the public gallery.":"Photo saved privately.";}catch(error){this.message=error instanceof Error?error.message:"Upload failed.";}finally{this.forceUpdate();}}
+async makePublic(photo:Photo){try{const url=await files.publicUrl(photo.fileId,{noExpiry:true});await this.setImage.run(photo.id,url.url);await this.setPublicId.run(photo.id,url.id);await this.setPublic.run(photo.id,true);}catch(error){this.message=error instanceof Error?error.message:"Could not publish photo.";}this.forceUpdate();}async makePrivate(photo:Photo){try{if(photo.publicUrlId)await files.revokePublicUrl(photo.publicUrlId);await this.setPublic.run(photo.id,false);await this.setImage.run(photo.id,"");await this.setPublicId.run(photo.id,"");}catch(error){this.message=error instanceof Error?error.message:"Could not hide photo.";}this.forceUpdate();}
+render(){const google=this.session.state.auth?.provider==="google",gallery=this.publicPhotos.state.data??[],mine=google?this.personalPhotos.state.data??[]:[];return <main className="shell"><header><div><p>Sporades Storage</p><h1>Photo Library</h1></div>{google?<button onClick={()=>this.signOut()}>Sign out</button>:<button onClick={()=>this.signIn()}>Sign in with Google</button>}</header><form onSubmit={(e)=>this.submit(e)}><input value={this.title} placeholder="Caption" onInput={(e)=>{this.title=(e.currentTarget as HTMLInputElement).value;this.forceUpdate();}}/><input type="file" accept="image/*" onChange={(e)=>{this.selected=(e.currentTarget as HTMLInputElement).files?.[0]??null;this.forceUpdate();}}/><label><input type="checkbox" checked={!this.session.isAuthenticated()||this.publish} disabled={!this.session.isAuthenticated()} onChange={(e)=>{this.publish=(e.currentTarget as HTMLInputElement).checked;this.forceUpdate();}}/>{this.session.isAuthenticated()?"Publish to gallery":"Anonymous uploads are public"}</label><button disabled={!this.selected||this.record.state.loading}>Upload photo</button>{this.message?<p role="status">{this.message}</p>:null}</form><h2>Public gallery</h2><section>{gallery.map(p=><article key={p.id}><img src={p.imageUrl} alt={p.title}/><strong>{p.title}</strong><span>{p.ownerName}</span></article>)}</section>{google?<section><h2>My library</h2>{mine.map(p=><article key={p.id}><strong>{p.title}</strong><span>{p.status}</span>{p.isPublic?<button onClick={()=>this.makePrivate(p)}>Make private</button>:<button onClick={()=>this.makePublic(p)}>Make public</button>}</article>)}</section>:null}</main>}}
+export function mountInfernoApp(target:Element){render(<App/>,target);} mountInfernoApp(document.getElementById("app")!);
+`;
+}
+
+function infernoCampfireTemplate() {
+  return `import { Component, render } from "inferno";
+import { createElement } from "inferno-create-element";
+import { auth, createInfernoAdapters, journey, preferences } from "sporades/client";
+import mark from "./sporades-mark.svg";
+import { createTypingPublisher } from "./journey-typing";import "./styles.css";
+type Chat={id:string;authorName:string;body:string;createdAt:string;reactions?:Record<string,unknown>};type Activity={sessionId:string;userId:string;status:string;metadata?:{channel?:string}};
+const {authAdapter,mutationAdapter,queryAdapter}=createInfernoAdapters();const channels=["general","ideas","random","protect-the-crown"] as const;export const infernoMark=mark;
+export class App extends Component {session=authAdapter(this);messages=queryAdapter<Chat[]>(this,"messagesGeneral");send=mutationAdapter(this,"sendMessage");reactMutation=mutationAdapter(this,"toggleReaction");channel="general";draft="";notice="";sharing=false;identity:string|null=null;activities:Activity[]=[];journeySubscription:{unsubscribe():void}|null=null;typing=createTypingPublisher((state)=>journey.set(state));
+componentDidMount(){this.session.componentDidMount();this.identity=this.session.state.auth?.userId??null;this.messages.componentDidMount();this.journeySubscription=journey.subscribe((event:any)=>{const data=event?.data??event;if(data?.type==="snapshot")this.activities=data.states??[];else if(data?.state)this.activities=[...this.activities.filter(a=>a.sessionId!==data.state.sessionId),data.state];this.forceUpdate();});}
+componentDidUpdate(){const next=this.session.state.auth?.userId??null;if(next!==this.identity){this.identity=next;this.typing.dispose();void journey.disable();this.sharing=false;}}
+componentWillUnmount(){this.typing.dispose();void journey.disable();this.sharing=false;this.journeySubscription?.unsubscribe();this.journeySubscription=null;this.messages.componentWillUnmount();this.session.componentWillUnmount();}
+async setSharing(enabled:boolean){if(enabled){const result=await journey.enable({capture:{navigation:false,focus:false,interactions:false}});if(result.error){this.notice=result.error.message;this.forceUpdate();return;}const published=await journey.set({status:"reading",metadata:{channel:this.channel},ttlSeconds:12});if(published.error){await journey.disable();this.notice=published.error.message;this.forceUpdate();return;}this.sharing=true;}else{this.typing.dispose();await journey.disable();this.sharing=false;}const saved=await preferences.update({campfireShareActivity:enabled});if(saved.error){this.notice=saved.error.message;if(enabled){await journey.disable();this.sharing=false;}}this.forceUpdate();}
+async choose(next:string){this.typing.dispose();this.channel=next;this.messages.componentWillUnmount();this.messages=queryAdapter<Chat[]>(this,{general:"messagesGeneral",ideas:"messagesIdeas",random:"messagesRandom","protect-the-crown":"messagesProtectTheCrown"}[next]??"messagesGeneral");this.messages.componentDidMount();if(this.sharing)await journey.set({status:"reading",metadata:{channel:next},ttlSeconds:12});this.forceUpdate();}
+async submit(e:Event){e.preventDefault();const body=this.draft.trim();if(!body)return;const r=await this.send.run({channel:this.channel,body});if(r.error)this.notice=r.error.message;else{this.draft="";if(this.sharing){this.typing.dispose();await journey.set({status:"posted",metadata:{channel:this.channel},ttlSeconds:8});}}this.forceUpdate();}
+async toggle(messageId:string,kind:"up"|"down"){const r=await this.reactMutation.run({messageId,kind});if(r.error)this.notice=r.error.message;else if(this.sharing)await journey.set({status:kind==="up"?"liked":"disliked",metadata:{channel:this.channel},ttlSeconds:8});this.forceUpdate();}
+async signOut(){this.typing.dispose();await journey.disable();this.sharing=false;const r=await auth.signOut();if(r.error)this.notice=r.error.message;this.forceUpdate();}
+render(){return <main className="shell"><aside><p>Sporades exemplar</p><h1>🔥 Campfire</h1><nav>{channels.map(c=><button key={c} onClick={()=>this.choose(c)}># {c}</button>)}</nav></aside><section><header><h2># {this.channel}</h2><p role="status">{this.notice}</p>{this.session.isAuthenticated()?<button onClick={()=>this.signOut()}>Sign out</button>:null}</header><div>{(this.messages.state.data??[]).map(m=><article key={m.id}><strong>{m.authorName}</strong><time>{new Date(m.createdAt).toLocaleString()}</time><p>{m.body}</p><button aria-label="Thumbs up" onClick={()=>this.toggle(m.id,"up")}>👍</button><button aria-label="Thumbs down" onClick={()=>this.toggle(m.id,"down")}>👎</button></article>)}</div><form onSubmit={(e)=>this.submit(e)}><input id="message" value={this.draft} onInput={(e)=>{this.draft=(e.currentTarget as HTMLInputElement).value;if(this.sharing)this.typing.input(this.draft,this.channel);this.forceUpdate();}}/><button disabled={!this.draft.trim()||this.send.state.loading}>Send</button></form></section><aside><h2>What's happening</h2><label><input type="checkbox" role="switch" checked={this.sharing} onChange={(e)=>this.setSharing((e.currentTarget as HTMLInputElement).checked)}/>Share my activity</label><p>Never shares drafts, messages, URLs, query strings, emails, passwords, message IDs, or keystrokes.</p><ul>{this.activities.map(a=><li key={a.sessionId}>{a.status} #{a.metadata?.channel??"campfire"}</li>)}</ul></aside></main>}}
+export function mountInfernoApp(target:Element){render(<App/>,target);} mountInfernoApp(document.getElementById("app")!);
+`;
+}
 function litTemplateFiles(options: { name: any; template?: any }, files: Record<string, string>) {
   const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));
   const apps: Record<string, () => string> = { todo: litTodoTemplate, guestbook: litGuestbookTemplate, "photo-library": litPhotoLibraryTemplate, campfire: litCampfireTemplate };

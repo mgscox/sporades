@@ -12,7 +12,7 @@ and `sporades host ...`.
 
 Apps run as real Node.js code with SQLite-backed persistence. The CLI keeps the
 Server Bundle on esbuild and builds clients through a framework/toolchain
-adapter: esbuild remains the React/Preact/Inferno default, while React and Preact can
+adapter: esbuild remains the React/Preact/Inferno default, while all three can
 explicitly select Vite and Vue uses Vite for native Single-File Components.
 The normalized release runs unchanged in a local Dev session, a local Docker
 Container session, or a Hosted Capsule on a Host server.
@@ -31,7 +31,8 @@ The repository currently includes:
   admission, and Vue/Vite admission across every supported template,
   Svelte/Vite and SolidJS/Vite admission across every supported template, plus
   Lit/Vite admission across every supported template with native Web Components,
-  Inferno/esbuild admission for native `blank` and `todo` class-component scaffolds,
+  Inferno admission across every supported template through esbuild or explicit Vite,
+  with native class-component lifecycle and no React compatibility dependency,
   framework support, `AGENTS.md`, `CLAUDE.md`, `index.html`, `sporades.json`,
   Server env, and optional `npm install` / git initialization.
 - `sporades dev` for local Node execution with bundling, file watching,

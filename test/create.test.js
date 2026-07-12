@@ -738,22 +738,26 @@ test("sporades create admits every Lit/Vite template with project-owned Lit and 
   });
 });
 
-test("sporades create admits native Inferno/esbuild blank and todo with strict boundaries", async () => {
+test("sporades create admits native Inferno across both toolchains and every template", async () => {
   await withTempDir(async (dir) => {
-    for (const template of ["blank", "todo"]) {
-      const result = await runCli(["create", `inferno-${template}`, "--framework", "inferno", "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
+    for (const toolchain of ["esbuild", "vite"]) for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire"]) {
+      const result = await runCli(["create", `inferno-${toolchain}-${template}`, "--framework", "inferno", "--toolchain", toolchain, "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
       assert.equal(result.code, 0, result.stderr || result.stdout);
-      const project = path.join(dir, `inferno-${template}`);
+      const project = path.join(dir, `inferno-${toolchain}-${template}`);
       const [config, html, client, packageJson, tsconfig, readme, agents] = await Promise.all([
         readFile(path.join(project, "sporades.json"), "utf8").then(JSON.parse), readFile(path.join(project, "index.html"), "utf8"), readFile(path.join(project, "client/index.tsx"), "utf8"), readFile(path.join(project, "package.json"), "utf8").then(JSON.parse), readFile(path.join(project, "tsconfig.json"), "utf8").then(JSON.parse), readFile(path.join(project, "README.md"), "utf8"), readFile(path.join(project, "AGENTS.md"), "utf8"),
       ]);
-      assert.deepEqual(config.client, { framework: "inferno", toolchain: "esbuild" }); assert.match(html, /assets\/client\.css[\s\S]*src="\/client\.js"/);
+      assert.deepEqual(config.client, { framework: "inferno", toolchain });
+      assert.match(html, toolchain === "esbuild" ? /assets\/client\.css[\s\S]*src="\/client\.js"/ : /src="\/client\/index\.tsx"/);
       assert.match(client, /from "inferno"/); assert.match(client, /from "inferno-create-element"/); assert.match(client, /createInfernoAdapters/); assert.match(client, /componentDidMount[\s\S]*componentWillUnmount/);
       assert.equal(packageJson.dependencies.inferno, "^9.1.0"); assert.equal(packageJson.dependencies["inferno-create-element"], "^9.1.0"); assert.equal(packageJson.dependencies.react, undefined); assert.equal(packageJson.dependencies["react-dom"], undefined);
-      assert.equal(tsconfig.compilerOptions.jsxFactory, "createElement"); assert.match(readme, /native Inferno class components/); assert.match(agents, /inferno/i); assert.doesNotMatch(client, /react|react-dom|inferno-compat/i);
+      assert.equal(tsconfig.compilerOptions.jsxFactory, "createElement"); assert.match(readme, /native Inferno class components/); assert.match(agents, /inferno/i); assert.doesNotMatch(`${client}\n${html}\n${readme}`, /from "react|react-dom|inferno-compat|cdn\.tailwindcss/i);
+      if (template === "guestbook") assert.match(client, /mutationAdapter\(this,"sign"\)/);
+      if (template === "photo-library") assert.match(client, /files\.upload/);
+      if (template === "campfire") assert.match(client, /createTypingPublisher[\s\S]*journey\.enable[\s\S]*preferences\.update/);
     }
-    const vite = await runCli(["create", "inferno-vite", "--framework", "inferno", "--toolchain", "vite", "--no-install", "--no-git", "--json"], { cwd: dir }); assert.deepEqual(JSON.parse(vite.stdout).error, { message: "Unsupported client framework/toolchain combination: inferno/vite", hint: "Use Inferno with esbuild." });
-    const richer = await runCli(["create", "inferno-guestbook", "--framework", "inferno", "--template", "guestbook", "--no-install", "--no-git", "--json"], { cwd: dir }); assert.deepEqual(JSON.parse(richer.stdout).error, { message: "Unsupported client template for Inferno: guestbook", hint: "Use Inferno with the blank or todo template." });
+    const omitted = await runCli(["create", "inferno-default", "--framework", "inferno", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(omitted.code, 0); assert.deepEqual(JSON.parse(await readFile(path.join(dir, "inferno-default", "sporades.json"), "utf8")).client, { framework: "inferno", toolchain: "esbuild" });
   });
 });
 

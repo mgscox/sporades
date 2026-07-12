@@ -779,21 +779,21 @@ test("sporades deploy assembles a Vanilla TypeScript release without leaking Ser
   });
 });
 
-for (const template of ["blank", "todo"]) test(`sporades deploy mounts native Inferno/esbuild ${template} output without Server env`, async () => {
+for (const toolchain of ["esbuild", "vite"]) for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire"]) test(`sporades deploy mounts native Inferno/${toolchain} ${template} output without Server env`, async () => {
   await withTempDir(async (dir) => {
-    const created = await runCli(["create", `inferno-${template}-release`, "--template", template, "--framework", "inferno", "--no-install", "--no-git", "--json"], { cwd: dir });
+    const created = await runCli(["create", `inferno-${template}-release`, "--template", template, "--framework", "inferno", "--toolchain", toolchain, "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(created.code, 0, created.stderr);
     const projectDir = await realpath(path.join(dir, `inferno-${template}-release`));
     await installProjectInfernoToolchain(projectDir, repoRoot);
-    await writeFile(path.join(projectDir, ".env.sporades.server"), "INFERNO_SERVER_ONLY=inferno-container-secret\n");
+    await writeFile(path.join(projectDir, ".env.sporades.server"), `${template === "photo-library" ? "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n" : ""}INFERNO_SERVER_ONLY=inferno-container-secret\n`);
     const docker = await installFakeDocker(dir, `inferno-${template}-container`);
     const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env }); assert.equal(deployed.code, 0, deployed.stderr);
     const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
-    assert.equal(binding.clientRelease.framework, "inferno"); assert.equal(binding.clientRelease.toolchain, "esbuild");
-    assert(binding.clientRelease.paths.includes("client.js")); assert(binding.clientRelease.paths.includes("client.js.map")); assert(binding.clientRelease.paths.includes("assets/client.css"));
+    assert.equal(binding.clientRelease.framework, "inferno"); assert.equal(binding.clientRelease.toolchain, toolchain);
+    assert(binding.clientRelease.paths.includes(toolchain === "esbuild" ? "client.js" : "index.html")); assert(binding.clientRelease.paths.some((file) => file.endsWith(".js.map"))); assert(binding.clientRelease.paths.some((file) => file.endsWith(".css")));
     const publicRoot = path.join(projectDir, ".sporades", "build", ".public-trees", binding.clientRelease.publicTree);
     const output = (await Promise.all(binding.clientRelease.paths.map((file) => readFile(path.join(publicRoot, file), "utf8")))).join("\n");
-    assert.match(output, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+    assert.match(output, { blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/, "photo-library": /Photo Library/, campfire: /Campfire/ }[template]);
     assert.doesNotMatch(output, /inferno-container-secret|INFERNO_SERVER_ONLY|react-dom|react\/jsx-runtime|node_modules\/react/);
     const runCall = firstDockerRunCall(await docker.calls()); assertVolume(runCall.args, `${publicRoot}:/app/public:ro`);
   });

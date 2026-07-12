@@ -91,9 +91,6 @@ export function validateClientConfig(client: LooseRecord) {
   if (client.framework === "lit" && client.toolchain !== undefined && client.toolchain !== "vite") {
     throw commandError("Unsupported client framework/toolchain combination: lit/esbuild", "Use Lit with Vite.");
   }
-  if (client.framework === "inferno" && client.toolchain !== undefined && client.toolchain !== "esbuild") {
-    throw commandError("Unsupported client framework/toolchain combination: inferno/vite", "Use Inferno with esbuild.");
-  }
 }
 
 export function validateSchedulingConfig(scheduling: LooseRecord) {
