@@ -106,7 +106,7 @@ export async function createBundle(
   } = {},
 ) {
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
-  const toolchain = readClientToolchain(config.client?.toolchain ?? (["solid", "vue", "svelte"].includes(frameworkBundleConfig.framework) ? "vite" : "esbuild"), frameworkBundleConfig.framework);
+  const toolchain = readClientToolchain(config.client?.toolchain ?? (["lit", "solid", "vue", "svelte"].includes(frameworkBundleConfig.framework) ? "vite" : "esbuild"), frameworkBundleConfig.framework);
   const buildDir = path.join(projectDir, ".sporades", "build");
 
   const paths = {

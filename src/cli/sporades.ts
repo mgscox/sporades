@@ -2188,7 +2188,7 @@ function tagDevRebuildError(
 }
 
 function configuredClientToolchain(config: LooseRecord) {
-  return config.client?.toolchain ?? (["solid", "vue", "svelte"].includes(config.client?.framework) ? "vite" : "esbuild");
+  return config.client?.toolchain ?? (["lit", "solid", "vue", "svelte"].includes(config.client?.framework) ? "vite" : "esbuild");
 }
 
 function reportDevPublicCleanupDegradation(

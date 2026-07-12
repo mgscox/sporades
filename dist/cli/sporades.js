@@ -1825,7 +1825,7 @@ function tagDevRebuildError(error, phase, config, options = {}) {
     return tagged;
 }
 function configuredClientToolchain(config) {
-    return config.client?.toolchain ?? (["solid", "vue", "svelte"].includes(config.client?.framework) ? "vite" : "esbuild");
+    return config.client?.toolchain ?? (["lit", "solid", "vue", "svelte"].includes(config.client?.framework) ? "vite" : "esbuild");
 }
 function reportDevPublicCleanupDegradation(options, runtime, url, port, config, error) {
     runtime.database.log.emit({

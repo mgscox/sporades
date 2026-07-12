@@ -59,7 +59,7 @@ const FRAMEWORK_BUNDLE_CONFIG = {
 const SUPPORTED_AUTH_PROVIDERS = new Set(["anonymous", "google", "email"]);
 export async function createBundle(projectDir, config, options = {}) {
     const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
-    const toolchain = readClientToolchain(config.client?.toolchain ?? (["solid", "vue", "svelte"].includes(frameworkBundleConfig.framework) ? "vite" : "esbuild"), frameworkBundleConfig.framework);
+    const toolchain = readClientToolchain(config.client?.toolchain ?? (["lit", "solid", "vue", "svelte"].includes(frameworkBundleConfig.framework) ? "vite" : "esbuild"), frameworkBundleConfig.framework);
     const buildDir = path.join(projectDir, ".sporades", "build");
     const paths = {
         config: path.join(projectDir, "sporades.json"),

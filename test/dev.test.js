@@ -1293,6 +1293,24 @@ test("Preact configuration without a toolchain preserves the esbuild client defa
   });
 });
 
+test("Lit configuration without a toolchain defaults to the Vite public-tree contract", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "lit-default", "--framework", "lit", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr || created.stdout);
+    const projectDir = path.join(dir, "lit-default");
+    await installProjectLitToolchain(projectDir, repoRoot);
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    delete config.client.toolchain;
+    const bundle = await createBundle(projectDir, config, { publishLegacy: false });
+    try {
+      const paths = Object.keys(await snapshotProjectTree(bundle.staticFiles.publicDir)).filter((file) => !file.endsWith("/"));
+      assert(paths.some((file) => /^assets\/index-[^/]+\.js$/.test(file)));
+      assert(paths.some((file) => /^assets\/index-[^/]+\.css$/.test(file)));
+      assert.equal(paths.includes("client.js"), false);
+    } finally { await bundle.releasePublicTreeLease(); await discardPublicTree(bundle.staticFiles.publicTree); }
+  });
+});
+
 test("Vue Vite compiles native SFCs into an isolated normalized public tree", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", "vue-todo-build", "--template", "todo", "--framework", "vue", "--no-install", "--no-git", "--json"], { cwd: dir });
@@ -2524,14 +2542,16 @@ for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire
   });
 });
 
-for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good Lit ${template} output and recovers through acknowledged refresh`, async () => {
+for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good Lit ${template} output${template === "blank" ? " with omitted-toolchain Vite inference" : ""} and recovers through acknowledged refresh`, async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", `lit-${template}-dev`, "--template", template, "--framework", "lit", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(created.code, 0, created.stderr || created.stdout);
     const projectDir = path.join(dir, `lit-${template}-dev`);
     await installProjectLitToolchain(projectDir, repoRoot);
     const configPath = path.join(projectDir, "sporades.json");
-    const config = JSON.parse(await readFile(configPath, "utf8")); config.dev.port = 0; await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    if (template === "blank") delete config.client.toolchain;
+    config.dev.port = 0; await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     const clientPath = path.join(projectDir, "client", "index.ts"), original = await readFile(clientPath, "utf8");
     const child = startCli(["dev", "--json"], { cwd: projectDir }), events = captureJsonEvents(child);
     let socket, messages;

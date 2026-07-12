@@ -252,18 +252,42 @@ export function createSolidPrimitives(primitives) {
 }
 
 export function createLitControllers() {
+  function requestHostUpdate(host) {
+    try { host.requestUpdate(); } catch {}
+  }
+
   function observedController(host, initialState, subscribe) {
     let subscription = null;
+    let connected = false;
+    let generation = 0;
     const controller = {
       state: initialState,
       hostConnected() {
-        if (subscription) return;
-        subscription = subscribe((state) => {
-          controller.state = state;
-          host.requestUpdate();
-        });
+        if (connected) return;
+        connected = true;
+        const ownedGeneration = ++generation;
+        let nextSubscription;
+        try {
+          nextSubscription = subscribe((state) => {
+            if (!connected || generation !== ownedGeneration) return;
+            controller.state = state;
+            requestHostUpdate(host);
+          });
+        } catch (error) {
+          connected = false;
+          generation += 1;
+          throw error;
+        }
+        if (!connected || generation !== ownedGeneration) {
+          nextSubscription.unsubscribe();
+          return;
+        }
+        subscription = nextSubscription;
       },
       hostDisconnected() {
+        if (!connected) return;
+        connected = false;
+        generation += 1;
         if (!subscription) return;
         const owned = subscription;
         subscription = null;
@@ -287,24 +311,24 @@ export function createLitControllers() {
         const invocation = ++latestInvocation;
         pending += 1;
         controller.state = { data: null, error: null, loading: true };
-        host.requestUpdate();
+        requestHostUpdate(host);
         try {
           const result = await mutations.run(name, ...args);
           if (invocation === latestInvocation) {
             controller.state = { data: result.error ? null : result.data ?? null, error: result.error ?? null, loading: pending > 1 };
-            host.requestUpdate();
+            requestHostUpdate(host);
           }
           return result;
         } catch (error) {
           if (invocation === latestInvocation) {
             controller.state = { data: null, error: normalizeMutationError(error), loading: pending > 1 };
-            host.requestUpdate();
+            requestHostUpdate(host);
           }
           throw error;
         } finally {
           pending -= 1;
           controller.state = { ...controller.state, loading: pending > 0 };
-          host.requestUpdate();
+          requestHostUpdate(host);
         }
       },
     };
