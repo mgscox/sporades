@@ -693,6 +693,76 @@ Container sessions use the generated Compose service DNS name on the services
 network. Capsule code still uses the normal `ctx.db` API; app code does not
 need to read the service URL or choose a database client.
 
+#### Use Postgres locally
+
+To run a Capsule against Postgres instead of the default embedded SQLite
+database, declare a Postgres database Capsule service in `sporades.json`:
+
+```json
+{
+  "name": "notes",
+  "services": {
+    "database": {
+      "kind": "database",
+      "engine": "postgres"
+    }
+  }
+}
+```
+
+Then start the Capsule normally:
+
+```sh
+# Starts a Dev session and its Postgres service.
+sporades dev
+
+# Or builds and starts a local Container session on the same services network.
+sporades deploy
+```
+
+Sporades generates `.sporades/compose/capsule-services.compose.yml`, starts a
+`postgres:16-alpine` service, waits for it to become healthy, and selects the
+internal Postgres Database adapter. Dev sessions connect through a generated
+loopback port; local Container sessions use the generated Compose service name.
+Sporades owns the database name, user, password, connection URL, network, and
+Compose configuration. Do not copy those generated credentials into app code
+or add a Postgres client dependency.
+
+Capsule server code does not change when the database engine changes. Define
+tables with `table()`, read and write through `ctx.db`, and use the normal query
+and mutation APIs. Sporades applies the supported app-schema setup and
+migrations through the selected adapter:
+
+```ts
+export default capsule({
+  name: "notes",
+  mutations: {
+    createNote: mutation(async (ctx, input: { body: string }) => {
+      return await ctx.db.notes.insert({ body: input.body });
+    }),
+  },
+});
+```
+
+Inspect the running local session and its service state with the existing
+structured commands:
+
+```sh
+sporades dev status --json
+sporades deploy status --json
+sporades doctor --session dev --json
+```
+
+Postgres data persists under `.sporades/services/database/` across ordinary
+stops and restarts. `sporades dev reset` or `sporades deploy reset` deliberately
+deletes generated Capsule service state, including the Postgres data. Changing
+an existing Capsule from SQLite to Postgres selects a separate database; it
+does not copy the existing SQLite rows automatically.
+
+Postgres Capsule service orchestration is currently local-only. Hosted Capsules
+do not provision or attach the declared service yet, so a Capsule that must run
+on a Host server today should continue using the default embedded SQLite path.
+
 Declaring `services.storage` with `engine: "minio"` starts a local MinIO
 service for Dev sessions and local Container sessions, selects the internal
 S3-compatible Storage adapter, and injects server-only connection env. Capsule
