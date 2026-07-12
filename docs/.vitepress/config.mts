@@ -24,6 +24,7 @@ export default defineConfig({
         text: "Start",
         items: [
           { text: "User guide", link: "/user-guide" },
+          { text: "Build your first Capsule", link: "/guide/getting-started" },
           { text: "Projects and frameworks", link: "/guide/projects" },
         ],
       },

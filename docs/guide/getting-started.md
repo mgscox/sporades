@@ -1,0 +1,83 @@
+# Build Your First Capsule
+
+This walkthrough builds a small Todo Capsule from scaffold to local Container.
+It assumes Sporades is already installed.
+
+## 1. Create and run it
+
+```sh
+sporades create notes --template todo
+cd notes
+sporades dev
+```
+
+Open the URL printed by the Dev session. Sporades watches server, client,
+shared, configuration, and HTML source while preserving the last successful
+Bundle when a rebuild fails.
+
+## 2. Add server behaviour
+
+Open `server/index.ts` and define the data the UI will read and change:
+
+```ts
+import { Boolean, capsule, mutation, query, String, table } from "sporades/server";
+
+export default capsule({
+  name: "notes",
+  schema: {
+    todos: table({
+      text: String(),
+      done: Boolean().default(false),
+      ownerId: String(),
+    }),
+  },
+  queries: {
+    todos: query((ctx) =>
+      ctx.db.todos.where("ownerId", ctx.auth.userId).all(),
+    ),
+  },
+  mutations: {
+    addTodo: mutation((ctx, text: string) =>
+      ctx.db.todos.insert({ text, ownerId: ctx.auth.userId }),
+    ),
+  },
+});
+```
+
+Keep ownership and validation on the server. The browser must not choose trusted
+fields such as `ownerId`.
+
+## 3. Connect the client
+
+In a React or Preact client, use the scaffolded hooks:
+
+```tsx
+const todos = useQuery("todos");
+const addTodo = useMutation("addTodo");
+
+await addTodo.run("Buy coffee");
+```
+
+Queries remain subscribed through the Sporades transport, so successful
+mutations refresh connected clients without a separate fetch layer. Other
+framework scaffolds expose equivalent adapters over the same client contract.
+
+## 4. Inspect it
+
+From another terminal:
+
+```sh
+sporades logs
+sporades db list
+sporades db dump --json
+```
+
+## 5. Try the Container runtime
+
+```sh
+sporades deploy --port 5000
+```
+
+The local Container session runs the same Bundles with persistent local data.
+Continue with [server concepts](./server.md), [client concepts](./client.md), or
+[local operations](./local-operations.md) when you need more than this first slice.

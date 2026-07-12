@@ -420,46 +420,6 @@ For automation, use JSONL streaming:
 sporades dev --json
 ```
 
-## Make a Server Change
-
-Open `server/index.ts`. A typical Capsule defines a schema, queries, and
-mutations:
-
-```ts
-import { Boolean, capsule, mutation, query, String, table } from "sporades/server";
-
-export default capsule({
-  name: "notes",
-
-  schema: {
-    todos: table({
-      text: String(),
-      done: Boolean().default(false),
-      ownerId: String(),
-    }),
-  },
-
-  queries: {
-    todos: query((ctx) =>
-      ctx.db.todos
-        .where("ownerId", ctx.auth.userId)
-        .orderBy("createdAt", "desc")
-        .all(),
-    ),
-  },
-
-  mutations: {
-    addTodo: mutation((ctx, text: string) => {
-      ctx.db.todos.insert({ text, ownerId: ctx.auth.userId });
-    }),
-  },
-});
-```
-
-Use queries for data the UI reads. Use mutations for changes. Keep ownership and
-validation on the server; the client should not be trusted to send fields such
-as `ownerId`.
-
 ## Building the Server Side
 
 ### Define Tables
@@ -1043,69 +1003,6 @@ effective timezone, policy, next occurrence, and latest safe outcome and Job
 correlation. They omit payloads and secrets, do not evaluate or advance a
 Schedule, and return `schedules: []` when no schedules exist. V1 has no human
 renderer, filters, pagination, or offline inspection.
-
-## Make a Client Change
-
-Open `client/index.tsx`. The scaffold wires the framework primitives into
-Sporades hooks:
-
-```tsx
-import { useEffect, useState } from "react";
-import { createHooks } from "sporades/client";
-
-const { useAuth, useQuery, useMutation } = createHooks({ useState, useEffect });
-```
-
-Read data with `useQuery("queryName")`:
-
-```tsx
-const todos = useQuery("todos");
-```
-
-Run changes with `useMutation("mutationName")`:
-
-```tsx
-const addTodo = useMutation("addTodo");
-await addTodo.run("Buy coffee");
-```
-
-For Vue, open `client/App.vue`. The scaffold binds native reactive state and
-scope disposal to the same framework-neutral connection in `client/sporades.ts`:
-
-```ts
-import { onScopeDispose, reactive } from "vue";
-import { createVueComposables } from "sporades/client";
-
-export const { useAuth, useMutation, useQuery } = createVueComposables({ reactive, onScopeDispose });
-```
-
-Vue mutation composables keep `loading` true until every concurrent invocation
-settles. Reactive `data` and `error` follow the latest invocation, so an older
-completion cannot overwrite newer state; each `run()` promise still resolves
-or rejects with its own outcome.
-
-The Vue Guestbook uses those composables for auth, queries, and mutations. The
-Photo Library keeps authenticated uploads private until publication is
-explicit, and the Campfire uses the shared preferences and consented Journey
-APIs directly from `sporades/client`.
-
-Queries stay subscribed over the Sporades client transport, so successful
-mutations refresh connected clients without you writing manual fetch code.
-
-For Vanilla TypeScript, open `client/index.ts` and use the same transport
-without a UI framework:
-
-```ts
-import { auth, mutations, queries } from "sporades/client";
-
-const subscription = queries.subscribe("todos", (state) => render(state));
-await mutations.run("addTodo", "Buy coffee");
-const current = await auth.get();
-const authSubscription = auth.subscribe((state) => renderAuth(state));
-```
-
-Both subscriptions deliver their latest state immediately, reconnect and
-resubscribe automatically, and expose an idempotent `unsubscribe()` method.
 
 ## Building the Client Side
 

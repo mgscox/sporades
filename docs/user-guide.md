@@ -20,6 +20,9 @@ sporades dev
 Open the URL printed by `sporades dev`. Edit `server/`, `client/`, or `shared/`;
 the Dev session rebuilds the Capsule and refreshes the browser.
 
+Follow [Build your first Capsule](./guide/getting-started.md) for the complete
+Todo walkthrough from server schema to client mutation and local Container.
+
 When it works in development, try the same Bundle in a local Container session:
 
 ```sh
@@ -28,7 +31,7 @@ sporades deploy --port 5000
 
 That is the complete starting loop. Everything below extends it.
 
-## Choose your next task
+## Walkthrough
 
 ### Build the Capsule
 
