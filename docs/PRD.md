@@ -869,7 +869,7 @@ sealed envelope exists.
 
 ## Non-Goals
 
-- Being Lakebed or an interpreted IR sandbox.
+- Being an interpreted IR sandbox.
 - Requiring dashboards or browser-based setup for core workflows.
 - Supporting Angular.
 - Providing file-based routing.

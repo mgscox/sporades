@@ -6,7 +6,7 @@ Superseded by the implemented Custom endpoints runtime. This ADR remains as
 the historical decision for the first v0 local-only scope.
 
 v0 did not include `endpoint({ method, path }, handler)`. The server exposed
-queries, mutations, and auth over the WebSocket transport. In Lakebed,
+queries, mutations, and auth over the WebSocket transport. In an interpreted sandbox environment,
 endpoints existed partly to receive Google OAuth callbacks; early Sporades
 deferred webhooks and other HTTP-based integrations.
 

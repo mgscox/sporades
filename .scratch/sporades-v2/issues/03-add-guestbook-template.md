@@ -4,7 +4,7 @@ Status: done
 
 ## What to build
 
-Add a `guestbook` template inspired by the Lakebed guestbook example. The template should demonstrate a shared feed, server-owned authorship, bounded text input, and auth-aware UI behavior.
+Add a `guestbook` template. The template should demonstrate a shared feed, server-owned authorship, bounded text input, and auth-aware UI behavior.
 
 ## Acceptance criteria
 
@@ -20,10 +20,6 @@ Add a `guestbook` template inspired by the Lakebed guestbook example. The templa
 - [x] Guestbook uses `ctx.auth.picture` when available.
 - [x] Guestbook does not add avatar uploads as a template dependency.
 - [x] Template docs call out that trusted author fields must come from the server, not from client-submitted input.
-
-## Reference
-
-- Lakebed guestbook example: https://docs.lakebed.dev/examples/guestbook/
 
 ## Blocked by
 

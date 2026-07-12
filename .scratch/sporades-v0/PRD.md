@@ -4,7 +4,7 @@
 
 ## Overview
 
-Sporades is a CLI-first tool for building and running full-stack web apps. It provides the developer experience of Lakebed — `create`, `dev`, `deploy` in three commands — without the artificial constraints of an interpreted IR sandbox. Apps run as real Node.js with a real SQLite database, bundled by esbuild into self-contained files.
+Sporades is a CLI-first tool for building and running full-stack web apps. It provides the developer experience of an interpreted sandbox environment — `create`, `dev`, `deploy` in three commands — without the artificial constraints of an interpreted IR sandbox. Apps run as real Node.js with a real SQLite database, bundled by esbuild into self-contained files.
 
 **Target users:** developers who want zero-config full-stack apps, and agentic LLM systems that need a deterministic, scriptable deployment pipeline.
 
@@ -20,7 +20,7 @@ Sporades is a CLI-first tool for building and running full-stack web apps. It pr
 
 ## Server API (v0)
 
-Mirrors Lakebed's API for familiarity and simplicity. `capsule()` is the initialisation function — it registers the schema with SQLite, configures Better Auth, and wires the table API. Future extensibility (middleware, hooks, custom field types) hooks into this function.
+Mirrors an interpreted sandbox environment API for familiarity and simplicity. `capsule()` is the initialisation function — it registers the schema with SQLite, configures Better Auth, and wires the table API. Future extensibility (middleware, hooks, custom field types) hooks into this function.
 
 ```typescript
 import { Boolean, capsule, mutation, query, String, table } from "sporades/server";
@@ -55,7 +55,7 @@ export default capsule({
 
 ### No endpoints in v0
 
-v0 does not include `endpoint()`. The server exposes queries, mutations, and auth over WebSocket only. Webhooks and HTTP-based integrations are a v1 concern. (Lakebed needed endpoints for Google OAuth callbacks; Sporades handles auth server-side via Better Auth, so that use case doesn't exist.)
+v0 does not include `endpoint()`. The server exposes queries, mutations, and auth over WebSocket only. Webhooks and HTTP-based integrations are a v1 concern. 
 
 ### Context (`ctx`)
 
@@ -156,7 +156,7 @@ A `sporades` table auto-created in every database. Stores schema version hash, m
 
 ### Query builder
 
-Chainable API accumulates filters, sort, and limit. Compilation to SQL happens at `.all()` (queries) or at mutation execution. Same pattern as Lakebed's `QueryBuilder`, with SQL execution instead of in-memory filtering.
+Chainable API accumulates filters, sort, and limit. Compilation to SQL happens at `.all()` (queries) or at mutation execution. Same pattern as an interpreted sandbox environment `QueryBuilder`, with SQL execution instead of in-memory filtering.
 
 ## Auth
 
@@ -543,7 +543,7 @@ sporades db dump  # dump database as JSON
 
 ## Non-goals
 
-- Being Lakebed. Sporades runs real code in real containers. No IR, no symbolic execution, no source-code scanning.
+- Being an interpreted sandbox environment. Sporades runs real code in real containers. No IR, no symbolic execution, no source-code scanning.
 - Competing with Vercel/Netlify for enterprise workloads. This is for prototype-to-small-production apps.
 - Supporting Postgres or any external database. Use a different platform if you need that.
 - Supporting Angular. Its build system is incompatible with the esbuild-only pipeline.

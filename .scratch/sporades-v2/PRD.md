@@ -10,7 +10,7 @@ These additions keep the core Sporades principles intact: the CLI remains the pr
 
 - Add persistent file upload storage with WebSocket notifications.
 - Make `sporades create` support optional template selection while keeping the default scaffold blank.
-- Add a `guestbook` template based on the Lakebed guestbook example.
+- Add a `guestbook` template.
 - Extend auth beyond anonymous sessions, using Google as the first provider target unless already fully implemented.
 - Add SDK-level app messages over the existing client transport.
 
@@ -92,7 +92,7 @@ Template validation should use structured errors and hints consistent with the r
 
 ## Guestbook Template
 
-Add a guestbook scaffold inspired by the Lakebed guestbook example:
+Add a guestbook scaffold:
 
 - An `entries` table with body and server-owned author metadata.
 - A shared entries query ordered newest first.
@@ -102,8 +102,6 @@ Add a guestbook scaffold inspired by the Lakebed guestbook example:
 - A visible Google sign-in path that exercises the real redirect-based provider auth flow in a live scaffolded site.
 
 The template should demonstrate why provider auth matters while still working acceptably for anonymous sessions. Guestbook is the v2 live-site acceptance test for Google authentication: anonymous users can sign, Google-linked users show richer author metadata, and the redirect flow should work without app code knowing OAuth details. Use `ctx.auth.picture` when available; do not add avatar uploads to the guestbook template.
-
-Source reference: https://docs.lakebed.dev/examples/guestbook/
 
 ## Provider Auth
 
