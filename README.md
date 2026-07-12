@@ -13,7 +13,8 @@
 </p>
 
 Designed as Agents-first, Sporades is a CLI-first platform for building, running, inspecting, and hosting
-small full-stack web Capsules.
+small full-stack web Capsules supporting vanilla Typescript, React, Preact, Inferno, Lit, SolidJS, Vue, and Svelte 
+for front-end clients.
 
 It is intended for developers and coding Agents who want deterministic commands
 instead of dashboards: scaffold a Capsule, run it locally, test the bundled
