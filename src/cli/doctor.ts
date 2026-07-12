@@ -9,6 +9,7 @@ import {
   capsuleServicesComposeModel,
 } from "../capsule-services.js";
 import { bundleServerCapsuleModule } from "../bundle-pipeline.js";
+import { supportsClientCapability } from "../client-capabilities.js";
 import { readPublicTreeConsumer, summarizePublicTree } from "../public-tree.js";
 import { schemaFromCapsuleDefinition } from "../server-runtime-source.js";
 import type { LooseRecord } from "./cli-support.js";
@@ -1013,6 +1014,7 @@ async function containerClientReleaseCheck(container: LooseRecord, binding: Loos
     release
     && typeof release.framework === "string"
     && typeof release.toolchain === "string"
+    && supportsClientCapability(release.framework, release.toolchain)
     && typeof release.publicTree === "string"
     && /^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(release.publicTree)
     && release.htmlEntry === "index.html"

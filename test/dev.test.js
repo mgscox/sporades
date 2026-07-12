@@ -16,6 +16,7 @@ import { installProjectSvelteToolchain } from "./support/project-svelte-toolchai
 import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
 import { installProjectLitToolchain } from "./support/project-lit-toolchain.js";
 import { installProjectInfernoToolchain } from "./support/project-inferno-toolchain.js";
+import { CLIENT_CAPABILITIES } from "../dist/client-capabilities.js";
 import { mountLitTemplate } from "./support/lit-template-harness.js";
 import { mountSvelteTemplate } from "./support/svelte-template-harness.js";
 import { mountSolidTemplate } from "./support/solid-template-harness.js";
@@ -5028,6 +5029,52 @@ test("sporades dev builds and rebuilds the Vanilla TypeScript client without fra
     } finally {
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
+    }
+  });
+});
+
+for (const capability of CLIENT_CAPABILITIES) test(`matrix Dev conformance preserves last-good output and recovers for ${capability.framework}/${capability.toolchain}`, async () => {
+  await withTempDir(async (dir) => {
+    const name = `matrix-${capability.framework}-${capability.toolchain}`;
+    const created = await runCli(["create", name, "--template", "blank", "--framework", capability.framework, "--toolchain", capability.toolchain, "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, name);
+    await (capability.framework === "vanilla" ? async () => {}
+      : capability.framework === "react" ? installFakeReact
+      : capability.framework === "preact" ? installFakePreact
+      : capability.framework === "inferno" ? (project) => installProjectInfernoToolchain(project, repoRoot)
+      : capability.framework === "lit" ? (project) => installProjectLitToolchain(project, repoRoot)
+      : capability.framework === "solid" ? (project) => installProjectSolidToolchain(project, repoRoot)
+      : capability.framework === "vue" ? installVue
+      : installSvelte)(projectDir);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8")); config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const child = startCli(["dev", "--json"], { cwd: projectDir });
+    try {
+      const started = await waitForJsonLine(child);
+      assert.equal(started.ok, true, JSON.stringify(started));
+      const entryUrl = capability.toolchain === "esbuild" ? `${started.data.url}/client.js` : started.data.url;
+      const first = await fetch(entryUrl);
+      assert.equal(first.status, 200);
+      assert.match(first.headers.get("content-type") ?? "", capability.toolchain === "esbuild" ? /javascript/ : /text\/html/);
+      const normalize = (text) => text.replace(/window\.__SPORADES_CONNECTION_TOKEN="[^"]+"/, 'window.__SPORADES_CONNECTION_TOKEN="<token>"');
+      const lastGood = normalize(await first.text());
+      const nested = await fetch(`${started.data.url}/nested/route`);
+      assert.equal(nested.status, 404); assert.match(nested.headers.get("content-type") ?? "", /text\/plain/);
+      assert.equal((await fetch(`${started.data.url}/%2e%2e/server/index.ts`)).status, 404);
+      const clientPath = path.join(projectDir, "client", capability.build.entry);
+      const original = await readFile(clientPath, "utf8");
+      await writeFile(clientPath, `${original}\nexport const = ;\n`);
+      const failed = await waitForJsonEvent(child, (event) => !event.ok && event.data?.event === "rebuild" && event.data.status === "failed");
+      assert.deepEqual(failed.data.build, { phase: "client", framework: capability.framework, toolchain: capability.toolchain });
+      assert.equal(normalize(await (await fetch(entryUrl)).text()), lastGood);
+      await writeFile(clientPath, `${original}\n// matrix recovery\n`);
+      const recovered = await waitForJsonEvent(child, (event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(recovered.data.build, { phase: "client", framework: capability.framework, toolchain: capability.toolchain });
+      assert.doesNotMatch(await (await fetch(entryUrl)).text(), /SERVER_ONLY|server-only/i);
+    } finally {
+      child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve));
     }
   });
 });

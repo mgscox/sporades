@@ -1,8 +1,13 @@
-import { defaultClientToolchain } from "../client-capabilities.js";
+import { clientCapability, clientCapabilityError, defaultClientToolchain } from "../client-capabilities.js";
 export function scaffoldFiles(options) {
     const templateOptions = resolveTemplateOptions(options.template);
     const framework = options.framework ?? templateOptions.framework;
     const toolchain = options.toolchain ?? defaultClientToolchain(framework) ?? "esbuild";
+    const capability = clientCapability(framework, toolchain);
+    if (!capability) {
+        const details = clientCapabilityError(framework, toolchain);
+        throw Object.assign(new Error(details.message), { hint: details.hint });
+    }
     const renderOptions = { ...options, name: options.name, framework, toolchain };
     const packageName = options.name;
     const sporadesDependency = options.sporadesDependency ?? "sporades";
@@ -99,7 +104,7 @@ export function scaffoldFiles(options) {
   </head>
   <body>
     ${framework === "lit" ? "<sporades-app></sporades-app>" : '<div id="app"></div>'}
-    <script type="module" src="${toolchain === "vite" ? `/client/${framework === "vue" || framework === "svelte" || framework === "lit" ? "index.ts" : "index.tsx"}` : "/client.js"}"></script>
+    <script type="module" src="${toolchain === "vite" ? `/client/${capability.build.entry}` : "/client.js"}"></script>
   </body>
 </html>
 `,

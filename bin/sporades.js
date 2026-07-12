@@ -1144,6 +1144,72 @@ function structuredError(error) {
 `;
 }
 
+// src/client-capabilities.ts
+var CLIENT_TEMPLATES = deepFreeze(["blank", "todo", "guestbook", "photo-library", "campfire"]);
+var frameworkDefinitions = deepFreeze([
+  { framework: "vanilla", label: "Vanilla TypeScript", build: { entry: "index.ts", loader: "ts", jsxImportSource: null, jsxRuntimeImport: null }, toolchains: ["esbuild"] },
+  { framework: "react", label: "React", build: { entry: "index.tsx", loader: "tsx", jsxImportSource: "react", jsxRuntimeImport: "react/jsx-runtime" }, toolchains: ["esbuild", "vite"] },
+  { framework: "preact", label: "Preact", build: { entry: "index.tsx", loader: "tsx", jsxImportSource: "preact", jsxRuntimeImport: "preact/jsx-runtime" }, toolchains: ["esbuild", "vite"] },
+  { framework: "inferno", label: "Inferno", build: { entry: "index.tsx", loader: "tsx", jsxImportSource: null, jsxRuntimeImport: null, jsxFactory: "createElement" }, toolchains: ["esbuild", "vite"] },
+  { framework: "lit", label: "Lit", build: { entry: "index.ts", loader: "ts", jsxImportSource: null, jsxRuntimeImport: null }, toolchains: ["vite"] },
+  { framework: "solid", label: "SolidJS", build: { entry: "index.tsx", loader: "tsx", jsxImportSource: "solid-js", jsxRuntimeImport: "solid-js/jsx-runtime" }, toolchains: ["vite"] },
+  { framework: "vue", label: "Vue", build: { entry: "index.ts", loader: "ts", jsxImportSource: null, jsxRuntimeImport: null }, toolchains: ["vite"] },
+  { framework: "svelte", label: "Svelte", build: { entry: "index.ts", loader: "ts", jsxImportSource: null, jsxRuntimeImport: null }, toolchains: ["vite"] }
+]);
+var CLIENT_CAPABILITIES = deepFreeze(frameworkDefinitions.flatMap(
+  (definition) => definition.toolchains.map((toolchain, index) => ({
+    framework: definition.framework,
+    label: definition.label,
+    toolchain,
+    default: index === 0,
+    templates: CLIENT_TEMPLATES,
+    build: definition.build
+  }))
+));
+var CLIENT_FRAMEWORKS = deepFreeze(frameworkDefinitions.map(({ framework }) => framework));
+var CLIENT_TOOLCHAINS = deepFreeze(["esbuild", "vite"]);
+function isClientFramework(value) {
+  return CLIENT_FRAMEWORKS.some((framework) => framework === value);
+}
+function isClientToolchain(value) {
+  return CLIENT_TOOLCHAINS.some((toolchain) => toolchain === value);
+}
+function clientFrameworkCapability(framework) {
+  if (!isClientFramework(framework)) return null;
+  const cell = CLIENT_CAPABILITIES.find((candidate) => candidate.framework === framework);
+  return deepFreeze({ framework: cell.framework, label: cell.label, build: cell.build, templates: cell.templates });
+}
+function clientCapability(framework, toolchain) {
+  return CLIENT_CAPABILITIES.find((cell) => cell.framework === framework && cell.toolchain === toolchain) ?? null;
+}
+function supportsClientCapability(framework, toolchain) {
+  return clientCapability(framework, toolchain) !== null;
+}
+function defaultClientToolchain(framework) {
+  return CLIENT_CAPABILITIES.find((cell) => cell.framework === framework && cell.default)?.toolchain ?? null;
+}
+function resolveClientCapability(framework = "react", toolchain) {
+  const resolvedFramework = framework ?? "react";
+  const resolvedToolchain = toolchain ?? defaultClientToolchain(resolvedFramework);
+  return clientCapability(resolvedFramework, resolvedToolchain);
+}
+function clientCapabilityError(framework, toolchain) {
+  const message = `Unsupported client framework/toolchain combination: ${framework}/${toolchain}`;
+  if (framework === "vanilla" && toolchain === "vite") return { message, hint: "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild." };
+  const definition = clientFrameworkCapability(framework);
+  if (definition && defaultClientToolchain(framework) === "vite") return { message, hint: `Use ${definition.label} with Vite.` };
+  return { message, hint: "Choose an admitted pair from the client capability matrix in docs/user-guide.md." };
+}
+var CLIENT_FRAMEWORK_HINT = `Use one of: ${CLIENT_FRAMEWORKS.filter((framework) => framework !== "vanilla").join(", ")}, vanilla.`;
+var CLIENT_TOOLCHAIN_HINT = `Use one of: ${CLIENT_TOOLCHAINS.join(", ")}.`;
+function deepFreeze(value) {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+
 // src/client-toolchain.ts
 async function buildClientToolchain(options) {
   validateClientToolchainInput(options);
@@ -1152,12 +1218,10 @@ async function buildClientToolchain(options) {
 }
 function validateClientToolchainInput(options) {
   if (options.toolchain !== "vite") return;
-  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "inferno" ? "Inferno" : options.frameworkConfig.framework === "lit" ? "Lit" : options.frameworkConfig.framework === "solid" ? "SolidJS" : options.frameworkConfig.framework === "vue" ? "Vue" : options.frameworkConfig.framework === "svelte" ? "Svelte" : "React";
-  if (!(/* @__PURE__ */ new Set(["react", "preact", "inferno", "lit", "solid", "vue", "svelte"])).has(options.frameworkConfig.framework)) {
-    throw clientToolchainError(
-      `Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`,
-      "Use React, Preact, Inferno, Lit, SolidJS, Vue, or Svelte with Vite, or keep Vanilla TypeScript on esbuild."
-    );
+  const frameworkLabel = clientFrameworkCapability(options.frameworkConfig.framework)?.label ?? String(options.frameworkConfig.framework);
+  if (!supportsClientCapability(options.frameworkConfig.framework, options.toolchain)) {
+    const details = clientCapabilityError(options.frameworkConfig.framework, options.toolchain);
+    throw clientToolchainError(details.message, details.hint);
   }
   if (referencesLegacyClientShell(options.indexHtml)) {
     throw clientToolchainError(
@@ -1503,7 +1567,7 @@ function viteBuildError(error, projectRoots, framework) {
   const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectRoots, rawFile) : null;
   return clientToolchainError(
     `Client bundle failed: ${message}`,
-    `Fix the ${framework === "preact" ? "Preact" : framework === "lit" ? "Lit" : framework === "solid" ? "SolidJS" : framework === "vue" ? "Vue" : framework === "svelte" ? "Svelte" : "React"}/Vite client source and save again.`,
+    `Fix the ${clientFrameworkCapability(framework)?.label ?? framework}/Vite client source and save again.`,
     {
       ...typeof details.code === "string" ? { code: details.code.slice(0, 80) } : {},
       ...relativeFile ? { file: relativeFile } : {},
@@ -11925,69 +11989,10 @@ function publicTreeError(message, hint, diagnostics) {
 }
 
 // src/bundle-pipeline.ts
-var FRAMEWORK_BUNDLE_CONFIG = {
-  react: {
-    framework: "react",
-    entry: "index.tsx",
-    loader: "tsx",
-    jsxImportSource: "react",
-    jsxRuntimeImport: "react/jsx-runtime"
-  },
-  preact: {
-    framework: "preact",
-    entry: "index.tsx",
-    loader: "tsx",
-    jsxImportSource: "preact",
-    jsxRuntimeImport: "preact/jsx-runtime"
-  },
-  inferno: {
-    framework: "inferno",
-    entry: "index.tsx",
-    loader: "tsx",
-    jsxImportSource: null,
-    jsxRuntimeImport: null,
-    jsxFactory: "createElement"
-  },
-  solid: {
-    framework: "solid",
-    entry: "index.tsx",
-    loader: "tsx",
-    jsxImportSource: "solid-js",
-    jsxRuntimeImport: "solid-js/jsx-runtime"
-  },
-  lit: {
-    framework: "lit",
-    entry: "index.ts",
-    loader: "ts",
-    jsxImportSource: null,
-    jsxRuntimeImport: null
-  },
-  vue: {
-    framework: "vue",
-    entry: "index.ts",
-    loader: "ts",
-    jsxImportSource: null,
-    jsxRuntimeImport: null
-  },
-  svelte: {
-    framework: "svelte",
-    entry: "index.ts",
-    loader: "ts",
-    jsxImportSource: null,
-    jsxRuntimeImport: null
-  },
-  vanilla: {
-    framework: "vanilla",
-    entry: "index.ts",
-    loader: "ts",
-    jsxImportSource: null,
-    jsxRuntimeImport: null
-  }
-};
 var SUPPORTED_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "google", "email"]);
 async function createBundle(projectDir, config, options = {}) {
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
-  const toolchain = readClientToolchain(config.client?.toolchain ?? (["lit", "solid", "vue", "svelte"].includes(frameworkBundleConfig.framework) ? "vite" : "esbuild"), frameworkBundleConfig.framework);
+  const toolchain = readClientToolchain(config.client?.toolchain ?? defaultClientToolchain(frameworkBundleConfig.framework), frameworkBundleConfig.framework);
   const buildDir = path4.join(projectDir, ".sporades", "build");
   const paths = {
     config: path4.join(projectDir, "sporades.json"),
@@ -12438,32 +12443,15 @@ async function readRequiredFile(filePath, message, hint) {
   }
 }
 function readFrameworkBundleConfig(framework) {
-  if (typeof framework !== "string" || !(framework in FRAMEWORK_BUNDLE_CONFIG)) {
-    throw commandError2(`Unsupported framework: ${framework}`, "Use one of: react, preact, inferno, lit, solid, vue, svelte, vanilla.");
-  }
-  return FRAMEWORK_BUNDLE_CONFIG[framework];
+  const capability = clientFrameworkCapability(framework);
+  if (!capability) throw commandError2(`Unsupported framework: ${framework}`, CLIENT_FRAMEWORK_HINT);
+  return { framework: capability.framework, ...capability.build };
 }
 function readClientToolchain(toolchain, framework) {
-  if (toolchain !== "esbuild" && toolchain !== "vite") {
-    throw commandError2(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
-  }
-  if (toolchain === "vite" && framework === "vanilla") {
-    throw commandError2(
-      `Unsupported client framework/toolchain combination: ${framework}/vite`,
-      "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild."
-    );
-  }
-  if (framework === "vue" && toolchain !== "vite") {
-    throw commandError2("Unsupported client framework/toolchain combination: vue/esbuild", "Use Vue with Vite.");
-  }
-  if (framework === "svelte" && toolchain !== "vite") {
-    throw commandError2("Unsupported client framework/toolchain combination: svelte/esbuild", "Use Svelte with Vite.");
-  }
-  if (framework === "solid" && toolchain !== "vite") {
-    throw commandError2("Unsupported client framework/toolchain combination: solid/esbuild", "Use SolidJS with Vite.");
-  }
-  if (framework === "lit" && toolchain !== "vite") {
-    throw commandError2("Unsupported client framework/toolchain combination: lit/esbuild", "Use Lit with Vite.");
+  if (!isClientToolchain(toolchain)) throw commandError2(`Unsupported client toolchain: ${toolchain}`, CLIENT_TOOLCHAIN_HINT);
+  if (!supportsClientCapability(framework, toolchain)) {
+    const details = clientCapabilityError(framework, toolchain);
+    throw commandError2(details.message, details.hint);
   }
   return toolchain;
 }
@@ -12515,29 +12503,6 @@ function tagBuildError(error, phase, framework, toolchain) {
   tagged.framework = framework;
   tagged.toolchain = toolchain;
   return tagged;
-}
-
-// src/client-capabilities.ts
-var CLIENT_CAPABILITIES = Object.freeze([
-  { framework: "vanilla", toolchain: "esbuild", default: true },
-  { framework: "react", toolchain: "esbuild", default: true },
-  { framework: "react", toolchain: "vite", default: false },
-  { framework: "preact", toolchain: "esbuild", default: true },
-  { framework: "preact", toolchain: "vite", default: false },
-  { framework: "vue", toolchain: "vite", default: true },
-  { framework: "svelte", toolchain: "vite", default: true },
-  { framework: "solid", toolchain: "vite", default: true },
-  { framework: "lit", toolchain: "vite", default: true },
-  { framework: "inferno", toolchain: "esbuild", default: true },
-  { framework: "inferno", toolchain: "vite", default: false }
-]);
-var CLIENT_FRAMEWORKS = [...new Set(CLIENT_CAPABILITIES.map(({ framework }) => framework))];
-var CLIENT_TOOLCHAINS = [...new Set(CLIENT_CAPABILITIES.map(({ toolchain }) => toolchain))];
-function supportsClientCapability(framework, toolchain) {
-  return CLIENT_CAPABILITIES.some((cell) => cell.framework === framework && cell.toolchain === toolchain);
-}
-function defaultClientToolchain(framework) {
-  return CLIENT_CAPABILITIES.find((cell) => cell.framework === framework && cell.default)?.toolchain ?? null;
 }
 
 // src/base-image.ts
@@ -12649,6 +12614,11 @@ function scaffoldFiles(options) {
   const templateOptions = resolveTemplateOptions(options.template);
   const framework = options.framework ?? templateOptions.framework;
   const toolchain = options.toolchain ?? defaultClientToolchain(framework) ?? "esbuild";
+  const capability = clientCapability(framework, toolchain);
+  if (!capability) {
+    const details = clientCapabilityError(framework, toolchain);
+    throw Object.assign(new Error(details.message), { hint: details.hint });
+  }
   const renderOptions = { ...options, name: options.name, framework, toolchain };
   const packageName = options.name;
   const sporadesDependency = options.sporadesDependency ?? "sporades";
@@ -12739,7 +12709,7 @@ function scaffoldFiles(options) {
   </head>
   <body>
     ${framework === "lit" ? "<sporades-app></sporades-app>" : '<div id="app"></div>'}
-    <script type="module" src="${toolchain === "vite" ? `/client/${framework === "vue" || framework === "svelte" || framework === "lit" ? "index.ts" : "index.tsx"}` : "/client.js"}"></script>
+    <script type="module" src="${toolchain === "vite" ? `/client/${capability.build.entry}` : "/client.js"}"></script>
   </body>
 </html>
 `,
@@ -16053,15 +16023,18 @@ function posixJoin(...segments) {
 }
 
 // src/cli/cli-help.ts
+var frameworkHelp = [...CLIENT_FRAMEWORKS.filter((framework) => framework !== "vanilla"), "vanilla"].join(", ").replace(/, ([^,]+)$/, ", or $1");
+var toolchainHelp = CLIENT_TOOLCHAINS.map((toolchain) => toolchain === "vite" ? "Vite" : toolchain).join(" or ");
+var templateHelp = CLIENT_TEMPLATES.join(", ").replace(/, ([^,]+)$/, ", or $1");
 var HELP_TEXT = {
   create: `Usage: sporades create <name> [options]
 
 Scaffold a new Capsule.
 
 Options:
-  --framework <name>  Client framework: react, preact, inferno, lit, solid, vue, svelte, or vanilla
-  --toolchain <name>  Client toolchain: esbuild or Vite (framework-dependent)
-  --template <name>   Template: blank, todo, guestbook, photo-library, or campfire
+  --framework <name>  Client framework: ${frameworkHelp}
+  --toolchain <name>  Client toolchain: ${toolchainHelp} (framework-dependent)
+  --template <name>   Template: ${templateHelp}
   --no-install        Skip npm install
   --no-git            Skip git initialization
   --json              Write JSON output
@@ -16335,8 +16308,6 @@ import { createHash as createHash3 } from "node:crypto";
 import { chmod, mkdir as mkdir5, readFile as readFile6, writeFile as writeFile5 } from "node:fs/promises";
 import path6 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
-var CLIENT_FRAMEWORK_SET = new Set(CLIENT_FRAMEWORKS);
-var CLIENT_TOOLCHAIN_SET = new Set(CLIENT_TOOLCHAINS);
 var DEFAULT_CSP_DIRECTIVES = {
   "default-src": ["'self'"],
   "script-src": ["'self'", "'unsafe-inline'"],
@@ -16391,31 +16362,18 @@ function validateClientConfig(client) {
   if (!client || typeof client !== "object" || Array.isArray(client) || Object.keys(client).some((key) => key !== "framework" && key !== "toolchain")) {
     throw commandError4("Invalid client configuration.", "Set `client.framework` and optional `client.toolchain` in sporades.json.");
   }
-  if (client.framework !== void 0 && !CLIENT_FRAMEWORK_SET.has(client.framework)) {
-    throw commandError4(`Unsupported framework: ${client.framework}`, "Use one of: react, preact, inferno, lit, solid, vue, svelte, vanilla.");
+  if (client.framework !== void 0 && !isClientFramework(client.framework)) {
+    throw commandError4(`Unsupported framework: ${client.framework}`, CLIENT_FRAMEWORK_HINT);
   }
-  if (client.toolchain !== void 0 && !CLIENT_TOOLCHAIN_SET.has(client.toolchain)) {
-    throw commandError4(`Unsupported client toolchain: ${client.toolchain}`, "Use one of: esbuild, vite.");
+  if (client.toolchain !== void 0 && !isClientToolchain(client.toolchain)) {
+    throw commandError4(`Unsupported client toolchain: ${client.toolchain}`, CLIENT_TOOLCHAIN_HINT);
   }
-  if (client.toolchain === "vite" && (client.framework ?? "react") === "vanilla") {
-    throw commandError4(
-      `Unsupported client framework/toolchain combination: ${client.framework}/vite`,
-      "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild."
-    );
+  const framework = client.framework ?? "react";
+  const toolchain = client.toolchain ?? defaultClientToolchain(framework);
+  if (isClientFramework(framework) && isClientToolchain(toolchain) && !supportsClientCapability(framework, toolchain)) {
+    const details = clientCapabilityError(framework, toolchain);
+    throw commandError4(details.message, details.hint);
   }
-  if (client.framework === "vue" && client.toolchain !== void 0 && client.toolchain !== "vite") {
-    throw commandError4("Unsupported client framework/toolchain combination: vue/esbuild", "Use Vue with Vite.");
-  }
-  if (client.framework === "svelte" && client.toolchain !== void 0 && client.toolchain !== "vite") {
-    throw commandError4("Unsupported client framework/toolchain combination: svelte/esbuild", "Use Svelte with Vite.");
-  }
-  if (client.framework === "solid" && client.toolchain !== void 0 && client.toolchain !== "vite") {
-    throw commandError4("Unsupported client framework/toolchain combination: solid/esbuild", "Use SolidJS with Vite.");
-  }
-  if (client.framework === "lit" && client.toolchain !== void 0 && client.toolchain !== "vite") {
-    throw commandError4("Unsupported client framework/toolchain combination: lit/esbuild", "Use Lit with Vite.");
-  }
-  if (client.framework !== void 0 && client.toolchain !== void 0 && !supportsClientCapability(client.framework, client.toolchain)) throw commandError4(`Unsupported client framework/toolchain combination: ${client.framework}/${client.toolchain}`, "Choose an admitted pair from the client capability matrix in docs/user-guide.md.");
 }
 function validateSchedulingConfig(scheduling) {
   if (scheduling === void 0) return;
@@ -17588,7 +17546,7 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
   const publicMount = mounts.find((candidate) => candidate.Target === "/app/public" || candidate.Destination === "/app/public");
   const release = binding.clientRelease;
   const validRelease = Boolean(
-    release && typeof release.framework === "string" && typeof release.toolchain === "string" && typeof release.publicTree === "string" && /^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(release.publicTree) && release.htmlEntry === "index.html" && typeof release.consumerToken === "string" && /^[a-f0-9]{32}$/.test(release.consumerToken)
+    release && typeof release.framework === "string" && typeof release.toolchain === "string" && supportsClientCapability(release.framework, release.toolchain) && typeof release.publicTree === "string" && /^[1-9][0-9]*-[0-9]{10,}-[a-f0-9]{8,}$/.test(release.publicTree) && release.htmlEntry === "index.html" && typeof release.consumerToken === "string" && /^[a-f0-9]{32}$/.test(release.consumerToken)
   );
   const framework = validRelease ? release.framework : null;
   const toolchain = validRelease ? release.toolchain : null;
@@ -18228,9 +18186,7 @@ jobs:
 var CLI_VERSION = "0.3.0";
 
 // src/cli/sporades.ts
-var SUPPORTED_FRAMEWORKS = new Set(CLIENT_FRAMEWORKS);
-var SUPPORTED_CLIENT_TOOLCHAINS = new Set(CLIENT_TOOLCHAINS);
-var SUPPORTED_TEMPLATES = /* @__PURE__ */ new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
+var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);
 var DEV_SESSION_FILE = path8.join(".sporades", "dev-session.json");
 var DEV_DATABASE_ENV_FILE = path8.join(".sporades", "dev-database-env.json");
 var DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";
@@ -18460,35 +18416,17 @@ function parseCreateArgs(args) {
   if (!name) {
     throw commandError4("Missing scaffold name.", "Use `sporades create <name>`.");
   }
-  if (framework !== null && !SUPPORTED_FRAMEWORKS.has(framework)) {
-    throw commandError4(`Unsupported framework: ${framework}`, "Use one of: react, preact, inferno, lit, solid, vue, svelte, vanilla.");
+  if (framework !== null && !isClientFramework(framework)) {
+    throw commandError4(`Unsupported framework: ${framework}`, CLIENT_FRAMEWORK_HINT);
   }
-  toolchain ??= defaultClientToolchain(framework) ?? "esbuild";
-  if (!SUPPORTED_CLIENT_TOOLCHAINS.has(toolchain)) {
-    throw commandError4(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
+  toolchain ??= defaultClientToolchain(framework ?? "react");
+  if (!isClientToolchain(toolchain)) {
+    throw commandError4(`Unsupported client toolchain: ${toolchain}`, CLIENT_TOOLCHAIN_HINT);
   }
-  if (toolchain === "vite" && framework === "vanilla") {
-    throw commandError4(
-      `Unsupported client framework/toolchain combination: ${framework ?? "default"}/vite`,
-      "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild."
-    );
+  if (framework !== null && !supportsClientCapability(framework, toolchain)) {
+    const details = clientCapabilityError(framework, toolchain);
+    throw commandError4(details.message, details.hint);
   }
-  if (framework === "vue" && toolchain !== "vite") {
-    throw commandError4(
-      `Unsupported client framework/toolchain combination: vue/${toolchain}`,
-      "Use Vue with Vite."
-    );
-  }
-  if (framework === "svelte" && toolchain !== "vite") {
-    throw commandError4(`Unsupported client framework/toolchain combination: svelte/${toolchain}`, "Use Svelte with Vite.");
-  }
-  if (framework === "solid" && toolchain !== "vite") {
-    throw commandError4(`Unsupported client framework/toolchain combination: solid/${toolchain}`, "Use SolidJS with Vite.");
-  }
-  if (framework === "lit" && toolchain !== "vite") {
-    throw commandError4(`Unsupported client framework/toolchain combination: lit/${toolchain}`, "Use Lit with Vite.");
-  }
-  if (framework !== null && !supportsClientCapability(framework, toolchain)) throw commandError4(`Unsupported client framework/toolchain combination: ${framework}/${toolchain}`, "Choose an admitted pair from the client capability matrix in docs/user-guide.md.");
   if (!SUPPORTED_TEMPLATES.has(template)) {
     throw commandError4(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
   }
@@ -20102,7 +20040,7 @@ function tagDevRebuildError(error, phase, config, options = {}) {
   return tagged;
 }
 function configuredClientToolchain(config) {
-  return config.client?.toolchain ?? (["lit", "solid", "vue", "svelte"].includes(config.client?.framework) ? "vite" : "esbuild");
+  return resolveClientCapability(config.client?.framework ?? "react", config.client?.toolchain)?.toolchain ?? defaultClientToolchain(config.client?.framework ?? "react") ?? "esbuild";
 }
 function reportDevPublicCleanupDegradation(options, runtime, url, port, config, error) {
   runtime.database.log.emit({

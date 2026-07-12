@@ -16,6 +16,7 @@ import { installProjectSvelteToolchain } from "./support/project-svelte-toolchai
 import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
 import { installProjectLitToolchain } from "./support/project-lit-toolchain.js";
 import { installProjectInfernoToolchain } from "./support/project-inferno-toolchain.js";
+import { CLIENT_CAPABILITIES } from "../dist/client-capabilities.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -776,6 +777,37 @@ test("sporades deploy assembles a Vanilla TypeScript release without leaking Ser
     const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
     assert.match(clientBundle, /Vanilla Sporades/);
     assert.doesNotMatch(clientBundle, /vanilla-server-only|SECRET_TOKEN/);
+  });
+});
+
+for (const capability of CLIENT_CAPABILITIES) test(`matrix Container packaging validates ${capability.framework}/${capability.toolchain}`, async () => {
+  await withTempDir(async (dir) => {
+    const name = `matrix-${capability.framework}-${capability.toolchain}`;
+    const created = await runCli(["create", name, "--template", "blank", "--framework", capability.framework, "--toolchain", capability.toolchain, "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = await realpath(path.join(dir, name));
+    await (capability.framework === "vanilla" ? async () => {}
+      : capability.framework === "react" ? installFakeReact
+      : capability.framework === "preact" ? installFakePreact
+      : capability.framework === "inferno" ? (project) => installProjectInfernoToolchain(project, repoRoot)
+      : capability.framework === "lit" ? (project) => installProjectLitToolchain(project, repoRoot)
+      : capability.framework === "solid" ? (project) => installProjectSolidToolchain(project, repoRoot)
+      : capability.framework === "vue" ? installVue
+      : (project) => installProjectSvelteToolchain(project, repoRoot))(projectDir);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "SERVER_ONLY_MATRIX=container-secret\n");
+    const docker = await installFakeDocker(dir, name);
+    const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deployed.code, 0, deployed.stderr);
+    const binding = JSON.parse(await readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"));
+    assert.equal(binding.clientRelease.framework, capability.framework);
+    assert.equal(binding.clientRelease.toolchain, capability.toolchain);
+    assert(binding.clientRelease.paths.includes("index.html"));
+    assert(binding.clientRelease.paths.some((file) => file.endsWith(".js")));
+    assert(binding.clientRelease.paths.every((file) => !file.includes("..") && !file.includes("\\")));
+    const publicRoot = path.join(projectDir, ".sporades", "build", ".public-trees", binding.clientRelease.publicTree);
+    const output = (await Promise.all(binding.clientRelease.paths.filter((file) => /\.(?:html|js|css|map|svg)$/.test(file)).map((file) => readFile(path.join(publicRoot, file), "utf8")))).join("\n");
+    assert.doesNotMatch(output, /SERVER_ONLY_MATRIX|container-secret|\/@vite\/client|react-refresh/);
+    assertVolume(firstDockerRunCall(await docker.calls()).args, `${publicRoot}:/app/public:ro`);
   });
 });
 

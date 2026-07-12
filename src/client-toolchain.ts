@@ -6,6 +6,7 @@ import type { Plugin as EsbuildPlugin } from "esbuild";
 import type { Plugin as VitePlugin } from "vite";
 
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
+import { clientCapabilityError, clientFrameworkCapability, supportsClientCapability } from "./client-capabilities.js";
 
 export type ClientToolchainName = "esbuild" | "vite";
 export type ClientToolchainDiagnostics = {
@@ -50,12 +51,10 @@ export function validateClientToolchainInput(options: {
   indexHtml: string;
 }) {
   if (options.toolchain !== "vite") return;
-  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "inferno" ? "Inferno" : options.frameworkConfig.framework === "lit" ? "Lit" : options.frameworkConfig.framework === "solid" ? "SolidJS" : options.frameworkConfig.framework === "vue" ? "Vue" : options.frameworkConfig.framework === "svelte" ? "Svelte" : "React";
-  if (!new Set(["react", "preact", "inferno", "lit", "solid", "vue", "svelte"]).has(options.frameworkConfig.framework)) {
-    throw clientToolchainError(
-      `Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`,
-      "Use React, Preact, Inferno, Lit, SolidJS, Vue, or Svelte with Vite, or keep Vanilla TypeScript on esbuild.",
-    );
+  const frameworkLabel = clientFrameworkCapability(options.frameworkConfig.framework)?.label ?? String(options.frameworkConfig.framework);
+  if (!supportsClientCapability(options.frameworkConfig.framework, options.toolchain)) {
+    const details = clientCapabilityError(options.frameworkConfig.framework, options.toolchain);
+    throw clientToolchainError(details.message, details.hint);
   }
   if (referencesLegacyClientShell(options.indexHtml)) {
     throw clientToolchainError(
@@ -419,7 +418,7 @@ function viteBuildError(error: unknown, projectRoots: string[], framework: strin
   const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectRoots, rawFile) : null;
   return clientToolchainError(
     `Client bundle failed: ${message}`,
-    `Fix the ${framework === "preact" ? "Preact" : framework === "lit" ? "Lit" : framework === "solid" ? "SolidJS" : framework === "vue" ? "Vue" : framework === "svelte" ? "Svelte" : "React"}/Vite client source and save again.`,
+    `Fix the ${clientFrameworkCapability(framework)?.label ?? framework}/Vite client source and save again.`,
     {
       ...(typeof details.code === "string" ? { code: details.code.slice(0, 80) } : {}),
       ...(relativeFile ? { file: relativeFile } : {}),

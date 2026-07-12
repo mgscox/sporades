@@ -3,6 +3,7 @@ import { lstat, readFile, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createClientRuntimeSource } from "./templates/client-runtime-template.js";
+import { clientCapabilityError, clientFrameworkCapability, supportsClientCapability } from "./client-capabilities.js";
 export async function buildClientToolchain(options) {
     validateClientToolchainInput(options);
     if (options.toolchain === "vite")
@@ -12,9 +13,10 @@ export async function buildClientToolchain(options) {
 export function validateClientToolchainInput(options) {
     if (options.toolchain !== "vite")
         return;
-    const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "inferno" ? "Inferno" : options.frameworkConfig.framework === "lit" ? "Lit" : options.frameworkConfig.framework === "solid" ? "SolidJS" : options.frameworkConfig.framework === "vue" ? "Vue" : options.frameworkConfig.framework === "svelte" ? "Svelte" : "React";
-    if (!new Set(["react", "preact", "inferno", "lit", "solid", "vue", "svelte"]).has(options.frameworkConfig.framework)) {
-        throw clientToolchainError(`Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`, "Use React, Preact, Inferno, Lit, SolidJS, Vue, or Svelte with Vite, or keep Vanilla TypeScript on esbuild.");
+    const frameworkLabel = clientFrameworkCapability(options.frameworkConfig.framework)?.label ?? String(options.frameworkConfig.framework);
+    if (!supportsClientCapability(options.frameworkConfig.framework, options.toolchain)) {
+        const details = clientCapabilityError(options.frameworkConfig.framework, options.toolchain);
+        throw clientToolchainError(details.message, details.hint);
     }
     if (referencesLegacyClientShell(options.indexHtml)) {
         throw clientToolchainError(`${frameworkLabel}/Vite requires an author-owned source entry in index.html.`, `Replace the \`/client.js\` script with \`<script type="module" src="/client/${options.frameworkConfig.entry}"></script>\`, then retry.`);
@@ -357,7 +359,7 @@ function viteBuildError(error, projectRoots, framework) {
     const loc = errorDetails(details.loc);
     const rawFile = typeof loc.file === "string" ? loc.file : typeof details.id === "string" ? details.id : null;
     const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectRoots, rawFile) : null;
-    return clientToolchainError(`Client bundle failed: ${message}`, `Fix the ${framework === "preact" ? "Preact" : framework === "lit" ? "Lit" : framework === "solid" ? "SolidJS" : framework === "vue" ? "Vue" : framework === "svelte" ? "Svelte" : "React"}/Vite client source and save again.`, {
+    return clientToolchainError(`Client bundle failed: ${message}`, `Fix the ${clientFrameworkCapability(framework)?.label ?? framework}/Vite client source and save again.`, {
         ...(typeof details.code === "string" ? { code: details.code.slice(0, 80) } : {}),
         ...(relativeFile ? { file: relativeFile } : {}),
         ...(Number.isInteger(loc.line) ? { line: loc.line } : {}),

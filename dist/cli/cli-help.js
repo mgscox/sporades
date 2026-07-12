@@ -1,12 +1,16 @@
+import { CLIENT_FRAMEWORKS, CLIENT_TEMPLATES, CLIENT_TOOLCHAINS } from "../client-capabilities.js";
+const frameworkHelp = [...CLIENT_FRAMEWORKS.filter((framework) => framework !== "vanilla"), "vanilla"].join(", ").replace(/, ([^,]+)$/, ", or $1");
+const toolchainHelp = CLIENT_TOOLCHAINS.map((toolchain) => toolchain === "vite" ? "Vite" : toolchain).join(" or ");
+const templateHelp = CLIENT_TEMPLATES.join(", ").replace(/, ([^,]+)$/, ", or $1");
 const HELP_TEXT = {
     create: `Usage: sporades create <name> [options]
 
 Scaffold a new Capsule.
 
 Options:
-  --framework <name>  Client framework: react, preact, inferno, lit, solid, vue, svelte, or vanilla
-  --toolchain <name>  Client toolchain: esbuild or Vite (framework-dependent)
-  --template <name>   Template: blank, todo, guestbook, photo-library, or campfire
+  --framework <name>  Client framework: ${frameworkHelp}
+  --toolchain <name>  Client toolchain: ${toolchainHelp} (framework-dependent)
+  --template <name>   Template: ${templateHelp}
   --no-install        Skip npm install
   --no-git            Skip git initialization
   --json              Write JSON output
