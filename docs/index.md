@@ -25,3 +25,7 @@ features:
 ## Start here
 
 The [user guide](./user-guide.md) walks through building and operating a Capsule. For the platform model and ownership boundaries, continue with the [architecture](./architecture.md).
+
+Using an AI assistant or documentation agent? Start with
+[llms.txt](/llms.txt) for a curated map of release-matched Markdown
+sources.
