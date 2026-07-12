@@ -44,7 +44,7 @@ test("unsupported matrix cells and replacement frameworks remain structurally ab
 });
 
 test("the user-guide capability table is derived-data checked against the runtime matrix", async () => {
-  const guide = await readFile(new URL("../docs/user-guide.md", import.meta.url), "utf8");
+  const guide = await readFile(new URL("../docs/guide/reference.md", import.meta.url), "utf8");
   for (const framework of CLIENT_FRAMEWORKS) {
     const cells = CLIENT_CAPABILITIES.filter((cell) => cell.framework === framework);
     const primary = cells.find((cell) => cell.default);

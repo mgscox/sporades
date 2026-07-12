@@ -1198,7 +1198,7 @@ function clientCapabilityError(framework, toolchain) {
   if (framework === "vanilla" && toolchain === "vite") return { message, hint: "Use React or Preact with Vite, or keep Vanilla TypeScript on esbuild." };
   const definition = clientFrameworkCapability(framework);
   if (definition && defaultClientToolchain(framework) === "vite") return { message, hint: `Use ${definition.label} with Vite.` };
-  return { message, hint: "Choose an admitted pair from the client capability matrix in docs/user-guide.md." };
+  return { message, hint: "Choose an admitted pair from the client capability matrix in docs/guide/reference.md." };
 }
 var CLIENT_FRAMEWORK_HINT = `Use one of: ${CLIENT_FRAMEWORKS.filter((framework) => framework !== "vanilla").join(", ")}, vanilla.`;
 var CLIENT_TOOLCHAIN_HINT = `Use one of: ${CLIENT_TOOLCHAINS.join(", ")}.`;

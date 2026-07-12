@@ -21,15 +21,48 @@ export default defineConfig({
     ],
     sidebar: [
       {
-        text: "Documentation",
+        text: "Start",
         items: [
           { text: "User guide", link: "/user-guide" },
+          { text: "Projects and frameworks", link: "/guide/projects" },
+        ],
+      },
+      {
+        text: "Build",
+        items: [
+          { text: "Server", link: "/guide/server" },
+          { text: "Client", link: "/guide/client" },
+          { text: "Authentication", link: "/guide/auth" },
+          { text: "Files", link: "/guide/files" },
+          { text: "Realtime features", link: "/guide/realtime" },
+          { text: "Jobs and schedules", link: "/guide/background-work" },
+          { text: "Configuration", link: "/guide/configuration" },
+        ],
+      },
+      {
+        text: "Operate",
+        items: [
+          { text: "Local operations", link: "/guide/local-operations" },
+          { text: "Hosting", link: "/guide/hosting" },
+          { text: "Troubleshooting", link: "/guide/troubleshooting" },
+        ],
+      },
+      {
+        text: "Reference",
+        items: [
+          { text: "Feature reference", link: "/guide/reference" },
           { text: "Architecture", link: "/architecture" },
           { text: "Runtime layout", link: "/runtime-layout" },
           { text: "Host server installation", link: "/server-installation" },
+          { text: "SDK documentation", link: "/sdk-documentation" },
+          { text: "API reference", link: "https://mgscox.github.io/sporades/api/" },
+        ],
+      },
+      {
+        text: "Project",
+        items: [
           { text: "Product requirements", link: "/PRD" },
           { text: "Roadmap", link: "/ROADMAP" },
-          { text: "API reference", link: "https://mgscox.github.io/sporades/api/" },
         ],
       },
     ],

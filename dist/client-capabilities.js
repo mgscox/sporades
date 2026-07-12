@@ -52,7 +52,7 @@ export function clientCapabilityError(framework, toolchain) {
     const definition = clientFrameworkCapability(framework);
     if (definition && defaultClientToolchain(framework) === "vite")
         return { message, hint: `Use ${definition.label} with Vite.` };
-    return { message, hint: "Choose an admitted pair from the client capability matrix in docs/user-guide.md." };
+    return { message, hint: "Choose an admitted pair from the client capability matrix in docs/guide/reference.md." };
 }
 export const CLIENT_FRAMEWORK_HINT = `Use one of: ${CLIENT_FRAMEWORKS.filter((framework) => framework !== "vanilla").join(", ")}, vanilla.`;
 export const CLIENT_TOOLCHAIN_HINT = `Use one of: ${CLIENT_TOOLCHAINS.join(", ")}.`;

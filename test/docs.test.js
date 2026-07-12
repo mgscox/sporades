@@ -9,6 +9,24 @@ import { fileURLToPath } from "node:url";
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 async function readProjectFile(relativePath) {
+  if (relativePath === "docs/user-guide.md") {
+    const files = [
+      "docs/user-guide.md",
+      "docs/guide/projects.md",
+      "docs/guide/server.md",
+      "docs/guide/client.md",
+      "docs/guide/auth.md",
+      "docs/guide/files.md",
+      "docs/guide/realtime.md",
+      "docs/guide/background-work.md",
+      "docs/guide/configuration.md",
+      "docs/guide/local-operations.md",
+      "docs/guide/hosting.md",
+      "docs/guide/troubleshooting.md",
+      "docs/guide/reference.md",
+    ];
+    return (await Promise.all(files.map((file) => readFile(path.join(repoRoot, file), "utf8")))).join("\n");
+  }
   return readFile(path.join(repoRoot, relativePath), "utf8");
 }
 
