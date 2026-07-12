@@ -1,10 +1,10 @@
-import { cp, mkdir } from "node:fs/promises";
+import { cp, mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const LIT_PROJECT_PACKAGES = [
   "@esbuild", "@lit", "@rollup", "@types", "csstype", "entities", "esbuild",
   "fdir", "fsevents", "lit", "lit-element", "lit-html", "nanoid", "parse5",
-  "picocolors", "picomatch", "postcss", "rollup", "source-map-js", "tinyglobby", "vite",
+  "picocolors", "picomatch", "postcss", "rollup", "source-map-js", "tinyglobby", "typescript", "vite",
 ];
 
 export async function installProjectLitToolchain(projectDir, repoRoot) {
@@ -17,4 +17,11 @@ export async function installProjectLitToolchain(projectDir, repoRoot) {
       if (error.code !== "ENOENT" || packageName !== "fsevents") throw error;
     }
   }));
+  const sporades = path.join(nodeModules, "sporades");
+  await mkdir(sporades, { recursive: true });
+  await Promise.all([
+    cp(path.join(repoRoot, "src/types/client.d.ts"), path.join(sporades, "client.d.ts")),
+    cp(path.join(repoRoot, "src/types/server.d.ts"), path.join(sporades, "server.d.ts")),
+    writeFile(path.join(sporades, "package.json"), `${JSON.stringify({ name: "sporades", type: "module", exports: { "./client": { types: "./client.d.ts" }, "./server": { types: "./server.d.ts" } } }, null, 2)}\n`),
+  ]);
 }

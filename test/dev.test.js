@@ -535,6 +535,21 @@ async function createLitTemplate(dir, name, template) {
   const projectDir = path.join(dir, name); await installProjectLitToolchain(projectDir, repoRoot); return projectDir;
 }
 
+async function runProjectTsc(projectDir) {
+  return new Promise((resolve) => {
+    const child = spawn(process.execPath, [path.join(projectDir, "node_modules/typescript/bin/tsc"), "--project", "tsconfig.json"], { cwd: projectDir, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "", stderr = ""; child.stdout.on("data", (chunk) => stdout += chunk); child.stderr.on("data", (chunk) => stderr += chunk); child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
+test("every generated Lit template passes its emitted strict TypeScript project", async () => {
+  for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire"]) await withTempDir(async (dir) => {
+    const projectDir = await createLitTemplate(dir, `lit-strict-${template}`, template);
+    const result = await runProjectTsc(projectDir);
+    assert.equal(result.code, 0, `${template}\n${result.stdout}\n${result.stderr}`);
+  });
+});
+
 test("real Lit Guestbook renders query state, mutates, and reconnects controllers", async () => {
   await withTempDir(async (dir) => {
     const projectDir = await createLitTemplate(dir, "lit-guestbook-behavior", "guestbook");
@@ -572,6 +587,25 @@ test("real Lit Photo Library keeps authenticated uploads private and publishes e
   });
 });
 
+test("real Lit Photo Library surfaces and recovers structured sign-in and sign-out failures", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createLitTemplate(dir, "lit-photo-auth", "photo-library");
+    const session = litSource({ ...sessionState(), loading: false }); let signInFails = true, signOutFails = true;
+    const auth = authStub({ async signIn() { return signInFails ? { data: null, error: new Error("Google sign-in failed") } : { data: null, error: null }; }, async signOut() { return signOutFails ? { data: null, error: new Error("Sign-out failed") } : { data: null, error: null }; } });
+    const mutation = { async run() { return { data: null, error: null }; } };
+    const harness = await mountLitTemplate(projectDir, { auth, files: {}, journey: {}, preferences: {}, session, queries: { publicPhotos: litSource({ data: [], error: null, loading: false }), personalPhotos: litSource({ data: [], error: null, loading: false }) }, mutations: { recordPhoto: mutation, updatePhotoIsPublic: mutation, updatePhotoImageUrl: mutation, updatePhotoPublicUrlId: mutation } });
+    const button = (label) => [...harness.element.shadowRoot.querySelectorAll("button")].find((node) => node.textContent.trim() === label);
+    try {
+      button("Sign in with Google").dispatchEvent(new harness.window.Event("click", { bubbles: true })); await harness.settle(); assert.match(harness.text(), /Google sign-in failed/);
+      signInFails = false; button("Sign in with Google").dispatchEvent(new harness.window.Event("click", { bubbles: true })); await harness.settle(); assert.doesNotMatch(harness.text(), /Google sign-in failed/);
+      session.publish({ ...sessionState(), loading: false, auth: { userId: "athos", provider: "google", displayName: "Athos", isAuthenticated: true } }); await harness.settle(); assert(button("Sign out"));
+      button("Sign out").dispatchEvent(new harness.window.Event("click", { bubbles: true })); await harness.settle(); assert.match(harness.text(), /Sign-out failed/); assert(button("Sign out"));
+      signOutFails = false; button("Sign out").dispatchEvent(new harness.window.Event("click", { bubbles: true })); await harness.settle(); assert.doesNotMatch(harness.text(), /Sign-out failed/);
+      session.publish({ ...sessionState(), loading: false }); await harness.settle(); assert(button("Sign in with Google"));
+    } finally { await harness.unmount(); }
+  });
+});
+
 function litCampfireState(calls, journeyOverrides = {}) {
   const mutation = (name) => ({ async run(input) { calls.push([name, input]); return { data: null, error: null }; } });
   let subscriber = () => {};
@@ -594,6 +628,9 @@ test("real Lit Campfire restores consent, publishes TTL activity, and disconnect
       assert(calls.some(([name]) => name === "preferences.get"));
       assert(calls.some(([name, value]) => name === "journey.set" && value.status === "reading" && value.ttlSeconds === 12));
       assert.equal(harness.find('input[type="checkbox"]').checked, true);
+      [...harness.element.shadowRoot.querySelectorAll("button")].find((button) => button.textContent.includes("👍")).dispatchEvent(new harness.window.Event("click", { bubbles: true })); await harness.settle();
+      assert(calls.some(([name, value]) => name === "toggleReaction" && value.messageId === "m1" && value.kind === "up"));
+      assert(calls.some(([name, value]) => name === "journey.set" && value.status === "liked" && value.ttlSeconds === 8));
       state.publishJourney({ data: { type: "snapshot", states: [{ sessionId: "p1", userId: "porthos", status: "reading", metadata: { channel: "ideas" } }] } }); await harness.settle();
       assert.match(harness.text(), /A Musketeer is reading #ideas/);
       const input = harness.find("#message"); input.value = "Protect the crown"; input.dispatchEvent(new harness.window.Event("input", { bubbles: true })); await harness.settle();
@@ -607,6 +644,21 @@ test("real Lit Campfire restores consent, publishes TTL activity, and disconnect
       await harness.disconnect();
       assert(calls.some(([name]) => name === "journey.unsubscribe"));
       assert.equal(state.queries.messagesGeneral.counts.stops, 1); assert.equal(state.session.counts.stops, 1);
+    } finally { await harness.unmount(); }
+  });
+});
+
+test("real Lit Campfire renews typing and cancels it exactly on channel change and disconnect", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createLitTemplate(dir, "lit-campfire-typing-cleanup", "campfire");
+    const calls = [], state = litCampfireState(calls); state.session = litSource({ ...sessionState(), loading: false, auth: { userId: "athos", provider: "email", isGuest: false, isAuthenticated: true } });
+    const harness = await mountLitTemplate(projectDir, state);
+    const typingCount = () => calls.filter(([name, value]) => name === "journey.set" && value?.status === "typing").length;
+    try {
+      await harness.settle(); let input = harness.find("#message"); input.value = "Still typing"; input.dispatchEvent(new harness.window.Event("input", { bubbles: true })); await harness.settle(); const immediate = typingCount(); assert(immediate >= 1);
+      await new Promise((resolve) => setTimeout(resolve, 2600)); assert(typingCount() > immediate, "active typing renews before its four-second TTL");
+      const ideas = [...harness.element.shadowRoot.querySelectorAll("nav button")].find((button) => button.textContent.includes("ideas")); ideas.dispatchEvent(new harness.window.Event("click", { bubbles: true })); await harness.settle(); const afterChannel = typingCount(); await new Promise((resolve) => setTimeout(resolve, 2600)); assert.equal(typingCount(), afterChannel, "channel change cancels the old renewal timer");
+      input = harness.find("#message"); input.value = "New channel typing"; input.dispatchEvent(new harness.window.Event("input", { bubbles: true })); await harness.settle(); const beforeDisconnect = typingCount(); await harness.disconnect(); await new Promise((resolve) => setTimeout(resolve, 2600)); assert.equal(typingCount(), beforeDisconnect, "disconnect cancels renewal exactly");
     } finally { await harness.unmount(); }
   });
 });
@@ -649,6 +701,23 @@ for (const deferredStage of ["journey.enable", "journey.set", "preferences.updat
       assert.equal(calls.filter(([name, _value, owner]) => name === "journey.set" && owner === "porthos-user").length, 0);
       assert.equal(calls.filter(([name, _value, owner]) => name === "preferences.update" && owner === "porthos-user").length, 0);
       assert(calls.some(([name, owner]) => name === "preferences.get" && owner === "porthos-user"));
+    } finally { await harness.unmount(); }
+  });
+});
+
+for (const failureStage of ["journey.set", "preferences.update"]) test(`real Lit Campfire direct consent recovers from structured ${failureStage} failures`, async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createLitTemplate(dir, `lit-campfire-error-${failureStage.replaceAll(".", "-")}`, "campfire");
+    const calls = []; let fail = true;
+    const state = litCampfireState(calls, { async set(value) { calls.push(["journey.set", value]); return fail && failureStage === "journey.set" ? { data: null, error: new Error("Journey publication failed") } : { data: null, error: null }; } });
+    state.session = litSource({ ...sessionState(), loading: false, auth: { userId: "athos", provider: "email", isGuest: false, isAuthenticated: true } });
+    state.preferences.get = async () => ({ data: { preferences: { campfireShareActivity: false } }, error: null });
+    state.preferences.update = async (value) => { calls.push(["preferences.update", value]); return fail && failureStage === "preferences.update" ? { data: null, error: new Error("Preference save failed") } : { data: { preferences: value }, error: null }; };
+    const harness = await mountLitTemplate(projectDir, state);
+    const enable = async () => { const share = harness.find('input[type="checkbox"]'); share.checked = true; share.dispatchEvent(new harness.window.Event("change", { bubbles: true })); await harness.settle(); };
+    try {
+      await harness.settle(); await enable(); assert.equal(harness.find('input[type="checkbox"]').checked, false); assert.match(harness.text(), failureStage === "journey.set" ? /Journey publication failed/ : /Preference save failed/); assert.equal(calls.filter(([name]) => name === "journey.disable").length, 1); if (failureStage === "journey.set") assert.equal(calls.some(([name]) => name === "preferences.update"), false);
+      fail = false; await enable(); assert.equal(harness.find('input[type="checkbox"]').checked, true, "control recovers after a structured failure"); assert.doesNotMatch(harness.text(), failureStage === "journey.set" ? /Journey publication failed/ : /Preference save failed/);
     } finally { await harness.unmount(); }
   });
 });

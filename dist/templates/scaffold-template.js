@@ -182,11 +182,13 @@ class SporadesApp extends LitElement {
   title = ""; selectedFile: File | null = null; publish = false; message = "";
   static styles = css\`:host{display:block;max-width:1080px;margin:auto;padding:40px 0;font-family:system-ui,sans-serif}header,header div,form,.library{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.mark{width:2rem}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}.grid img{width:100%;aspect-ratio:4/3;object-fit:cover}form,.library{background:white;padding:14px;border:1px solid #d8ddd2}\`;
   async requireMutation(mutation: any, ...args: any[]) { const result = await mutation.run(...args); if (result.error) throw result.error; }
+  async signIn() { this.message = ""; const result = await auth.signIn("google"); if (result.error) this.message = result.error.message; this.requestUpdate(); }
+  async signOut() { this.message = ""; const result = await auth.signOut(); if (result.error) this.message = result.error.message; this.requestUpdate(); }
   async submit(event: SubmitEvent) { event.preventDefault(); if (!this.selectedFile) return; this.message = "Uploading..."; this.requestUpdate(); try { const file = await files.upload(this.selectedFile); const isPublic = !this.session.isAuthenticated() || this.publish; const publicUrl = isPublic ? await files.publicUrl(file.id, { noExpiry: true }) : null; const result = await this.recordPhoto.run({ title: this.title, file, isPublic, publicUrl }); if (result.error) { this.message = result.error.message; } else { this.title = ""; this.selectedFile = null; this.publish = false; this.message = isPublic ? "Photo added to the public gallery." : "Photo saved privately."; } } catch (error) { this.message = error instanceof Error ? error.message : "Upload failed."; } this.requestUpdate(); }
   async makePublic(photo: any) { try { const publicUrl = await files.publicUrl(photo.fileId, { noExpiry: true }); await this.requireMutation(this.updatePhotoImageUrl, photo.id, publicUrl.url); await this.requireMutation(this.updatePhotoPublicUrlId, photo.id, publicUrl.id); await this.requireMutation(this.updatePhotoIsPublic, photo.id, true); } catch (error) { this.message = error instanceof Error ? error.message : "Could not publish photo."; } this.requestUpdate(); }
   async makePrivate(photo: any) { try { if (photo.publicUrlId) await files.revokePublicUrl(photo.publicUrlId); await this.requireMutation(this.updatePhotoIsPublic, photo.id, false); await this.requireMutation(this.updatePhotoImageUrl, photo.id, ""); await this.requireMutation(this.updatePhotoPublicUrlId, photo.id, ""); } catch (error) { this.message = error instanceof Error ? error.message : "Could not hide photo."; } this.requestUpdate(); }
   renderPhoto(photo: any) { return html\`<article><img src=\${photo.imageUrl} alt=\${photo.title}><strong>\${photo.title}</strong><span>\${photo.ownerName}</span></article>\`; }
-  render() { const google = this.session.state.auth?.provider === "google"; return html\`<main><header><div><img class="mark" src=\${mark} alt=""><h1>Photo Library</h1></div><div><span>\${this.session.state.auth?.displayName ?? "Anonymous"}</span><button @click=\${() => google ? auth.signOut() : auth.signIn("google")}>\${google ? "Sign out" : "Sign in with Google"}</button></div></header><form @submit=\${(event: SubmitEvent) => this.submit(event)}><input placeholder="Caption" .value=\${this.title} @input=\${(event: InputEvent) => this.title = (event.currentTarget as HTMLInputElement).value}><input type="file" accept="image/*" @change=\${(event: Event) => { this.selectedFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null; this.requestUpdate(); }}><label><input type="checkbox" .checked=\${!this.session.isAuthenticated() || this.publish} ?disabled=\${!this.session.isAuthenticated()} @change=\${(event: Event) => { this.publish = (event.currentTarget as HTMLInputElement).checked; this.requestUpdate(); }}>\${this.session.isAuthenticated() ? "Publish to gallery" : "Anonymous uploads are public"}</label><button ?disabled=\${!this.selectedFile || this.recordPhoto.state.loading}>Upload photo</button>\${this.message ? html\`<p>\${this.message}</p>\` : null}</form><section><h2>Public gallery</h2><div class="grid">\${(this.publicPhotos.state.data ?? []).map((photo) => this.renderPhoto(photo))}</div></section>\${google ? html\`<section><h2>My library</h2>\${(this.personalPhotos.state.data ?? []).map((photo) => html\`<article class="library"><strong>\${photo.title}</strong><span>\${photo.status}</span><button @click=\${() => photo.isPublic ? this.makePrivate(photo) : this.makePublic(photo)}>\${photo.isPublic ? "Make private" : "Make public"}</button></article>\`)}</section>\` : null}</main>\`; }
+  render() { const google = this.session.state.auth?.provider === "google"; return html\`<main><header><div><img class="mark" src=\${mark} alt=""><h1>Photo Library</h1></div><div><span>\${this.session.state.auth?.displayName ?? "Anonymous"}</span><button @click=\${() => google ? this.signOut() : this.signIn()}>\${google ? "Sign out" : "Sign in with Google"}</button></div></header><form @submit=\${(event: SubmitEvent) => this.submit(event)}><input placeholder="Caption" .value=\${this.title} @input=\${(event: InputEvent) => this.title = (event.currentTarget as HTMLInputElement).value}><input type="file" accept="image/*" @change=\${(event: Event) => { this.selectedFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null; this.requestUpdate(); }}><label><input type="checkbox" .checked=\${!this.session.isAuthenticated() || this.publish} ?disabled=\${!this.session.isAuthenticated()} @change=\${(event: Event) => { this.publish = (event.currentTarget as HTMLInputElement).checked; this.requestUpdate(); }}>\${this.session.isAuthenticated() ? "Publish to gallery" : "Anonymous uploads are public"}</label><button ?disabled=\${!this.selectedFile || this.recordPhoto.state.loading}>Upload photo</button>\${this.message ? html\`<p role="status">\${this.message}</p>\` : null}</form><section><h2>Public gallery</h2><div class="grid">\${(this.publicPhotos.state.data ?? []).map((photo) => this.renderPhoto(photo))}</div></section>\${google ? html\`<section><h2>My library</h2>\${(this.personalPhotos.state.data ?? []).map((photo) => html\`<article class="library"><strong>\${photo.title}</strong><span>\${photo.status}</span><button @click=\${() => photo.isPublic ? this.makePrivate(photo) : this.makePublic(photo)}>\${photo.isPublic ? "Make private" : "Make public"}</button></article>\`)}</section>\` : null}</main>\`; }
 }
 customElements.define("sporades-app", SporadesApp);
 `;
@@ -216,8 +218,8 @@ class SporadesApp extends LitElement {
   async lane<T>(action: () => Promise<T>) { const before = this.tail; let release = () => {}; this.tail = new Promise<void>((resolve) => { release = resolve; }); await before; try { return await action(); } finally { release(); } }
   async retire(expected: number | null = null) { this.typingPublisher.dispose(); this.sharing = false; this.requestUpdate(); if (this.owner === null || (expected !== null && this.owner !== expected)) return; this.owner = null; const result = await journey.disable(); if (result?.error) { this.notice = result.error.message; this.requestUpdate(); } }
   async enable(value: number, userId: string, expose = true) { const result = await journey.enable({ capture: { navigation: false, focus: false, interactions: false } }); if (result.error) { this.notice = result.error.message; this.requestUpdate(); return false; } this.owner = value; if (!this.current(value, userId)) { await this.retire(value); return false; } const published = await journey.set({ status: "reading", metadata: { channel: this.channel }, ttlSeconds: 12 }); if (published?.error) { this.notice = published.error.message; await this.retire(value); return false; } if (!this.current(value, userId)) { await this.retire(value); return false; } if (expose) { this.sharing = true; this.requestUpdate(); } return true; }
-  async authChanged(userId: string | undefined, oldUserId: string | undefined) { const value = ++this.generation; await this.lane(async () => { if (oldUserId && oldUserId !== userId) await this.retire(); if (!userId || this.session.state.auth?.isGuest || this.fixturePreparationActive || !this.current(value, userId)) return; const stored = await preferences.get(); if (!this.current(value, userId) || stored.error || stored.data.preferences.campfireShareActivity !== true) return; if (await this.enable(value, userId) && this.current(value, userId)) { this.notice = "Activity sharing restored for this Musketeer."; this.requestUpdate(); } }); }
-  async setShare(enabled: boolean) { const userId = this.session.state.auth?.userId, value = ++this.generation; this.sharing = false; this.requestUpdate(); if (!userId) { this.notice = "Sign in before sharing activity."; this.requestUpdate(); return; } await this.lane(async () => { if (!this.current(value, userId)) return; if (enabled) { if (!await this.enable(value, userId, false) || !this.current(value, userId)) { await this.retire(value); return; } } else { await this.retire(); if (!this.current(value, userId)) return; } if (!this.current(value, userId)) { await this.retire(value); return; } const saved = await preferences.update({ campfireShareActivity: enabled }); if (saved?.error) { this.notice = saved.error.message; if (enabled) await this.retire(value); this.requestUpdate(); return; } if (!this.current(value, userId)) { if (enabled) await this.retire(value); return; } this.sharing = enabled; this.requestUpdate(); }); }
+  async authChanged(userId: string | undefined, oldUserId: string | undefined) { const value = ++this.generation; await this.lane(async () => { if (oldUserId && oldUserId !== userId) await this.retire(); if (!userId || this.session.state.auth?.isGuest || this.fixturePreparationActive || !this.current(value, userId)) return; const stored = await preferences.get(); if (!this.current(value, userId) || stored.error || stored.data?.preferences.campfireShareActivity !== true) return; if (await this.enable(value, userId) && this.current(value, userId)) { this.notice = "Activity sharing restored for this Musketeer."; this.requestUpdate(); } }); }
+  async setShare(enabled: boolean) { const userId = this.session.state.auth?.userId, value = ++this.generation; this.sharing = false; this.notice = ""; this.requestUpdate(); if (!userId) { this.notice = "Sign in before sharing activity."; this.requestUpdate(); return; } await this.lane(async () => { if (!this.current(value, userId)) return; if (enabled) { if (!await this.enable(value, userId, false) || !this.current(value, userId)) { await this.retire(value); return; } } else { await this.retire(); if (!this.current(value, userId)) return; } if (!this.current(value, userId)) { await this.retire(value); return; } const saved = await preferences.update({ campfireShareActivity: enabled }); if (saved?.error) { this.notice = saved.error.message; if (enabled) await this.retire(value); this.requestUpdate(); return; } if (!this.current(value, userId)) { if (enabled) await this.retire(value); return; } this.sharing = enabled; this.requestUpdate(); }); }
   isLocalDemoOrigin(hostname = window.location.hostname) { return ["localhost", "127.0.0.1", "::1"].includes(hostname); }
   async prepareFixtures(people = musketeers) { this.fixturePreparationActive = true; ++this.generation; await this.lane(() => this.retire()); for (const person of people) { let result = await auth.signUp("email", { email: person.email, password, name: person.name }); if (result.error && /already|exists|registered/i.test(result.error.message)) result = await auth.signIn("email", { email: person.email, password }); if (result.error) { this.notice = result.error.message; this.fixturePreparationActive = false; return; } await this.registerFixture.run(person.key); await this.lane(() => this.retire()); await auth.signOut(); } this.fixturePreparationActive = false; const seeded = await this.seedCampfire.run(); this.notice = seeded.error ? seeded.error.message : "Development-only fixtures ready."; this.requestUpdate(); }
   async choose(next: string) { this.typingPublisher.dispose(); this.channel = next; this.requestUpdate(); if (this.sharing) await journey.set({ status: "reading", metadata: { channel: next }, ttlSeconds: 12 }); }
@@ -1296,6 +1298,7 @@ export default capsule({
   jobs: {
     timestampPhotoNames: job((ctx) => {
       const time = new globalThis.Date().toISOString().slice(11, 16);
+      let updated = 0;
       for (const photo of ctx.db.photos.all()) {
         const title = globalThis.String(photo.title).replace(/^\\d{2}:\\d{2}\\s+/, "");
         const fileName = globalThis.String(photo.fileName).replace(/^\\d{2}:\\d{2}\\s+/, "");
@@ -1303,7 +1306,9 @@ export default capsule({
           title: \`\${time} \${title}\`,
           fileName: \`\${time} \${fileName}\`,
         });
+        updated += 1;
       }
+      return { updated };
     }),
   },
 
@@ -1315,7 +1320,7 @@ export default capsule({
   },
 
   mutations: {
-    recordPhoto: mutation((ctx, input) => {
+    recordPhoto: mutation((ctx, input: any) => {
       const file = input?.file;
       if (!file?.id || !file?.name || !file?.type || typeof file?.size !== "number") {
         throw new Error("Upload an image before saving the photo.");
@@ -1395,12 +1400,16 @@ Tailwind is loaded from its browser CDN under Sporades' current fixed client-Bun
 `,
         "server/index.ts": campfireServerTemplate(options.name),
         "client/index.tsx": campfireClientTemplate(options.framework),
-        "client/journey-typing.ts": `export function createTypingPublisher(publish, clock = {}) {
+        "client/journey-typing.ts": `type JourneyTypingState = { status: "typing" | "reading"; metadata: { channel: string }; ttlSeconds: number };
+type Timer = ReturnType<typeof setTimeout>;
+type TypingClock = { now?: () => number; setTimer?: (fn: () => void, delay: number) => Timer; clearTimer?: (timer: Timer) => void };
+
+export function createTypingPublisher(publish: (state: JourneyTypingState) => unknown, clock: TypingClock = {}) {
   const now = clock.now ?? (() => Date.now());
   const setTimer = clock.setTimer ?? ((fn, delay) => setTimeout(fn, delay));
   const clearTimer = clock.clearTimer ?? ((id) => clearTimeout(id));
-  let activeChannel = null, lastPublishedAt = -Infinity, throttleTimer = null, renewTimer = null;
-  const clear = (name) => { if (name !== null) clearTimer(name); };
+  let activeChannel: string | null = null, lastPublishedAt = -Infinity, throttleTimer: Timer | null = null, renewTimer: Timer | null = null;
+  const clear = (name: Timer | null) => { if (name !== null) clearTimer(name); };
   const publishTyping = () => {
     throttleTimer = null;
     if (!activeChannel) return;
@@ -1410,14 +1419,14 @@ Tailwind is loaded from its browser CDN under Sporades' current fixed client-Bun
     renewTimer = setTimer(publishTyping, 2500);
   };
   return {
-    input(value, channel) {
+    input(value: string, channel: string) {
       if (!value) { this.stop(channel); return; }
       activeChannel = channel;
       const remaining = 750 - (now() - lastPublishedAt);
       if (remaining <= 0) publishTyping();
       else if (throttleTimer === null) throttleTimer = setTimer(publishTyping, remaining);
     },
-    stop(channel) {
+    stop(channel: string) {
       activeChannel = null;
       clear(throttleTimer); clear(renewTimer); throttleTimer = renewTimer = null;
       publish({ status: "reading", metadata: { channel }, ttlSeconds: 12 });
@@ -1426,7 +1435,9 @@ Tailwind is loaded from its browser CDN under Sporades' current fixed client-Bun
   };
 }
 `,
-        "client/journey-lifecycle.ts": `export async function retireJourneyConsent({ typingPublisher, journey, setSharing }) {
+        "client/journey-lifecycle.ts": `type JourneyConsentLifecycle = { typingPublisher: { dispose(): void }; journey: { disable(): Promise<unknown> }; setSharing(value: boolean): void };
+
+export async function retireJourneyConsent({ typingPublisher, journey, setSharing }: JourneyConsentLifecycle) {
   typingPublisher.dispose();
   await journey.disable();
   setSharing(false);
@@ -1479,8 +1490,8 @@ export default capsule({
   },
   mutations: {
     seedCampfire: mutation((ctx) => {
-      const created = [], alreadyPresent = [], failed = [];
-      const ensure = (type, key, exists, create) => { try { if (exists()) alreadyPresent.push({ type, key }); else { create(); created.push({ type, key }); } } catch (error) { failed.push({ type, key, message: error instanceof Error ? error.message : "Unknown seed failure." }); } };
+      const created: Array<{ type: string; key: string }> = [], alreadyPresent: Array<{ type: string; key: string }> = [], failed: Array<{ type: string; key: string; message: string }> = [];
+      const ensure = (type: string, key: string, exists: () => boolean, create: () => unknown) => { try { if (exists()) alreadyPresent.push({ type, key }); else { create(); created.push({ type, key }); } } catch (error) { failed.push({ type, key, message: error instanceof Error ? error.message : "Unknown seed failure." }); } };
       for (const slug of channels) ensure("channel", slug, () => ctx.db.channels.where("slug", slug).all().length > 0, () => ctx.db.channels.insert({ slug, name: slug }));
       ensure("message", "general-welcome", () => ctx.db.messages.where("seedKey", "general-welcome").all().length > 0, () => ctx.db.messages.insert({ channel: "general", body: "The Queen requires discretion.", authorId: "fixture:athos", authorName: fixtureNames.athos, seedKey: "general-welcome", reactions: {} }));
       ensure("message", "ideas-welcome", () => ctx.db.messages.where("seedKey", "ideas-welcome").all().length > 0, () => ctx.db.messages.insert({ channel: "ideas", body: "And refreshments.", authorId: "fixture:porthos", authorName: fixtureNames.porthos, seedKey: "ideas-welcome", reactions: {} }));
@@ -1490,7 +1501,9 @@ export default capsule({
     }),
     registerFixture: mutation((ctx, key: any) => {
       if (!Object.prototype.hasOwnProperty.call(fixtureNames, key)) throw new Error("Unknown Musketeer.");
-      if (!ctx.db.profiles.where("userId", ctx.auth.userId).all().length) ctx.db.profiles.insert({ userId: ctx.auth.userId, key, name: fixtureNames[key] });
+      const fixtureKey = key as keyof typeof fixtureNames;
+      if (!ctx.db.profiles.where("userId", ctx.auth.userId).all().length) ctx.db.profiles.insert({ userId: ctx.auth.userId, key: fixtureKey, name: fixtureNames[fixtureKey] });
+      return { registered: true };
     }),
     sendMessage: mutation((ctx, input: any) => {
       const channel = globalThis.String(input?.channel ?? "");
@@ -1506,7 +1519,7 @@ export default capsule({
       const message = ctx.db.messages.where("id", input?.messageId).all()[0];
       if (!message) throw new Error("Message not found.");
       const identity = ctx.auth.userId + ":" + kind;
-      const reactions = { ...(message.reactions ?? {}) };
+      const reactions: Record<string, boolean> = { ...((message.reactions ?? {}) as Record<string, boolean>) };
       if (reactions[identity]) { delete reactions[identity]; ctx.db.messages.update(message.id, { reactions }); return { active: false }; }
       reactions[identity] = true;
       ctx.db.messages.update(message.id, { reactions });

@@ -379,7 +379,8 @@ test("Campfire typing publication is throttled and renewed while input remains a
     const result = await runCli(["create", "cadence-campfire", "--template", "campfire", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(result.code, 0, result.stderr);
     const source = await readFile(path.join(dir, "cadence-campfire", "client/journey-typing.ts"), "utf8");
-    const { createTypingPublisher } = await import(`data:text/javascript,${encodeURIComponent(source)}`);
+    const compiled = await transform(source, { loader: "ts", format: "esm" });
+    const { createTypingPublisher } = await import(`data:text/javascript,${encodeURIComponent(compiled.code)}`);
     let now = 0;
     let nextTimer = 1;
     const timers = new Map();
@@ -411,7 +412,8 @@ test("Campfire auth transitions retire Journey consent and typing timers", async
     assert.equal(result.code, 0, result.stderr);
     const source = await readFile(path.join(dir, "lifecycle-campfire", "client/journey-lifecycle.ts"), "utf8");
     const client = await readFile(path.join(dir, "lifecycle-campfire", "client/index.tsx"), "utf8");
-    const { retireJourneyConsent } = await import(`data:text/javascript,${encodeURIComponent(source)}`);
+    const compiled = await transform(source, { loader: "ts", format: "esm" });
+    const { retireJourneyConsent } = await import(`data:text/javascript,${encodeURIComponent(compiled.code)}`);
     const calls = [];
     await retireJourneyConsent({
       typingPublisher: { dispose: () => calls.push("dispose") },
