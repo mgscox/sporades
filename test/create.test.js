@@ -704,6 +704,37 @@ test("sporades create scaffolds an idiomatic Solid/Vite blank Capsule by default
   });
 });
 
+test("sporades create admits Lit/Vite blank and todo with project-owned Lit and structured boundaries", async () => {
+  await withTempDir(async (dir) => {
+    for (const template of ["blank", "todo"]) {
+      const result = await runCli(["create", `lit-${template}`, "--framework", "lit", "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
+      assert.equal(result.code, 0, result.stderr || result.stdout);
+      const project = path.join(dir, `lit-${template}`);
+      const [config, html, client, packageJson, tsconfig] = await Promise.all([
+        readFile(path.join(project, "sporades.json"), "utf8").then(JSON.parse), readFile(path.join(project, "index.html"), "utf8"),
+        readFile(path.join(project, "client", "index.ts"), "utf8"), readFile(path.join(project, "package.json"), "utf8").then(JSON.parse),
+        readFile(path.join(project, "tsconfig.json"), "utf8").then(JSON.parse),
+      ]);
+      assert.deepEqual(config.client, { framework: "lit", toolchain: "vite" });
+      assert.match(html, /<sporades-app><\/sporades-app>[\s\S]*src="\/client\/index\.ts"/);
+      assert.match(client, /class SporadesApp extends LitElement/);
+      assert.match(client, /createLitControllers/);
+      assert.match(client, /static styles = css/);
+      if (template === "todo") assert.match(client, /queryController<Todo\[]>[\s\S]*mutationController/);
+      assert.equal(packageJson.dependencies.lit, "^3.2.1");
+      assert.equal(packageJson.devDependencies["@lit/reactive-element"], undefined);
+      assert.equal(packageJson.dependencies.react, undefined);
+      assert.equal(packageJson.dependencies["react-dom"], undefined);
+      assert.equal(tsconfig.compilerOptions.experimentalDecorators, undefined);
+      assert.doesNotMatch(`${html}\n${client}`, /from "react|react-dom|createRoot/);
+    }
+    const esbuild = await runCli(["create", "lit-esbuild", "--framework", "lit", "--toolchain", "esbuild", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.deepEqual(JSON.parse(esbuild.stdout).error, { message: "Unsupported client framework/toolchain combination: lit/esbuild", hint: "Use Lit with Vite." });
+    const richer = await runCli(["create", "lit-guestbook", "--framework", "lit", "--template", "guestbook", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.deepEqual(JSON.parse(richer.stdout).error, { message: "Unsupported client template for Lit: guestbook", hint: "Use Lit with the blank or todo template." });
+  });
+});
+
 test("sporades create admits every Solid/Vite template and rejects the unsupported toolchain structurally", async () => {
   await withTempDir(async (dir) => {
     const todo = await runCli(["create", "solid-todo", "--framework", "solid", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
@@ -1184,7 +1215,7 @@ test("sporades create rejects unsupported framework values with structured JSON"
       data: null,
       error: {
         message: "Unsupported framework: angular",
-        hint: "Use one of: react, preact, solid, vue, svelte, vanilla.",
+        hint: "Use one of: react, preact, lit, solid, vue, svelte, vanilla.",
       },
     });
   });

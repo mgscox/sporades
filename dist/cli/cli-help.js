@@ -4,8 +4,8 @@ const HELP_TEXT = {
 Scaffold a new Capsule.
 
 Options:
-  --framework <name>  Client framework: react, preact, solid, vue, svelte, or vanilla
-  --toolchain <name>  Client toolchain: esbuild (default) or vite (React only)
+  --framework <name>  Client framework: react, preact, lit, solid, vue, svelte, or vanilla
+  --toolchain <name>  Client toolchain: esbuild or Vite (framework-dependent)
   --template <name>   Template: blank, todo, guestbook, photo-library, or campfire
   --no-install        Skip npm install
   --no-git            Skip git initialization

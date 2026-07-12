@@ -22,7 +22,7 @@ import { createGithubAutodeployWorkflow } from "./github-autodeploy-workflow.js"
 import { SECURITY_SESSIONS, authorizedKeyFingerprint, readBaseImageUpdatePolicy, readOptionalProjectSecurity, readProjectConfig, resolveAuthorizedKeyLines, resolveEffectiveSecurityPolicy, resolveLocalContainerSshAccess, withRuntimeSecuritySession, } from "./project-config.js";
 import { commandError, errorDetails, writeResult } from "./cli-support.js";
 import { CLI_VERSION } from "./cli-version.js";
-const SUPPORTED_FRAMEWORKS = new Set(["react", "preact", "solid", "vue", "svelte", "vanilla"]);
+const SUPPORTED_FRAMEWORKS = new Set(["react", "preact", "lit", "solid", "vue", "svelte", "vanilla"]);
 const SUPPORTED_CLIENT_TOOLCHAINS = new Set(["esbuild", "vite"]);
 const SUPPORTED_TEMPLATES = new Set(["blank", "todo", "guestbook", "photo-library", "campfire"]);
 const DEV_SESSION_FILE = path.join(".sporades", "dev-session.json");
@@ -253,9 +253,9 @@ function parseCreateArgs(args) {
         throw commandError("Missing scaffold name.", "Use `sporades create <name>`.");
     }
     if (framework !== null && !SUPPORTED_FRAMEWORKS.has(framework)) {
-        throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, solid, vue, svelte, vanilla.");
+        throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, lit, solid, vue, svelte, vanilla.");
     }
-    toolchain ??= framework === "solid" || framework === "vue" || framework === "svelte" ? "vite" : "esbuild";
+    toolchain ??= framework === "lit" || framework === "solid" || framework === "vue" || framework === "svelte" ? "vite" : "esbuild";
     if (!SUPPORTED_CLIENT_TOOLCHAINS.has(toolchain)) {
         throw commandError(`Unsupported client toolchain: ${toolchain}`, "Use one of: esbuild, vite.");
     }
@@ -270,6 +270,12 @@ function parseCreateArgs(args) {
     }
     if (framework === "solid" && toolchain !== "vite") {
         throw commandError(`Unsupported client framework/toolchain combination: solid/${toolchain}`, "Use SolidJS with Vite.");
+    }
+    if (framework === "lit" && toolchain !== "vite") {
+        throw commandError(`Unsupported client framework/toolchain combination: lit/${toolchain}`, "Use Lit with Vite.");
+    }
+    if (framework === "lit" && !["blank", "todo"].includes(template)) {
+        throw commandError(`Unsupported client template for Lit: ${template}`, "Use Lit with the blank or todo template.");
     }
     if (!SUPPORTED_TEMPLATES.has(template)) {
         throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");

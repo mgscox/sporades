@@ -113,7 +113,7 @@ export default capsule({
 ```
 
 Client scaffolds wire `sporades/client` into React or Preact hooks, Vue
-composables, Svelte stores, SolidJS signals, or framework-neutral subscriptions
+composables, Svelte stores, SolidJS signals, Lit reactive controllers, or framework-neutral subscriptions
 so the UI can consume queries, mutations, and auth without hand-rolled fetch plumbing.
 
 ## What You Get
@@ -128,6 +128,8 @@ Sporades currently includes:
   consent, caller-renewed Journey TTL state, and deterministic cleanup.
 - SolidJS/Vite scaffolds across the complete template set, with native JSX,
   signals, identity-safe Campfire consent, and reactive-root cleanup.
+- Lit/Vite `blank` and `todo` Web Component scaffolds with component styles and
+  host-lifecycle reactive controllers.
 - Local Dev sessions with rebuilds, WebSocket reconnects, SQLite persistence,
   logs, database inspection, auth helpers, and file storage.
 - Local Docker Container sessions for production-like staging tests.
@@ -162,7 +164,7 @@ sporades --help
 
 Sporades depends on `esbuild` for the Server Bundle and default client builds;
 React and Preact clients can explicitly use the runtime-owned Vite adapter;
-Vue, Svelte, and SolidJS select Vite. On newer npm versions, you
+Vue, Svelte, SolidJS, and Lit select Vite. On newer npm versions, you
 may see an `allow-scripts` warning during global install because `esbuild` uses
 a postinstall script to select the native binary for your platform.
 

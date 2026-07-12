@@ -14,6 +14,8 @@ import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
 import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
+import { installProjectLitToolchain } from "./support/project-lit-toolchain.js";
+import { mountLitTemplate } from "./support/lit-template-harness.js";
 import { mountSvelteTemplate } from "./support/svelte-template-harness.js";
 import { mountSolidTemplate } from "./support/solid-template-harness.js";
 import { mountVueTemplate } from "./support/vue-template-harness.js";
@@ -491,6 +493,36 @@ function campfireHarnessState(calls, journeyOverrides = {}) {
     },
   };
 }
+
+test("real Lit todo host renders controller state, drives mutation, and reconnects exact ownership", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", "lit-todo-behavior", "--framework", "lit", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr || created.stdout);
+    const projectDir = path.join(dir, "lit-todo-behavior");
+    await installProjectLitToolchain(projectDir, repoRoot);
+    const calls = [], queryListeners = new Set(), authListeners = new Set();
+    const counts = { queryStarts: 0, queryStops: 0, authStarts: 0, authStops: 0 };
+    const harness = await mountLitTemplate(projectDir, {
+      auth: authStub(),
+      session: { subscribe(listener) { counts.authStarts += 1; authListeners.add(listener); listener({ auth: null, providers: {}, loading: false, error: null }); return { unsubscribe() { if (authListeners.delete(listener)) counts.authStops += 1; } }; } },
+      queries: { todos: { subscribe(listener) { counts.queryStarts += 1; queryListeners.add(listener); listener({ data: [{ id: "lit-1", text: "Cross the real host seam" }], error: null, loading: false }); return { unsubscribe() { if (queryListeners.delete(listener)) counts.queryStops += 1; } }; } } },
+      mutations: { addTodo: { async run(value) { calls.push(value); return { data: { id: "lit-2" }, error: null }; } } },
+    });
+    try {
+      assert.match(harness.text(), /Sporades Todos.*Cross the real host seam/s);
+      assert.deepEqual(counts, { queryStarts: 1, queryStops: 0, authStarts: 1, authStops: 0 });
+      const input = harness.find('input[aria-label="Todo"]'); input.value = "Ship Lit"; input.dispatchEvent(new harness.window.Event("input", { bubbles: true }));
+      harness.find("form").dispatchEvent(new harness.window.Event("submit", { bubbles: true, cancelable: true }));
+      await harness.settle();
+      assert.deepEqual(calls, ["Ship Lit"]);
+      await harness.disconnect(); await harness.disconnect();
+      assert.deepEqual(counts, { queryStarts: 1, queryStops: 1, authStarts: 1, authStops: 1 });
+      await harness.reconnect();
+      assert.deepEqual(counts, { queryStarts: 2, queryStops: 1, authStarts: 2, authStops: 1 });
+    } finally { await harness.unmount(); }
+    assert.deepEqual(counts, { queryStarts: 2, queryStops: 2, authStarts: 2, authStops: 2 });
+  });
+});
 
 async function writePackage(projectDir, packageName, exports, files) {
   const packageDir = path.join(projectDir, "node_modules", packageName);
@@ -2489,6 +2521,44 @@ for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire
       await new Promise((resolve) => child.once("exit", resolve));
       events.dispose();
     }
+  });
+});
+
+for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good Lit ${template} output and recovers through acknowledged refresh`, async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(["create", `lit-${template}-dev`, "--template", template, "--framework", "lit", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(created.code, 0, created.stderr || created.stdout);
+    const projectDir = path.join(dir, `lit-${template}-dev`);
+    await installProjectLitToolchain(projectDir, repoRoot);
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8")); config.dev.port = 0; await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    const clientPath = path.join(projectDir, "client", "index.ts"), original = await readFile(clientPath, "utf8");
+    const child = startCli(["dev", "--json"], { cwd: projectDir }), events = captureJsonEvents(child);
+    let socket, messages;
+    try {
+      const scrub = (html) => html.replace(/window\.__SPORADES_CONNECTION_TOKEN="[^"]+"/, 'window.__SPORADES_CONNECTION_TOKEN="<token>"');
+      const started = await events.next((event) => event.ok && event.data?.event === "started");
+      const initialHtml = scrub(await (await fetch(started.data.url)).text());
+      socket = await openSocket(started.data.url); messages = captureSocketMessages(socket);
+      socket.send(JSON.stringify({ id: "lit-dev-ready", type: "dev.refresh.subscribe" }));
+      assert.deepEqual(await messages.next((message) => message.id === "lit-dev-ready"), { id: "lit-dev-ready", type: "dev.refresh.ready", data: { mode: "full-page", sequence: 0 }, error: null });
+      const refresh = messages.next((message) => message.type === "refresh");
+      await writeFile(clientPath, original.replace("customElements.define", 'console.info("Lit rebuilt");\ncustomElements.define'));
+      assert.equal((await refresh).data.sequence, 1);
+      assert.equal(events.events.some((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success"), false);
+      socket.send(JSON.stringify({ id: null, type: "dev.refresh.received", sequence: 1 }));
+      const rebuilt = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assert.deepEqual(rebuilt.data.build, { phase: "client", framework: "lit", toolchain: "vite" }); assertDevRefreshDelivery(rebuilt.data.refresh, 1);
+      const lastGood = scrub(await (await fetch(started.data.url)).text()); assert.notEqual(lastGood, initialHtml);
+      await writeFile(clientPath, "export class = ;\n");
+      const failed = await events.next((event) => !event.ok && event.data?.event === "rebuild");
+      assert.deepEqual(failed.data.build, { phase: "client", framework: "lit", toolchain: "vite" });
+      assert.match(failed.error.hint, /Lit\/Vite client source/); assert(JSON.stringify(failed).length < 4096); assert.equal(scrub(await (await fetch(started.data.url)).text()), lastGood);
+      const recoveredRefresh = messages.next((message) => message.type === "refresh"); await writeFile(clientPath, original);
+      assert.equal((await recoveredRefresh).data.sequence, 2); socket.send(JSON.stringify({ id: null, type: "dev.refresh.received", sequence: 2 }));
+      const recovered = await events.next((event) => event.ok && event.data?.event === "rebuild" && event.data.status === "success");
+      assertDevRefreshDelivery(recovered.data.refresh, 2);
+    } finally { messages?.dispose(); await closeSocketGracefully(socket); child.kill("SIGTERM"); await new Promise((resolve) => child.once("exit", resolve)); events.dispose(); }
   });
 });
 

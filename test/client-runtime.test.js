@@ -174,6 +174,60 @@ test("Solid mutation state is pending-counted and latest-invocation deterministi
   } finally { browser.cleanup(); }
 });
 
+test("Lit controllers own query and auth observation through exact host lifecycle", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  try {
+    const runtime = await importClientRuntime();
+    let queryPublish, authPublish, queryStarts = 0, queryStops = 0, authStarts = 0, authStops = 0;
+    runtime.queries.subscribe = (_name, publish) => { queryStarts += 1; queryPublish = publish; return { unsubscribe() { queryStops += 1; } }; };
+    runtime.auth.subscribe = (publish) => { authStarts += 1; authPublish = publish; return { unsubscribe() { authStops += 1; } }; };
+    const controllers = [], updates = [];
+    const host = { addController(controller) { controllers.push(controller); }, requestUpdate() { updates.push("update"); } };
+    const lit = runtime.createLitControllers();
+    const query = lit.queryController(host, "todos");
+    const session = lit.authController(host);
+    assert.deepEqual(controllers, [query, session]);
+    assert.deepEqual(query.state, { data: null, error: null, loading: true });
+    assert.deepEqual(session.state, { auth: null, providers: {}, loading: true, error: null });
+    assert.deepEqual([queryStarts, authStarts], [0, 0]);
+    for (const controller of controllers) { controller.hostConnected(); controller.hostConnected(); }
+    assert.deepEqual([queryStarts, authStarts], [1, 1], "duplicate connect is idempotent");
+    queryPublish({ data: [{ id: "lit-1" }], error: null, loading: false });
+    authPublish({ auth: anonymousAuth, providers: {}, error: null, loading: false });
+    assert.equal(query.state.data[0].id, "lit-1");
+    assert.equal(session.isAuthenticated(), false);
+    assert.equal(updates.length, 2);
+    for (const controller of controllers) { controller.hostDisconnected(); controller.hostDisconnected(); }
+    assert.deepEqual([queryStops, authStops], [1, 1], "duplicate disconnect releases once");
+    for (const controller of controllers) controller.hostConnected();
+    assert.deepEqual([queryStarts, authStarts], [2, 2], "same host reconnect owns fresh subscriptions");
+    for (const controller of controllers) controller.hostDisconnected();
+    assert.deepEqual([queryStops, authStops], [2, 2]);
+  } finally { browser.cleanup(); }
+});
+
+test("Lit mutation controller is pending-counted and latest-invocation deterministic", async () => {
+  const browser = installBrowserFakes(anonymousAuth);
+  const deferred = () => { let resolve, reject; const promise = new Promise((yes, no) => { resolve = yes; reject = no; }); return { promise, resolve, reject }; };
+  try {
+    const runtime = await importClientRuntime();
+    const calls = [], updates = [];
+    runtime.mutations.run = (_name, value) => { const call = deferred(); calls.push({ value, ...call }); return call.promise; };
+    const host = { addController() {}, requestUpdate() { updates.push("update"); } };
+    const mutation = runtime.createLitControllers().mutationController(host, "save");
+    const first = mutation.run("A"), latest = mutation.run("B");
+    assert.equal(mutation.state.loading, true);
+    calls[1].resolve({ data: { value: "B" }, error: null }); await latest;
+    assert.deepEqual(mutation.state, { data: { value: "B" }, error: null, loading: true });
+    calls[0].resolve({ data: { value: "A" }, error: null }); await first;
+    assert.deepEqual(mutation.state, { data: { value: "B" }, error: null, loading: false });
+    const rejected = mutation.run("C"); calls[2].reject(new Error("Lit transport failed"));
+    await assert.rejects(rejected, /Lit transport failed/);
+    assert.deepEqual(mutation.state, { data: null, error: { message: "Lit transport failed" }, loading: false });
+    assert(updates.length >= 5, "each visible mutation state transition requests a host update");
+  } finally { browser.cleanup(); }
+});
+
 test("Svelte stores lazily own one query and auth observation across subscribers and resubscribe deterministically", async () => {
   const browser = installBrowserFakes(anonymousAuth);
   try {

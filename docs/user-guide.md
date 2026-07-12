@@ -211,15 +211,16 @@ sporades create no-install-yet --no-install --no-git
 Available templates are `blank`, `todo`, `guestbook`, `photo-library`, and
 `campfire`. Campfire demonstrates realtime messaging, durable reactions, email
 fixture identities, and explicitly consented ephemeral Journey activity.
-Available client frameworks are `react`, `preact`, `solid`, `vue`, `svelte`,
+Available client frameworks are `react`, `preact`, `lit`, `solid`, `vue`, `svelte`,
 and framework-neutral Vanilla TypeScript. esbuild remains the React and Preact default client
 toolchain, and they can explicitly select Vite with `--toolchain vite`. Vue
 selects Vite and supports the complete template set. Svelte and SolidJS also
-select Vite and support the complete template set; Vanilla TypeScript remains
-on esbuild.
+select Vite and support the complete template set. Lit selects Vite for native
+`blank` and `todo` Web Components; Vanilla TypeScript remains on esbuild.
 
-React/Vite, Preact/Vite, and SolidJS/Vite scaffolds reference `/client/index.tsx`; Vue/Vite
-and Svelte/Vite reference `/client/index.ts` and compile native `client/App.vue`
+React/Vite, Preact/Vite, and SolidJS/Vite scaffolds reference `/client/index.tsx`; Lit/Vite,
+Vue/Vite, and Svelte/Vite reference `/client/index.ts`. Lit defines the
+`<sporades-app>` Web Component directly, while Vue and Svelte compile native `client/App.vue`
 or `client/App.svelte` components respectively. SolidJS authors native JSX in
 `client/App.tsx` with `jsxImportSource: "solid-js"`. All
 keep `index.html` author-owned. Sporades runs Vite as an isolated one-shot build

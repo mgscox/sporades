@@ -345,6 +345,43 @@ export type SporadesSolidPrimitives = {
   createAuth(): SolidAuth;
 };
 
+/** Minimal Lit reactive-controller host contract used by Sporades controllers. */
+export type LitReactiveControllerHost = {
+  addController(controller: LitReactiveController): void;
+  requestUpdate(): void;
+};
+
+/** Lit host lifecycle callbacks owned by a Sporades reactive controller. */
+export type LitReactiveController = {
+  hostConnected?(): void;
+  hostDisconnected?(): void;
+};
+
+/** Host-owned Lit query controller over the shared Sporades connection. */
+export type LitQueryController<Data = unknown> = LitReactiveController & { state: QueryState<Data> };
+
+/** Host-owned Lit mutation controller with latest-invocation state semantics. */
+export type LitMutationController<Result = unknown> = LitReactiveController & {
+  state: SolidMutationState<Result>;
+  run(...args: unknown[]): Promise<SporadesResult<Result>>;
+};
+
+/** Host-owned Lit auth controller with direct auth commands. */
+export type LitAuthController = LitReactiveController & {
+  state: AuthObserverState;
+  isAuthenticated(): boolean;
+  signUp: AuthApi["signUp"];
+  signIn: AuthApi["signIn"];
+  signOut: AuthApi["signOut"];
+};
+
+/** Lit reactive-controller factories over the shared framework-neutral client connection. */
+export type SporadesLitControllers = {
+  queryController<Data = unknown>(host: LitReactiveControllerHost, name: string): LitQueryController<Data>;
+  mutationController<Result = unknown>(host: LitReactiveControllerHost, name: string): LitMutationController<Result>;
+  authController(host: LitReactiveControllerHost): LitAuthController;
+};
+
 /** Minimal Svelte-compatible readable store contract. */
 export type SvelteReadable<State> = {
   subscribe(listener: (state: State) => void): () => void;
@@ -412,5 +449,7 @@ export function createHooks(primitives: HookPrimitives): SporadesHooks;
 export function createVueComposables(primitives: VueComposablePrimitives): SporadesVueComposables;
 /** Bind root-owned SolidJS signals and cleanup to the shared Sporades client connection. */
 export function createSolidPrimitives(primitives: SolidPrimitiveInputs): SporadesSolidPrimitives;
+/** Create Lit reactive controllers bound to their host element lifecycle. */
+export function createLitControllers(): SporadesLitControllers;
 /** Create lazily observed Svelte-compatible stores for query, mutation, and auth state. */
 export function createSvelteStores(): SporadesSvelteStores;

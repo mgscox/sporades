@@ -9,6 +9,7 @@ export const queries = runtime.queries;
 export const createHooks = runtime.createHooks;
 export const createVueComposables = runtime.createVueComposables;
 export const createSolidPrimitives = runtime.createSolidPrimitives;
+export const createLitControllers = runtime.createLitControllers;
 export const createSvelteStores = runtime.createSvelteStores;
 export const isAuthenticated = runtime.isAuthenticated;
 export const onMessage = runtime.onMessage;

@@ -49,11 +49,11 @@ export function validateClientToolchainInput(options: {
   indexHtml: string;
 }) {
   if (options.toolchain !== "vite") return;
-  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "solid" ? "SolidJS" : options.frameworkConfig.framework === "vue" ? "Vue" : options.frameworkConfig.framework === "svelte" ? "Svelte" : "React";
-  if (!new Set(["react", "preact", "solid", "vue", "svelte"]).has(options.frameworkConfig.framework)) {
+  const frameworkLabel = options.frameworkConfig.framework === "preact" ? "Preact" : options.frameworkConfig.framework === "lit" ? "Lit" : options.frameworkConfig.framework === "solid" ? "SolidJS" : options.frameworkConfig.framework === "vue" ? "Vue" : options.frameworkConfig.framework === "svelte" ? "Svelte" : "React";
+  if (!new Set(["react", "preact", "lit", "solid", "vue", "svelte"]).has(options.frameworkConfig.framework)) {
     throw clientToolchainError(
       `Unsupported client framework/toolchain combination: ${options.frameworkConfig.framework}/vite`,
-      "Use React, Preact, SolidJS, Vue, or Svelte with Vite, or keep Vanilla TypeScript on esbuild.",
+      "Use React, Preact, Lit, SolidJS, Vue, or Svelte with Vite, or keep Vanilla TypeScript on esbuild.",
     );
   }
   if (referencesLegacyClientShell(options.indexHtml)) {
@@ -395,7 +395,7 @@ function viteBuildError(error: unknown, projectRoots: string[], framework: strin
   const relativeFile = rawFile ? safeRelativeDiagnosticPath(projectRoots, rawFile) : null;
   return clientToolchainError(
     `Client bundle failed: ${message}`,
-    `Fix the ${framework === "preact" ? "Preact" : framework === "solid" ? "SolidJS" : framework === "vue" ? "Vue" : framework === "svelte" ? "Svelte" : "React"}/Vite client source and save again.`,
+    `Fix the ${framework === "preact" ? "Preact" : framework === "lit" ? "Lit" : framework === "solid" ? "SolidJS" : framework === "vue" ? "Vue" : framework === "svelte" ? "Svelte" : "React"}/Vite client source and save again.`,
     {
       ...(typeof details.code === "string" ? { code: details.code.slice(0, 80) } : {}),
       ...(relativeFile ? { file: relativeFile } : {}),

@@ -13,6 +13,7 @@ import { createWebSocketHub, openDevDatabase, prepareHttpSecurity, routeRuntimeH
 import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
 import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
+import { installProjectLitToolchain } from "./support/project-lit-toolchain.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -4200,6 +4201,8 @@ process.exit(0);
 for (const { framework, template } of [
   { framework: "react", template: "blank" },
   { framework: "preact", template: "blank" },
+  { framework: "lit", template: "blank" },
+  { framework: "lit", template: "todo" },
   { framework: "solid", template: "blank" },
   { framework: "solid", template: "todo" },
   { framework: "solid", template: "guestbook" },
@@ -4229,7 +4232,7 @@ for (const { framework, template } of [
     );
     assert.equal(created.code, 0, created.stderr);
     const projectDir = path.join(dir, "vite-hosted");
-    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : framework === "solid" ? (project) => installProjectSolidToolchain(project, repoRoot) : framework === "vue" ? installVue : (project) => installProjectSvelteToolchain(project, repoRoot))(projectDir);
+    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : framework === "lit" ? (project) => installProjectLitToolchain(project, repoRoot) : framework === "solid" ? (project) => installProjectSolidToolchain(project, repoRoot) : framework === "vue" ? installVue : (project) => installProjectSvelteToolchain(project, repoRoot))(projectDir);
     if (template === "photo-library") {
       const configPath = path.join(projectDir, "sporades.json");
       const config = JSON.parse(await readFile(configPath, "utf8"));
@@ -4272,6 +4275,10 @@ for (const { framework, template } of [
     if (framework === "solid") {
       assert.match(publicText, { blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/, "photo-library": /Photo Library/, campfire: /Campfire/ }[template]);
       assert.doesNotMatch(publicText, /react-dom|react\/jsx-runtime/);
+    }
+    if (framework === "lit") {
+      assert.match(publicText, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+      assert.doesNotMatch(publicText, /react-dom|react\/jsx-runtime|node_modules\/react/);
     }
     if (framework === "vue") assert.match(publicText, {
       blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,

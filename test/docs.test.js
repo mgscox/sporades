@@ -133,6 +133,19 @@ test("published docs and API reference describe the admitted SolidJS client cont
   assert.match(api, /Bind root-owned SolidJS signals and cleanup/);
 });
 
+test("published docs and API reference describe the admitted Lit controller contract", async () => {
+  const [readme, prd, guide, clientTypes, api] = await Promise.all([
+    readProjectFile("README.md"), readProjectFile("docs/PRD.md"), readProjectFile("docs/user-guide.md"),
+    readProjectFile("src/types/client.d.ts"), readProjectFile("docs/api/functions/client.createLitControllers.html"),
+  ]);
+  assert.match(readme, /Lit\/Vite `blank` and `todo` Web Component scaffolds/);
+  assert.match(prd, /Lit\/Vite admission for native `blank` and `todo` Web Components/);
+  assert.match(prd, /createLitControllers/);
+  assert.match(guide, /`lit`[\s\S]*Lit selects Vite[\s\S]*`blank` and `todo`/);
+  assert.match(clientTypes, /createLitControllers[\s\S]*SporadesLitControllers/);
+  assert.match(api, /Create Lit reactive controllers bound to their host element lifecycle/);
+});
+
 test("docs publish the implemented User journey tracker contract", async () => {
   const [guide, roadmap, clientTypes, serverTypes] = await Promise.all([
     readProjectFile("docs/user-guide.md"),

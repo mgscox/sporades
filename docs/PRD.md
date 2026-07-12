@@ -26,10 +26,11 @@ LLM systems that need a scriptable build, deploy, inspect, and repair loop.
 
 The repository currently includes:
 
-- `sporades create` scaffolding with template selection, React, Preact, SolidJS, and
+- `sporades create` scaffolding with template selection, React, Preact, Lit, SolidJS, and
   Vanilla TypeScript framework support, explicit React/Vite and Preact/Vite
   admission, and Vue/Vite admission across every supported template,
-  Svelte/Vite and SolidJS/Vite admission across every supported template,
+  Svelte/Vite and SolidJS/Vite admission across every supported template, plus
+  Lit/Vite admission for native `blank` and `todo` Web Components,
   framework support, `AGENTS.md`, `CLAUDE.md`, `index.html`, `sporades.json`,
   Server env, and optional `npm install` / git initialization.
 - `sporades dev` for local Node execution with bundling, file watching,
@@ -263,7 +264,8 @@ transport remain the default application path.
 
 `sporades/client` exports framework-neutral query, mutation, auth, current-user
 preferences and file APIs, app-message helpers, a `createHooks` factory,
-Vue-native composables, Svelte stores, and SolidJS signals over the same connection.
+Vue-native composables, Svelte stores, SolidJS signals, and Lit reactive
+controllers over the same connection.
 Vanilla TypeScript clients can use the transport primitives directly:
 
 ```ts
@@ -319,6 +321,23 @@ const { createAuth, createMutation, createQuery } = createSolidPrimitives({ crea
 const todos = createQuery("todos");
 const addTodo = createMutation("addTodo");
 const session = createAuth();
+```
+
+Lit clients use reactive controllers tied to the Web Component host lifecycle.
+Query and auth controllers request updates on shared transport state, disconnect
+exactly once, and reconnect safely; mutation controllers keep concurrent state
+pending-counted and latest-invocation deterministic:
+
+```ts
+import { LitElement } from "lit";
+import { createLitControllers } from "sporades/client";
+
+const { authController, mutationController, queryController } = createLitControllers();
+class TodoApp extends LitElement {
+  session = authController(this);
+  todos = queryController(this, "todos");
+  addTodo = mutationController(this, "addTodo");
+}
 ```
 
 The browser connects to `/__sporades/ws` on the same origin. The transport

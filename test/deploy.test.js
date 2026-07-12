@@ -14,6 +14,7 @@ import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 import { installProjectVueToolchain } from "./support/project-vue-toolchain.js";
 import { installProjectSvelteToolchain } from "./support/project-svelte-toolchain.js";
 import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
+import { installProjectLitToolchain } from "./support/project-lit-toolchain.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -780,6 +781,8 @@ test("sporades deploy assembles a Vanilla TypeScript release without leaking Ser
 for (const { framework, template } of [
   { framework: "react", template: "blank" },
   { framework: "preact", template: "blank" },
+  { framework: "lit", template: "blank" },
+  { framework: "lit", template: "todo" },
   { framework: "solid", template: "blank" },
   { framework: "solid", template: "todo" },
   { framework: "solid", template: "guestbook" },
@@ -803,7 +806,7 @@ for (const { framework, template } of [
     );
     assert.equal(createResult.code, 0, createResult.stderr);
     const projectDir = await realpath(path.join(dir, "vite-release"));
-    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : framework === "solid" ? (project) => installProjectSolidToolchain(project, repoRoot) : framework === "vue" ? installVue : (project) => installProjectSvelteToolchain(project, repoRoot))(projectDir);
+    await (framework === "react" ? installFakeReact : framework === "preact" ? installFakePreact : framework === "lit" ? (project) => installProjectLitToolchain(project, repoRoot) : framework === "solid" ? (project) => installProjectSolidToolchain(project, repoRoot) : framework === "vue" ? installVue : (project) => installProjectSvelteToolchain(project, repoRoot))(projectDir);
     await writeFile(path.join(projectDir, ".env.sporades.server"), `${template === "photo-library" ? "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n" : ""}SERVER_ONLY_TOKEN=vite-container-secret\n`);
     const docker = await installFakeDocker(dir, "vite-container");
     const deployed = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
@@ -830,6 +833,10 @@ for (const { framework, template } of [
     if (framework === "solid") {
       assert.match(output, { blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/, "photo-library": /Photo Library/, campfire: /Campfire/ }[template]);
       assert.doesNotMatch(output, /react-dom|react\/jsx-runtime/);
+    }
+    if (framework === "lit") {
+      assert.match(output, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+      assert.doesNotMatch(output, /react-dom|react\/jsx-runtime|node_modules\/react/);
     }
     if (framework === "vue") assert.match(output, {
       blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/,

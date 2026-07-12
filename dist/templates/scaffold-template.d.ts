@@ -70,6 +70,19 @@ export declare function scaffoldFiles(options: {
     ".env.sporades.server": string;
     "index.html": string;
 } | {
+    "README.md": string;
+    "tsconfig.json": string;
+    "client/index.ts": string;
+    "client/styles.css": string;
+    "client/sporades-mark.svg": string;
+    "sporades.json": string;
+    "package.json": string;
+    "AGENTS.md": string;
+    "CLAUDE.md": string;
+    ".gitignore": string;
+    ".env.sporades.server": string;
+    "index.html": string;
+} | {
     "client/index.tsx": string;
     "client/styles.css": string;
     "client/vite-scaffold.ts": string;

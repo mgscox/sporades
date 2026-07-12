@@ -7,6 +7,7 @@ export declare const queries: any;
 export declare const createHooks: any;
 export declare const createVueComposables: any;
 export declare const createSolidPrimitives: any;
+export declare const createLitControllers: any;
 export declare const createSvelteStores: any;
 export declare const isAuthenticated: any;
 export declare const onMessage: any;

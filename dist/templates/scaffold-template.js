@@ -1,7 +1,7 @@
 export function scaffoldFiles(options) {
     const templateOptions = resolveTemplateOptions(options.template);
     const framework = options.framework ?? templateOptions.framework;
-    const toolchain = options.toolchain ?? (["solid", "vue", "svelte"].includes(framework) ? "vite" : "esbuild");
+    const toolchain = options.toolchain ?? (["lit", "solid", "vue", "svelte"].includes(framework) ? "vite" : "esbuild");
     const renderOptions = { ...options, name: options.name, framework, toolchain };
     const packageName = options.name;
     const sporadesDependency = options.sporadesDependency ?? "sporades";
@@ -12,6 +12,8 @@ export function scaffoldFiles(options) {
         }
         : framework === "preact" ? {
             preact: "^10.25.0",
+        } : framework === "lit" ? {
+            lit: "^3.2.1",
         } : framework === "vue" ? {
             vue: "^3.5.13",
         } : framework === "svelte" ? {
@@ -39,9 +41,11 @@ export function scaffoldFiles(options) {
             ? svelteTemplateFiles(renderOptions, baseTemplateFiles)
             : framework === "solid"
                 ? solidTemplateFiles(renderOptions, baseTemplateFiles)
-                : toolchain === "vite" && framework !== "vanilla"
-                    ? viteTemplateFiles(baseTemplateFiles, framework)
-                    : baseTemplateFiles;
+                : framework === "lit"
+                    ? litTemplateFiles(renderOptions, baseTemplateFiles)
+                    : toolchain === "vite" && framework !== "vanilla"
+                        ? viteTemplateFiles(baseTemplateFiles, framework)
+                        : baseTemplateFiles;
     return {
         "sporades.json": `${JSON.stringify({
             name: options.name,
@@ -87,13 +91,63 @@ export function scaffoldFiles(options) {
     <script src="https://cdn.tailwindcss.com"></script>` : ""}
   </head>
   <body>
-    <div id="app"></div>
-    <script type="module" src="${toolchain === "vite" ? `/client/${framework === "vue" || framework === "svelte" ? "index.ts" : "index.tsx"}` : "/client.js"}"></script>
+    ${framework === "lit" ? "<sporades-app></sporades-app>" : '<div id="app"></div>'}
+    <script type="module" src="${toolchain === "vite" ? `/client/${framework === "vue" || framework === "svelte" || framework === "lit" ? "index.ts" : "index.tsx"}` : "/client.js"}"></script>
   </body>
 </html>
 `,
         ...templateFiles,
     };
+}
+function litTemplateFiles(options, files) {
+    const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));
+    return {
+        ...sharedFiles,
+        "README.md": `${sharedFiles["README.md"] ?? ""}\n## Lit client\n\nThe author-owned HTML loads \`client/index.ts\`, which defines the \`<sporades-app>\` Web Component. Sporades query, mutation, and auth state is owned by Lit reactive controllers tied to the element lifecycle.\n`,
+        "tsconfig.json": `${JSON.stringify({ compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true, noEmit: true, lib: ["ES2022", "DOM", "DOM.Iterable"], types: ["vite/client"], skipLibCheck: true } }, null, 2)}\n`,
+        "client/index.ts": options.template === "todo" ? litTodoTemplate() : litBlankTemplate(),
+        "client/styles.css": `:root{font-family:system-ui,sans-serif;background:#f3f6ff;color:#15211d}body{margin:0;padding:1rem}\n`,
+        "client/sporades-mark.svg": `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><circle cx="16" cy="16" r="14" fill="#324fff"/></svg>\n`,
+    };
+}
+function litBlankTemplate() {
+    return `import { LitElement, css, html } from "lit";
+import { createLitControllers } from "sporades/client";
+import mark from "./sporades-mark.svg";
+import "./styles.css";
+
+const { authController } = createLitControllers();
+
+class SporadesApp extends LitElement {
+  session = authController(this);
+  static styles = css\`:host{display:block;max-width:42rem;margin:5rem auto;font-family:system-ui,sans-serif;color:#15211d}.mark{width:2rem;height:2rem}\`;
+  render() { return html\`<main><img class="mark" src=\${mark} alt=""><h1>Blank Sporades Capsule</h1>\${this.session.state.loading ? html\`<p>Connecting…</p>\` : html\`<p>Start building in server/index.ts and client/index.ts.</p>\`}</main>\`; }
+}
+
+customElements.define("sporades-app", SporadesApp);
+`;
+}
+function litTodoTemplate() {
+    return `import { LitElement, css, html } from "lit";
+import { auth, createLitControllers } from "sporades/client";
+import type { Todo } from "../shared/types";
+import mark from "./sporades-mark.svg";
+import "./styles.css";
+
+const { authController, mutationController, queryController } = createLitControllers();
+
+class SporadesApp extends LitElement {
+  session = authController(this);
+  todos = queryController<Todo[]>(this, "todos");
+  addTodo = mutationController(this, "addTodo");
+  text = "";
+  static styles = css\`:host{display:block;max-width:42rem;margin:3rem auto;font-family:system-ui,sans-serif;color:#15211d}header,form{display:flex;gap:.75rem;align-items:center}.mark{width:2rem;height:2rem}li{margin-block:.5rem}\`;
+  async submit(event: SubmitEvent) { event.preventDefault(); const value = this.text.trim(); if (!value) return; const result = await this.addTodo.run(value); if (!result.error) { this.text = ""; this.requestUpdate(); } }
+  render() { const query = this.todos.state; return html\`<main><header><img class="mark" src=\${mark} alt=""><h1>Sporades Todos</h1></header>\${this.session.state.providers.google?.enabled && !this.session.isAuthenticated() ? html\`<button @click=\${() => auth.signIn("google")}>Sign in with Google</button>\` : null}<form @submit=\${(event: SubmitEvent) => this.submit(event)}><input aria-label="Todo" .value=\${this.text} @input=\${(event: InputEvent) => { this.text = (event.currentTarget as HTMLInputElement).value; }}><button ?disabled=\${this.addTodo.state.loading}>Add</button></form>\${query.loading ? html\`<p>Loading…</p>\` : query.error ? html\`<p role="alert">\${query.error.message}</p>\` : html\`<ul>\${(query.data ?? []).map((todo) => html\`<li>\${todo.text}</li>\`)}</ul>\`}</main>\`; }
+}
+
+customElements.define("sporades-app", SporadesApp);
+`;
 }
 function solidTemplateFiles(options, files) {
     const sharedFiles = Object.fromEntries(Object.entries(files).filter(([file]) => !file.endsWith(".tsx")));
@@ -2370,9 +2424,10 @@ const styles = \`
 function agentsTemplate(template, framework, toolchain) {
     const vanilla = framework === "vanilla";
     const solid = framework === "solid";
+    const lit = framework === "lit";
     const vue = framework === "vue";
     const svelte = framework === "svelte";
-    const clientFiles = vue ? "client/*.vue and client/*.ts" : svelte ? "client/*.svelte and client/*.ts" : `client/*.${vanilla ? "ts" : "tsx"}`;
+    const clientFiles = vue ? "client/*.vue and client/*.ts" : svelte ? "client/*.svelte and client/*.ts" : `client/*.${vanilla || lit ? "ts" : "tsx"}`;
     return `# Sporades App Instructions
 
 This directory is for a Sporades app. Sporades is a CLI-first tool for building and running full-stack web apps.
@@ -2391,7 +2446,7 @@ Client toolchain: ${toolchain}
 - No file-based routing. Use the router included in the scaffold template.
 - All imports must be from Sporades, the configured framework, or relative paths.
 - Do not use Node built-ins in client code.
-- Auth is available via \`ctx.auth\` on the server, ${vanilla ? "`auth.get()` and `auth.subscribe()` in the framework-neutral client" : solid ? "`createAuth()` in the SolidJS client" : "`useAuth()` on the client"}.
+- Auth is available via \`ctx.auth\` on the server, ${vanilla ? "`auth.get()` and `auth.subscribe()` in the framework-neutral client" : lit ? "`authController(this)` in the Lit client" : solid ? "`createAuth()` in the SolidJS client" : "`useAuth()` on the client"}.
 - Server env vars: define in \`.env.sporades.server\`, access via \`ctx.env\`.
 - Keep \`shared/\` free of DOM, Node, env, and Sporades runtime imports.
 
@@ -2408,7 +2463,7 @@ sporades db dump
 ## Structure
 
 - \`server/index.ts\` - schema, queries, mutations
-- \`client/index.${vanilla || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : solid ? "SolidJS render entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
+- \`client/index.${vanilla || lit || vue || svelte ? "ts" : "tsx"}\` - ${vanilla ? "framework-neutral DOM UI entrypoint" : lit ? "Lit Web Component definition" : solid ? "SolidJS render entrypoint" : vue ? "Vue mount entrypoint" : svelte ? "Svelte mount entrypoint" : "UI entrypoint"}
 ${solid ? "- `client/App.tsx` - native SolidJS component UI\n" : ""}${vue ? "- `client/App.vue` - Vue Single-File Component UI\n" : ""}- \`shared/\` - pure TypeScript shared by client and server
 ${svelte ? "- `client/App.svelte` - Svelte component UI\n" : ""}
 - \`index.html\` - HTML shell (user-owned)

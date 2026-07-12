@@ -251,6 +251,79 @@ export function createSolidPrimitives(primitives) {
   return { createQuery, createMutation, createAuth };
 }
 
+export function createLitControllers() {
+  function observedController(host, initialState, subscribe) {
+    let subscription = null;
+    const controller = {
+      state: initialState,
+      hostConnected() {
+        if (subscription) return;
+        subscription = subscribe((state) => {
+          controller.state = state;
+          host.requestUpdate();
+        });
+      },
+      hostDisconnected() {
+        if (!subscription) return;
+        const owned = subscription;
+        subscription = null;
+        owned.unsubscribe();
+      },
+    };
+    host.addController(controller);
+    return controller;
+  }
+
+  function queryController(host, name) {
+    return observedController(host, { data: null, error: null, loading: true }, (publish) => queries.subscribe(name, publish));
+  }
+
+  function mutationController(host, name) {
+    let pending = 0;
+    let latestInvocation = 0;
+    const controller = {
+      state: { data: null, error: null, loading: false },
+      async run(...args) {
+        const invocation = ++latestInvocation;
+        pending += 1;
+        controller.state = { data: null, error: null, loading: true };
+        host.requestUpdate();
+        try {
+          const result = await mutations.run(name, ...args);
+          if (invocation === latestInvocation) {
+            controller.state = { data: result.error ? null : result.data ?? null, error: result.error ?? null, loading: pending > 1 };
+            host.requestUpdate();
+          }
+          return result;
+        } catch (error) {
+          if (invocation === latestInvocation) {
+            controller.state = { data: null, error: normalizeMutationError(error), loading: pending > 1 };
+            host.requestUpdate();
+          }
+          throw error;
+        } finally {
+          pending -= 1;
+          controller.state = { ...controller.state, loading: pending > 0 };
+          host.requestUpdate();
+        }
+      },
+    };
+    host.addController(controller);
+    return controller;
+  }
+
+  function authController(host) {
+    const controller = observedController(host, { auth: null, providers: {}, loading: true, error: null }, (publish) => auth.subscribe(publish));
+    controller.isAuthenticated = () => Boolean(controller.state.auth?.isAuthenticated);
+    controller.signUp = (provider, credentials) => connect().signUp(provider, credentials);
+    controller.signIn = (provider, credentials) => connect().signIn(provider, credentials);
+    controller.signOut = () => connect().signOut();
+    return controller;
+  }
+
+  return { queryController, mutationController, authController };
+}
+
 export function createSvelteStores() {
   function queryStore(name) {
     return createLazyStore(

@@ -65,6 +65,13 @@ const FRAMEWORK_BUNDLE_CONFIG = {
     jsxImportSource: "solid-js",
     jsxRuntimeImport: "solid-js/jsx-runtime",
   },
+  lit: {
+    framework: "lit",
+    entry: "index.ts",
+    loader: "ts",
+    jsxImportSource: null,
+    jsxRuntimeImport: null,
+  },
   vue: {
     framework: "vue",
     entry: "index.ts",
@@ -596,7 +603,7 @@ async function readRequiredFile(filePath: PathLike | FileHandle, message: string
 
 function readFrameworkBundleConfig(framework: unknown): FrameworkBundleConfig {
   if (typeof framework !== "string" || !(framework in FRAMEWORK_BUNDLE_CONFIG)) {
-    throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, solid, vue, svelte, vanilla.");
+    throw commandError(`Unsupported framework: ${framework}`, "Use one of: react, preact, lit, solid, vue, svelte, vanilla.");
   }
   return FRAMEWORK_BUNDLE_CONFIG[framework as keyof typeof FRAMEWORK_BUNDLE_CONFIG];
 }
@@ -619,6 +626,9 @@ function readClientToolchain(toolchain: unknown, framework: string): ClientToolc
   }
   if (framework === "solid" && toolchain !== "vite") {
     throw commandError("Unsupported client framework/toolchain combination: solid/esbuild", "Use SolidJS with Vite.");
+  }
+  if (framework === "lit" && toolchain !== "vite") {
+    throw commandError("Unsupported client framework/toolchain combination: lit/esbuild", "Use Lit with Vite.");
   }
   return toolchain;
 }
