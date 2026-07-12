@@ -418,9 +418,6 @@ function parseCreateArgs(args: string[]): LooseRecord {
   if (framework === "lit" && toolchain !== "vite") {
     throw commandError(`Unsupported client framework/toolchain combination: lit/${toolchain}`, "Use Lit with Vite.");
   }
-  if (framework === "lit" && !["blank", "todo"].includes(template)) {
-    throw commandError(`Unsupported client template for Lit: ${template}`, "Use Lit with the blank or todo template.");
-  }
   if (!SUPPORTED_TEMPLATES.has(template)) {
     throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
   }

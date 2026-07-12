@@ -215,8 +215,9 @@ Available client frameworks are `react`, `preact`, `lit`, `solid`, `vue`, `svelt
 and framework-neutral Vanilla TypeScript. esbuild remains the React and Preact default client
 toolchain, and they can explicitly select Vite with `--toolchain vite`. Vue
 selects Vite and supports the complete template set. Svelte and SolidJS also
-select Vite and support the complete template set. Lit selects Vite for native
-`blank` and `todo` Web Components; Vanilla TypeScript remains on esbuild.
+select Vite and support the complete template set. Lit also selects Vite and
+supports the complete template set with native Web Components; Vanilla
+TypeScript remains on esbuild.
 
 React/Vite, Preact/Vite, and SolidJS/Vite scaffolds reference `/client/index.tsx`; Lit/Vite,
 Vue/Vite, and Svelte/Vite reference `/client/index.ts`. Lit defines the

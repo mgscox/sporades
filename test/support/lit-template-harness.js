@@ -9,7 +9,7 @@ export async function mountLitTemplate(projectDir, initial) {
   await rm(outDir, { recursive: true, force: true });
   await mkdir(outDir, { recursive: true });
   const stub = path.join(outDir, "sporades-client.js");
-  await writeFile(stub, `const state=globalThis.__SPORADES_LIT_HARNESS__;export const auth=state.auth;
+  await writeFile(stub, `const state=globalThis.__SPORADES_LIT_HARNESS__;export const auth=state.auth;export const files=state.files;export const journey=state.journey;export const preferences=state.preferences;
 export function createLitControllers(){
  const observed=(host,initial,subscribe)=>{let owned=null;const controller={state:initial,hostConnected(){if(owned)return;owned=subscribe(value=>{controller.state=value;host.requestUpdate();});},hostDisconnected(){if(!owned)return;const current=owned;owned=null;current.unsubscribe();}};host.addController(controller);return controller;};
  const queryController=(host,name)=>observed(host,{data:null,error:null,loading:true},publish=>state.queries[name].subscribe(publish));
@@ -29,7 +29,7 @@ export function createLitControllers(){
     window, element, state,
     text: () => element.shadowRoot?.textContent ?? "",
     find: (selector) => element.shadowRoot?.querySelector(selector),
-    async settle() { await Promise.resolve(); await element.updateComplete; },
+    async settle() { for (let index = 0; index < 10; index += 1) await Promise.resolve(); await element.updateComplete; },
     async disconnect() { element.remove(); await Promise.resolve(); },
     async reconnect() { window.document.body.append(element); await element.updateComplete; },
     async unmount() { element.remove(); await Promise.resolve(); delete globalThis.__SPORADES_LIT_HARNESS__; restore(); await window.happyDOM.close(); },

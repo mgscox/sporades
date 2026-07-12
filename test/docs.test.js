@@ -138,10 +138,10 @@ test("published docs and API reference describe the admitted Lit controller cont
     readProjectFile("README.md"), readProjectFile("docs/PRD.md"), readProjectFile("docs/user-guide.md"),
     readProjectFile("src/types/client.d.ts"), readProjectFile("docs/api/functions/client.createLitControllers.html"),
   ]);
-  assert.match(readme, /Lit\/Vite `blank` and `todo` Web Component scaffolds/);
-  assert.match(prd, /Lit\/Vite admission for native `blank` and `todo` Web Components/);
+  assert.match(readme, /Lit\/Vite Web Component scaffolds across the complete template set/);
+  assert.match(prd, /Lit\/Vite admission across every supported template/);
   assert.match(prd, /createLitControllers/);
-  assert.match(guide, /`lit`[\s\S]*Lit selects Vite[\s\S]*`blank` and `todo`/);
+  assert.match(guide, /`lit`[\s\S]*Lit also selects Vite[\s\S]*supports the complete template set/);
   assert.match(clientTypes, /createLitControllers[\s\S]*SporadesLitControllers/);
   assert.match(api, /Create Lit reactive controllers bound to their host element lifecycle/);
 });

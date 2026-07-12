@@ -704,9 +704,9 @@ test("sporades create scaffolds an idiomatic Solid/Vite blank Capsule by default
   });
 });
 
-test("sporades create admits Lit/Vite blank and todo with project-owned Lit and structured boundaries", async () => {
+test("sporades create admits every Lit/Vite template with project-owned Lit and structured toolchain boundaries", async () => {
   await withTempDir(async (dir) => {
-    for (const template of ["blank", "todo"]) {
+    for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire"]) {
       const result = await runCli(["create", `lit-${template}`, "--framework", "lit", "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
       assert.equal(result.code, 0, result.stderr || result.stdout);
       const project = path.join(dir, `lit-${template}`);
@@ -721,17 +721,18 @@ test("sporades create admits Lit/Vite blank and todo with project-owned Lit and 
       assert.match(client, /createLitControllers/);
       assert.match(client, /static styles = css/);
       if (template === "todo") assert.match(client, /queryController<Todo\[]>[\s\S]*mutationController/);
+      if (template === "guestbook") assert.match(client, /queryController<any\[]>\(this, "entries"\)[\s\S]*mutationController\(this, "sign"\)/);
+      if (template === "photo-library") assert.match(client, /files\.upload[\s\S]*Make public/);
+      if (template === "campfire") assert.match(client, /createTypingPublisher[\s\S]*ttlSeconds: 12/);
       assert.equal(packageJson.dependencies.lit, "^3.2.1");
       assert.equal(packageJson.devDependencies["@lit/reactive-element"], undefined);
       assert.equal(packageJson.dependencies.react, undefined);
       assert.equal(packageJson.dependencies["react-dom"], undefined);
       assert.equal(tsconfig.compilerOptions.experimentalDecorators, undefined);
-      assert.doesNotMatch(`${html}\n${client}`, /from "react|react-dom|createRoot/);
+      assert.doesNotMatch(`${html}\n${client}`, /from "react|react-dom|createRoot|cdn\.tailwindcss|components\/ui/);
     }
     const esbuild = await runCli(["create", "lit-esbuild", "--framework", "lit", "--toolchain", "esbuild", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.deepEqual(JSON.parse(esbuild.stdout).error, { message: "Unsupported client framework/toolchain combination: lit/esbuild", hint: "Use Lit with Vite." });
-    const richer = await runCli(["create", "lit-guestbook", "--framework", "lit", "--template", "guestbook", "--no-install", "--no-git", "--json"], { cwd: dir });
-    assert.deepEqual(JSON.parse(richer.stdout).error, { message: "Unsupported client template for Lit: guestbook", hint: "Use Lit with the blank or todo template." });
   });
 });
 

@@ -128,8 +128,9 @@ Sporades currently includes:
   consent, caller-renewed Journey TTL state, and deterministic cleanup.
 - SolidJS/Vite scaffolds across the complete template set, with native JSX,
   signals, identity-safe Campfire consent, and reactive-root cleanup.
-- Lit/Vite `blank` and `todo` Web Component scaffolds with component styles and
-  host-lifecycle reactive controllers.
+- Lit/Vite Web Component scaffolds across the complete template set, with
+  component styles and host-lifecycle reactive controllers. Campfire preserves
+  serialized identity-safe consent, explicit Journey TTLs, and cleanup.
 - Local Dev sessions with rebuilds, WebSocket reconnects, SQLite persistence,
   logs, database inspection, auth helpers, and file storage.
 - Local Docker Container sessions for production-like staging tests.

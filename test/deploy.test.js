@@ -783,6 +783,9 @@ for (const { framework, template } of [
   { framework: "preact", template: "blank" },
   { framework: "lit", template: "blank" },
   { framework: "lit", template: "todo" },
+  { framework: "lit", template: "guestbook" },
+  { framework: "lit", template: "photo-library" },
+  { framework: "lit", template: "campfire" },
   { framework: "solid", template: "blank" },
   { framework: "solid", template: "todo" },
   { framework: "solid", template: "guestbook" },
@@ -835,7 +838,7 @@ for (const { framework, template } of [
       assert.doesNotMatch(output, /react-dom|react\/jsx-runtime/);
     }
     if (framework === "lit") {
-      assert.match(output, template === "todo" ? /Sporades Todos/ : /Blank Sporades Capsule/);
+      assert.match(output, { blank: /Blank Sporades Capsule/, todo: /Sporades Todos/, guestbook: /Leave a note from this island/, "photo-library": /Photo Library/, campfire: /Campfire/ }[template]);
       assert.doesNotMatch(output, /react-dom|react\/jsx-runtime|node_modules\/react/);
     }
     if (framework === "vue") assert.match(output, {

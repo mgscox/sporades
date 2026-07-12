@@ -524,6 +524,135 @@ test("real Lit todo host renders controller state, drives mutation, and reconnec
   });
 });
 
+function litSource(initial, counts = { starts: 0, stops: 0 }) {
+  const listeners = new Set();
+  return { counts, subscribe(listener) { counts.starts += 1; listeners.add(listener); listener(initial); return { unsubscribe() { if (listeners.delete(listener)) counts.stops += 1; } }; }, publish(value) { initial = value; for (const listener of [...listeners]) listener(value); } };
+}
+
+async function createLitTemplate(dir, name, template) {
+  const created = await runCli(["create", name, "--framework", "lit", "--template", template, "--no-install", "--no-git", "--json"], { cwd: dir });
+  assert.equal(created.code, 0, created.stderr || created.stdout);
+  const projectDir = path.join(dir, name); await installProjectLitToolchain(projectDir, repoRoot); return projectDir;
+}
+
+test("real Lit Guestbook renders query state, mutates, and reconnects controllers", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createLitTemplate(dir, "lit-guestbook-behavior", "guestbook");
+    const calls = [], session = litSource({ ...sessionState(), loading: false }), entries = litSource({ data: [{ id: "e1", authorName: "Athos", body: "All for one", createdAt: "2026-07-11T12:00:00.000Z" }], error: null, loading: false });
+    const harness = await mountLitTemplate(projectDir, { auth: authStub(), files: {}, journey: {}, preferences: {}, session, queries: { entries }, mutations: { sign: { async run(value) { calls.push(value); return { data: null, error: null }; } } } });
+    try {
+      assert.match(harness.text(), /Leave a note from this island.*All for one/s);
+      const textarea = harness.find("textarea"); textarea.value = "  One for all  "; textarea.dispatchEvent(new harness.window.Event("input", { bubbles: true })); await harness.settle();
+      harness.find("form").dispatchEvent(new harness.window.Event("submit", { bubbles: true, cancelable: true })); await harness.settle();
+      assert.deepEqual(calls, ["One for all"]); assert.equal(harness.find("textarea").value, "");
+      await harness.disconnect(); assert.deepEqual([session.counts.stops, entries.counts.stops], [1, 1]);
+      await harness.reconnect(); assert.deepEqual([session.counts.starts, entries.counts.starts], [2, 2]);
+    } finally { await harness.unmount(); }
+    assert.deepEqual([session.counts.stops, entries.counts.stops], [2, 2]);
+  });
+});
+
+test("real Lit Photo Library keeps authenticated uploads private and publishes explicitly", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createLitTemplate(dir, "lit-photo-behavior", "photo-library");
+    const calls = [], session = litSource({ ...sessionState(), loading: false, auth: { userId: "athos", provider: "google", displayName: "Athos", isAuthenticated: true } });
+    const photo = { id: "p1", title: "Secret crown", fileId: "f1", imageUrl: "/private", publicUrlId: "u1", isPublic: false, status: "private" };
+    const mutation = (name) => ({ async run(...args) { calls.push([name, ...args]); return { data: null, error: null }; } });
+    const files = { async upload(file) { calls.push(["upload", file.name]); return { id: "f2", name: file.name }; }, async publicUrl(id) { calls.push(["publicUrl", id]); return { id: "u2", url: "/public/f2" }; }, async revokePublicUrl(id) { calls.push(["revokePublicUrl", id]); } };
+    const harness = await mountLitTemplate(projectDir, { auth: authStub(), files, journey: {}, preferences: {}, session, queries: { publicPhotos: litSource({ data: [], error: null, loading: false }), personalPhotos: litSource({ data: [photo], error: null, loading: false }) }, mutations: { recordPhoto: mutation("recordPhoto"), updatePhotoIsPublic: mutation("updatePhotoIsPublic"), updatePhotoImageUrl: mutation("updatePhotoImageUrl"), updatePhotoPublicUrlId: mutation("updatePhotoPublicUrlId") } });
+    try {
+      const input = harness.find('input[type="file"]'); Object.defineProperty(input, "files", { configurable: true, value: [{ name: "private.png", type: "image/png", size: 11 }] }); input.dispatchEvent(new harness.window.Event("change", { bubbles: true })); await harness.settle(); assert.equal(harness.find('button[type="submit"], form button').disabled, false);
+      harness.find("form").dispatchEvent(new harness.window.Event("submit", { bubbles: true, cancelable: true })); await harness.settle();
+      assert(calls.some(([name]) => name === "upload")); assert.equal(calls.some(([name]) => name === "publicUrl"), false); assert.match(harness.text(), /Photo saved privately/);
+      calls.length = 0; harness.find(".library button").dispatchEvent(new harness.window.Event("click", { bubbles: true })); await harness.settle();
+      assert.deepEqual(calls.map(([name]) => name), ["publicUrl", "updatePhotoImageUrl", "updatePhotoPublicUrlId", "updatePhotoIsPublic"]);
+      photo.isPublic = true; await harness.element.requestUpdate(); await harness.settle(); calls.length = 0; harness.find(".library button").dispatchEvent(new harness.window.Event("click", { bubbles: true })); await harness.settle();
+      assert.deepEqual(calls.map(([name]) => name), ["revokePublicUrl", "updatePhotoIsPublic", "updatePhotoImageUrl", "updatePhotoPublicUrlId"]);
+    } finally { await harness.unmount(); }
+  });
+});
+
+function litCampfireState(calls, journeyOverrides = {}) {
+  const mutation = (name) => ({ async run(input) { calls.push([name, input]); return { data: null, error: null }; } });
+  let subscriber = () => {};
+  const journey = {
+    async enable(options) { calls.push(["journey.enable", options]); return { data: null, error: null }; },
+    async disable() { calls.push(["journey.disable"]); return { data: null, error: null }; },
+    async set(value) { calls.push(["journey.set", value]); return { data: null, error: null }; },
+    subscribe(callback) { subscriber = callback; calls.push(["journey.subscribe"]); return { unsubscribe() { calls.push(["journey.unsubscribe"]); } }; },
+    ...journeyOverrides,
+  };
+  return { auth: authStub(), files: {}, journey, preferences: { async get() { calls.push(["preferences.get"]); return { data: { preferences: { campfireShareActivity: true } }, error: null }; }, async update(value) { calls.push(["preferences.update", value]); return { data: { preferences: value }, error: null }; } }, session: litSource({ ...sessionState(), loading: false }), queries: { profiles: litSource({ data: null, error: null, loading: false }), messagesGeneral: litSource({ data: [{ id: "m1", authorName: "Athos", body: "All for one", reactions: {} }], error: null, loading: false }), messagesIdeas: litSource({ data: [], error: null, loading: false }), messagesRandom: litSource({ data: [], error: null, loading: false }), messagesProtectTheCrown: litSource({ data: [], error: null, loading: false }) }, mutations: { sendMessage: mutation("sendMessage"), toggleReaction: mutation("toggleReaction"), seedCampfire: mutation("seedCampfire"), registerFixture: mutation("registerFixture") }, publishJourney(event) { subscriber(event); } };
+}
+
+test("real Lit Campfire restores consent, publishes TTL activity, and disconnects exact ownership", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createLitTemplate(dir, "lit-campfire-behavior", "campfire");
+    const calls = [], state = litCampfireState(calls), harness = await mountLitTemplate(projectDir, state);
+    try {
+      state.session.publish({ ...sessionState(), loading: false, auth: { userId: "athos-user", provider: "email", displayName: "Athos", isGuest: false, isAuthenticated: true } }); await harness.settle();
+      assert(calls.some(([name]) => name === "preferences.get"));
+      assert(calls.some(([name, value]) => name === "journey.set" && value.status === "reading" && value.ttlSeconds === 12));
+      assert.equal(harness.find('input[type="checkbox"]').checked, true);
+      state.publishJourney({ data: { type: "snapshot", states: [{ sessionId: "p1", userId: "porthos", status: "reading", metadata: { channel: "ideas" } }] } }); await harness.settle();
+      assert.match(harness.text(), /A Musketeer is reading #ideas/);
+      const input = harness.find("#message"); input.value = "Protect the crown"; input.dispatchEvent(new harness.window.Event("input", { bubbles: true })); await harness.settle();
+      assert.equal(harness.find("form button").disabled, false);
+      assert(calls.some(([name, value]) => name === "journey.set" && value.status === "typing" && value.ttlSeconds === 4));
+      harness.find("form").dispatchEvent(new harness.window.Event("submit", { bubbles: true, cancelable: true })); await harness.settle();
+      assert(calls.some(([name, value]) => name === "sendMessage" && value.body === "Protect the crown"));
+      assert(calls.some(([name, value]) => name === "journey.set" && value.status === "posted" && value.ttlSeconds === 8));
+      const share = harness.find('input[type="checkbox"]'); share.checked = false; share.dispatchEvent(new harness.window.Event("change", { bubbles: true })); await harness.settle();
+      assert(calls.some(([name, value]) => name === "preferences.update" && value.campfireShareActivity === false));
+      await harness.disconnect();
+      assert(calls.some(([name]) => name === "journey.unsubscribe"));
+      assert.equal(state.queries.messagesGeneral.counts.stops, 1); assert.equal(state.session.counts.stops, 1);
+    } finally { await harness.unmount(); }
+  });
+});
+
+test("real Lit Campfire stale preference restore retires deferred activity without successor mutation", async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createLitTemplate(dir, "lit-campfire-race", "campfire");
+    const calls = []; let currentUser, releaseFirstSet, markFirstSet; const firstSet = new Promise((resolve) => { markFirstSet = resolve; }); let setCount = 0;
+    const state = litCampfireState(calls, { async set(value) { calls.push(["journey.set", value, currentUser]); if (++setCount === 1) { markFirstSet(); await new Promise((resolve) => { releaseFirstSet = resolve; }); } return { data: null, error: null }; } });
+    state.preferences.get = async () => { calls.push(["preferences.get", currentUser]); return { data: { preferences: { campfireShareActivity: currentUser === "athos-user" } }, error: null }; };
+    const harness = await mountLitTemplate(projectDir, state);
+    try {
+      currentUser = "athos-user"; state.session.publish({ ...sessionState(), loading: false, auth: { userId: currentUser, provider: "email", isGuest: false, isAuthenticated: true } }); await firstSet;
+      currentUser = "porthos-user"; state.session.publish({ ...sessionState(), loading: false, auth: { userId: currentUser, provider: "email", isGuest: false, isAuthenticated: true } }); await harness.settle();
+      const disables = calls.filter(([name]) => name === "journey.disable").length; releaseFirstSet(); await harness.settle();
+      assert.equal(calls.filter(([name]) => name === "journey.disable").length, disables + 1);
+      assert.equal(harness.find('input[type="checkbox"]').checked, false);
+      assert.equal(calls.filter(([name, _value, owner]) => name === "journey.set" && owner === "porthos-user").length, 0);
+      assert(calls.some(([name, owner]) => name === "preferences.get" && owner === "porthos-user"));
+    } finally { await harness.unmount(); }
+  });
+});
+
+for (const deferredStage of ["journey.enable", "journey.set", "preferences.update"]) test(`real Lit Campfire direct consent remains identity-safe while ${deferredStage} is pending`, async () => {
+  await withTempDir(async (dir) => {
+    const projectDir = await createLitTemplate(dir, `lit-campfire-${deferredStage.replaceAll(".", "-")}`, "campfire");
+    const calls = []; let currentUser = "athos-user", releaseStage, markStage; const stageStarted = new Promise((resolve) => { markStage = resolve; });
+    const waitAt = async (stage) => { if (stage === deferredStage) { markStage(); await new Promise((resolve) => { releaseStage = resolve; }); } };
+    const state = litCampfireState(calls, { async enable(options) { calls.push(["journey.enable", options, currentUser]); await waitAt("journey.enable"); return { data: null, error: null }; }, async set(value) { calls.push(["journey.set", value, currentUser]); await waitAt("journey.set"); return { data: null, error: null }; } });
+    state.session = litSource({ ...sessionState(), loading: false, auth: { userId: currentUser, provider: "email", isGuest: false, isAuthenticated: true } });
+    state.preferences.get = async () => { calls.push(["preferences.get", currentUser]); return { data: { preferences: { campfireShareActivity: false } }, error: null }; };
+    state.preferences.update = async (value) => { calls.push(["preferences.update", value, currentUser]); await waitAt("preferences.update"); return { data: { preferences: value }, error: null }; };
+    const harness = await mountLitTemplate(projectDir, state);
+    try {
+      await harness.settle(); const share = harness.find('input[type="checkbox"]'); share.checked = true; share.dispatchEvent(new harness.window.Event("change", { bubbles: true })); await stageStarted;
+      currentUser = "porthos-user"; state.session.publish({ ...sessionState(), loading: false, auth: { userId: currentUser, provider: "email", isGuest: false, isAuthenticated: true } }); await harness.settle();
+      assert.equal(harness.find('input[type="checkbox"]').checked, false); assert.equal(calls.filter(([name]) => name === "journey.disable").length, 0);
+      releaseStage(); await harness.settle();
+      assert.equal(harness.find('input[type="checkbox"]').checked, false); assert.equal(calls.filter(([name]) => name === "journey.disable").length, 1);
+      assert.equal(calls.filter(([name, _value, owner]) => name === "journey.set" && owner === "porthos-user").length, 0);
+      assert.equal(calls.filter(([name, _value, owner]) => name === "preferences.update" && owner === "porthos-user").length, 0);
+      assert(calls.some(([name, owner]) => name === "preferences.get" && owner === "porthos-user"));
+    } finally { await harness.unmount(); }
+  });
+});
+
 async function writePackage(projectDir, packageName, exports, files) {
   const packageDir = path.join(projectDir, "node_modules", packageName);
   await mkdir(packageDir, { recursive: true });
@@ -2542,12 +2671,13 @@ for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire
   });
 });
 
-for (const template of ["blank", "todo"]) test(`sporades dev preserves last-good Lit ${template} output${template === "blank" ? " with omitted-toolchain Vite inference" : ""} and recovers through acknowledged refresh`, async () => {
+for (const template of ["blank", "todo", "guestbook", "photo-library", "campfire"]) test(`sporades dev preserves last-good Lit ${template} output${template === "blank" ? " with omitted-toolchain Vite inference" : ""} and recovers through acknowledged refresh`, async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", `lit-${template}-dev`, "--template", template, "--framework", "lit", "--no-install", "--no-git", "--json"], { cwd: dir });
     assert.equal(created.code, 0, created.stderr || created.stdout);
     const projectDir = path.join(dir, `lit-${template}-dev`);
     await installProjectLitToolchain(projectDir, repoRoot);
+    if (template === "photo-library") await writeFile(path.join(projectDir, ".env.sporades.server"), "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n");
     const configPath = path.join(projectDir, "sporades.json");
     const config = JSON.parse(await readFile(configPath, "utf8"));
     if (template === "blank") delete config.client.toolchain;
