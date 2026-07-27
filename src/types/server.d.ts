@@ -294,6 +294,11 @@ export type PrivilegedFileMetadata = {
   [key: string]: unknown;
 };
 
+export type PrivilegedOwnedFileMetadata = PrivilegedFileMetadata & {
+  /** Runtime user ID that owns the File. Available only inside an active Privileged server callback. */
+  ownerId: string;
+};
+
 export type PrivilegedPublicFileUrl = {
   id: string;
   fileId: string;
@@ -305,9 +310,9 @@ export type PrivilegedPublicFileUrl = {
 
 export type PrivilegedFileApi = {
   /** Return a private runtime URL for one live Capsule File by id or absolute File path. */
-  url(fileReference: string): Promise<PrivilegedResult<{ url: string; file: PrivilegedFileMetadata }>>;
+  url(fileReference: string): Promise<PrivilegedResult<{ url: string; file: PrivilegedOwnedFileMetadata }>>;
   /** Create a public URL for one live Capsule File while preserving File runtime boundaries. */
-  createPublicUrl(fileReference: string, options?: { expires?: string | Date; ttlSeconds?: number; noExpiry?: boolean }): Promise<PrivilegedResult<PrivilegedPublicFileUrl>>;
+  createPublicUrl(fileReference: string, options?: { expires?: string | Date; ttlSeconds?: number; noExpiry?: boolean }): Promise<PrivilegedResult<{ publicUrl: PrivilegedPublicFileUrl }>>;
   /** Delete one live Capsule File through the configured Capsule File storage adapter. */
   delete(fileReference: string): Promise<PrivilegedResult<PrivilegedFileMetadata>>;
 };

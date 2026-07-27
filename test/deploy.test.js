@@ -2548,7 +2548,7 @@ export default capsule({
     todos: table({
       text: String(),
       ownerId: String(),
-    }),
+    }).acl({ read: () => true, write: () => true }),
     auditLogs: table({
       text: String(),
       ownerId: String(),
@@ -2598,6 +2598,18 @@ export default capsule({
       ctx.privileged.run(
         { operation: "test.file.delete", targetResourceKind: "files" },
         (privilegedCtx) => privilegedCtx.files.delete("missing-file"),
+      )
+    ),
+    privilegedFileOwner: mutation((ctx, fileId: string) =>
+      ctx.privileged.run(
+        { operation: "test.file.owner", targetResourceKind: "files" },
+        async (privilegedCtx) => {
+          const inspected = await privilegedCtx.files.url(fileId);
+          return {
+            callerUserId: ctx.auth.userId,
+            ownerId: inspected.ok ? inspected.data.file.ownerId : null,
+          };
+        },
       )
     ),
   },
@@ -2663,6 +2675,27 @@ export default capsule({
       await waitForHttp(`http://127.0.0.1:${port}/`, child);
       socket = await openSocket(`http://127.0.0.1:${port}`);
 
+      socket.send(JSON.stringify({ id: "auth", type: "auth.get" }));
+      const auth = await waitForSocketMessage(socket, (message) => message.id === "auth");
+      socket.send(JSON.stringify({
+        id: "upload-url",
+        type: "file.uploadUrl",
+        file: { name: "owner-proof.txt", type: "text/plain", size: 5 },
+      }));
+      const uploadUrl = await waitForSocketMessage(
+        socket,
+        (message) => message.id === "upload-url",
+      );
+      assert.equal(uploadUrl.error, null, uploadUrl.error?.message);
+      const uploadResponse = await fetch(
+        new URL(uploadUrl.data.uploadUrl, `http://127.0.0.1:${port}`),
+        { method: uploadUrl.data.method, body: "proof" },
+      );
+      if (uploadResponse.status !== 200) {
+        assert.fail(await uploadResponse.text());
+      }
+      const uploaded = await uploadResponse.json();
+      assert.equal(uploaded.ok, true, uploaded.error?.message);
       socket.send(JSON.stringify({ id: "greeting", type: "query.subscribe", query: "greeting" }));
       assert.deepEqual(await readSocketMessage(socket), {
         id: "greeting",
@@ -2718,6 +2751,26 @@ export default capsule({
         (await auditsRefresh).data.map((audit) => audit.text),
         ["before-hook:async:mutation", "after-hook:2:2"],
       );
+
+      socket.send(JSON.stringify({
+        id: "privileged-file-owner",
+        type: "mutation.run",
+        mutation: "privilegedFileOwner",
+        args: [uploaded.data.file.id],
+      }));
+      assert.deepEqual(await waitForSocketMessage(
+        socket,
+        (message) => message.id === "privileged-file-owner",
+      ), {
+        id: "privileged-file-owner",
+        type: "mutation.result",
+        mutation: "privilegedFileOwner",
+        data: {
+          callerUserId: auth.data.auth.userId,
+          ownerId: auth.data.auth.userId,
+        },
+        error: null,
+      });
 
       socket.send(JSON.stringify({ id: "privileged", type: "mutation.run", mutation: "privilegedEcho", args: [] }));
       assert.deepEqual(await waitForSocketMessage(

@@ -274,6 +274,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   applyReadAcl,
   filterRowsByReadAcl,
   createAclHelpers,
+  aclRuleTouchedAsyncHelperRead,
   createAclDbHelpers,
   createAclStorageHelpers,
   assertAclHelperReadAllowed,
@@ -3932,7 +3933,10 @@ function createPrivilegedFileApi(database: LooseRecord, contextGetter: () => Loo
         ok: true,
         data: {
           url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
-          file: fileMetadataFromRow(row),
+          file: {
+            ...fileMetadataFromRow(row),
+            ownerId: row.ownerId,
+          },
         },
         error: null as any,
       };

@@ -2451,7 +2451,9 @@ test("privileged file access can read approved Capsule files that normal access 
               return {
                 actor: privilegedCtx.auth.userId,
                 byIdFileId: byId.data.file.id,
+                byIdOwnerId: byId.data.file.ownerId,
                 byPathFileId: byPath.data.file.id,
+                byPathOwnerId: byPath.data.file.ownerId,
                 url: byId.data.url,
               };
             }),
@@ -2464,7 +2466,9 @@ test("privileged file access can read approved Capsule files that normal access 
         data: {
           actor: "__privileged__",
           byIdFileId: completed.data.file.id,
+          byIdOwnerId: "owner-1",
           byPathFileId: completed.data.file.id,
+          byPathOwnerId: "owner-1",
           url: `/__sporades/files/private/${completed.data.file.id}?v=${encodeURIComponent(completed.data.file.version)}`,
         },
         error: null,

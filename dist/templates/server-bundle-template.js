@@ -28,6 +28,7 @@ const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
 const PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
 const PRIVILEGED_AUDIT_ACTOR_KINDS = new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
 const PRIVILEGED_AUDIT_OUTCOMES = new Set(["started", "completed", "errored", "finished"]);
+const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
 ${runtimeFunctions}
 ${publicTreeContract}
 

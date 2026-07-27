@@ -173,6 +173,11 @@ const app = capsule({
         const fileUrl = await privilegedCtx.files.url("/reports/private.txt");
         if (fileUrl.ok) {
           fileUrl.data.url.toUpperCase();
+          fileUrl.data.file.ownerId.toUpperCase();
+        }
+        const publicFileUrl = await privilegedCtx.files.createPublicUrl("/reports/private.txt", { ttlSeconds: 600 });
+        if (publicFileUrl.ok) {
+          publicFileUrl.data.publicUrl.fileId.toUpperCase();
         }
         return privilegedCtx.db.todos.all();
       });

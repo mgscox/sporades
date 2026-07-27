@@ -232,6 +232,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     applyReadAcl,
     filterRowsByReadAcl,
     createAclHelpers,
+    aclRuleTouchedAsyncHelperRead,
     createAclDbHelpers,
     createAclStorageHelpers,
     assertAclHelperReadAllowed,
@@ -3577,7 +3578,10 @@ function createPrivilegedFileApi(database, contextGetter) {
                 ok: true,
                 data: {
                     url: `/__sporades/files/private/${row.id}?v=${encodeURIComponent(row.version)}`,
-                    file: fileMetadataFromRow(row),
+                    file: {
+                        ...fileMetadataFromRow(row),
+                        ownerId: row.ownerId,
+                    },
                 },
                 error: null,
             };
