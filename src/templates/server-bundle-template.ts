@@ -39,6 +39,9 @@ const sporadesActionIndex = process.argv.indexOf("--sporades-action");
 const sporadesAction = sporadesActionIndex < 0 ? null : process.argv[sporadesActionIndex + 1];
 const sporadesCapsuleModule = sporadesAction ? null : await import(${JSON.stringify(serverModuleDataUrl)});
 const sporadesCapsuleDefinition = sporadesCapsuleModule?.default ?? null;
+const PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
+const PRIVILEGED_AUDIT_ACTOR_KINDS = new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
+const PRIVILEGED_AUDIT_OUTCOMES = new Set(["started", "completed", "errored", "finished"]);
 ${runtimeFunctions}
 ${publicTreeContract}
 

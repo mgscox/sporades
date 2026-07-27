@@ -2588,6 +2588,18 @@ export default capsule({
       ctx.db.todos.insert({ text: text + ":after-await", ownerId: ctx.auth.userId });
       return { inserted: 2, marker: ctx.marker };
     }),
+    privilegedEcho: mutation((ctx) =>
+      ctx.privileged.run(
+        { operation: "test.echo", targetResourceKind: "capsule-db" },
+        (privilegedCtx) => ({ userId: privilegedCtx.auth.userId }),
+      )
+    ),
+    privilegedMissingFile: mutation((ctx) =>
+      ctx.privileged.run(
+        { operation: "test.file.delete", targetResourceKind: "files" },
+        (privilegedCtx) => privilegedCtx.files.delete("missing-file"),
+      )
+    ),
   },
 
   endpoints: {
@@ -2706,6 +2718,32 @@ export default capsule({
         (await auditsRefresh).data.map((audit) => audit.text),
         ["before-hook:async:mutation", "after-hook:2:2"],
       );
+
+      socket.send(JSON.stringify({ id: "privileged", type: "mutation.run", mutation: "privilegedEcho", args: [] }));
+      assert.deepEqual(await waitForSocketMessage(
+        socket,
+        (message) => message.id === "privileged" && message.type === "mutation.result",
+      ), {
+        id: "privileged",
+        type: "mutation.result",
+        mutation: "privilegedEcho",
+        data: { userId: "__privileged__" },
+        error: null,
+      });
+
+      socket.send(JSON.stringify({
+        id: "privileged-file",
+        type: "mutation.run",
+        mutation: "privilegedMissingFile",
+        args: [],
+      }));
+      const privilegedFileResult = await waitForSocketMessage(
+        socket,
+        (message) => message.id === "privileged-file" && message.type === "mutation.result",
+      );
+      assert.equal(privilegedFileResult.error, null);
+      assert.equal(privilegedFileResult.data.ok, false);
+      assert.equal(privilegedFileResult.data.error.message, "File not found.");
     } finally {
       socket?.close();
       await stopChild(child);
