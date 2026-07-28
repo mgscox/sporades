@@ -117,7 +117,8 @@ if (missingContainerActions.has(call.args[0])) {
 }
 const missingInspectIds = new Set((process.env.FAKE_DOCKER_MISSING_INSPECT_IDS ?? "").split(",").filter(Boolean));
 if (call.args[0] === "inspect" && missingInspectIds.has(call.args.at(-1))) {
-  process.stderr.write("Error response from daemon: No such container: " + call.args.at(-1) + "\\n");
+  const subject = process.env.FAKE_DOCKER_MISSING_INSPECT_SUBJECT || "container";
+  process.stderr.write("Error response from daemon: No such " + subject + ": " + call.args.at(-1) + "\\n");
   process.exit(1);
 }
 if (call.args[0] === "ps") {
@@ -232,6 +233,7 @@ if (call.args[0] === "run") {
       FAKE_DOCKER_DATA_DIR: options.dataDir ?? "",
       FAKE_DOCKER_MISSING_CONTAINER_ACTIONS: options.missingContainerActions?.join(",") ?? "",
       FAKE_DOCKER_MISSING_INSPECT_IDS: options.missingInspectIds?.join(",") ?? "",
+      FAKE_DOCKER_MISSING_INSPECT_SUBJECT: options.missingInspectSubject ?? "",
       FAKE_DOCKER_FAIL_ONCE_ACTIONS: options.failOnceActions?.join(",") ?? "",
       FAKE_DOCKER_IMAGE_INSPECT_STATUS: String(options.imageInspectStatus ?? 0),
       FAKE_DOCKER_PULL_STATUS: String(options.pullStatus ?? 0),
@@ -4356,7 +4358,7 @@ test("sporades deploy replaces the existing container binding before starting a 
   });
 });
 
-test("sporades deploy --force ignores stale container bindings when the container was deleted manually", async () => {
+test("sporades deploy --force replaces a stale binding after Docker reports no such object", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
@@ -4368,6 +4370,7 @@ test("sporades deploy --force ignores stale container bindings when the containe
     await deployOwnedContainer(projectDir, dir, "container-deleted");
     const docker = await installFakeDocker(dir, "container-replacement", {
       missingInspectIds: ["container-deleted"],
+      missingInspectSubject: "object",
     });
 
     const deployResult = await runCli(["deploy", "--force", "--json"], {
@@ -4437,6 +4440,44 @@ test("sporades deploy fails on stale container bindings without --force", async 
     await deployOwnedContainer(projectDir, dir, "container-deleted");
     const docker = await installFakeDocker(dir, "container-replacement", {
       missingInspectIds: ["container-deleted"],
+    });
+
+    const deployResult = await runCli(["deploy", "--json"], {
+      cwd: projectDir,
+      env: docker.env,
+    });
+
+    assert.equal(deployResult.code, 1);
+    assert.deepEqual(JSON.parse(deployResult.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "The existing Container binding is stale.",
+        hint: "Retry with `sporades deploy --force`; through npm, use `npm run deploy -- --force`.",
+      },
+    });
+
+    const calls = await docker.calls();
+    assert.deepEqual(
+      calls.map((call) => call.args[0]),
+      ["image", "inspect"],
+    );
+  });
+});
+
+test("sporades deploy recognizes Docker no-such-object output as a stale container binding", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+
+    const projectDir = await realpath(path.join(dir, "todo-island"));
+    await installFakeReact(projectDir);
+    await deployOwnedContainer(projectDir, dir, "container-deleted");
+    const docker = await installFakeDocker(dir, "container-replacement", {
+      missingInspectIds: ["container-deleted"],
+      missingInspectSubject: "object",
     });
 
     const deployResult = await runCli(["deploy", "--json"], {

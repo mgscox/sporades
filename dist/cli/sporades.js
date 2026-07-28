@@ -5353,7 +5353,7 @@ function localContainerRuntimeUser() {
     return baseImageRuntimeUser();
 }
 function isMissingDockerContainerError(result) {
-    return /No such container/i.test(`${result.stderr ?? ""}\n${result.stdout ?? ""}`);
+    return /No such (?:container|object)/i.test(`${result.stderr ?? ""}\n${result.stdout ?? ""}`);
 }
 function writeJsonResponse(response, status, result) {
     response.writeHead(status, { "content-type": "application/json; charset=utf-8" });

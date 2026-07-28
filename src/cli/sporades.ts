@@ -6233,7 +6233,7 @@ function localContainerRuntimeUser() {
 }
 
 function isMissingDockerContainerError(result: SpawnSyncReturns<string>) {
-  return /No such container/i.test(`${result.stderr ?? ""}\n${result.stdout ?? ""}`);
+  return /No such (?:container|object)/i.test(`${result.stderr ?? ""}\n${result.stdout ?? ""}`);
 }
 
 function writeJsonResponse(response: ServerResponse<IncomingMessage>, status: number, result: LooseRecord) {
