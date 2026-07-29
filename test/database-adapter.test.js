@@ -47,6 +47,7 @@ async function withTempDir(fn) {
 
 const createRuntimeLogSink = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createRuntimeLogSink");
 const emitPrivilegedAuditEvent = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "emitPrivilegedAuditEvent");
+const extractEndpoints = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "extractEndpoints");
 const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
 const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
 
@@ -58,6 +59,22 @@ async function captureErrorCode(fn) {
     return error.code ?? error.message;
   }
 }
+
+test("endpoint source extraction excludes a trailing handler argument comma", () => {
+  const [endpoint] = extractEndpoints(`
+    export default capsule({
+      endpoints: {
+        ping: endpoint(
+          { method: "POST", path: "/ping" },
+          (ctx) => ctx.request.path,
+        ),
+      },
+    });
+  `);
+
+  assert.equal(endpoint.handlerSource, "(ctx) => ctx.request.path");
+  assert.equal(new Function(`return (${endpoint.handlerSource});`)()({ request: { path: "/ping" } }), "/ping");
+});
 
 test("SQLite database adapter owns setup, query execution, and close lifecycle", async () => {
   await withTempDir(async (dir) => {

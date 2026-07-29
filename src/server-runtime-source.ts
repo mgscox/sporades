@@ -216,6 +216,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   schemaFieldFromCapsuleField,
   sqliteTypeForFieldKind,
   extractEndpoints,
+  endpointHandlersFromCapsuleDefinition,
   extractQueryHandlers,
   extractQueryHandlersFromCapsule,
   extractMutationHandlers,
@@ -735,7 +736,9 @@ export async function openDevDatabase(
     serviceEnv,
   });
   const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
-  const endpoints = extractEndpoints(serverSource);
+  const endpoints = capsuleDefinition
+    ? endpointHandlersFromCapsuleDefinition(capsuleDefinition)
+    : extractEndpoints(serverSource);
   const queries: any[] = (extractQueryHandlersFromCapsule(capsuleDefinition) as any) ?? (extractQueryHandlers(serverSource) as any);
   const mutations: any[] = (capsuleDefinition
     ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition)
@@ -4775,12 +4778,27 @@ function extractEndpoints(serverSource: string) {
       name: match[1],
       method: descriptor[1].toUpperCase(),
       path: descriptor[2],
-      handlerSource: argsSource.slice(descriptor[0].length).trim(),
+      handlerSource: argsSource.slice(descriptor[0].length).trim().replace(/,\s*$/, ""),
     });
     endpointPattern.lastIndex = argsEnd + 1;
   }
 
   return endpoints;
+}
+
+function endpointHandlersFromCapsuleDefinition(capsuleDefinition: any) {
+  return Object.entries(capsuleDefinition?.endpoints ?? {})
+    .filter(([, definition]: [string, any]) =>
+      definition?.kind === "endpoint"
+      && typeof definition.handler === "function"
+      && typeof definition.options?.method === "string"
+      && typeof definition.options?.path === "string")
+    .map(([name, definition]: [string, any]) => ({
+      name,
+      method: definition.options.method.toUpperCase(),
+      path: definition.options.path,
+      handler: definition.handler,
+    }));
 }
 
 function extractQueryHandlers(serverSource: any) {
@@ -6050,9 +6068,11 @@ async function removeFileVersionBestEffort(database: LooseRecord, fileId: any, v
   await database.fileStorage.deleteFileVersion({ fileId, version }).catch(() => { });
 }
 
-async function runEndpoint(database: any, endpoint: { handlerSource: any; }, requestUrl: URL, request: any) {
-  const createHandler = new Function(`return (${endpoint.handlerSource});`);
-  const handler = createHandler();
+async function runEndpoint(database: any, endpoint: { handler?: Function; handlerSource?: string; }, requestUrl: URL, request: any) {
+  const handler =
+    typeof endpoint.handler === "function"
+      ? endpoint.handler
+      : new Function(`return (${endpoint.handlerSource});`)();
   const endpointRequest = await readEndpointRequest(database, requestUrl, request);
   const session = await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
   let context: LooseRecord | undefined;

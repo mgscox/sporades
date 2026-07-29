@@ -3728,7 +3728,11 @@ export default capsule({
   name: "endpoint-island",
 
   endpoints: {
-    ping: endpoint({ method: "POST", path: "/integrations/ping" }, () => "pong"),
+    ping: endpoint(
+      { method: "POST", path: "/integrations/ping" },
+      (ctx: { request: { query: Record<string, string> } }) =>
+        String((ctx.request.query.source as string) ?? "missing"),
+    ),
   },
 });
 `,
@@ -3738,11 +3742,12 @@ export default capsule({
     const child = startCli(["dev", "--json"], { cwd: projectDir });
     try {
       const started = await waitForJsonLine(child);
+      assert.ok(started.data, JSON.stringify(started));
 
       const endpointResponse = await fetch(`${started.data.url}/integrations/ping?source=test`, { method: "POST" });
       assert.equal(endpointResponse.status, 200);
       assert.match(endpointResponse.headers.get("content-type") ?? "", /^text\/plain/);
-      assert.equal(await endpointResponse.text(), "pong");
+      assert.equal(await endpointResponse.text(), "test");
 
       const methodMissResponse = await fetch(`${started.data.url}/integrations/ping`);
       assert.equal(methodMissResponse.status, 404);

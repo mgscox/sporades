@@ -2087,6 +2087,7 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   schemaFieldFromCapsuleField,
   sqliteTypeForFieldKind,
   extractEndpoints,
+  endpointHandlersFromCapsuleDefinition,
   extractQueryHandlers,
   extractQueryHandlersFromCapsule,
   extractMutationHandlers,
@@ -2571,7 +2572,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     serviceEnv
   });
   const schema = capsuleDefinition ? schemaFromCapsuleDefinition(capsuleDefinition) : extractSchema(serverSource);
-  const endpoints = extractEndpoints(serverSource);
+  const endpoints = capsuleDefinition ? endpointHandlersFromCapsuleDefinition(capsuleDefinition) : extractEndpoints(serverSource);
   const queries = extractQueryHandlersFromCapsule(capsuleDefinition) ?? extractQueryHandlers(serverSource);
   const mutations = capsuleDefinition ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition) : extractMutationHandlers(serverSource);
   const messages = extractMessageHandlers(serverSource);
@@ -6087,11 +6088,19 @@ function extractEndpoints(serverSource) {
       name: match[1],
       method: descriptor[1].toUpperCase(),
       path: descriptor[2],
-      handlerSource: argsSource.slice(descriptor[0].length).trim()
+      handlerSource: argsSource.slice(descriptor[0].length).trim().replace(/,\s*$/, "")
     });
     endpointPattern.lastIndex = argsEnd + 1;
   }
   return endpoints;
+}
+function endpointHandlersFromCapsuleDefinition(capsuleDefinition) {
+  return Object.entries(capsuleDefinition?.endpoints ?? {}).filter(([, definition]) => definition?.kind === "endpoint" && typeof definition.handler === "function" && typeof definition.options?.method === "string" && typeof definition.options?.path === "string").map(([name, definition]) => ({
+    name,
+    method: definition.options.method.toUpperCase(),
+    path: definition.options.path,
+    handler: definition.handler
+  }));
 }
 function extractQueryHandlers(serverSource) {
   const queriesSource = extractObjectPropertySource(serverSource, "queries");
@@ -7180,8 +7189,7 @@ async function removeFileVersionBestEffort(database, fileId, version) {
   });
 }
 async function runEndpoint(database, endpoint, requestUrl, request) {
-  const createHandler = new Function(`return (${endpoint.handlerSource});`);
-  const handler = createHandler();
+  const handler = typeof endpoint.handler === "function" ? endpoint.handler : new Function(`return (${endpoint.handlerSource});`)();
   const endpointRequest = await readEndpointRequest(database, requestUrl, request);
   const session = await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
   let context;
