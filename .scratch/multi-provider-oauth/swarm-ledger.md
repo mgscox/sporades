@@ -11,7 +11,7 @@ was discarded as non-authoritative environment noise.
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 01 | ready | None | — | — | — | — | — | — | — | baseline 961 pass, 0 fail, 38 skipped | — |
+| 01 | working | None | `716075b` | `codex/multi-provider-oauth-01` / `/private/tmp/sporades-multi-provider-oauth-swarm/issue-01` | `/root/oauth_01` | — | — | — | — | baseline 961 pass, 0 fail, 38 skipped; worker gate pending | active |
 | 02 | blocked | 01 | — | — | — | — | — | — | — | — | — |
 | 03 | blocked | 02 | — | — | — | — | — | — | — | — | — |
 | 04 | blocked | 02, 03 | — | — | — | — | — | — | — | — | — |
