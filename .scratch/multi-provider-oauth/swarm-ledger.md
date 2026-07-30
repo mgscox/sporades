@@ -16,14 +16,12 @@ was discarded as non-authoritative environment noise.
 | 03 | done | None (02 done) | `c3da4ab` | `codex/multi-provider-oauth-03` / removed worktree | `/root/oauth_01` | `ca805f3` | `/root/oauth_01_review` | ACCEPT for `c3da4ab...ca805f3`; prior REQUEST_CHANGES verdicts void for replacement SHA | `3cabaf0` | integration: transaction/config/client/docs/Sealed 152 pass; Dev 5; Container 1; type/build/generated/docs/diff green | clean worktree removed; reviewed branch retained for SHA audit |
 | 04 | done | None (02, 03 done) | `b63b4b1` | `codex/multi-provider-oauth-04` / removed worktree | `/root/oauth_04` | `e246bc2` | `/root/oauth_01_review` | ACCEPT for `b63b4b1...e246bc2`; pre-rebase verdicts void | `11bf24e` | integration: combined provider 35; config 4; Dev/TLS/Chrome 6; Container 2; Facebook Chrome 1; type/build/generated/docs/diff green | clean worktree removed; reviewed branch retained for SHA audit |
 | 05 | done | None (02, 03 done) | `49471f2` | `codex/multi-provider-oauth-05` / removed worktree | `/root/oauth_05` | `c1fb111` | `/root/oauth_05_review` | ACCEPT for `49471f2...c1fb111`; pre-rebase verdicts void | `1817519` | integration: Apple+Facebook 19; config 4; combined Dev 6 incl TLS/spoof; Container 1; type/build/generated/docs/diff green | clean worktree removed; reviewed branch retained for SHA audit |
-| 06 | done | None (02, 03 done) | `1dc0371` | `codex/multi-provider-oauth-06` / `/private/tmp/sporades-multi-provider-oauth-swarm/issue-06` | `/root/oauth_01` | `446ab22` | `/root/oauth_06_review` | ACCEPT for `1dc0371...446ab22`; prior REQUEST_CHANGES verdicts void for replacement SHA | `bbbb5b5` | integration: provider/OAuth 14; Dev 3; Container 1; real Chrome 1; type/build/generated/docs/diff green | integrated; worker worktree clean |
-| 07 | accepted | None (04, 05, 06 done) | `b18dae7` | `codex/multi-provider-oauth-07` / `/private/tmp/sporades-multi-provider-oauth-swarm/issue-07` | `/root/oauth_04` | `302aa50` | `/root/oauth_01_review` | ACCEPT for `b18dae7...302aa50`; prior REQUEST_CHANGES verdicts void | — | review: provider/network 44 pass, 1 optional browser skip; type/build/generated/diff green | worker and final review complete; awaiting integration |
-| 08 | blocked | 07; real provider registrations and credentials | — | — | — | — | — | — | — | — | — |
+| 06 | done | None (02, 03 done) | `1dc0371` | `codex/multi-provider-oauth-06` / removed worktree | `/root/oauth_01` | `446ab22` | `/root/oauth_06_review` | ACCEPT for `1dc0371...446ab22`; prior REQUEST_CHANGES verdicts void for replacement SHA | `bbbb5b5` | integration: provider/OAuth 14; Dev 3; Container 1; real Chrome 1; type/build/generated/docs/diff green | clean worktree removed; reviewed branch retained for SHA audit |
+| 07 | done | None (04, 05, 06 done) | `b18dae7` | `codex/multi-provider-oauth-07` / removed worktree | `/root/oauth_04` | `302aa50` | `/root/oauth_01_review` | ACCEPT for `b18dae7...302aa50`; prior REQUEST_CHANGES verdicts void | `df4901f` | integration: provider/network 44; real Chrome 1; Dev/TLS/Chrome 6; Container 2; full suite 1053 pass, 1 unrelated path-sensitive fail, 39 skip; type/build/generated/docs/diff green | clean worktree removed; reviewed branch retained for SHA audit |
+| 08 | external-blocked | real Google, Microsoft, Apple, and Facebook provider registrations and secret-safe credentials for one HTTPS Hosted Capsule | `df4901f` | — | maintainer | — | — | — | — | real-provider acceptance pending | no worktree created |
 
 ## External acceptance boundary
 
-Issue 08 is tracker-labelled `ready-for-human`. Once Issue 07 is merged and
-integration-green, Issue 08 becomes `external-blocked` until the maintainer
-provides or confirms the real Google, Microsoft, Apple, and Facebook provider
-registrations and secret-safe credentials required for Hosted Capsule
-acceptance.
+Issue 08 is `external-blocked` until the maintainer provides or confirms the
+real Google, Microsoft, Apple, and Facebook provider registrations and
+secret-safe credentials required for Hosted Capsule acceptance.
