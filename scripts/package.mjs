@@ -69,6 +69,45 @@ export function bumpVersion(version, releaseType) {
   throw new Error(`Unsupported release type: ${releaseType}`);
 }
 
+function compareVersions(left, right) {
+  const leftMatch = /^(\d+)\.(\d+)\.(\d+)$/.exec(left);
+  const rightMatch = /^(\d+)\.(\d+)\.(\d+)$/.exec(right);
+  if (!leftMatch || !rightMatch) {
+    throw new Error(`Cannot compare non-semver package versions: ${left} and ${right}`);
+  }
+
+  const leftParts = leftMatch.slice(1).map(Number);
+  const rightParts = rightMatch.slice(1).map(Number);
+  for (let index = 0; index < leftParts.length; index += 1) {
+    if (leftParts[index] !== rightParts[index]) {
+      return leftParts[index] - rightParts[index];
+    }
+  }
+  return 0;
+}
+
+function isNotFoundResult(result) {
+  return result.code !== 0 && /\bE404\b|404 Not Found/i.test(`${result.stdout}\n${result.stderr}`);
+}
+
+export function nextReleaseVersion(packageVersion, releaseType, publishedResult) {
+  let releaseBase = packageVersion;
+
+  if (publishedResult.code === 0) {
+    const publishedVersion = publishedResult.stdout.trim();
+    if (!/^(\d+)\.(\d+)\.(\d+)$/.test(publishedVersion)) {
+      throw new Error(`npm reported a non-semver package version: ${publishedVersion || "(empty)"}`);
+    }
+    if (compareVersions(publishedVersion, packageVersion) > 0) {
+      releaseBase = publishedVersion;
+    }
+  } else if (!isNotFoundResult(publishedResult)) {
+    throw new Error(`Could not determine the current published package version:\n${publishedResult.stderr.trim()}`);
+  }
+
+  return bumpVersion(releaseBase, releaseType);
+}
+
 function run(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -155,6 +194,9 @@ export function assertVersionNotPublished(packageName, version, result) {
   if (result.code === 0 && result.stdout.trim()) {
     throw new Error(`${packageName}@${version} already exists on npm.`);
   }
+  if (!isNotFoundResult(result)) {
+    throw new Error(`Could not check whether ${packageName}@${version} is published:\n${result.stderr.trim()}`);
+  }
 }
 
 export function assertReleaseTagAvailable(tag, result) {
@@ -163,20 +205,24 @@ export function assertReleaseTagAvailable(tag, result) {
   }
 }
 
-async function updatePackageVersion(releaseType) {
-  const packageJsonPath = path.join(repoRoot, "package.json");
-  const packageLockPath = path.join(repoRoot, "package-lock.json");
-  const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
-  const nextVersion = bumpVersion(packageJson.version, releaseType);
-
+export function applyPackageVersion(packageJson, packageLock, nextVersion) {
+  releaseTagForVersion(nextVersion);
   packageJson.version = nextVersion;
-  await writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
-
-  const packageLock = JSON.parse(await readFile(packageLockPath, "utf8"));
   packageLock.version = nextVersion;
   if (packageLock.packages?.[""]) {
     packageLock.packages[""].version = nextVersion;
   }
+}
+
+async function updatePackageVersion(nextVersion) {
+  const packageJsonPath = path.join(repoRoot, "package.json");
+  const packageLockPath = path.join(repoRoot, "package-lock.json");
+  const packageJson = JSON.parse(await readFile(packageJsonPath, "utf8"));
+
+  const packageLock = JSON.parse(await readFile(packageLockPath, "utf8"));
+  applyPackageVersion(packageJson, packageLock, nextVersion);
+
+  await writeFile(packageJsonPath, `${JSON.stringify(packageJson, null, 2)}\n`);
   await writeFile(packageLockPath, `${JSON.stringify(packageLock, null, 2)}\n`);
 
   return nextVersion;
@@ -198,13 +244,15 @@ export async function packageForNpm(args = process.argv.slice(2)) {
   }
 
   const packageJson = await readPackageJson();
-  const nextVersion = bumpVersion(packageJson.version, options.releaseType);
-  const releaseTag = releaseTagForVersion(nextVersion);
 
-  console.log(`Packaging ${packageJson.name}@${nextVersion} with a ${options.releaseType} version bump...`);
   await run("npm", ["whoami"]);
   const status = await run("git", ["status", "--porcelain=v1"], { captureStdout: true });
   assertCleanWorkingTree(status);
+  const currentPublished = await runResult("npm", ["view", packageJson.name, "version"]);
+  const nextVersion = nextReleaseVersion(packageJson.version, options.releaseType, currentPublished);
+  const releaseTag = releaseTagForVersion(nextVersion);
+
+  console.log(`Packaging ${packageJson.name}@${nextVersion} with a ${options.releaseType} version bump...`);
   const published = await runResult("npm", ["view", `${packageJson.name}@${nextVersion}`, "version"]);
   assertVersionNotPublished(packageJson.name, nextVersion, published);
   const existingTag = await runResult("git", ["rev-parse", "--verify", "--quiet", `refs/tags/${releaseTag}`]);
@@ -213,7 +261,7 @@ export async function packageForNpm(args = process.argv.slice(2)) {
   await run("npm", ["run", "docs:api"]);
   await generateChanges();
   console.log("Updated CHANGES.md.");
-  await updatePackageVersion(options.releaseType);
+  await updatePackageVersion(nextVersion);
   console.log(`Version bumped to ${nextVersion}.`);
   await run("npm", ["run", "build"]);
   console.log("Rebuilt packaged files with baked CLI version.");
