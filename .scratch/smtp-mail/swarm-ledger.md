@@ -17,7 +17,7 @@ gates, and obtain re-review if the merge changes accepted SMTP behavior.
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 01 | rework | None | `ac20cf1` | `codex/smtp-mail-01` / `/private/tmp/sporades-smtp-mail-swarm/issue-01` | `/root/smtp_01` | `754feaa` | `/root/smtp_01_review` | REQUEST_CHANGES: MIME line folding, Unicode/SMTPUTF8, C0 controls, real TLS error normalization | — | RED missing `validateMailConfig`; focused gates green; reviewer independently passed mail/types/generated with live smoke skipped | original worktree retained; rework active |
+| 01 | review | None | `ac20cf1` | `codex/smtp-mail-01` / `/private/tmp/sporades-smtp-mail-swarm/issue-01` | `/root/smtp_01` | `d8c1b55` | `/root/smtp_01_review` | pending; prior `754feaa` REQUEST_CHANGES void for replacement SHA | — | rework RED covered MIME folding, Unicode/envelope handling, C0 controls, and TLS errors; affected build/runtime/types/jobs/schedules/ACL/docs/generated gates green | worker complete; worktree clean; replacement review active |
 | 02 | blocked | 01 | — | — | — | — | — | — | — | — | — |
 | 03 | blocked | 01 | — | — | — | — | — | — | — | — | — |
 | 04 | blocked | 01 | — | — | — | — | — | — | — | — | — |
