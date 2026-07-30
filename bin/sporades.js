@@ -2180,6 +2180,7 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   authStatus,
   normalizeAuthConfig,
   readProviderConfig,
+  readFacebookProviderConfig,
   emptyProviderConfig,
   createFileStorageTables,
   createRuntimeFileStorageAdapter,
@@ -2295,6 +2296,7 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   facebookOAuthCallbackError,
   facebookOAuthEndpoint,
   facebookOAuthTimeoutSignal,
+  cancelFacebookOAuthResponse,
   readFacebookOAuthJson,
   completeFacebookOAuth,
   verifyGoogleIdentityToken,
@@ -9578,7 +9580,7 @@ async function completeGoogleOAuth(database, context) {
 }
 function createFacebookOAuthProviderAdapter(database) {
   const facebook = database.authConfig.providers.facebook;
-  const graphVersion = facebook.graphVersion ?? "v23.0";
+  const graphVersion = facebook.graphVersion;
   const configured = Boolean(
     facebook.enabled && facebook.configured && facebook.runtimeAvailable && graphVersion === "v23.0"
   );
@@ -9686,33 +9688,58 @@ function facebookOAuthTimeoutSignal() {
   const timeoutMs = Number.isInteger(testTimeout) && testTimeout >= 10 && testTimeout <= 1e4 ? testTimeout : 1e4;
   return AbortSignal.timeout(timeoutMs);
 }
-async function readFacebookOAuthJson(response, failureCode, failureMessage, failureHint) {
+async function cancelFacebookOAuthResponse(response) {
+  try {
+    await response.body?.cancel();
+  } catch {
+  }
+}
+async function readFacebookOAuthJson(response, signal, failureCode, failureMessage, failureHint, timeoutCode, timeoutMessage) {
   const reader = response.body?.getReader();
   if (!reader) {
     throw commandError(failureMessage, failureHint, failureCode);
   }
   const chunks = [];
   let length = 0;
+  const aborted = {};
+  let onAbort = null;
+  const abort = signal.aborted ? Promise.resolve(aborted) : new Promise((resolve) => {
+    onAbort = () => resolve(aborted);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
   try {
     while (true) {
-      const next = await reader.read();
+      const next = await Promise.race([reader.read(), abort]);
+      if (next === aborted) throw aborted;
       if (next.done) break;
       if (!(next.value instanceof Uint8Array)) throw new Error("invalid chunk");
       length += next.value.byteLength;
       if (length > 64 * 1024) {
-        await reader.cancel();
         throw new Error("response too large");
       }
       chunks.push(next.value);
     }
     return JSON.parse(Buffer.concat(chunks, length).toString("utf8"));
-  } catch {
+  } catch (error) {
+    try {
+      await reader.cancel();
+    } catch {
+    }
+    if (error === aborted || signal.aborted) {
+      throw commandError(timeoutMessage, failureHint, timeoutCode);
+    }
     throw commandError(failureMessage, failureHint, failureCode);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+    try {
+      reader.releaseLock();
+    } catch {
+    }
   }
 }
 async function completeFacebookOAuth(database, context) {
   const facebook = database.authConfig.providers.facebook;
-  const graphVersion = facebook.graphVersion ?? "v23.0";
+  const graphVersion = facebook.graphVersion;
   if (graphVersion !== "v23.0") {
     throw commandError(
       "Facebook Graph API version is unsupported.",
@@ -9734,6 +9761,7 @@ async function completeFacebookOAuth(database, context) {
     `https://graph.facebook.com/${graphVersion}/oauth/access_token`
   );
   let tokenResponse;
+  const tokenSignal = facebookOAuthTimeoutSignal();
   try {
     tokenResponse = await fetch(tokenUrl, {
       method: "POST",
@@ -9745,7 +9773,7 @@ async function completeFacebookOAuth(database, context) {
         redirect_uri: context.redirectUri
       }),
       redirect: "error",
-      signal: facebookOAuthTimeoutSignal()
+      signal: tokenSignal
     });
   } catch (error) {
     throw commandError(
@@ -9755,6 +9783,7 @@ async function completeFacebookOAuth(database, context) {
     );
   }
   if (!tokenResponse.ok) {
+    await cancelFacebookOAuthResponse(tokenResponse);
     throw commandError(
       "Facebook OAuth code exchange failed.",
       "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
@@ -9763,9 +9792,12 @@ async function completeFacebookOAuth(database, context) {
   }
   const token = await readFacebookOAuthJson(
     tokenResponse,
+    tokenSignal,
     "FACEBOOK_EXCHANGE_FAILED",
     "Facebook OAuth response was invalid.",
-    "Check the Facebook app configuration and retry sign-in."
+    "Check the Facebook app configuration and retry sign-in.",
+    "FACEBOOK_EXCHANGE_TIMEOUT",
+    "Facebook OAuth response timed out."
   );
   if (typeof token?.access_token !== "string" || token.access_token.length < 1 || token.access_token.length > 16 * 1024) {
     throw commandError(
@@ -9780,11 +9812,12 @@ async function completeFacebookOAuth(database, context) {
   );
   graphUrl.searchParams.set("fields", "id,name,email,picture");
   let graphResponse;
+  const graphSignal = facebookOAuthTimeoutSignal();
   try {
     graphResponse = await fetch(graphUrl, {
       headers: { authorization: `Bearer ${token.access_token}` },
       redirect: "error",
-      signal: facebookOAuthTimeoutSignal()
+      signal: graphSignal
     });
   } catch (error) {
     throw commandError(
@@ -9794,6 +9827,7 @@ async function completeFacebookOAuth(database, context) {
     );
   }
   if (!graphResponse.ok) {
+    await cancelFacebookOAuthResponse(graphResponse);
     throw commandError(
       "Facebook profile could not be loaded.",
       "Check Facebook Graph API access and retry sign-in.",
@@ -9802,9 +9836,12 @@ async function completeFacebookOAuth(database, context) {
   }
   const profile = await readFacebookOAuthJson(
     graphResponse,
+    graphSignal,
     "FACEBOOK_GRAPH_FAILED",
     "Facebook profile response was invalid.",
-    "Check Facebook Graph API access and retry sign-in."
+    "Check Facebook Graph API access and retry sign-in.",
+    "FACEBOOK_GRAPH_TIMEOUT",
+    "Facebook profile response timed out."
   );
   if (typeof profile?.id !== "string" || profile.id.length < 1 || profile.id.length > 255 || !/^[\x21-\x7e]+$/.test(profile.id)) {
     throw commandError(
@@ -11508,7 +11545,7 @@ function authStatus(config, serverEnv) {
   for (const providerName of providerOrder) {
     const provider = normalized.providers[providerName];
     const credentialsConfigured = providerName === "anonymous" || providerName === "email" ? true : providerName === "apple" ? Boolean(provider.clientId && provider.teamId && provider.keyId && provider.privateKeyEnv && serverEnv[provider.privateKeyEnv]) : Boolean(provider.clientIdEnv && provider.clientSecretEnv && serverEnv[provider.clientIdEnv] && serverEnv[provider.clientSecretEnv]);
-    const configured = providerName === "facebook" ? credentialsConfigured && (provider.graphVersion === null || provider.graphVersion === "v23.0") : credentialsConfigured;
+    const configured = providerName === "facebook" ? credentialsConfigured && provider.graphVersion === "v23.0" : credentialsConfigured;
     const state = {
       enabled: provider.enabled,
       configured,
@@ -11585,7 +11622,7 @@ function normalizeAuthConfig(authConfig) {
       },
       microsoft: readProviderConfig(providerConfig.microsoft),
       apple: readProviderConfig(providerConfig.apple),
-      facebook: readProviderConfig(providerConfig.facebook)
+      facebook: readFacebookProviderConfig(providerConfig.facebook)
     }
   };
 }
@@ -11608,6 +11645,13 @@ function readProviderConfig(config) {
     graphVersion: config.graphVersion === void 0 ? null : typeof config.graphVersion === "string" ? config.graphVersion : "__invalid__"
   };
 }
+function readFacebookProviderConfig(config) {
+  const normalized = readProviderConfig(config);
+  if (!config || typeof config !== "object" || Array.isArray(config) || !Object.prototype.hasOwnProperty.call(config, "graphVersion")) {
+    return { ...normalized, graphVersion: "v23.0" };
+  }
+  return normalized;
+}
 function emptyProviderConfig() {
   return { clientIdEnv: null, clientSecretEnv: null, clientId: null, teamId: null, keyId: null, privateKeyEnv: null, tenant: null, graphVersion: null };
 }
@@ -11617,7 +11661,8 @@ function authProvidersForClient(authConfig) {
     providers[name] = {
       enabled: provider.enabled,
       configured: provider.configured,
-      runtimeAvailable: provider.runtimeAvailable
+      runtimeAvailable: provider.runtimeAvailable,
+      ...name === "facebook" ? { graphVersion: provider.graphVersion === "__invalid__" ? null : provider.graphVersion } : {}
     };
   }
   return providers;
@@ -13128,7 +13173,7 @@ function normalizeAuthConfig2(authConfig) {
       },
       microsoft: readProviderConfig2(providerConfig.microsoft),
       apple: readProviderConfig2(providerConfig.apple),
-      facebook: readProviderConfig2(providerConfig.facebook)
+      facebook: readFacebookProviderConfig2(providerConfig.facebook)
     }
   };
 }
@@ -13153,6 +13198,13 @@ function readProviderConfig2(config) {
     tenant: typeof config.tenant === "string" ? config.tenant : null,
     graphVersion: config.graphVersion === void 0 ? null : typeof config.graphVersion === "string" ? config.graphVersion : "__invalid__"
   };
+}
+function readFacebookProviderConfig2(config) {
+  const normalized = readProviderConfig2(config);
+  if (!isRecord2(config) || !Object.prototype.hasOwnProperty.call(config, "graphVersion")) {
+    return { ...normalized, graphVersion: "v23.0" };
+  }
+  return normalized;
 }
 function validateAuthConfig(config, serverEnv) {
   const status = authStatus2(config, serverEnv);
@@ -13185,7 +13237,7 @@ function providerConfigured(provider, config, serverEnv) {
   }
   const credentialsConfigured = Boolean(config.clientIdEnv && config.clientSecretEnv && serverEnv[config.clientIdEnv] && serverEnv[config.clientSecretEnv]);
   if (provider === "facebook") {
-    return credentialsConfigured && (config.graphVersion === null || config.graphVersion === "v23.0");
+    return credentialsConfigured && config.graphVersion === "v23.0";
   }
   return credentialsConfigured;
 }

@@ -8174,6 +8174,10 @@ test("Facebook auth callback uses the versioned server-owned Graph flow and acce
       { cwd: projectDir },
     );
     assert.equal(setResult.code, 0, setResult.stdout || setResult.stderr);
+    const configuredProject = JSON.parse(await readFile(configPath, "utf8"));
+    delete configuredProject.auth.providers.facebook.graphVersion;
+    configuredProject.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(configuredProject, null, 2)}\n`);
 
     await withFakeFacebookServer(async (facebook) => {
       const child = startCli(["dev", "--json"], {
@@ -8196,6 +8200,7 @@ test("Facebook auth callback uses the versioned server-owned Graph flow and acce
           enabled: true,
           configured: true,
           runtimeAvailable: true,
+          graphVersion: "v23.0",
         });
 
         socket.send(JSON.stringify({

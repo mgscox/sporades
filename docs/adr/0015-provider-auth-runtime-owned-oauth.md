@@ -36,6 +36,9 @@ refuse redirects, have finite deadlines, and stream response bodies through a
 64 KiB hard cap before JSON parsing. An explicit process-only test seam permits
 plain HTTP solely for loopback protocol receivers; Capsule configuration cannot
 select endpoints or enable that seam.
+The same deadline remains authoritative while a response body is streaming;
+timeout, oversize, malformed JSON, and other read failures cancel and release
+the response reader before returning a bounded error.
 
 Provider identity is stored separately from the Sporades user. A verified
 `(provider, subject)` pair identifies the Provider identity; provider email,
@@ -73,6 +76,9 @@ configured before its runtime protocol adapter is available. Updating one
 provider merges it into the existing provider map and preserves siblings.
 Facebook is runtime-available only when enabled, its App ID and App Secret env
 entries are present, and its configured Graph version is supported.
+When `graphVersion` is genuinely absent it is normalized once to `v23.0`, which
+is then reported consistently by CLI status, runtime status, and client provider
+state. An explicitly supplied invalid value never enters that defaulting path.
 
 Google OAuth can be configured either with explicit values:
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -15,6 +16,7 @@ import { authStatus } from "../dist/bundle-pipeline.js";
 const beginOAuthSignIn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "beginOAuthSignIn");
 const oauthProviderAdapter = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "oauthProviderAdapter");
 const linkProviderIdentity = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkProviderIdentity");
+const authProvidersForClient = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "authProvidersForClient");
 
 async function withFacebookDatabase(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-facebook-oauth-"));
@@ -145,10 +147,35 @@ test("Facebook direct config distinguishes an absent Graph version from invalid 
     if (supplied) facebook.graphVersion = graphVersion;
     return authStatus({ auth: { providers: { facebook } } }, env).providers.facebook;
   };
+  const absentBuildStatus = provider(undefined, false);
   assert.deepEqual(
-    { configured: provider(undefined, false).configured, runtimeAvailable: provider(undefined, false).runtimeAvailable },
-    { configured: true, runtimeAvailable: true },
+    {
+      configured: absentBuildStatus.configured,
+      runtimeAvailable: absentBuildStatus.runtimeAvailable,
+      graphVersion: absentBuildStatus.graphVersion,
+    },
+    { configured: true, runtimeAvailable: true, graphVersion: "v23.0" },
   );
+  const absentDir = await mkdtemp(path.join(tmpdir(), "sporades-facebook-version-"));
+  const absentDatabase = await openDevDatabase(path.join(absentDir, "data.db"), "", env, {
+    auth: {
+      providers: {
+        facebook: {
+          enabled: true,
+          clientIdEnv: "FACEBOOK_CLIENT_ID",
+          clientSecretEnv: "FACEBOOK_CLIENT_SECRET",
+        },
+      },
+    },
+  });
+  try {
+    assert.equal(absentDatabase.authConfig.providers.facebook.graphVersion, "v23.0");
+    assert.equal(authProvidersForClient(absentDatabase.authConfig).facebook.graphVersion, "v23.0");
+    assert.equal(oauthProviderAdapter(absentDatabase, "facebook").enabled, true);
+  } finally {
+    absentDatabase.close();
+    await rm(absentDir, { recursive: true, force: true });
+  }
   for (const invalid of [null, 23, [], "v99.0", "23.0", ""]) {
     const status = provider(invalid);
     assert.equal(status.configured, false, JSON.stringify(invalid));
@@ -405,6 +432,86 @@ test("Facebook abort deadlines terminate stalled exchange and Graph reads", asyn
       else process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK = originalAllow;
       if (originalTimeout === undefined) delete process.env.SPORADES_FACEBOOK_TEST_TIMEOUT_MS;
       else process.env.SPORADES_FACEBOOK_TEST_TIMEOUT_MS = originalTimeout;
+    }
+  });
+});
+
+test("Facebook preserves timeout taxonomy and closes real loopback responses that stall after partial JSON", async () => {
+  await withFacebookDatabase(async (database) => {
+    const closed = new Set();
+    const server = createServer((request, response) => {
+      const pathname = new URL(request.url, "http://127.0.0.1").pathname;
+      response.on("close", () => closed.add(pathname));
+      response.writeHead(200, { "content-type": "application/json" });
+      if (pathname === "/token") {
+        response.end(JSON.stringify({ access_token: "provider-access-token" }));
+        return;
+      }
+      response.flushHeaders();
+      response.write(pathname === "/slow-token"
+        ? '{"access_token":"raw-partial-token'
+        : '{"id":"raw-partial-profile');
+    });
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const adapter = oauthProviderAdapter(database, "facebook");
+    const originals = {
+      allow: process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK,
+      timeout: process.env.SPORADES_FACEBOOK_TEST_TIMEOUT_MS,
+      token: process.env.SPORADES_FACEBOOK_TOKEN_URL,
+      graph: process.env.SPORADES_FACEBOOK_GRAPH_URL,
+    };
+    process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK = "1";
+    process.env.SPORADES_FACEBOOK_TEST_TIMEOUT_MS = "30";
+    try {
+      const cases = [
+        {
+          tokenUrl: `${origin}/slow-token`,
+          graphUrl: `${origin}/graph`,
+          code: "FACEBOOK_EXCHANGE_TIMEOUT",
+          closedPath: "/slow-token",
+        },
+        {
+          tokenUrl: `${origin}/token`,
+          graphUrl: `${origin}/slow-graph`,
+          code: "FACEBOOK_GRAPH_TIMEOUT",
+          closedPath: "/slow-graph",
+        },
+      ];
+      for (const testCase of cases) {
+        process.env.SPORADES_FACEBOOK_TOKEN_URL = testCase.tokenUrl;
+        process.env.SPORADES_FACEBOOK_GRAPH_URL = testCase.graphUrl;
+        const startedAt = Date.now();
+        await assert.rejects(
+          adapter.complete({ code: "code", redirectUri: "https://capsule.example/__sporades/auth/facebook/callback" }),
+          (error) => {
+            assert.equal(error.code, testCase.code);
+            assert.doesNotMatch(`${error.message} ${error.hint}`, /raw-partial|provider-access-token/);
+            return true;
+          },
+        );
+        assert.ok(Date.now() - startedAt < 1_000, `${testCase.code} exceeded its bounded deadline`);
+        for (let attempt = 0; attempt < 50 && !closed.has(testCase.closedPath); attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        assert.ok(closed.has(testCase.closedPath), `${testCase.closedPath} response was not closed after abort`);
+      }
+    } finally {
+      for (const [name, value] of Object.entries(originals)) {
+        const key = {
+          allow: "SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK",
+          timeout: "SPORADES_FACEBOOK_TEST_TIMEOUT_MS",
+          token: "SPORADES_FACEBOOK_TOKEN_URL",
+          graph: "SPORADES_FACEBOOK_GRAPH_URL",
+        }[name];
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
     }
   });
 });

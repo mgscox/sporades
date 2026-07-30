@@ -63,6 +63,8 @@ export type ProviderState = {
   enabled: boolean;
   configured: boolean;
   runtimeAvailable: boolean;
+  /** Explicitly supported version for versioned provider APIs such as Meta Graph. */
+  graphVersion?: string | null;
 };
 
 /** Provider availability reported by the server runtime. */

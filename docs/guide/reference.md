@@ -1101,6 +1101,9 @@ Apple requires an HTTPS callback: its status has a null `callbackUrl` locally
 and guidance to use the Capsule's Hosted HTTPS origin or an HTTPS development
 tunnel. JSON output contains env-var names and non-secret options, never
 credential values.
+Facebook status and client provider state also report the effective
+`graphVersion`. A genuinely omitted value is normalized to `v23.0`; explicit
+null, non-string, malformed, and unsupported values leave Facebook unavailable.
 
 ### Configure OAuth Providers
 

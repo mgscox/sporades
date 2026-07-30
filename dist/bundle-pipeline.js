@@ -478,7 +478,7 @@ function normalizeAuthConfig(authConfig) {
             },
             microsoft: readProviderConfig(providerConfig.microsoft),
             apple: readProviderConfig(providerConfig.apple),
-            facebook: readProviderConfig(providerConfig.facebook),
+            facebook: readFacebookProviderConfig(providerConfig.facebook),
         },
     };
 }
@@ -507,6 +507,13 @@ function readProviderConfig(config) {
                 ? config.graphVersion
                 : "__invalid__",
     };
+}
+function readFacebookProviderConfig(config) {
+    const normalized = readProviderConfig(config);
+    if (!isRecord(config) || !Object.prototype.hasOwnProperty.call(config, "graphVersion")) {
+        return { ...normalized, graphVersion: "v23.0" };
+    }
+    return normalized;
 }
 function validateAuthConfig(config, serverEnv) {
     const status = authStatus(config, serverEnv);
@@ -542,7 +549,7 @@ function providerConfigured(provider, config, serverEnv) {
     }
     const credentialsConfigured = Boolean(config.clientIdEnv && config.clientSecretEnv && serverEnv[config.clientIdEnv] && serverEnv[config.clientSecretEnv]);
     if (provider === "facebook") {
-        return credentialsConfigured && (config.graphVersion === null || config.graphVersion === "v23.0");
+        return credentialsConfigured && config.graphVersion === "v23.0";
     }
     return credentialsConfigured;
 }

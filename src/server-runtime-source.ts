@@ -309,6 +309,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   authStatus,
   normalizeAuthConfig,
   readProviderConfig,
+  readFacebookProviderConfig,
   emptyProviderConfig,
   createFileStorageTables,
   createRuntimeFileStorageAdapter,
@@ -424,6 +425,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   facebookOAuthCallbackError,
   facebookOAuthEndpoint,
   facebookOAuthTimeoutSignal,
+  cancelFacebookOAuthResponse,
   readFacebookOAuthJson,
   completeFacebookOAuth,
   verifyGoogleIdentityToken,
@@ -8672,7 +8674,7 @@ async function completeGoogleOAuth(database: LooseRecord, context: LooseRecord) 
 
 function createFacebookOAuthProviderAdapter(database: LooseRecord) {
   const facebook = database.authConfig.providers.facebook;
-  const graphVersion = facebook.graphVersion ?? "v23.0";
+  const graphVersion = facebook.graphVersion;
   const configured = Boolean(
     facebook.enabled &&
     facebook.configured &&
@@ -8803,34 +8805,73 @@ function facebookOAuthTimeoutSignal() {
   return AbortSignal.timeout(timeoutMs);
 }
 
-async function readFacebookOAuthJson(response: Response, failureCode: string, failureMessage: string, failureHint: string) {
+async function cancelFacebookOAuthResponse(response: Response) {
+  try {
+    await response.body?.cancel();
+  } catch {
+    // Preserve the bounded protocol error rather than exposing cleanup details.
+  }
+}
+
+async function readFacebookOAuthJson(
+  response: Response,
+  signal: AbortSignal,
+  failureCode: string,
+  failureMessage: string,
+  failureHint: string,
+  timeoutCode: string,
+  timeoutMessage: string,
+) {
   const reader = response.body?.getReader();
   if (!reader) {
     throw commandError(failureMessage, failureHint, failureCode);
   }
   const chunks = [];
   let length = 0;
+  const aborted = {};
+  let onAbort: (() => void) | null = null;
+  const abort = signal.aborted
+    ? Promise.resolve(aborted)
+    : new Promise((resolve) => {
+        onAbort = () => resolve(aborted);
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
   try {
     while (true) {
-      const next = await reader.read();
+      const next: any = await Promise.race([reader.read(), abort]);
+      if (next === aborted) throw aborted;
       if (next.done) break;
       if (!(next.value instanceof Uint8Array)) throw new Error("invalid chunk");
       length += next.value.byteLength;
       if (length > 64 * 1024) {
-        await reader.cancel();
         throw new Error("response too large");
       }
       chunks.push(next.value);
     }
     return JSON.parse(Buffer.concat(chunks, length).toString("utf8"));
-  } catch {
+  } catch (error) {
+    try {
+      await reader.cancel();
+    } catch {
+      // Preserve the bounded protocol error rather than exposing cleanup details.
+    }
+    if (error === aborted || signal.aborted) {
+      throw commandError(timeoutMessage, failureHint, timeoutCode);
+    }
     throw commandError(failureMessage, failureHint, failureCode);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+    try {
+      reader.releaseLock();
+    } catch {
+      // Reader cleanup must not replace the bounded protocol outcome.
+    }
   }
 }
 
 async function completeFacebookOAuth(database: LooseRecord, context: LooseRecord) {
   const facebook = database.authConfig.providers.facebook;
-  const graphVersion = facebook.graphVersion ?? "v23.0";
+  const graphVersion = facebook.graphVersion;
   if (graphVersion !== "v23.0") {
     throw commandError(
       "Facebook Graph API version is unsupported.",
@@ -8865,6 +8906,7 @@ async function completeFacebookOAuth(database: LooseRecord, context: LooseRecord
     `https://graph.facebook.com/${graphVersion}/oauth/access_token`,
   );
   let tokenResponse;
+  const tokenSignal = facebookOAuthTimeoutSignal();
   try {
     tokenResponse = await fetch(tokenUrl, {
       method: "POST",
@@ -8876,7 +8918,7 @@ async function completeFacebookOAuth(database: LooseRecord, context: LooseRecord
           redirect_uri: context.redirectUri,
         }),
       redirect: "error",
-      signal: facebookOAuthTimeoutSignal(),
+      signal: tokenSignal,
     });
   } catch (error: any) {
     throw commandError(
@@ -8890,6 +8932,7 @@ async function completeFacebookOAuth(database: LooseRecord, context: LooseRecord
     );
   }
   if (!tokenResponse.ok) {
+    await cancelFacebookOAuthResponse(tokenResponse);
     throw commandError(
       "Facebook OAuth code exchange failed.",
       "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
@@ -8898,9 +8941,12 @@ async function completeFacebookOAuth(database: LooseRecord, context: LooseRecord
   }
   const token = await readFacebookOAuthJson(
     tokenResponse,
+    tokenSignal,
     "FACEBOOK_EXCHANGE_FAILED",
     "Facebook OAuth response was invalid.",
     "Check the Facebook app configuration and retry sign-in.",
+    "FACEBOOK_EXCHANGE_TIMEOUT",
+    "Facebook OAuth response timed out.",
   );
   if (typeof token?.access_token !== "string" || token.access_token.length < 1 || token.access_token.length > 16 * 1024) {
     throw commandError(
@@ -8916,11 +8962,12 @@ async function completeFacebookOAuth(database: LooseRecord, context: LooseRecord
   );
   graphUrl.searchParams.set("fields", "id,name,email,picture");
   let graphResponse;
+  const graphSignal = facebookOAuthTimeoutSignal();
   try {
     graphResponse = await fetch(graphUrl, {
       headers: { authorization: `Bearer ${token.access_token}` },
       redirect: "error",
-      signal: facebookOAuthTimeoutSignal(),
+      signal: graphSignal,
     });
   } catch (error: any) {
     throw commandError(
@@ -8934,6 +8981,7 @@ async function completeFacebookOAuth(database: LooseRecord, context: LooseRecord
     );
   }
   if (!graphResponse.ok) {
+    await cancelFacebookOAuthResponse(graphResponse);
     throw commandError(
       "Facebook profile could not be loaded.",
       "Check Facebook Graph API access and retry sign-in.",
@@ -8942,9 +8990,12 @@ async function completeFacebookOAuth(database: LooseRecord, context: LooseRecord
   }
   const profile = await readFacebookOAuthJson(
     graphResponse,
+    graphSignal,
     "FACEBOOK_GRAPH_FAILED",
     "Facebook profile response was invalid.",
     "Check Facebook Graph API access and retry sign-in.",
+    "FACEBOOK_GRAPH_TIMEOUT",
+    "Facebook profile response timed out.",
   );
   if (typeof profile?.id !== "string" || profile.id.length < 1 || profile.id.length > 255 || !/^[\x21-\x7e]+$/.test(profile.id)) {
     throw commandError(
@@ -10737,7 +10788,7 @@ function authStatus(config: LooseRecord, serverEnv: LooseRecord) {
         ? Boolean(provider.clientId && provider.teamId && provider.keyId && provider.privateKeyEnv && serverEnv[provider.privateKeyEnv])
         : Boolean(provider.clientIdEnv && provider.clientSecretEnv && serverEnv[provider.clientIdEnv] && serverEnv[provider.clientSecretEnv]);
     const configured = providerName === "facebook"
-      ? credentialsConfigured && (provider.graphVersion === null || provider.graphVersion === "v23.0")
+      ? credentialsConfigured && provider.graphVersion === "v23.0"
       : credentialsConfigured;
     const state: LooseRecord = {
       enabled: provider.enabled,
@@ -10820,7 +10871,7 @@ function normalizeAuthConfig(authConfig: LooseRecord) {
       },
       microsoft: readProviderConfig(providerConfig.microsoft),
       apple: readProviderConfig(providerConfig.apple),
-      facebook: readProviderConfig(providerConfig.facebook),
+      facebook: readFacebookProviderConfig(providerConfig.facebook),
     },
   };
 }
@@ -10849,6 +10900,14 @@ function readProviderConfig(config: any) {
   };
 }
 
+function readFacebookProviderConfig(config: any) {
+  const normalized = readProviderConfig(config);
+  if (!config || typeof config !== "object" || Array.isArray(config) || !Object.prototype.hasOwnProperty.call(config, "graphVersion")) {
+    return { ...normalized, graphVersion: "v23.0" };
+  }
+  return normalized;
+}
+
 function emptyProviderConfig() {
   return { clientIdEnv: null, clientSecretEnv: null, clientId: null, teamId: null, keyId: null, privateKeyEnv: null, tenant: null, graphVersion: null };
 }
@@ -10860,6 +10919,9 @@ function authProvidersForClient(authConfig: LooseRecord) {
       enabled: provider.enabled,
       configured: provider.configured,
       runtimeAvailable: provider.runtimeAvailable,
+      ...(name === "facebook"
+        ? { graphVersion: provider.graphVersion === "__invalid__" ? null : provider.graphVersion }
+        : {}),
     };
   }
   return providers;
