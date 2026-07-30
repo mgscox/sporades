@@ -449,6 +449,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   readBoundedJsonBody,
   microsoftOidcCache,
   microsoftOidcNow,
+  pruneMicrosoftOidcCacheMap,
   loadMicrosoftJwks,
   selectMicrosoftJwk,
   isPlainRecord,
@@ -9548,13 +9549,24 @@ async function discoverMicrosoftOpenIdConfiguration(database: LooseRecord, tenan
     microsoft.clientIdEnv ?? "",
     microsoft.clientSecretEnv ?? "",
   ].join("|");
-  const cache = microsoftOidcCache(database).discovery;
+  const cacheRoot = microsoftOidcCache(database);
+  const cache = cacheRoot.discovery;
   const now = microsoftOidcNow(database);
+  pruneMicrosoftOidcCacheMap(cache, now, 32);
   let state = cache.get(cacheKey);
   if (!state || typeof state !== "object" || !Number.isInteger(state.nextGeneration)) {
-    state = { value: null, expiresAt: 0, generation: 0, nextGeneration: 1, inflight: null };
-    cache.set(cacheKey, state);
+    pruneMicrosoftOidcCacheMap(cache, now, 32, true);
+    state = {
+      value: null,
+      expiresAt: 0,
+      generation: 0,
+      nextGeneration: 1,
+      inflight: null,
+      lastAccess: cacheRoot.nextAccess++,
+    };
+    if (cache.size < 32) cache.set(cacheKey, state);
   }
+  state.lastAccess = cacheRoot.nextAccess++;
   if (state.value && state.expiresAt > now) return state.value;
   if (state.inflight) return await state.inflight;
   const requestGeneration = state.nextGeneration++;
@@ -9687,7 +9699,11 @@ function microsoftOidcCache(database: LooseRecord) {
     database.__microsoftOidcCache = {
       discovery: new Map(),
       jwks: new Map(),
+      nextAccess: 1,
     };
+  }
+  if (!Number.isSafeInteger(database.__microsoftOidcCache.nextAccess)) {
+    database.__microsoftOidcCache.nextAccess = 1;
   }
   return database.__microsoftOidcCache;
 }
@@ -9696,6 +9712,30 @@ function microsoftOidcNow(database: LooseRecord) {
   return Number.isFinite(database.__microsoftOidcNowMs)
     ? Number(database.__microsoftOidcNowMs)
     : Date.now();
+}
+
+function pruneMicrosoftOidcCacheMap(
+  cache: Map<string, LooseRecord>,
+  now: number,
+  maximumSize: number,
+  reserveSlot = false,
+) {
+  for (const [key, state] of cache) {
+    if (!state?.inflight && (!state?.value || !Number.isFinite(state.expiresAt) || state.expiresAt <= now)) {
+      cache.delete(key);
+    }
+  }
+  const targetSize = Math.max(0, maximumSize - (reserveSlot ? 1 : 0));
+  while (cache.size > targetSize) {
+    const candidates = [...cache.entries()]
+      .filter(([, state]) => !state?.inflight)
+      .sort(([leftKey, left], [rightKey, right]) => {
+        const accessDifference = Number(left?.lastAccess ?? 0) - Number(right?.lastAccess ?? 0);
+        return accessDifference || leftKey.localeCompare(rightKey);
+      });
+    if (candidates.length === 0) break;
+    cache.delete(candidates[0][0]);
+  }
 }
 
 async function completeMicrosoftOAuth(database: LooseRecord, context: LooseRecord) {
@@ -10016,6 +10056,7 @@ async function loadMicrosoftJwks(
   discovery: LooseRecord,
   forceRefresh = false,
   observedGeneration: number | null = null,
+  missingKid: string | null = null,
 ) {
   const microsoft = database.authConfig.providers.microsoft;
   const cacheKey = [
@@ -10024,10 +10065,13 @@ async function loadMicrosoftJwks(
     microsoft.tenant ?? "",
     microsoft.clientIdEnv ?? "",
   ].join("|");
-  const cache = microsoftOidcCache(database).jwks;
+  const cacheRoot = microsoftOidcCache(database);
+  const cache = cacheRoot.jwks;
   const now = microsoftOidcNow(database);
+  pruneMicrosoftOidcCacheMap(cache, now, 32);
   let state = cache.get(cacheKey);
   if (!state || typeof state !== "object" || !Number.isInteger(state.nextGeneration)) {
+    pruneMicrosoftOidcCacheMap(cache, now, 32, true);
     state = {
       value: null,
       expiresAt: 0,
@@ -10035,15 +10079,33 @@ async function loadMicrosoftJwks(
       nextGeneration: 1,
       inflight: null,
       inflightKind: null,
-      rolloverUntil: 0,
+      missingKidCooldowns: new Map(),
+      lastAccess: cacheRoot.nextAccess++,
     };
-    cache.set(cacheKey, state);
+    if (cache.size < 32) cache.set(cacheKey, state);
   }
+  state.lastAccess = cacheRoot.nextAccess++;
+  if (!(state.missingKidCooldowns instanceof Map)) state.missingKidCooldowns = new Map();
+  const rememberMissingKid = (jwks: LooseRecord, missingKid: string | null, at: number) => {
+    if (typeof missingKid !== "string") return;
+    for (const [cachedKid, cooldown] of state.missingKidCooldowns) {
+      if (!Number.isFinite(cooldown) || cooldown <= at) state.missingKidCooldowns.delete(cachedKid);
+    }
+    const found = Array.isArray(jwks?.keys) &&
+      jwks.keys.some((value: any) => isPlainRecord(value) && value.kid === missingKid);
+    state.missingKidCooldowns.delete(missingKid);
+    if (!found) state.missingKidCooldowns.set(missingKid, at + 10_000);
+    while (state.missingKidCooldowns.size > 64) {
+      state.missingKidCooldowns.delete(state.missingKidCooldowns.keys().next().value);
+    }
+  };
   if (forceRefresh) {
     if (Number.isInteger(observedGeneration) && state.generation !== observedGeneration && state.value) {
+      rememberMissingKid(state.value, missingKid, now);
       return state.value;
     }
-    if (state.value && state.rolloverUntil > now) return state.value;
+    const cooldownUntil = state.missingKidCooldowns.get(missingKid);
+    if (state.value && Number.isFinite(cooldownUntil) && cooldownUntil > now) return state.value;
   } else if (state.value && state.expiresAt > now) {
     return state.value;
   }
@@ -10051,9 +10113,17 @@ async function loadMicrosoftJwks(
     const sharedInflight = state.inflight;
     const sharedKind = state.inflightKind;
     const shared = await sharedInflight;
-    if (!forceRefresh || sharedKind === "rollover") return shared;
-    if (Number.isInteger(observedGeneration) && state.generation !== observedGeneration) return state.value;
-    if (state.value && state.rolloverUntil > microsoftOidcNow(database)) return state.value;
+    if (!forceRefresh) return shared;
+    if (sharedKind === "rollover") {
+      rememberMissingKid(shared, missingKid, microsoftOidcNow(database));
+      return shared;
+    }
+    if (Number.isInteger(observedGeneration) && state.generation !== observedGeneration) {
+      rememberMissingKid(state.value, missingKid, microsoftOidcNow(database));
+      return state.value;
+    }
+    const cooldownUntil = state.missingKidCooldowns.get(missingKid);
+    if (state.value && Number.isFinite(cooldownUntil) && cooldownUntil > microsoftOidcNow(database)) return state.value;
   }
   const requestGeneration = state.nextGeneration++;
   const requestKind = forceRefresh ? "rollover" : "load";
@@ -10074,7 +10144,8 @@ async function loadMicrosoftJwks(
       state.value = jwks;
       state.expiresAt = microsoftOidcNow(database) + 5 * 60 * 1000;
       state.generation = requestGeneration;
-      if (requestKind === "rollover") state.rolloverUntil = state.expiresAt;
+      if (requestKind === "load") state.missingKidCooldowns.clear();
+      else rememberMissingKid(jwks, missingKid, microsoftOidcNow(database));
     }
     return state.value;
   })();
@@ -10102,7 +10173,7 @@ async function selectMicrosoftJwk(database: LooseRecord, discovery: LooseRecord,
       microsoft.clientIdEnv ?? "",
     ].join("|");
     const observedGeneration = microsoftOidcCache(database).jwks.get(cacheKey)?.generation ?? null;
-    jwks = await loadMicrosoftJwks(database, discovery, true, observedGeneration);
+    jwks = await loadMicrosoftJwks(database, discovery, true, observedGeneration, kid);
     candidate = jwks.keys.find((value: any) => isPlainRecord(value) && value.kid === kid);
   }
   if (!candidate) {
