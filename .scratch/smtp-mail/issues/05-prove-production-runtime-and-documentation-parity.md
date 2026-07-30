@@ -4,7 +4,7 @@
 
 **Blocked by:** 02 — Support Postmark SMTP extensions; 03 — Support Mailgun SMTP extensions; 04 — Support portable SMTP providers and SMTP2GO.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] The same Capsule server source and `sporades.json` contract work unchanged in Dev, local Container, and Hosted Capsule execution.
 - [ ] Generated Server Bundles include every mail runtime helper and dependency required by the source runtime, with no source-only global or helper assumptions.
