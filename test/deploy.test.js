@@ -1712,6 +1712,48 @@ test("sporades deploy writes a server bundle that serves the capsule", async () 
   });
 });
 
+test("bundled Container runtime supports email sign-in after sign-up and sign-out", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "bundled-email-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = await realpath(path.join(dir, "bundled-email-island"));
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.auth = { providers: { anonymous: true, email: true } };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    const docker = await installFakeDocker(dir, "container-email-runtime");
+    const deployResult = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deployResult.code, 0, deployResult.stderr);
+
+    const port = await getAvailablePort();
+    const child = spawn(process.execPath, [path.join(projectDir, ".sporades", "build", "server.mjs")], {
+      cwd: projectDir,
+      env: { ...process.env, PORT: String(port), SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db") },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let socket;
+    try {
+      await waitForHttp(`http://127.0.0.1:${port}/`, child);
+      socket = await openSocket(`http://127.0.0.1:${port}`);
+      socket.send(JSON.stringify({ id: "signup", type: "auth.signUp", provider: "email", credentials: { email: "mira@example.com", password: "correct horse battery staple", name: "Mira" } }));
+      const signUp = await readSocketMessage(socket);
+      assert.equal(signUp.type, "auth.signUp.result");
+      socket.send(JSON.stringify({ id: "signout", type: "auth.signOut" }));
+      const signOut = await readSocketMessage(socket);
+      assert.equal(signOut.type, "auth.signOut.result");
+      socket.send(JSON.stringify({ id: "signin", type: "auth.signIn", provider: "email", credentials: { email: "mira@example.com", password: "correct horse battery staple" } }));
+      const signIn = await readSocketMessage(socket);
+      assert.equal(signIn.type, "auth.signIn.result", JSON.stringify(signIn));
+      assert.equal(signIn.error, null);
+      assert.equal(signIn.data.auth.email, "mira@example.com");
+    } finally {
+      socket?.close();
+      await stopChild(child);
+    }
+  });
+});
+
 test("generated runtime does not serve fixed root client files outside the public tree", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(["create", "hosted-legacy-island", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
