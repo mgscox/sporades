@@ -3961,8 +3961,8 @@ test("sessions and local identity simulation cannot resolve the privileged senti
           "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
       ).run("__privileged__", now, "Forged Privileged", "privileged@example.com", null, 1, 0, "email");
       database.sqlite.prepare(
-        "INSERT INTO sporades_auth_sessions (token, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?)",
-      ).run("forged-token", "__privileged__", now, new Date(Date.parse(now) + 60_000).toISOString());
+        "INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)",
+      ).run("forged-token", "__privileged__", "email", now, new Date(Date.parse(now) + 60_000).toISOString());
 
       const resolved = await resolveAnonymousSession(database, "forged-token");
       assert.notEqual(resolved.auth.userId, "__privileged__");
@@ -4658,6 +4658,7 @@ test("legacy Google auth storage migrates without changing existing Session toke
       const linked = await linkGoogleAccount(database, session, {
         subject: "verified-google-subject",
         email: "legacy@example.com",
+        emailVerified: true,
         displayName: "Ada Verified",
         picture: null,
       });
@@ -4672,7 +4673,175 @@ test("legacy Google auth storage migrates without changing existing Session toke
         database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_auth_identities WHERE userId = ?").get("legacy-user").count,
         1,
       );
+
+      const freshSession = await resolveAnonymousSession(database, null);
+      const subjectOnly = await linkGoogleAccount(database, freshSession, {
+        subject: "verified-google-subject",
+        email: "changed-unverified@example.com",
+        emailVerified: false,
+        displayName: "Ada Changed",
+        picture: null,
+      });
+      assert.equal(subjectOnly.ok, true);
+      assert.equal(subjectOnly.auth.userId, "legacy-user");
+      assert.equal(
+        database.sqlite.findAuthIdentityByProviderSubject("google", "verified-google-subject").email,
+        "changed-unverified@example.com",
+      );
     } finally {
+      database.close();
+    }
+  });
+});
+
+test("legacy Google identity claiming fails closed for unverified or ambiguous matching emails", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true, google: { enabled: true } } },
+    });
+    try {
+      const now = new Date().toISOString();
+      for (const suffix of ["one", "two"]) {
+        database.sqlite.insertAuthUser({
+          id: `legacy-user-${suffix}`,
+          createdAt: now,
+          displayName: `Legacy ${suffix}`,
+          email: "shared@example.com",
+          picture: null,
+          isAuthenticated: 1,
+          isGuest: 0,
+          provider: "google",
+        });
+        database.sqlite.insertAuthIdentity({
+          id: `legacy-identity-${suffix}`,
+          userId: `legacy-user-${suffix}`,
+          provider: "google",
+          subject: `legacy:legacy-user-${suffix}`,
+          email: "shared@example.com",
+          displayName: `Legacy ${suffix}`,
+          picture: null,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+
+      const unverifiedSession = await resolveAnonymousSession(database, null);
+      const unverified = await linkGoogleAccount(database, unverifiedSession, {
+        subject: "new-google-subject",
+        email: "shared@example.com",
+        emailVerified: false,
+        displayName: "Unverified",
+        picture: null,
+      });
+      assert.equal(unverified.ok, false);
+      assert.equal(unverified.error.code, "AUTH_LEGACY_IDENTITY_UNVERIFIED_EMAIL");
+
+      const verifiedSession = await resolveAnonymousSession(database, null);
+      const ambiguous = await linkGoogleAccount(database, verifiedSession, {
+        subject: "new-google-subject",
+        email: "shared@example.com",
+        emailVerified: true,
+        displayName: "Ambiguous",
+        picture: null,
+      });
+      assert.equal(ambiguous.ok, false);
+      assert.equal(ambiguous.error.code, "AUTH_LEGACY_IDENTITY_AMBIGUOUS");
+
+      assert.equal(database.sqlite.findAuthIdentityByProviderSubject("google", "new-google-subject"), null);
+      assert.deepEqual(
+        database.sqlite
+          .prepare("SELECT subject FROM sporades_auth_identities WHERE email = ? ORDER BY subject")
+          .all("shared@example.com")
+          .map((row) => row.subject),
+        ["legacy:legacy-user-one", "legacy:legacy-user-two"],
+      );
+      assert.equal(database.sqlite.readAuthSessionWithUser(unverifiedSession.token).provider, "anonymous");
+      assert.equal(database.sqlite.readAuthSessionWithUser(verifiedSession.token).provider, "anonymous");
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("Google OAuth callback preserves structured Provider identity conflicts", async () => {
+  await withTempDir(async (dir) => {
+    const originalFetch = globalThis.fetch;
+    const database = await openDevDatabase(
+      path.join(dir, "data.db"),
+      "",
+      { GOOGLE_CLIENT_ID: "client-id", GOOGLE_CLIENT_SECRET: "client-secret" },
+      {
+        auth: {
+          providers: {
+            anonymous: true,
+            email: { enabled: true },
+            google: {
+              enabled: true,
+              clientIdEnv: "GOOGLE_CLIENT_ID",
+              clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+            },
+          },
+        },
+      },
+    );
+    try {
+      const ownerSession = await resolveAnonymousSession(database, null);
+      const owner = await linkGoogleAccount(database, ownerSession, {
+        subject: "owned-google-subject",
+        email: "owner@example.com",
+        emailVerified: true,
+        displayName: "Owner",
+        picture: null,
+      });
+      assert.equal(owner.ok, true);
+
+      const otherAnonymous = await resolveAnonymousSession(database, null);
+      const other = await signUpWithEmail(database, otherAnonymous, "email", {
+        email: "other@example.com",
+        password: "correct horse battery staple",
+        name: "Other",
+      });
+      await database.sqlite.insertOAuthState({
+        state: "conflict-state",
+        sessionToken: other.sessionToken,
+        returnTo: "http://127.0.0.1/app",
+        redirectUri: "http://127.0.0.1/__sporades/auth/google/callback",
+        createdAt: new Date().toISOString(),
+      });
+      globalThis.fetch = async (url) => {
+        if (String(url).includes("token")) {
+          return new Response(JSON.stringify({ access_token: "access-token" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return new Response(
+          JSON.stringify({
+            sub: "owned-google-subject",
+            email: "owner@example.com",
+            email_verified: true,
+            name: "Owner",
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      };
+
+      const response = createResponseRecorder();
+      await routeSporadesAuth(
+        database,
+        { method: "GET", url: "/__sporades/auth/google/callback?state=conflict-state&code=good-code" },
+        response,
+      );
+      assert.equal(response.statusCode, 500);
+      assert.deepEqual(JSON.parse(response.body).error, {
+        code: "AUTH_IDENTITY_CONFLICT",
+        message: "Google identity is already linked to another account.",
+        hint: "Sign out before using this Google identity, or sign in with the account it is already linked to.",
+      });
+      assert.equal(database.sqlite.readAuthSessionWithUser(other.sessionToken).userId, other.auth.userId);
+      assert.equal(database.sqlite.findAuthIdentityByProviderSubject("google", "owned-google-subject").userId, owner.auth.userId);
+    } finally {
+      globalThis.fetch = originalFetch;
       database.close();
     }
   });
@@ -4825,7 +4994,7 @@ function wrapAsyncRuntimeAdapter(adapter) {
     "ensureAuthStorage",
     "findAuthUserByProviderEmail",
     "findAuthIdentityByProviderSubject",
-    "findLegacyAuthIdentityByProviderEmail",
+    "findLegacyAuthIdentitiesByProviderEmail",
     "insertAuthIdentity",
     "updateAuthIdentity",
     "insertAuthUser",

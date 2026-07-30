@@ -2052,6 +2052,7 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   privilegedAuthUserId,
   isReservedAuthUserId,
   authIdentityRowUnlessReserved,
+  authIdentityRowsUnlessReserved,
   assertNotReservedAuthUserId,
   createPrivilegedAuditLogInput,
   normalizePrivilegedAuditActorKind,
@@ -3639,11 +3640,11 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       ).get(provider, subject) ?? null;
       return authIdentityRowUnlessReserved(row);
     },
-    findLegacyAuthIdentityByProviderEmail(provider, email) {
-      const row = this.prepare(
-        "SELECT id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt FROM sporades_auth_identities WHERE provider = ? AND email = ? AND subject LIKE 'legacy:%' ORDER BY createdAt LIMIT 1"
-      ).get(provider, email) ?? null;
-      return authIdentityRowUnlessReserved(row);
+    findLegacyAuthIdentitiesByProviderEmail(provider, email) {
+      const rows = this.prepare(
+        "SELECT id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt FROM sporades_auth_identities WHERE provider = ? AND email = ? AND subject LIKE 'legacy:%' ORDER BY createdAt, id"
+      ).all(provider, email);
+      return authIdentityRowsUnlessReserved(rows);
     },
     insertAuthIdentity(row) {
       assertNotReservedAuthUserId(row.userId);
@@ -5511,6 +5512,12 @@ function authIdentityRowUnlessReserved(rowOrPromise) {
     return rowOrPromise.then((row) => isReservedAuthUserId(row?.userId) ? null : row);
   }
   return isReservedAuthUserId(rowOrPromise?.userId) ? null : rowOrPromise;
+}
+function authIdentityRowsUnlessReserved(rowsOrPromise) {
+  if (rowsOrPromise && typeof rowsOrPromise.then === "function") {
+    return rowsOrPromise.then((rows) => rows.filter((row) => !isReservedAuthUserId(row?.userId)));
+  }
+  return rowsOrPromise.filter((row) => !isReservedAuthUserId(row?.userId));
 }
 function assertNotReservedAuthUserId(userId) {
   if (!isReservedAuthUserId(userId)) {
@@ -9300,7 +9307,7 @@ async function routeSporadesAuth(database, request, response) {
     const session = await resolveAnonymousSession(database, stateRow.sessionToken);
     const result = await linkGoogleAccount(database, session, profile);
     if (!result.ok) {
-      throw commandError(result.error?.message, result.error?.hint ?? "Retry Google sign-in from the app.");
+      throw commandError(result.error?.message, result.error?.hint ?? "Retry Google sign-in from the app.", result.error?.code);
     }
     writeRedirect(response, stateRow.returnTo);
   } catch (error) {
@@ -9434,6 +9441,7 @@ async function fetchGoogleProfile(accessToken) {
   return {
     subject: profile.sub,
     email: profile.email ?? null,
+    emailVerified: profile.email_verified === true,
     displayName: profile.name ?? profile.email ?? "Google user",
     picture: profile.picture ?? null
   };
@@ -9453,7 +9461,28 @@ async function linkGoogleAccount(database, session, profile) {
     const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? null;
     let identity = await tx.findAuthIdentityByProviderSubject("google", subject);
     if (!identity && email) {
-      identity = await tx.findLegacyAuthIdentityByProviderEmail("google", email);
+      const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail("google", email);
+      if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
+        return {
+          ok: false,
+          error: {
+            code: "AUTH_LEGACY_IDENTITY_UNVERIFIED_EMAIL",
+            message: "Google did not verify the email needed to restore this legacy account.",
+            hint: "Use a Google account with a verified email address, or sign in with the account's existing authentication method."
+          }
+        };
+      }
+      if (legacyIdentities.length > 1) {
+        return {
+          ok: false,
+          error: {
+            code: "AUTH_LEGACY_IDENTITY_AMBIGUOUS",
+            message: "Google email matches more than one legacy account.",
+            hint: "Sign in with an existing authentication method before linking this Google identity."
+          }
+        };
+      }
+      identity = legacyIdentities[0] ?? null;
     }
     if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
       return {

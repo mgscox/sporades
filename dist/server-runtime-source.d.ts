@@ -257,7 +257,7 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
     }): StatementResultingChanges;
     findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
     findAuthIdentityByProviderSubject(provider: any, subject: any): any;
-    findLegacyAuthIdentityByProviderEmail(provider: any, email: any): any;
+    findLegacyAuthIdentitiesByProviderEmail(provider: any, email: any): any;
     insertAuthIdentity(row: {
         id: any;
         userId: any;
@@ -841,7 +841,7 @@ export declare function createPostgresDatabaseAdapter(options: {
     fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null;
     findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
     findAuthIdentityByProviderSubject(provider: any, subject: any): any;
-    findLegacyAuthIdentityByProviderEmail(provider: any, email: any): any;
+    findLegacyAuthIdentitiesByProviderEmail(provider: any, email: any): any;
     insertAuthIdentity(row: {
         id: any;
         userId: any;
@@ -1156,7 +1156,7 @@ export declare function createLibsqlDatabaseAdapter(options: {
     }): StatementResultingChanges;
     findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
     findAuthIdentityByProviderSubject(provider: any, subject: any): any;
-    findLegacyAuthIdentityByProviderEmail(provider: any, email: any): any;
+    findLegacyAuthIdentitiesByProviderEmail(provider: any, email: any): any;
     insertAuthIdentity(row: {
         id: any;
         userId: any;

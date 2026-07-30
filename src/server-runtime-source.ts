@@ -181,6 +181,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   privilegedAuthUserId,
   isReservedAuthUserId,
   authIdentityRowUnlessReserved,
+  authIdentityRowsUnlessReserved,
   assertNotReservedAuthUserId,
   createPrivilegedAuditLogInput,
   normalizePrivilegedAuditActorKind,
@@ -1915,12 +1916,12 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       ).get(provider, subject) ?? null;
       return authIdentityRowUnlessReserved(row);
     },
-    findLegacyAuthIdentityByProviderEmail(provider: any, email: any) {
-      const row = this.prepare(
+    findLegacyAuthIdentitiesByProviderEmail(provider: any, email: any) {
+      const rows = this.prepare(
         "SELECT id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt " +
-        "FROM sporades_auth_identities WHERE provider = ? AND email = ? AND subject LIKE 'legacy:%' ORDER BY createdAt LIMIT 1",
-      ).get(provider, email) ?? null;
-      return authIdentityRowUnlessReserved(row);
+        "FROM sporades_auth_identities WHERE provider = ? AND email = ? AND subject LIKE 'legacy:%' ORDER BY createdAt, id",
+      ).all(provider, email);
+      return authIdentityRowsUnlessReserved(rows);
     },
     insertAuthIdentity(row: { id: any; userId: any; provider: any; subject: any; email: any; displayName: any; picture: any; createdAt: any; updatedAt: any; }) {
       assertNotReservedAuthUserId(row.userId);
@@ -4083,6 +4084,13 @@ function authIdentityRowUnlessReserved(rowOrPromise: any) {
     return rowOrPromise.then((row: any) => (isReservedAuthUserId(row?.userId) ? null : row));
   }
   return isReservedAuthUserId(rowOrPromise?.userId) ? null : rowOrPromise;
+}
+
+function authIdentityRowsUnlessReserved(rowsOrPromise: any) {
+  if (rowsOrPromise && typeof rowsOrPromise.then === "function") {
+    return rowsOrPromise.then((rows: any[]) => rows.filter((row) => !isReservedAuthUserId(row?.userId)));
+  }
+  return rowsOrPromise.filter((row: any) => !isReservedAuthUserId(row?.userId));
 }
 
 function assertNotReservedAuthUserId(userId: any) {
@@ -8369,7 +8377,7 @@ export async function routeSporadesAuth(database: LooseRecord, request: Incoming
     const session = await resolveAnonymousSession(database, stateRow.sessionToken);
     const result = await linkGoogleAccount(database, session, profile);
     if (!result.ok) {
-      throw commandError(result.error?.message, result.error?.hint ?? "Retry Google sign-in from the app.");
+      throw commandError(result.error?.message, result.error?.hint ?? "Retry Google sign-in from the app.", result.error?.code);
     }
     writeRedirect(response, stateRow.returnTo);
   } catch (error: any) {
@@ -8510,6 +8518,7 @@ async function fetchGoogleProfile(accessToken: any) {
   return {
     subject: profile.sub,
     email: profile.email ?? null,
+    emailVerified: profile.email_verified === true,
     displayName: profile.name ?? profile.email ?? "Google user",
     picture: profile.picture ?? null,
   };
@@ -8531,7 +8540,28 @@ async function linkGoogleAccount(database: LooseRecord, session: LooseRecord, pr
     const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? null;
     let identity = await tx.findAuthIdentityByProviderSubject("google", subject);
     if (!identity && email) {
-      identity = await tx.findLegacyAuthIdentityByProviderEmail("google", email);
+      const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail("google", email);
+      if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
+        return {
+          ok: false,
+          error: {
+            code: "AUTH_LEGACY_IDENTITY_UNVERIFIED_EMAIL",
+            message: "Google did not verify the email needed to restore this legacy account.",
+            hint: "Use a Google account with a verified email address, or sign in with the account's existing authentication method.",
+          },
+        };
+      }
+      if (legacyIdentities.length > 1) {
+        return {
+          ok: false,
+          error: {
+            code: "AUTH_LEGACY_IDENTITY_AMBIGUOUS",
+            message: "Google email matches more than one legacy account.",
+            hint: "Sign in with an existing authentication method before linking this Google identity.",
+          },
+        };
+      }
+      identity = legacyIdentities[0] ?? null;
     }
     if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
       return {

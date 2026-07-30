@@ -16,8 +16,11 @@ Each authenticated Session records the provider used for that Session, so
 linking another Provider identity cannot rewrite the provider reported by
 already-authenticated Sessions for the same user. Existing Session tokens and
 Sporades user IDs survive the additive storage migration. Legacy Google rows
-are claimed by the next verified Google subject during a compatibility window;
-new and claimed identities are subsequently resolved only by stable subject.
+are claimed by the next verified Google subject during a compatibility window
+only when Google reports the matching email as verified and exactly one
+eligible legacy identity matches it. Unverified or ambiguous legacy matches
+fail closed. New and claimed identities are subsequently resolved only by
+stable subject.
 
 An authenticated user cannot claim a Provider identity owned by another user.
 That attempt returns a structured `AUTH_IDENTITY_CONFLICT`, and identity,
