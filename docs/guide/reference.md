@@ -1399,7 +1399,9 @@ If sign-in fails:
 Provider response details and tokens are deliberately omitted from browser
 errors and normal logs. Sporades rejects redirects on provider network calls,
 uses finite deadlines and response limits, and caches discovery/signing keys
-for a bounded period. Start a new sign-in after any failure because OAuth state
+for a bounded period. Concurrent sign-ins share cache fills and the single
+key-rollover refresh, rather than multiplying provider requests. Start a new
+sign-in after any failure because OAuth state
 is single-use.
 
 

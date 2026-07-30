@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
 import { generateKeyPairSync, sign, verify } from "node:crypto";
 import test from "node:test";
+import { promisify } from "node:util";
 
 import {
   openDevDatabase,
@@ -21,8 +23,11 @@ const appleOAuthOriginEligible = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn
 const resolveOAuthRequestOrigin = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "resolveOAuthRequestOrigin");
 const verifyMicrosoftIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "verifyMicrosoftIdentityToken");
 const discoverMicrosoftOpenIdConfiguration = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "discoverMicrosoftOpenIdConfiguration");
+const fetchMicrosoftOidcJson = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "fetchMicrosoftOidcJson");
+const loadMicrosoftJwks = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "loadMicrosoftJwks");
 const completeMicrosoftOAuth = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "completeMicrosoftOAuth");
 const linkProviderIdentity = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkProviderIdentity");
+const execFileAsync = promisify(execFile);
 
 async function withTempDatabase(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-oauth-provider-"));
@@ -498,6 +503,111 @@ test("Microsoft discovery fetches are deadline-bound, size-bound, no-redirect, a
   });
 });
 
+test("Microsoft response-body deadlines close a real stalled loopback response without leaking its partial body", async () => {
+  const script = `
+    import { createServer } from "node:http";
+    import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "./dist/server-runtime-source.js";
+    const fetchJson = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "fetchMicrosoftOidcJson");
+    let closedResolve;
+    const closed = new Promise((resolve) => { closedResolve = resolve; });
+    const server = createServer((request, response) => {
+      request.on("close", closedResolve);
+      response.on("close", closedResolve);
+      response.writeHead(200, { "content-type": "application/json" });
+      response.write('{"upstreamSecret":"partial');
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const startedAt = Date.now();
+    let result;
+    try {
+      const address = server.address();
+      await fetchJson(
+        { __microsoftOidcTimeoutMs: 40 },
+        "http://127.0.0.1:" + address.port + "/stalled",
+        {},
+        {
+          maxBytes: 65536,
+          unavailableCode: "OAUTH_TEST_UNAVAILABLE",
+          unavailableMessage: "OIDC test response was unavailable.",
+          unavailableHint: "Retry the test request.",
+          invalidCode: "OAUTH_TEST_INVALID",
+          invalidMessage: "OIDC test response was invalid.",
+          invalidHint: "Retry the test request.",
+        },
+      );
+      result = { unexpectedSuccess: true };
+    } catch (error) {
+      const deadlineElapsedMs = Date.now() - startedAt;
+      await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 500))]);
+      result = {
+        code: error.code,
+        deadlineElapsedMs,
+        cleanupElapsedMs: Date.now() - startedAt,
+        leaked: /upstreamSecret|partial/i.test(String(error.message) + " " + String(error.hint)),
+        connections: server._connections,
+      };
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+    process.stdout.write(JSON.stringify(result));
+  `;
+  const { stdout, stderr } = await execFileAsync(process.execPath, ["--input-type=module", "--eval", script], {
+    cwd: process.cwd(),
+    timeout: 2_000,
+  });
+  assert.equal(stderr, "");
+  const result = JSON.parse(stdout);
+  assert.equal(result.code, "OAUTH_TEST_UNAVAILABLE");
+  assert.equal(result.leaked, false);
+  assert.ok(result.deadlineElapsedMs < 500, "stalled body should be bounded by the configured deadline");
+  assert.ok(result.cleanupElapsedMs < 1_000, "stalled connection cleanup should remain bounded");
+  assert.equal(result.connections, 0, "aborting the reader should close the stalled loopback connection");
+});
+
+test("Microsoft oversized response cleanup cancels and releases the body reader", async () => {
+  await withTempDatabase(async (database) => {
+    let cancelled = 0;
+    let released = 0;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      ok: true,
+      headers: { get: () => null },
+      body: {
+        getReader() {
+          let read = false;
+          return {
+            async read() {
+              if (read) return { done: true };
+              read = true;
+              return { done: false, value: new Uint8Array(65) };
+            },
+            async cancel() { cancelled += 1; },
+            releaseLock() { released += 1; },
+          };
+        },
+      },
+    });
+    try {
+      await assert.rejects(
+        fetchMicrosoftOidcJson(database, "https://example.test/oversized", {}, {
+          maxBytes: 64,
+          unavailableCode: "OAUTH_TEST_UNAVAILABLE",
+          unavailableMessage: "unavailable",
+          unavailableHint: "retry",
+          invalidCode: "OAUTH_TEST_INVALID",
+          invalidMessage: "invalid",
+          invalidHint: "retry",
+        }),
+        (error) => error.code === "OAUTH_TEST_INVALID",
+      );
+      assert.equal(cancelled, 1);
+      assert.equal(released, 1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 test("Microsoft token and JWKS fetches bound stalls, redirects, body size, malformed JSON, and HTTP failures", async () => {
   await withTempDatabase(async (database) => {
     configureMicrosoft(database);
@@ -661,6 +771,119 @@ test("Microsoft discovery and JWKS caches are bounded by TTL and refresh an unkn
       assert.equal(jwksFetches, 2);
       await verifyMicrosoftIdentityToken(database, token, "nonce", discovery);
       assert.equal(jwksFetches, 2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("Microsoft coalesces concurrent discovery and JWKS rollover loads and keeps the newest generation", async () => {
+  await withTempDatabase(async (database) => {
+    configureMicrosoft(database);
+    database.__microsoftOidcNowMs = 1_000;
+    const discovery = microsoftDiscovery();
+    const tenantId = "11111111-2222-3333-4444-555555555555";
+    const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const rotatedJwk = {
+      ...publicKey.export({ format: "jwk" }),
+      kid: "rotated-key",
+      alg: "RS256",
+      use: "sig",
+      issuer: "https://login.microsoftonline.com/{tenantid}/v2.0",
+    };
+    const token = signedJwt(privateKey, rotatedJwk.kid, {
+      iss: `https://login.microsoftonline.com/${tenantId}/v2.0`,
+      aud: "microsoft-client-id",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      nonce: "nonce",
+      tid: tenantId,
+      sub: "subject",
+    });
+    const originalFetch = globalThis.fetch;
+    let discoveryFetches = 0;
+    let jwksFetches = 0;
+    let releaseDiscovery;
+    let releaseInitialKeys;
+    let releaseRotatedKeys;
+    const discoveryGate = new Promise((resolve) => { releaseDiscovery = resolve; });
+    const initialKeysGate = new Promise((resolve) => { releaseInitialKeys = resolve; });
+    const rotatedKeysGate = new Promise((resolve) => { releaseRotatedKeys = resolve; });
+    globalThis.fetch = async (url) => {
+      if (String(url).includes("openid-configuration")) {
+        discoveryFetches += 1;
+        await discoveryGate;
+        return new Response(JSON.stringify(discovery));
+      }
+      jwksFetches += 1;
+      if (jwksFetches === 1) {
+        await initialKeysGate;
+        return new Response(JSON.stringify({ keys: [{ ...rotatedJwk, kid: "old-key" }] }));
+      }
+      if (jwksFetches === 2) {
+        await rotatedKeysGate;
+        return new Response(JSON.stringify({ keys: [rotatedJwk] }));
+      }
+      throw new Error(`unexpected JWKS fetch ${jwksFetches}`);
+    };
+    try {
+      const discoveries = Array.from({ length: 8 }, () =>
+        discoverMicrosoftOpenIdConfiguration(database, "organizations"));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(discoveryFetches, 1);
+      releaseDiscovery();
+      assert.equal((await Promise.all(discoveries)).length, 8);
+
+      const callbacks = Array.from({ length: 8 }, () =>
+        verifyMicrosoftIdentityToken(database, token, "nonce", discovery));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(jwksFetches, 1);
+      releaseInitialKeys();
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(jwksFetches, 2);
+      releaseRotatedKeys();
+      const identities = await Promise.all(callbacks);
+      assert.deepEqual(
+        identities.map((identity) => identity.subject),
+        Array(8).fill(`${tenantId}:subject`),
+      );
+      assert.equal(jwksFetches, 2);
+
+      await verifyMicrosoftIdentityToken(database, token, "nonce", discovery);
+      assert.equal(jwksFetches, 2, "the older key response must not overwrite the rotated generation");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("Microsoft clears rejected shared JWKS loads so a later callback can retry", async () => {
+  await withTempDatabase(async (database) => {
+    configureMicrosoft(database);
+    const discovery = microsoftDiscovery();
+    const originalFetch = globalThis.fetch;
+    let fetches = 0;
+    let releaseFailure;
+    const failureGate = new Promise((resolve) => { releaseFailure = resolve; });
+    globalThis.fetch = async () => {
+      fetches += 1;
+      if (fetches === 1) {
+        await failureGate;
+        throw new TypeError("temporary secret network failure");
+      }
+      return new Response(JSON.stringify({ keys: [] }));
+    };
+    try {
+      const loads = Array.from({ length: 6 }, () => loadMicrosoftJwks(database, discovery, false));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(fetches, 1);
+      releaseFailure();
+      const failures = await Promise.allSettled(loads);
+      assert.equal(failures.every((result) =>
+        result.status === "rejected" &&
+        result.reason.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE" &&
+        !/secret network/i.test(result.reason.message)), true);
+      assert.deepEqual(await loadMicrosoftJwks(database, discovery, false), { keys: [] });
+      assert.equal(fetches, 2);
     } finally {
       globalThis.fetch = originalFetch;
     }

@@ -9550,47 +9550,65 @@ async function discoverMicrosoftOpenIdConfiguration(database: LooseRecord, tenan
   ].join("|");
   const cache = microsoftOidcCache(database).discovery;
   const now = microsoftOidcNow(database);
-  const cached = cache.get(cacheKey);
-  if (cached && cached.expiresAt > now) return cached.value;
-  const discovery = await fetchMicrosoftOidcJson(database, discoveryUrl, {}, {
-    maxBytes: 64 * 1024,
-    unavailableCode: "OAUTH_DISCOVERY_UNAVAILABLE",
-    unavailableMessage: "Microsoft OpenID configuration could not be loaded.",
-    unavailableHint: "Check Microsoft tenant selection and network access, then retry sign-in.",
-    invalidCode: "OAUTH_DISCOVERY_INVALID",
-    invalidMessage: "Microsoft OpenID configuration was invalid.",
-    invalidHint: "Check Microsoft tenant selection and retry sign-in.",
-  });
-  const required = ["issuer", "authorization_endpoint", "token_endpoint", "jwks_uri"];
-  if (!isPlainRecord(discovery) ||
-      !required.every((key) =>
-        typeof discovery[key] === "string" &&
-        discovery[key].length > 0 &&
-        discovery[key].length <= 2048
-      )) {
-    throw commandError(
-      "Microsoft OpenID configuration was invalid.",
-      "Check Microsoft tenant selection and retry sign-in.",
-      "OAUTH_DISCOVERY_INVALID",
-    );
+  let state = cache.get(cacheKey);
+  if (!state || typeof state !== "object" || !Number.isInteger(state.nextGeneration)) {
+    state = { value: null, expiresAt: 0, generation: 0, nextGeneration: 1, inflight: null };
+    cache.set(cacheKey, state);
   }
+  if (state.value && state.expiresAt > now) return state.value;
+  if (state.inflight) return await state.inflight;
+  const requestGeneration = state.nextGeneration++;
+  const inflight = (async () => {
+    const discovery = await fetchMicrosoftOidcJson(database, discoveryUrl, {}, {
+      maxBytes: 64 * 1024,
+      unavailableCode: "OAUTH_DISCOVERY_UNAVAILABLE",
+      unavailableMessage: "Microsoft OpenID configuration could not be loaded.",
+      unavailableHint: "Check Microsoft tenant selection and network access, then retry sign-in.",
+      invalidCode: "OAUTH_DISCOVERY_INVALID",
+      invalidMessage: "Microsoft OpenID configuration was invalid.",
+      invalidHint: "Check Microsoft tenant selection and retry sign-in.",
+    });
+    const required = ["issuer", "authorization_endpoint", "token_endpoint", "jwks_uri"];
+    if (!isPlainRecord(discovery) ||
+        !required.every((key) =>
+          typeof discovery[key] === "string" &&
+          discovery[key].length > 0 &&
+          discovery[key].length <= 2048
+        )) {
+      throw commandError(
+        "Microsoft OpenID configuration was invalid.",
+        "Check Microsoft tenant selection and retry sign-in.",
+        "OAUTH_DISCOVERY_INVALID",
+      );
+    }
+    try {
+      const endpointUrls = ["authorization_endpoint", "token_endpoint", "jwks_uri"].map((key) => new URL(discovery[key]));
+      const issuerUrl = new URL(String(discovery.issuer).replace("{tenantid}", "11111111-2222-3333-4444-555555555555"));
+      const endpointsTrusted = discoveryOverride
+        ? endpointUrls.every((url) => url.origin === discoveryOrigin)
+        : endpointUrls.every((url) => url.protocol === "https:" && url.hostname === "login.microsoftonline.com");
+      const issuerTrusted = issuerUrl.protocol === "https:" && issuerUrl.hostname === "login.microsoftonline.com";
+      if (!endpointsTrusted || !issuerTrusted) throw new Error("untrusted endpoints");
+    } catch {
+      throw commandError(
+        "Microsoft OpenID configuration contained invalid endpoints.",
+        "Check Microsoft tenant selection and retry sign-in.",
+        "OAUTH_DISCOVERY_INVALID",
+      );
+    }
+    if (requestGeneration >= state.generation) {
+      state.value = discovery;
+      state.expiresAt = microsoftOidcNow(database) + 5 * 60 * 1000;
+      state.generation = requestGeneration;
+    }
+    return state.value;
+  })();
+  state.inflight = inflight;
   try {
-    const endpointUrls = ["authorization_endpoint", "token_endpoint", "jwks_uri"].map((key) => new URL(discovery[key]));
-    const issuerUrl = new URL(String(discovery.issuer).replace("{tenantid}", "11111111-2222-3333-4444-555555555555"));
-    const endpointsTrusted = discoveryOverride
-      ? endpointUrls.every((url) => url.origin === discoveryOrigin)
-      : endpointUrls.every((url) => url.protocol === "https:" && url.hostname === "login.microsoftonline.com");
-    const issuerTrusted = issuerUrl.protocol === "https:" && issuerUrl.hostname === "login.microsoftonline.com";
-    if (!endpointsTrusted || !issuerTrusted) throw new Error("untrusted endpoints");
-  } catch {
-    throw commandError(
-      "Microsoft OpenID configuration contained invalid endpoints.",
-      "Check Microsoft tenant selection and retry sign-in.",
-      "OAUTH_DISCOVERY_INVALID",
-    );
+    return await inflight;
+  } finally {
+    if (state.inflight === inflight) state.inflight = null;
   }
-  cache.set(cacheKey, { value: discovery, expiresAt: now + 5 * 60 * 1000 });
-  return discovery;
 }
 
 async function fetchMicrosoftOidcJson(
@@ -9603,7 +9621,9 @@ async function fetchMicrosoftOidcJson(
   const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout >= 1 && configuredTimeout <= 10_000
     ? Math.floor(configuredTimeout)
     : 5_000;
-  const signal = AbortSignal.timeout(timeoutMs);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const signal = controller.signal;
   let response;
   try {
     response = await fetch(url, {
@@ -9611,20 +9631,23 @@ async function fetchMicrosoftOidcJson(
       redirect: "error",
       signal,
     });
-  } catch {
-    throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
-  }
-  if (!response?.ok) {
-    try { await response?.body?.cancel?.(); } catch { /* response disposal is best effort */ }
-    throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
-  }
-  try {
-    return await readBoundedJsonBody(response, policy.maxBytes);
-  } catch (error: any) {
-    if (error?.name === "AbortError" || signal.aborted) {
+    if (!response?.ok) {
+      try { await response?.body?.cancel?.(); } catch { /* response disposal is best effort */ }
       throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
     }
-    throw commandError(policy.invalidMessage, policy.invalidHint, policy.invalidCode);
+    try {
+      return await readBoundedJsonBody(response, policy.maxBytes);
+    } catch (error: any) {
+      if (error?.name === "AbortError" || signal.aborted) {
+        throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
+      }
+      throw commandError(policy.invalidMessage, policy.invalidHint, policy.invalidCode);
+    }
+  } catch (error: any) {
+    if (error?.code === policy.unavailableCode || error?.code === policy.invalidCode) throw error;
+    throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -9644,11 +9667,13 @@ async function readBoundedJsonBody(response: LooseRecord, maxBytes: number) {
       if (chunk.done) break;
       total += chunk.value.byteLength;
       if (total > maxBytes) {
-        try { await reader.cancel(); } catch { /* response disposal is best effort */ }
         throw new Error("OIDC response exceeded its byte limit");
       }
       chunks.push(Buffer.from(chunk.value));
     }
+  } catch (error) {
+    try { await reader.cancel(); } catch { /* response disposal is best effort */ }
+    throw error;
   } finally {
     try { reader.releaseLock?.(); } catch { /* response disposal is best effort */ }
   }
@@ -9986,7 +10011,12 @@ function sanitizeAppleNamePart(value: any) {
   return text;
 }
 
-async function loadMicrosoftJwks(database: LooseRecord, discovery: LooseRecord, forceRefresh = false) {
+async function loadMicrosoftJwks(
+  database: LooseRecord,
+  discovery: LooseRecord,
+  forceRefresh = false,
+  observedGeneration: number | null = null,
+) {
   const microsoft = database.authConfig.providers.microsoft;
   const cacheKey = [
     discovery.issuer,
@@ -9996,29 +10026,83 @@ async function loadMicrosoftJwks(database: LooseRecord, discovery: LooseRecord, 
   ].join("|");
   const cache = microsoftOidcCache(database).jwks;
   const now = microsoftOidcNow(database);
-  const cached = cache.get(cacheKey);
-  if (!forceRefresh && cached && cached.expiresAt > now) return cached.value;
-  const jwks = await fetchMicrosoftOidcJson(database, discovery.jwks_uri, {}, {
-    maxBytes: 256 * 1024,
-    unavailableCode: "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
-    unavailableMessage: "Microsoft signing keys could not be loaded.",
-    unavailableHint: "Retry Microsoft sign-in.",
-    invalidCode: "OAUTH_ID_TOKEN_KEYS_INVALID",
-    invalidMessage: "Microsoft signing keys were invalid.",
-    invalidHint: "Retry Microsoft sign-in.",
-  });
-  if (!isPlainRecord(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length > 100) {
-    throw commandError("Microsoft signing keys were invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
+  let state = cache.get(cacheKey);
+  if (!state || typeof state !== "object" || !Number.isInteger(state.nextGeneration)) {
+    state = {
+      value: null,
+      expiresAt: 0,
+      generation: 0,
+      nextGeneration: 1,
+      inflight: null,
+      inflightKind: null,
+      rolloverUntil: 0,
+    };
+    cache.set(cacheKey, state);
   }
-  cache.set(cacheKey, { value: jwks, expiresAt: now + 5 * 60 * 1000 });
-  return jwks;
+  if (forceRefresh) {
+    if (Number.isInteger(observedGeneration) && state.generation !== observedGeneration && state.value) {
+      return state.value;
+    }
+    if (state.value && state.rolloverUntil > now) return state.value;
+  } else if (state.value && state.expiresAt > now) {
+    return state.value;
+  }
+  if (state.inflight) {
+    const sharedInflight = state.inflight;
+    const sharedKind = state.inflightKind;
+    const shared = await sharedInflight;
+    if (!forceRefresh || sharedKind === "rollover") return shared;
+    if (Number.isInteger(observedGeneration) && state.generation !== observedGeneration) return state.value;
+    if (state.value && state.rolloverUntil > microsoftOidcNow(database)) return state.value;
+  }
+  const requestGeneration = state.nextGeneration++;
+  const requestKind = forceRefresh ? "rollover" : "load";
+  const inflight = (async () => {
+    const jwks = await fetchMicrosoftOidcJson(database, discovery.jwks_uri, {}, {
+      maxBytes: 256 * 1024,
+      unavailableCode: "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
+      unavailableMessage: "Microsoft signing keys could not be loaded.",
+      unavailableHint: "Retry Microsoft sign-in.",
+      invalidCode: "OAUTH_ID_TOKEN_KEYS_INVALID",
+      invalidMessage: "Microsoft signing keys were invalid.",
+      invalidHint: "Retry Microsoft sign-in.",
+    });
+    if (!isPlainRecord(jwks) || !Array.isArray(jwks.keys) || jwks.keys.length > 100) {
+      throw commandError("Microsoft signing keys were invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
+    }
+    if (requestGeneration >= state.generation) {
+      state.value = jwks;
+      state.expiresAt = microsoftOidcNow(database) + 5 * 60 * 1000;
+      state.generation = requestGeneration;
+      if (requestKind === "rollover") state.rolloverUntil = state.expiresAt;
+    }
+    return state.value;
+  })();
+  state.inflight = inflight;
+  state.inflightKind = requestKind;
+  try {
+    return await inflight;
+  } finally {
+    if (state.inflight === inflight) {
+      state.inflight = null;
+      state.inflightKind = null;
+    }
+  }
 }
 
 async function selectMicrosoftJwk(database: LooseRecord, discovery: LooseRecord, kid: string) {
   let jwks = await loadMicrosoftJwks(database, discovery, false);
   let candidate = jwks.keys.find((value: any) => isPlainRecord(value) && value.kid === kid);
   if (!candidate) {
-    jwks = await loadMicrosoftJwks(database, discovery, true);
+    const microsoft = database.authConfig.providers.microsoft;
+    const cacheKey = [
+      discovery.issuer,
+      discovery.jwks_uri,
+      microsoft.tenant ?? "",
+      microsoft.clientIdEnv ?? "",
+    ].join("|");
+    const observedGeneration = microsoftOidcCache(database).jwks.get(cacheKey)?.generation ?? null;
+    jwks = await loadMicrosoftJwks(database, discovery, true, observedGeneration);
     candidate = jwks.keys.find((value: any) => isPlainRecord(value) && value.kid === kid);
   }
   if (!candidate) {

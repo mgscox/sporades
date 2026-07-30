@@ -60,7 +60,10 @@ Microsoft discovery, token, and signing-key requests reject HTTP redirects,
 carry finite deadlines, and parse JSON only after enforcing response-byte
 limits. Discovery metadata and JWKS documents are cached inside one runtime
 database context for a bounded TTL. An unknown signing-key ID permits one
-controlled JWKS refresh for key rollover. Malformed metadata, token JSON, JWT
+controlled JWKS refresh for key rollover. Concurrent cache fills and rollover
+checks share one in-flight request per complete cache key; rejected requests
+are removed so a later sign-in can retry, while generations prevent an older
+response from replacing newer key material. Malformed metadata, token JSON, JWT
 objects, NumericDate claims, audience shapes, and matching JWK entries fail
 with bounded provider errors rather than escaping as runtime type errors.
 
