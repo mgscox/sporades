@@ -58,6 +58,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   buildSmtpMessage,
   encodeMimeHeaderValue,
   foldMimeHeader,
+  foldMailgunJsonHeader,
   encodeMimeBase64,
   normalizeMailMessage,
   normalizePostmarkProvider,
@@ -875,11 +876,11 @@ function unsupportedMailProviderField(field: string) {
   );
 }
 
-function captureMailProviderDataObject(value: any, label: string) {
+function captureMailProviderDataObject(value: any, label: string, vendor = "Postmark") {
   const invalid = (detail: string): never => {
     throw mailError(
       "INVALID_MAIL_MESSAGE",
-      "Invalid Postmark provider data.",
+      `Invalid ${vendor} provider data.`,
       `Pass \`${label}\` as a plain data object; ${detail}.`,
     );
   };
@@ -1017,7 +1018,7 @@ function normalizeMailgunProvider(provider: any) {
     "deliveryTimeOptimizePeriod",
     "timeZoneLocalize",
   ]);
-  const providerEntries = captureMailProviderDataObject(provider, "provider");
+  const providerEntries = captureMailProviderDataObject(provider, "provider", "Mailgun");
   const unsupported = (field: string): never => {
     throw mailError(
       "UNSUPPORTED_MAIL_PROVIDER_FIELD",
@@ -1031,7 +1032,7 @@ function normalizeMailgunProvider(provider: any) {
   const invalid = (hint: string): never => {
     throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", hint);
   };
-  const headers: { name: string; value: string }[] = [];
+  const headers: { name: string; value: string; json?: boolean }[] = [];
   const controlFreeString = (field: string, value: any, maximum = 128) => {
     if (typeof value !== "string" || value.length < 1 || value.length > maximum || /[\x00-\x1f\x7f]/.test(value)) {
       invalid(`Pass \`provider.${field}\` as a non-empty string of at most ${maximum} characters without control characters.`);
@@ -1066,14 +1067,14 @@ function normalizeMailgunProvider(provider: any) {
     const value = providerData.get(field);
     if (field === "variables") {
       try {
-        captureMailProviderDataObject(value, "provider.variables");
+        captureMailProviderDataObject(value, "provider.variables", "Mailgun");
       } catch {
         invalid("Pass `provider.variables` as a plain JSON dictionary.");
       }
     }
     const json = serializeMailgunJson(value, `provider.${field}`, maximum);
     if (field === "recipientVariables") {
-      const entries = captureMailProviderDataObject(value, "provider.recipientVariables");
+      const entries = captureMailProviderDataObject(value, "provider.recipientVariables", "Mailgun");
       if (entries.length < 1 || entries.length > 1000) {
         invalid("Pass `provider.recipientVariables` for one to 1000 recipients.");
       }
@@ -1081,13 +1082,13 @@ function normalizeMailgunProvider(provider: any) {
         try {
           const address = normalizeMailAddress(recipient, "provider.recipientVariables");
           if (address.email !== recipient || address.name !== undefined) throw new Error("not plain");
-          captureMailProviderDataObject(variables, `provider.recipientVariables.${recipient}`);
+          captureMailProviderDataObject(variables, `provider.recipientVariables.${recipient}`, "Mailgun");
         } catch {
           invalid("Use plain ASCII recipient email addresses mapped to variable objects in `provider.recipientVariables`.");
         }
       }
     }
-    headers.push({ name, value: json });
+    headers.push({ name, value: json, json: true });
   }
 
   for (const [field, name] of [
@@ -1098,13 +1099,14 @@ function normalizeMailgunProvider(provider: any) {
   }
   if (providerData.has("templateVariables")) {
     try {
-      captureMailProviderDataObject(providerData.get("templateVariables"), "provider.templateVariables");
+      captureMailProviderDataObject(providerData.get("templateVariables"), "provider.templateVariables", "Mailgun");
     } catch {
       invalid("Pass `provider.templateVariables` as a plain JSON dictionary.");
     }
     headers.push({
       name: "X-Mailgun-Template-Variables",
       value: serializeMailgunJson(providerData.get("templateVariables"), "provider.templateVariables", 32 * 1024),
+      json: true,
     });
   }
 
@@ -1113,7 +1115,7 @@ function normalizeMailgunProvider(provider: any) {
     if (typeof tracking === "boolean") {
       headers.push({ name: "X-Mailgun-Track", value: tracking ? "yes" : "no" });
     } else {
-      const entries = captureMailProviderDataObject(tracking, "provider.tracking");
+      const entries = captureMailProviderDataObject(tracking, "provider.tracking", "Mailgun");
       const trackingAllowed = new Set(["enabled", "clicks", "opens", "pixelLocationTop"]);
       const unknown = entries.map(([field]) => field).filter((field) => !trackingAllowed.has(field)).sort();
       if (unknown.length > 0) unsupported(`tracking.${unknown[0]}`);
@@ -1162,7 +1164,10 @@ function normalizeMailgunProvider(provider: any) {
   }
   if (providerData.has("deliveryTimeOptimizePeriod")) {
     const period = controlFreeString("deliveryTimeOptimizePeriod", providerData.get("deliveryTimeOptimizePeriod"), 5);
-    if (!/^[1-9]\d{0,2}h$/.test(period)) invalid("Pass `provider.deliveryTimeOptimizePeriod` in Mailgun's hours format, such as `24h`.");
+    const hours = period.match(/^(\d{2})h$/)?.[1];
+    if (hours === undefined || Number(hours) < 24 || Number(hours) > 72) {
+      invalid("Pass `provider.deliveryTimeOptimizePeriod` from `24h` through `72h`.");
+    }
     headers.push({ name: "X-Mailgun-Delivery-Time-Optimize-Period", value: period });
   }
   if (providerData.has("timeZoneLocalize")) {
@@ -1191,7 +1196,7 @@ function serializeMailgunJson(value: any, label: string, maximumBytes: number) {
     if (candidate && typeof candidate === "object") {
       if (seen.has(candidate)) throw new Error(`${path} is cyclic`);
       seen.add(candidate);
-      const entries = captureMailProviderDataObject(candidate, path).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+      const entries = captureMailProviderDataObject(candidate, path, "Mailgun").sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
       const result = Object.create(null);
       for (const [key, entry] of entries) result[key] = normalize(entry, `${path}.${key}`);
       seen.delete(candidate);
@@ -1519,7 +1524,9 @@ function buildSmtpMessage(message: any) {
     `Date: ${new Date().toUTCString()}`,
     `Message-ID: ${message.messageId ?? `<${randomUUID()}@sporades.local>`}`,
     "MIME-Version: 1.0",
-    ...(message.providerHeaders ?? []).map((header: any) => foldMimeHeader(header.name, header.value)),
+    ...(message.providerHeaders ?? []).map((header: any) => header.json
+      ? foldMailgunJsonHeader(header.name, header.value)
+      : foldMimeHeader(header.name, header.value)),
   ];
   if (message.textBody !== undefined && message.htmlBody !== undefined) {
     const boundary = `sporades-${randomUUID()}`;
@@ -1573,6 +1580,48 @@ function foldMimeHeader(name: string, value: string) {
   if (lines.some((candidate) => candidate.length > 998)) {
     throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", `${name} cannot be encoded within SMTP header line limits.`);
   }
+  return lines.join("\r\n");
+}
+
+function foldMailgunJsonHeader(name: string, value: string) {
+  const text = String(value);
+  const atoms = [];
+  let atom = "";
+  let inString = false;
+  let escaped = false;
+  for (const character of text) {
+    atom += character;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === "\"") inString = false;
+    } else if (character === "\"") {
+      inString = true;
+    } else if (character === "," || character === ":" || character === "{" || character === "[") {
+      atoms.push(atom);
+      atom = "";
+    }
+  }
+  if (atom) atoms.push(atom);
+  const prefix = `${name}: `;
+  const lines = [];
+  let line = prefix;
+  for (const candidateAtom of atoms) {
+    if (`${line}${candidateAtom}`.length <= 78) {
+      line += candidateAtom;
+      continue;
+    }
+    if (line !== prefix && line !== " ") {
+      lines.push(line);
+      line = ` ${candidateAtom}`;
+    } else {
+      line += candidateAtom;
+    }
+    if (line.length > 998) {
+      throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", `${name} contains a JSON token that cannot be folded within SMTP's 998-character line limit.`);
+    }
+  }
+  if (line !== prefix) lines.push(line);
   return lines.join("\r\n");
 }
 

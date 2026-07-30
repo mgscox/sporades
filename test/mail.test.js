@@ -16,6 +16,15 @@ const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "
 const createTableAclContext = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createTableAclContext");
 const buildSmtpMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "buildSmtpMessage");
 
+function readMimeHeader(message, name) {
+  const lines = message.split("\r\n\r\n")[0].split("\r\n");
+  const start = lines.findIndex((line) => line.startsWith(`${name}:`));
+  assert.notEqual(start, -1, `missing ${name}`);
+  const folded = [lines[start]];
+  for (let index = start + 1; index < lines.length && /^[ \t]/.test(lines[index]); index += 1) folded.push(lines[index]);
+  return folded.join("\r\n").replace(/\r\n[ \t]+/g, " ").slice(name.length + 2);
+}
+
 const user = {
   userId: "mail-user",
   displayName: "Mail user",
@@ -401,8 +410,8 @@ test("Mailgun provider fields become exact SMTP MIME headers", async () => {
     "X-Mailgun-Tag: welcome",
     "X-Mailgun-Tag: new-customer",
     "X-Mailgun-Variables: {\"account\":{\"active\":true,\"tier\":\"pro\"},\"zeta\":2}",
-    "X-Mailgun-Recipient-Variables:",
-    " {\"a@example.com\":{\"name\":\"Amy\"},\"z@example.com\":{\"name\":\"Zed\"}}",
+    "X-Mailgun-Recipient-Variables: {\"a@example.com\":{\"name\":\"Amy\"},",
+    " \"z@example.com\":{\"name\":\"Zed\"}}",
     "X-Mailgun-Template-Name: welcome-email",
     "X-Mailgun-Template-Version: v2",
     "X-Mailgun-Template-Variables: {\"firstName\":\"Amy\",\"surname\":\"M\\u00fcller\"}",
@@ -466,6 +475,8 @@ test("Mailgun rejects unsupported, malformed, oversized, and protected provider 
       { deliverWithin: "4m" },
       { deliverWithin: "24h1m" },
       { deliveryTimeOptimizePeriod: "24 hours" },
+      { deliveryTimeOptimizePeriod: "23h" },
+      { deliveryTimeOptimizePeriod: "73h" },
       { timeZoneLocalize: "25:00" },
     ];
     for (const provider of invalid) {
@@ -543,6 +554,7 @@ test("Mailgun provider JSON reads only complete own data descriptors and is dete
     ]) {
       const result = await runMutation(database, user, "send", [provider]);
       assert.equal(result.error.code, "INVALID_MAIL_MESSAGE");
+      assert.match(result.error.message, /Invalid Mailgun provider data/);
     }
     assert.equal(getterCalls, 0);
     assert.equal(captured.length, 0);
@@ -558,6 +570,52 @@ test("Mailgun provider JSON reads only complete own data descriptors and is dete
 
   const headers = captured[0].split("\r\n\r\n")[0];
   assert.match(headers, /X-Mailgun-Variables: \{"a":\{"first":1,"second":2\},"z":1\}/);
+});
+
+test("Mailgun JSON headers preserve string whitespace and fold payloads larger than 998 bytes", async () => {
+  const captured = [];
+  const transport = {
+    async send(message) {
+      captured.push(buildSmtpMessage({ ...message, messageId: "<mailgun-large-json@example.com>" }));
+      return { messageId: "<mailgun-large-json@example.com>", accepted: ["to@example.com"], rejected: [] };
+    },
+    close() {},
+  };
+  const spaced = "  leading   repeated   trailing  ";
+  const variables = Object.fromEntries(Array.from({ length: 50 }, (_, index) => [`variable-${String(index).padStart(3, "0")}`, `${spaced}${index}`]));
+  const recipientVariables = Object.fromEntries(Array.from({ length: 50 }, (_, index) => [`user${index}@example.com`, { note: `${spaced}${index}` }]));
+  const templateVariables = Object.fromEntries(Array.from({ length: 80 }, (_, index) => [`template-${String(index).padStart(3, "0")}`, `${spaced}${index}`]));
+  await withDatabase(mailgunConfig, {
+    mutations: {
+      send: mutation((ctx) => ctx.mail.send({
+        to: "to@example.com",
+        subject: "Large Mailgun JSON",
+        htmlBody: "<p>Hello</p>",
+        provider: {
+          variables,
+          recipientVariables,
+          templateVariables,
+          deliveryTimeOptimizePeriod: "72h",
+        },
+      })),
+    },
+  }, { mailTransportFactory: () => transport }, async (database) => {
+    const result = await runMutation(database, user, "send", []);
+    assert.equal(result.ok, true);
+  });
+
+  const message = captured[0];
+  for (const [name, expected] of [
+    ["X-Mailgun-Variables", variables],
+    ["X-Mailgun-Recipient-Variables", recipientVariables],
+    ["X-Mailgun-Template-Variables", templateVariables],
+  ]) {
+    const unfolded = readMimeHeader(message, name);
+    assert.ok(unfolded.length > 998, `${name} did not exercise long JSON`);
+    assert.deepEqual(JSON.parse(unfolded), expected);
+  }
+  for (const line of message.split("\r\n\r\n")[0].split("\r\n")) assert.ok(line.length <= 998, `overlong MIME header line: ${line.length}`);
+  assert.equal(readMimeHeader(message, "X-Mailgun-Delivery-Time-Optimize-Period"), "72h");
 });
 
 test("SMTP transport failures use stable safe mail errors", async () => {

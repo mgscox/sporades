@@ -186,5 +186,5 @@ fields and malformed values fail before an SMTP connection is opened.
 
 Tracking booleans become Mailgun `yes` or `no` values; click tracking also
 accepts `htmlonly`. `deliveryTime` uses RFC 2822 format, `deliverWithin` ranges
-from `5m` through `24h`, the optimization period uses an hours value such as
-`24h`, and timezone localization uses `HH:mm` or `hh:mmaa`.
+from `5m` through `24h`, the optimization period ranges from `24h` through
+`72h`, and timezone localization uses `HH:mm` or `hh:mmaa`.
