@@ -120,7 +120,7 @@ async function withDatabase(config, capsule, options, run) {
   }
 }
 
-async function startTestSmtpServer({ implicitTls = false } = {}) {
+async function startTestSmtpServer({ implicitTls = false, authReject = false, recipientReject = false } = {}) {
   const commands = [];
   const messages = [];
   const tlsOptions = implicitTls ? {
@@ -153,14 +153,15 @@ async function startTestSmtpServer({ implicitTls = false } = {}) {
         buffer = buffer.slice(end + 2);
         commands.push(command);
         if (/^EHLO /i.test(command)) socket.write("250-smtp.test\r\n250 PIPELINING\r\n");
-        else if (/^MAIL FROM:/i.test(command) || /^RCPT TO:/i.test(command)) socket.write("250 ok\r\n");
+        else if (/^MAIL FROM:/i.test(command)) socket.write("250 ok\r\n");
+        else if (/^RCPT TO:/i.test(command)) socket.write(recipientReject ? "550 rejected\r\n" : "250 ok\r\n");
         else if (command === "DATA") {
           inData = true;
           socket.write("354 end with dot\r\n");
         } else if (command === "QUIT") {
           socket.write("221 bye\r\n");
           socket.end();
-        } else if (/^AUTH /i.test(command)) socket.write("235 authenticated\r\n");
+        } else if (/^AUTH /i.test(command)) socket.write(authReject ? "535 authentication failed\r\n" : "235 authenticated\r\n");
         else socket.write("500 unsupported\r\n");
       }
     });
@@ -1153,7 +1154,7 @@ test("SMTP transport failures use stable safe mail errors", async () => {
       mutations: {
         send: mutation((ctx) => ctx.mail.send({ to: "to@example.com", subject: "test", textBody: "test" })),
       },
-    }, { mailTransportFactory: () => transport }, async (database) => {
+    }, { mailTransportFactory: () => transport, mailTransportFactoryTrusted: true }, async (database) => {
       const result = await runMutation(database, user, "send", []);
       assert.equal(result.error.code, expected);
       assert.equal(JSON.stringify(result).includes("password-secret"), false);
@@ -1414,7 +1415,7 @@ test("mail delivery failure diagnostics expose only stable result categories", a
         textBody: "or this body",
       })),
     },
-  }, { mailTransportFactory: () => transport }, async (database) => {
+  }, { mailTransportFactory: () => transport, mailTransportFactoryTrusted: true }, async (database) => {
     const result = await runMutation(database, user, "send", []);
     assert.equal(result.error.code, "MAIL_AUTH_FAILED");
     const event = database.log.tail().findLast((candidate) => candidate.event === "mail.delivery");
@@ -1469,7 +1470,7 @@ test("Capsule code cannot inspect raw SMTP transport failure details", async () 
         }
       }),
     },
-  }, { mailTransportFactory: () => transport }, async (database) => {
+  }, { mailTransportFactory: () => transport, mailTransportFactoryTrusted: true }, async (database) => {
     const result = await runMutation(database, user, "inspect", []);
     assert.deepEqual(result, {
       ok: true,
@@ -1494,6 +1495,7 @@ test("Capsule code cannot inspect raw SMTP transport failure details", async () 
 
 test("SMTP failure normalization never executes hostile code properties and still logs safely", async () => {
   let getterCalls = 0;
+  let proxyTrapCalls = 0;
   const rawDetail = "AUTH LOGIN password-secret inherited@example.com provider response";
   const ownAccessor = new Error("own accessor");
   Object.defineProperty(ownAccessor, "code", {
@@ -1511,14 +1513,30 @@ test("SMTP failure normalization never executes hostile code properties and stil
   }));
   inheritedAccessor.message = rawDetail;
   const trapped = new Proxy(new Error(rawDetail), {
-    getOwnPropertyDescriptor() {
+    get() {
+      proxyTrapCalls += 1;
       throw new Error(rawDetail);
     },
-    get() {
+    getOwnPropertyDescriptor() {
+      proxyTrapCalls += 1;
+      throw new Error(rawDetail);
+    },
+    getPrototypeOf() {
+      proxyTrapCalls += 1;
+      throw new Error(rawDetail);
+    },
+    has() {
+      proxyTrapCalls += 1;
+      throw new Error(rawDetail);
+    },
+    ownKeys() {
+      proxyTrapCalls += 1;
       throw new Error(rawDetail);
     },
   });
-  const failures = [ownAccessor, inheritedAccessor, trapped];
+  const customCoded = new Error(rawDetail);
+  customCoded.code = "EAUTH";
+  const failures = [ownAccessor, inheritedAccessor, trapped, customCoded];
   let index = 0;
   const transport = {
     async send() {
@@ -1544,6 +1562,7 @@ test("SMTP failure normalization never executes hostile code properties and stil
       });
     }
     assert.equal(getterCalls, 0);
+    assert.equal(proxyTrapCalls, 0);
     const events = database.log.tail().filter((event) => event.event === "mail.delivery");
     assert.equal(events.length, failures.length);
     for (const event of events) {
@@ -1753,5 +1772,84 @@ test("a stalled SMTP greeting is bounded by the configured socket timeout", asyn
     });
   } finally {
     await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test("owned SMTP transport preserves stable connection, authentication, and rejection categories", async () => {
+  const authServer = await startTestSmtpServer({ implicitTls: true, authReject: true });
+  const rejectionServer = await startTestSmtpServer({ recipientReject: true });
+  const refusedServer = createNetServer();
+  await new Promise((resolve, reject) => {
+    refusedServer.once("error", reject);
+    refusedServer.listen(0, "127.0.0.1", resolve);
+  });
+  const refusedPort = refusedServer.address().port;
+  await new Promise((resolve, reject) => refusedServer.close((error) => error ? reject(error) : resolve()));
+  const cases = [
+    [{
+      name: "owned-auth-failure",
+      mail: {
+        smtp: {
+          vendor: "generic",
+          host: "127.0.0.1",
+          port: authServer.port,
+          tls: { mode: "implicit", rejectUnauthorized: false, servername: "smtp.internal.example" },
+          auth: { method: "PLAIN", usernameEnv: "SMTP_USERNAME", passwordEnv: "SMTP_PASSWORD" },
+          defaultFrom: "sender@example.com",
+          connectionTimeoutMs: 1_000,
+          socketTimeoutMs: 1_000,
+        },
+      },
+    }, "MAIL_AUTH_FAILED"],
+    [{
+      name: "owned-recipient-rejection",
+      mail: {
+        smtp: {
+          vendor: "generic",
+          host: "127.0.0.1",
+          port: rejectionServer.port,
+          tls: { mode: "disabled" },
+          auth: { method: "none" },
+          defaultFrom: "sender@example.com",
+          connectionTimeoutMs: 1_000,
+          socketTimeoutMs: 1_000,
+        },
+      },
+    }, "MAIL_REJECTED"],
+    [{
+      name: "owned-connect-failure",
+      mail: {
+        smtp: {
+          vendor: "generic",
+          host: "127.0.0.1",
+          port: refusedPort,
+          tls: { mode: "disabled" },
+          auth: { method: "none" },
+          defaultFrom: "sender@example.com",
+          connectionTimeoutMs: 1_000,
+          socketTimeoutMs: 1_000,
+        },
+      },
+    }, "MAIL_CONNECTION_FAILED"],
+  ];
+  try {
+    for (const [config, expectedCode] of cases) {
+      await withDatabase(config, {
+        mutations: {
+          send: mutation((ctx) => ctx.mail.send({
+            to: "recipient@example.com",
+            subject: "owned transport category",
+            textBody: "owned transport category",
+          })),
+        },
+      }, {}, async (database) => {
+        const result = await runMutation(database, user, "send", []);
+        assert.equal(result.error.code, expectedCode);
+        assert.deepEqual(Object.keys(result.error).sort(), ["code", "hint", "message"]);
+      });
+    }
+  } finally {
+    await authServer.close();
+    await rejectionServer.close();
   }
 });

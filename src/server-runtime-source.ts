@@ -74,7 +74,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   normalizeMailAddress,
   mailError,
   normalizeMailTransportError,
-  safeMailTransportCode,
   mailJsonSize,
   normalizeJourneyPolicy,
   normalizeJourneyState,
@@ -794,6 +793,8 @@ function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv, options: Loos
     socketTimeoutMs: smtp.socketTimeoutMs ?? 30_000,
   };
   const factory = options.mailTransportFactory ?? createMailTransport;
+  const ownedTransportBoundary = factory === createMailTransport;
+  const trustedTestTransportBoundary = options.mailTransportFactoryTrusted === true;
   const transport = factory(resolvedSmtp);
   if (!transport || typeof transport.send !== "function") {
     throw mailError("MAIL_CONNECTION_FAILED", "SMTP transport could not be created.", "Check the SMTP configuration and restart the Capsule runtime.");
@@ -837,7 +838,14 @@ function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv, options: Loos
         }
         return normalizedResult;
       } catch (error) {
-        const normalizedError = normalizeMailTransportError(error);
+        // Only Sporades-owned transport failures, or explicitly trusted
+        // internal test doubles, may be inspected for classification. An
+        // arbitrary injected value remains completely opaque.
+        const normalizedError = ownedTransportBoundary
+          ? error
+          : trustedTestTransportBoundary
+            ? normalizeMailTransportError(error)
+            : mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
         try {
           await options.mailLog?.({
             category: "mail",
@@ -1487,7 +1495,7 @@ function normalizeMailAddress(value: any, field: string) {
 }
 
 function normalizeMailTransportError(error: any) {
-  const code = safeMailTransportCode(error);
+  const code = String(error?.code ?? "");
   if (code === "ETIMEDOUT" || code === "ESOCKETTIMEDOUT") {
     return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.");
   }
@@ -1509,31 +1517,22 @@ function normalizeMailTransportError(error: any) {
   return mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
 }
 
-function safeMailTransportCode(error: any) {
-  if (error === null || (typeof error !== "object" && typeof error !== "function")) return "";
-  try {
-    const descriptor = Object.getOwnPropertyDescriptor(error, "code");
-    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, "value")) return "";
-    return typeof descriptor.value === "string" ? descriptor.value : "";
-  } catch {
-    return "";
-  }
-}
-
 function createMailTransport(smtp: any) {
   const sockets = new Set<any>();
   let closed = false;
   return {
     async send(message: any) {
-      if (closed) {
-        const error: any = new Error("closed");
-        error.code = "ECONNECTION";
-        throw error;
-      }
-      const socket = await connectSmtpSocket(smtp);
-      sockets.add(socket);
-      const reader = createSmtpResponseReader(socket, smtp.socketTimeoutMs);
+      let socket: any;
+      let reader: any;
       try {
+        if (closed) {
+          const error: any = new Error("closed");
+          error.code = "ECONNECTION";
+          throw error;
+        }
+        socket = await connectSmtpSocket(smtp);
+        sockets.add(socket);
+        reader = createSmtpResponseReader(socket, smtp.socketTimeoutMs);
         let encrypted = smtp.tls.mode === "implicit";
         await reader.expect([220]);
         const ehlo = await smtpCommand(socket, reader, `EHLO sporades.local`, [250]);
@@ -1603,10 +1602,15 @@ function createMailTransport(smtp: any) {
           accepted,
           rejected,
         };
+      } catch (error) {
+        // This is the trusted Sporades-owned SMTP boundary. Classify Node
+        // socket/TLS and runtime command errors here, then expose only a fresh
+        // stable mail Error to the outer runtime.
+        throw normalizeMailTransportError(error);
       } finally {
-        reader.close();
+        reader?.close();
         for (const candidate of [...sockets]) {
-          if (candidate === socket || candidate === reader.socket()) {
+          if (candidate === socket || candidate === reader?.socket()) {
             sockets.delete(candidate);
             candidate.destroy();
           }
