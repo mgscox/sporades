@@ -1095,9 +1095,12 @@ sporades auth status --json
 ```
 
 The status command reports every built-in provider's `enabled`, `configured`,
-and `runtimeAvailable` state. OAuth entries also report their exact local
-callback URL when the Dev port is fixed. JSON output contains env-var names and
-non-secret options, never credential values.
+and `runtimeAvailable` state. OAuth entries report their callback path and, when
+the provider accepts it, the exact local callback URL for a fixed Dev port.
+Apple requires an HTTPS callback: its status has a null `callbackUrl` locally
+and guidance to use the Capsule's Hosted HTTPS origin or an HTTPS development
+tunnel. JSON output contains env-var names and non-secret options, never
+credential values.
 
 ### Configure OAuth Providers
 
@@ -1117,6 +1120,12 @@ files through `--client-json`. Sporades stores secret values only in Server env
 (or Sealed Server env after import); `sporades.json` keeps provider shape,
 non-secret options, and env-var names. Restart a running Dev session after any
 provider change.
+
+Apple private keys may be supplied as ordinary multiline PEM values in the
+credential JSON file. Sporades serializes them reversibly into one Server env
+entry; it does not copy the key into `sporades.json` or command output. Register
+`/__sporades/auth/apple/callback` on an HTTPS origin. Do not register a
+localhost or plain-HTTP callback for Apple.
 
 ### Configure Google OAuth
 

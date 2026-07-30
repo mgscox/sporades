@@ -372,8 +372,19 @@ export function parseServerEnv(envFile) {
     return values;
 }
 function parseEnvValue(value) {
-    if ((value.startsWith('"') && value.endsWith('"')) ||
-        (value.startsWith("'") && value.endsWith("'"))) {
+    if (value.startsWith('"') && value.endsWith('"')) {
+        try {
+            const parsed = JSON.parse(value);
+            if (typeof parsed === "string") {
+                return parsed;
+            }
+        }
+        catch {
+            // Preserve the legacy double-quoted value behaviour for existing env files.
+        }
+        return value.slice(1, -1);
+    }
+    if (value.startsWith("'") && value.endsWith("'")) {
         return value.slice(1, -1);
     }
     return value;
@@ -411,7 +422,13 @@ export function authStatus(config, serverEnv) {
         }
         if (!["anonymous", "email"].includes(providerName)) {
             result.callbackPath = `/__sporades/auth/${providerName}/callback`;
-            result.callbackUrl = port > 0 ? `http://localhost:${port}${result.callbackPath}` : null;
+            if (providerName === "apple") {
+                result.callbackUrl = null;
+                result.callbackGuidance = "Register this callback path on the Capsule's Hosted HTTPS origin, or use an HTTPS development tunnel.";
+            }
+            else {
+                result.callbackUrl = port > 0 ? `http://localhost:${port}${result.callbackPath}` : null;
+            }
         }
         providers[providerName] = result;
     }
@@ -490,7 +507,11 @@ function validateAuthConfig(config, serverEnv) {
         const state = status.providers[provider];
         if (!state.enabled || state.configured)
             continue;
-        const callback = typeof state.callbackUrl === "string" ? ` Register callback URL ${state.callbackUrl}.` : "";
+        const callback = typeof state.callbackUrl === "string"
+            ? ` Register callback URL ${state.callbackUrl}.`
+            : typeof state.callbackGuidance === "string"
+                ? ` ${state.callbackGuidance}`
+                : "";
         throw commandError(`${providerLabel(provider)} auth is not fully configured.`, `${providerConfigurationHint(provider)}${callback}`);
     }
 }

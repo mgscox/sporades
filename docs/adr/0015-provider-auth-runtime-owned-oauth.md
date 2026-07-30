@@ -74,7 +74,14 @@ The JSON parser is provider-specific: Google reads Web application credentials,
 Microsoft reads client ID, client secret, and tenant, Apple reads Services ID,
 Team ID, Key ID, and private key, and Facebook reads app ID, app secret, and an
 optional Graph version. All parsers remain behind the same `--client-json`
-provider configuration seam.
+provider configuration seam. The seam validates JSON object shape and required
+string fields before extracting values. Multiline Apple PEM values are escaped
+reversibly into a single Server env entry.
+
+Apple callbacks are never advertised as localhost or plain HTTP. Status exposes
+the stable `/__sporades/auth/apple/callback` path and directs operators to
+register it on the Capsule's Hosted HTTPS origin or an HTTPS development
+tunnel; `callbackUrl` remains null until an eligible HTTPS origin is known.
 
 After `sporades auth set <provider>`, any running dev session must be restarted.
 The dev session loads Server env and auth configuration at startup, so a restart

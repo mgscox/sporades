@@ -10423,7 +10423,12 @@ function authStatus(config: LooseRecord, serverEnv: LooseRecord) {
     }
     if (!["anonymous", "email"].includes(providerName)) {
       state.callbackPath = `/__sporades/auth/${providerName}/callback`;
-      state.callbackUrl = port > 0 ? `http://localhost:${port}${state.callbackPath}` : null;
+      if (providerName === "apple") {
+        state.callbackUrl = null;
+        state.callbackGuidance = "Register this callback path on the Capsule's Hosted HTTPS origin, or use an HTTPS development tunnel.";
+      } else {
+        state.callbackUrl = port > 0 ? `http://localhost:${port}${state.callbackPath}` : null;
+      }
     }
     providers[providerName] = state;
   }

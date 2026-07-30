@@ -7583,6 +7583,37 @@ test("sporades dev gives provider-specific OAuth guidance with the exact safe ca
   });
 });
 
+test("sporades dev gives Apple HTTPS callback guidance without advertising localhost", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "apple-guidance-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "apple-guidance-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.auth = {
+      providers: {
+        anonymous: true,
+        apple: {
+          clientId: "com.example.web",
+          teamId: "TEAM123",
+          keyId: "KEY123",
+          privateKeyEnv: "APPLE_PRIVATE_KEY",
+        },
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const result = await runCli(["dev", "--json"], { cwd: projectDir });
+    assert.equal(result.code, 1);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.error.message, "Apple auth is not fully configured.");
+    assert.match(payload.error.hint, /Hosted HTTPS origin/);
+    assert.match(payload.error.hint, /HTTPS development tunnel/);
+    assert.doesNotMatch(payload.error.hint, /localhost|http:\/\//);
+  });
+});
+
 test("sporades dev rejects unsupported auth providers with structured JSON", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {

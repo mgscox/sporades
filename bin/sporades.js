@@ -11246,7 +11246,12 @@ function authStatus(config, serverEnv) {
     }
     if (!["anonymous", "email"].includes(providerName)) {
       state.callbackPath = `/__sporades/auth/${providerName}/callback`;
-      state.callbackUrl = port > 0 ? `http://localhost:${port}${state.callbackPath}` : null;
+      if (providerName === "apple") {
+        state.callbackUrl = null;
+        state.callbackGuidance = "Register this callback path on the Capsule's Hosted HTTPS origin, or use an HTTPS development tunnel.";
+      } else {
+        state.callbackUrl = port > 0 ? `http://localhost:${port}${state.callbackPath}` : null;
+      }
     }
     providers[providerName] = state;
   }
@@ -12740,7 +12745,17 @@ function parseServerEnv(envFile) {
   return values;
 }
 function parseEnvValue(value) {
-  if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
+  if (value.startsWith('"') && value.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed === "string") {
+        return parsed;
+      }
+    } catch {
+    }
+    return value.slice(1, -1);
+  }
+  if (value.startsWith("'") && value.endsWith("'")) {
     return value.slice(1, -1);
   }
   return value;
@@ -12772,7 +12787,12 @@ function authStatus2(config, serverEnv) {
     }
     if (!["anonymous", "email"].includes(providerName)) {
       result.callbackPath = `/__sporades/auth/${providerName}/callback`;
-      result.callbackUrl = port > 0 ? `http://localhost:${port}${result.callbackPath}` : null;
+      if (providerName === "apple") {
+        result.callbackUrl = null;
+        result.callbackGuidance = "Register this callback path on the Capsule's Hosted HTTPS origin, or use an HTTPS development tunnel.";
+      } else {
+        result.callbackUrl = port > 0 ? `http://localhost:${port}${result.callbackPath}` : null;
+      }
     }
     providers[providerName] = result;
   }
@@ -12853,7 +12873,7 @@ function validateAuthConfig(config, serverEnv) {
   for (const provider of AUTH_PROVIDER_ORDER) {
     const state = status.providers[provider];
     if (!state.enabled || state.configured) continue;
-    const callback = typeof state.callbackUrl === "string" ? ` Register callback URL ${state.callbackUrl}.` : "";
+    const callback = typeof state.callbackUrl === "string" ? ` Register callback URL ${state.callbackUrl}.` : typeof state.callbackGuidance === "string" ? ` ${state.callbackGuidance}` : "";
     throw commandError2(
       `${providerLabel(provider)} auth is not fully configured.`,
       `${providerConfigurationHint(provider)}${callback}`
@@ -19632,13 +19652,7 @@ function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
       "Download a valid OAuth client credentials JSON file from the provider and retry."
     );
   }
-  const parsers = {
-    google: (value) => value.web?.client_id && value.web?.client_secret ? { clientId: value.web.client_id, clientSecret: value.web.client_secret } : null,
-    microsoft: (value) => value.clientId && value.clientSecret ? { clientId: value.clientId, clientSecret: value.clientSecret, tenant: value.tenant ?? "common" } : null,
-    apple: (value) => value.servicesId && value.teamId && value.keyId && value.privateKey ? { clientId: value.servicesId, teamId: value.teamId, keyId: value.keyId, privateKey: value.privateKey } : null,
-    facebook: (value) => value.appId && value.appSecret ? { clientId: value.appId, clientSecret: value.appSecret, graphVersion: value.graphVersion ?? null } : null
-  };
-  const credentials = parsers[provider]?.(parsed) ?? null;
+  const credentials = parseProviderCredentialDocument(provider, parsed);
   if (!credentials) {
     if (provider === "google") {
       throw commandError4(
@@ -19652,6 +19666,29 @@ function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
     );
   }
   return credentials;
+}
+function parseProviderCredentialDocument(provider, value) {
+  if (!isLooseRecord(value)) {
+    return null;
+  }
+  switch (provider) {
+    case "google":
+      return isLooseRecord(value.web) && hasNonEmptyString(value.web, "client_id") && hasNonEmptyString(value.web, "client_secret") ? { clientId: value.web.client_id, clientSecret: value.web.client_secret } : null;
+    case "microsoft":
+      return hasNonEmptyString(value, "clientId") && hasNonEmptyString(value, "clientSecret") && (value.tenant === void 0 || hasNonEmptyString(value, "tenant")) ? { clientId: value.clientId, clientSecret: value.clientSecret, tenant: value.tenant ?? "common" } : null;
+    case "apple":
+      return hasNonEmptyString(value, "servicesId") && hasNonEmptyString(value, "teamId") && hasNonEmptyString(value, "keyId") && hasNonEmptyString(value, "privateKey") ? { clientId: value.servicesId, teamId: value.teamId, keyId: value.keyId, privateKey: value.privateKey } : null;
+    case "facebook":
+      return hasNonEmptyString(value, "appId") && hasNonEmptyString(value, "appSecret") && (value.graphVersion === void 0 || hasNonEmptyString(value, "graphVersion")) ? { clientId: value.appId, clientSecret: value.appSecret, graphVersion: value.graphVersion ?? null } : null;
+    default:
+      return null;
+  }
+}
+function isLooseRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+function hasNonEmptyString(value, key) {
+  return typeof value[key] === "string" && value[key].length > 0;
 }
 function providerLabel2(provider) {
   return `${provider[0]?.toUpperCase() ?? ""}${provider.slice(1)}`;
@@ -20899,12 +20936,8 @@ async function manageAuth(options) {
     mode: options.disable && existingAuth.mode === options.provider ? enabledSibling ?? "anonymous" : options.disable ? existingAuth.mode ?? "anonymous" : options.provider,
     providers: existingProviders
   };
-  await writeFile6(configPath, `${JSON.stringify(config, null, 2)}
-`);
   const envPath = path8.join(options.projectDir, ".env.sporades.server");
-  if (Object.keys(envValues).length > 0) {
-    await upsertServerEnvValues(envPath, envValues);
-  }
+  await writeAuthConfiguration(configPath, envPath, config, envValues);
   const status = authStatus2(config, parseServerEnv(await readServerEnvFile(envPath)));
   if (options.json) {
     writeResult({ ok: true, data: status, error: null });
@@ -22489,9 +22522,8 @@ function withDevInspectionTokenHeader(session, fetchOptions = {}) {
     }
   };
 }
-async function upsertServerEnvValues(envPath, values) {
-  const existing = await readServerEnvFile(envPath);
-  const lines = existing.raw ? existing.raw.split(/\r?\n/) : [];
+function renderServerEnvValues(existingRaw, values) {
+  const lines = existingRaw ? existingRaw.split(/\r?\n/) : [];
   const pending = new Map(Object.entries(values));
   const nextLines = lines.map((line) => {
     const trimmed = line.trim();
@@ -22505,14 +22537,46 @@ async function upsertServerEnvValues(envPath, values) {
     }
     const value = pending.get(key);
     pending.delete(key);
-    return `${key}=${value}`;
+    return `${key}=${serializeServerEnvValue(value)}`;
   });
   for (const [key, value] of pending) {
-    nextLines.push(`${key}=${value}`);
+    nextLines.push(`${key}=${serializeServerEnvValue(value)}`);
   }
-  await writeFile6(envPath, `${nextLines.filter((line, index) => line || index < nextLines.length - 1).join("\n")}
-`);
-  parseServerEnv(await readServerEnvFile(envPath));
+  return `${nextLines.filter((line, index) => line || index < nextLines.length - 1).join("\n")}
+`;
+}
+function serializeServerEnvValue(value) {
+  const stringValue = String(value);
+  return stringValue.trim() !== stringValue || /[\r\n"'\\]/.test(stringValue) ? JSON.stringify(stringValue) : stringValue;
+}
+async function writeAuthConfiguration(configPath, envPath, config, envValues) {
+  const previousConfig = await readFile8(configPath, "utf8");
+  const previousEnv = await readServerEnvFile(envPath);
+  const nextConfig = `${JSON.stringify(config, null, 2)}
+`;
+  const nextEnv = Object.keys(envValues).length > 0 ? renderServerEnvValues(previousEnv.raw, envValues) : previousEnv.raw;
+  parseServerEnv({ exists: previousEnv.exists || Object.keys(envValues).length > 0, raw: nextEnv });
+  let configWritten = false;
+  let envWriteStarted = false;
+  try {
+    await writeFile6(configPath, nextConfig);
+    configWritten = true;
+    if (Object.keys(envValues).length > 0) {
+      envWriteStarted = true;
+      await writeFile6(envPath, nextEnv);
+    }
+  } catch (error) {
+    if (configWritten) {
+      await writeFile6(configPath, previousConfig);
+    }
+    if (envWriteStarted && previousEnv.exists) {
+      try {
+        await writeFile6(envPath, previousEnv.raw);
+      } catch {
+      }
+    }
+    throw error;
+  }
 }
 async function readRequiredFile3(filePath, message, hint) {
   try {

@@ -442,6 +442,11 @@ non-secret options, and env var names, not secret values. Configuring or
 disabling one provider merges that provider without replacing siblings or
 implicitly disabling Anonymous sessions.
 
+Apple private keys support multiline PEM input and must round-trip exactly
+through Server env serialization. Apple callback guidance exposes the stable
+callback path but never suggests localhost or plain HTTP; operators register
+the path against a Hosted HTTPS origin or an HTTPS development tunnel.
+
 Session records store `createdAt` and `expiresAt` lifecycle metadata. By
 default a session expires 30 days after creation or refresh. Missing, invalid,
 or expired session tokens resolve to a fresh anonymous session. Email sign-up

@@ -971,21 +971,7 @@ function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
     catch {
         throw commandError(`Invalid OAuth client JSON: ${clientJsonPath}`, "Download a valid OAuth client credentials JSON file from the provider and retry.");
     }
-    const parsers = {
-        google: (value) => value.web?.client_id && value.web?.client_secret
-            ? { clientId: value.web.client_id, clientSecret: value.web.client_secret }
-            : null,
-        microsoft: (value) => value.clientId && value.clientSecret
-            ? { clientId: value.clientId, clientSecret: value.clientSecret, tenant: value.tenant ?? "common" }
-            : null,
-        apple: (value) => value.servicesId && value.teamId && value.keyId && value.privateKey
-            ? { clientId: value.servicesId, teamId: value.teamId, keyId: value.keyId, privateKey: value.privateKey }
-            : null,
-        facebook: (value) => value.appId && value.appSecret
-            ? { clientId: value.appId, clientSecret: value.appSecret, graphVersion: value.graphVersion ?? null }
-            : null,
-    };
-    const credentials = parsers[provider]?.(parsed) ?? null;
+    const credentials = parseProviderCredentialDocument(provider, parsed);
     if (!credentials) {
         if (provider === "google") {
             throw commandError("OAuth client JSON is missing Google client credentials.", "Use a Google OAuth Web application JSON file containing `web.client_id` and `web.client_secret`.");
@@ -993,6 +979,46 @@ function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
         throw commandError(`OAuth client JSON is missing ${providerLabel(provider)} credentials.`, `Use a ${providerLabel(provider)} credentials JSON file with the fields documented by \`sporades auth --help\`.`);
     }
     return credentials;
+}
+function parseProviderCredentialDocument(provider, value) {
+    if (!isLooseRecord(value)) {
+        return null;
+    }
+    switch (provider) {
+        case "google":
+            return isLooseRecord(value.web) &&
+                hasNonEmptyString(value.web, "client_id") &&
+                hasNonEmptyString(value.web, "client_secret")
+                ? { clientId: value.web.client_id, clientSecret: value.web.client_secret }
+                : null;
+        case "microsoft":
+            return hasNonEmptyString(value, "clientId") &&
+                hasNonEmptyString(value, "clientSecret") &&
+                (value.tenant === undefined || hasNonEmptyString(value, "tenant"))
+                ? { clientId: value.clientId, clientSecret: value.clientSecret, tenant: value.tenant ?? "common" }
+                : null;
+        case "apple":
+            return hasNonEmptyString(value, "servicesId") &&
+                hasNonEmptyString(value, "teamId") &&
+                hasNonEmptyString(value, "keyId") &&
+                hasNonEmptyString(value, "privateKey")
+                ? { clientId: value.servicesId, teamId: value.teamId, keyId: value.keyId, privateKey: value.privateKey }
+                : null;
+        case "facebook":
+            return hasNonEmptyString(value, "appId") &&
+                hasNonEmptyString(value, "appSecret") &&
+                (value.graphVersion === undefined || hasNonEmptyString(value, "graphVersion"))
+                ? { clientId: value.appId, clientSecret: value.appSecret, graphVersion: value.graphVersion ?? null }
+                : null;
+        default:
+            return null;
+    }
+}
+function isLooseRecord(value) {
+    return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+function hasNonEmptyString(value, key) {
+    return typeof value[key] === "string" && value[key].length > 0;
 }
 function providerLabel(provider) {
     return `${provider[0]?.toUpperCase() ?? ""}${provider.slice(1)}`;
@@ -2203,11 +2229,8 @@ async function manageAuth(options) {
             : options.disable ? existingAuth.mode ?? "anonymous" : options.provider,
         providers: existingProviders,
     };
-    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
     const envPath = path.join(options.projectDir, ".env.sporades.server");
-    if (Object.keys(envValues).length > 0) {
-        await upsertServerEnvValues(envPath, envValues);
-    }
+    await writeAuthConfiguration(configPath, envPath, config, envValues);
     const status = authStatus(config, parseServerEnv(await readServerEnvFile(envPath)));
     if (options.json) {
         writeResult({ ok: true, data: status, error: null });
@@ -3759,9 +3782,8 @@ function withDevInspectionTokenHeader(session, fetchOptions = {}) {
         },
     };
 }
-async function upsertServerEnvValues(envPath, values) {
-    const existing = await readServerEnvFile(envPath);
-    const lines = existing.raw ? existing.raw.split(/\r?\n/) : [];
+function renderServerEnvValues(existingRaw, values) {
+    const lines = existingRaw ? existingRaw.split(/\r?\n/) : [];
     const pending = new Map(Object.entries(values));
     const nextLines = lines.map((line) => {
         const trimmed = line.trim();
@@ -3775,13 +3797,51 @@ async function upsertServerEnvValues(envPath, values) {
         }
         const value = pending.get(key);
         pending.delete(key);
-        return `${key}=${value}`;
+        return `${key}=${serializeServerEnvValue(value)}`;
     });
     for (const [key, value] of pending) {
-        nextLines.push(`${key}=${value}`);
+        nextLines.push(`${key}=${serializeServerEnvValue(value)}`);
     }
-    await writeFile(envPath, `${nextLines.filter((line, index) => line || index < nextLines.length - 1).join("\n")}\n`);
-    parseServerEnv(await readServerEnvFile(envPath));
+    return `${nextLines.filter((line, index) => line || index < nextLines.length - 1).join("\n")}\n`;
+}
+function serializeServerEnvValue(value) {
+    const stringValue = String(value);
+    return stringValue.trim() !== stringValue || /[\r\n"'\\]/.test(stringValue)
+        ? JSON.stringify(stringValue)
+        : stringValue;
+}
+async function writeAuthConfiguration(configPath, envPath, config, envValues) {
+    const previousConfig = await readFile(configPath, "utf8");
+    const previousEnv = await readServerEnvFile(envPath);
+    const nextConfig = `${JSON.stringify(config, null, 2)}\n`;
+    const nextEnv = Object.keys(envValues).length > 0
+        ? renderServerEnvValues(previousEnv.raw, envValues)
+        : previousEnv.raw;
+    parseServerEnv({ exists: previousEnv.exists || Object.keys(envValues).length > 0, raw: nextEnv });
+    let configWritten = false;
+    let envWriteStarted = false;
+    try {
+        await writeFile(configPath, nextConfig);
+        configWritten = true;
+        if (Object.keys(envValues).length > 0) {
+            envWriteStarted = true;
+            await writeFile(envPath, nextEnv);
+        }
+    }
+    catch (error) {
+        if (configWritten) {
+            await writeFile(configPath, previousConfig);
+        }
+        if (envWriteStarted && previousEnv.exists) {
+            try {
+                await writeFile(envPath, previousEnv.raw);
+            }
+            catch {
+                // The original env write can fail before changing a read-only file.
+            }
+        }
+        throw error;
+    }
 }
 async function readRequiredFile(filePath, message, hint) {
     try {

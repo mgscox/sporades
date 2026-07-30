@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { transform } from "esbuild";
+import { parseServerEnv } from "../dist/bundle-pipeline.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoRoot, "bin", "sporades.js");
@@ -1412,6 +1413,36 @@ test("sporades auth set google rejects invalid OAuth client JSON files", async (
   });
 });
 
+test("sporades auth set rejects malformed provider credential documents without leaking runtime type errors", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "oauth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "oauth-island");
+    const cases = [
+      ["google", null, "Google"],
+      ["google", [], "Google"],
+      ["google", { web: "not-an-object" }, "Google"],
+      ["google", { web: { client_id: 42, client_secret: "secret" } }, "Google"],
+      ["microsoft", { clientId: "id", clientSecret: 42 }, "Microsoft"],
+      ["apple", { servicesId: "id", teamId: "team", keyId: "key", privateKey: ["secret"] }, "Apple"],
+      ["facebook", { appId: "id", appSecret: "secret", graphVersion: 23 }, "Facebook"],
+    ];
+
+    for (const [provider, document, label] of cases) {
+      const filename = `${provider}-invalid.json`;
+      await writeFile(path.join(projectDir, filename), JSON.stringify(document));
+      const result = await runCli(["auth", "set", provider, "--client-json", filename, "--json"], { cwd: projectDir });
+      assert.equal(result.code, 1, `${provider}: ${result.stdout || result.stderr}`);
+      const payload = JSON.parse(result.stdout);
+      assert.equal(payload.ok, false);
+      assert.match(payload.error.message, new RegExp(`OAuth client JSON is missing ${label} .*credentials\\.$`));
+      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /TypeError|Cannot read|Cannot convert|42/);
+    }
+  });
+});
+
 test("sporades auth set merges OAuth providers, supports explicit disablement, and redacts every secret", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "oauth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -1476,11 +1507,18 @@ test("sporades auth set parses provider-specific credential files and reports al
       clientSecret: "ms-secret",
       tenant: "common",
     }));
+    const applePrivateKey = [
+      "-----BEGIN PRIVATE KEY-----",
+      "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg",
+      "line-with-backslash-\\\\-and-quote-\"",
+      "-----END PRIVATE KEY-----",
+      "",
+    ].join("\n");
     await writeFile(path.join(projectDir, "apple.json"), JSON.stringify({
       servicesId: "com.example.web",
       teamId: "TEAM123",
       keyId: "KEY123",
-      privateKey: "apple-private-key",
+      privateKey: applePrivateKey,
     }));
     await writeFile(path.join(projectDir, "facebook.json"), JSON.stringify({
       appId: "facebook-id",
@@ -1506,7 +1544,52 @@ test("sporades auth set parses provider-specific credential files and reports al
     assert.equal(status.providers.microsoft.runtimeAvailable, false);
     assert.equal(status.providers.apple.configured, true);
     assert.equal(status.providers.facebook.configured, true);
-    assert.equal(status.providers.apple.callbackUrl, "http://localhost:4000/__sporades/auth/apple/callback");
-    assert.doesNotMatch(statusResult.stdout, /ms-secret|apple-private-key|facebook-secret|facebook-id|ms-id/);
+    assert.equal(status.providers.apple.callbackPath, "/__sporades/auth/apple/callback");
+    assert.equal(status.providers.apple.callbackUrl, null);
+    assert.match(status.providers.apple.callbackGuidance, /HTTPS/i);
+    assert.doesNotMatch(statusResult.stdout, /ms-secret|BEGIN PRIVATE KEY|facebook-secret|facebook-id|ms-id/);
+
+    const envRaw = await readFile(path.join(projectDir, ".env.sporades.server"), "utf8");
+    assert.doesNotMatch(envRaw, /^-----BEGIN PRIVATE KEY-----$/m);
+    assert.equal(
+      parseServerEnv({ exists: true, raw: envRaw }).APPLE_PRIVATE_KEY,
+      applePrivateKey,
+    );
+  });
+});
+
+test("sporades auth set rolls back sporades.json when the server env update fails", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "oauth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "oauth-island");
+    const google = await runCli(
+      ["auth", "set", "google", "--client-id", "google-id", "--client-secret", "google-secret", "--json"],
+      { cwd: projectDir },
+    );
+    assert.equal(google.code, 0, google.stderr);
+
+    const configPath = path.join(projectDir, "sporades.json");
+    const envPath = path.join(projectDir, ".env.sporades.server");
+    const configBefore = await readFile(configPath, "utf8");
+    const envBefore = await readFile(envPath, "utf8");
+    await writeFile(path.join(projectDir, "apple.json"), JSON.stringify({
+      servicesId: "com.example.web",
+      teamId: "TEAM123",
+      keyId: "KEY123",
+      privateKey: "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n",
+    }));
+
+    await chmod(envPath, 0o444);
+    try {
+      const result = await runCli(["auth", "set", "apple", "--client-json", "apple.json", "--json"], { cwd: projectDir });
+      assert.equal(result.code, 1, result.stdout || result.stderr);
+    } finally {
+      await chmod(envPath, 0o600);
+    }
+    assert.equal(await readFile(configPath, "utf8"), configBefore);
+    assert.equal(await readFile(envPath, "utf8"), envBefore);
   });
 });
