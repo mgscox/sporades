@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — Send mail through generic SMTP.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] A Mailgun SMTP declaration selects the Mailgun provider codec without changing the common `ctx.mail.send(...)` interface.
 - [ ] `provider.tags` emits repeatable Mailgun tag headers with bounded, validated values.
