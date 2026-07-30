@@ -45,6 +45,15 @@ const smtpConfig = {
   },
 };
 
+const postmarkConfig = {
+  mail: {
+    smtp: {
+      ...smtpConfig.mail.smtp,
+      vendor: "postmark",
+    },
+  },
+};
+
 async function withDatabase(config, capsule, options, run) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-mail-"));
   const database = await openDevDatabase(
@@ -158,6 +167,95 @@ test("ctx.mail validates messages before using the captured SMTP transport and n
     assert.equal(capturedSmtp.auth.password, "password-secret");
     assert.equal("smtp" in captured[0], false);
   });
+});
+
+test("Postmark provider fields become exact SMTP MIME headers", async () => {
+  const captured = [];
+  const transport = {
+    async send(message) {
+      captured.push(buildSmtpMessage({ ...message, messageId: "<postmark@example.com>" }));
+      return { messageId: "<postmark@example.com>", accepted: ["to@example.com"], rejected: [] };
+    },
+    close() {},
+  };
+  await withDatabase(postmarkConfig, {
+    mutations: {
+      send: mutation((ctx) => ctx.mail.send({
+        to: "to@example.com",
+        subject: "Postmark extensions",
+        textBody: "Hello",
+        provider: {
+          tag: "welcome-email",
+          metadata: {
+            "Client-ID": "12345",
+            color: "blue",
+          },
+          messageStream: "transactional-dev",
+        },
+      })),
+    },
+  }, { mailTransportFactory: () => transport }, async (database) => {
+    const result = await runMutation(database, user, "send", []);
+    assert.equal(result.ok, true);
+  });
+
+  const headerBlock = captured[0].split("\r\n\r\n")[0];
+  const postmarkHeaders = headerBlock
+    .split("\r\n")
+    .filter((line) => line.startsWith("X-PM-"));
+  assert.deepEqual(postmarkHeaders, [
+    "X-PM-Tag: welcome-email",
+    "X-PM-Metadata-client-id: 12345",
+    "X-PM-Metadata-color: blue",
+    "X-PM-Message-Stream: transactional-dev",
+  ]);
+});
+
+test("Postmark rejects unsupported, malformed, colliding, and unsafe provider data before SMTP delivery", async () => {
+  let sends = 0;
+  const transport = {
+    async send() {
+      sends += 1;
+      return { messageId: "<unexpected@example.com>", accepted: [], rejected: [] };
+    },
+    close() {},
+  };
+  await withDatabase(postmarkConfig, {
+    mutations: {
+      send: mutation((ctx, provider) => ctx.mail.send({
+        to: "to@example.com",
+        subject: "Postmark validation",
+        textBody: "Hello",
+        provider,
+      })),
+    },
+  }, { mailTransportFactory: () => transport }, async (database) => {
+    for (const field of ["headers", "from", "subject"]) {
+      const result = await runMutation(database, user, "send", [{ [field]: "unsafe" }]);
+      assert.equal(result.error.code, "UNSUPPORTED_MAIL_PROVIDER_FIELD");
+      assert.match(result.error.message, new RegExp(`\\b${field}\\b`));
+    }
+
+    const invalid = [
+      { tag: "" },
+      { tag: "x".repeat(1001) },
+      { tag: "welcome\r\nBcc: attacker@example.com" },
+      { metadata: new Date() },
+      { metadata: Object.fromEntries(Array.from({ length: 11 }, (_, index) => [`key-${index}`, "value"])) },
+      { metadata: { "this-key-is-far-too-long": "value" } },
+      { metadata: { TraceID: "one", traceid: "two" } },
+      { metadata: { trace: "x".repeat(81) } },
+      { metadata: { trace: "value\u0007" } },
+      { messageStream: "Broadcast" },
+      { messageStream: "pm-reserved" },
+      { messageStream: `a${"b".repeat(30)}` },
+    ];
+    for (const provider of invalid) {
+      const result = await runMutation(database, user, "send", [provider]);
+      assert.equal(result.error.code, "INVALID_MAIL_MESSAGE", JSON.stringify(provider));
+    }
+  });
+  assert.equal(sends, 0);
 });
 
 test("SMTP transport failures use stable safe mail errors", async () => {
@@ -356,6 +454,7 @@ test("generated Server Bundles carry the generic mail runtime helpers", async ()
     });
     assert.match(source, /function createMailRuntime/);
     assert.match(source, /function createMailTransport/);
+    assert.match(source, /function normalizePostmarkProvider/);
     assert.match(source, /function validateMailConfig/);
     await writeFile(bundlePath, source);
     const checked = spawnSync(process.execPath, ["--check", bundlePath], { encoding: "utf8" });

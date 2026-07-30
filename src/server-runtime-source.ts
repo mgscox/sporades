@@ -60,6 +60,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   foldMimeHeader,
   encodeMimeBase64,
   normalizeMailMessage,
+  normalizePostmarkProvider,
+  unsupportedMailProviderField,
   normalizeMailAddresses,
   normalizeMailAddress,
   mailError,
@@ -783,7 +785,7 @@ function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv, options: Loos
   }
   return {
     async send(input: any) {
-      const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom);
+      const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
       try {
         const result = await transport.send(message);
         return {
@@ -801,7 +803,7 @@ function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv, options: Loos
   };
 }
 
-function normalizeMailMessage(input: any, defaultFrom: any) {
+function normalizeMailMessage(input: any, defaultFrom: any, vendor = "generic") {
   const invalid = (hint: string) => {
     throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", hint);
   };
@@ -829,13 +831,19 @@ function normalizeMailMessage(input: any, defaultFrom: any) {
     }
   }
   let provider = input.provider;
+  let providerHeaders: { name: string; value: string }[] | undefined;
   if (provider !== undefined) {
     if (!provider || typeof provider !== "object" || Array.isArray(provider)) invalid("Pass `provider` as a JSON object.");
-    if ("headers" in provider) invalid("Provider header overrides are not supported by the configured SMTP vendor.");
     try {
       if (mailJsonSize(provider) > 32 * 1024) invalid("Keep `provider` fields within 32 KiB.");
     } catch {
       invalid("Pass only JSON-compatible values in `provider`.");
+    }
+    if (vendor === "postmark") {
+      providerHeaders = normalizePostmarkProvider(provider);
+      provider = undefined;
+    } else if ("headers" in provider) {
+      invalid("Provider header overrides are not supported by the configured SMTP vendor.");
     }
   }
   return {
@@ -847,8 +855,85 @@ function normalizeMailMessage(input: any, defaultFrom: any) {
     subject: input.subject,
     ...(input.textBody !== undefined ? { textBody: input.textBody } : {}),
     ...(input.htmlBody !== undefined ? { htmlBody: input.htmlBody } : {}),
+    ...(providerHeaders?.length ? { providerHeaders } : {}),
     ...(provider !== undefined ? { provider } : {}),
   };
+}
+
+function unsupportedMailProviderField(field: string) {
+  return mailError(
+    "UNSUPPORTED_MAIL_PROVIDER_FIELD",
+    `Unsupported Postmark provider field: ${field}.`,
+    "Use only `tag`, `metadata`, and `messageStream` in the Postmark provider object.",
+  );
+}
+
+function normalizePostmarkProvider(provider: any) {
+  const allowed = new Set(["tag", "metadata", "messageStream"]);
+  const unsupported = Object.keys(provider).filter((field) => !allowed.has(field)).sort();
+  if (unsupported.length > 0) throw unsupportedMailProviderField(unsupported[0]);
+  const invalid = (hint: string): never => {
+    throw mailError("INVALID_MAIL_MESSAGE", "Invalid Postmark provider data.", hint);
+  };
+  const headers: { name: string; value: string }[] = [];
+  if (provider.tag !== undefined) {
+    if (typeof provider.tag !== "string" || provider.tag.length < 1 || provider.tag.length > 1000 || /[\x00-\x1f\x7f]/.test(provider.tag)) {
+      invalid("Pass `provider.tag` as one non-empty value of at most 1000 characters without control characters.");
+    }
+    headers.push({ name: "X-PM-Tag", value: encodeMimeHeaderValue(provider.tag) });
+  }
+  if (provider.metadata !== undefined) {
+    const metadataPrototype = provider.metadata && typeof provider.metadata === "object"
+      ? Object.getPrototypeOf(provider.metadata)
+      : undefined;
+    if (
+      !provider.metadata
+      || typeof provider.metadata !== "object"
+      || Array.isArray(provider.metadata)
+      || (metadataPrototype !== Object.prototype && metadataPrototype !== null)
+    ) {
+      invalid("Pass `provider.metadata` as an object containing at most 10 string values.");
+    }
+    const metadata = Object.entries(provider.metadata)
+      .map(([key, value]) => ({ originalKey: key, key: key.toLowerCase(), value }))
+      .sort((left, right) => {
+        if (left.key < right.key) return -1;
+        if (left.key > right.key) return 1;
+        if (left.originalKey < right.originalKey) return -1;
+        if (left.originalKey > right.originalKey) return 1;
+        return 0;
+      });
+    if (metadata.length > 10) invalid("Pass at most 10 Postmark metadata fields.");
+    const seen = new Set<string>();
+    for (const entry of metadata) {
+      if (!/^[a-z0-9][a-z0-9_-]{0,19}$/.test(entry.key)) {
+        invalid(`Postmark metadata key \`${entry.originalKey}\` must be 1 to 20 ASCII letters, numbers, hyphens, or underscores.`);
+      }
+      if (seen.has(entry.key)) {
+        invalid(`Postmark metadata keys collide case-insensitively at \`${entry.key}\`.`);
+      }
+      seen.add(entry.key);
+      const metadataValue = entry.value;
+      if (typeof metadataValue !== "string" || metadataValue.length > 80 || /[\x00-\x1f\x7f]/.test(metadataValue)) {
+        invalid(`Postmark metadata value \`${entry.originalKey}\` must be a string of at most 80 characters without control characters.`);
+      }
+      headers.push({
+        name: `X-PM-Metadata-${entry.key}`,
+        value: encodeMimeHeaderValue(metadataValue as string),
+      });
+    }
+  }
+  if (provider.messageStream !== undefined) {
+    if (
+      typeof provider.messageStream !== "string"
+      || !/^[a-z][a-z0-9_-]{0,29}$/.test(provider.messageStream)
+      || provider.messageStream.startsWith("pm-")
+    ) {
+      invalid("Pass `provider.messageStream` as a Postmark stream ID: 1 to 30 lowercase letters, numbers, hyphens, or underscores, beginning with a letter and not `pm-`.");
+    }
+    headers.push({ name: "X-PM-Message-Stream", value: provider.messageStream });
+  }
+  return headers;
 }
 
 function mailJsonSize(value: any) {
@@ -1155,6 +1240,7 @@ function buildSmtpMessage(message: any) {
     `Date: ${new Date().toUTCString()}`,
     `Message-ID: ${message.messageId ?? `<${randomUUID()}@sporades.local>`}`,
     "MIME-Version: 1.0",
+    ...(message.providerHeaders ?? []).map((header: any) => foldMimeHeader(header.name, header.value)),
   ];
   if (message.textBody !== undefined && message.htmlBody !== undefined) {
     const boundary = `sporades-${randomUUID()}`;
