@@ -17,8 +17,8 @@ gates, and obtain re-review if the merge changes accepted SMTP behavior.
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 01 | accepted | None | `ac20cf1` | `codex/smtp-mail-01` / `/private/tmp/sporades-smtp-mail-swarm/issue-01` | `/root/smtp_01` | `c16b7a4` | `/root/smtp_01_review` | ACCEPT; prior replacement SHAs REQUEST_CHANGES and void | — | reviewer: 11 focused pass, typecheck/generated/diff green, Mailjet opt-in skipped; boundary fuzzing green | worker complete; worktree clean; awaiting coordinator integration |
-| 02 | blocked | 01 | — | — | — | — | — | — | — | — | — |
-| 03 | blocked | 01 | — | — | — | — | — | — | — | — | — |
-| 04 | blocked | 01 | — | — | — | — | — | — | — | — | — |
+| 01 | done | None | `ac20cf1` | `codex/smtp-mail-01` / `/private/tmp/sporades-smtp-mail-swarm/issue-01` | `/root/smtp_01` | `c16b7a4` | `/root/smtp_01_review` | ACCEPT; prior replacement SHAs REQUEST_CHANGES and void | `ab731ed` | integration 95 pass, 0 fail, 2 opt-in skip; live Mailjet STARTTLS 1 pass, 0 skip; build/generated/diff green | worker worktree clean; remove after status commit |
+| 02 | ready | 01 done | — | — | — | — | — | — | — | — | — |
+| 03 | ready | 01 done | — | — | — | — | — | — | — | — | — |
+| 04 | ready | 01 done | — | — | — | — | — | — | — | — | — |
 | 05 | blocked | 02, 03, 04 | — | — | — | — | — | — | — | — | — |

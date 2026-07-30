@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] `sporades.json` accepts an optional `mail.smtp` declaration containing vendor identity, host, port, TLS mode, authentication method and Server env references, default sender, and bounded connection and socket timeouts.
 - [ ] SMTP passwords, usernames, and tokens remain in Server env; configuration stores only non-secret values and Server env key names.
