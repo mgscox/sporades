@@ -14,6 +14,7 @@ import { createServerBundleSource } from "../dist/templates/server-bundle-templa
 const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
 const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
 const createTableAclContext = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createTableAclContext");
+const buildSmtpMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "buildSmtpMessage");
 
 const user = {
   userId: "mail-user",
@@ -165,6 +166,10 @@ test("SMTP transport failures use stable safe mail errors", async () => {
     ["ETLS", "MAIL_TLS_FAILED"],
     ["EAUTH", "MAIL_AUTH_FAILED"],
     ["EREJECTED", "MAIL_REJECTED"],
+    ["CERT_HAS_EXPIRED", "MAIL_TLS_FAILED"],
+    ["ERR_TLS_CERT_ALTNAME_INVALID", "MAIL_TLS_FAILED"],
+    ["ERR_SSL_WRONG_VERSION_NUMBER", "MAIL_TLS_FAILED"],
+    ["DEPTH_ZERO_SELF_SIGNED_CERT", "MAIL_TLS_FAILED"],
     ["ECONNREFUSED", "MAIL_CONNECTION_FAILED"],
   ];
   for (const [transportCode, expected] of cases) {
@@ -187,6 +192,53 @@ test("SMTP transport failures use stable safe mail errors", async () => {
       assert.equal(JSON.stringify(result).includes("provider internals"), false);
     });
   }
+});
+
+test("mail headers reject every prohibited C0 control and internationalized envelopes before transport", async () => {
+  let sends = 0;
+  const transport = {
+    async send() {
+      sends += 1;
+      return { messageId: "<unexpected@example.com>", accepted: [], rejected: [] };
+    },
+    close() {},
+  };
+  await withDatabase(smtpConfig, {
+    mutations: { send: mutation((ctx, message) => ctx.mail.send(message)) },
+  }, { mailTransportFactory: () => transport }, async (database) => {
+    for (const message of [
+      { to: "to@example.com", subject: "bad\u0001subject", textBody: "body" },
+      { to: { email: "to@example.com", name: "bad\u000bname" }, subject: "subject", textBody: "body" },
+      { to: "tést@example.com", subject: "subject", textBody: "body" },
+      { to: "to@exämple.com", subject: "subject", textBody: "body" },
+    ]) {
+      const result = await runMutation(database, user, "send", [message]);
+      assert.equal(result.error.code, "INVALID_MAIL_MESSAGE");
+    }
+    assert.equal(sends, 0);
+  });
+});
+
+test("MIME generation encodes Unicode headers, folds headers, and wraps base64 body lines", () => {
+  const recipients = Array.from({ length: 100 }, (_, index) => ({
+    email: `recipient-${String(index).padStart(3, "0")}@example.com`,
+    name: `Recipient ${index}`,
+  }));
+  const mime = buildSmtpMessage({
+    from: { email: "sender@example.com", name: "Équipe Sporades" },
+    to: recipients,
+    cc: [],
+    bcc: [],
+    subject: `Résumé ${"long subject ".repeat(100)}`,
+    textBody: "long body ".repeat(500),
+    messageId: "<mime-test@sporades.local>",
+  });
+  const [headerBlock, body] = mime.split("\r\n\r\n");
+  assert.equal(headerBlock.includes("Équipe"), false);
+  assert.equal(headerBlock.includes("Résumé"), false);
+  assert.match(headerBlock, /=\?UTF-8\?B\?/);
+  assert.equal(headerBlock.split("\r\n").every((line) => line.length <= 998), true);
+  assert.equal(body.split("\r\n").every((line) => line.length <= 76), true);
 });
 
 test("configured SMTP credentials must resolve from Server env before startup", async () => {

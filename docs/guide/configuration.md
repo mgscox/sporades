@@ -55,6 +55,10 @@ await ctx.mail.send({
 });
 ```
 
+Unicode subjects and display names are MIME encoded. Envelope email addresses
+must currently be ASCII; internationalized local parts and domains are rejected
+before Sporades opens an SMTP connection.
+
 SMTP delivery is an external, non-transactional side effect. A later mutation
 rollback cannot recall a message that has already left the SMTP server. For
 important notifications, enqueue a durable Job, send from its handler, and use

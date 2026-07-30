@@ -14,6 +14,9 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     smtpCommand,
     smtpRecipientCommand,
     buildSmtpMessage,
+    encodeMimeHeaderValue,
+    foldMimeHeader,
+    encodeMimeBase64,
     normalizeMailMessage,
     normalizeMailAddresses,
     normalizeMailAddress,
@@ -745,8 +748,8 @@ function normalizeMailMessage(input, defaultFrom) {
     const replyTo = normalizeMailAddresses(input.replyTo, "replyTo", false);
     if (replyTo.length > 1)
         invalid("Pass at most one `replyTo` address.");
-    if (typeof input.subject !== "string" || input.subject.length < 1 || input.subject.length > 998 || /[\r\n\0]/.test(input.subject)) {
-        invalid("Pass a non-empty subject of at most 998 characters without control characters.");
+    if (typeof input.subject !== "string" || input.subject.length < 1 || input.subject.length > 998 || /[\x00-\x1f\x7f]/.test(input.subject)) {
+        invalid("Pass a non-empty subject of at most 998 characters without prohibited control characters.");
     }
     if (input.textBody === undefined && input.htmlBody === undefined)
         invalid("Pass at least one of `textBody` or `htmlBody`.");
@@ -814,7 +817,7 @@ function normalizeMailAddress(value, field) {
     let email;
     let name;
     if (typeof value === "string") {
-        if (/[\r\n\0]/.test(value) || value.length > 320) {
+        if (/[\x00-\x1f\x7f]/.test(value) || value.length > 320) {
             throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", `Pass valid ${field} addresses without control characters.`);
         }
         const match = value.match(/^\s*(?:(.*?)\s*)?<([^<>]+)>\s*$/);
@@ -825,10 +828,10 @@ function normalizeMailAddress(value, field) {
         email = value.email;
         name = value.name;
     }
-    if (typeof email !== "string" || email.length < 3 || email.length > 254 || !/^[^\s@<>]+@[^\s@<>]+$/.test(email) || /[\r\n\0]/.test(email)) {
-        throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", `Pass valid ${field} email addresses.`);
+    if (typeof email !== "string" || email.length < 3 || email.length > 254 || !/^[^\s@<>]+@[^\s@<>]+$/.test(email) || /[^\x21-\x7e]/.test(email)) {
+        throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", `Pass valid ASCII ${field} email addresses; internationalized envelopes are not supported.`);
     }
-    if (name !== undefined && (typeof name !== "string" || name.length > 200 || /[\r\n\0]/.test(name))) {
+    if (name !== undefined && (typeof name !== "string" || name.length > 200 || /[\x00-\x1f\x7f]/.test(name))) {
         throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", `Pass valid ${field} display names without control characters.`);
     }
     return { email, ...(name ? { name } : {}) };
@@ -842,7 +845,11 @@ function normalizeMailTransportError(error) {
     }
     if (code === "EAUTH")
         return mailError("MAIL_AUTH_FAILED", "SMTP authentication failed.", "Check the SMTP Server env credentials and authentication method.", error);
-    if (code === "ETLS")
+    if (code === "ETLS"
+        || code.startsWith("CERT_")
+        || code.startsWith("ERR_TLS_")
+        || code.startsWith("ERR_SSL_")
+        || ["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"].includes(code))
         return mailError("MAIL_TLS_FAILED", "SMTP TLS negotiation failed.", "Check the SMTP TLS mode, port, and certificate policy.", error);
     if (code === "EREJECTED")
         return mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipients, and provider delivery policy.", error);
@@ -1078,14 +1085,14 @@ async function smtpRecipientCommand(socket, reader, email) {
 }
 function buildSmtpMessage(message) {
     const formatAddress = (address) => address.name
-        ? `"${address.name.replace(/(["\\])/g, "\\$1")}" <${address.email}>`
+        ? `${encodeMimeHeaderValue(address.name, true)} <${address.email}>`
         : address.email;
     const headers = [
-        `From: ${formatAddress(message.from)}`,
-        `To: ${message.to.map(formatAddress).join(", ")}`,
-        ...(message.cc.length ? [`Cc: ${message.cc.map(formatAddress).join(", ")}`] : []),
-        ...(message.replyTo ? [`Reply-To: ${formatAddress(message.replyTo)}`] : []),
-        `Subject: ${message.subject}`,
+        foldMimeHeader("From", formatAddress(message.from)),
+        foldMimeHeader("To", message.to.map(formatAddress).join(", ")),
+        ...(message.cc.length ? [foldMimeHeader("Cc", message.cc.map(formatAddress).join(", "))] : []),
+        ...(message.replyTo ? [foldMimeHeader("Reply-To", formatAddress(message.replyTo))] : []),
+        foldMimeHeader("Subject", encodeMimeHeaderValue(message.subject)),
         `Date: ${new Date().toUTCString()}`,
         `Message-ID: ${message.messageId ?? `<${randomUUID()}@sporades.local>`}`,
         "MIME-Version: 1.0",
@@ -1093,11 +1100,56 @@ function buildSmtpMessage(message) {
     if (message.textBody !== undefined && message.htmlBody !== undefined) {
         const boundary = `sporades-${randomUUID()}`;
         headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
-        return `${headers.join("\r\n")}\r\n\r\n--${boundary}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${Buffer.from(message.textBody).toString("base64")}\r\n--${boundary}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${Buffer.from(message.htmlBody).toString("base64")}\r\n--${boundary}--`;
+        return `${headers.join("\r\n")}\r\n\r\n--${boundary}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${encodeMimeBase64(message.textBody)}\r\n--${boundary}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${encodeMimeBase64(message.htmlBody)}\r\n--${boundary}--`;
     }
     const html = message.htmlBody !== undefined;
     headers.push(`Content-Type: ${html ? "text/html" : "text/plain"}; charset=utf-8`, "Content-Transfer-Encoding: base64");
-    return `${headers.join("\r\n")}\r\n\r\n${Buffer.from(html ? message.htmlBody : message.textBody).toString("base64")}`;
+    return `${headers.join("\r\n")}\r\n\r\n${encodeMimeBase64(html ? message.htmlBody : message.textBody)}`;
+}
+function encodeMimeHeaderValue(value, quoteAscii = false) {
+    const text = String(value);
+    if (/^[\x20-\x7e]*$/.test(text) && Buffer.byteLength(text) <= 70) {
+        return quoteAscii ? `"${text.replace(/(["\\])/g, "\\$1")}"` : text;
+    }
+    const chunks = [];
+    let current = "";
+    for (const character of text) {
+        if (current && Buffer.byteLength(current + character) > 45) {
+            chunks.push(current);
+            current = "";
+        }
+        current += character;
+    }
+    if (current)
+        chunks.push(current);
+    return chunks.map((chunk) => `=?UTF-8?B?${Buffer.from(chunk).toString("base64")}?=`).join(" ");
+}
+function foldMimeHeader(name, value) {
+    const prefix = `${name}: `;
+    const tokens = String(value).split(/(?<=,)\s+|\s+/);
+    const lines = [];
+    let line = prefix;
+    for (const token of tokens) {
+        if (!token)
+            continue;
+        const separator = line === prefix || line === " " ? "" : " ";
+        if (line.length + separator.length + token.length <= 78 || line === prefix) {
+            line += `${separator}${token}`;
+        }
+        else {
+            lines.push(line);
+            line = ` ${token}`;
+        }
+    }
+    if (line !== prefix)
+        lines.push(line);
+    if (lines.some((candidate) => candidate.length > 998)) {
+        throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", `${name} cannot be encoded within SMTP header line limits.`);
+    }
+    return lines.join("\r\n");
+}
+function encodeMimeBase64(value) {
+    return Buffer.from(value, "utf8").toString("base64").match(/.{1,76}/g)?.join("\r\n") ?? "";
 }
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
     const path = await import("node:path");
