@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — Send mail through generic SMTP.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] A Postmark SMTP declaration selects the Postmark provider codec without changing the common `ctx.mail.send(...)` interface.
 - [ ] `provider.tag` becomes the documented Postmark tag header and observes Postmark's single-tag and size constraints.
