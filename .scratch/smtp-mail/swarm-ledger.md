@@ -22,3 +22,17 @@ gates, and obtain re-review if the merge changes accepted SMTP behavior.
 | 03 | done | 01 done | `912a1ac` | `codex/smtp-mail-03` / removed worktree | `/root/smtp_03` | `bbe1402` | `/root/smtp_01_review` | ACCEPT; prior `df0ef2d`, `b913a04`, and `88bf341` REQUEST_CHANGES and void | `378ca69` | integration 18 pass, 0 fail, 1 Mailjet opt-in skip; typecheck/build/generated/docs/diff green | worktree removed; branch retained for audit history |
 | 04 | done | 01 done | `f7e9916` | `codex/smtp-mail-04` / removed worktree | `/root/smtp_04` | `a9f698f` | `/root/smtp_01_review` | ACCEPT; prior `2acd395` and `d23ff4d` REQUEST_CHANGES and void | `24f10b2` | integration 26 pass, 0 fail, 1 Mailjet opt-in skip; build/typecheck/generated/docs/diff green; worker broad 983 pass, 1 unrelated Dev/Vite failure, 39 skip | worktree removed; branch retained for audit history |
 | 05 | done | 02, 03, 04 done | `630b589` | `codex/smtp-mail-05` / removed worktree | `/root/smtp_05` | `ecee52c` | `/root/smtp_01_review` | ACCEPT; prior `93277c5`, `c2621e3`, and `07dda55` REQUEST_CHANGES and void | `279e629` | integration 58 pass, 0 fail, 1 Mailjet opt-in skip; typecheck/generated/docs/diff green; worker broad 991 pass, 1 unrelated Dev/Vite failure, 39 skip | worktree removed; branch retained for audit history |
+
+## Final reconciliation
+
+- Merged concurrent `main` runtime work through `487686a` at `8eb0b74`.
+  `/root/smtp_01_review` independently reviewed the exact merged range and
+  returned ACCEPT with no SMTP merge findings.
+- Merged subsequent ledger-only `main` changes through `df527e8`; the final
+  reconciliation merge is `b2643fd`.
+- On the reconciled runtime tree at `c175758`, `npm test` passed 1,059, failed
+  0, and skipped 40 opt-in external integrations out of 1,099 tests. The
+  previously intermittent Vite symlink-redaction test passed.
+- The final live Mailjet authenticated STARTTLS smoke passed 1, failed 0, and
+  skipped 0 using the authorized Mailjet test sender and recipient. No
+  credentials were persisted or logged.
