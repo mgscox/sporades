@@ -17,7 +17,7 @@ gates, and obtain re-review if the merge changes accepted SMTP behavior.
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 01 | ready | None | — | — | — | — | — | — | — | baseline 961 pass, 0 fail, 38 skip | — |
+| 01 | working | None | `ac20cf1` | `codex/smtp-mail-01` / `/private/tmp/sporades-smtp-mail-swarm/issue-01` | `/root/smtp_01` | — | — | — | — | baseline 961 pass, 0 fail, 38 skip; worker TDD active | dependencies installed; worker active |
 | 02 | blocked | 01 | — | — | — | — | — | — | — | — | — |
 | 03 | blocked | 01 | — | — | — | — | — | — | — | — | — |
 | 04 | blocked | 01 | — | — | — | — | — | — | — | — | — |
