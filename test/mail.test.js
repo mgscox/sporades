@@ -258,6 +258,93 @@ test("Postmark rejects unsupported, malformed, colliding, and unsafe provider da
   assert.equal(sends, 0);
 });
 
+test("Postmark reads only complete own data properties from plain provider objects", async () => {
+  const captured = [];
+  let getterCalls = 0;
+  const transport = {
+    async send(message) {
+      captured.push(buildSmtpMessage({ ...message, messageId: "<descriptor-test@example.com>" }));
+      return { messageId: "<descriptor-test@example.com>", accepted: ["to@example.com"], rejected: [] };
+    },
+    close() {},
+  };
+  await withDatabase(postmarkConfig, {
+    mutations: {
+      send: mutation((ctx, provider) => ctx.mail.send({
+        to: "to@example.com",
+        subject: "Postmark descriptor validation",
+        textBody: "Hello",
+        provider,
+      })),
+    },
+  }, { mailTransportFactory: () => transport }, async (database) => {
+    const inheritedTag = Object.create({ tag: "inherited-tag" });
+    const symbolProvider = { tag: "visible" };
+    symbolProvider[Symbol("hidden-provider-field")] = "unsafe";
+    const accessorProvider = {};
+    Object.defineProperty(accessorProvider, "tag", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return "accessor-tag";
+      },
+    });
+    const nonEnumerableProvider = {};
+    Object.defineProperty(nonEnumerableProvider, "tag", {
+      enumerable: false,
+      value: "hidden-tag",
+    });
+
+    const symbolMetadata = { trace: "visible" };
+    symbolMetadata[Symbol("hidden-metadata-field")] = "unsafe";
+    const accessorMetadata = {};
+    Object.defineProperty(accessorMetadata, "trace", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return "accessor-value";
+      },
+    });
+    const nonEnumerableMetadata = {};
+    Object.defineProperty(nonEnumerableMetadata, "trace", {
+      enumerable: false,
+      value: "hidden-value",
+    });
+
+    for (const provider of [
+      inheritedTag,
+      symbolProvider,
+      accessorProvider,
+      nonEnumerableProvider,
+      { metadata: symbolMetadata },
+      { metadata: accessorMetadata },
+      { metadata: nonEnumerableMetadata },
+    ]) {
+      const result = await runMutation(database, user, "send", [provider]);
+      assert.equal(result.error.code, "INVALID_MAIL_MESSAGE");
+    }
+    assert.equal(getterCalls, 0);
+    assert.equal(captured.length, 0);
+
+    const nullPrototypeMetadata = Object.assign(Object.create(null), {
+      "Client-ID": "12345",
+      color: "blue",
+    });
+    const nullPrototypeProvider = Object.assign(Object.create(null), {
+      tag: "own-tag",
+      metadata: nullPrototypeMetadata,
+    });
+    const valid = await runMutation(database, user, "send", [nullPrototypeProvider]);
+    assert.equal(valid.ok, true);
+  });
+
+  const headers = captured[0].split("\r\n\r\n")[0];
+  assert.match(headers, /^X-PM-Tag: own-tag$/m);
+  assert.match(headers, /^X-PM-Metadata-client-id: 12345$/m);
+  assert.match(headers, /^X-PM-Metadata-color: blue$/m);
+  assert.equal(headers.includes("inherited-tag"), false);
+});
+
 test("SMTP transport failures use stable safe mail errors", async () => {
   const cases = [
     ["ETIMEDOUT", "MAIL_TIMEOUT"],

@@ -1994,6 +1994,7 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   encodeMimeBase64,
   normalizeMailMessage,
   normalizePostmarkProvider,
+  captureMailProviderDataObject,
   unsupportedMailProviderField,
   normalizeMailAddresses,
   normalizeMailAddress,
@@ -2740,16 +2741,16 @@ function normalizeMailMessage(input, defaultFrom, vendor = "generic") {
   let providerHeaders;
   if (provider !== void 0) {
     if (!provider || typeof provider !== "object" || Array.isArray(provider)) invalid("Pass `provider` as a JSON object.");
-    try {
-      if (mailJsonSize(provider) > 32 * 1024) invalid("Keep `provider` fields within 32 KiB.");
-    } catch {
-      invalid("Pass only JSON-compatible values in `provider`.");
-    }
     if (vendor === "postmark") {
       providerHeaders = normalizePostmarkProvider(provider);
       provider = void 0;
-    } else if ("headers" in provider) {
-      invalid("Provider header overrides are not supported by the configured SMTP vendor.");
+    } else {
+      if ("headers" in provider) invalid("Provider header overrides are not supported by the configured SMTP vendor.");
+      try {
+        if (mailJsonSize(provider) > 32 * 1024) invalid("Keep `provider` fields within 32 KiB.");
+      } catch {
+        invalid("Pass only JSON-compatible values in `provider`.");
+      }
     }
   }
   return {
@@ -2772,26 +2773,56 @@ function unsupportedMailProviderField(field) {
     "Use only `tag`, `metadata`, and `messageStream` in the Postmark provider object."
   );
 }
+function captureMailProviderDataObject(value, label) {
+  const invalid = (detail) => {
+    throw mailError(
+      "INVALID_MAIL_MESSAGE",
+      "Invalid Postmark provider data.",
+      `Pass \`${label}\` as a plain data object; ${detail}.`
+    );
+  };
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    invalid("arrays and non-object values are not supported");
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) {
+    invalid("custom prototypes and inherited fields are not supported");
+  }
+  const entries = [];
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string") invalid("symbol fields are not supported");
+    const stringKey = key;
+    const descriptor = Object.getOwnPropertyDescriptor(value, stringKey);
+    if (!descriptor) invalid(`field \`${stringKey}\` must have an own property descriptor`);
+    const ownDescriptor = descriptor;
+    if (!ownDescriptor.enumerable) invalid(`field \`${stringKey}\` must be enumerable`);
+    if (!Object.prototype.hasOwnProperty.call(ownDescriptor, "value")) {
+      invalid(`field \`${stringKey}\` must not be an accessor`);
+    }
+    entries.push([stringKey, ownDescriptor.value]);
+  }
+  return entries;
+}
 function normalizePostmarkProvider(provider) {
   const allowed = /* @__PURE__ */ new Set(["tag", "metadata", "messageStream"]);
-  const unsupported = Object.keys(provider).filter((field) => !allowed.has(field)).sort();
+  const providerEntries = captureMailProviderDataObject(provider, "provider");
+  const unsupported = providerEntries.map(([field]) => field).filter((field) => !allowed.has(field)).sort();
   if (unsupported.length > 0) throw unsupportedMailProviderField(unsupported[0]);
+  const providerData = new Map(providerEntries);
   const invalid = (hint) => {
     throw mailError("INVALID_MAIL_MESSAGE", "Invalid Postmark provider data.", hint);
   };
   const headers = [];
-  if (provider.tag !== void 0) {
-    if (typeof provider.tag !== "string" || provider.tag.length < 1 || provider.tag.length > 1e3 || /[\x00-\x1f\x7f]/.test(provider.tag)) {
+  const tag = providerData.get("tag");
+  if (providerData.has("tag")) {
+    if (typeof tag !== "string" || tag.length < 1 || tag.length > 1e3 || /[\x00-\x1f\x7f]/.test(tag)) {
       invalid("Pass `provider.tag` as one non-empty value of at most 1000 characters without control characters.");
     }
-    headers.push({ name: "X-PM-Tag", value: encodeMimeHeaderValue(provider.tag) });
+    headers.push({ name: "X-PM-Tag", value: encodeMimeHeaderValue(tag) });
   }
-  if (provider.metadata !== void 0) {
-    const metadataPrototype = provider.metadata && typeof provider.metadata === "object" ? Object.getPrototypeOf(provider.metadata) : void 0;
-    if (!provider.metadata || typeof provider.metadata !== "object" || Array.isArray(provider.metadata) || metadataPrototype !== Object.prototype && metadataPrototype !== null) {
-      invalid("Pass `provider.metadata` as an object containing at most 10 string values.");
-    }
-    const metadata = Object.entries(provider.metadata).map(([key, value]) => ({ originalKey: key, key: key.toLowerCase(), value })).sort((left, right) => {
+  const metadataValue = providerData.get("metadata");
+  if (providerData.has("metadata")) {
+    const metadata = captureMailProviderDataObject(metadataValue, "provider.metadata").map(([key, value]) => ({ originalKey: key, key: key.toLowerCase(), value })).sort((left, right) => {
       if (left.key < right.key) return -1;
       if (left.key > right.key) return 1;
       if (left.originalKey < right.originalKey) return -1;
@@ -2808,21 +2839,22 @@ function normalizePostmarkProvider(provider) {
         invalid(`Postmark metadata keys collide case-insensitively at \`${entry.key}\`.`);
       }
       seen.add(entry.key);
-      const metadataValue = entry.value;
-      if (typeof metadataValue !== "string" || metadataValue.length > 80 || /[\x00-\x1f\x7f]/.test(metadataValue)) {
+      const metadataValue2 = entry.value;
+      if (typeof metadataValue2 !== "string" || metadataValue2.length > 80 || /[\x00-\x1f\x7f]/.test(metadataValue2)) {
         invalid(`Postmark metadata value \`${entry.originalKey}\` must be a string of at most 80 characters without control characters.`);
       }
       headers.push({
         name: `X-PM-Metadata-${entry.key}`,
-        value: encodeMimeHeaderValue(metadataValue)
+        value: encodeMimeHeaderValue(metadataValue2)
       });
     }
   }
-  if (provider.messageStream !== void 0) {
-    if (typeof provider.messageStream !== "string" || !/^[a-z][a-z0-9_-]{0,29}$/.test(provider.messageStream) || provider.messageStream.startsWith("pm-")) {
+  const messageStream = providerData.get("messageStream");
+  if (providerData.has("messageStream")) {
+    if (typeof messageStream !== "string" || !/^[a-z][a-z0-9_-]{0,29}$/.test(messageStream) || messageStream.startsWith("pm-")) {
       invalid("Pass `provider.messageStream` as a Postmark stream ID: 1 to 30 lowercase letters, numbers, hyphens, or underscores, beginning with a letter and not `pm-`.");
     }
-    headers.push({ name: "X-PM-Message-Stream", value: provider.messageStream });
+    headers.push({ name: "X-PM-Message-Stream", value: messageStream });
   }
   return headers;
 }
