@@ -68,7 +68,11 @@ short, bounded retry cooldown rather than inheriting the positive document TTL,
 allowing recently propagated keys to become available without request
 amplification. Both document caches and per-key cooldown state have fixed
 cardinality bounds, with expired and least-recently-used inactive entries
-pruned while active requests remain protected. Malformed metadata, token JSON, JWT
+pruned while active requests remain protected. A new distinct cache key fails
+with a bounded provider-unavailable error when every admitted slot is active;
+it never starts an untracked overflow request. Cache tuples use structural JSON
+encoding, so delimiter-bearing URL components cannot alias another tenant,
+endpoint, configuration, or missing-key state. Malformed metadata, token JSON, JWT
 objects, NumericDate claims, audience shapes, and matching JWK entries fail
 with bounded provider errors rather than escaping as runtime type errors.
 

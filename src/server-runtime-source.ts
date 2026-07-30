@@ -449,6 +449,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   readBoundedJsonBody,
   microsoftOidcCache,
   microsoftOidcNow,
+  microsoftOidcCacheKey,
   pruneMicrosoftOidcCacheMap,
   loadMicrosoftJwks,
   selectMicrosoftJwk,
@@ -9543,12 +9544,12 @@ async function discoverMicrosoftOpenIdConfiguration(database: LooseRecord, tenan
     );
   }
   const microsoft = database.authConfig.providers.microsoft;
-  const cacheKey = [
+  const cacheKey = microsoftOidcCacheKey([
     selectedTenant,
     discoveryUrl,
     microsoft.clientIdEnv ?? "",
     microsoft.clientSecretEnv ?? "",
-  ].join("|");
+  ]);
   const cacheRoot = microsoftOidcCache(database);
   const cache = cacheRoot.discovery;
   const now = microsoftOidcNow(database);
@@ -9564,7 +9565,14 @@ async function discoverMicrosoftOpenIdConfiguration(database: LooseRecord, tenan
       inflight: null,
       lastAccess: cacheRoot.nextAccess++,
     };
-    if (cache.size < 32) cache.set(cacheKey, state);
+    if (cache.size >= 32) {
+      throw commandError(
+        "Microsoft OpenID configuration could not be loaded.",
+        "Retry Microsoft sign-in after other provider requests complete.",
+        "OAUTH_DISCOVERY_UNAVAILABLE",
+      );
+    }
+    cache.set(cacheKey, state);
   }
   state.lastAccess = cacheRoot.nextAccess++;
   if (state.value && state.expiresAt > now) return state.value;
@@ -9712,6 +9720,10 @@ function microsoftOidcNow(database: LooseRecord) {
   return Number.isFinite(database.__microsoftOidcNowMs)
     ? Number(database.__microsoftOidcNowMs)
     : Date.now();
+}
+
+function microsoftOidcCacheKey(parts: string[]) {
+  return JSON.stringify(parts);
 }
 
 function pruneMicrosoftOidcCacheMap(
@@ -10059,12 +10071,12 @@ async function loadMicrosoftJwks(
   missingKid: string | null = null,
 ) {
   const microsoft = database.authConfig.providers.microsoft;
-  const cacheKey = [
+  const cacheKey = microsoftOidcCacheKey([
     discovery.issuer,
     discovery.jwks_uri,
     microsoft.tenant ?? "",
     microsoft.clientIdEnv ?? "",
-  ].join("|");
+  ]);
   const cacheRoot = microsoftOidcCache(database);
   const cache = cacheRoot.jwks;
   const now = microsoftOidcNow(database);
@@ -10082,7 +10094,14 @@ async function loadMicrosoftJwks(
       missingKidCooldowns: new Map(),
       lastAccess: cacheRoot.nextAccess++,
     };
-    if (cache.size < 32) cache.set(cacheKey, state);
+    if (cache.size >= 32) {
+      throw commandError(
+        "Microsoft signing keys could not be loaded.",
+        "Retry Microsoft sign-in after other provider requests complete.",
+        "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
+      );
+    }
+    cache.set(cacheKey, state);
   }
   state.lastAccess = cacheRoot.nextAccess++;
   if (!(state.missingKidCooldowns instanceof Map)) state.missingKidCooldowns = new Map();
@@ -10166,12 +10185,12 @@ async function selectMicrosoftJwk(database: LooseRecord, discovery: LooseRecord,
   let candidate = jwks.keys.find((value: any) => isPlainRecord(value) && value.kid === kid);
   if (!candidate) {
     const microsoft = database.authConfig.providers.microsoft;
-    const cacheKey = [
+    const cacheKey = microsoftOidcCacheKey([
       discovery.issuer,
       discovery.jwks_uri,
       microsoft.tenant ?? "",
       microsoft.clientIdEnv ?? "",
-    ].join("|");
+    ]);
     const observedGeneration = microsoftOidcCache(database).jwks.get(cacheKey)?.generation ?? null;
     jwks = await loadMicrosoftJwks(database, discovery, true, observedGeneration, kid);
     candidate = jwks.keys.find((value: any) => isPlainRecord(value) && value.kid === kid);

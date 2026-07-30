@@ -1403,6 +1403,9 @@ for a bounded period. Concurrent sign-ins share cache fills and the single
 key-rollover refresh, rather than multiplying provider requests. Missing key
 IDs use a short per-key retry cooldown so provider propagation can complete
 before the document TTL expires. Cache and cooldown entry counts are bounded.
+If every cache slot is serving an active distinct provider request, another
+distinct key fails safely and may be retried after capacity becomes available;
+no untracked request is launched.
 Start a new sign-in after any failure because OAuth state
 is single-use.
 

@@ -1042,6 +1042,173 @@ test("Microsoft discovery and JWKS cache maps prune expired state and cap distin
   });
 });
 
+test("Microsoft cache saturation fails closed without launching untracked discovery or JWKS fetches", async () => {
+  await withTempDatabase(async (database) => {
+    configureMicrosoft(database);
+    const discoveryControls = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => await new Promise((resolve, reject) => {
+      discoveryControls.push({ resolve, reject });
+    });
+    try {
+      const held = [];
+      for (let index = 0; index < 32; index += 1) {
+        database.authConfig.providers.microsoft.clientIdEnv = `MICROSOFT_HELD_CLIENT_${index}`;
+        held.push(discoverMicrosoftOpenIdConfiguration(database, "organizations")
+          .then((value) => ({ value }), (error) => ({ error })));
+      }
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(discoveryControls.length, 32);
+      assert.equal(database.__microsoftOidcCache.discovery.size, 32);
+
+      database.authConfig.providers.microsoft.clientIdEnv = "MICROSOFT_CAPACITY|CLIENT";
+      const overflowCalls = Array.from({ length: 8 }, () =>
+        discoverMicrosoftOpenIdConfiguration(database, "organizations")
+          .then((value) => ({ status: "fulfilled", value }), (reason) => ({ status: "rejected", reason })));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(discoveryControls.length, 32);
+      assert.equal(database.__microsoftOidcCache.discovery.size, 32);
+      const overflow = await Promise.all(overflowCalls);
+      assert.equal(overflow.every((result) =>
+        result.status === "rejected" &&
+        result.reason.code === "OAUTH_DISCOVERY_UNAVAILABLE" &&
+        !/CAPACITY|CLIENT|openid-configuration/i.test(`${result.reason.message} ${result.reason.hint}`)), true);
+
+      discoveryControls[0].reject(new TypeError("temporary discovery failure"));
+      assert.equal((await held[0]).error.code, "OAUTH_DISCOVERY_UNAVAILABLE");
+      const retry = Array.from({ length: 8 }, () =>
+        discoverMicrosoftOpenIdConfiguration(database, "organizations"));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(discoveryControls.length, 33);
+      discoveryControls[32].resolve(new Response(JSON.stringify(microsoftDiscovery())));
+      assert.equal((await Promise.all(retry)).length, 8);
+      for (let index = 1; index < 32; index += 1) {
+        discoveryControls[index].resolve(new Response(JSON.stringify(microsoftDiscovery())));
+      }
+      await Promise.all(held.slice(1));
+      assert.equal(database.__microsoftOidcCache.discovery.size, 32);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  await withTempDatabase(async (database) => {
+    configureMicrosoft(database);
+    const jwksControls = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => await new Promise((resolve, reject) => {
+      jwksControls.push({ resolve, reject });
+    });
+    try {
+      const held = Array.from({ length: 32 }, (_, index) =>
+        loadMicrosoftJwks(database, {
+          ...microsoftDiscovery(),
+          issuer: `https://login.microsoftonline.com/held-${index}/v2.0`,
+          jwks_uri: `https://keys.example.test/held-${index}`,
+        }, false).then((value) => ({ value }), (error) => ({ error })));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(jwksControls.length, 32);
+      assert.equal(database.__microsoftOidcCache.jwks.size, 32);
+
+      const overflowDiscovery = {
+        ...microsoftDiscovery(),
+        issuer: "https://login.microsoftonline.com/CAPACITY|ISSUER/v2.0",
+        jwks_uri: "https://keys.example.test/CAPACITY|KEYS",
+      };
+      const overflowCalls = Array.from({ length: 8 }, () =>
+        loadMicrosoftJwks(database, overflowDiscovery, false)
+          .then((value) => ({ status: "fulfilled", value }), (reason) => ({ status: "rejected", reason })));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(jwksControls.length, 32);
+      assert.equal(database.__microsoftOidcCache.jwks.size, 32);
+      const overflow = await Promise.all(overflowCalls);
+      assert.equal(overflow.every((result) =>
+        result.status === "rejected" &&
+        result.reason.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE" &&
+        !/CAPACITY|ISSUER|keys\.example/i.test(`${result.reason.message} ${result.reason.hint}`)), true);
+
+      jwksControls[0].reject(new TypeError("temporary JWKS failure"));
+      assert.equal((await held[0]).error.code, "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
+      const retry = Array.from({ length: 8 }, () => loadMicrosoftJwks(database, overflowDiscovery, false));
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.equal(jwksControls.length, 33);
+      jwksControls[32].resolve(new Response(JSON.stringify({ keys: [], marker: "overflow" })));
+      assert.equal((await Promise.all(retry)).every((value) => value.marker === "overflow"), true);
+      for (let index = 1; index < 32; index += 1) {
+        jwksControls[index].resolve(new Response(JSON.stringify({ keys: [], marker: `held-${index}` })));
+      }
+      await Promise.all(held.slice(1));
+      assert.equal(database.__microsoftOidcCache.jwks.size, 32);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("Microsoft cache tuple encoding separates delimiter-bearing discovery, JWKS, and missing-kid components", async () => {
+  await withTempDatabase(async (database) => {
+    configureMicrosoft(database);
+    const originalFetch = globalThis.fetch;
+    const originalDiscoveryOverride = process.env.SPORADES_MICROSOFT_DISCOVERY_URL;
+    let fetches = 0;
+    globalThis.fetch = async (url) => {
+      fetches += 1;
+      const value = String(url);
+      if (value.includes("discovery")) {
+        return new Response(JSON.stringify({
+          ...microsoftDiscovery(),
+          authorization_endpoint: "http://127.0.0.1/authorize",
+          token_endpoint: "http://127.0.0.1/token",
+          jwks_uri: "http://127.0.0.1/keys",
+          marker: value,
+        }));
+      }
+      return new Response(JSON.stringify({ keys: [], marker: value }));
+    };
+    try {
+      process.env.SPORADES_MICROSOFT_DISCOVERY_URL = "http://127.0.0.1/discovery|segment";
+      database.authConfig.providers.microsoft.clientIdEnv = "CLIENT";
+      const discoveryA = await discoverMicrosoftOpenIdConfiguration(database, "organizations");
+      process.env.SPORADES_MICROSOFT_DISCOVERY_URL = "http://127.0.0.1/discovery";
+      database.authConfig.providers.microsoft.clientIdEnv = "segment|CLIENT";
+      const discoveryB = await discoverMicrosoftOpenIdConfiguration(database, "organizations");
+      assert.notEqual(discoveryA.marker, discoveryB.marker);
+      assert.equal(database.__microsoftOidcCache.discovery.size, 2);
+
+      database.authConfig.providers.microsoft.clientIdEnv = "CLIENT";
+      const descriptorA = {
+        ...microsoftDiscovery(),
+        issuer: "https://issuer.example/a|https://keys.example/b",
+        jwks_uri: "https://keys.example/c",
+      };
+      const descriptorB = {
+        ...microsoftDiscovery(),
+        issuer: "https://issuer.example/a",
+        jwks_uri: "https://keys.example/b|https://keys.example/c",
+      };
+      const jwksA = await loadMicrosoftJwks(database, descriptorA, false);
+      const jwksB = await loadMicrosoftJwks(database, descriptorB, false);
+      assert.equal(jwksA.marker, descriptorA.jwks_uri);
+      assert.equal(jwksB.marker, descriptorB.jwks_uri);
+      assert.equal(database.__microsoftOidcCache.jwks.size, 2);
+
+      const states = [...database.__microsoftOidcCache.jwks.values()];
+      const stateA = states.find((state) => state.value.marker === descriptorA.jwks_uri);
+      const stateB = states.find((state) => state.value.marker === descriptorB.jwks_uri);
+      await loadMicrosoftJwks(database, descriptorA, true, stateA.generation, "nested|missing-a");
+      await loadMicrosoftJwks(database, descriptorB, true, stateB.generation, "nested|missing-b");
+      assert.equal(stateA.missingKidCooldowns.has("nested|missing-a"), true);
+      assert.equal(stateA.missingKidCooldowns.has("nested|missing-b"), false);
+      assert.equal(stateB.missingKidCooldowns.has("nested|missing-b"), true);
+      assert.equal(stateB.missingKidCooldowns.has("nested|missing-a"), false);
+    } finally {
+      if (originalDiscoveryOverride === undefined) delete process.env.SPORADES_MICROSOFT_DISCOVERY_URL;
+      else process.env.SPORADES_MICROSOFT_DISCOVERY_URL = originalDiscoveryOverride;
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 test("Microsoft clears rejected shared JWKS loads so a later callback can retry", async () => {
   await withTempDatabase(async (database) => {
     configureMicrosoft(database);
