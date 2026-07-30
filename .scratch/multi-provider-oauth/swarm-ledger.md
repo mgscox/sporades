@@ -13,10 +13,10 @@ was discarded as non-authoritative environment noise.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 01 | done | None | `716075b` | `codex/multi-provider-oauth-01` / removed worktree | `/root/oauth_01` | `4dff228` | `/root/oauth_01_review` | ACCEPT for `716075b...4dff228`; prior `313d6bf` REQUEST_CHANGES void for replacement SHA | `39e9e7a` | integration: adapter 70 pass, 0 fail, 1 Postgres opt-in skip; Container/Dev callback 3 pass; type/build/generated/docs/diff green | clean worktree removed; reviewed branch retained for SHA audit |
 | 02 | done | None (01 done) | `da7602c` | `codex/multi-provider-oauth-02` / removed worktree | `/root/oauth_01` | `d30cbbb` | `/root/oauth_01_review` | ACCEPT for `da7602c...d30cbbb`; prior `3ccb801` REQUEST_CHANGES void for replacement SHA | `6ef5d6a` | integration: OAuth + adapters 75 pass, 0 fail, 1 Postgres opt-in skip; Dev 3 pass; Container 1 pass; type/build/generated/docs/diff green | clean worktree removed; reviewed branch retained for SHA audit |
-| 03 | accepted | None (02 done) | `c3da4ab` | `codex/multi-provider-oauth-03` / `/private/tmp/sporades-multi-provider-oauth-swarm/issue-03` | `/root/oauth_01` | `ca805f3` | `/root/oauth_01_review` | ACCEPT for `c3da4ab...ca805f3`; prior REQUEST_CHANGES verdicts void for replacement SHA | — | review: transaction 28 pass; auth/config 8; Dev 3; Container 2; Sealed 6; type/generated/TypeDoc/diff green | worker and review complete; awaiting integration |
-| 04 | blocked | 02, 03 | — | — | — | — | — | — | — | — | — |
-| 05 | blocked | 02, 03 | — | — | — | — | — | — | — | — | — |
-| 06 | blocked | 02, 03 | — | — | — | — | — | — | — | — | — |
+| 03 | done | None (02 done) | `c3da4ab` | `codex/multi-provider-oauth-03` / `/private/tmp/sporades-multi-provider-oauth-swarm/issue-03` | `/root/oauth_01` | `ca805f3` | `/root/oauth_01_review` | ACCEPT for `c3da4ab...ca805f3`; prior REQUEST_CHANGES verdicts void for replacement SHA | `3cabaf0` | integration: transaction/config/client/docs/Sealed 152 pass; Dev 5; Container 1; type/build/generated/docs/diff green | integrated; worker worktree clean |
+| 04 | ready | None (02, 03 done) | — | — | — | — | — | — | — | — | awaiting dispatch |
+| 05 | ready | None (02, 03 done) | — | — | — | — | — | — | — | — | awaiting dispatch |
+| 06 | ready | None (02, 03 done) | — | — | — | — | — | — | — | — | awaiting dispatch |
 | 07 | blocked | 04, 05, 06 | — | — | — | — | — | — | — | — | — |
 | 08 | blocked | 07; real provider registrations and credentials | — | — | — | — | — | — | — | — | — |
 
