@@ -72,6 +72,27 @@ const mailgunConfig = {
   },
 };
 
+const smtp2goConfig = {
+  mail: {
+    smtp: {
+      ...smtpConfig.mail.smtp,
+      vendor: "smtp2go",
+      host: "mail.smtp2go.com",
+      port: 2525,
+      tls: {
+        mode: "required-starttls",
+        rejectUnauthorized: true,
+        servername: "mail.smtp2go.com",
+      },
+      auth: {
+        method: "LOGIN",
+        usernameEnv: "SMTP2GO_USERNAME",
+        passwordEnv: "SMTP2GO_PASSWORD",
+      },
+    },
+  },
+};
+
 async function withDatabase(config, capsule, options, run) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-mail-"));
   const database = await openDevDatabase(
@@ -94,6 +115,15 @@ async function withDatabase(config, capsule, options, run) {
 test("mail.smtp configuration rejects ambiguous, incomplete, and unsafe declarations", () => {
   assert.doesNotThrow(() => validateMailConfig(undefined));
   assert.doesNotThrow(() => validateMailConfig(smtpConfig.mail));
+  assert.doesNotThrow(() => validateMailConfig(smtp2goConfig.mail));
+  assert.doesNotThrow(() => validateMailConfig({
+    smtp: {
+      ...smtpConfig.mail.smtp,
+      host: "127.0.0.1",
+      tls: { mode: "disabled", servername: "smtp.internal.example" },
+      auth: { method: "none" },
+    },
+  }));
 
   const invalid = [
     [{ smtp: { ...smtpConfig.mail.smtp, port: 0 } }, /Invalid SMTP port/],
@@ -102,8 +132,112 @@ test("mail.smtp configuration rejects ambiguous, incomplete, and unsafe declarat
     [{ smtp: { ...smtpConfig.mail.smtp, connectionTimeoutMs: 0 } }, /Invalid SMTP connection timeout/],
     [{ smtp: { ...smtpConfig.mail.smtp, auth: { ...smtpConfig.mail.smtp.auth, usernameEnv: "bad-name" } } }, /Invalid SMTP Server env reference/],
     [{ smtp: { ...smtpConfig.mail.smtp, auth: { usernameEnv: "SMTP_USERNAME" } } }, /Invalid SMTP authentication configuration/],
+    [{ smtp: { ...smtpConfig.mail.smtp, tls: { mode: "disabled" } } }, /requires an explicit unauthenticated relay/],
+    [{ smtp: { ...smtpConfig.mail.smtp, tls: { mode: "opportunistic" } } }, /requires an explicit unauthenticated relay/],
+    [{ smtp: { ...smtpConfig.mail.smtp, auth: undefined } }, /Invalid SMTP authentication configuration/],
+    [{ smtp: { ...smtpConfig.mail.smtp, auth: { method: "none", usernameEnv: "SMTP_USERNAME" } } }, /Invalid SMTP authentication configuration/],
+    [{ smtp: { ...smtpConfig.mail.smtp, tls: { ...smtpConfig.mail.smtp.tls, servername: "bad name" } } }, /Invalid SMTP TLS server name/],
   ];
   for (const [mail, expected] of invalid) assert.throws(() => validateMailConfig(mail), expected);
+});
+
+test("SMTP2GO-shaped configuration reaches the generic SMTP transport", async () => {
+  let capturedSmtp;
+  const capturedMessages = [];
+  const config = {
+    ...smtp2goConfig,
+    name: "smtp2go-shaped",
+  };
+  await withDatabase(config, {
+    mutations: {
+      send: mutation((ctx) => ctx.mail.send({
+        to: "recipient@example.com",
+        subject: "SMTP2GO generic delivery",
+        textBody: "Portable SMTP",
+        provider: {
+          headers: {
+            "X-Smtp2go-Campaign": "onboarding",
+            "X-Smtp2go-Tag": ["welcome", "trial"],
+          },
+        },
+      })),
+    },
+  }, {
+    mailTransportFactory(smtp) {
+      capturedSmtp = smtp;
+      return {
+        async send(message) {
+          capturedMessages.push(buildSmtpMessage({ ...message, messageId: "<smtp2go@example.com>" }));
+          return { messageId: "<smtp2go@example.com>", accepted: ["recipient@example.com"], rejected: [] };
+        },
+        close() {},
+      };
+    },
+  }, async (database) => {
+    const result = await runMutation(database, user, "send", []);
+    assert.equal(result.ok, true);
+  });
+
+  assert.equal(capturedSmtp.vendor, "smtp2go");
+  assert.equal(capturedSmtp.host, "mail.smtp2go.com");
+  assert.equal(capturedSmtp.port, 2525);
+  assert.equal(capturedSmtp.tls.mode, "required-starttls");
+  assert.equal(capturedSmtp.tls.servername, "mail.smtp2go.com");
+  assert.equal(capturedSmtp.auth.method, "LOGIN");
+  assert.match(capturedMessages[0], /\r\nX-Smtp2go-Campaign: onboarding\r\n/);
+  assert.match(capturedMessages[0], /\r\nX-Smtp2go-Tag: welcome\r\nX-Smtp2go-Tag: trial\r\n/);
+});
+
+test("generic provider headers reject unsafe names, values, fields, and descriptor tricks before transport", async () => {
+  let sends = 0;
+  const transport = {
+    async send() {
+      sends += 1;
+      return { messageId: "<unexpected@example.com>", accepted: [], rejected: [] };
+    },
+    close() {},
+  };
+  await withDatabase(smtpConfig, {
+    mutations: {
+      send: mutation((ctx, provider) => ctx.mail.send({
+        to: "to@example.com",
+        subject: "provider headers",
+        textBody: "body",
+        provider,
+      })),
+    },
+  }, { mailTransportFactory: () => transport }, async (database) => {
+    const accessorHeaders = {};
+    Object.defineProperty(accessorHeaders, "X-Test", {
+      enumerable: true,
+      get() {
+        throw new Error("must not execute");
+      },
+    });
+    const hiddenHeaders = {};
+    Object.defineProperty(hiddenHeaders, "X-Test", { enumerable: false, value: "hidden" });
+    const inheritedHeaders = Object.create({ "X-Test": "inherited" });
+    const sparseValues = [];
+    sparseValues.length = 1;
+    const cases = [
+      { metadata: { trace: "no longer portable" } },
+      { headers: { Subject: "override" } },
+      { headers: { "X-Test\r\nBcc": "attacker@example.com" } },
+      { headers: { "X-Test": "safe\r\nBcc: attacker@example.com" } },
+      { headers: { "X-Test": 123 } },
+      { headers: { "X-Test": [] } },
+      { headers: { "X-Test": sparseValues } },
+      { headers: accessorHeaders },
+      { headers: hiddenHeaders },
+      { headers: inheritedHeaders },
+    ];
+    for (const provider of cases) {
+      const result = await runMutation(database, user, "send", [provider]);
+      assert.equal(result.ok, false);
+      assert.match(result.error.code, /^(?:INVALID_MAIL_MESSAGE|UNSUPPORTED_MAIL_PROVIDER_FIELD)$/);
+    }
+    assert.equal(sends, 0);
+  });
 });
 
 test("ctx.mail remains present while disabled and returns a stable error", async () => {
