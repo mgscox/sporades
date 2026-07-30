@@ -98,6 +98,46 @@ important notifications, enqueue a durable Job, send from its handler, and use
 an application-level idempotency key or delivery record. Job execution and SMTP
 delivery are at least once rather than exactly once.
 
+### Durable mail with Jobs
+
+This pattern returns promptly from the mutation and retains one Job identity
+for the application notification key:
+
+```ts
+import { capsule, job, mutation } from "sporades/server";
+
+export default capsule({
+  jobs: {
+    sendWelcome: job(async (ctx, payload: { userId: string; email: string }) => {
+      // Check and record a stable application delivery key such as
+      // `welcome:${payload.userId}` around this operation. Job execution is
+      // at least once, so an interrupted attempt may run again.
+      return ctx.mail.send({
+        to: payload.email,
+        subject: "Welcome",
+        textBody: "Welcome to the Capsule."
+      });
+    })
+  },
+  mutations: {
+    queueWelcome: mutation((ctx, user: { id: string; email: string }) =>
+      ctx.jobs.enqueue(
+        "sendWelcome",
+        { userId: user.id, email: user.email },
+        { idempotencyKey: `welcome:${user.id}` }
+      )
+    )
+  }
+});
+```
+
+The Job `idempotencyKey` prevents duplicate Job records for the same handler,
+actor, and key; it does not make the SMTP provider exactly once. Keep
+application-level idempotency or delivery state that can tolerate a lease
+recovery after the provider accepted a message. Also do not send inside a
+database Transaction expecting rollback semantics: SMTP is an external side
+effect and cannot roll back with Capsule data.
+
 ### Portable SMTP and SMTP2GO
 
 Standards-compatible providers use the same generic transport; Sporades does

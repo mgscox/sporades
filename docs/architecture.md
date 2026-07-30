@@ -80,6 +80,34 @@ Conceptually, each runtime contains:
   client Bundle and exposed through `ctx.env`.
 - persistent data: SQLite database plus file bytes.
 
+### Outbound SMTP mail
+
+Outbound mail is a runtime-owned server capability. Capsule code calls the
+provider-independent `ctx.mail.send(...)` interface while `sporades.json`
+declares the SMTP host, port, explicit TLS mode, vendor identity, bounded
+timeouts, and the names of credential entries in Sealed Server env. Omitting
+`mail.smtp` disables delivery without exposing any mail surface to the browser.
+
+The Bundle pipeline embeds the same configuration validator, MIME codecs,
+vendor-header codecs, SMTP transport, timeout handling, and lifecycle cleanup
+into `server.mjs`. Dev sessions, local Container sessions, and Hosted Capsules
+therefore run the same mail implementation and source/config contract; none
+loads a provider SDK or a source-tree-only helper at runtime.
+
+Postmark, Mailgun, and portable providers such as SMTP2GO still travel over
+SMTP. The message-level `provider` object is validated and translated into a
+narrow allowlist of provider MIME headers. It is not passed to a vendor API and
+cannot replace envelope addresses, content headers, authentication, or
+transport configuration.
+
+Each attempted delivery records an opaque mail identity, vendor, recipient
+counts, latency, and stable result category. Logs deliberately exclude
+addresses, subject and bodies, provider values, provider message IDs,
+credentials, Server env names and values, and raw SMTP authentication. Active
+sockets are destroyed during runtime shutdown, and connection/response
+timeouts keep a stalled peer from holding a handler or lifecycle transition
+indefinitely.
+
 ## Capsule Model
 
 A Capsule is the deployable unit of Sporades. It combines:

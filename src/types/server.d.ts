@@ -239,7 +239,13 @@ export type Logger = {
 /** One SMTP mailbox, optionally with a display name. */
 export type MailAddress = string | { email: string; name?: string };
 
-/** Common provider-independent message shape accepted by `ctx.mail.send(...)`. */
+/**
+ * Common provider-independent message shape accepted by `ctx.mail.send(...)`.
+ *
+ * `provider` is validated for the configured SMTP vendor and translated into
+ * approved MIME headers. It is not an arbitrary provider API payload and
+ * cannot override addressing, content, authentication, or transport settings.
+ */
 export type MailSendInput = {
   to: MailAddress | MailAddress[];
   cc?: MailAddress | MailAddress[];
@@ -259,7 +265,13 @@ export type MailSendResult = {
   rejected: string[];
 };
 
-/** Server-only runtime-owned SMTP delivery API. */
+/**
+ * Server-only runtime-owned SMTP delivery API.
+ *
+ * Available to trusted Capsule handlers, lifecycle hooks, middleware,
+ * mutation hooks, Jobs, and active Privileged callbacks. It is intentionally
+ * absent from browser, table ACL, and Schedule payload-factory contexts.
+ */
 export type MailApi = {
   send(message: MailSendInput): Promise<MailSendResult>;
 };

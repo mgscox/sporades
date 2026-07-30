@@ -76,6 +76,7 @@ const app = capsule({
   jobs: {
     summarise: job(async (ctx, payload) => {
       const text = typeof payload === "object" && payload !== null && "text" in payload && typeof payload.text === "string" ? payload.text : "";
+      await ctx.mail.send({ to: "recipient@example.com", subject: "Job report", textBody: text || "empty" });
       const queued = await ctx.jobs.enqueue("summarise", { text }, { idempotencyKey: text });
       const visible = await ctx.jobs.get(queued.id);
       return { id: visible?.id ?? queued.id };
@@ -141,17 +142,19 @@ const app = capsule({
   middleware: [
     async (ctx) => {
       await Promise.resolve();
+      await ctx.mail.send({ to: "recipient@example.com", subject: "Middleware", textBody: ctx.kind });
       return { ...ctx, requestKind: ctx.kind };
     },
   ],
   queries: {
-    todos: query((ctx) =>
-      ctx.db.todos
+    todos: query(async (ctx) => {
+      await ctx.mail.send({ to: "recipient@example.com", subject: "Query", textBody: "Query" });
+      return ctx.db.todos
         .where("ownerId", ctx.auth.userId)
         .orderBy("createdAt", "desc")
         .limit(50)
-        .all(),
-    ),
+        .all();
+    }),
     noOrdinaryScheduleInspection: query((ctx) => {
       // @ts-expect-error Schedule inspection is available only in an active Privileged callback.
       return ctx.schedules.list();
@@ -232,6 +235,7 @@ const app = capsule({
   },
   messages: {
     typing: message(async (ctx, data) => {
+      await ctx.mail.send({ to: "recipient@example.com", subject: "Message", textBody: "Typing" });
       await ctx.privileged.run({
         operation: "messages.auditTyping",
         targetResourceKind: "capsule-db",
@@ -244,6 +248,7 @@ const app = capsule({
     beforeMutation: [
       async ({ ctx, name, args }) => {
         await Promise.resolve();
+        await ctx.mail.send({ to: "recipient@example.com", subject: "Before hook", textBody: name });
         await ctx.privileged.run({ operation: "hooks.beforeMutation", targetResourceKind: "capsule-db" }, () => undefined);
         ctx.log.info("before", name, args.length);
       },
@@ -251,9 +256,16 @@ const app = capsule({
     afterMutation: [
       async ({ ctx, result }) => {
         await Promise.resolve();
+        await ctx.mail.send({ to: "recipient@example.com", subject: "After hook", textBody: globalThis.String(result?.ok) });
         ctx.log.info("after", result?.ok);
       },
     ],
+    init: async (ctx) => {
+      await ctx.mail.send({ to: "recipient@example.com", subject: "Init", textBody: "Init" });
+    },
+    shutdown: async (ctx) => {
+      await ctx.mail.send({ to: "recipient@example.com", subject: "Shutdown", textBody: "Shutdown" });
+    },
   },
 });
 
@@ -325,6 +337,8 @@ auth.privileged;
 files.privileged;
 // @ts-expect-error browser auth API has no direct Job Queue authority.
 auth.jobs;
+// @ts-expect-error browser APIs have no direct SMTP authority.
+auth.mail;
 files.upload(new Blob(["hello"], { type: "text/plain" }));
 files.publicUrl("/docs/hello.txt", { expires: new globalThis.Date() });
 // @ts-expect-error public URL expiry option is named expires, not expiresAt.

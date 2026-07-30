@@ -1326,11 +1326,206 @@ test("generated Server Bundles carry the generic mail runtime helpers", async ()
     assert.match(source, /function createMailTransport/);
     assert.match(source, /function normalizePostmarkProvider/);
     assert.match(source, /function normalizeMailgunProvider/);
+    assert.match(source, /function createMailDeliveryLogData/);
     assert.match(source, /function validateMailConfig/);
     await writeFile(bundlePath, source);
     const checked = spawnSync(process.execPath, ["--check", bundlePath], { encoding: "utf8" });
     assert.equal(checked.status, 0, checked.stderr);
   } finally {
     await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("mail delivery emits bounded secret-safe structured diagnostics", async () => {
+  const secretAddress = "private-recipient@example.com";
+  const secretBody = "a body that must never reach logs";
+  const secretProviderValue = "private-provider-payload";
+  const transport = {
+    async send() {
+      return {
+        messageId: "<provider-message@example.com>",
+        accepted: [secretAddress],
+        rejected: ["blocked@example.com"],
+      };
+    },
+    close() {},
+  };
+  await withDatabase(smtpConfig, {
+    mutations: {
+      send: mutation((ctx) => ctx.mail.send({
+        to: secretAddress,
+        cc: "copy@example.com",
+        subject: "Secret subject",
+        textBody: secretBody,
+        provider: { headers: { "X-Private": secretProviderValue } },
+      })),
+    },
+  }, { mailTransportFactory: () => transport }, async (database) => {
+    const result = await runMutation(database, user, "send", []);
+    assert.equal(result.ok, true);
+    const event = database.log.tail().findLast((candidate) => candidate.event === "mail.delivery");
+    assert.ok(event);
+    assert.equal(event.category, "mail");
+    assert.equal(event.level, "info");
+    assert.equal(event.data.vendor, "generic");
+    assert.deepEqual(event.data.recipients, {
+      to: 1,
+      cc: 1,
+      bcc: 0,
+      total: 2,
+      accepted: 1,
+      rejected: 1,
+    });
+    assert.equal(event.data.result, "partial");
+    assert.equal(typeof event.data.latencyMs, "number");
+    assert.match(event.data.messageIdentity, /^mail_[0-9a-f-]{36}$/);
+    const serialized = JSON.stringify(event);
+    for (const forbidden of [
+      secretAddress,
+      "copy@example.com",
+      "blocked@example.com",
+      "Secret subject",
+      secretBody,
+      secretProviderValue,
+      "provider-message@example.com",
+      "user-secret",
+      "password-secret",
+      "SMTP_USERNAME",
+      "SMTP_PASSWORD",
+      "AUTH PLAIN",
+    ]) assert.equal(serialized.includes(forbidden), false, `mail log leaked ${forbidden}`);
+  });
+});
+
+test("mail delivery failure diagnostics expose only stable result categories", async () => {
+  const transport = {
+    async send() {
+      const error = new Error("SMTP_PASSWORD raw AUTH PLAIN password-secret recipient@example.com");
+      error.code = "EAUTH";
+      throw error;
+    },
+    close() {},
+  };
+  await withDatabase(smtpConfig, {
+    mutations: {
+      send: mutation((ctx) => ctx.mail.send({
+        to: "recipient@example.com",
+        subject: "do not log this",
+        textBody: "or this body",
+      })),
+    },
+  }, { mailTransportFactory: () => transport }, async (database) => {
+    const result = await runMutation(database, user, "send", []);
+    assert.equal(result.error.code, "MAIL_AUTH_FAILED");
+    const event = database.log.tail().findLast((candidate) => candidate.event === "mail.delivery");
+    assert.ok(event);
+    assert.equal(event.level, "error");
+    assert.equal(event.data.result, "MAIL_AUTH_FAILED");
+    assert.equal(event.data.recipients.total, 1);
+    const serialized = JSON.stringify(event);
+    for (const forbidden of ["recipient@example.com", "do not log this", "or this body", "SMTP_PASSWORD", "AUTH PLAIN", "password-secret"]) {
+      assert.equal(serialized.includes(forbidden), false, `mail error log leaked ${forbidden}`);
+    }
+  });
+});
+
+test("runtime shutdown promptly aborts an active stalled SMTP delivery", async () => {
+  let acceptConnection;
+  const accepted = new Promise((resolve) => {
+    acceptConnection = resolve;
+  });
+  const server = createNetServer((socket) => {
+    socket.on("error", () => {});
+    acceptConnection();
+    // Intentionally never send the SMTP greeting.
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-mail-shutdown-"));
+  const database = await openDevDatabase(
+    path.join(dir, "data.db"),
+    "",
+    {},
+    {
+      name: "mail-shutdown",
+      mail: {
+        smtp: {
+          vendor: "generic",
+          host: "127.0.0.1",
+          port: server.address().port,
+          tls: { mode: "disabled" },
+          auth: { method: "none" },
+          defaultFrom: "sender@example.com",
+          connectionTimeoutMs: 5_000,
+          socketTimeoutMs: 5_000,
+        },
+      },
+    },
+    {
+      mutations: {
+        send: mutation((ctx) => ctx.mail.send({
+          to: "recipient@example.com",
+          subject: "stalled",
+          textBody: "stalled",
+        })),
+      },
+    },
+  );
+  try {
+    const pending = runMutation(database, user, "send", []);
+    await accepted;
+    const startedAt = Date.now();
+    await database.shutdown();
+    assert.ok(Date.now() - startedAt < 1_000, "shutdown waited for the stalled SMTP timeout");
+    const result = await pending;
+    assert.equal(result.ok, false);
+    assert.equal(result.error.code, "MAIL_CONNECTION_FAILED");
+  } finally {
+    await database.close();
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("a stalled SMTP greeting is bounded by the configured socket timeout", async () => {
+  const server = createNetServer((socket) => socket.on("error", () => {}));
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const config = {
+    name: "mail-timeout",
+    mail: {
+      smtp: {
+        vendor: "generic",
+        host: "127.0.0.1",
+        port: server.address().port,
+        tls: { mode: "disabled" },
+        auth: { method: "none" },
+        defaultFrom: "sender@example.com",
+        connectionTimeoutMs: 1_000,
+        socketTimeoutMs: 100,
+      },
+    },
+  };
+  try {
+    await withDatabase(config, {
+      mutations: {
+        send: mutation((ctx) => ctx.mail.send({
+          to: "recipient@example.com",
+          subject: "timeout",
+          textBody: "timeout",
+        })),
+      },
+    }, {}, async (database) => {
+      const startedAt = Date.now();
+      const result = await runMutation(database, user, "send", []);
+      assert.equal(result.error.code, "MAIL_TIMEOUT");
+      assert.ok(Date.now() - startedAt < 1_000, "stalled peer exceeded the configured timeout");
+    });
+  } finally {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });

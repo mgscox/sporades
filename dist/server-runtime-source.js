@@ -8,6 +8,7 @@ const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
 export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     validateMailConfig,
     createMailRuntime,
+    createMailDeliveryLogData,
     createMailTransport,
     connectSmtpSocket,
     createSmtpResponseReader,
@@ -725,21 +726,76 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
     return {
         async send(input) {
             const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
+            const messageIdentity = `mail_${randomUUID()}`;
+            const startedAt = Date.now();
             try {
                 const result = await transport.send(message);
-                return {
+                const normalizedResult = {
                     messageId: String(result?.messageId ?? ""),
                     accepted: Array.isArray(result?.accepted) ? result.accepted.map(String) : [],
                     rejected: Array.isArray(result?.rejected) ? result.rejected.map(String) : [],
                 };
+                const resultCategory = normalizedResult.rejected.length > 0 ? "partial" : "accepted";
+                try {
+                    await options.mailLog?.({
+                        category: "mail",
+                        event: "mail.delivery",
+                        level: "info",
+                        message: "SMTP delivery completed.",
+                        data: createMailDeliveryLogData(resolvedSmtp.vendor, message, messageIdentity, Date.now() - startedAt, resultCategory, normalizedResult),
+                        request: null,
+                        release: null,
+                        correlation: { mail: messageIdentity },
+                    });
+                }
+                catch {
+                    // Diagnostics must never turn a completed external side effect into
+                    // an apparent delivery failure that callers may retry.
+                }
+                return normalizedResult;
             }
             catch (error) {
-                throw normalizeMailTransportError(error);
+                const normalizedError = normalizeMailTransportError(error);
+                try {
+                    await options.mailLog?.({
+                        category: "mail",
+                        event: "mail.delivery",
+                        level: "error",
+                        message: "SMTP delivery failed.",
+                        data: createMailDeliveryLogData(resolvedSmtp.vendor, message, messageIdentity, Date.now() - startedAt, normalizedError.code),
+                        request: null,
+                        release: null,
+                        correlation: { mail: messageIdentity },
+                    });
+                }
+                catch {
+                    // Preserve the stable mail failure even if diagnostics are unavailable.
+                }
+                throw normalizedError;
             }
         },
         close() {
             return transport.close?.();
         },
+    };
+}
+function createMailDeliveryLogData(vendor, message, messageIdentity, latencyMs, result, delivery = undefined) {
+    const to = Array.isArray(message?.to) ? message.to.length : 0;
+    const cc = Array.isArray(message?.cc) ? message.cc.length : 0;
+    const bcc = Array.isArray(message?.bcc) ? message.bcc.length : 0;
+    return {
+        vendor,
+        messageIdentity,
+        recipients: {
+            to,
+            cc,
+            bcc,
+            total: to + cc + bcc,
+            accepted: Array.isArray(delivery?.accepted) ? delivery.accepted.length : 0,
+            rejected: Array.isArray(delivery?.rejected) ? delivery.rejected.length : 0,
+        },
+        latencyMs: Math.max(0, Math.floor(Number(latencyMs) || 0)),
+        result,
     };
 }
 function normalizeMailMessage(input, defaultFrom, vendor = "generic") {
@@ -1728,7 +1784,11 @@ function encodeMimeBase64(value) {
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
     const path = await import("node:path");
     const mailConfig = validateMailConfig(config.mail);
-    const mail = createMailRuntime(mailConfig, serverEnv, options);
+    let mailLogSink;
+    const mail = createMailRuntime(mailConfig, serverEnv, {
+        ...options,
+        mailLog: options.mailLog ?? ((event) => mailLogSink?.emit(event)),
+    });
     const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
     const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
     // Handler sources extracted from Capsule server code are re-created with
@@ -1826,20 +1886,25 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         database.__runtimeInitialized = true;
     };
     database.shutdown = async () => {
-        database.__scheduleStopped = true;
-        abortSchedulePayloadFactories(database);
-        for (const timer of database.__scheduleTimers ?? [])
-            database.clock.clearTimer(timer);
-        database.__scheduleTimers?.clear?.();
-        database.__scheduleRecoveryTimer = null;
-        database.__scheduleRecoveryDueAt = null;
-        await Promise.allSettled([...(database.__activeScheduleOccurrences ?? [])]);
-        if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
-            if (typeof database.lifecycleHooks.shutdown !== "function")
-                throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
-            await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+        try {
+            database.__scheduleStopped = true;
+            abortSchedulePayloadFactories(database);
+            for (const timer of database.__scheduleTimers ?? [])
+                database.clock.clearTimer(timer);
+            database.__scheduleTimers?.clear?.();
+            database.__scheduleRecoveryTimer = null;
+            database.__scheduleRecoveryDueAt = null;
+            await Promise.allSettled([...(database.__activeScheduleOccurrences ?? [])]);
+            if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
+                if (typeof database.lifecycleHooks.shutdown !== "function")
+                    throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
+                await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+            }
         }
-        database.__runtimeInitialized = false;
+        finally {
+            database.__runtimeInitialized = false;
+            await database.mail.close();
+        }
     };
     database.log = createRuntimeLogSink({
         database: sqlite,
@@ -1847,6 +1912,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         serverEnv,
         dataDir: path.dirname(databasePath),
     });
+    mailLogSink = database.log;
     database.audit = createPrivilegedAuditEmitter(database.log);
     await sqlite.ensureSystemTable();
     await sqlite.ensureAuthStorage(database.authConfig);
