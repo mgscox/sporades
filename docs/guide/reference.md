@@ -1237,6 +1237,20 @@ If Facebook sign-in fails:
 - `FACEBOOK_GRAPH_FAILED` or `FACEBOOK_PROFILE_ID_MISSING`: check Graph API
   access and that the supported `v23.0` `/me` response includes a stable `id`.
 
+Sporades accepts only the built-in HTTPS Facebook and Graph endpoints in normal
+operation. Redirect responses are refused, requests have finite deadlines, and
+provider JSON is capped before parsing. For an opt-in real-browser regression
+tracer, install Playwright and Chrome, then run:
+
+```sh
+SPORADES_REAL_FACEBOOK_BROWSER=1 node --test test/facebook-oauth-browser.test.js
+```
+
+The tracer scaffolds a real React Capsule, clicks its runtime-derived Facebook
+button in Chrome, and observes top-level navigation at a loopback authorization
+receiver. Its insecure loopback seam is process-only and cannot be enabled from
+`sporades.json`.
+
 
 #### Using OAuth sign-in in the client
 

@@ -10,6 +10,7 @@ import {
   routeSporadesAuth,
   SERVER_RUNTIME_SOURCE_FUNCTIONS,
 } from "../dist/server-runtime-source.js";
+import { authStatus } from "../dist/bundle-pipeline.js";
 
 const beginOAuthSignIn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "beginOAuthSignIn");
 const oauthProviderAdapter = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "oauthProviderAdapter");
@@ -123,8 +124,96 @@ test("Facebook adapter uses the supported versioned code and Graph profile flow 
       assert.equal(graphUrl.searchParams.get("fields"), "id,name,email,picture");
       assert.equal(requests[1].options.headers.authorization, "Bearer provider-access-token");
       assert.doesNotMatch(requests[1].url, /provider-access-token/);
+      assert.equal(requests[0].options.redirect, "error");
+      assert.equal(requests[1].options.redirect, "error");
+      assert.ok(requests[0].options.signal instanceof AbortSignal);
+      assert.ok(requests[1].options.signal instanceof AbortSignal);
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("Facebook direct config distinguishes an absent Graph version from invalid supplied values in build and runtime status", async () => {
+  const env = { FACEBOOK_CLIENT_ID: "id", FACEBOOK_CLIENT_SECRET: "secret" };
+  const provider = (graphVersion, supplied = true) => {
+    const facebook = {
+      enabled: true,
+      clientIdEnv: "FACEBOOK_CLIENT_ID",
+      clientSecretEnv: "FACEBOOK_CLIENT_SECRET",
+    };
+    if (supplied) facebook.graphVersion = graphVersion;
+    return authStatus({ auth: { providers: { facebook } } }, env).providers.facebook;
+  };
+  assert.deepEqual(
+    { configured: provider(undefined, false).configured, runtimeAvailable: provider(undefined, false).runtimeAvailable },
+    { configured: true, runtimeAvailable: true },
+  );
+  for (const invalid of [null, 23, [], "v99.0", "23.0", ""]) {
+    const status = provider(invalid);
+    assert.equal(status.configured, false, JSON.stringify(invalid));
+    assert.equal(status.runtimeAvailable, false, JSON.stringify(invalid));
+    const dir = await mkdtemp(path.join(tmpdir(), "sporades-facebook-version-"));
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", env, {
+      auth: {
+        providers: {
+          facebook: {
+            enabled: true,
+            clientIdEnv: "FACEBOOK_CLIENT_ID",
+            clientSecretEnv: "FACEBOOK_CLIENT_SECRET",
+            graphVersion: invalid,
+          },
+        },
+      },
+    });
+    try {
+      assert.equal(database.authConfig.providers.facebook.configured, false, JSON.stringify(invalid));
+      assert.equal(database.authConfig.providers.facebook.runtimeAvailable, false, JSON.stringify(invalid));
+      assert.equal(oauthProviderAdapter(database, "facebook").enabled, false, JSON.stringify(invalid));
+    } finally {
+      database.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("Facebook rejects unsafe endpoint overrides before sending credentials", async () => {
+  await withFacebookDatabase(async (database) => {
+    const adapter = oauthProviderAdapter(database, "facebook");
+    const originalTokenUrl = process.env.SPORADES_FACEBOOK_TOKEN_URL;
+    const originalGraphUrl = process.env.SPORADES_FACEBOOK_GRAPH_URL;
+    let called = false;
+    const originalFetch = globalThis.fetch;
+    process.env.SPORADES_FACEBOOK_TOKEN_URL = "http://attacker.example/token";
+    globalThis.fetch = async () => {
+      called = true;
+      return responseJson({});
+    };
+    try {
+      await assert.rejects(
+        adapter.complete({ code: "code", redirectUri: "https://capsule.example/__sporades/auth/facebook/callback" }),
+        (error) => error.code === "FACEBOOK_ENDPOINT_UNSAFE",
+      );
+      assert.equal(called, false);
+
+      delete process.env.SPORADES_FACEBOOK_TOKEN_URL;
+      process.env.SPORADES_FACEBOOK_GRAPH_URL = "http://attacker.example/me";
+      called = false;
+      globalThis.fetch = async () => {
+        called = true;
+        return responseJson({ access_token: "provider-access-token" });
+      };
+      await assert.rejects(
+        adapter.complete({ code: "code", redirectUri: "https://capsule.example/__sporades/auth/facebook/callback" }),
+        (error) => error.code === "FACEBOOK_ENDPOINT_UNSAFE",
+      );
+      assert.equal(called, true, "only the safe HTTPS token exchange occurs before the unsafe Graph endpoint is rejected");
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalTokenUrl === undefined) delete process.env.SPORADES_FACEBOOK_TOKEN_URL;
+      else process.env.SPORADES_FACEBOOK_TOKEN_URL = originalTokenUrl;
+      if (originalGraphUrl === undefined) delete process.env.SPORADES_FACEBOOK_GRAPH_URL;
+      else process.env.SPORADES_FACEBOOK_GRAPH_URL = originalGraphUrl;
     }
   });
 });
@@ -195,6 +284,29 @@ test("Facebook exchange and Graph failures expose bounded errors without provide
         ],
         code: "FACEBOOK_PROFILE_ID_MISSING",
       },
+      {
+        responses: [new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(40 * 1024));
+            controller.enqueue(new Uint8Array(40 * 1024));
+            controller.close();
+          },
+        }))],
+        code: "FACEBOOK_EXCHANGE_FAILED",
+      },
+      {
+        responses: [
+          responseJson({ access_token: "provider-access-token" }),
+          new Response(new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(40 * 1024));
+              controller.enqueue(new Uint8Array(40 * 1024));
+              controller.close();
+            },
+          })),
+        ],
+        code: "FACEBOOK_GRAPH_FAILED",
+      },
     ];
     const originalFetch = globalThis.fetch;
     try {
@@ -215,6 +327,84 @@ test("Facebook exchange and Graph failures expose bounded errors without provide
       }
     } finally {
       globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("Facebook bounds redirects and timeouts for both exchange and Graph requests", async () => {
+  await withFacebookDatabase(async (database) => {
+    const adapter = oauthProviderAdapter(database, "facebook");
+    const originalFetch = globalThis.fetch;
+    const redirectError = Object.assign(new TypeError("redirect refused raw-secret"), { cause: "raw-secret" });
+    const timeoutError = Object.assign(new Error("stall raw-secret"), { name: "TimeoutError" });
+    const cases = [
+      { fetches: [() => { throw redirectError; }], code: "FACEBOOK_EXCHANGE_FAILED" },
+      { fetches: [() => { throw timeoutError; }], code: "FACEBOOK_EXCHANGE_TIMEOUT" },
+      {
+        fetches: [
+          () => responseJson({ access_token: "provider-access-token" }),
+          () => { throw redirectError; },
+        ],
+        code: "FACEBOOK_GRAPH_FAILED",
+      },
+      {
+        fetches: [
+          () => responseJson({ access_token: "provider-access-token" }),
+          () => { throw timeoutError; },
+        ],
+        code: "FACEBOOK_GRAPH_TIMEOUT",
+      },
+    ];
+    try {
+      for (const testCase of cases) {
+        let call = 0;
+        globalThis.fetch = async () => testCase.fetches[call++]();
+        await assert.rejects(
+          adapter.complete({ code: "code", redirectUri: "https://capsule.example/__sporades/auth/facebook/callback" }),
+          (error) => {
+            assert.equal(error.code, testCase.code);
+            assert.doesNotMatch(`${error.message} ${error.hint}`, /raw-secret|provider-access-token/);
+            return true;
+          },
+        );
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("Facebook abort deadlines terminate stalled exchange and Graph reads", async () => {
+  await withFacebookDatabase(async (database) => {
+    const adapter = oauthProviderAdapter(database, "facebook");
+    const originalFetch = globalThis.fetch;
+    const originalAllow = process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK;
+    const originalTimeout = process.env.SPORADES_FACEBOOK_TEST_TIMEOUT_MS;
+    process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK = "1";
+    process.env.SPORADES_FACEBOOK_TEST_TIMEOUT_MS = "10";
+    const stall = (_url, options) => new Promise((resolve, reject) => {
+      options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+    });
+    try {
+      globalThis.fetch = stall;
+      await assert.rejects(
+        adapter.complete({ code: "code", redirectUri: "https://capsule.example/__sporades/auth/facebook/callback" }),
+        (error) => error.code === "FACEBOOK_EXCHANGE_TIMEOUT",
+      );
+      let call = 0;
+      globalThis.fetch = (url, options) => call++ === 0
+        ? Promise.resolve(responseJson({ access_token: "provider-access-token" }))
+        : stall(url, options);
+      await assert.rejects(
+        adapter.complete({ code: "code", redirectUri: "https://capsule.example/__sporades/auth/facebook/callback" }),
+        (error) => error.code === "FACEBOOK_GRAPH_TIMEOUT",
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalAllow === undefined) delete process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK;
+      else process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK = originalAllow;
+      if (originalTimeout === undefined) delete process.env.SPORADES_FACEBOOK_TEST_TIMEOUT_MS;
+      else process.env.SPORADES_FACEBOOK_TEST_TIMEOUT_MS = originalTimeout;
     }
   });
 });

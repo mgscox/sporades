@@ -462,6 +462,9 @@ browser.
 Facebook sign-in follows the same Session-linking contract. Its App Secret and
 access token remain server-only; the runtime persists only the stable Facebook
 ID and optional selected email, name, and picture profile fields.
+An absent Facebook Graph version defaults to `v23.0`; a supplied null,
+non-string, malformed, or unsupported version is not treated as absent and
+leaves the provider configured/runtime unavailable.
 
 `sporades auth as <provider> ... --json` is a dev-session helper for tests and
 agents. It creates or resolves simulated local identities and can push the

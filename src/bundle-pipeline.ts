@@ -474,7 +474,9 @@ export function authStatus(config: ProjectConfig, serverEnv: ServerEnv) {
       result.clientSecretEnv = provider.clientSecretEnv;
     }
     if (providerName === "microsoft") result.tenant = provider.tenant;
-    if (providerName === "facebook") result.graphVersion = provider.graphVersion;
+    if (providerName === "facebook") {
+      result.graphVersion = provider.graphVersion === "__invalid__" ? null : provider.graphVersion;
+    }
     if (providerName === "apple") {
       result.clientId = provider.clientId;
       result.teamId = provider.teamId;
@@ -565,7 +567,11 @@ function readProviderConfig(config: unknown): NormalizedProviderConfig {
     keyId: typeof config.keyId === "string" ? config.keyId : null,
     privateKeyEnv: typeof config.privateKeyEnv === "string" ? config.privateKeyEnv : null,
     tenant: typeof config.tenant === "string" ? config.tenant : null,
-    graphVersion: typeof config.graphVersion === "string" ? config.graphVersion : null,
+    graphVersion: config.graphVersion === undefined
+      ? null
+      : typeof config.graphVersion === "string"
+        ? config.graphVersion
+        : "__invalid__",
   };
 }
 

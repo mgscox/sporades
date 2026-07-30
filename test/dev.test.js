@@ -8181,6 +8181,7 @@ test("Facebook auth callback uses the versioned server-owned Graph flow and acce
         env: {
           SPORADES_FACEBOOK_TOKEN_URL: facebook.tokenUrl,
           SPORADES_FACEBOOK_GRAPH_URL: facebook.graphUrl,
+          SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK: "1",
         },
       });
       let socket;

@@ -31,6 +31,11 @@ Graph API `v23.0` `/me` interface. The stable string `id` is required and is
 the Provider identity subject. Email, name, and picture are optional; a user
 who declines email access can still sign in. Provider access tokens and raw
 Graph response bodies remain local to the adapter and are never profile fields.
+Facebook protocol endpoints are fixed HTTPS URLs in normal operation. Fetches
+refuse redirects, have finite deadlines, and stream response bodies through a
+64 KiB hard cap before JSON parsing. An explicit process-only test seam permits
+plain HTTP solely for loopback protocol receivers; Capsule configuration cannot
+select endpoints or enable that seam.
 
 Provider identity is stored separately from the Sporades user. A verified
 `(provider, subject)` pair identifies the Provider identity; provider email,

@@ -2293,6 +2293,9 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   completeGoogleOAuth,
   createFacebookOAuthProviderAdapter,
   facebookOAuthCallbackError,
+  facebookOAuthEndpoint,
+  facebookOAuthTimeoutSignal,
+  readFacebookOAuthJson,
   completeFacebookOAuth,
   verifyGoogleIdentityToken,
   decodeJwtPart,
@@ -9585,6 +9588,13 @@ function createFacebookOAuthProviderAdapter(database) {
     enabled: configured,
     begin(context) {
       const clientId = database.serverEnv[facebook.clientIdEnv];
+      if (typeof clientId !== "string" || clientId.length < 1 || clientId.length > 4096) {
+        throw commandError(
+          "Facebook App ID is invalid.",
+          "Configure a valid Facebook App ID and retry sign-in.",
+          "FACEBOOK_CONFIGURATION_INVALID"
+        );
+      }
       const params = new URLSearchParams({
         client_id: clientId,
         redirect_uri: context.redirectUri,
@@ -9592,8 +9602,19 @@ function createFacebookOAuthProviderAdapter(database) {
         scope: "public_profile,email",
         state: context.state
       });
-      const authorizationUrl = process.env.SPORADES_FACEBOOK_AUTH_URL ?? `https://www.facebook.com/${graphVersion}/dialog/oauth`;
-      return { url: `${authorizationUrl}?${params.toString()}` };
+      const authorizationUrl = facebookOAuthEndpoint(
+        process.env.SPORADES_FACEBOOK_AUTH_URL,
+        `https://www.facebook.com/${graphVersion}/dialog/oauth`
+      );
+      authorizationUrl.search = params.toString();
+      if (authorizationUrl.toString().length > 8192) {
+        throw commandError(
+          "Facebook authorization URL is too large.",
+          "Check the Facebook App ID and callback configuration.",
+          "FACEBOOK_CONFIGURATION_INVALID"
+        );
+      }
+      return { url: authorizationUrl.toString() };
     },
     callbackError(parameters) {
       return facebookOAuthCallbackError(parameters);
@@ -9630,6 +9651,65 @@ function facebookOAuthCallbackError(parameters) {
   }
   return null;
 }
+function facebookOAuthEndpoint(configured, fallback) {
+  const value = configured === void 0 ? fallback : configured;
+  if (typeof value !== "string" || value.length < 1 || value.length > 2048) {
+    throw commandError(
+      "Facebook OAuth endpoint is invalid.",
+      "Use the built-in HTTPS Meta endpoint.",
+      "FACEBOOK_ENDPOINT_UNSAFE"
+    );
+  }
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    throw commandError(
+      "Facebook OAuth endpoint is invalid.",
+      "Use the built-in HTTPS Meta endpoint.",
+      "FACEBOOK_ENDPOINT_UNSAFE"
+    );
+  }
+  const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+  const insecureTestEndpoint = process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK === "1" && url.protocol === "http:" && loopback;
+  if (url.protocol !== "https:" && !insecureTestEndpoint || url.username || url.password || url.hash) {
+    throw commandError(
+      "Facebook OAuth endpoint is unsafe.",
+      "Use the built-in HTTPS Meta endpoint. Plain HTTP is limited to the explicit loopback test seam.",
+      "FACEBOOK_ENDPOINT_UNSAFE"
+    );
+  }
+  return url;
+}
+function facebookOAuthTimeoutSignal() {
+  const testTimeout = process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK === "1" ? Number(process.env.SPORADES_FACEBOOK_TEST_TIMEOUT_MS) : NaN;
+  const timeoutMs = Number.isInteger(testTimeout) && testTimeout >= 10 && testTimeout <= 1e4 ? testTimeout : 1e4;
+  return AbortSignal.timeout(timeoutMs);
+}
+async function readFacebookOAuthJson(response, failureCode, failureMessage, failureHint) {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw commandError(failureMessage, failureHint, failureCode);
+  }
+  const chunks = [];
+  let length = 0;
+  try {
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      if (!(next.value instanceof Uint8Array)) throw new Error("invalid chunk");
+      length += next.value.byteLength;
+      if (length > 64 * 1024) {
+        await reader.cancel();
+        throw new Error("response too large");
+      }
+      chunks.push(next.value);
+    }
+    return JSON.parse(Buffer.concat(chunks, length).toString("utf8"));
+  } catch {
+    throw commandError(failureMessage, failureHint, failureCode);
+  }
+}
 async function completeFacebookOAuth(database, context) {
   const facebook = database.authConfig.providers.facebook;
   const graphVersion = facebook.graphVersion ?? "v23.0";
@@ -9642,7 +9722,17 @@ async function completeFacebookOAuth(database, context) {
   }
   const clientId = database.serverEnv[facebook.clientIdEnv];
   const clientSecret = database.serverEnv[facebook.clientSecretEnv];
-  const tokenUrl = process.env.SPORADES_FACEBOOK_TOKEN_URL ?? `https://graph.facebook.com/${graphVersion}/oauth/access_token`;
+  if (typeof context.code !== "string" || context.code.length < 1 || context.code.length > 16 * 1024 || typeof context.redirectUri !== "string" || context.redirectUri.length < 1 || context.redirectUri.length > 2048 || typeof clientId !== "string" || clientId.length < 1 || clientId.length > 4096 || typeof clientSecret !== "string" || clientSecret.length < 1 || clientSecret.length > 16 * 1024) {
+    throw commandError(
+      "Facebook OAuth callback or configuration is invalid.",
+      "Retry sign-in and check the Facebook App ID, App Secret, and callback configuration.",
+      "FACEBOOK_CALLBACK_INVALID"
+    );
+  }
+  const tokenUrl = facebookOAuthEndpoint(
+    process.env.SPORADES_FACEBOOK_TOKEN_URL,
+    `https://graph.facebook.com/${graphVersion}/oauth/access_token`
+  );
   let tokenResponse;
   try {
     tokenResponse = await fetch(tokenUrl, {
@@ -9653,13 +9743,15 @@ async function completeFacebookOAuth(database, context) {
         client_id: clientId,
         client_secret: clientSecret,
         redirect_uri: context.redirectUri
-      })
+      }),
+      redirect: "error",
+      signal: facebookOAuthTimeoutSignal()
     });
-  } catch {
+  } catch (error) {
     throw commandError(
-      "Facebook OAuth code exchange failed.",
+      error?.name === "TimeoutError" || error?.name === "AbortError" ? "Facebook OAuth code exchange timed out." : "Facebook OAuth code exchange failed.",
       "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
-      "FACEBOOK_EXCHANGE_FAILED"
+      error?.name === "TimeoutError" || error?.name === "AbortError" ? "FACEBOOK_EXCHANGE_TIMEOUT" : "FACEBOOK_EXCHANGE_FAILED"
     );
   }
   if (!tokenResponse.ok) {
@@ -9669,18 +9761,12 @@ async function completeFacebookOAuth(database, context) {
       "FACEBOOK_EXCHANGE_FAILED"
     );
   }
-  let token;
-  try {
-    const body = await tokenResponse.text();
-    if (Buffer.byteLength(body, "utf8") > 64 * 1024) throw new Error("response too large");
-    token = JSON.parse(body);
-  } catch {
-    throw commandError(
-      "Facebook OAuth response was invalid.",
-      "Check the Facebook app configuration and retry sign-in.",
-      "FACEBOOK_EXCHANGE_FAILED"
-    );
-  }
+  const token = await readFacebookOAuthJson(
+    tokenResponse,
+    "FACEBOOK_EXCHANGE_FAILED",
+    "Facebook OAuth response was invalid.",
+    "Check the Facebook app configuration and retry sign-in."
+  );
   if (typeof token?.access_token !== "string" || token.access_token.length < 1 || token.access_token.length > 16 * 1024) {
     throw commandError(
       "Facebook OAuth response did not include a valid access token.",
@@ -9688,20 +9774,23 @@ async function completeFacebookOAuth(database, context) {
       "FACEBOOK_EXCHANGE_FAILED"
     );
   }
-  const graphUrl = new URL(
-    process.env.SPORADES_FACEBOOK_GRAPH_URL ?? `https://graph.facebook.com/${graphVersion}/me`
+  const graphUrl = facebookOAuthEndpoint(
+    process.env.SPORADES_FACEBOOK_GRAPH_URL,
+    `https://graph.facebook.com/${graphVersion}/me`
   );
   graphUrl.searchParams.set("fields", "id,name,email,picture");
   let graphResponse;
   try {
     graphResponse = await fetch(graphUrl, {
-      headers: { authorization: `Bearer ${token.access_token}` }
+      headers: { authorization: `Bearer ${token.access_token}` },
+      redirect: "error",
+      signal: facebookOAuthTimeoutSignal()
     });
-  } catch {
+  } catch (error) {
     throw commandError(
-      "Facebook profile could not be loaded.",
+      error?.name === "TimeoutError" || error?.name === "AbortError" ? "Facebook profile request timed out." : "Facebook profile could not be loaded.",
       "Check Facebook Graph API access and retry sign-in.",
-      "FACEBOOK_GRAPH_FAILED"
+      error?.name === "TimeoutError" || error?.name === "AbortError" ? "FACEBOOK_GRAPH_TIMEOUT" : "FACEBOOK_GRAPH_FAILED"
     );
   }
   if (!graphResponse.ok) {
@@ -9711,18 +9800,12 @@ async function completeFacebookOAuth(database, context) {
       "FACEBOOK_GRAPH_FAILED"
     );
   }
-  let profile;
-  try {
-    const body = await graphResponse.text();
-    if (Buffer.byteLength(body, "utf8") > 64 * 1024) throw new Error("response too large");
-    profile = JSON.parse(body);
-  } catch {
-    throw commandError(
-      "Facebook profile response was invalid.",
-      "Check Facebook Graph API access and retry sign-in.",
-      "FACEBOOK_GRAPH_FAILED"
-    );
-  }
+  const profile = await readFacebookOAuthJson(
+    graphResponse,
+    "FACEBOOK_GRAPH_FAILED",
+    "Facebook profile response was invalid.",
+    "Check Facebook Graph API access and retry sign-in."
+  );
   if (typeof profile?.id !== "string" || profile.id.length < 1 || profile.id.length > 255 || !/^[\x21-\x7e]+$/.test(profile.id)) {
     throw commandError(
       "Facebook profile is missing a stable identifier.",
@@ -11436,7 +11519,9 @@ function authStatus(config, serverEnv) {
       state.clientSecretEnv = provider.clientSecretEnv;
     }
     if (providerName === "microsoft") state.tenant = provider.tenant;
-    if (providerName === "facebook") state.graphVersion = provider.graphVersion;
+    if (providerName === "facebook") {
+      state.graphVersion = provider.graphVersion === "__invalid__" ? null : provider.graphVersion;
+    }
     if (providerName === "apple") {
       state.clientId = provider.clientId;
       state.teamId = provider.teamId;
@@ -11520,7 +11605,7 @@ function readProviderConfig(config) {
     keyId: config.keyId ?? null,
     privateKeyEnv: config.privateKeyEnv ?? null,
     tenant: config.tenant ?? null,
-    graphVersion: config.graphVersion ?? null
+    graphVersion: config.graphVersion === void 0 ? null : typeof config.graphVersion === "string" ? config.graphVersion : "__invalid__"
   };
 }
 function emptyProviderConfig() {
@@ -12977,7 +13062,9 @@ function authStatus2(config, serverEnv) {
       result.clientSecretEnv = provider.clientSecretEnv;
     }
     if (providerName === "microsoft") result.tenant = provider.tenant;
-    if (providerName === "facebook") result.graphVersion = provider.graphVersion;
+    if (providerName === "facebook") {
+      result.graphVersion = provider.graphVersion === "__invalid__" ? null : provider.graphVersion;
+    }
     if (providerName === "apple") {
       result.clientId = provider.clientId;
       result.teamId = provider.teamId;
@@ -13064,7 +13151,7 @@ function readProviderConfig2(config) {
     keyId: typeof config.keyId === "string" ? config.keyId : null,
     privateKeyEnv: typeof config.privateKeyEnv === "string" ? config.privateKeyEnv : null,
     tenant: typeof config.tenant === "string" ? config.tenant : null,
-    graphVersion: typeof config.graphVersion === "string" ? config.graphVersion : null
+    graphVersion: config.graphVersion === void 0 ? null : typeof config.graphVersion === "string" ? config.graphVersion : "__invalid__"
   };
 }
 function validateAuthConfig(config, serverEnv) {
