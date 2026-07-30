@@ -1943,8 +1943,8 @@ function validateMailConfig(mail) {
   if (!Number.isInteger(smtp.port) || smtp.port < 1 || smtp.port > 65535) {
     fail("Invalid SMTP port.", "Set `mail.smtp.port` to an integer from 1 through 65535.");
   }
-  if (!object(smtp.tls) || !onlyKeys(smtp.tls, ["mode", "rejectUnauthorized"])) {
-    fail("Invalid SMTP TLS configuration.", "Set `mail.smtp.tls.mode` and optional `rejectUnauthorized`; do not combine TLS modes or legacy secure flags.");
+  if (!object(smtp.tls) || !onlyKeys(smtp.tls, ["mode", "rejectUnauthorized", "servername"])) {
+    fail("Invalid SMTP TLS configuration.", "Set `mail.smtp.tls.mode` and optional `rejectUnauthorized` and `servername`; do not combine TLS modes or legacy secure flags.");
   }
   if (!["implicit", "required-starttls", "opportunistic", "disabled"].includes(smtp.tls.mode)) {
     fail("Invalid SMTP TLS mode.", "Use `implicit`, `required-starttls`, `opportunistic`, or `disabled`.");
@@ -1952,17 +1952,29 @@ function validateMailConfig(mail) {
   if (smtp.tls.rejectUnauthorized !== void 0 && typeof smtp.tls.rejectUnauthorized !== "boolean") {
     fail("Invalid SMTP TLS certificate policy.", "Set `mail.smtp.tls.rejectUnauthorized` to a boolean.");
   }
+  if (smtp.tls.servername !== void 0 && (typeof smtp.tls.servername !== "string" || smtp.tls.servername.length < 1 || smtp.tls.servername.length > 253 || !/^[A-Za-z0-9](?:[A-Za-z0-9.-]{0,251}[A-Za-z0-9])?$/.test(smtp.tls.servername) || smtp.tls.servername.split(".").some((label) => label.length < 1 || label.length > 63 || label.startsWith("-") || label.endsWith("-")))) {
+    fail("Invalid SMTP TLS server name.", "Set `mail.smtp.tls.servername` to the DNS name on the SMTP certificate, especially when `host` is an IP address.");
+  }
   if (!object(smtp.auth) || !onlyKeys(smtp.auth, ["method", "usernameEnv", "passwordEnv"])) {
-    fail("Invalid SMTP authentication configuration.", "Set auth method plus usernameEnv and passwordEnv Server env references.");
+    fail("Invalid SMTP authentication configuration.", 'Use `PLAIN` or `LOGIN` with Server env references, or exactly `{ "method": "none" }` for an explicit unauthenticated relay.');
   }
-  if (typeof smtp.auth.method !== "string" || typeof smtp.auth.usernameEnv !== "string" || typeof smtp.auth.passwordEnv !== "string") {
-    fail("Invalid SMTP authentication configuration.", "Use `PLAIN` or `LOGIN` with both usernameEnv and passwordEnv.");
+  if (smtp.auth.method === "none") {
+    if (!onlyKeys(smtp.auth, ["method"])) {
+      fail("Invalid SMTP authentication configuration.", 'Set exactly `{ "method": "none" }` only for an explicitly trusted unauthenticated relay.');
+    }
+  } else {
+    if (!["PLAIN", "LOGIN"].includes(smtp.auth.method) || typeof smtp.auth.usernameEnv !== "string" || typeof smtp.auth.passwordEnv !== "string") {
+      fail("Invalid SMTP authentication configuration.", "Use `PLAIN` or `LOGIN` with both usernameEnv and passwordEnv.");
+    }
+    if (!envReference(smtp.auth.usernameEnv) || !envReference(smtp.auth.passwordEnv)) {
+      fail("Invalid SMTP Server env reference.", "Use uppercase Server env key names without the reserved `SPORADES_` prefix.");
+    }
   }
-  if (!envReference(smtp.auth.usernameEnv) || !envReference(smtp.auth.passwordEnv)) {
-    fail("Invalid SMTP Server env reference.", "Use uppercase Server env key names without the reserved `SPORADES_` prefix.");
-  }
-  if (!["PLAIN", "LOGIN"].includes(smtp.auth.method)) {
-    fail("Invalid SMTP authentication configuration.", "Use `PLAIN` or `LOGIN` with both usernameEnv and passwordEnv.");
+  if (["opportunistic", "disabled"].includes(smtp.tls.mode) && smtp.auth.method !== "none") {
+    fail(
+      "SMTP plaintext delivery requires an explicit unauthenticated relay.",
+      'Use required STARTTLS or implicit TLS with credentials; opportunistic and disabled TLS are allowed only with `{ "auth": { "method": "none" } }`.'
+    );
   }
   if (smtp.defaultFrom !== void 0 && (typeof smtp.defaultFrom !== "string" || smtp.defaultFrom.length < 1 || smtp.defaultFrom.length > 320 || /[\r\n\0]/.test(smtp.defaultFrom))) {
     fail("Invalid SMTP default sender.", "Set `mail.smtp.defaultFrom` to one email address without control characters.");
@@ -1994,6 +2006,8 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   foldMailgunJsonHeader,
   encodeMimeBase64,
   normalizeMailMessage,
+  normalizeGenericProvider,
+  captureGenericHeaderValues,
   normalizePostmarkProvider,
   normalizeMailgunProvider,
   serializeMailgunJson,
@@ -2668,14 +2682,20 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
       }
     };
   }
-  const username = serverEnv[smtp.auth.usernameEnv];
-  const password = serverEnv[smtp.auth.passwordEnv];
-  if (typeof username !== "string" || typeof password !== "string") {
-    throw mailError(
-      "MAIL_CREDENTIAL_MISSING",
-      "SMTP credentials are unavailable.",
-      "Set the configured SMTP username and password keys in Server env, then restart the Capsule runtime."
-    );
+  let auth;
+  if (smtp.auth.method === "none") {
+    auth = { method: "none" };
+  } else {
+    const username = serverEnv[smtp.auth.usernameEnv];
+    const password = serverEnv[smtp.auth.passwordEnv];
+    if (typeof username !== "string" || typeof password !== "string") {
+      throw mailError(
+        "MAIL_CREDENTIAL_MISSING",
+        "SMTP credentials are unavailable.",
+        "Set the configured SMTP username and password keys in Server env, then restart the Capsule runtime."
+      );
+    }
+    auth = { method: smtp.auth.method, username, password };
   }
   const resolvedSmtp = {
     vendor: smtp.vendor,
@@ -2683,9 +2703,10 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
     port: smtp.port,
     tls: {
       mode: smtp.tls.mode,
-      rejectUnauthorized: smtp.tls.rejectUnauthorized !== false
+      rejectUnauthorized: smtp.tls.rejectUnauthorized !== false,
+      servername: smtp.tls.servername
     },
-    auth: { method: smtp.auth.method, username, password },
+    auth,
     defaultFrom: smtp.defaultFrom,
     connectionTimeoutMs: smtp.connectionTimeoutMs ?? 1e4,
     socketTimeoutMs: smtp.socketTimeoutMs ?? 3e4
@@ -2752,12 +2773,8 @@ function normalizeMailMessage(input, defaultFrom, vendor = "generic") {
       providerHeaders = normalizeMailgunProvider(provider);
       provider = void 0;
     } else {
-      if ("headers" in provider) invalid("Provider header overrides are not supported by the configured SMTP vendor.");
-      try {
-        if (mailJsonSize(provider) > 32 * 1024) invalid("Keep `provider` fields within 32 KiB.");
-      } catch {
-        invalid("Pass only JSON-compatible values in `provider`.");
-      }
+      providerHeaders = normalizeGenericProvider(provider);
+      provider = void 0;
     }
   }
   return {
@@ -2772,6 +2789,118 @@ function normalizeMailMessage(input, defaultFrom, vendor = "generic") {
     ...providerHeaders?.length ? { providerHeaders } : {},
     ...provider !== void 0 ? { provider } : {}
   };
+}
+function normalizeGenericProvider(provider) {
+  const providerEntries = captureMailProviderDataObject(provider, "provider", "generic SMTP");
+  const unsupported = providerEntries.map(([field]) => field).filter((field) => field !== "headers").sort();
+  if (unsupported.length > 0) {
+    throw mailError(
+      "UNSUPPORTED_MAIL_PROVIDER_FIELD",
+      `Unsupported generic SMTP provider field: ${unsupported[0]}.`,
+      "Use only `headers` in the generic SMTP provider object; addressing, MIME, authentication, and transport settings are not message-level provider fields."
+    );
+  }
+  if (providerEntries.length === 0) return [];
+  const providerData = new Map(providerEntries);
+  const headerEntries = captureMailProviderDataObject(providerData.get("headers"), "provider.headers", "generic SMTP").map(([name, value]) => ({ name, normalizedName: name.toLowerCase(), value })).sort((left, right) => {
+    if (left.normalizedName < right.normalizedName) return -1;
+    if (left.normalizedName > right.normalizedName) return 1;
+    return left.name < right.name ? -1 : left.name > right.name ? 1 : 0;
+  });
+  if (headerEntries.length > 50) {
+    throw mailError("INVALID_MAIL_MESSAGE", "Invalid generic SMTP provider data.", "Pass at most 50 `provider.headers` names.");
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const protectedNames = /* @__PURE__ */ new Set([
+    "x-from",
+    "x-to",
+    "x-cc",
+    "x-bcc",
+    "x-sender",
+    "x-reply-to",
+    "x-return-path",
+    "x-subject",
+    "x-content-type",
+    "x-content-transfer-encoding",
+    "x-mime-version",
+    "x-message-id",
+    "x-date",
+    // SendGrid's legacy X-SMTPAPI header can replace envelope recipients.
+    "x-smtpapi"
+  ]);
+  const protectedPrefixes = [
+    "x-envelope-",
+    "x-original-",
+    "x-delivered-",
+    "x-auth",
+    "x-smtp-",
+    "x-starttls",
+    "x-tls"
+  ];
+  const headers = [];
+  for (const entry of headerEntries) {
+    if (!/^X-[A-Za-z0-9](?:[A-Za-z0-9-]{0,125})$/.test(entry.name)) {
+      throw mailError(
+        "INVALID_MAIL_MESSAGE",
+        "Invalid generic SMTP provider data.",
+        `Pass \`provider.headers.${entry.name}\` as a custom X-* header name containing only ASCII letters, numbers, and hyphens.`
+      );
+    }
+    if (protectedNames.has(entry.normalizedName) || protectedPrefixes.some((prefix) => entry.normalizedName.startsWith(prefix))) {
+      throw mailError(
+        "INVALID_MAIL_MESSAGE",
+        "Invalid generic SMTP provider data.",
+        `Provider header \`${entry.name}\` is protected because it may alter addressing, MIME, authentication, or transport behavior.`
+      );
+    }
+    if (seen.has(entry.normalizedName)) {
+      throw mailError("INVALID_MAIL_MESSAGE", "Invalid generic SMTP provider data.", `Provider header names collide case-insensitively at \`${entry.name}\`.`);
+    }
+    seen.add(entry.normalizedName);
+    for (const value of captureGenericHeaderValues(entry.value, `provider.headers.${entry.name}`)) {
+      if (!/^[\x20-\x7e]+$/.test(value) || value.trim() !== value || entry.name.length + 2 + value.length > 998) {
+        throw mailError(
+          "INVALID_MAIL_MESSAGE",
+          "Invalid generic SMTP provider data.",
+          `Pass \`provider.headers.${entry.name}\` values as non-empty printable ASCII strings without leading or trailing whitespace that fit one SMTP header line of at most 998 characters.`
+        );
+      }
+      headers.push({ name: entry.name, value, verbatim: true });
+    }
+  }
+  return headers;
+}
+function captureGenericHeaderValues(value, label) {
+  if (typeof value === "string") return [value];
+  const invalid = (detail) => {
+    throw mailError(
+      "INVALID_MAIL_MESSAGE",
+      "Invalid generic SMTP provider data.",
+      `Pass \`${label}\` as a string or complete ordinary array of strings; ${detail}.`
+    );
+  };
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+    invalid("custom prototypes and non-array values are not supported");
+  }
+  const descriptors = Object.getOwnPropertyDescriptors(value);
+  for (const key of Reflect.ownKeys(descriptors)) {
+    if (typeof key !== "string") invalid("symbol fields are not supported");
+    const stringKey = key;
+    if (stringKey === "length") continue;
+    if (!/^(?:0|[1-9]\d*)$/.test(stringKey) || Number(stringKey) >= value.length) invalid(`field \`${stringKey}\` is not an array index`);
+    const descriptor = descriptors[stringKey];
+    if (!descriptor.enumerable) invalid(`field \`${stringKey}\` must be enumerable`);
+    if (!Object.prototype.hasOwnProperty.call(descriptor, "value")) invalid(`field \`${stringKey}\` must not be an accessor`);
+  }
+  if (value.length < 1 || value.length > 50) invalid("arrays must contain one to 50 values");
+  const result = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = descriptors[String(index)];
+    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, "value")) invalid(`index ${index} must be an own data property`);
+    if (typeof descriptor.value !== "string") invalid(`index ${index} must be a string`);
+    result.push(descriptor.value);
+  }
+  return result;
 }
 function unsupportedMailProviderField(field) {
   return mailError(
@@ -3186,6 +3315,7 @@ function createMailTransport(smtp) {
       sockets.add(socket);
       const reader = createSmtpResponseReader(socket, smtp.socketTimeoutMs);
       try {
+        let encrypted = smtp.tls.mode === "implicit";
         await reader.expect([220]);
         const ehlo = await smtpCommand(socket, reader, `EHLO sporades.local`, [250]);
         if (smtp.tls.mode === "required-starttls" || smtp.tls.mode === "opportunistic") {
@@ -3194,7 +3324,7 @@ function createMailTransport(smtp) {
             const tls = await import("node:tls");
             const upgraded = tls.connect({
               socket,
-              servername: smtp.host,
+              servername: smtp.tls.servername ?? smtp.host,
               rejectUnauthorized: smtp.tls.rejectUnauthorized
             });
             sockets.delete(socket);
@@ -3210,6 +3340,7 @@ function createMailTransport(smtp) {
               throw error;
             });
             await smtpCommand(upgraded, reader, "EHLO sporades.local", [250]);
+            encrypted = true;
           } else if (smtp.tls.mode === "required-starttls") {
             const error = new Error("STARTTLS unavailable");
             error.code = "ETLS";
@@ -3217,10 +3348,15 @@ function createMailTransport(smtp) {
           }
         }
         const activeSocket = reader.socket();
+        if (smtp.auth.method !== "none" && !encrypted) {
+          const error = new Error("refusing SMTP authentication over plaintext");
+          error.code = "ETLS";
+          throw error;
+        }
         if (smtp.auth.method === "PLAIN") {
           const credential = Buffer.from(`\0${smtp.auth.username}\0${smtp.auth.password}`).toString("base64");
           await smtpCommand(activeSocket, reader, `AUTH PLAIN ${credential}`, [235], "EAUTH");
-        } else {
+        } else if (smtp.auth.method === "LOGIN") {
           await smtpCommand(activeSocket, reader, "AUTH LOGIN", [334], "EAUTH");
           await smtpCommand(activeSocket, reader, Buffer.from(smtp.auth.username).toString("base64"), [334], "EAUTH");
           await smtpCommand(activeSocket, reader, Buffer.from(smtp.auth.password).toString("base64"), [235], "EAUTH");
@@ -3271,7 +3407,12 @@ async function connectSmtpSocket(smtp) {
   let socket;
   if (smtp.tls.mode === "implicit") {
     const tls = await import("node:tls");
-    socket = tls.connect({ host: smtp.host, port: smtp.port, servername: smtp.host, rejectUnauthorized: smtp.tls.rejectUnauthorized });
+    socket = tls.connect({
+      host: smtp.host,
+      port: smtp.port,
+      servername: smtp.tls.servername ?? smtp.host,
+      rejectUnauthorized: smtp.tls.rejectUnauthorized
+    });
   } else {
     const net = await import("node:net");
     socket = net.connect({ host: smtp.host, port: smtp.port });
@@ -3412,7 +3553,7 @@ function buildSmtpMessage(message) {
     `Date: ${(/* @__PURE__ */ new Date()).toUTCString()}`,
     `Message-ID: ${message.messageId ?? `<${randomUUID()}@sporades.local>`}`,
     "MIME-Version: 1.0",
-    ...(message.providerHeaders ?? []).map((header) => header.json ? foldMailgunJsonHeader(header.name, header.value) : foldMimeHeader(header.name, header.value))
+    ...(message.providerHeaders ?? []).map((header) => header.json ? foldMailgunJsonHeader(header.name, header.value) : header.verbatim ? `${header.name}: ${header.value}` : foldMimeHeader(header.name, header.value))
   ];
   if (message.textBody !== void 0 && message.htmlBody !== void 0) {
     const boundary = `sporades-${randomUUID()}`;

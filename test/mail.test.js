@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { writeFile } from "node:fs/promises";
+import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
+import {
+  createServer as createTlsServer,
+  getCACertificates,
+  setDefaultCACertificates,
+} from "node:tls";
 
 import { validateMailConfig } from "../dist/cli/project-config.js";
 import { openDevDatabase, runMutation, runQuery, SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
@@ -15,6 +21,8 @@ const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "ru
 const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
 const createTableAclContext = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createTableAclContext");
 const buildSmtpMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "buildSmtpMessage");
+const createMailTransport = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createMailTransport");
+const connectSmtpSocket = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "connectSmtpSocket");
 
 function readMimeHeader(message, name) {
   const lines = message.split("\r\n\r\n")[0].split("\r\n");
@@ -98,7 +106,12 @@ async function withDatabase(config, capsule, options, run) {
   const database = await openDevDatabase(
     path.join(dir, "data.db"),
     "",
-    { SMTP_USERNAME: "user-secret", SMTP_PASSWORD: "password-secret" },
+    {
+      SMTP_USERNAME: "user-secret",
+      SMTP_PASSWORD: "password-secret",
+      SMTP2GO_USERNAME: "smtp2go-user-secret",
+      SMTP2GO_PASSWORD: "smtp2go-password-secret",
+    },
     config,
     capsule,
     options,
@@ -110,6 +123,64 @@ async function withDatabase(config, capsule, options, run) {
     await database.close();
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+async function startTestSmtpServer({ implicitTls = false } = {}) {
+  const commands = [];
+  const messages = [];
+  const tlsOptions = implicitTls ? {
+    key: await readFile(new URL("./fixtures/smtp-test-key.pem", import.meta.url)),
+    cert: await readFile(new URL("./fixtures/smtp-test-cert.pem", import.meta.url)),
+  } : undefined;
+  const handle = (socket) => {
+    let buffer = "";
+    let inData = false;
+    socket.on("error", (error) => {
+      if (error.code !== "ECONNRESET") throw error;
+    });
+    socket.setEncoding("utf8");
+    socket.write("220 smtp.test ESMTP\r\n");
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      while (true) {
+        if (inData) {
+          const end = buffer.indexOf("\r\n.\r\n");
+          if (end < 0) return;
+          messages.push(buffer.slice(0, end));
+          buffer = buffer.slice(end + 5);
+          inData = false;
+          socket.write("250 queued <portable-smtp@test>\r\n");
+          continue;
+        }
+        const end = buffer.indexOf("\r\n");
+        if (end < 0) return;
+        const command = buffer.slice(0, end);
+        buffer = buffer.slice(end + 2);
+        commands.push(command);
+        if (/^EHLO /i.test(command)) socket.write("250-smtp.test\r\n250 PIPELINING\r\n");
+        else if (/^MAIL FROM:/i.test(command) || /^RCPT TO:/i.test(command)) socket.write("250 ok\r\n");
+        else if (command === "DATA") {
+          inData = true;
+          socket.write("354 end with dot\r\n");
+        } else if (command === "QUIT") {
+          socket.write("221 bye\r\n");
+          socket.end();
+        } else if (/^AUTH /i.test(command)) socket.write("235 authenticated\r\n");
+        else socket.write("500 unsupported\r\n");
+      }
+    });
+  };
+  const server = implicitTls ? createTlsServer(tlsOptions, handle) : createNetServer(handle);
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  return {
+    commands,
+    messages,
+    port: server.address().port,
+    close: () => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())),
+  };
 }
 
 test("mail.smtp configuration rejects ambiguous, incomplete, and unsafe declarations", () => {
@@ -157,7 +228,7 @@ test("SMTP2GO-shaped configuration reaches the generic SMTP transport", async ()
         provider: {
           headers: {
             "X-Smtp2go-Campaign": "onboarding",
-            "X-Smtp2go-Tag": ["welcome", "trial"],
+            "X-Smtp2go-Tag": ["welcome  cohort", "trial"],
           },
         },
       })),
@@ -185,7 +256,7 @@ test("SMTP2GO-shaped configuration reaches the generic SMTP transport", async ()
   assert.equal(capturedSmtp.tls.servername, "mail.smtp2go.com");
   assert.equal(capturedSmtp.auth.method, "LOGIN");
   assert.match(capturedMessages[0], /\r\nX-Smtp2go-Campaign: onboarding\r\n/);
-  assert.match(capturedMessages[0], /\r\nX-Smtp2go-Tag: welcome\r\nX-Smtp2go-Tag: trial\r\n/);
+  assert.match(capturedMessages[0], /\r\nX-Smtp2go-Tag: welcome  cohort\r\nX-Smtp2go-Tag: trial\r\n/);
 });
 
 test("generic provider headers reject unsafe names, values, fields, and descriptor tricks before transport", async () => {
@@ -222,8 +293,14 @@ test("generic provider headers reject unsafe names, values, fields, and descript
     const cases = [
       { metadata: { trace: "no longer portable" } },
       { headers: { Subject: "override" } },
+      { headers: { "X-Original-To": "other@example.com" } },
+      { headers: { "X-SMTP-Host": "attacker.example.com" } },
+      { headers: { "X-SMTPAPI": "{\"to\":[\"other@example.com\"]}" } },
       { headers: { "X-Test\r\nBcc": "attacker@example.com" } },
       { headers: { "X-Test": "safe\r\nBcc: attacker@example.com" } },
+      { headers: { "X-Test": "" } },
+      { headers: { "X-Test": " leading" } },
+      { headers: { "X-Test": "trailing " } },
       { headers: { "X-Test": 123 } },
       { headers: { "X-Test": [] } },
       { headers: { "X-Test": sparseValues } },
@@ -238,6 +315,92 @@ test("generic provider headers reject unsafe names, values, fields, and descript
     }
     assert.equal(sends, 0);
   });
+});
+
+test("explicitly unauthenticated plaintext and opportunistic local relays never send AUTH", async () => {
+  for (const mode of ["disabled", "opportunistic"]) {
+    const server = await startTestSmtpServer();
+    const config = {
+      name: `${mode}-relay`,
+      mail: {
+        smtp: {
+          vendor: "generic",
+          host: "127.0.0.1",
+          port: server.port,
+          tls: { mode, rejectUnauthorized: true },
+          auth: { method: "none" },
+          defaultFrom: "relay@example.com",
+        },
+      },
+    };
+    try {
+      await withDatabase(config, {
+        mutations: {
+          send: mutation((ctx) => ctx.mail.send({
+            to: "recipient@example.com",
+            subject: `${mode} relay`,
+            textBody: "local relay",
+          })),
+        },
+      }, {}, async (database) => {
+        const result = await runMutation(database, user, "send", []);
+        assert.equal(result.ok, true);
+      });
+      assert.equal(server.commands.some((command) => /^AUTH /i.test(command)), false);
+      assert.equal(server.commands.some((command) => /^MAIL FROM:/i.test(command)), true);
+      assert.equal(server.messages.length, 1);
+    } finally {
+      await server.close();
+    }
+  }
+});
+
+test("implicit TLS validates the configured server name when the SMTP host is an IP address", async () => {
+  const server = await startTestSmtpServer({ implicitTls: true });
+  const cert = await readFile(new URL("./fixtures/smtp-test-cert.pem", import.meta.url), "utf8");
+  const previousDefaultCAs = getCACertificates("default");
+  setDefaultCACertificates([...previousDefaultCAs, cert]);
+  const config = {
+    name: "implicit-tls-relay",
+    mail: {
+      smtp: {
+        vendor: "generic",
+        host: "127.0.0.1",
+        port: server.port,
+        tls: {
+          mode: "implicit",
+          rejectUnauthorized: true,
+          servername: "smtp.internal.example",
+        },
+        auth: { method: "none" },
+        defaultFrom: "relay@example.com",
+      },
+    },
+  };
+  try {
+    await withDatabase(config, {
+      mutations: {
+        send: mutation((ctx) => ctx.mail.send({
+          to: "recipient@example.com",
+          subject: "implicit TLS relay",
+          textBody: "certificate checked",
+        })),
+      },
+    }, {}, async (database) => {
+      const result = await runMutation(database, user, "send", []);
+      assert.equal(result.ok, true);
+    });
+    assert.equal(server.commands.some((command) => /^AUTH /i.test(command)), false);
+    assert.equal(server.messages.length, 1);
+  } finally {
+    setDefaultCACertificates(previousDefaultCAs);
+    await server.close();
+  }
+});
+
+test("TLS server name is forwarded for implicit and upgraded STARTTLS sockets", () => {
+  assert.match(String(connectSmtpSocket), /servername:\s*smtp\.tls\.servername\s*\?\?\s*smtp\.host/);
+  assert.match(String(createMailTransport), /servername:\s*smtp\.tls\.servername\s*\?\?\s*smtp\.host/);
 });
 
 test("ctx.mail remains present while disabled and returns a stable error", async () => {
@@ -298,7 +461,7 @@ test("ctx.mail validates messages before using the captured SMTP transport and n
       subject: "Plain and HTML",
       textBody: "Plain",
       htmlBody: "<p>HTML</p>",
-      provider: { metadata: { trace: "abc" } },
+      provider: { headers: { "X-Trace": "abc" } },
     }]);
     assert.deepEqual(success, {
       ok: true,
@@ -312,7 +475,7 @@ test("ctx.mail validates messages before using the captured SMTP transport and n
     assert.equal(captured.length, 1);
     assert.equal(captured[0].from.email, "mail@example.com");
     assert.equal(captured[0].to[0].email, "to@example.com");
-    assert.deepEqual(captured[0].provider, { metadata: { trace: "abc" } });
+    assert.deepEqual(captured[0].providerHeaders, [{ name: "X-Trace", value: "abc", verbatim: true }]);
     assert.equal(capturedSmtp.tls.mode, "required-starttls");
     assert.equal(capturedSmtp.auth.method, "PLAIN");
     assert.equal(capturedSmtp.auth.username, "user-secret");

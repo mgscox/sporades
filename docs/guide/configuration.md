@@ -46,6 +46,39 @@ The JSON configuration contains only Server env key names. Store the referenced
 username and password in Sealed Server env; never put credentials or provider
 tokens in `sporades.json`.
 
+TLS modes are explicit:
+
+- `implicit` opens TLS before the SMTP greeting, commonly on port 465.
+- `required-starttls` requires the server to advertise STARTTLS and fails
+  closed if it does not, commonly on port 587.
+- `opportunistic` upgrades when STARTTLS is advertised and otherwise continues
+  over plaintext.
+- `disabled` uses plaintext for a deliberately trusted relay.
+
+Certificate verification defaults to enabled. Do not set
+`rejectUnauthorized: false` in production. When `host` is an IP address, set
+`tls.servername` to the DNS name on the SMTP server certificate:
+
+```json
+{
+  "host": "192.0.2.25",
+  "port": 465,
+  "tls": {
+    "mode": "implicit",
+    "servername": "smtp.internal.example"
+  }
+}
+```
+
+Authenticated SMTP is accepted only with `implicit` or `required-starttls`
+TLS. Sporades rejects credentials combined with `opportunistic` or `disabled`
+delivery so a missing STARTTLS advertisement cannot downgrade authentication
+onto plaintext. A trusted relay that intentionally does not require
+authentication must opt in exactly with `"auth": { "method": "none" }`.
+Unauthenticated or plaintext relays should be restricted by network policy to
+the Capsule hosts that need them; never expose an open relay to an untrusted
+network.
+
 ```ts
 await ctx.mail.send({
   to: "recipient@example.com",
@@ -64,6 +97,63 @@ rollback cannot recall a message that has already left the SMTP server. For
 important notifications, enqueue a durable Job, send from its handler, and use
 an application-level idempotency key or delivery record. Job execution and SMTP
 delivery are at least once rather than exactly once.
+
+### Portable SMTP and SMTP2GO
+
+Standards-compatible providers use the same generic transport; Sporades does
+not require a provider SDK. Set `vendor` to a lowercase identity such as
+`generic` or `smtp2go`. SMTP2GO, for example, can use its ordinary SMTP
+endpoint and credentials held in Sealed Server env:
+
+```json
+{
+  "mail": {
+    "smtp": {
+      "vendor": "smtp2go",
+      "host": "mail.smtp2go.com",
+      "port": 2525,
+      "tls": {
+        "mode": "required-starttls",
+        "rejectUnauthorized": true
+      },
+      "auth": {
+        "method": "LOGIN",
+        "usernameEnv": "SMTP2GO_USERNAME",
+        "passwordEnv": "SMTP2GO_PASSWORD"
+      },
+      "defaultFrom": "Capsule <mail@example.com>"
+    }
+  }
+}
+```
+
+Generic providers may receive explicitly selected custom headers through
+`provider.headers`:
+
+```ts
+await ctx.mail.send({
+  to: "recipient@example.com",
+  subject: "Welcome",
+  textBody: "Welcome to the Capsule.",
+  provider: {
+    headers: {
+      "X-Smtp2go-Campaign": "onboarding",
+      "X-Smtp2go-Tag": ["welcome", "trial"]
+    }
+  }
+});
+```
+
+Only custom `X-*` names containing ASCII letters, numbers, and hyphens are
+accepted. Values are non-empty printable ASCII strings, or complete ordinary
+arrays of those strings, without leading or trailing whitespace. Internal and
+repeated spaces are emitted without normalization. Names are case-insensitively
+unique, each complete header must fit SMTP's 998-character line limit, and one
+message may contain at most 50 custom names and 50 repeated values per name.
+Unknown provider fields, inherited/accessor/hidden data, control characters,
+standard or protected headers, and message-level attempts to change addressing,
+MIME content, authentication, or transport configuration fail before Sporades
+opens an SMTP connection.
 
 ### Postmark SMTP extensions
 
