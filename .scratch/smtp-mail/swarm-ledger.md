@@ -17,7 +17,7 @@ gates, and obtain re-review if the merge changes accepted SMTP behavior.
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 01 | review | None | `ac20cf1` | `codex/smtp-mail-01` / `/private/tmp/sporades-smtp-mail-swarm/issue-01` | `/root/smtp_01` | `7927dbd` | `/root/smtp_01_review` | pending; prior `754feaa` and `d8c1b55` REQUEST_CHANGES void for replacement SHA | — | second rework RED proved RFC 2047 overflow; focused mail/types/build/generated/diff green | worker complete; worktree clean; third review active |
+| 01 | rework | None | `ac20cf1` | `codex/smtp-mail-01` / `/private/tmp/sporades-smtp-mail-swarm/issue-01` | `/root/smtp_01` | `7927dbd` | `/root/smtp_01_review` | REQUEST_CHANGES: encoded display name plus mailbox can still form a 77–78 character RFC 2047 line | — | third review independently passed focused mail/type/generated/diff; prior findings remain resolved | original worktree retained; third rework active |
 | 02 | blocked | 01 | — | — | — | — | — | — | — | — | — |
 | 03 | blocked | 01 | — | — | — | — | — | — | — | — | — |
 | 04 | blocked | 01 | — | — | — | — | — | — | — | — | — |
