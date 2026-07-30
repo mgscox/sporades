@@ -39,13 +39,19 @@ Manage local auth configuration and identity simulation.
 Commands:
   status              Print auth provider status
   clients             List connected Dev session clients
-  set google          Configure Google OAuth credentials
+  set <provider>      Configure or disable anonymous, email, Google, Microsoft, Apple, or Facebook
   as email            Simulate a local email identity
 
 Options:
-  --client-id <id>        Google OAuth client ID
-  --client-secret <secret> Google OAuth client secret
-  --client-json <path>    Read Google OAuth credentials JSON
+  --client-id <id>        OAuth client/app ID (Apple Services ID)
+  --client-secret <secret> OAuth client/app secret
+  --client-json <path>    Read provider-specific credentials JSON
+  --tenant <tenant>       Microsoft tenant (default: common)
+  --team-id <id>          Apple Developer Team ID
+  --key-id <id>           Apple Sign in key ID
+  --private-key <pem>     Apple private key (stored only in Server env)
+  --graph-version <name>  Facebook Graph API version
+  --disable               Disable the selected provider without changing siblings
   --email <address>       Simulated email identity
   --display-name <name>   Simulated display name
   --picture <url>         Simulated profile picture URL

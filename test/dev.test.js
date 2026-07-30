@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { access, chmod, lstat, mkdtemp, mkdir, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
+import { createServer as createHttpsServer, request as httpsRequest } from "node:https";
 import { connect } from "node:net";
+import { connect as connectTls } from "node:tls";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -38,6 +40,17 @@ async function withTempDir(fn) {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+async function getTestAvailablePort() {
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const port = server.address().port;
+  await new Promise((resolve) => server.close(resolve));
+  return port;
 }
 
 async function snapshotProjectTree(root, current = root) {
@@ -429,7 +442,10 @@ function sessionState() {
   return {
     loading: false,
     auth: null,
-    providers: { anonymous: { enabled: true }, google: { enabled: true } },
+    providers: {
+      anonymous: { enabled: true, configured: true, runtimeAvailable: true },
+      google: { enabled: true, configured: true, runtimeAvailable: true },
+    },
     isAuthenticated() { return Boolean(this.auth && !this.auth.isGuest && this.auth.provider !== "anonymous"); },
   };
 }
@@ -615,7 +631,7 @@ test("real Inferno Guestbook renders, mutates, handles auth errors, and cleans l
   await withTempDir(async (dir) => {
     const projectDir = await createInfernoTemplate(dir, "inferno-guestbook-behavior", "guestbook", { toolchain: "vite" });
     const calls = [], entries = litSource({ data: [{ id: "e1", authorName: "Athos", body: "All for one", createdAt: "2026-07-12T12:00:00Z" }], error: null, loading: false });
-    const session = litSource({ auth: null, providers: { google: { enabled: true } }, error: null, loading: false });
+    const session = litSource({ auth: null, providers: { google: { enabled: true, configured: true, runtimeAvailable: true } }, error: null, loading: false });
     const harness = await mountInfernoTemplate(projectDir, { auth: { ...authStub(), async signIn() { return { data: null, error: { message: "Auth refused" } }; } }, session, queries: { entries }, mutations: { sign: { async run(value) { calls.push(value); return { data: null, error: null }; } } } });
     try {
       assert.match(harness.text(), /Leave a note from this island.*All for one/s);
@@ -897,6 +913,26 @@ async function writePackage(projectDir, packageName, exports, files) {
 
 async function withFakeGoogleServer(fn) {
   const requests = [];
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: "jwk" });
+  Object.assign(jwk, { kid: "fake-google-key", alg: "RS256", use: "sig" });
+  let nonce = null;
+  const identityToken = () => {
+    const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid: jwk.kid })).toString("base64url");
+    const payload = Buffer.from(JSON.stringify({
+      iss: "https://accounts.google.com",
+      aud: "client-id",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      nonce,
+      sub: "google-subject-mira",
+      email: "mira@example.com",
+      email_verified: true,
+      name: "Mira",
+      picture: "https://example.com/mira.png",
+    })).toString("base64url");
+    const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString("base64url");
+    return `${header}.${payload}.${signature}`;
+  };
   const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url, "http://127.0.0.1");
     requests.push({ method: request.method, path: requestUrl.pathname });
@@ -911,21 +947,13 @@ async function withFakeGoogleServer(fn) {
       });
       requests.at(-1).body = Object.fromEntries(body.entries());
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ access_token: "server-owned-access-token", token_type: "Bearer" }));
+      response.end(JSON.stringify({ id_token: identityToken(), access_token: "server-owned-access-token", token_type: "Bearer" }));
       return;
     }
 
-    if (request.method === "GET" && requestUrl.pathname === "/userinfo") {
-      requests.at(-1).authorization = request.headers.authorization;
+    if (request.method === "GET" && requestUrl.pathname === "/jwks") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(
-        JSON.stringify({
-          email: "mira@example.com",
-          name: "Mira",
-          picture: "https://example.com/mira.png",
-          email_verified: true,
-        }),
-      );
+      response.end(JSON.stringify({ keys: [jwk] }));
       return;
     }
 
@@ -942,11 +970,208 @@ async function withFakeGoogleServer(fn) {
   try {
     return await fn({
       tokenUrl: `http://127.0.0.1:${port}/token`,
-      userInfoUrl: `http://127.0.0.1:${port}/userinfo`,
+      jwksUrl: `http://127.0.0.1:${port}/jwks`,
+      requests,
+      setNonce(value) {
+        nonce = value;
+      },
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+async function withFakeFacebookServer(fn) {
+  const requests = [];
+  const server = createServer(async (request, response) => {
+    const requestUrl = new URL(request.url, "http://127.0.0.1");
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    requests.push({
+      method: request.method,
+      path: requestUrl.pathname,
+      query: Object.fromEntries(requestUrl.searchParams),
+      body: Object.fromEntries(new URLSearchParams(body)),
+      authorization: request.headers.authorization ?? null,
+    });
+    response.writeHead(200, { "content-type": "application/json" });
+    if (requestUrl.pathname === "/token") {
+      response.end(JSON.stringify({ access_token: "facebook-provider-access-token", token_type: "bearer" }));
+      return;
+    }
+    response.end(JSON.stringify({
+      id: "facebook-subject-mira",
+      name: "Mira Without Email",
+      picture: { data: { url: "https://example.com/mira-facebook.png" } },
+    }));
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const port = server.address().port;
+  try {
+    return await fn({
+      tokenUrl: `http://127.0.0.1:${port}/token`,
+      graphUrl: `http://127.0.0.1:${port}/v23.0/me`,
       requests,
     });
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+async function withFakeAppleServer(fn) {
+  const requests = [];
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: "jwk" });
+  Object.assign(jwk, { kid: "fake-apple-key", alg: "RS256", use: "sig" });
+  let nonce = null;
+  const identityToken = () => {
+    const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid: jwk.kid })).toString("base64url");
+    const payload = Buffer.from(JSON.stringify({
+      iss: "https://appleid.apple.com",
+      aud: "com.example.web",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      nonce,
+      sub: "apple-subject-mira",
+      email: "mira@privaterelay.appleid.com",
+      email_verified: "true",
+    })).toString("base64url");
+    const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString("base64url");
+    return `${header}.${payload}.${signature}`;
+  };
+  const server = createServer(async (request, response) => {
+    const requestUrl = new URL(request.url, "http://127.0.0.1");
+    requests.push({ method: request.method, path: requestUrl.pathname });
+    if (request.method === "POST" && requestUrl.pathname === "/token") {
+      const body = await new Promise((resolve) => {
+        let raw = "";
+        request.on("data", (chunk) => { raw += chunk; });
+        request.on("end", () => resolve(new URLSearchParams(raw)));
+      });
+      requests.at(-1).body = Object.fromEntries(body.entries());
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ id_token: identityToken(), token_type: "Bearer" }));
+      return;
+    }
+    if (request.method === "GET" && requestUrl.pathname === "/jwks") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ keys: [jwk] }));
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const port = server.address().port;
+  try {
+    return await fn({
+      tokenUrl: `http://127.0.0.1:${port}/token`,
+      jwksUrl: `http://127.0.0.1:${port}/jwks`,
+      requests,
+      setNonce(value) { nonce = value; },
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+async function withAppleHttpsTunnel(upstreamUrl, publicPort, fn) {
+  const upstream = new URL(upstreamUrl);
+  const [key, cert] = await Promise.all([
+    readFile(path.join(repoRoot, "test", "support", "apple-tls-key.pem")),
+    readFile(path.join(repoRoot, "test", "support", "apple-tls-cert.pem")),
+  ]);
+  let publicOrigin = null;
+  const tunnelSockets = new Set();
+  const forwardedHeaders = (headers) => ({
+    ...headers,
+    host: new URL(publicOrigin).host,
+    origin: headers.origin ?? publicOrigin,
+    "x-forwarded-host": new URL(publicOrigin).host,
+    "x-forwarded-proto": "https",
+  });
+  const proxy = createHttpsServer({ key, cert }, (request, response) => {
+    const outgoing = httpRequest({
+      hostname: upstream.hostname,
+      port: upstream.port,
+      method: request.method,
+      path: request.url,
+      headers: forwardedHeaders(request.headers),
+    }, (upstreamResponse) => {
+      response.writeHead(upstreamResponse.statusCode, upstreamResponse.headers);
+      upstreamResponse.pipe(response);
+    });
+    outgoing.on("error", (error) => response.destroy(error));
+    request.pipe(outgoing);
+  });
+  proxy.on("upgrade", (request, socket, head) => {
+    const upstreamSocket = connect(Number(upstream.port), upstream.hostname, () => {
+      const headers = forwardedHeaders(request.headers);
+      upstreamSocket.write([
+        `${request.method} ${request.url} HTTP/${request.httpVersion}`,
+        ...Object.entries(headers).map(([name, value]) => `${name}: ${value}`),
+        "",
+        "",
+      ].join("\r\n"));
+      if (head.length > 0) upstreamSocket.write(head);
+      socket.pipe(upstreamSocket).pipe(socket);
+    });
+    upstreamSocket.on("error", () => socket.destroy());
+  });
+  proxy.on("connection", (socket) => {
+    tunnelSockets.add(socket);
+    socket.on("close", () => tunnelSockets.delete(socket));
+  });
+  await new Promise((resolve, reject) => {
+    proxy.once("error", reject);
+    proxy.listen(publicPort, "127.0.0.1", resolve);
+  });
+  publicOrigin = `https://apple.example.test:${proxy.address().port}`;
+  try {
+    return await fn({
+      publicOrigin,
+      socketOptions: {
+        connectHost: "127.0.0.1",
+        connectionTokenBaseUrl: upstreamUrl,
+      },
+      postForm(pathname, values) {
+        const body = new URLSearchParams(values).toString();
+        return new Promise((resolve, reject) => {
+          const request = httpsRequest({
+            hostname: "127.0.0.1",
+            port: proxy.address().port,
+            path: pathname,
+            method: "POST",
+            rejectUnauthorized: false,
+            servername: "apple.example.test",
+            headers: {
+              host: new URL(publicOrigin).host,
+              origin: publicOrigin,
+              "content-type": "application/x-www-form-urlencoded",
+              "content-length": Buffer.byteLength(body),
+            },
+          }, (response) => {
+            let responseBody = "";
+            response.on("data", (chunk) => { responseBody += chunk; });
+            response.on("end", () => resolve({
+              status: response.statusCode,
+              headers: response.headers,
+              body: responseBody,
+            }));
+          });
+          request.on("error", reject);
+          request.end(body);
+        });
+      },
+    });
+  } finally {
+    for (const socket of tunnelSockets) socket.destroy();
+    await new Promise((resolve) => proxy.close(resolve));
   }
 }
 
@@ -3418,7 +3643,7 @@ test("sporades dev bundles and serves a scaffolded React photo library capsule",
       assert.match(serverBundle, /personalPhotos/);
       assert.match(clientBundle, /Photo Library/);
       assert.match(clientBundle, /upload\(/);
-      assert.match(clientBundle, /Sign in with Google/);
+      assert.match(clientBundle, /runtimeAvailable/);
       assert.doesNotMatch(clientBundle, /better-auth|googleapis|gapi|accounts\.google/);
 
       const rootResponse = await fetch(started.data.url);
@@ -3453,7 +3678,7 @@ test("sporades dev bundles and serves a scaffolded Preact photo library capsule"
       const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
       assert.match(clientBundle, /Photo Library/);
       assert.match(clientBundle, /My library/);
-      assert.match(clientBundle, /Sign in with Google/);
+      assert.match(clientBundle, /runtimeAvailable/);
       assert.doesNotMatch(clientBundle, /react-dom|better-auth|googleapis|gapi|accounts\.google/);
 
       const rootResponse = await fetch(started.data.url);
@@ -5385,10 +5610,10 @@ test("sporades dev reloads sporades.json on rebuild failure and keeps the last R
         child,
         (event) => !event.ok && event.data.event === "rebuild" && event.data.status === "failed",
       );
-      assert.equal(failed.error.message, "Google OAuth is not fully configured.");
+      assert.equal(failed.error.message, "Google auth is not fully configured.");
       assert.equal(
         failed.error.hint,
-        "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`.",
+        "Run `sporades auth set google --client-id <id> --client-secret <secret>` or use `--client-json <path>`.",
       );
 
       socket.send(JSON.stringify({ id: "auth-after", type: "auth.get" }));
@@ -5571,6 +5796,7 @@ test("sporades dev restarts server runtime and accepts new WebSocket connections
       assert.deepEqual(JSON.parse(listResult.stdout).data.tables, [
         "notes",
         "sporades",
+        "sporades_auth_identities",
         "sporades_auth_oauth_states",
         "sporades_auth_sessions",
         "sporades_auth_users",
@@ -7523,10 +7749,75 @@ test("sporades dev rejects Google auth mode when required env values are missing
       ok: false,
       data: null,
       error: {
-        message: "Google OAuth is not fully configured.",
-        hint: "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`.",
+        message: "Google auth is not fully configured.",
+        hint: "Run `sporades auth set google --client-id <id> --client-secret <secret>` or use `--client-json <path>`. Register callback URL http://localhost:4000/__sporades/auth/google/callback.",
       },
     });
+  });
+});
+
+test("sporades dev gives provider-specific OAuth guidance with the exact safe callback URL", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "oauth-guidance-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "oauth-guidance-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 4105;
+    config.auth = {
+      providers: {
+        anonymous: true,
+        microsoft: {
+          clientIdEnv: "MICROSOFT_CLIENT_ID",
+          clientSecretEnv: "MICROSOFT_CLIENT_SECRET",
+          tenant: "organizations",
+        },
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "MICROSOFT_CLIENT_ID=partial-id\n");
+
+    const result = await runCli(["dev", "--json"], { cwd: projectDir });
+    assert.equal(result.code, 1);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Microsoft auth is not fully configured.",
+        hint: "Run `sporades auth set microsoft --client-id <id> --client-secret <secret>` or use `--client-json <path>`. Register callback URL http://localhost:4105/__sporades/auth/microsoft/callback.",
+      },
+    });
+  });
+});
+
+test("sporades dev gives Apple HTTPS callback guidance without advertising localhost", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "apple-guidance-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "apple-guidance-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.auth = {
+      providers: {
+        anonymous: true,
+        apple: {
+          clientId: "com.example.web",
+          teamId: "TEAM123",
+          keyId: "KEY123",
+          privateKeyEnv: "APPLE_PRIVATE_KEY",
+        },
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+
+    const result = await runCli(["dev", "--json"], { cwd: projectDir });
+    assert.equal(result.code, 1);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.error.message, "Apple auth is not fully configured.");
+    assert.match(payload.error.hint, /Hosted HTTPS origin/);
+    assert.match(payload.error.hint, /HTTPS development tunnel/);
+    assert.doesNotMatch(payload.error.hint, /localhost|http:\/\//);
   });
 });
 
@@ -7556,7 +7847,7 @@ test("sporades dev rejects unsupported auth providers with structured JSON", asy
       data: null,
       error: {
         message: "Unsupported auth provider: mastodon",
-        hint: "Use supported auth providers: anonymous, google, email.",
+        hint: "Use supported auth providers: anonymous, email, google, microsoft, apple, facebook.",
       },
     });
   });
@@ -7597,18 +7888,11 @@ test("WebSocket auth.get reports enabled providers from multi-provider config", 
       const auth = await readSocketMessage(socket);
 
       assert.equal(auth.id, "auth-1");
-      assert.deepEqual(auth.data.providers, {
-        anonymous: {
-          enabled: true,
-        },
-        google: {
-          enabled: true,
-          configured: true,
-        },
-        email: {
-          enabled: true,
-        },
-      });
+      assert.deepEqual(Object.keys(auth.data.providers), ["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
+      assert.deepEqual(auth.data.providers.anonymous, { enabled: true, configured: true, runtimeAvailable: true });
+      assert.deepEqual(auth.data.providers.email, { enabled: true, configured: true, runtimeAvailable: true });
+      assert.deepEqual(auth.data.providers.google, { enabled: true, configured: true, runtimeAvailable: true });
+      assert.deepEqual(auth.data.providers.microsoft, { enabled: false, configured: false, runtimeAvailable: false });
       assert.doesNotMatch(JSON.stringify(auth.data.providers), /GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET|client-secret/);
     } finally {
       socket?.close();
@@ -7895,7 +8179,7 @@ test("Google auth callback exchanges the code server-side and links the current 
         cwd: projectDir,
         env: {
           SPORADES_GOOGLE_TOKEN_URL: google.tokenUrl,
-          SPORADES_GOOGLE_USERINFO_URL: google.userInfoUrl,
+          SPORADES_GOOGLE_JWKS_URL: google.jwksUrl,
         },
       });
       let socket;
@@ -7947,8 +8231,12 @@ test("Google auth callback exchanges the code server-side and links the current 
         assert.equal(signInUrl.searchParams.get("client_id"), "client-id");
         assert.equal(signInUrl.searchParams.get("response_type"), "code");
         assert.equal(signInUrl.searchParams.get("scope"), "openid email profile");
+        assert.ok(signInUrl.searchParams.get("nonce"));
+        assert.ok(signInUrl.searchParams.get("code_challenge"));
+        assert.equal(signInUrl.searchParams.get("code_challenge_method"), "S256");
         assert.match(signInUrl.searchParams.get("redirect_uri"), /\/__sporades\/auth\/google\/callback$/);
         assert.notEqual(signInUrl.searchParams.get("state"), anonymousAuth.data.sessionToken);
+        google.setNonce(signInUrl.searchParams.get("nonce"));
 
         const callbackResponse = await fetch(
           `${started.data.url}/__sporades/auth/google/callback?code=server-owned-code&state=${signInUrl.searchParams.get("state")}`,
@@ -7956,7 +8244,9 @@ test("Google auth callback exchanges the code server-side and links the current 
         );
         assert.equal(callbackResponse.status, 302);
         assert.equal(callbackResponse.headers.get("location"), `${started.data.url}/notes`);
-        assert.deepEqual(google.requests[0], {
+        const tokenRequest = google.requests[0];
+        assert.ok(tokenRequest.body.code_verifier);
+        assert.deepEqual(tokenRequest, {
           method: "POST",
           path: "/token",
           body: {
@@ -7965,13 +8255,10 @@ test("Google auth callback exchanges the code server-side and links the current 
             client_secret: "client-secret",
             redirect_uri: `${started.data.url}/__sporades/auth/google/callback`,
             grant_type: "authorization_code",
+            code_verifier: tokenRequest.body.code_verifier,
           },
         });
-        assert.deepEqual(google.requests[1], {
-          method: "GET",
-          path: "/userinfo",
-          authorization: "Bearer server-owned-access-token",
-        });
+        assert.deepEqual(google.requests[1], { method: "GET", path: "/jwks" });
 
         socket.send(JSON.stringify({ id: "auth-2", type: "auth.get" }));
         const linked = await readSocketMessage(socket);
@@ -8037,7 +8324,136 @@ test("Google auth callback exchanges the code server-side and links the current 
   });
 });
 
-test("Google auth sign-in uses forwarded https origin behind a proxy", async () => {
+test("Facebook auth callback uses the versioned server-owned Graph flow and accepts a profile without email", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "facebook-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "facebook-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    const setResult = await runCli(
+      ["auth", "set", "facebook", "--client-id", "facebook-app-id", "--client-secret", "facebook-app-secret", "--graph-version", "v23.0", "--json"],
+      { cwd: projectDir },
+    );
+    assert.equal(setResult.code, 0, setResult.stdout || setResult.stderr);
+    const configuredProject = JSON.parse(await readFile(configPath, "utf8"));
+    delete configuredProject.auth.providers.facebook.graphVersion;
+    configuredProject.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(configuredProject, null, 2)}\n`);
+
+    await withFakeFacebookServer(async (facebook) => {
+      const child = startCli(["dev", "--json"], {
+        cwd: projectDir,
+        env: {
+          SPORADES_FACEBOOK_TOKEN_URL: facebook.tokenUrl,
+          SPORADES_FACEBOOK_GRAPH_URL: facebook.graphUrl,
+          SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK: "1",
+        },
+      });
+      let socket;
+      try {
+        const started = await waitForJsonLine(child);
+        assert.equal(started.ok, true, JSON.stringify(started));
+        socket = await openSocket(started.data.url);
+        socket.send(JSON.stringify({ id: "auth-1", type: "auth.get" }));
+        const anonymous = await readSocketMessage(socket);
+        const anonymousUserId = anonymous.data.auth.userId;
+        assert.deepEqual(anonymous.data.providers.facebook, {
+          enabled: true,
+          configured: true,
+          runtimeAvailable: true,
+          graphVersion: "v23.0",
+        });
+
+        socket.send(JSON.stringify({
+          id: "signin-1",
+          type: "auth.signIn",
+          provider: "facebook",
+          returnTo: `${started.data.url}/after`,
+        }));
+        const signIn = await readSocketMessage(socket);
+        assert.equal(signIn.type, "auth.redirect");
+        const signInUrl = new URL(signIn.data.url);
+        assert.equal(signInUrl.origin, "https://www.facebook.com");
+        assert.equal(signInUrl.pathname, "/v23.0/dialog/oauth");
+        assert.equal(signInUrl.searchParams.get("client_id"), "facebook-app-id");
+        assert.equal(signInUrl.searchParams.get("scope"), "public_profile,email");
+        assert.equal(signInUrl.searchParams.get("response_type"), "code");
+        assert.match(signInUrl.searchParams.get("redirect_uri"), /\/__sporades\/auth\/facebook\/callback$/);
+        assert.notEqual(signInUrl.searchParams.get("state"), anonymous.data.sessionToken);
+        assert.doesNotMatch(signIn.data.url, /facebook-app-secret/);
+
+        const callbackResponse = await fetch(
+          `${started.data.url}/__sporades/auth/facebook/callback?code=server-owned-code&state=${signInUrl.searchParams.get("state")}`,
+          { redirect: "manual" },
+        );
+        assert.equal(callbackResponse.status, 302);
+        assert.equal(callbackResponse.headers.get("location"), `${started.data.url}/after`);
+        assert.deepEqual(facebook.requests[0], {
+          method: "POST",
+          path: "/token",
+          query: {},
+          body: {
+            code: "server-owned-code",
+            client_id: "facebook-app-id",
+            client_secret: "facebook-app-secret",
+            redirect_uri: `${started.data.url}/__sporades/auth/facebook/callback`,
+          },
+          authorization: null,
+        });
+        assert.deepEqual(facebook.requests[1], {
+          method: "GET",
+          path: "/v23.0/me",
+          query: { fields: "id,name,email,picture" },
+          body: {},
+          authorization: "Bearer facebook-provider-access-token",
+        });
+
+        socket.send(JSON.stringify({ id: "auth-2", type: "auth.get" }));
+        const linked = await readSocketMessage(socket);
+        assert.deepEqual(linked.data.auth, {
+          userId: anonymousUserId,
+          displayName: "Mira Without Email",
+          email: null,
+          picture: "https://example.com/mira-facebook.png",
+          isAuthenticated: true,
+          isGuest: false,
+          provider: "facebook",
+        });
+        assert.equal(linked.data.sessionToken, anonymous.data.sessionToken);
+
+        const { DatabaseSync } = await import("node:sqlite");
+        const sqlite = new DatabaseSync(path.join(projectDir, ".sporades", "data.db"));
+        try {
+          const persisted = sqlite.prepare(
+            "SELECT provider, subject, email, displayName, picture FROM sporades_auth_identities WHERE provider = ?",
+          ).get("facebook");
+          assert.deepEqual({ ...persisted }, {
+            provider: "facebook",
+            subject: "facebook-subject-mira",
+            email: null,
+            displayName: "Mira Without Email",
+            picture: "https://example.com/mira-facebook.png",
+          });
+          assert.doesNotMatch(JSON.stringify(persisted), /facebook-provider-access-token/);
+        } finally {
+          sqlite.close();
+        }
+      } finally {
+        socket?.close();
+        child.kill("SIGTERM");
+        await new Promise((resolve) => child.once("exit", resolve));
+      }
+    });
+  });
+});
+
+test("Google auth rejects spoofed forwarding without a configured public origin", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
@@ -8073,14 +8489,126 @@ test("Google auth sign-in uses forwarded https origin behind a proxy", async () 
         returnTo: "https://photos.example.test/library",
       });
       const signIn = await socket.readJson();
-      assert.equal(signIn.type, "auth.redirect");
-      const signInUrl = new URL(signIn.data.url);
-      assert.equal(signInUrl.searchParams.get("redirect_uri"), "https://photos.example.test/__sporades/auth/google/callback");
+      assert.equal(signIn.type, "error");
+      assert.equal(signIn.error.code, "OAUTH_ORIGIN_INVALID");
     } finally {
       socket?.close();
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
     }
+  });
+});
+
+test("Apple HTTPS browser tracer completes form-post auth without client-side Apple SDK code", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "apple-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "apple-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const credentialsPath = path.join(projectDir, "apple.json");
+    await writeFile(credentialsPath, JSON.stringify({
+      servicesId: "com.example.web",
+      teamId: "TEAM123456",
+      keyId: "KEY1234567",
+      privateKey: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+    }));
+    const setResult = await runCli(["auth", "set", "apple", "--client-json", credentialsPath, "--json"], { cwd: projectDir });
+    assert.equal(setResult.code, 0, setResult.stderr);
+    const tlsPort = await getTestAvailablePort();
+    const publicOrigin = `https://apple.example.test:${tlsPort}`;
+    const configured = JSON.parse(await readFile(configPath, "utf8"));
+    configured.__sporadesPublicOrigin = publicOrigin;
+    await writeFile(configPath, `${JSON.stringify(configured, null, 2)}\n`);
+
+    await withFakeAppleServer(async (apple) => {
+      const child = startCli(["dev", "--json"], {
+        cwd: projectDir,
+        env: {
+          SPORADES_APPLE_TOKEN_URL: apple.tokenUrl,
+          SPORADES_APPLE_JWKS_URL: apple.jwksUrl,
+        },
+      });
+      let httpsSocket;
+      try {
+        const started = await waitForJsonLine(child);
+        assert.equal(started.ok, true, JSON.stringify(started));
+        await withAppleHttpsTunnel(started.data.url, tlsPort, async (tunnel) => {
+          httpsSocket = await openSocketWithHeaders(started.data.url, {
+            host: new URL(tunnel.publicOrigin).host,
+            origin: tunnel.publicOrigin,
+            "x-forwarded-host": new URL(tunnel.publicOrigin).host,
+            "x-forwarded-proto": "https",
+          });
+          httpsSocket.sendJson({ id: "auth", type: "auth.get" });
+          const anonymous = await httpsSocket.readJson();
+          assert.equal(anonymous.data.providers.apple.configured, true);
+          assert.equal(anonymous.data.providers.apple.runtimeAvailable, true);
+          const userId = anonymous.data.auth.userId;
+          httpsSocket.sendJson({ id: "todos", type: "query.subscribe", query: "todos" });
+          assert.deepEqual((await httpsSocket.readJson()).data, []);
+          httpsSocket.sendJson({
+            id: "signin",
+            type: "auth.signIn",
+            provider: "apple",
+            returnTo: `${tunnel.publicOrigin}/account`,
+          });
+          const redirect = await httpsSocket.readJson();
+          assert.equal(redirect.type, "auth.redirect");
+          const authorization = new URL(redirect.data.url);
+          assert.equal(authorization.searchParams.get("redirect_uri"), `${tunnel.publicOrigin}/__sporades/auth/apple/callback`);
+          apple.setNonce(authorization.searchParams.get("nonce"));
+
+          const callback = await tunnel.postForm("/__sporades/auth/apple/callback", {
+            state: authorization.searchParams.get("state"),
+            code: "apple-code",
+            user: JSON.stringify({ name: { firstName: "Mira", lastName: "Chen" } }),
+          });
+          assert.equal(callback.status, 302, callback.body);
+          assert.equal(callback.headers.location, `${tunnel.publicOrigin}/account`);
+          assert.equal(apple.requests[0].body.redirect_uri, `${tunnel.publicOrigin}/__sporades/auth/apple/callback`);
+          assert.ok(apple.requests[0].body.client_secret);
+
+          httpsSocket.sendJson({ id: "linked", type: "auth.get" });
+          const linked = await httpsSocket.readJson();
+          assert.equal(linked.data.auth.userId, userId);
+          assert.equal(linked.data.auth.provider, "apple");
+          assert.equal(linked.data.auth.displayName, "Mira Chen");
+          assert.equal(linked.data.auth.email, "mira@privaterelay.appleid.com");
+
+          httpsSocket.sendJson({ id: "preference-write", type: "preferences.update", patch: { appleTheme: "orchard" } });
+          const preferenceWrite = await httpsSocket.readJson();
+          assert.deepEqual(preferenceWrite.data.preferences, { appleTheme: "orchard" });
+          httpsSocket.sendJson({ id: "preference-read", type: "preferences.get" });
+          const preferenceRead = await httpsSocket.readJson();
+          assert.deepEqual(preferenceRead.data.preferences, { appleTheme: "orchard" });
+
+          httpsSocket.sendJson({ id: "todo", type: "mutation.run", mutation: "addTodo", args: ["Verified Apple owner"] });
+          assert.equal((await httpsSocket.readJson()).error, null);
+          const todoRefresh = await httpsSocket.readJson();
+          assert.equal(todoRefresh.data[0].text, "Verified Apple owner");
+
+          httpsSocket.sendJson({ id: "signout", type: "auth.signOut" });
+          assert.equal((await httpsSocket.readJson()).type, "auth.signOut.result");
+          httpsSocket.sendJson({ id: "signed-out", type: "auth.get" });
+          assert.equal((await httpsSocket.readJson()).data.auth.provider, "anonymous");
+          const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
+          assert.doesNotMatch(clientBundle, /appleid\\.auth|appleid\\.apple\\.com|SignInWithApple|AppleID\\.auth/);
+          httpsSocket.close();
+          httpsSocket = null;
+        });
+      } finally {
+        httpsSocket?.close();
+        child.kill("SIGTERM");
+        await new Promise((resolve) => child.once("exit", resolve));
+      }
+    });
   });
 });
 
@@ -8529,6 +9057,7 @@ test("sporades db list returns tables from the running dev session database", as
         data: {
           tables: [
             "sporades",
+            "sporades_auth_identities",
             "sporades_auth_oauth_states",
             "sporades_auth_sessions",
             "sporades_auth_users",
@@ -8588,13 +9117,28 @@ test("sporades db dump returns structured table data from the running dev sessio
               ],
             },
             {
+              name: "sporades_auth_identities",
+              columns: ["id", "userId", "provider", "subject", "email", "displayName", "picture", "createdAt", "updatedAt"],
+              rows: [],
+            },
+            {
               name: "sporades_auth_oauth_states",
-              columns: ["state", "sessionToken", "returnTo", "redirectUri", "createdAt"],
+              columns: [
+                "state",
+                "provider",
+                "sessionToken",
+                "returnTo",
+                "redirectUri",
+                "createdAt",
+                "expiresAt",
+                "nonce",
+                "pkceVerifier",
+              ],
               rows: [],
             },
             {
               name: "sporades_auth_sessions",
-              columns: ["token", "userId", "createdAt", "expiresAt"],
+              columns: ["token", "userId", "provider", "createdAt", "expiresAt"],
               rows: [],
             },
             {
@@ -8722,6 +9266,7 @@ test("sporades db query runs read-only SQL against the running dev session datab
           columns: ["name"],
           rows: [
             { name: "sporades" },
+            { name: "sporades_auth_identities" },
             { name: "sporades_auth_oauth_states" },
             { name: "sporades_auth_sessions" },
             { name: "sporades_auth_users" },
@@ -9598,7 +10143,7 @@ test("a scaffolded guestbook stores Google-linked author metadata from ctx.auth"
         cwd: projectDir,
         env: {
           SPORADES_GOOGLE_TOKEN_URL: google.tokenUrl,
-          SPORADES_GOOGLE_USERINFO_URL: google.userInfoUrl,
+          SPORADES_GOOGLE_JWKS_URL: google.jwksUrl,
         },
       });
       let socket;
@@ -9616,6 +10161,7 @@ test("a scaffolded guestbook stores Google-linked author metadata from ctx.auth"
         const signIn = await readSocketMessage(socket);
         assert.equal(signIn.type, "auth.redirect");
         const signInUrl = new URL(signIn.data.url);
+        google.setNonce(signInUrl.searchParams.get("nonce"));
         const callbackResponse = await fetch(
           `${started.data.url}/__sporades/auth/google/callback?code=server-owned-code&state=${signInUrl.searchParams.get("state")}`,
           { redirect: "manual" },
@@ -12083,12 +12629,19 @@ function installSessionTokenEnvelope(socket, sessionToken) {
   };
 }
 
-async function openSocketWithHeaders(baseUrl, headers = {}) {
-  const connectionToken = await readPageConnectionToken(baseUrl);
+async function openSocketWithHeaders(baseUrl, headers = {}, options = {}) {
+  const connectionToken = await readPageConnectionToken(options.connectionTokenBaseUrl ?? baseUrl);
   return new Promise((resolve, reject) => {
     const url = new URL("/__sporades/ws", baseUrl);
     url.searchParams.set("connectionToken", connectionToken);
-    const socket = connect(Number(url.port), url.hostname);
+    const socket = url.protocol === "https:"
+      ? connectTls({
+          host: options.connectHost ?? url.hostname,
+          port: Number(url.port || 443),
+          servername: url.hostname,
+          rejectUnauthorized: false,
+        })
+      : connect(Number(url.port), options.connectHost ?? url.hostname);
     const key = randomBytes(16).toString("base64");
     let buffer = Buffer.alloc(0);
     const timeout = setTimeout(() => {

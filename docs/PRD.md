@@ -439,9 +439,32 @@ Supported provider behavior:
 | Anonymous | `auth.providers.anonymous`, legacy `auth.mode`, or unset | Creates a persistent anonymous Sporades session. |
 | Email | `auth.providers.email` | `auth.signUp("email", ...)` links the current session; `auth.signIn("email", ...)` resolves the account later. |
 | Google | `auth.providers.google` with env var names, or legacy Google mode | `auth.signIn("google")` starts a server-owned OAuth redirect and links the verified provider identity. |
+| Microsoft | `auth.providers.microsoft` with client env names and tenant | Configuration is provider-neutral; runtime availability is reported separately from credential completeness. |
+| Apple | `auth.providers.apple` with Services ID, Team ID, Key ID, and private-key env name | HTTPS-domain-only server-owned `form_post` flow; runtime ES256 client credential and strictly verified Apple subject link the current Anonymous account. |
+| Facebook | `auth.providers.facebook` with app env names and Graph `v23.0` | `auth.signIn("facebook")` starts a server-owned authorization-code redirect, requires the stable Graph profile ID, and accepts profiles without email. |
 
-Provider secrets live in Server env. `sporades.json` stores provider shape and
-env var names, not secret values.
+Provider secrets live in Server env. `sporades.json` stores provider shape,
+non-secret options, and env var names, not secret values. Configuring or
+disabling one provider merges that provider without replacing siblings or
+implicitly disabling Anonymous sessions.
+
+Apple private keys support multiline PEM input and must round-trip exactly
+through Server env serialization. Apple callback guidance exposes the stable
+callback path but never suggests localhost or plain HTTP; operators register
+the path against a Hosted HTTPS origin or an HTTPS development tunnel. Apple
+availability is origin-aware: HTTP, localhost, and IP-address origins cannot
+start the flow. The first-authorization name is sanitized and persisted while
+later callbacks may omit it; private-relay email is profile data rather than
+the identity key. Forwarding headers are authoritative only when they agree
+with the configured public origin; otherwise OAuth derives its origin from the
+actual TLS connection and validated Host. Apple client signing accepts only an
+unencrypted P-256 private key, and callback/JWT/JWKS inputs are bounded and
+unambiguous before identity work.
+Provider configuration updates stage all file replacements before mutation and
+recover the exact prior config and Server env state when a commit fails.
+Duplicate lexical target aliases are rejected before filesystem inspection;
+transaction callers provide canonical non-symlink targets rather than relying
+on symlink or hard-link identity discovery.
 
 Session records store `createdAt` and `expiresAt` lifecycle metadata. By
 default a session expires 30 days after creation or refresh. Missing, invalid,
@@ -450,6 +473,12 @@ and sign-in rotate the current session token when the linked identity changes.
 Google sign-in refreshes the current session token during the server-owned OAuth
 callback, preserving the redirect flow without exposing a token handoff in the
 browser.
+Facebook sign-in follows the same Session-linking contract. Its App Secret and
+access token remain server-only; the runtime persists only the stable Facebook
+ID and optional selected email, name, and picture profile fields.
+An absent Facebook Graph version defaults to `v23.0`; a supplied null,
+non-string, malformed, or unsupported version is not treated as absent and
+leaves the provider configured/runtime unavailable.
 
 `sporades auth as <provider> ... --json` is a dev-session helper for tests and
 agents. It creates or resolves simulated local identities and can push the

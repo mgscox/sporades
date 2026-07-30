@@ -3,11 +3,11 @@
 
 // src/cli/sporades.ts
 import { spawnSync as spawnSync2 } from "node:child_process";
-import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes5, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes6, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { appendFile, chmod as chmod2, cp, lstat as lstat5, mkdir as mkdir6, readdir as readdir2, readFile as readFile8, rename as rename3, rm as rm4, writeFile as writeFile6 } from "node:fs/promises";
-import path8 from "node:path";
+import { appendFile, chmod as chmod2, cp, lstat as lstat6, mkdir as mkdir6, readdir as readdir2, readFile as readFile8, rename as rename4, rm as rm5, writeFile as writeFile7 } from "node:fs/promises";
+import path9 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/bundle-pipeline.ts
@@ -1912,7 +1912,7 @@ function field(kind) {
 }
 
 // src/server-runtime-source.ts
-import { createHash as createHash2, createHmac, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash as createHash2, createHmac, createPrivateKey, randomBytes as randomBytes2, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 
 // src/mail-config.ts
@@ -2096,6 +2096,9 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   isSameOriginRequest,
   isLocalDevOrigin,
   normalizeOrigin,
+  resolveOAuthRequestOrigin,
+  singleHttpHeader,
+  validatedRequestHost,
   appendVaryHeader,
   sanitizeResponseHeaders,
   createSqliteDatabaseAdapter,
@@ -2208,6 +2211,8 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   activePrivilegedFileAccess,
   privilegedAuthUserId,
   isReservedAuthUserId,
+  authIdentityRowUnlessReserved,
+  authIdentityRowsUnlessReserved,
   assertNotReservedAuthUserId,
   createPrivilegedAuditLogInput,
   normalizePrivilegedAuditActorKind,
@@ -2335,6 +2340,8 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   authStatus,
   normalizeAuthConfig,
   readProviderConfig,
+  readFacebookProviderConfig,
+  emptyProviderConfig,
   createFileStorageTables,
   createRuntimeFileStorageAdapter,
   createLocalFileStorageAdapter,
@@ -2397,8 +2404,14 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   removeFileVersionBestEffort,
   contentTypeForFile,
   createAnonymousAuthTables,
+  createProviderIdentityTables,
+  createLibsqlProviderIdentityTables,
+  ensureOAuthStateColumns,
+  ensureLibsqlOAuthStateColumns,
   createUserPreferencesTables,
   ensureSessionLifecycleColumns,
+  ensureSessionProvenanceColumn,
+  ensureLibsqlSessionProvenanceColumn,
   sessionExpiresAt,
   isExpiredSession,
   createSessionToken,
@@ -2415,6 +2428,8 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   updateCurrentUserPreferences,
   normalizePreferencesPatch,
   createPreferencesError,
+  normalizeSimulatedEmail,
+  normalizeSimulatedText,
   authProvidersForClient,
   routeSporadesAuth,
   signUpWithEmail,
@@ -2433,12 +2448,37 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   hashEmailPassword,
   verifyEmailPassword,
   emailAuthDisabledError,
-  beginGoogleSignIn,
+  beginOAuthSignIn,
+  oauthProviderAdapter,
+  createGoogleOAuthProviderAdapter,
+  createAppleOAuthProviderAdapter,
+  completeGoogleOAuth,
+  createFacebookOAuthProviderAdapter,
+  facebookOAuthCallbackError,
+  facebookOAuthEndpoint,
+  facebookOAuthTimeoutSignal,
+  cancelFacebookOAuthResponse,
+  readFacebookOAuthJson,
+  completeFacebookOAuth,
+  completeAppleOAuth,
+  createAppleClientSecret,
+  verifyGoogleIdentityToken,
+  verifyAppleIdentityToken,
+  parseBoundedJwtObject,
+  readBoundedJsonResponse,
+  isPlainJsonObject,
+  appleOAuthOriginEligible,
+  parseAppleAuthorizationUser,
+  sanitizeAppleNamePart,
+  decodeJwtPart,
+  readOAuthCallbackParameters,
+  oauthFormContentTypeValid,
+  parseOAuthFormBody,
+  decodeOAuthFormComponent,
+  validateOAuthCallbackScalar,
+  validateConsumedOAuthCallbackParameters,
   normalizeReturnTo,
-  exchangeGoogleCode,
-  readGoogleOAuthError,
-  oauthErrorHint,
-  fetchGoogleProfile,
+  linkProviderIdentity,
   linkGoogleAccount,
   writeRedirect,
   createWebSocketAccept,
@@ -2688,6 +2728,49 @@ function normalizeOrigin(value) {
   }
   try {
     return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+function resolveOAuthRequestOrigin(policy, request) {
+  const configuredOrigin = normalizeOrigin(policy?.cors?.publicOrigin);
+  const originHeader = normalizeOrigin(singleHttpHeader(request.headers.origin));
+  const hostHeader = singleHttpHeader(request.headers.host);
+  const forwardedHost = singleHttpHeader(request.headers["x-forwarded-host"]);
+  const forwardedProto = singleHttpHeader(request.headers["x-forwarded-proto"])?.toLowerCase() ?? null;
+  if (request.headers.host !== void 0 && !hostHeader || request.headers.origin !== void 0 && !singleHttpHeader(request.headers.origin) || request.headers["x-forwarded-host"] !== void 0 && !forwardedHost || request.headers["x-forwarded-proto"] !== void 0 && !forwardedProto) return null;
+  if (configuredOrigin) {
+    const configured = new URL(configuredOrigin);
+    if (originHeader && originHeader !== configuredOrigin) return null;
+    if (validatedRequestHost(hostHeader, configured.protocol) !== configured.host) return null;
+    if (forwardedHost && validatedRequestHost(forwardedHost, configured.protocol) !== configured.host) return null;
+    if (forwardedProto && `${forwardedProto}:` !== configured.protocol) return null;
+    return configuredOrigin;
+  }
+  if (forwardedHost || forwardedProto) return null;
+  const protocol = request.socket?.encrypted === true ? "https:" : "http:";
+  const host = validatedRequestHost(hostHeader, protocol);
+  if (!host) return null;
+  const actualOrigin = `${protocol}//${host}`;
+  if (originHeader && originHeader !== actualOrigin) return null;
+  return actualOrigin;
+}
+function singleHttpHeader(value) {
+  if (Array.isArray(value)) {
+    if (value.length !== 1) return null;
+    value = value[0];
+  }
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes(",")) return null;
+  return trimmed;
+}
+function validatedRequestHost(value, protocol) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9.:[\]-]+$/.test(value)) return null;
+  try {
+    const url = new URL(`${protocol}//${value}`);
+    if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) return null;
+    return url.host.toLowerCase();
   } catch {
     return null;
   }
@@ -3333,26 +3416,26 @@ function normalizeMailgunProvider(provider) {
 }
 function serializeMailgunJson(value, label, maximumBytes) {
   const seen = /* @__PURE__ */ new Set();
-  const normalize = (candidate, path9) => {
+  const normalize = (candidate, path10) => {
     if (candidate === null || typeof candidate === "string" || typeof candidate === "boolean") return candidate;
     if (typeof candidate === "number" && Number.isFinite(candidate)) return candidate;
     if (Array.isArray(candidate)) {
-      if (seen.has(candidate)) throw new Error(`${path9} is cyclic`);
+      if (seen.has(candidate)) throw new Error(`${path10} is cyclic`);
       seen.add(candidate);
-      const result = captureMailProviderDataArray(candidate, path9).map((entry, index) => normalize(entry, `${path9}[${index}]`));
+      const result = captureMailProviderDataArray(candidate, path10).map((entry, index) => normalize(entry, `${path10}[${index}]`));
       seen.delete(candidate);
       return result;
     }
     if (candidate && typeof candidate === "object") {
-      if (seen.has(candidate)) throw new Error(`${path9} is cyclic`);
+      if (seen.has(candidate)) throw new Error(`${path10} is cyclic`);
       seen.add(candidate);
-      const entries = captureMailProviderDataObject(candidate, path9, "Mailgun").sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+      const entries = captureMailProviderDataObject(candidate, path10, "Mailgun").sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
       const result = /* @__PURE__ */ Object.create(null);
-      for (const [key, entry] of entries) result[key] = normalize(entry, `${path9}.${key}`);
+      for (const [key, entry] of entries) result[key] = normalize(entry, `${path10}.${key}`);
       seen.delete(candidate);
       return result;
     }
-    throw new Error(`${path9} is not JSON-compatible`);
+    throw new Error(`${path10} is not JSON-compatible`);
   };
   let json;
   try {
@@ -3805,7 +3888,7 @@ function encodeMimeBase64(value) {
   return Buffer.from(value, "utf8").toString("base64").match(/.{1,76}/g)?.join("\r\n") ?? "";
 }
 async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
-  const path9 = await import("node:path");
+  const path10 = await import("node:path");
   const mailConfig = validateMailConfig(config.mail);
   let mailLogSink;
   const mail = createMailRuntime(mailConfig, serverEnv, {
@@ -3924,7 +4007,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     database: sqlite,
     config,
     serverEnv,
-    dataDir: path9.dirname(databasePath)
+    dataDir: path10.dirname(databasePath)
   });
   mailLogSink = database.log;
   database.audit = createPrivilegedAuditEmitter(database.log);
@@ -4369,7 +4452,7 @@ async function createRuntimeInspectionAdapter(databasePath, serverEnv = {}, conf
   return await createSqliteDatabaseAdapter(databasePath, { readOnly: true });
 }
 async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serviceEnv = {} }) {
-  const path9 = await import("node:path");
+  const path10 = await import("node:path");
   if (config.services?.storage?.engine === "minio" && serviceEnv.SPORADES_SERVICE_STORAGE_ENGINE === "minio") {
     return createS3CompatibleFileStorageAdapter({
       endpoint: serviceEnv.SPORADES_SERVICE_STORAGE_ENDPOINT ?? "",
@@ -4381,7 +4464,7 @@ async function createRuntimeFileStorageAdapter({ config = {}, databasePath, serv
     });
   }
   return createLocalFileStorageAdapter({
-    storagePath: config.files?.storagePath ?? path9.join(path9.dirname(databasePath), "files")
+    storagePath: config.files?.storagePath ?? path10.join(path10.dirname(databasePath), "files")
   });
 }
 function createLocalFileStorageAdapter({ storagePath }) {
@@ -4392,30 +4475,30 @@ function createLocalFileStorageAdapter({ storagePath }) {
     engine: "local",
     storagePath,
     async writeFileVersion({ fileId, version, bytes }) {
-      const { mkdir: mkdir7, writeFile: writeFile7 } = await import("node:fs/promises");
+      const { mkdir: mkdir7, writeFile: writeFile8 } = await import("node:fs/promises");
       await mkdir7(localFileStoragePath(storagePath, fileId), { recursive: true });
-      await writeFile7(localFileVersionPath(storagePath, fileId, version), bytes);
+      await writeFile8(localFileVersionPath(storagePath, fileId, version), bytes);
     },
     async readFileVersion({ fileId, version }) {
       const { readFile: readFile9 } = await import("node:fs/promises");
       return await readFile9(localFileVersionPath(storagePath, fileId, version));
     },
     async deleteFileVersion({ fileId, version }) {
-      const { rm: rm5 } = await import("node:fs/promises");
-      await rm5(localFileVersionPath(storagePath, fileId, version), { force: true });
+      const { rm: rm6 } = await import("node:fs/promises");
+      await rm6(localFileVersionPath(storagePath, fileId, version), { force: true });
     },
     async checkHealth() {
-      const { mkdir: mkdir7, rm: rm5, writeFile: writeFile7 } = await import("node:fs/promises");
-      const path9 = await import("node:path");
-      const probeDirectory = path9.join(storagePath, ".sporades-health");
-      const probeFile = path9.join(probeDirectory, `${randomUUID()}.tmp`);
+      const { mkdir: mkdir7, rm: rm6, writeFile: writeFile8 } = await import("node:fs/promises");
+      const path10 = await import("node:path");
+      const probeDirectory = path10.join(storagePath, ".sporades-health");
+      const probeFile = path10.join(probeDirectory, `${randomUUID()}.tmp`);
       try {
         await mkdir7(probeDirectory, { recursive: true });
-        await writeFile7(probeFile, "");
-        await rm5(probeFile, { force: true });
+        await writeFile8(probeFile, "");
+        await rm6(probeFile, { force: true });
         return { ok: true };
       } catch {
-        await rm5(probeFile, { force: true }).catch(() => {
+        await rm6(probeFile, { force: true }).catch(() => {
         });
         return { ok: false };
       }
@@ -4658,8 +4741,8 @@ function s3ObjectNotFoundError() {
 }
 async function createSqliteDatabaseAdapter(databasePath, options = {}) {
   const { DatabaseSync } = await import("node:sqlite");
-  const path9 = await import("node:path");
-  if (!options.readOnly) mkdirSync(path9.dirname(String(databasePath)), { recursive: true });
+  const path10 = await import("node:path");
+  if (!options.readOnly) mkdirSync(path10.dirname(String(databasePath)), { recursive: true });
   const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
   const adapter = {
     engine: "sqlite",
@@ -4769,18 +4852,18 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     selectFileById(fileId) {
       return this.prepare("SELECT * FROM sporades_files WHERE id = ?").get(fileId) ?? null;
     },
-    selectLiveFileByPath(path10) {
-      return this.prepare("SELECT * FROM sporades_files WHERE path = ? AND deletedAt IS NULL AND status = ?").all(path10, "uploaded");
+    selectLiveFileByPath(path11) {
+      return this.prepare("SELECT * FROM sporades_files WHERE path = ? AND deletedAt IS NULL AND status = ?").all(path11, "uploaded");
     },
-    selectActiveFileByPath(path10) {
+    selectActiveFileByPath(path11) {
       return this.prepare("SELECT * FROM sporades_files WHERE path = ? AND deletedAt IS NULL AND status IN (?, ?)").all(
-        path10,
+        path11,
         "pending",
         "uploaded"
       );
     },
-    selectPendingFileUploadByPath(path10) {
-      return this.prepare("SELECT * FROM sporades_file_uploads WHERE path = ? ORDER BY createdAt DESC, id DESC LIMIT 1").get(path10) ?? null;
+    selectPendingFileUploadByPath(path11) {
+      return this.prepare("SELECT * FROM sporades_file_uploads WHERE path = ? ORDER BY createdAt DESC, id DESC LIMIT 1").get(path11) ?? null;
     },
     selectFileUpload(uploadId) {
       return this.prepare("SELECT * FROM sporades_file_uploads WHERE id = ?").get(uploadId) ?? null;
@@ -4829,8 +4912,8 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         updatedAt
       });
     },
-    deleteFileUploadsForPath(path10) {
-      return this.prepare("DELETE FROM sporades_file_uploads WHERE path = ?").run(path10);
+    deleteFileUploadsForPath(path11) {
+      return this.prepare("DELETE FROM sporades_file_uploads WHERE path = ?").run(path11);
     },
     deleteFileUploadsForFile(ownerId, fileId) {
       return this.prepare("DELETE FROM sporades_file_uploads WHERE ownerId = ? AND fileId = ?").run(ownerId, fileId);
@@ -4889,6 +4972,29 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       const row = this.prepare("SELECT id FROM sporades_auth_users WHERE provider = ? AND email = ?").get(provider, email) ?? null;
       return isReservedAuthUserId(row?.id) ? null : row;
     },
+    findAuthIdentityByProviderSubject(provider, subject) {
+      const row = this.prepare(
+        "SELECT id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt FROM sporades_auth_identities WHERE provider = ? AND subject = ?"
+      ).get(provider, subject) ?? null;
+      return authIdentityRowUnlessReserved(row);
+    },
+    findLegacyAuthIdentitiesByProviderEmail(provider, email) {
+      const rows = this.prepare(
+        "SELECT id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt FROM sporades_auth_identities WHERE provider = ? AND email = ? AND subject LIKE 'legacy:%' ORDER BY createdAt, id"
+      ).all(provider, email);
+      return authIdentityRowsUnlessReserved(rows);
+    },
+    insertAuthIdentity(row) {
+      assertNotReservedAuthUserId(row.userId);
+      return this.prepare(
+        "INSERT INTO sporades_auth_identities (id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).run(row.id, row.userId, row.provider, row.subject, row.email, row.displayName, row.picture, row.createdAt, row.updatedAt);
+    },
+    updateAuthIdentity(row) {
+      return this.prepare(
+        "UPDATE sporades_auth_identities SET subject = ?, email = ?, displayName = ?, picture = ?, updatedAt = ? WHERE id = ?"
+      ).run(row.subject, row.email, row.displayName, row.picture, row.updatedAt, row.id);
+    },
     insertAuthUser(row) {
       assertNotReservedAuthUserId(row.id);
       return this.prepare(
@@ -4909,9 +5015,10 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     },
     insertAuthSession(row) {
       assertNotReservedAuthUserId(row.userId);
-      return this.prepare("INSERT INTO sporades_auth_sessions (token, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?)").run(
+      return this.prepare("INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)").run(
         row.token,
         row.userId,
+        row.provider,
         row.createdAt,
         row.expiresAt
       );
@@ -4922,11 +5029,15 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     refreshAuthSession(token, expiresAt) {
       return this.prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE token = ?").run(expiresAt, token);
     },
+    setAuthSessionProvider(token, provider) {
+      return this.prepare("UPDATE sporades_auth_sessions SET provider = ? WHERE token = ?").run(provider, token);
+    },
     rotateAuthSession(previousToken, row) {
       assertNotReservedAuthUserId(row.userId);
-      return this.prepare("UPDATE sporades_auth_sessions SET token = ?, userId = ?, createdAt = ?, expiresAt = ? WHERE token = ?").run(
+      return this.prepare("UPDATE sporades_auth_sessions SET token = ?, userId = ?, provider = ?, createdAt = ?, expiresAt = ? WHERE token = ?").run(
         row.token,
         row.userId,
+        row.provider,
         row.createdAt,
         row.expiresAt,
         previousToken
@@ -4934,7 +5045,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     },
     readAuthSessionWithUser(token) {
       const row = this.prepare(
-        "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, u.provider FROM sporades_auth_sessions s JOIN sporades_auth_users u ON u.id = s.userId WHERE s.token = ?"
+        "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, COALESCE(s.provider, u.provider) AS provider FROM sporades_auth_sessions s JOIN sporades_auth_users u ON u.id = s.userId WHERE s.token = ?"
       ).get(token) ?? null;
       if (isReservedAuthUserId(row?.userId)) {
         return null;
@@ -4942,12 +5053,16 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       return row;
     },
     insertOAuthState(row) {
+      const provider = row.provider ?? "google";
+      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1e3).toISOString();
       return this.prepare(
-        "INSERT INTO sporades_auth_oauth_states (state, sessionToken, returnTo, redirectUri, createdAt) VALUES (?, ?, ?, ?, ?)"
-      ).run(row.state, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt);
+        "INSERT INTO sporades_auth_oauth_states (state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
     },
     consumeOAuthState(state) {
-      const row = this.prepare("SELECT state, sessionToken, returnTo, redirectUri FROM sporades_auth_oauth_states WHERE state = ?").get(state) ?? null;
+      const row = this.prepare(
+        "SELECT state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier FROM sporades_auth_oauth_states WHERE state = ?"
+      ).get(state) ?? null;
       this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
       return row;
     },
@@ -5192,7 +5307,17 @@ async function createPostgresDatabaseAdapter(options) {
         "CREATE TABLE IF NOT EXISTS sporades_auth_users (id TEXT PRIMARY KEY, createdAt TEXT NOT NULL, displayName TEXT NOT NULL, email TEXT, picture TEXT, isAuthenticated INTEGER NOT NULL, isGuest INTEGER NOT NULL, provider TEXT NOT NULL)"
       );
       await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (token TEXT PRIMARY KEY, userId TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL)"
+        "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (token TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL)"
+      );
+      await this.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN IF NOT EXISTS provider TEXT");
+      await this.exec(
+        "UPDATE sporades_auth_sessions SET provider = COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') WHERE provider IS NULL"
+      );
+      await this.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_auth_identities (id TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, displayName TEXT, picture TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, UNIQUE(provider, subject))"
+      );
+      await this.exec(
+        "INSERT INTO sporades_auth_identities (id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)"
       );
       if (authConfig?.providers?.email?.enabled) {
         await this.exec(
@@ -5200,8 +5325,27 @@ async function createPostgresDatabaseAdapter(options) {
         );
       }
       await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (state TEXT PRIMARY KEY, sessionToken TEXT NOT NULL, returnTo TEXT NOT NULL, redirectUri TEXT NOT NULL, createdAt TEXT NOT NULL)"
+        "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (state TEXT PRIMARY KEY, provider TEXT NOT NULL, sessionToken TEXT NOT NULL, returnTo TEXT NOT NULL, redirectUri TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL, nonce TEXT, pkceVerifier TEXT)"
       );
+      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS provider TEXT");
+      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS expiresAt TEXT");
+      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS nonce TEXT");
+      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS pkceVerifier TEXT");
+      await this.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
+      await this.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
+    },
+    async insertOAuthState(row) {
+      const provider = row.provider ?? "google";
+      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1e3).toISOString();
+      return await this.prepare(
+        "INSERT INTO sporades_auth_oauth_states (state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
+    },
+    async consumeOAuthState(state) {
+      const row = await this.prepare(
+        "DELETE FROM sporades_auth_oauth_states WHERE state = ? RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier"
+      ).get(state);
+      return row ?? null;
     },
     async ensureLogStorage() {
       await this.exec(
@@ -5857,7 +6001,9 @@ function postgresRuntimeColumnName(name) {
     passwordhash: "passwordHash",
     passwordsalt: "passwordSalt",
     sessiontoken: "sessionToken",
+    returnto: "returnTo",
     redirecturi: "redirectUri",
+    pkceverifier: "pkceVerifier",
     capsulename: "capsuleName",
     capsuleid: "capsuleId",
     releaseid: "releaseId",
@@ -5987,22 +6133,32 @@ async function createLibsqlDatabaseAdapter(options) {
         "CREATE TABLE IF NOT EXISTS sporades_auth_users (id TEXT PRIMARY KEY, createdAt TEXT NOT NULL, displayName TEXT NOT NULL, email TEXT, picture TEXT, isAuthenticated INTEGER NOT NULL, isGuest INTEGER NOT NULL, provider TEXT NOT NULL)"
       );
       await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (token TEXT PRIMARY KEY, userId TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL)"
+        "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (token TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL)"
       );
       await ensureLibsqlSessionLifecycleColumns(this);
+      await ensureLibsqlSessionProvenanceColumn(this);
+      await createLibsqlProviderIdentityTables(this);
       if (authConfig?.providers?.email?.enabled) {
         await this.exec(
           "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (email TEXT PRIMARY KEY, userId TEXT NOT NULL, passwordHash TEXT NOT NULL, passwordSalt TEXT NOT NULL, createdAt TEXT NOT NULL)"
         );
       }
       await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (state TEXT PRIMARY KEY, sessionToken TEXT NOT NULL, returnTo TEXT NOT NULL, redirectUri TEXT NOT NULL, createdAt TEXT NOT NULL)"
+        "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (state TEXT PRIMARY KEY, provider TEXT NOT NULL, sessionToken TEXT NOT NULL, returnTo TEXT NOT NULL, redirectUri TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL, nonce TEXT, pkceVerifier TEXT)"
       );
+      await ensureLibsqlOAuthStateColumns(this);
+    },
+    async insertOAuthState(row) {
+      const provider = row.provider ?? "google";
+      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1e3).toISOString();
+      return await this.prepare(
+        "INSERT INTO sporades_auth_oauth_states (state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
     },
     async consumeOAuthState(state) {
-      const row = await this.prepare("SELECT state, sessionToken, returnTo, redirectUri FROM sporades_auth_oauth_states WHERE state = ?").get(state) ?? null;
-      await this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
-      return row;
+      return await this.prepare(
+        "DELETE FROM sporades_auth_oauth_states WHERE state = ? RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier"
+      ).get(state) ?? null;
     },
     async migrateAppSchema(schema) {
       return await this.withTransaction((transaction) => migrateLibsqlAppSchema(transaction, schema));
@@ -6246,9 +6402,9 @@ function logRedactedValue() {
   return "[REDACTED]";
 }
 function createRuntimeLogSink(options) {
-  const path9 = requirePathModule();
-  const logPath = options.config.logs?.jsonlPath ?? options.config.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path9.join(options.dataDir, "logs", "events.jsonl");
-  mkdirSync(path9.dirname(logPath), { recursive: true });
+  const path10 = requirePathModule();
+  const logPath = options.config.logs?.jsonlPath ?? options.config.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path10.join(options.dataDir, "logs", "events.jsonl");
+  mkdirSync(path10.dirname(logPath), { recursive: true });
   return {
     path: logPath,
     emit(input) {
@@ -6722,6 +6878,18 @@ function privilegedAuthUserId() {
 }
 function isReservedAuthUserId(userId) {
   return userId === privilegedAuthUserId();
+}
+function authIdentityRowUnlessReserved(rowOrPromise) {
+  if (rowOrPromise && typeof rowOrPromise.then === "function") {
+    return rowOrPromise.then((row) => isReservedAuthUserId(row?.userId) ? null : row);
+  }
+  return isReservedAuthUserId(rowOrPromise?.userId) ? null : rowOrPromise;
+}
+function authIdentityRowsUnlessReserved(rowsOrPromise) {
+  if (rowsOrPromise && typeof rowsOrPromise.then === "function") {
+    return rowsOrPromise.then((rows) => rows.filter((row) => !isReservedAuthUserId(row?.userId)));
+  }
+  return rowsOrPromise.filter((row) => !isReservedAuthUserId(row?.userId));
 }
 function assertNotReservedAuthUserId(userId) {
   if (!isReservedAuthUserId(userId)) {
@@ -8265,9 +8433,9 @@ function fileMetadataFromUpload(upload) {
     version: upload.version
   };
 }
-async function withFileUploadPathLock(path9, fn) {
+async function withFileUploadPathLock(path10, fn) {
   const fileUploadPathLocks = globalThis.__sporadesFileUploadPathLocks ??= /* @__PURE__ */ new Map();
-  const key = String(path9);
+  const key = String(path10);
   const previous = fileUploadPathLocks.get(key) ?? Promise.resolve();
   let release;
   const current = new Promise((resolve) => {
@@ -8288,11 +8456,11 @@ async function withFileUploadPathLock(path9, fn) {
 }
 async function resolveFileWriteTarget(database, ownerId, input, now) {
   const explicitPath = input.path === void 0 || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
-  const path9 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
-  const firstSegment = path9.split("/").filter(Boolean)[0] ?? "default";
+  const path10 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
+  const firstSegment = path10.split("/").filter(Boolean)[0] ?? "default";
   const existingBucket = await database.sqlite.findFileBucket(ownerId, firstSegment);
   const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now);
-  return { bucket, path: path9 };
+  return { bucket, path: path10 };
 }
 async function ensureFileBucket(database, ownerId, name, now) {
   const existing = await database.sqlite.findFileBucket(ownerId, name);
@@ -8331,13 +8499,13 @@ function isAbsoluteFilePath(value) {
 async function resolveLiveFileReference(database, ownerId, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path9;
+    let path10;
     try {
-      path9 = normalizeAbsoluteFilePath(value);
+      path10 = normalizeAbsoluteFilePath(value);
     } catch {
       return { ok: true, row: null };
     }
-    const resolved = await singleLiveFileRowByPath(database, path9);
+    const resolved = await singleLiveFileRowByPath(database, path10);
     if (resolved?.ambiguous) {
       return ambiguousFileReferenceError(value);
     }
@@ -8348,13 +8516,13 @@ async function resolveLiveFileReference(database, ownerId, reference) {
 async function resolvePrivilegedLiveFileReference(database, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path9;
+    let path10;
     try {
-      path9 = normalizeAbsoluteFilePath(value);
+      path10 = normalizeAbsoluteFilePath(value);
     } catch {
       return { ok: true, row: null };
     }
-    const resolved = await singleLiveFileRowByPath(database, path9);
+    const resolved = await singleLiveFileRowByPath(database, path10);
     if (resolved?.ambiguous) {
       return ambiguousFileReferenceError(value);
     }
@@ -8366,14 +8534,14 @@ async function resolvePrivilegedLiveFileReference(database, reference) {
   }
   return { ok: true, row };
 }
-function singleLiveFileRowByPath(database, path9) {
-  return thenIfPromise(database.sqlite.selectLiveFileByPath(path9), (rows) => {
+function singleLiveFileRowByPath(database, path10) {
+  return thenIfPromise(database.sqlite.selectLiveFileByPath(path10), (rows) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
 }
-function singleActiveFileRowByPath(database, path9) {
-  return thenIfPromise(database.sqlite.selectActiveFileByPath(path9), (rows) => {
+function singleActiveFileRowByPath(database, path10) {
+  return thenIfPromise(database.sqlite.selectActiveFileByPath(path10), (rows) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
@@ -8936,13 +9104,13 @@ function createAclStorageHelpers(database, state) {
 function resolveAclStorageFileReference(database, state, reference) {
   const value = String(reference ?? "");
   if (isAbsoluteFilePath(value)) {
-    let path9;
+    let path10;
     try {
-      path9 = normalizeAbsoluteFilePath(value);
+      path10 = normalizeAbsoluteFilePath(value);
     } catch {
       return null;
     }
-    const selected2 = database.sqlite.selectLiveFileByPath(path9);
+    const selected2 = database.sqlite.selectLiveFileByPath(path10);
     if (markAsyncAclHelperRead(state, selected2)) {
       return null;
     }
@@ -9695,7 +9863,7 @@ async function simulateLocalIdentitySession(database, options = {}) {
         provider
       });
     }
-    await tx.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
+    await tx.insertAuthSession({ token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
     const auth = {
       userId,
       displayName,
@@ -9822,7 +9990,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
           ""
         ].join("\r\n")
       );
-      const origin = requestOrigin(request);
+      const origin = resolveOAuthRequestOrigin(policy, request);
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const client = {
         id: `client-${(nextClientId++).toString(36)}`,
@@ -9993,17 +10161,6 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
     return [...clients].filter((client) => client.id === target);
   }
-  function requestOrigin(request) {
-    const forwardedProto = firstForwardedHeader(request.headers["x-forwarded-proto"]);
-    const forwardedHost = firstForwardedHeader(request.headers["x-forwarded-host"]);
-    const protocol = forwardedProto === "https" || forwardedProto === "http" ? forwardedProto : request.socket?.encrypted ? "https" : "http";
-    const host = forwardedHost || request.headers.host;
-    return `${protocol}://${host}`;
-  }
-  function firstForwardedHeader(value) {
-    const raw = Array.isArray(value) ? value[0] : value;
-    return String(raw ?? "").split(",")[0].trim().toLowerCase();
-  }
   function summarizeAuthForClientList(auth) {
     return {
       userId: auth?.userId ?? null,
@@ -10062,8 +10219,9 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
     }
     const database = getDatabase();
     const messageSessionToken = typeof message.sessionToken === "string" && message.sessionToken.length > 0 ? message.sessionToken : client.session.token;
+    const previousAuth = client.session.auth;
     const resolvedSession = await resolveAnonymousSession(database, messageSessionToken ?? null);
-    if (client.session.auth.userId && client.session.auth.userId !== resolvedSession.auth.userId) retireJourney(client);
+    if (previousAuth.userId && (previousAuth.userId !== resolvedSession.auth.userId || previousAuth.provider !== resolvedSession.auth.provider || Boolean(previousAuth.isAuthenticated) !== Boolean(resolvedSession.auth.isAuthenticated))) retireJourney(client);
     client.session = resolvedSession;
     if (message.type === "auth.get") {
       await sendAuthResult(client, message.id ?? null);
@@ -10116,18 +10274,19 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
         });
         return;
       }
-      if (provider !== "google") {
+      const providerAdapter = oauthProviderAdapter(database, provider);
+      if (!providerAdapter?.enabled) {
         sendJson(client, {
           id: message.id ?? null,
           type: "error",
           error: {
             message: `Unsupported auth provider: ${provider ?? ""}`.trim(),
-            hint: "Use auth.signIn with a configured provider such as google."
+            hint: "Use auth.signIn with a configured OAuth provider."
           }
         });
         return;
       }
-      const result = await beginGoogleSignIn(database, client.session, {
+      const result = await beginOAuthSignIn(database, client.session, provider, {
         origin: client.origin,
         returnTo: message.returnTo
       });
@@ -10434,7 +10593,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       data: {
         sessionToken: client.session.token,
         auth: client.session.auth,
-        providers: authProvidersForClient(database.authConfig)
+        providers: authProvidersForClient(database.authConfig, client.origin)
       },
       error: null
     });
@@ -10493,26 +10652,85 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
 }
 async function routeSporadesAuth(database, request, response) {
   const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/auth/google/callback") {
+  const match = requestUrl.pathname.match(/^\/__sporades\/auth\/([a-z0-9-]+)\/callback$/);
+  if (!match) {
     return false;
   }
-  const state = requestUrl.searchParams.get("state");
-  const code = requestUrl.searchParams.get("code");
-  if (!state || !code) {
-    writeEndpointError(response, commandError("Invalid Google OAuth callback.", "Retry Google sign-in from the app."));
+  const provider = match[1];
+  let callbackParameters;
+  try {
+    callbackParameters = await readOAuthCallbackParameters(request, requestUrl);
+  } catch (error) {
+    writeEndpointError(response, error);
+    return true;
+  }
+  const parameters = callbackParameters.parameters;
+  const states = parameters.getAll("state");
+  const state = states.length === 1 ? states[0] : null;
+  if (!callbackParameters.stateTrustworthy || !state || states.length !== 1) {
+    writeEndpointError(response, commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK"));
     return true;
   }
   const stateRow = await database.sqlite.consumeOAuthState(state);
   if (!stateRow) {
-    writeEndpointError(response, commandError("Invalid Google OAuth state.", "Retry Google sign-in from the app."));
+    writeEndpointError(response, commandError("Invalid or already-used OAuth state.", "Retry sign-in from the app.", "OAUTH_INVALID_STATE"));
     return true;
   }
   try {
-    const profile = await exchangeGoogleCode(database, code, stateRow.redirectUri);
+    if (callbackParameters.error) {
+      throw callbackParameters.error;
+    }
+    validateConsumedOAuthCallbackParameters(parameters);
+    if (stateRow.provider !== provider) {
+      throw commandError("OAuth provider did not match the sign-in request.", "Retry sign-in from the app.", "OAUTH_PROVIDER_MISMATCH");
+    }
+    if (!stateRow.expiresAt || Date.parse(stateRow.expiresAt) <= Date.now()) {
+      throw commandError("OAuth sign-in request expired.", "Retry sign-in from the app.", "OAUTH_STATE_EXPIRED");
+    }
+    const adapter = oauthProviderAdapter(database, provider);
+    if (!adapter?.enabled) {
+      throw commandError("OAuth provider is not configured.", "Configure the provider and retry sign-in.", "OAUTH_PROVIDER_NOT_CONFIGURED");
+    }
+    if (adapter.responseMode === "form_post" && request.method !== "POST" || adapter.responseMode !== "form_post" && request.method !== "GET") {
+      throw commandError("OAuth callback used the wrong response mode.", "Retry sign-in from the app.", "OAUTH_RESPONSE_MODE_MISMATCH");
+    }
+    const providerError = parameters.get("error");
+    if (providerError) {
+      const mappedError = adapter.callbackError?.(parameters);
+      if (mappedError) {
+        throw mappedError;
+      }
+      throw commandError(
+        "OAuth sign-in was cancelled or declined.",
+        "Retry sign-in when you are ready.",
+        "OAUTH_PROVIDER_CANCELLED"
+      );
+    }
+    const code = parameters.get("code");
+    if (!code) {
+      throw commandError("OAuth callback did not include an authorization code.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+    }
+    const profile = await adapter.complete({
+      provider,
+      code,
+      redirectUri: stateRow.redirectUri,
+      nonce: stateRow.nonce,
+      pkceVerifier: stateRow.pkceVerifier,
+      parameters
+    });
     const session = await resolveAnonymousSession(database, stateRow.sessionToken);
-    const result = await linkGoogleAccount(database, session, profile);
+    let result;
+    try {
+      result = await linkProviderIdentity(database, session, provider, profile);
+    } catch {
+      throw commandError(
+        "OAuth account linking failed.",
+        "Retry sign-in. If the problem persists, check the database connection.",
+        "AUTH_TRANSACTION_FAILED"
+      );
+    }
     if (!result.ok) {
-      throw commandError(result.error?.message, result.error?.hint ?? "Retry Google sign-in from the app.");
+      throw commandError(result.error?.message, result.error?.hint ?? "Retry sign-in from the app.", result.error?.code);
     }
     writeRedirect(response, stateRow.returnTo);
   } catch (error) {
@@ -10520,34 +10738,196 @@ async function routeSporadesAuth(database, request, response) {
   }
   return true;
 }
-async function beginGoogleSignIn(database, session, options) {
-  if (!database.authConfig.providers.google.enabled || !database.authConfig.google.configured) {
+async function readOAuthCallbackParameters(request, requestUrl) {
+  if (request.method === "GET") {
+    return {
+      parameters: requestUrl.searchParams,
+      error: null,
+      stateTrustworthy: true
+    };
+  }
+  if (request.method !== "POST" || !oauthFormContentTypeValid(request.headers["content-type"])) {
+    throw commandError("Unsupported OAuth callback request.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+  }
+  const body = await readLimitedRequestBody(request, 16 * 1024);
+  return parseOAuthFormBody(body);
+}
+function oauthFormContentTypeValid(value) {
+  const raw = singleHttpHeader(value);
+  if (!raw) return false;
+  const parts = raw.split(";").map((part) => part.trim());
+  if (parts.shift()?.toLowerCase() !== "application/x-www-form-urlencoded") return false;
+  if (parts.length === 0) return true;
+  if (parts.length !== 1) return false;
+  const match = parts[0].match(/^charset\s*=\s*(?:"utf-8"|utf-8)$/i);
+  return Boolean(match);
+}
+function parseOAuthFormBody(body) {
+  const parameters = new URLSearchParams();
+  let error = null;
+  let stateTrustworthy = true;
+  const invalidCallback = () => commandError(
+    "Invalid OAuth callback.",
+    "Retry sign-in from the app.",
+    "OAUTH_INVALID_CALLBACK"
+  );
+  for (let start = 0; start <= body.length; ) {
+    let end = body.indexOf(38, start);
+    if (end === -1) end = body.length;
+    const separator = body.indexOf(61, start);
+    const hasSeparator = separator !== -1 && separator < end;
+    const rawName = body.subarray(start, hasSeparator ? separator : end);
+    const rawValue = body.subarray(hasSeparator ? separator + 1 : end, end);
+    let name = null;
+    let value = null;
+    try {
+      name = decodeOAuthFormComponent(rawName);
+    } catch {
+      stateTrustworthy = false;
+      error ??= invalidCallback();
+    }
+    if (name !== null) {
+      try {
+        value = decodeOAuthFormComponent(rawValue);
+      } catch {
+        if (name === "state") stateTrustworthy = false;
+        error ??= invalidCallback();
+      }
+    }
+    if (name !== null && value !== null) {
+      parameters.append(name, value);
+    }
+    if (end === body.length) break;
+    start = end + 1;
+  }
+  return { parameters, error, stateTrustworthy };
+}
+function decodeOAuthFormComponent(raw) {
+  const bytes = [];
+  for (let index = 0; index < raw.length; index += 1) {
+    const byte = raw[index];
+    if (byte === 43) {
+      bytes.push(32);
+      continue;
+    }
+    if (byte === 37) {
+      if (index + 2 >= raw.length) throw new Error("Malformed percent escape.");
+      const pair = raw.subarray(index + 1, index + 3).toString("ascii");
+      if (!/^[0-9a-fA-F]{2}$/.test(pair)) throw new Error("Malformed percent escape.");
+      bytes.push(Number.parseInt(pair, 16));
+      index += 2;
+      continue;
+    }
+    bytes.push(byte);
+  }
+  const value = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
+  validateOAuthCallbackScalar(value);
+  return value;
+}
+function validateOAuthCallbackScalar(value) {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint <= 31 || codePoint >= 127 && codePoint <= 159 || codePoint === 65533 || codePoint >= 64976 && codePoint <= 65007 || (codePoint & 65535) === 65534 || (codePoint & 65535) === 65535) {
+      throw new Error("Invalid callback character.");
+    }
+  }
+}
+function validateConsumedOAuthCallbackParameters(parameters) {
+  for (const name of ["code", "error", "user"]) {
+    if (parameters.getAll(name).length > 1) {
+      throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+    }
+  }
+  if (parameters.has("code") && parameters.has("error")) {
+    throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+  }
+  if (parameters.has("error") && parameters.has("user")) {
+    throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+  }
+}
+async function beginOAuthSignIn(database, session, provider, options) {
+  const adapter = oauthProviderAdapter(database, provider);
+  if (!adapter?.enabled) {
     return {
       ok: false,
       error: {
-        message: "Google OAuth is not configured.",
-        hint: "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`."
+        code: "OAUTH_PROVIDER_NOT_CONFIGURED",
+        message: `${provider || "OAuth"} provider is not configured.`,
+        hint: provider === "google" ? "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`." : "Configure this OAuth provider before retrying sign-in."
       }
     };
   }
   const origin = options.origin;
-  const redirectUri = `${origin}/__sporades/auth/google/callback`;
+  if (!normalizeOrigin(origin) || normalizeOrigin(origin) !== origin) {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_ORIGIN_INVALID",
+        message: "OAuth sign-in requires a trusted request origin.",
+        hint: "Use the Capsule origin directly, or configure SPORADES_PUBLIC_ORIGIN for a trusted HTTPS reverse proxy."
+      }
+    };
+  }
+  if (provider === "apple" && !appleOAuthOriginEligible(origin)) {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED",
+        message: "Apple sign-in requires an HTTPS domain origin.",
+        hint: "Use an HTTPS development tunnel or a Hosted Capsule with an HTTPS domain, then register its exact Apple callback URL."
+      }
+    };
+  }
+  const redirectUri = `${origin}/__sporades/auth/${provider}/callback`;
   const returnTo = normalizeReturnTo(options.returnTo, origin);
   const state = randomBytes2(32).toString("base64url");
+  const nonce = randomBytes2(32).toString("base64url");
+  const pkceVerifier = randomBytes2(48).toString("base64url");
+  const pkceChallenge = createHash2("sha256").update(pkceVerifier).digest("base64url");
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  await database.sqlite.insertOAuthState({ state, sessionToken: session.token, returnTo, redirectUri, createdAt: now });
-  const clientId = database.serverEnv[database.authConfig.google.clientIdEnv];
-  const params = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    response_type: "code",
-    scope: "openid email profile",
-    state
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1e3).toISOString();
+  let started;
+  try {
+    started = await adapter.begin({
+      provider,
+      state,
+      nonce,
+      redirectUri,
+      pkceChallenge,
+      pkceChallengeMethod: "S256"
+    });
+  } catch {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_PROVIDER_START_FAILED",
+        message: "OAuth sign-in could not be started.",
+        hint: "Check the provider configuration and retry sign-in."
+      }
+    };
+  }
+  if (!started?.url) {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_PROVIDER_START_FAILED",
+        message: "OAuth provider did not return an authorization URL.",
+        hint: "Check the provider configuration and retry sign-in."
+      }
+    };
+  }
+  await database.sqlite.insertOAuthState({
+    state,
+    provider,
+    sessionToken: session.token,
+    returnTo,
+    redirectUri,
+    createdAt: now,
+    expiresAt,
+    nonce,
+    pkceVerifier
   });
-  return {
-    ok: true,
-    url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`
-  };
+  return { ok: true, url: started.url };
 }
 function normalizeReturnTo(returnTo, origin) {
   if (!returnTo) {
@@ -10563,125 +10943,796 @@ function normalizeReturnTo(returnTo, origin) {
     return origin;
   }
 }
-async function exchangeGoogleCode(database, code, redirectUri) {
+function oauthProviderAdapter(database, provider) {
+  if (database.__oauthProviderAdapters?.[provider]) {
+    return database.__oauthProviderAdapters[provider];
+  }
+  if (provider === "google") {
+    return createGoogleOAuthProviderAdapter(database);
+  }
+  if (provider === "facebook") {
+    return createFacebookOAuthProviderAdapter(database);
+  }
+  if (provider === "apple") {
+    return createAppleOAuthProviderAdapter(database);
+  }
+  return null;
+}
+function createGoogleOAuthProviderAdapter(database) {
+  const google = database.authConfig.google;
+  const configured = Boolean(database.authConfig.providers.google.enabled && google.configured);
+  return {
+    provider: "google",
+    responseMode: "query",
+    enabled: configured,
+    begin(context) {
+      const clientId = database.serverEnv[google.clientIdEnv];
+      const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: context.redirectUri,
+        response_type: "code",
+        scope: "openid email profile",
+        state: context.state,
+        nonce: context.nonce,
+        code_challenge: context.pkceChallenge,
+        code_challenge_method: "S256"
+      });
+      return { url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` };
+    },
+    complete(context) {
+      return completeGoogleOAuth(database, context);
+    }
+  };
+}
+function createAppleOAuthProviderAdapter(database) {
+  const apple = database.authConfig.providers.apple;
+  const configured = Boolean(apple.enabled && apple.configured);
+  return {
+    provider: "apple",
+    responseMode: "form_post",
+    enabled: configured,
+    begin(context) {
+      if (!appleOAuthOriginEligible(new URL(context.redirectUri).origin)) {
+        throw commandError(
+          "Apple sign-in requires an HTTPS domain origin.",
+          "Use an HTTPS development tunnel or a Hosted Capsule with an HTTPS domain.",
+          "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED"
+        );
+      }
+      const params = new URLSearchParams({
+        client_id: apple.clientId,
+        redirect_uri: context.redirectUri,
+        response_type: "code",
+        response_mode: "form_post",
+        scope: "name email",
+        state: context.state,
+        nonce: context.nonce
+      });
+      return { url: `https://appleid.apple.com/auth/authorize?${params.toString()}` };
+    },
+    complete(context) {
+      return completeAppleOAuth(database, context);
+    }
+  };
+}
+function appleOAuthOriginEligible(origin) {
+  try {
+    const url = new URL(String(origin));
+    const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    if (url.protocol !== "https:" || url.username || url.password || !hostname) return false;
+    if (hostname === "localhost" || hostname.endsWith(".localhost")) return false;
+    if (hostname.includes(":")) return false;
+    if (/^\d+(?:\.\d+){3}$/.test(hostname)) return false;
+    const labels = hostname.split(".");
+    return hostname.length <= 253 && labels.length >= 2 && labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label));
+  } catch {
+    return false;
+  }
+}
+async function completeAppleOAuth(database, context) {
+  const apple = database.authConfig.providers.apple;
+  const tokenUrl = process.env.SPORADES_APPLE_TOKEN_URL ?? "https://appleid.apple.com/auth/token";
+  let clientSecret;
+  try {
+    clientSecret = createAppleClientSecret(database);
+  } catch {
+    throw commandError(
+      "Apple client credential could not be generated.",
+      "Check the Apple Team ID, Key ID, Services ID, and private key, then retry sign-in.",
+      "OAUTH_CLIENT_CREDENTIAL_INVALID"
+    );
+  }
+  let tokenResponse;
+  try {
+    tokenResponse = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code: context.code,
+        client_id: apple.clientId,
+        client_secret: clientSecret,
+        redirect_uri: context.redirectUri,
+        grant_type: "authorization_code"
+      })
+    });
+  } catch {
+    throw commandError("Apple OAuth code exchange failed.", "Check the Apple OAuth configuration and retry sign-in.", "OAUTH_EXCHANGE_FAILED");
+  }
+  if (!tokenResponse.ok) {
+    throw commandError("Apple OAuth code exchange failed.", "Check the Apple OAuth configuration and exact callback URL, then retry sign-in.", "OAUTH_EXCHANGE_FAILED");
+  }
+  let token;
+  try {
+    token = await tokenResponse.json();
+  } catch {
+    throw commandError("Apple OAuth response was invalid.", "Check the Apple OAuth configuration and retry sign-in.", "OAUTH_EXCHANGE_FAILED");
+  }
+  if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
+    throw commandError("Apple OAuth response did not include a valid identity token.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  const identity = await verifyAppleIdentityToken(database, token.id_token, context.nonce);
+  const authorizationUser = parseAppleAuthorizationUser(context.parameters?.get("user"));
+  return {
+    ...identity,
+    displayName: authorizationUser?.displayName ?? null
+  };
+}
+function createAppleClientSecret(database, nowSeconds = Math.floor(Date.now() / 1e3)) {
+  const apple = database.authConfig.providers.apple;
+  const privateKey = database.serverEnv[apple.privateKeyEnv];
+  if (!privateKey || ![apple.clientId, apple.teamId, apple.keyId].every((value) => typeof value === "string" && /^[\x21-\x7e]{1,255}$/.test(value))) {
+    throw commandError(
+      "Apple client credential is invalid.",
+      "Configure a matching Apple Services ID, Team ID, Key ID, and unencrypted P-256 private key.",
+      "OAUTH_CLIENT_CREDENTIAL_INVALID"
+    );
+  }
+  let signingKey;
+  try {
+    signingKey = createPrivateKey(privateKey);
+  } catch {
+    throw commandError(
+      "Apple client credential is invalid.",
+      "Configure an unencrypted Apple P-256 private key in PKCS#8 PEM format.",
+      "OAUTH_CLIENT_CREDENTIAL_INVALID"
+    );
+  }
+  if (signingKey.type !== "private" || signingKey.asymmetricKeyType !== "ec" || signingKey.asymmetricKeyDetails?.namedCurve !== "prime256v1") {
+    throw commandError(
+      "Apple client credential is invalid.",
+      "Configure the unencrypted P-256 private key issued for Sign in with Apple.",
+      "OAUTH_CLIENT_CREDENTIAL_INVALID"
+    );
+  }
+  const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: apple.keyId, typ: "JWT" })).toString("base64url");
+  const claims = Buffer.from(JSON.stringify({
+    iss: apple.teamId,
+    iat: nowSeconds,
+    exp: nowSeconds + 300,
+    aud: "https://appleid.apple.com",
+    sub: apple.clientId
+  })).toString("base64url");
+  const signatureBytes = sign(
+    "sha256",
+    Buffer.from(`${header}.${claims}`),
+    { key: signingKey, dsaEncoding: "ieee-p1363" }
+  );
+  if (signatureBytes.length !== 64) {
+    throw commandError(
+      "Apple client credential is invalid.",
+      "Configure the unencrypted P-256 private key issued for Sign in with Apple.",
+      "OAUTH_CLIENT_CREDENTIAL_INVALID"
+    );
+  }
+  return `${header}.${claims}.${signatureBytes.toString("base64url")}`;
+}
+async function completeGoogleOAuth(database, context) {
   const google = database.authConfig.google;
   const tokenUrl = process.env.SPORADES_GOOGLE_TOKEN_URL ?? "https://oauth2.googleapis.com/token";
   const clientId = database.serverEnv[google.clientIdEnv];
   const clientSecret = database.serverEnv[google.clientSecretEnv];
-  const tokenResponse = await fetch(tokenUrl, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      code,
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uri: redirectUri,
-      grant_type: "authorization_code"
-    })
-  });
+  let tokenResponse;
+  try {
+    tokenResponse = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code: context.code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: context.redirectUri,
+        grant_type: "authorization_code",
+        code_verifier: context.pkceVerifier
+      })
+    });
+  } catch {
+    throw commandError("Google OAuth code exchange failed.", "Check the Google OAuth client configuration and retry sign-in.", "OAUTH_EXCHANGE_FAILED");
+  }
   if (!tokenResponse.ok) {
-    const details = await readGoogleOAuthError(tokenResponse);
-    throw commandError(
-      `Google OAuth code exchange failed${details.message ? `: ${details.message}` : "."}`,
-      details.hint
+    throw commandError("Google OAuth code exchange failed.", "Check the Google OAuth client configuration and retry sign-in.", "OAUTH_EXCHANGE_FAILED");
+  }
+  let token;
+  try {
+    token = await tokenResponse.json();
+  } catch {
+    throw commandError("Google OAuth response was invalid.", "Check the Google OAuth client configuration and retry sign-in.", "OAUTH_EXCHANGE_FAILED");
+  }
+  if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
+    throw commandError("Google OAuth response did not include a valid identity token.", "Check the Google OAuth client configuration and retry sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  return await verifyGoogleIdentityToken(database, token.id_token, context.nonce);
+}
+function createFacebookOAuthProviderAdapter(database) {
+  const facebook = database.authConfig.providers.facebook;
+  const graphVersion = facebook.graphVersion;
+  const configured = Boolean(
+    facebook.enabled && facebook.configured && facebook.runtimeAvailable && graphVersion === "v23.0"
+  );
+  return {
+    provider: "facebook",
+    responseMode: "query",
+    enabled: configured,
+    begin(context) {
+      const clientId = database.serverEnv[facebook.clientIdEnv];
+      if (typeof clientId !== "string" || clientId.length < 1 || clientId.length > 4096) {
+        throw commandError(
+          "Facebook App ID is invalid.",
+          "Configure a valid Facebook App ID and retry sign-in.",
+          "FACEBOOK_CONFIGURATION_INVALID"
+        );
+      }
+      const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: context.redirectUri,
+        response_type: "code",
+        scope: "public_profile,email",
+        state: context.state
+      });
+      const authorizationUrl = facebookOAuthEndpoint(
+        process.env.SPORADES_FACEBOOK_AUTH_URL,
+        `https://www.facebook.com/${graphVersion}/dialog/oauth`
+      );
+      authorizationUrl.search = params.toString();
+      if (authorizationUrl.toString().length > 8192) {
+        throw commandError(
+          "Facebook authorization URL is too large.",
+          "Check the Facebook App ID and callback configuration.",
+          "FACEBOOK_CONFIGURATION_INVALID"
+        );
+      }
+      return { url: authorizationUrl.toString() };
+    },
+    callbackError(parameters) {
+      return facebookOAuthCallbackError(parameters);
+    },
+    complete(context) {
+      return completeFacebookOAuth(database, context);
+    }
+  };
+}
+function facebookOAuthCallbackError(parameters) {
+  const reason = parameters.get("error_reason");
+  const code = parameters.get("error_code");
+  const description = parameters.get("error_description")?.toLowerCase() ?? "";
+  if (reason === "user_denied" || code === "200") {
+    return commandError(
+      "Facebook permissions were declined or are unavailable.",
+      "Allow the requested public profile and email permissions, then retry sign-in.",
+      "FACEBOOK_PERMISSION_DENIED"
     );
   }
-  const token = await tokenResponse.json();
-  if (!token.access_token) {
-    throw commandError("Google OAuth response did not include an access token.", "Check the Google OAuth client configuration and retry sign-in.");
+  if (code === "191") {
+    return commandError(
+      "Facebook rejected the OAuth redirect URI.",
+      "Register the exact Sporades callback URL in the Facebook app settings, then retry sign-in.",
+      "FACEBOOK_REDIRECT_MISMATCH"
+    );
   }
-  return fetchGoogleProfile(token.access_token);
+  if (description.includes("development mode") || description.includes("app is not set up") || description.includes("app not set up") || description.includes("app is not available")) {
+    return commandError(
+      "Facebook sign-in is unavailable for this account.",
+      "Check the Facebook app mode and tester access, then retry sign-in.",
+      "FACEBOOK_APP_RESTRICTED"
+    );
+  }
+  return null;
 }
-async function readGoogleOAuthError(response) {
-  const fallback = {
-    message: "",
-    hint: "Check the Google OAuth client configuration and retry sign-in."
-  };
-  let body;
+function facebookOAuthEndpoint(configured, fallback) {
+  const value = configured === void 0 ? fallback : configured;
+  if (typeof value !== "string" || value.length < 1 || value.length > 2048) {
+    throw commandError(
+      "Facebook OAuth endpoint is invalid.",
+      "Use the built-in HTTPS Meta endpoint.",
+      "FACEBOOK_ENDPOINT_UNSAFE"
+    );
+  }
+  let url;
   try {
-    body = await response.text();
+    url = new URL(value);
   } catch {
-    return fallback;
+    throw commandError(
+      "Facebook OAuth endpoint is invalid.",
+      "Use the built-in HTTPS Meta endpoint.",
+      "FACEBOOK_ENDPOINT_UNSAFE"
+    );
   }
-  if (!body) {
-    return fallback;
+  const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
+  const insecureTestEndpoint = process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK === "1" && url.protocol === "http:" && loopback;
+  if (url.protocol !== "https:" && !insecureTestEndpoint || url.username || url.password || url.hash) {
+    throw commandError(
+      "Facebook OAuth endpoint is unsafe.",
+      "Use the built-in HTTPS Meta endpoint. Plain HTTP is limited to the explicit loopback test seam.",
+      "FACEBOOK_ENDPOINT_UNSAFE"
+    );
   }
+  return url;
+}
+function facebookOAuthTimeoutSignal() {
+  const testTimeout = process.env.SPORADES_FACEBOOK_TEST_ALLOW_INSECURE_LOOPBACK === "1" ? Number(process.env.SPORADES_FACEBOOK_TEST_TIMEOUT_MS) : NaN;
+  const timeoutMs = Number.isInteger(testTimeout) && testTimeout >= 10 && testTimeout <= 1e4 ? testTimeout : 1e4;
+  return AbortSignal.timeout(timeoutMs);
+}
+async function cancelFacebookOAuthResponse(response) {
   try {
-    const parsed = JSON.parse(body);
-    const code = parsed.error ? String(parsed.error) : "";
-    const description = parsed.error_description ? String(parsed.error_description) : "";
-    return {
-      message: [code, description].filter(Boolean).join(": "),
-      hint: oauthErrorHint(code, description)
-    };
+    await response.body?.cancel();
   } catch {
-    return {
-      message: body.slice(0, 240),
-      hint: fallback.hint
-    };
   }
 }
-function oauthErrorHint(code, description) {
-  const detail = `${code} ${description}`.toLowerCase();
-  if (detail.includes("redirect_uri_mismatch") || detail.includes("redirect_uri")) {
-    return "Make sure Google Console has the exact authorized redirect URI shown in the browser callback URL, including scheme, host, and port.";
+async function readFacebookOAuthJson(response, signal, failureCode, failureMessage, failureHint, timeoutCode, timeoutMessage) {
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw commandError(failureMessage, failureHint, failureCode);
   }
-  if (detail.includes("invalid_client")) {
-    return "Check that the Client ID and Client secret belong to the same Web application OAuth client.";
-  }
-  if (detail.includes("invalid_grant")) {
-    return "Retry sign-in from the app. OAuth codes can only be used once and expire quickly; also check that the redirect URI has not changed.";
-  }
-  return "Check the Google OAuth client configuration and retry sign-in.";
-}
-async function fetchGoogleProfile(accessToken) {
-  const userInfoUrl = process.env.SPORADES_GOOGLE_USERINFO_URL ?? "https://www.googleapis.com/oauth2/v3/userinfo";
-  const profileResponse = await fetch(userInfoUrl, {
-    headers: { authorization: `Bearer ${accessToken}` }
+  const chunks = [];
+  let length = 0;
+  const aborted = {};
+  let onAbort = null;
+  const abort = signal.aborted ? Promise.resolve(aborted) : new Promise((resolve) => {
+    onAbort = () => resolve(aborted);
+    signal.addEventListener("abort", onAbort, { once: true });
   });
-  if (!profileResponse.ok) {
-    throw commandError("Google profile lookup failed.", "Retry Google sign-in with an email-bearing account.");
+  try {
+    while (true) {
+      const next = await Promise.race([reader.read(), abort]);
+      if (next === aborted) throw aborted;
+      if (next.done) break;
+      if (!(next.value instanceof Uint8Array)) throw new Error("invalid chunk");
+      length += next.value.byteLength;
+      if (length > 64 * 1024) {
+        throw new Error("response too large");
+      }
+      chunks.push(next.value);
+    }
+    return JSON.parse(Buffer.concat(chunks, length).toString("utf8"));
+  } catch (error) {
+    try {
+      await reader.cancel();
+    } catch {
+    }
+    if (error === aborted || signal.aborted) {
+      throw commandError(timeoutMessage, failureHint, timeoutCode);
+    }
+    throw commandError(failureMessage, failureHint, failureCode);
+  } finally {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+    try {
+      reader.releaseLock();
+    } catch {
+    }
   }
-  const profile = await profileResponse.json();
+}
+async function completeFacebookOAuth(database, context) {
+  const facebook = database.authConfig.providers.facebook;
+  const graphVersion = facebook.graphVersion;
+  if (graphVersion !== "v23.0") {
+    throw commandError(
+      "Facebook Graph API version is unsupported.",
+      "Configure Facebook Graph API version v23.0 and retry sign-in.",
+      "FACEBOOK_GRAPH_VERSION_UNSUPPORTED"
+    );
+  }
+  const clientId = database.serverEnv[facebook.clientIdEnv];
+  const clientSecret = database.serverEnv[facebook.clientSecretEnv];
+  if (typeof context.code !== "string" || context.code.length < 1 || context.code.length > 16 * 1024 || typeof context.redirectUri !== "string" || context.redirectUri.length < 1 || context.redirectUri.length > 2048 || typeof clientId !== "string" || clientId.length < 1 || clientId.length > 4096 || typeof clientSecret !== "string" || clientSecret.length < 1 || clientSecret.length > 16 * 1024) {
+    throw commandError(
+      "Facebook OAuth callback or configuration is invalid.",
+      "Retry sign-in and check the Facebook App ID, App Secret, and callback configuration.",
+      "FACEBOOK_CALLBACK_INVALID"
+    );
+  }
+  const tokenUrl = facebookOAuthEndpoint(
+    process.env.SPORADES_FACEBOOK_TOKEN_URL,
+    `https://graph.facebook.com/${graphVersion}/oauth/access_token`
+  );
+  let tokenResponse;
+  const tokenSignal = facebookOAuthTimeoutSignal();
+  try {
+    tokenResponse = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code: context.code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: context.redirectUri
+      }),
+      redirect: "error",
+      signal: tokenSignal
+    });
+  } catch (error) {
+    throw commandError(
+      error?.name === "TimeoutError" || error?.name === "AbortError" ? "Facebook OAuth code exchange timed out." : "Facebook OAuth code exchange failed.",
+      "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
+      error?.name === "TimeoutError" || error?.name === "AbortError" ? "FACEBOOK_EXCHANGE_TIMEOUT" : "FACEBOOK_EXCHANGE_FAILED"
+    );
+  }
+  if (!tokenResponse.ok) {
+    await cancelFacebookOAuthResponse(tokenResponse);
+    throw commandError(
+      "Facebook OAuth code exchange failed.",
+      "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
+      "FACEBOOK_EXCHANGE_FAILED"
+    );
+  }
+  const token = await readFacebookOAuthJson(
+    tokenResponse,
+    tokenSignal,
+    "FACEBOOK_EXCHANGE_FAILED",
+    "Facebook OAuth response was invalid.",
+    "Check the Facebook app configuration and retry sign-in.",
+    "FACEBOOK_EXCHANGE_TIMEOUT",
+    "Facebook OAuth response timed out."
+  );
+  if (typeof token?.access_token !== "string" || token.access_token.length < 1 || token.access_token.length > 16 * 1024) {
+    throw commandError(
+      "Facebook OAuth response did not include a valid access token.",
+      "Check the Facebook app configuration and retry sign-in.",
+      "FACEBOOK_EXCHANGE_FAILED"
+    );
+  }
+  const graphUrl = facebookOAuthEndpoint(
+    process.env.SPORADES_FACEBOOK_GRAPH_URL,
+    `https://graph.facebook.com/${graphVersion}/me`
+  );
+  graphUrl.searchParams.set("fields", "id,name,email,picture");
+  let graphResponse;
+  const graphSignal = facebookOAuthTimeoutSignal();
+  try {
+    graphResponse = await fetch(graphUrl, {
+      headers: { authorization: `Bearer ${token.access_token}` },
+      redirect: "error",
+      signal: graphSignal
+    });
+  } catch (error) {
+    throw commandError(
+      error?.name === "TimeoutError" || error?.name === "AbortError" ? "Facebook profile request timed out." : "Facebook profile could not be loaded.",
+      "Check Facebook Graph API access and retry sign-in.",
+      error?.name === "TimeoutError" || error?.name === "AbortError" ? "FACEBOOK_GRAPH_TIMEOUT" : "FACEBOOK_GRAPH_FAILED"
+    );
+  }
+  if (!graphResponse.ok) {
+    await cancelFacebookOAuthResponse(graphResponse);
+    throw commandError(
+      "Facebook profile could not be loaded.",
+      "Check Facebook Graph API access and retry sign-in.",
+      "FACEBOOK_GRAPH_FAILED"
+    );
+  }
+  const profile = await readFacebookOAuthJson(
+    graphResponse,
+    graphSignal,
+    "FACEBOOK_GRAPH_FAILED",
+    "Facebook profile response was invalid.",
+    "Check Facebook Graph API access and retry sign-in.",
+    "FACEBOOK_GRAPH_TIMEOUT",
+    "Facebook profile response timed out."
+  );
+  if (typeof profile?.id !== "string" || profile.id.length < 1 || profile.id.length > 255 || !/^[\x21-\x7e]+$/.test(profile.id)) {
+    throw commandError(
+      "Facebook profile is missing a stable identifier.",
+      "Retry Facebook sign-in. Sporades requires the Facebook profile id.",
+      "FACEBOOK_PROFILE_ID_MISSING"
+    );
+  }
+  const email = typeof profile.email === "string" && profile.email.length <= 320 ? profile.email.trim().toLowerCase() || null : null;
+  const displayName = typeof profile.name === "string" && profile.name.length <= 512 ? profile.name.trim() || null : null;
+  const pictureCandidate = profile.picture?.data?.url;
+  let picture = null;
+  if (typeof pictureCandidate === "string" && pictureCandidate.length <= 2048) {
+    try {
+      const pictureUrl = new URL(pictureCandidate);
+      if (pictureUrl.protocol === "https:" || pictureUrl.protocol === "http:") {
+        picture = pictureUrl.toString();
+      }
+    } catch {
+      picture = null;
+    }
+  }
   return {
-    email: profile.email,
-    displayName: profile.name ?? profile.email,
-    picture: profile.picture ?? null
+    subject: profile.id,
+    email,
+    emailVerified: null,
+    displayName,
+    picture
   };
 }
-async function linkGoogleAccount(database, session, profile) {
-  if (!profile.email) {
+async function verifyGoogleIdentityToken(database, token, expectedNonce) {
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    throw commandError("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  let header;
+  let claims;
+  try {
+    header = JSON.parse(decodeJwtPart(parts[0]).toString("utf8"));
+    claims = JSON.parse(decodeJwtPart(parts[1]).toString("utf8"));
+  } catch {
+    throw commandError("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  if (header.alg !== "RS256" || typeof header.kid !== "string") {
+    throw commandError("Google identity token used an unsupported signature.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  const jwksUrl = process.env.SPORADES_GOOGLE_JWKS_URL ?? "https://www.googleapis.com/oauth2/v3/certs";
+  let jwks;
+  try {
+    const response = await fetch(jwksUrl);
+    if (!response.ok) {
+      throw new Error("jwks");
+    }
+    jwks = await response.json();
+  } catch {
+    throw commandError("Google signing keys could not be loaded.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
+  }
+  const jwk = Array.isArray(jwks?.keys) ? jwks.keys.find((candidate) => candidate.kid === header.kid && candidate.kty === "RSA") : null;
+  if (!jwk) {
+    throw commandError("Google identity token signing key was not recognized.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  let signatureValid = false;
+  let signatureCheckFailed = false;
+  try {
+    signatureValid = verify(
+      "RSA-SHA256",
+      Buffer.from(`${parts[0]}.${parts[1]}`),
+      { key: jwk, format: "jwk" },
+      decodeJwtPart(parts[2])
+    );
+  } catch {
+    signatureCheckFailed = true;
+  }
+  const clientId = database.serverEnv[database.authConfig.google.clientIdEnv];
+  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  const validIssuer = claims.iss === "https://accounts.google.com" || claims.iss === "accounts.google.com";
+  const validSubject = typeof claims.sub === "string" && claims.sub.length <= 255 && /^[\x21-\x7e]+$/.test(claims.sub);
+  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED" : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID" : !validIssuer ? "OAUTH_ID_TOKEN_ISSUER_INVALID" : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID" : typeof claims.exp !== "number" || claims.exp <= Math.floor(Date.now() / 1e3) ? "OAUTH_ID_TOKEN_EXPIRED" : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID" : !validSubject ? "OAUTH_ID_TOKEN_SUBJECT_INVALID" : null;
+  if (invalidCode) {
+    throw commandError("Google identity token failed verification.", "Retry Google sign-in.", invalidCode);
+  }
+  return {
+    subject: claims.sub,
+    email: normalizeSimulatedText(claims.email)?.toLowerCase() ?? null,
+    emailVerified: claims.email_verified === true,
+    displayName: normalizeSimulatedText(claims.name) ?? normalizeSimulatedText(claims.email) ?? "Google user",
+    picture: normalizeSimulatedText(claims.picture)
+  };
+}
+async function verifyAppleIdentityToken(database, token, expectedNonce) {
+  if (typeof token !== "string" || token.length > 16 * 1024) {
+    throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  let header;
+  let claims;
+  try {
+    header = parseBoundedJwtObject(parts[0]);
+    claims = parseBoundedJwtObject(parts[1]);
+  } catch {
+    throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  if (header.alg !== "RS256" || typeof header.kid !== "string" || !/^[\x21-\x7e]{1,255}$/.test(header.kid) || header.typ !== void 0 && header.typ !== "JWT") {
+    throw commandError("Apple identity token used an unsupported signature.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  const jwksUrl = process.env.SPORADES_APPLE_JWKS_URL ?? "https://appleid.apple.com/auth/keys";
+  let jwks;
+  try {
+    const response = await fetch(jwksUrl);
+    if (!response.ok) throw new Error("jwks");
+    jwks = await readBoundedJsonResponse(response, 64 * 1024);
+  } catch {
+    throw commandError("Apple signing keys could not be loaded.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
+  }
+  const keys = isPlainJsonObject(jwks) && Array.isArray(jwks.keys) && jwks.keys.length <= 32 ? jwks.keys : null;
+  const jwk = keys ? keys.find((candidate) => isPlainJsonObject(candidate) && candidate.kid === header.kid && candidate.kty === "RSA" && candidate.use === "sig" && candidate.alg === "RS256" && typeof candidate.n === "string" && typeof candidate.e === "string") : null;
+  if (!jwk) {
+    throw commandError("Apple identity token signing key was not recognized.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  let signatureValid = false;
+  let signatureCheckFailed = false;
+  try {
+    signatureValid = verify(
+      "RSA-SHA256",
+      Buffer.from(`${parts[0]}.${parts[1]}`),
+      { key: jwk, format: "jwk" },
+      decodeJwtPart(parts[2])
+    );
+  } catch {
+    signatureCheckFailed = true;
+  }
+  const clientId = database.authConfig.providers.apple.clientId;
+  const audiences = typeof claims.aud === "string" ? [claims.aud] : Array.isArray(claims.aud) && claims.aud.length > 0 && claims.aud.length <= 8 && claims.aud.every((audience) => typeof audience === "string") ? claims.aud : [];
+  const validSubject = typeof claims.sub === "string" && claims.sub.length <= 255 && /^[\x21-\x7e]+$/.test(claims.sub);
+  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED" : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID" : typeof claims.iss !== "string" || claims.iss !== "https://appleid.apple.com" ? "OAUTH_ID_TOKEN_ISSUER_INVALID" : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID" : !Number.isSafeInteger(claims.exp) || claims.exp <= Math.floor(Date.now() / 1e3) ? "OAUTH_ID_TOKEN_EXPIRED" : typeof claims.nonce !== "string" || claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID" : !validSubject ? "OAUTH_ID_TOKEN_SUBJECT_INVALID" : null;
+  if (invalidCode) {
+    throw commandError("Apple identity token failed verification.", "Retry Apple sign-in.", invalidCode);
+  }
+  return {
+    subject: claims.sub,
+    email: normalizeSimulatedEmail(claims.email),
+    emailVerified: claims.email_verified === true || claims.email_verified === "true",
+    displayName: null,
+    picture: null
+  };
+}
+function parseBoundedJwtObject(value) {
+  if (typeof value !== "string" || value.length > 12 * 1024) throw new Error("Invalid JWT part");
+  const bytes = decodeJwtPart(value);
+  if (bytes.length === 0 || bytes.length > 8 * 1024) throw new Error("Invalid JWT part");
+  const parsed = JSON.parse(bytes.toString("utf8"));
+  if (!isPlainJsonObject(parsed)) throw new Error("Invalid JWT object");
+  return parsed;
+}
+async function readBoundedJsonResponse(response, maxBytes) {
+  const contentLength = Number(response.headers?.get?.("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) throw new Error("Response too large");
+  const chunks = [];
+  let size = 0;
+  if (response.body?.getReader) {
+    const reader = response.body.getReader();
+    try {
+      while (true) {
+        const result = await reader.read();
+        if (result.done) break;
+        size += result.value.byteLength;
+        if (size > maxBytes) throw new Error("Response too large");
+        chunks.push(Buffer.from(result.value));
+      }
+    } finally {
+      if (size > maxBytes) await reader.cancel().catch(() => {
+      });
+    }
+  } else {
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > maxBytes) throw new Error("Response too large");
+    chunks.push(bytes);
+  }
+  const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  if (!isPlainJsonObject(parsed)) throw new Error("Invalid JSON object");
+  return parsed;
+}
+function isPlainJsonObject(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
+}
+function parseAppleAuthorizationUser(value) {
+  if (value === null || value === void 0 || value === "") return null;
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 8 * 1024) {
+    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+  }
+  let user;
+  try {
+    user = JSON.parse(value);
+  } catch {
+    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+  }
+  if (!user || typeof user !== "object" || Array.isArray(user) || user.name !== void 0 && (!user.name || typeof user.name !== "object" || Array.isArray(user.name))) {
+    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+  }
+  const firstName = sanitizeAppleNamePart(user.name?.firstName);
+  const lastName = sanitizeAppleNamePart(user.name?.lastName);
+  const displayName = [firstName, lastName].filter(Boolean).join(" ") || null;
+  return { displayName };
+}
+function sanitizeAppleNamePart(value) {
+  if (value === null || value === void 0 || value === "") return null;
+  if (typeof value !== "string") {
+    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+  }
+  const text = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+  if (!text) return null;
+  if (text.length > 128) {
+    throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+  }
+  return text;
+}
+function decodeJwtPart(value) {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error("Invalid JWT encoding");
+  }
+  return Buffer.from(value, "base64url");
+}
+async function linkProviderIdentity(database, session, provider, profile) {
+  const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
+  const safeProvider = typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider) ? provider : "provider";
+  const providerName = `${safeProvider[0].toUpperCase()}${safeProvider.slice(1)}`;
+  if (!subject) {
     return {
       ok: false,
       error: {
-        message: "Google profile is missing an email address.",
-        hint: "Retry Google sign-in with an email-bearing account."
+        message: `${providerName} profile is missing a stable subject.`,
+        hint: "Retry sign-in. Sporades requires a verified stable subject claim."
       }
     };
   }
   return await database.sqlite.withTransaction(async (tx) => {
-    const existingUser = await tx.findAuthUserByProviderEmail("google", profile.email);
+    let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
+    const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
+    if (!identity && email && provider === "google") {
+      const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
+      if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
+        return {
+          ok: false,
+          error: {
+            code: "AUTH_LEGACY_IDENTITY_UNVERIFIED_EMAIL",
+            message: "Google did not verify the email needed to restore this legacy account.",
+            hint: "Use a Google account with a verified email address, or sign in with the account's existing authentication method."
+          }
+        };
+      }
+      if (legacyIdentities.length > 1) {
+        return {
+          ok: false,
+          error: {
+            code: "AUTH_LEGACY_IDENTITY_AMBIGUOUS",
+            message: "Google email matches more than one legacy account.",
+            hint: "Sign in with an existing authentication method before linking this Google identity."
+          }
+        };
+      }
+      identity = legacyIdentities[0] ?? null;
+    }
+    if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
+      return {
+        ok: false,
+        error: {
+          code: "AUTH_IDENTITY_CONFLICT",
+          message: `${providerName} identity is already linked to another account.`,
+          hint: `Sign out before using this ${providerName} identity, or sign in with the account it is already linked to.`
+        }
+      };
+    }
+    const displayName = normalizeSimulatedText(profile.displayName) ?? identity?.displayName ?? email ?? `${providerName} user`;
     const auth = {
-      userId: existingUser?.id ?? session.auth.userId,
-      displayName: profile.displayName ?? profile.email,
-      email: profile.email,
+      userId: identity?.userId ?? session.auth.userId,
+      displayName,
+      email,
       picture: profile.picture ?? null,
       isAuthenticated: true,
       isGuest: false,
-      provider: "google"
+      provider
     };
-    if (session.auth.isGuest && existingUser?.id && existingUser.id !== session.auth.userId) {
-      await tx.linkAuthUser({
-        id: auth.userId,
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    if (identity) {
+      await tx.updateAuthIdentity({
+        id: identity.id,
+        subject,
+        email,
         displayName: auth.displayName,
-        email: auth.email,
         picture: auth.picture,
-        isAuthenticated: 1,
-        isGuest: 0,
-        provider: "google"
+        updatedAt: now
       });
-      await moveSessionToUserOnAdapter(database, tx, session, auth.userId);
-      return { ok: true, auth };
+    } else {
+      await tx.insertAuthIdentity({
+        id: randomUUID(),
+        userId: auth.userId,
+        provider,
+        subject,
+        email,
+        displayName: auth.displayName,
+        picture: auth.picture,
+        createdAt: now,
+        updatedAt: now
+      });
     }
     await tx.linkAuthUser({
       id: auth.userId,
@@ -10690,11 +11741,19 @@ async function linkGoogleAccount(database, session, profile) {
       picture: auth.picture,
       isAuthenticated: 1,
       isGuest: 0,
-      provider: "google"
+      provider
     });
-    await refreshSessionOnAdapter(tx, session.token);
+    if (session.auth.isGuest && identity?.userId && identity.userId !== session.auth.userId) {
+      await moveSessionToUserOnAdapter(database, tx, session, auth.userId, provider);
+    } else {
+      await tx.setAuthSessionProvider(session.token, provider);
+      await refreshSessionOnAdapter(tx, session.token);
+    }
     return { ok: true, auth };
   });
+}
+async function linkGoogleAccount(database, session, profile) {
+  return await linkProviderIdentity(database, session, "google", profile);
 }
 function writeRedirect(response, location) {
   response.writeHead(302, { location });
@@ -10754,7 +11813,7 @@ async function signUpWithEmail(database, session, provider, credentials) {
       isGuest: 0,
       provider: "email"
     });
-    return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId), auth };
+    return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
   });
 }
 async function signInWithEmail(database, session, credentials) {
@@ -10782,11 +11841,11 @@ async function signInWithEmail(database, session, credentials) {
     picture: row.picture,
     isAuthenticated: Boolean(row.isAuthenticated),
     isGuest: Boolean(row.isGuest),
-    provider: row.provider
+    provider: "email"
   };
   return await database.sqlite.withTransaction(async (tx) => ({
     ok: true,
-    sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId),
+    sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"),
     auth
   }));
 }
@@ -10934,16 +11993,54 @@ function createAnonymousAuthTables(sqlite, authConfig = null) {
     "CREATE TABLE IF NOT EXISTS sporades_auth_users (id TEXT PRIMARY KEY, createdAt TEXT NOT NULL, displayName TEXT NOT NULL, email TEXT, picture TEXT, isAuthenticated INTEGER NOT NULL, isGuest INTEGER NOT NULL, provider TEXT NOT NULL)"
   );
   sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (token TEXT PRIMARY KEY, userId TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL)"
+    "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (token TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL)"
   );
   ensureSessionLifecycleColumns(sqlite);
+  ensureSessionProvenanceColumn(sqlite);
+  createProviderIdentityTables(sqlite);
   if (authConfig?.providers?.email?.enabled) {
     sqlite.exec(
       "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (email TEXT PRIMARY KEY, userId TEXT NOT NULL, passwordHash TEXT NOT NULL, passwordSalt TEXT NOT NULL, createdAt TEXT NOT NULL)"
     );
   }
   sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (state TEXT PRIMARY KEY, sessionToken TEXT NOT NULL, returnTo TEXT NOT NULL, redirectUri TEXT NOT NULL, createdAt TEXT NOT NULL)"
+    "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (state TEXT PRIMARY KEY, provider TEXT NOT NULL, sessionToken TEXT NOT NULL, returnTo TEXT NOT NULL, redirectUri TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL, nonce TEXT, pkceVerifier TEXT)"
+  );
+  ensureOAuthStateColumns(sqlite);
+}
+function ensureOAuthStateColumns(sqlite) {
+  const existing = new Set(sqlite.prepare("PRAGMA table_info(sporades_auth_oauth_states)").all().map((row) => row.name));
+  const columns = [
+    ["provider", "TEXT"],
+    ["expiresAt", "TEXT"],
+    ["nonce", "TEXT"],
+    ["pkceVerifier", "TEXT"]
+  ];
+  for (const [name, type] of columns) {
+    if (!existing.has(name)) {
+      sqlite.exec(`ALTER TABLE sporades_auth_oauth_states ADD COLUMN ${name} ${type}`);
+    }
+  }
+  sqlite.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
+  sqlite.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
+}
+async function ensureLibsqlOAuthStateColumns(sqlite) {
+  const rows = await sqlite.prepare("PRAGMA table_info(sporades_auth_oauth_states)").all();
+  const existing = new Set(rows.map((row) => row.name));
+  for (const [name, type] of [["provider", "TEXT"], ["expiresAt", "TEXT"], ["nonce", "TEXT"], ["pkceVerifier", "TEXT"]]) {
+    if (!existing.has(name)) {
+      await sqlite.exec(`ALTER TABLE sporades_auth_oauth_states ADD COLUMN ${name} ${type}`);
+    }
+  }
+  await sqlite.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
+  await sqlite.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
+}
+function createProviderIdentityTables(sqlite) {
+  sqlite.exec(
+    "CREATE TABLE IF NOT EXISTS sporades_auth_identities (id TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, displayName TEXT, picture TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, UNIQUE(provider, subject))"
+  );
+  sqlite.exec(
+    "INSERT INTO sporades_auth_identities (id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)"
   );
 }
 async function createUserPreferencesTables(sqlite) {
@@ -10959,6 +12056,16 @@ function ensureSessionLifecycleColumns(sqlite) {
     sqlite.prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE expiresAt IS NULL").run(sessionExpiresAt((/* @__PURE__ */ new Date()).toISOString()));
   }
 }
+function ensureSessionProvenanceColumn(sqlite) {
+  const columns = sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
+  const hasProvider = columns.some((column) => column.name === "provider");
+  if (!hasProvider) {
+    sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN provider TEXT");
+  }
+  sqlite.exec(
+    "UPDATE sporades_auth_sessions SET provider = COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') WHERE provider IS NULL"
+  );
+}
 async function ensureLibsqlSessionLifecycleColumns(sqlite) {
   const columns = await sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
   const hasExpiresAt = columns.some((column) => column.name === "expiresAt");
@@ -10966,6 +12073,23 @@ async function ensureLibsqlSessionLifecycleColumns(sqlite) {
     await sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN expiresAt TEXT");
     await sqlite.prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE expiresAt IS NULL").run(sessionExpiresAt((/* @__PURE__ */ new Date()).toISOString()));
   }
+}
+async function ensureLibsqlSessionProvenanceColumn(sqlite) {
+  const columns = await sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
+  if (!columns.some((column) => column.name === "provider")) {
+    await sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN provider TEXT");
+  }
+  await sqlite.exec(
+    "UPDATE sporades_auth_sessions SET provider = COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') WHERE provider IS NULL"
+  );
+}
+async function createLibsqlProviderIdentityTables(sqlite) {
+  await sqlite.exec(
+    "CREATE TABLE IF NOT EXISTS sporades_auth_identities (id TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, displayName TEXT, picture TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, UNIQUE(provider, subject))"
+  );
+  await sqlite.exec(
+    "INSERT INTO sporades_auth_identities (id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)"
+  );
 }
 function splitSqlStatements(sql) {
   const statements = [];
@@ -11056,25 +12180,26 @@ async function refreshSessionOnAdapter(sqlite, token) {
   await sqlite.refreshAuthSession(token, expiresAt);
   return expiresAt;
 }
-async function rotateSession(database, session, userId) {
-  return await database.sqlite.withTransaction(async (tx) => rotateSessionOnAdapter(database, tx, session, userId));
+async function rotateSession(database, session, userId, provider = session.auth.provider) {
+  return await database.sqlite.withTransaction(async (tx) => rotateSessionOnAdapter(database, tx, session, userId, provider));
 }
-async function rotateSessionOnAdapter(database, sqlite, session, userId) {
+async function rotateSessionOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const token = createSessionToken();
   await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
-  await sqlite.rotateAuthSession(session.token, { token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
+  await sqlite.rotateAuthSession(session.token, { token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
   return token;
 }
-async function moveSessionToUser(database, session, userId) {
-  return await database.sqlite.withTransaction(async (tx) => moveSessionToUserOnAdapter(database, tx, session, userId));
+async function moveSessionToUser(database, session, userId, provider = session.auth.provider) {
+  return await database.sqlite.withTransaction(async (tx) => moveSessionToUserOnAdapter(database, tx, session, userId, provider));
 }
-async function moveSessionToUserOnAdapter(database, sqlite, session, userId) {
+async function moveSessionToUserOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
   await sqlite.rotateAuthSession(session.token, {
     token: session.token,
     userId,
+    provider,
     createdAt: now,
     expiresAt: sessionExpiresAt(now)
   });
@@ -11130,7 +12255,7 @@ async function resolveAnonymousSession(database, sessionToken) {
       isGuest: 1,
       provider: "anonymous"
     });
-    await tx.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
+    await tx.insertAuthSession({ token, userId, provider: "anonymous", createdAt: now, expiresAt: sessionExpiresAt(now) });
   });
   return {
     token,
@@ -12128,41 +13253,61 @@ function formatMutationResult(message, mutationName, result) {
 function authStatus(config, serverEnv) {
   const authConfig = config.auth ?? { mode: "anonymous" };
   const normalized = normalizeAuthConfig(authConfig);
-  const clientIdEnv = normalized.providers.google.clientIdEnv;
-  const clientSecretEnv = normalized.providers.google.clientSecretEnv;
-  const providers = {
-    anonymous: {
-      enabled: normalized.providers.anonymous.enabled
-    },
-    google: {
-      enabled: normalized.providers.google.enabled,
-      configured: Boolean(clientIdEnv && clientSecretEnv && serverEnv[clientIdEnv] && serverEnv[clientSecretEnv]),
-      clientIdEnv,
-      clientSecretEnv
-    }
-  };
-  if (normalized.providers.email.enabled) {
-    providers.email = {
-      enabled: true
+  const providerOrder = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
+  const runtimeProviders = /* @__PURE__ */ new Set(["anonymous", "email", "google", "apple", "facebook"]);
+  const providers = {};
+  const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4e3;
+  for (const providerName of providerOrder) {
+    const provider = normalized.providers[providerName];
+    const credentialsConfigured = providerName === "anonymous" || providerName === "email" ? true : providerName === "apple" ? Boolean(provider.clientId && provider.teamId && provider.keyId && provider.privateKeyEnv && serverEnv[provider.privateKeyEnv]) : Boolean(provider.clientIdEnv && provider.clientSecretEnv && serverEnv[provider.clientIdEnv] && serverEnv[provider.clientSecretEnv]);
+    const configured = providerName === "facebook" ? credentialsConfigured && provider.graphVersion === "v23.0" : credentialsConfigured;
+    const state = {
+      enabled: provider.enabled,
+      configured,
+      runtimeAvailable: providerName === "facebook" ? Boolean(provider.enabled && configured) : runtimeProviders.has(providerName)
     };
+    if (["google", "microsoft", "facebook"].includes(providerName)) {
+      state.clientIdEnv = provider.clientIdEnv;
+      state.clientSecretEnv = provider.clientSecretEnv;
+    }
+    if (providerName === "microsoft") state.tenant = provider.tenant;
+    if (providerName === "facebook") {
+      state.graphVersion = provider.graphVersion === "__invalid__" ? null : provider.graphVersion;
+    }
+    if (providerName === "apple") {
+      state.clientId = provider.clientId;
+      state.teamId = provider.teamId;
+      state.keyId = provider.keyId;
+      state.privateKeyEnv = provider.privateKeyEnv;
+    }
+    if (!["anonymous", "email"].includes(providerName)) {
+      state.callbackPath = `/__sporades/auth/${providerName}/callback`;
+      if (providerName === "apple") {
+        state.callbackUrl = null;
+        state.callbackGuidance = "Register this callback path on the Capsule's Hosted HTTPS origin, or use an HTTPS development tunnel.";
+      } else {
+        state.callbackUrl = port > 0 ? `http://localhost:${port}${state.callbackPath}` : null;
+      }
+    }
+    providers[providerName] = state;
   }
   return {
     mode: normalized.mode,
     providers,
     google: {
       configured: providers.google.configured,
-      clientIdEnv,
-      clientSecretEnv
+      clientIdEnv: normalized.providers.google.clientIdEnv,
+      clientSecretEnv: normalized.providers.google.clientSecretEnv
     }
   };
 }
 function normalizeAuthConfig(authConfig) {
   const providerConfig = authConfig.providers ?? {};
   for (const provider of Object.keys(providerConfig)) {
-    if (!["anonymous", "google", "email"].includes(provider)) {
+    if (!["anonymous", "email", "google", "microsoft", "apple", "facebook"].includes(provider)) {
       throw commandError(
         `Unsupported auth provider: ${provider}`,
-        "Use supported auth providers: anonymous, google, email."
+        "Use supported auth providers: anonymous, email, google, microsoft, apple, facebook."
       );
     }
   }
@@ -12177,44 +13322,62 @@ function normalizeAuthConfig(authConfig) {
     mode,
     providers: {
       anonymous: {
-        enabled: anonymousEnabled
+        enabled: anonymousEnabled,
+        ...emptyProviderConfig()
       },
       google: {
+        ...emptyProviderConfig(),
         enabled: googleEnabled,
         clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv ?? null,
         clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv ?? null
       },
       email: {
-        enabled: emailConfig.enabled
-      }
+        enabled: emailConfig.enabled,
+        ...emptyProviderConfig()
+      },
+      microsoft: readProviderConfig(providerConfig.microsoft),
+      apple: readProviderConfig(providerConfig.apple),
+      facebook: readFacebookProviderConfig(providerConfig.facebook)
     }
   };
 }
 function readProviderConfig(config) {
   if (config === true) {
-    return { enabled: true };
+    return { enabled: true, ...emptyProviderConfig() };
   }
   if (config === false || config === void 0 || config === null) {
-    return { enabled: false };
+    return { enabled: false, ...emptyProviderConfig() };
   }
   return {
     enabled: config.enabled !== false,
     clientIdEnv: config.clientIdEnv ?? null,
-    clientSecretEnv: config.clientSecretEnv ?? null
+    clientSecretEnv: config.clientSecretEnv ?? null,
+    clientId: config.clientId ?? null,
+    teamId: config.teamId ?? null,
+    keyId: config.keyId ?? null,
+    privateKeyEnv: config.privateKeyEnv ?? null,
+    tenant: config.tenant ?? null,
+    graphVersion: config.graphVersion === void 0 ? null : typeof config.graphVersion === "string" ? config.graphVersion : "__invalid__"
   };
 }
-function authProvidersForClient(authConfig) {
+function readFacebookProviderConfig(config) {
+  const normalized = readProviderConfig(config);
+  if (!config || typeof config !== "object" || Array.isArray(config) || !Object.prototype.hasOwnProperty.call(config, "graphVersion")) {
+    return { ...normalized, graphVersion: "v23.0" };
+  }
+  return normalized;
+}
+function emptyProviderConfig() {
+  return { clientIdEnv: null, clientSecretEnv: null, clientId: null, teamId: null, keyId: null, privateKeyEnv: null, tenant: null, graphVersion: null };
+}
+function authProvidersForClient(authConfig, origin = null) {
   const providers = {};
   for (const [name, provider] of Object.entries(authConfig.providers)) {
-    if (name === "google") {
-      providers.google = {
-        enabled: provider.enabled,
-        configured: provider.configured
-      };
-      continue;
-    }
     providers[name] = {
-      enabled: provider.enabled
+      enabled: provider.enabled,
+      configured: provider.configured,
+      runtimeAvailable: provider.runtimeAvailable && (name !== "apple" || appleOAuthOriginEligible(origin)),
+      ...name === "facebook" ? { graphVersion: provider.graphVersion === "__invalid__" ? null : provider.graphVersion } : {}
     };
   }
   return providers;
@@ -12344,7 +13507,7 @@ function createServerBundleSource({
   ].join("\n\n");
   const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
   return `// Sporades server bundle
-import { createDecipheriv, createHash, createHash as createHash2, createHmac, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createDecipheriv, createHash, createHash as createHash2, createHmac, createPrivateKey, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readFileSync as readFileSync2 } from "node:fs";
 import { lstat, readFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -13279,7 +14442,9 @@ function publicTreeError(message, hint, diagnostics) {
 }
 
 // src/bundle-pipeline.ts
-var SUPPORTED_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "google", "email"]);
+var AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
+var SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
+var RUNTIME_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "email", "google", "apple", "facebook"]);
 async function createBundle(projectDir, config, options = {}) {
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
   const toolchain = readClientToolchain(config.client?.toolchain ?? defaultClientToolchain(frameworkBundleConfig.framework), frameworkBundleConfig.framework);
@@ -13624,7 +14789,17 @@ function parseServerEnv(envFile) {
   return values;
 }
 function parseEnvValue(value) {
-  if (value.startsWith('"') && value.endsWith('"') || value.startsWith("'") && value.endsWith("'")) {
+  if (value.startsWith('"') && value.endsWith('"')) {
+    try {
+      const parsed = JSON.parse(value);
+      if (typeof parsed === "string") {
+        return parsed;
+      }
+    } catch {
+    }
+    return value.slice(1, -1);
+  }
+  if (value.startsWith("'") && value.endsWith("'")) {
     return value.slice(1, -1);
   }
   return value;
@@ -13632,31 +14807,48 @@ function parseEnvValue(value) {
 function authStatus2(config, serverEnv) {
   const authConfig = config.auth ?? { mode: "anonymous" };
   const normalized = normalizeAuthConfig2(authConfig);
-  const clientIdEnv = normalized.providers.google.clientIdEnv;
-  const clientSecretEnv = normalized.providers.google.clientSecretEnv;
-  const providers = {
-    anonymous: {
-      enabled: normalized.providers.anonymous.enabled
-    },
-    google: {
-      enabled: normalized.providers.google.enabled,
-      configured: Boolean(clientIdEnv && clientSecretEnv && serverEnv[clientIdEnv] && serverEnv[clientSecretEnv]),
-      clientIdEnv,
-      clientSecretEnv
-    }
-  };
-  if (normalized.providers.email.enabled) {
-    providers.email = {
-      enabled: true
+  const providers = {};
+  const port = typeof config.dev === "object" && config.dev && typeof config.dev.port === "number" ? Number(config.dev.port) : typeof config.deploy === "object" && config.deploy && typeof config.deploy.port === "number" ? Number(config.deploy.port) : 4e3;
+  for (const providerName of AUTH_PROVIDER_ORDER) {
+    const provider = normalized.providers[providerName];
+    const configured = providerConfigured(providerName, provider, serverEnv);
+    const result = {
+      enabled: provider.enabled,
+      configured,
+      runtimeAvailable: providerName === "facebook" ? Boolean(provider.enabled && configured) : RUNTIME_AUTH_PROVIDERS.has(providerName)
     };
+    if (providerName === "google" || providerName === "microsoft" || providerName === "facebook") {
+      result.clientIdEnv = provider.clientIdEnv;
+      result.clientSecretEnv = provider.clientSecretEnv;
+    }
+    if (providerName === "microsoft") result.tenant = provider.tenant;
+    if (providerName === "facebook") {
+      result.graphVersion = provider.graphVersion === "__invalid__" ? null : provider.graphVersion;
+    }
+    if (providerName === "apple") {
+      result.clientId = provider.clientId;
+      result.teamId = provider.teamId;
+      result.keyId = provider.keyId;
+      result.privateKeyEnv = provider.privateKeyEnv;
+    }
+    if (!["anonymous", "email"].includes(providerName)) {
+      result.callbackPath = `/__sporades/auth/${providerName}/callback`;
+      if (providerName === "apple") {
+        result.callbackUrl = null;
+        result.callbackGuidance = "Register this callback path on the Capsule's Hosted HTTPS origin, or use an HTTPS development tunnel.";
+      } else {
+        result.callbackUrl = port > 0 ? `http://localhost:${port}${result.callbackPath}` : null;
+      }
+    }
+    providers[providerName] = result;
   }
   return {
     mode: normalized.mode,
     providers,
     google: {
       configured: providers.google.configured,
-      clientIdEnv,
-      clientSecretEnv
+      clientIdEnv: normalized.providers.google.clientIdEnv,
+      clientSecretEnv: normalized.providers.google.clientSecretEnv
     }
   };
 }
@@ -13666,7 +14858,7 @@ function normalizeAuthConfig2(authConfig) {
     if (!SUPPORTED_AUTH_PROVIDERS.has(provider)) {
       throw commandError2(
         `Unsupported auth provider: ${provider}`,
-        "Use supported auth providers: anonymous, google, email."
+        `Use supported auth providers: ${AUTH_PROVIDER_ORDER.join(", ")}.`
       );
     }
   }
@@ -13676,51 +14868,102 @@ function normalizeAuthConfig2(authConfig) {
   const emailConfig = readProviderConfig2(providerConfig.email);
   const anonymousConfig = readProviderConfig2(providerConfig.anonymous);
   const anonymousEnabled = providerConfig.anonymous === void 0 ? true : anonymousConfig.enabled;
-  const mode = typeof authConfig.mode === "string" ? authConfig.mode : googleEnabled ? "google" : "anonymous";
+  const mode = typeof authConfig.mode === "string" ? String(authConfig.mode) : googleEnabled ? "google" : "anonymous";
   return {
     mode,
     providers: {
       anonymous: {
-        enabled: anonymousEnabled
+        enabled: anonymousEnabled,
+        ...emptyProviderConfig2()
       },
       google: {
+        ...emptyProviderConfig2(),
         enabled: googleEnabled,
         clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv,
         clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv
       },
       email: {
-        enabled: emailConfig.enabled
-      }
+        enabled: emailConfig.enabled,
+        ...emptyProviderConfig2()
+      },
+      microsoft: readProviderConfig2(providerConfig.microsoft),
+      apple: readProviderConfig2(providerConfig.apple),
+      facebook: readFacebookProviderConfig2(providerConfig.facebook)
     }
   };
 }
 function readProviderConfig2(config) {
   if (config === true) {
-    return { enabled: true, clientIdEnv: null, clientSecretEnv: null };
+    return { enabled: true, ...emptyProviderConfig2() };
   }
   if (config === false || config === void 0 || config === null) {
-    return { enabled: false, clientIdEnv: null, clientSecretEnv: null };
+    return { enabled: false, ...emptyProviderConfig2() };
   }
   if (!isRecord2(config)) {
-    return { enabled: false, clientIdEnv: null, clientSecretEnv: null };
+    return { enabled: false, ...emptyProviderConfig2() };
   }
   return {
     enabled: config.enabled !== false,
     clientIdEnv: typeof config.clientIdEnv === "string" ? config.clientIdEnv : null,
-    clientSecretEnv: typeof config.clientSecretEnv === "string" ? config.clientSecretEnv : null
+    clientSecretEnv: typeof config.clientSecretEnv === "string" ? config.clientSecretEnv : null,
+    clientId: typeof config.clientId === "string" ? config.clientId : null,
+    teamId: typeof config.teamId === "string" ? config.teamId : null,
+    keyId: typeof config.keyId === "string" ? config.keyId : null,
+    privateKeyEnv: typeof config.privateKeyEnv === "string" ? config.privateKeyEnv : null,
+    tenant: typeof config.tenant === "string" ? config.tenant : null,
+    graphVersion: config.graphVersion === void 0 ? null : typeof config.graphVersion === "string" ? config.graphVersion : "__invalid__"
   };
+}
+function readFacebookProviderConfig2(config) {
+  const normalized = readProviderConfig2(config);
+  if (!isRecord2(config) || !Object.prototype.hasOwnProperty.call(config, "graphVersion")) {
+    return { ...normalized, graphVersion: "v23.0" };
+  }
+  return normalized;
 }
 function validateAuthConfig(config, serverEnv) {
   const status = authStatus2(config, serverEnv);
-  if (!status.providers.google.enabled) {
-    return;
-  }
-  if (!status.google.configured) {
+  for (const provider of AUTH_PROVIDER_ORDER) {
+    const state = status.providers[provider];
+    if (!state.enabled || state.configured) continue;
+    const callback = typeof state.callbackUrl === "string" ? ` Register callback URL ${state.callbackUrl}.` : typeof state.callbackGuidance === "string" ? ` ${state.callbackGuidance}` : "";
     throw commandError2(
-      "Google OAuth is not fully configured.",
-      "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`."
+      `${providerLabel(provider)} auth is not fully configured.`,
+      `${providerConfigurationHint(provider)}${callback}`
     );
   }
+}
+function emptyProviderConfig2() {
+  return {
+    clientIdEnv: null,
+    clientSecretEnv: null,
+    clientId: null,
+    teamId: null,
+    keyId: null,
+    privateKeyEnv: null,
+    tenant: null,
+    graphVersion: null
+  };
+}
+function providerConfigured(provider, config, serverEnv) {
+  if (provider === "anonymous" || provider === "email") return true;
+  if (provider === "apple") {
+    return Boolean(config.clientId && config.teamId && config.keyId && config.privateKeyEnv && serverEnv[config.privateKeyEnv]);
+  }
+  const credentialsConfigured = Boolean(config.clientIdEnv && config.clientSecretEnv && serverEnv[config.clientIdEnv] && serverEnv[config.clientSecretEnv]);
+  if (provider === "facebook") {
+    return credentialsConfigured && config.graphVersion === "v23.0";
+  }
+  return credentialsConfigured;
+}
+function providerLabel(provider) {
+  return `${provider[0].toUpperCase()}${provider.slice(1)}`;
+}
+function providerConfigurationHint(provider) {
+  if (provider === "apple") {
+    return "Run `sporades auth set apple --client-id <services-id> --team-id <team-id> --key-id <key-id> --private-key <pem>` or use `--client-json <path>`.";
+  }
+  return `Run \`sporades auth set ${provider} --client-id <id> --client-secret <secret>\` or use \`--client-json <path>\`.`;
 }
 async function readRequiredFile(filePath, message, hint) {
   try {
@@ -13793,6 +15036,257 @@ function tagBuildError(error, phase, framework, toolchain) {
   tagged.framework = framework;
   tagged.toolchain = toolchain;
   return tagged;
+}
+
+// src/file-transaction.ts
+import { randomBytes as randomBytes4 } from "node:crypto";
+import { lstat as lstat4, rename as rename3, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
+import path5 from "node:path";
+var defaultExecutor = async (_operation, action) => action();
+async function replaceFilesAtomically(replacements, options = {}) {
+  if (replacements.length === 0) {
+    return;
+  }
+  validateDistinctTargets(replacements);
+  const execute = options.execute ?? defaultExecutor;
+  const token = `${process.pid}-${randomBytes4(8).toString("hex")}`;
+  const entries = [];
+  try {
+    for (const [index, replacement] of replacements.entries()) {
+      const directory = path5.dirname(replacement.path);
+      const basename = path5.basename(replacement.path);
+      const artifactStem = path5.join(directory, `.${basename}.sporades-tx-${token}-${index}`);
+      const entry = {
+        ...replacement,
+        temporaryPath: `${artifactStem}.tmp`,
+        backupPath: `${artifactStem}.bak`,
+        hadOriginal: false,
+        originalMoved: false,
+        replacementMayExist: false
+      };
+      entries.push(entry);
+      entry.hadOriginal = await targetExists(entry, execute);
+      await performOperation(execute, {
+        phase: "stage",
+        action: "write",
+        label: entry.label,
+        targetPath: entry.path,
+        artifactPath: entry.temporaryPath
+      }, () => writeFile4(entry.temporaryPath, entry.contents, { flag: "wx", mode: 384 }));
+    }
+    for (const entry of entries) {
+      if (entry.hadOriginal) {
+        await performOperation(execute, {
+          phase: "commit",
+          action: "backup",
+          label: entry.label,
+          targetPath: entry.path,
+          artifactPath: entry.backupPath
+        }, () => rename3(entry.path, entry.backupPath));
+        entry.originalMoved = true;
+      }
+      entry.replacementMayExist = true;
+      await performOperation(execute, {
+        phase: "commit",
+        action: "replace",
+        label: entry.label,
+        targetPath: entry.path,
+        artifactPath: entry.temporaryPath
+      }, () => rename3(entry.temporaryPath, entry.path));
+    }
+  } catch (failure) {
+    const original = asOperationFailure(failure);
+    const recoveryFailures = await recoverEntries(entries, execute);
+    throw transactionError(original, recoveryFailures);
+  }
+  const cleanupFailures = await cleanupCommittedEntries(entries, execute);
+  if (cleanupFailures.length > 0) {
+    throw transactionError({
+      operation: {
+        phase: "cleanup",
+        action: "remove-backup",
+        label: cleanupFailures[0].label,
+        targetPath: ""
+      },
+      cause: Object.assign(new Error("Transaction cleanup failed."), { code: cleanupFailures[0].code })
+    }, cleanupFailures, "committed");
+  }
+}
+async function targetExists(entry, execute) {
+  try {
+    await performOperation(execute, {
+      phase: "inspect",
+      action: "stat",
+      label: entry.label,
+      targetPath: entry.path
+    }, () => lstat4(entry.path));
+    return true;
+  } catch (failure) {
+    const operationFailure = asOperationFailure(failure);
+    if (errorCode2(operationFailure.cause) === "ENOENT") {
+      return false;
+    }
+    throw operationFailure;
+  }
+}
+async function recoverEntries(entries, execute) {
+  const failures = [];
+  for (const entry of entries) {
+    if (entry.hadOriginal) {
+      const backupExists = await artifactExists(entry.backupPath);
+      if (backupExists) {
+        try {
+          await performOperation(execute, {
+            phase: "rollback",
+            action: "restore",
+            label: entry.label,
+            targetPath: entry.path,
+            artifactPath: entry.backupPath
+          }, () => rename3(entry.backupPath, entry.path));
+          entry.originalMoved = false;
+        } catch (failure) {
+          const backupRemains = await artifactExists(entry.backupPath);
+          const targetExistsAfterFailure = await artifactExists(entry.path);
+          if (!backupRemains && targetExistsAfterFailure) {
+            entry.originalMoved = false;
+          } else {
+            failures.push(recoveryFailure("restore", entry.label, asOperationFailure(failure).cause));
+          }
+        }
+      } else if (entry.originalMoved) {
+        failures.push({ action: "restore", label: entry.label, code: "BACKUP_MISSING" });
+      }
+    } else if (entry.replacementMayExist) {
+      try {
+        await performOperation(execute, {
+          phase: "rollback",
+          action: "remove",
+          label: entry.label,
+          targetPath: entry.path
+        }, () => rm3(entry.path, { force: true }));
+        entry.replacementMayExist = false;
+      } catch (failure) {
+        if (await artifactExists(entry.path)) {
+          failures.push(recoveryFailure("remove", entry.label, asOperationFailure(failure).cause));
+        } else {
+          entry.replacementMayExist = false;
+        }
+      }
+    }
+  }
+  for (const entry of entries) {
+    try {
+      await performOperation(execute, {
+        phase: "cleanup",
+        action: "remove-temp",
+        label: entry.label,
+        targetPath: entry.path,
+        artifactPath: entry.temporaryPath
+      }, () => rm3(entry.temporaryPath, { force: true }));
+    } catch (failure) {
+      if (await artifactExists(entry.temporaryPath)) {
+        failures.push(recoveryFailure("remove-temp", entry.label, asOperationFailure(failure).cause));
+      }
+    }
+  }
+  return failures;
+}
+async function cleanupCommittedEntries(entries, execute) {
+  const failures = [];
+  for (const entry of entries) {
+    for (const [action, artifactPath] of [
+      ["remove-temp", entry.temporaryPath],
+      ["remove-backup", entry.backupPath]
+    ]) {
+      try {
+        await performOperation(execute, {
+          phase: "cleanup",
+          action,
+          label: entry.label,
+          targetPath: entry.path,
+          artifactPath
+        }, () => rm3(artifactPath, { force: true }));
+      } catch (failure) {
+        if (await artifactExists(artifactPath)) {
+          failures.push(recoveryFailure(action, entry.label, asOperationFailure(failure).cause));
+        }
+      }
+    }
+  }
+  return failures;
+}
+async function artifactExists(artifactPath) {
+  try {
+    await lstat4(artifactPath);
+    return true;
+  } catch (error) {
+    if (errorCode2(error) === "ENOENT") {
+      return false;
+    }
+    return true;
+  }
+}
+async function performOperation(execute, operation, action) {
+  try {
+    return await execute(operation, action);
+  } catch (cause) {
+    throw { operation, cause };
+  }
+}
+function asOperationFailure(value) {
+  if (value && typeof value === "object" && "operation" in value && "cause" in value) {
+    return value;
+  }
+  return {
+    operation: {
+      phase: "commit",
+      action: "unknown",
+      label: "transaction",
+      targetPath: ""
+    },
+    cause: value
+  };
+}
+function recoveryFailure(action, label, cause) {
+  return { action, label, code: errorCode2(cause) };
+}
+function validateDistinctTargets(replacements) {
+  const identities = /* @__PURE__ */ new Set();
+  for (const replacement of replacements) {
+    const identity = path5.resolve(replacement.path);
+    if (identities.has(identity)) {
+      throw transactionError({
+        operation: {
+          phase: "validate",
+          action: "reject-duplicate",
+          label: "transaction",
+          targetPath: ""
+        },
+        cause: Object.assign(new Error("Duplicate transaction target."), { code: "DUPLICATE_TARGET" })
+      }, []);
+    }
+    identities.add(identity);
+  }
+}
+function transactionError(originalFailure, recoveryFailures, recoveryOverride) {
+  const recovery = recoveryOverride ?? (recoveryFailures.length === 0 ? "complete" : "incomplete");
+  const error = new Error("Unable to update OAuth configuration atomically.");
+  error.hint = recovery === "complete" ? "The previous project configuration and Server env state were restored. Retry the command." : recovery === "committed" ? "The new project configuration was committed, but transaction artifact cleanup was incomplete." : `Recovery was incomplete for ${[...new Set(recoveryFailures.map((failure) => failure.label))].join(", ")}. Inspect those files before retrying.`;
+  error.diagnostics = {
+    original: {
+      phase: originalFailure.operation.phase,
+      action: originalFailure.operation.action,
+      label: originalFailure.operation.label,
+      code: errorCode2(originalFailure.cause)
+    },
+    recovery,
+    recoveryFailures
+  };
+  return error;
+}
+function errorCode2(error) {
+  const code = error && typeof error === "object" && "code" in error ? String(error.code) : "UNKNOWN";
+  return /^[A-Z][A-Z0-9_]{1,31}$/.test(code) ? code : "UNKNOWN";
 }
 
 // src/base-image.ts
@@ -14058,7 +15552,7 @@ export class App extends Component {
   componentDidMount() { this.session.componentDidMount(); this.todos.componentDidMount(); }
   componentWillUnmount() { this.todos.componentWillUnmount(); this.session.componentWillUnmount(); }
   async submit(event: Event) { event.preventDefault(); const value = this.text.trim(); if (!value) return; const result = await this.addTodo.run(value); if (!result.error) { this.text = ""; this.forceUpdate(); } }
-  render() { const query = this.todos.state; return <main className="shell"><header><img className="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>{this.session.state.providers.google?.enabled && !this.session.isAuthenticated() ? <button type="button" onClick={() => auth.signIn("google")}>Sign in with Google</button> : null}<form onSubmit={(event) => this.submit(event)}><input aria-label="Todo" value={this.text} onInput={(event) => { this.text = (event.currentTarget as HTMLInputElement).value; this.forceUpdate(); }} /><button disabled={this.addTodo.state.loading || !this.text.trim()}>Add</button></form>{query.loading ? <p>Loading\u2026</p> : query.error ? <p role="alert">{query.error.message}</p> : <ul>{(query.data ?? []).map((todo) => <li key={todo.id}>{todo.text}</li>)}</ul>}</main>; }
+  render() { const query = this.todos.state; const providers = Object.entries(this.session.state.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable); return <main className="shell"><header><img className="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>{!this.session.isAuthenticated() ? providers.map(([provider]) => <button key={provider} type="button" onClick={() => auth.signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>) : null}<form onSubmit={(event) => this.submit(event)}><input aria-label="Todo" value={this.text} onInput={(event) => { this.text = (event.currentTarget as HTMLInputElement).value; this.forceUpdate(); }} /><button disabled={this.addTodo.state.loading || !this.text.trim()}>Add</button></form>{query.loading ? <p>Loading\u2026</p> : query.error ? <p role="alert">{query.error.message}</p> : <ul>{(query.data ?? []).map((todo) => <li key={todo.id}>{todo.text}</li>)}</ul>}</main>; }
 }
 export function mountInfernoApp(target: Element) { render(<App />, target); }
 mountInfernoApp(document.getElementById("app")!);
@@ -14074,9 +15568,9 @@ type Entry={id:string;authorName:string;authorPicture?:string;createdAt:string;b
 const {authAdapter,mutationAdapter,queryAdapter}=createInfernoAdapters();const maxLength=280;export const infernoMark=mark;
 export class App extends Component { session=authAdapter(this);entries=queryAdapter<Entry[]>(this,"entries");sign=mutationAdapter(this,"sign");body="";notice="";
 componentDidMount(){this.session.componentDidMount();this.entries.componentDidMount();} componentWillUnmount(){this.entries.componentWillUnmount();this.session.componentWillUnmount();}
-async signIn(){this.notice="";const r=await auth.signIn("google");if(r.error)this.notice=r.error.message;this.forceUpdate();} async signOut(){this.notice="";const r=await auth.signOut();if(r.error)this.notice=r.error.message;this.forceUpdate();}
+async signIn(provider:string){this.notice="";const r=await auth.signIn(provider);if(r.error)this.notice=r.error.message;this.forceUpdate();} async signOut(){this.notice="";const r=await auth.signOut();if(r.error)this.notice=r.error.message;this.forceUpdate();}
 async submit(e:Event){e.preventDefault();const value=this.body.trim();if(!value||value.length>maxLength)return;const r=await this.sign.run(value);if(!r.error)this.body="";this.forceUpdate();}
-render(){const remaining=maxLength-this.body.length;return <main className="shell"><header><div><p>Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div><span>{this.session.state.auth?.displayName??"Anonymous"}</span>{this.session.isAuthenticated()?<button type="button" onClick={()=>this.signOut()}>Sign out</button>:<button type="button" onClick={()=>this.signIn()}>Sign in with Google</button>}{this.notice?<p role="alert">{this.notice}</p>:null}</div></header><form onSubmit={(e)=>this.submit(e)}><textarea value={this.body} maxLength={maxLength} onInput={(e)=>{this.body=(e.currentTarget as HTMLTextAreaElement).value;this.forceUpdate();}}/><span>{remaining} characters left</span><button disabled={!this.body.trim()||this.sign.state.loading}>Sign guestbook</button>{this.sign.state.error?<p role="alert">{this.sign.state.error.message}</p>:null}</form><section>{(this.entries.state.data??[]).map(entry=><article key={entry.id}><strong>{entry.authorName}</strong><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time><p>{entry.body}</p></article>)}</section></main>}}
+render(){const remaining=maxLength-this.body.length,providers=Object.entries(this.session.state.providers).filter(([,state])=>state.enabled&&state.configured&&state.runtimeAvailable);return <main className="shell"><header><div><p>Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div><span>{this.session.state.auth?.displayName??"Anonymous"}</span>{this.session.isAuthenticated()?<button type="button" onClick={()=>this.signOut()}>Sign out</button>:providers.map(([provider])=><button key={provider} type="button" onClick={()=>this.signIn(provider)}>Sign in with {provider[0].toUpperCase()+provider.slice(1)}</button>)}{this.notice?<p role="alert">{this.notice}</p>:null}</div></header><form onSubmit={(e)=>this.submit(e)}><textarea value={this.body} maxLength={maxLength} onInput={(e)=>{this.body=(e.currentTarget as HTMLTextAreaElement).value;this.forceUpdate();}}/><span>{remaining} characters left</span><button disabled={!this.body.trim()||this.sign.state.loading}>Sign guestbook</button>{this.sign.state.error?<p role="alert">{this.sign.state.error.message}</p>:null}</form><section>{(this.entries.state.data??[]).map(entry=><article key={entry.id}><strong>{entry.authorName}</strong><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time><p>{entry.body}</p></article>)}</section></main>}}
 export function mountInfernoApp(target:Element){render(<App/>,target);} mountInfernoApp(document.getElementById("app")!);
 `;
 }
@@ -14090,11 +15584,11 @@ type Photo={id:string;title:string;fileId:string;imageUrl:string;ownerName:strin
 const {authAdapter,mutationAdapter,queryAdapter}=createInfernoAdapters();export const infernoMark=mark;
 export class App extends Component {session=authAdapter(this);publicPhotos=queryAdapter<Photo[]>(this,"publicPhotos");personalPhotos=queryAdapter<Photo[]>(this,"personalPhotos");record=mutationAdapter(this,"recordPhoto");setPublic=mutationAdapter(this,"updatePhotoIsPublic");setImage=mutationAdapter(this,"updatePhotoImageUrl");setPublicId=mutationAdapter(this,"updatePhotoPublicUrlId");title="";selected:File|null=null;publish=false;message="";
 componentDidMount(){this.session.componentDidMount();this.publicPhotos.componentDidMount();this.personalPhotos.componentDidMount();}componentWillUnmount(){this.personalPhotos.componentWillUnmount();this.publicPhotos.componentWillUnmount();this.session.componentWillUnmount();}
-async signIn(){this.message="";const r=await auth.signIn("google");if(r.error)this.message=r.error.message;this.forceUpdate();}async signOut(){this.message="";const r=await auth.signOut();if(r.error)this.message=r.error.message;this.forceUpdate();}
+async signIn(provider:string){this.message="";const r=await auth.signIn(provider);if(r.error)this.message=r.error.message;this.forceUpdate();}async signOut(){this.message="";const r=await auth.signOut();if(r.error)this.message=r.error.message;this.forceUpdate();}
 async requireMutation(mutation:any,...args:any[]){const result=await mutation.run(...args);if(result.error)throw new Error(result.error.message);return result;}
 async submit(e:Event){e.preventDefault();if(!this.selected)return;this.message="Uploading...";this.forceUpdate();try{const file=await files.upload(this.selected);const shouldPublish=!this.session.isAuthenticated()||this.publish;const publicUrl=shouldPublish?await files.publicUrl(file.id,{noExpiry:true}):null;const r=await this.record.run({title:this.title,file,isPublic:shouldPublish,publicUrl});if(r.error){this.message=r.error.message;return;}this.title="";this.selected=null;this.publish=false;this.message=shouldPublish?"Photo added to the public gallery.":"Photo saved privately.";}catch(error){this.message=error instanceof Error?error.message:"Upload failed.";}finally{this.forceUpdate();}}
 async makePublic(photo:Photo){this.message="";try{const url=await files.publicUrl(photo.fileId,{noExpiry:true});await this.requireMutation(this.setImage,photo.id,url.url);await this.requireMutation(this.setPublicId,photo.id,url.id);await this.requireMutation(this.setPublic,photo.id,true);}catch(error){this.message=error instanceof Error?error.message:"Could not publish photo.";}this.forceUpdate();}async makePrivate(photo:Photo){this.message="";try{if(photo.publicUrlId)await files.revokePublicUrl(photo.publicUrlId);await this.requireMutation(this.setPublic,photo.id,false);await this.requireMutation(this.setImage,photo.id,"");await this.requireMutation(this.setPublicId,photo.id,"");}catch(error){this.message=error instanceof Error?error.message:"Could not hide photo.";}this.forceUpdate();}
-render(){const google=this.session.state.auth?.provider==="google",gallery=this.publicPhotos.state.data??[],mine=google?this.personalPhotos.state.data??[]:[];return <main className="shell"><header><div><p>Sporades Storage</p><h1>Photo Library</h1></div>{google?<button onClick={()=>this.signOut()}>Sign out</button>:<button onClick={()=>this.signIn()}>Sign in with Google</button>}</header><form onSubmit={(e)=>this.submit(e)}><input value={this.title} placeholder="Caption" onInput={(e)=>{this.title=(e.currentTarget as HTMLInputElement).value;this.forceUpdate();}}/><input type="file" accept="image/*" onChange={(e)=>{this.selected=(e.currentTarget as HTMLInputElement).files?.[0]??null;this.forceUpdate();}}/><label><input type="checkbox" checked={!this.session.isAuthenticated()||this.publish} disabled={!this.session.isAuthenticated()} onChange={(e)=>{this.publish=(e.currentTarget as HTMLInputElement).checked;this.forceUpdate();}}/>{this.session.isAuthenticated()?"Publish to gallery":"Anonymous uploads are public"}</label><button disabled={!this.selected||this.record.state.loading}>Upload photo</button>{this.message?<p role="status">{this.message}</p>:null}</form><h2>Public gallery</h2><section>{gallery.map(p=><article key={p.id}><img src={p.imageUrl} alt={p.title}/><strong>{p.title}</strong><span>{p.ownerName}</span></article>)}</section>{google?<section><h2>My library</h2>{mine.map(p=><article key={p.id}><strong>{p.title}</strong><span>{p.status}</span>{p.isPublic?<button onClick={()=>this.makePrivate(p)}>Make private</button>:<button onClick={()=>this.makePublic(p)}>Make public</button>}</article>)}</section>:null}</main>}}
+render(){const signedIn=this.session.isAuthenticated(),providers=Object.entries(this.session.state.providers).filter(([,state])=>state.enabled&&state.configured&&state.runtimeAvailable),gallery=this.publicPhotos.state.data??[],mine=signedIn?this.personalPhotos.state.data??[]:[];return <main className="shell"><header><div><p>Sporades Storage</p><h1>Photo Library</h1></div>{signedIn?<button onClick={()=>this.signOut()}>Sign out</button>:providers.map(([provider])=><button key={provider} onClick={()=>this.signIn(provider)}>Sign in with {provider[0].toUpperCase()+provider.slice(1)}</button>)}</header><form onSubmit={(e)=>this.submit(e)}><input value={this.title} placeholder="Caption" onInput={(e)=>{this.title=(e.currentTarget as HTMLInputElement).value;this.forceUpdate();}}/><input type="file" accept="image/*" onChange={(e)=>{this.selected=(e.currentTarget as HTMLInputElement).files?.[0]??null;this.forceUpdate();}}/><label><input type="checkbox" checked={!signedIn||this.publish} disabled={!signedIn} onChange={(e)=>{this.publish=(e.currentTarget as HTMLInputElement).checked;this.forceUpdate();}}/>{signedIn?"Publish to gallery":"Anonymous uploads are public"}</label><button disabled={!this.selected||this.record.state.loading}>Upload photo</button>{this.message?<p role="status">{this.message}</p>:null}</form><h2>Public gallery</h2><section>{gallery.map(p=><article key={p.id}><img src={p.imageUrl} alt={p.title}/><strong>{p.title}</strong><span>{p.ownerName}</span></article>)}</section>{signedIn?<section><h2>My library</h2>{mine.map(p=><article key={p.id}><strong>{p.title}</strong><span>{p.status}</span>{p.isPublic?<button onClick={()=>this.makePrivate(p)}>Make private</button>:<button onClick={()=>this.makePublic(p)}>Make public</button>}</article>)}</section>:null}</main>}}
 export function mountInfernoApp(target:Element){render(<App/>,target);} mountInfernoApp(document.getElementById("app")!);
 `;
 }
@@ -14178,7 +15672,7 @@ class SporadesApp extends LitElement {
   text = "";
   static styles = css\`:host{display:block;max-width:42rem;margin:3rem auto;font-family:system-ui,sans-serif;color:#15211d}header,form{display:flex;gap:.75rem;align-items:center}.mark{width:2rem;height:2rem}li{margin-block:.5rem}\`;
   async submit(event: SubmitEvent) { event.preventDefault(); const value = this.text.trim(); if (!value) return; const result = await this.addTodo.run(value); if (!result.error) { this.text = ""; this.requestUpdate(); } }
-  render() { const query = this.todos.state; return html\`<main><header><img class="mark" src=\${mark} alt=""><h1>Sporades Todos</h1></header>\${this.session.state.providers.google?.enabled && !this.session.isAuthenticated() ? html\`<button @click=\${() => auth.signIn("google")}>Sign in with Google</button>\` : null}<form @submit=\${(event: SubmitEvent) => this.submit(event)}><input aria-label="Todo" .value=\${this.text} @input=\${(event: InputEvent) => { this.text = (event.currentTarget as HTMLInputElement).value; }}><button ?disabled=\${this.addTodo.state.loading}>Add</button></form>\${query.loading ? html\`<p>Loading\u2026</p>\` : query.error ? html\`<p role="alert">\${query.error.message}</p>\` : html\`<ul>\${(query.data ?? []).map((todo) => html\`<li>\${todo.text}</li>\`)}</ul>\`}</main>\`; }
+  render() { const query = this.todos.state; const providers = Object.entries(this.session.state.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable); return html\`<main><header><img class="mark" src=\${mark} alt=""><h1>Sporades Todos</h1></header>\${!this.session.isAuthenticated() ? providers.map(([provider]) => html\`<button @click=\${() => auth.signIn(provider)}>Sign in with \${provider[0].toUpperCase() + provider.slice(1)}</button>\`) : null}<form @submit=\${(event: SubmitEvent) => this.submit(event)}><input aria-label="Todo" .value=\${this.text} @input=\${(event: InputEvent) => { this.text = (event.currentTarget as HTMLInputElement).value; }}><button ?disabled=\${this.addTodo.state.loading}>Add</button></form>\${query.loading ? html\`<p>Loading\u2026</p>\` : query.error ? html\`<p role="alert">\${query.error.message}</p>\` : html\`<ul>\${(query.data ?? []).map((todo) => html\`<li>\${todo.text}</li>\`)}</ul>\`}</main>\`; }
 }
 customElements.define("sporades-app", SporadesApp);
 `;
@@ -14194,10 +15688,10 @@ class SporadesApp extends LitElement {
   session = authController(this); entries = queryController<any[]>(this, "entries"); sign = mutationController(this, "sign");
   body = ""; authError = ""; maxLength = 280;
   static styles = css\`:host{display:block;max-width:920px;margin:auto;padding:48px 0;font-family:system-ui,sans-serif}.intro,.row,.auth{display:flex;justify-content:space-between;gap:16px;align-items:center}form,article{background:white;border:1px solid #ded6ca;border-radius:8px;padding:16px;margin-top:24px}textarea{width:100%;min-height:116px;box-sizing:border-box}.entries{display:grid;gap:12px}.mark{width:2rem}button{padding:10px 14px}.error{color:#a33b28}\`;
-  async signIn() { this.authError = ""; const result = await auth.signIn("google"); if (result.error) this.authError = result.error.message; this.requestUpdate(); }
+  async signIn(provider: string) { this.authError = ""; const result = await auth.signIn(provider); if (result.error) this.authError = result.error.message; this.requestUpdate(); }
   async signOut() { this.authError = ""; const result = await auth.signOut(); if (result.error) this.authError = result.error.message; this.requestUpdate(); }
   async submit(event: SubmitEvent) { event.preventDefault(); const message = this.body.trim(); if (!message || message.length > this.maxLength) return; const result = await this.sign.run(message); if (!result.error) this.body = ""; this.requestUpdate(); }
-  render() { const entries = this.entries.state; return html\`<main><section class="intro"><div><img class="mark" src=\${mark} alt=""><p>Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div class="auth"><span>\${this.session.state.auth?.displayName ?? "Anonymous"}</span>\${this.session.isAuthenticated() ? html\`<button @click=\${() => this.signOut()}>Sign out</button>\` : html\`<button @click=\${() => this.signIn()}>Sign in with Google</button>\`}\${this.authError ? html\`<p class="error">\${this.authError}</p>\` : null}</div></section><form @submit=\${(event: SubmitEvent) => this.submit(event)}><textarea .value=\${this.body} maxlength=\${this.maxLength} @input=\${(event: InputEvent) => { this.body = (event.currentTarget as HTMLTextAreaElement).value; this.requestUpdate(); }}></textarea><div class="row"><span>\${this.maxLength - this.body.length} characters left</span><button ?disabled=\${!this.body.trim() || this.sign.state.loading}>Sign guestbook</button></div>\${this.sign.state.error ? html\`<p class="error">\${this.sign.state.error.message}</p>\` : null}</form>\${entries.loading ? html\`<p>Loading\u2026</p>\` : entries.error ? html\`<p role="alert" class="error">\${entries.error.message}</p>\` : html\`<section class="entries">\${(entries.data ?? []).map((entry) => html\`<article><strong>\${entry.authorName}</strong><time>\${new Date(entry.createdAt).toLocaleString()}</time><p>\${entry.body}</p></article>\`)}</section>\`}</main>\`; }
+  render() { const entries = this.entries.state; const providers = Object.entries(this.session.state.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable); return html\`<main><section class="intro"><div><img class="mark" src=\${mark} alt=""><p>Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div class="auth"><span>\${this.session.state.auth?.displayName ?? "Anonymous"}</span>\${this.session.isAuthenticated() ? html\`<button @click=\${() => this.signOut()}>Sign out</button>\` : providers.map(([provider]) => html\`<button @click=\${() => this.signIn(provider)}>Sign in with \${provider[0].toUpperCase() + provider.slice(1)}</button>\`)}\${this.authError ? html\`<p class="error">\${this.authError}</p>\` : null}</div></section><form @submit=\${(event: SubmitEvent) => this.submit(event)}><textarea .value=\${this.body} maxlength=\${this.maxLength} @input=\${(event: InputEvent) => { this.body = (event.currentTarget as HTMLTextAreaElement).value; this.requestUpdate(); }}></textarea><div class="row"><span>\${this.maxLength - this.body.length} characters left</span><button ?disabled=\${!this.body.trim() || this.sign.state.loading}>Sign guestbook</button></div>\${this.sign.state.error ? html\`<p class="error">\${this.sign.state.error.message}</p>\` : null}</form>\${entries.loading ? html\`<p>Loading\u2026</p>\` : entries.error ? html\`<p role="alert" class="error">\${entries.error.message}</p>\` : html\`<section class="entries">\${(entries.data ?? []).map((entry) => html\`<article><strong>\${entry.authorName}</strong><time>\${new Date(entry.createdAt).toLocaleString()}</time><p>\${entry.body}</p></article>\`)}</section>\`}</main>\`; }
 }
 customElements.define("sporades-app", SporadesApp);
 `;
@@ -14215,13 +15709,13 @@ class SporadesApp extends LitElement {
   title = ""; selectedFile: File | null = null; publish = false; message = "";
   static styles = css\`:host{display:block;max-width:1080px;margin:auto;padding:40px 0;font-family:system-ui,sans-serif}header,header div,form,.library{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.mark{width:2rem}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}.grid img{width:100%;aspect-ratio:4/3;object-fit:cover}form,.library{background:white;padding:14px;border:1px solid #d8ddd2}\`;
   async requireMutation(mutation: any, ...args: any[]) { const result = await mutation.run(...args); if (result.error) throw result.error; }
-  async signIn() { this.message = ""; const result = await auth.signIn("google"); if (result.error) this.message = result.error.message; this.requestUpdate(); }
+  async signIn(provider: string) { this.message = ""; const result = await auth.signIn(provider); if (result.error) this.message = result.error.message; this.requestUpdate(); }
   async signOut() { this.message = ""; const result = await auth.signOut(); if (result.error) this.message = result.error.message; this.requestUpdate(); }
   async submit(event: SubmitEvent) { event.preventDefault(); if (!this.selectedFile) return; this.message = "Uploading..."; this.requestUpdate(); try { const file = await files.upload(this.selectedFile); const isPublic = !this.session.isAuthenticated() || this.publish; const publicUrl = isPublic ? await files.publicUrl(file.id, { noExpiry: true }) : null; const result = await this.recordPhoto.run({ title: this.title, file, isPublic, publicUrl }); if (result.error) { this.message = result.error.message; } else { this.title = ""; this.selectedFile = null; this.publish = false; this.message = isPublic ? "Photo added to the public gallery." : "Photo saved privately."; } } catch (error) { this.message = error instanceof Error ? error.message : "Upload failed."; } this.requestUpdate(); }
   async makePublic(photo: any) { try { const publicUrl = await files.publicUrl(photo.fileId, { noExpiry: true }); await this.requireMutation(this.updatePhotoImageUrl, photo.id, publicUrl.url); await this.requireMutation(this.updatePhotoPublicUrlId, photo.id, publicUrl.id); await this.requireMutation(this.updatePhotoIsPublic, photo.id, true); } catch (error) { this.message = error instanceof Error ? error.message : "Could not publish photo."; } this.requestUpdate(); }
   async makePrivate(photo: any) { try { if (photo.publicUrlId) await files.revokePublicUrl(photo.publicUrlId); await this.requireMutation(this.updatePhotoIsPublic, photo.id, false); await this.requireMutation(this.updatePhotoImageUrl, photo.id, ""); await this.requireMutation(this.updatePhotoPublicUrlId, photo.id, ""); } catch (error) { this.message = error instanceof Error ? error.message : "Could not hide photo."; } this.requestUpdate(); }
   renderPhoto(photo: any) { return html\`<article><img src=\${photo.imageUrl} alt=\${photo.title}><strong>\${photo.title}</strong><span>\${photo.ownerName}</span></article>\`; }
-  render() { const google = this.session.state.auth?.provider === "google"; return html\`<main><header><div><img class="mark" src=\${mark} alt=""><h1>Photo Library</h1></div><div><span>\${this.session.state.auth?.displayName ?? "Anonymous"}</span><button @click=\${() => google ? this.signOut() : this.signIn()}>\${google ? "Sign out" : "Sign in with Google"}</button></div></header><form @submit=\${(event: SubmitEvent) => this.submit(event)}><input placeholder="Caption" .value=\${this.title} @input=\${(event: InputEvent) => this.title = (event.currentTarget as HTMLInputElement).value}><input type="file" accept="image/*" @change=\${(event: Event) => { this.selectedFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null; this.requestUpdate(); }}><label><input type="checkbox" .checked=\${!this.session.isAuthenticated() || this.publish} ?disabled=\${!this.session.isAuthenticated()} @change=\${(event: Event) => { this.publish = (event.currentTarget as HTMLInputElement).checked; this.requestUpdate(); }}>\${this.session.isAuthenticated() ? "Publish to gallery" : "Anonymous uploads are public"}</label><button ?disabled=\${!this.selectedFile || this.recordPhoto.state.loading}>Upload photo</button>\${this.message ? html\`<p role="status">\${this.message}</p>\` : null}</form><section><h2>Public gallery</h2><div class="grid">\${(this.publicPhotos.state.data ?? []).map((photo) => this.renderPhoto(photo))}</div></section>\${google ? html\`<section><h2>My library</h2>\${(this.personalPhotos.state.data ?? []).map((photo) => html\`<article class="library"><strong>\${photo.title}</strong><span>\${photo.status}</span><button @click=\${() => photo.isPublic ? this.makePrivate(photo) : this.makePublic(photo)}>\${photo.isPublic ? "Make private" : "Make public"}</button></article>\`)}</section>\` : null}</main>\`; }
+  render() { const signedIn = this.session.isAuthenticated(); const providers = Object.entries(this.session.state.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable); return html\`<main><header><div><img class="mark" src=\${mark} alt=""><h1>Photo Library</h1></div><div><span>\${this.session.state.auth?.displayName ?? "Anonymous"}</span>\${signedIn ? html\`<button @click=\${() => this.signOut()}>Sign out</button>\` : providers.map(([provider]) => html\`<button @click=\${() => this.signIn(provider)}>Sign in with \${provider[0].toUpperCase() + provider.slice(1)}</button>\`)}</div></header><form @submit=\${(event: SubmitEvent) => this.submit(event)}><input placeholder="Caption" .value=\${this.title} @input=\${(event: InputEvent) => this.title = (event.currentTarget as HTMLInputElement).value}><input type="file" accept="image/*" @change=\${(event: Event) => { this.selectedFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null; this.requestUpdate(); }}><label><input type="checkbox" .checked=\${!signedIn || this.publish} ?disabled=\${!signedIn} @change=\${(event: Event) => { this.publish = (event.currentTarget as HTMLInputElement).checked; this.requestUpdate(); }}>\${signedIn ? "Publish to gallery" : "Anonymous uploads are public"}</label><button ?disabled=\${!this.selectedFile || this.recordPhoto.state.loading}>Upload photo</button>\${this.message ? html\`<p role="status">\${this.message}</p>\` : null}</form><section><h2>Public gallery</h2><div class="grid">\${(this.publicPhotos.state.data ?? []).map((photo) => this.renderPhoto(photo))}</div></section>\${signedIn ? html\`<section><h2>My library</h2>\${(this.personalPhotos.state.data ?? []).map((photo) => html\`<article class="library"><strong>\${photo.title}</strong><span>\${photo.status}</span><button @click=\${() => photo.isPublic ? this.makePrivate(photo) : this.makePublic(photo)}>\${photo.isPublic ? "Make private" : "Make public"}</button></article>\`)}</section>\` : null}</main>\`; }
 }
 customElements.define("sporades-app", SporadesApp);
 `;
@@ -14348,6 +15842,7 @@ export default function App() {
   const todos = createQuery<Todo[]>("todos");
   const addTodo = createMutation("addTodo");
   const [text, setText] = createSignal("");
+  const providers = () => Object.entries(session.state().providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
 
   async function submit(event: SubmitEvent) {
     event.preventDefault();
@@ -14360,9 +15855,7 @@ export default function App() {
   return (
     <main>
       <header><img class="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>
-      <Show when={session.state().providers.google?.enabled && !session.isAuthenticated()}>
-        <button type="button" onClick={() => auth.signIn("google")}>Sign in with Google</button>
-      </Show>
+      <Show when={!session.isAuthenticated()}><For each={providers()}>{([provider]) => <button type="button" onClick={() => auth.signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>}</For></Show>
       <form onSubmit={submit}>
         <input aria-label="Todo" value={text()} onInput={(event) => setText(event.currentTarget.value)} />
         <button disabled={addTodo.state().loading}>Add</button>
@@ -14391,7 +15884,7 @@ export default function App() {
   const [authError, setAuthError] = createSignal("");
   const maxLength = 280;
   const initials = (name: string) => name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?";
-  async function signIn() { setAuthError(""); const result = await auth.signIn("google"); if (result.error) setAuthError(result.error.message); }
+  async function signIn(provider: string) { setAuthError(""); const result = await auth.signIn(provider); if (result.error) setAuthError(result.error.message); }
   async function signOut() { setAuthError(""); const result = await auth.signOut(); if (result.error) setAuthError(result.error.message); }
   async function submit(event: SubmitEvent) {
     event.preventDefault();
@@ -14402,7 +15895,7 @@ export default function App() {
   }
   return <main class="shell">
     <section class="intro"><div><img class="mark" src={mark} alt="" /><p class="eyebrow">Sporades guestbook</p><h1>Leave a note from this island.</h1></div>
-      <div class="auth-panel"><span>{session.state().auth?.displayName ?? "Anonymous"}</span><Show when={!session.isAuthenticated()} fallback={<button class="secondary" type="button" onClick={signOut}>Sign out</button>}><button type="button" onClick={signIn}>Sign in with Google</button></Show><Show when={authError()}><p class="error">{authError()}</p></Show></div></section>
+      <div class="auth-panel"><span>{session.state().auth?.displayName ?? "Anonymous"}</span><Show when={!session.isAuthenticated()} fallback={<button class="secondary" type="button" onClick={signOut}>Sign out</button>}><For each={Object.entries(session.state().providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable)}>{([provider]) => <button type="button" onClick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>}</For></Show><Show when={authError()}><p class="error">{authError()}</p></Show></div></section>
     <form onSubmit={submit}><textarea value={body()} maxLength={maxLength} placeholder="Write something kind, sharp, or strangely memorable." onInput={(event) => setBody(event.currentTarget.value)} /><div class="row"><span>{maxLength - body().length} characters left</span><button type="submit" disabled={!body().trim() || sign.state().loading}>Sign guestbook</button></div><Show when={sign.state().error}><p class="error">{sign.state().error?.message}</p></Show></form>
     <Show when={!entries().loading} fallback={<p>Loading\u2026</p>}><Show when={!entries().error} fallback={<p class="error" role="alert">{entries().error?.message}</p>}><section class="entries"><For each={entries().data ?? []}>{(entry) => <article><Show when={entry.authorPicture} fallback={<span class="badge">{initials(entry.authorName)}</span>}><img src={entry.authorPicture} alt="" /></Show><div><strong>{entry.authorName}</strong><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time><p>{entry.body}</p></div></article>}</For></section></Show></Show>
   </main>;
@@ -14420,8 +15913,8 @@ export default function App() {
   const publicPhotos = createQuery<any[]>("publicPhotos"), personalPhotos = createQuery<any[]>("personalPhotos");
   const recordPhoto = createMutation("recordPhoto"), updatePhotoIsPublic = createMutation("updatePhotoIsPublic"), updatePhotoImageUrl = createMutation("updatePhotoImageUrl"), updatePhotoPublicUrlId = createMutation("updatePhotoPublicUrlId");
   const [title, setTitle] = createSignal(""), [selectedFile, setSelectedFile] = createSignal<File | null>(null), [publish, setPublish] = createSignal(false), [message, setMessage] = createSignal("");
-  const isGoogleUser = () => session.state().auth?.provider === "google";
-  async function signIn() { setMessage(""); const result = await auth.signIn("google"); if (result.error) setMessage(result.error.message); }
+  const providers = () => Object.entries(session.state().providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
+  async function signIn(provider: string) { setMessage(""); const result = await auth.signIn(provider); if (result.error) setMessage(result.error.message); }
   async function signOut() { setMessage(""); const result = await auth.signOut(); if (result.error) setMessage(result.error.message); }
   async function requireMutation(mutation: any, ...args: any[]) { const result = await mutation.run(...args); if (result.error) throw result.error; return result; }
   async function submit(event: SubmitEvent) {
@@ -14430,10 +15923,10 @@ export default function App() {
   }
   async function makePublic(photo: any) { setMessage(""); try { const publicUrl = await files.publicUrl(photo.fileId, { noExpiry: true }); await requireMutation(updatePhotoImageUrl, photo.id, publicUrl.url); await requireMutation(updatePhotoPublicUrlId, photo.id, publicUrl.id); await requireMutation(updatePhotoIsPublic, photo.id, true); } catch (error) { setMessage(error instanceof Error ? error.message : "Could not publish photo."); } }
   async function makePrivate(photo: any) { setMessage(""); try { if (photo.publicUrlId) await files.revokePublicUrl(photo.publicUrlId); await requireMutation(updatePhotoIsPublic, photo.id, false); await requireMutation(updatePhotoImageUrl, photo.id, ""); await requireMutation(updatePhotoPublicUrlId, photo.id, ""); } catch (error) { setMessage(error instanceof Error ? error.message : "Could not hide photo."); } }
-  return <main class="shell"><header><div><img class="mark" src={mark} alt="" /><p>Sporades Storage</p><h1>Photo Library</h1></div><div><span>{session.state().auth?.displayName ?? "Anonymous"}</span><Show when={isGoogleUser()} fallback={<button type="button" onClick={signIn}>Sign in with Google</button>}><button type="button" onClick={signOut}>Sign out</button></Show></div></header>
+  return <main class="shell"><header><div><img class="mark" src={mark} alt="" /><p>Sporades Storage</p><h1>Photo Library</h1></div><div><span>{session.state().auth?.displayName ?? "Anonymous"}</span><Show when={session.isAuthenticated()} fallback={<For each={providers()}>{([provider]) => <button type="button" onClick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>}</For>}><button type="button" onClick={signOut}>Sign out</button></Show></div></header>
     <form onSubmit={submit}><input value={title()} onInput={(event) => setTitle(event.currentTarget.value)} placeholder="Caption" /><input type="file" accept="image/*" onChange={(event) => setSelectedFile(event.currentTarget.files?.[0] ?? null)} /><label><input type="checkbox" checked={!session.isAuthenticated() || publish()} disabled={!session.isAuthenticated()} onChange={(event) => setPublish(event.currentTarget.checked)} />{session.isAuthenticated() ? "Publish to gallery" : "Anonymous uploads are public"}</label><button type="submit" disabled={!selectedFile() || recordPhoto.state().loading}>Upload photo</button><Show when={message()}><p>{message()}</p></Show></form>
     <section><h2>Public gallery</h2><Show when={publicPhotos().error}><p role="alert">{publicPhotos().error?.message}</p></Show><div class="grid"><For each={publicPhotos().data ?? []}>{(photo) => <article><img src={photo.imageUrl} alt={photo.title} /><strong>{photo.title}</strong><span>{photo.ownerName}</span></article>}</For></div></section>
-    <Show when={isGoogleUser()}><section><h2>My library</h2><div class="list"><For each={personalPhotos().data ?? []}>{(photo) => <article class="library"><div><strong>{photo.title}</strong><span>{photo.status}</span></div><Show when={photo.isPublic} fallback={<button type="button" onClick={() => makePublic(photo)}>Make public</button>}><button type="button" onClick={() => makePrivate(photo)}>Make private</button></Show></article>}</For></div></section></Show>
+    <Show when={session.isAuthenticated()}><section><h2>My library</h2><div class="list"><For each={personalPhotos().data ?? []}>{(photo) => <article class="library"><div><strong>{photo.title}</strong><span>{photo.status}</span></div><Show when={photo.isPublic} fallback={<button type="button" onClick={() => makePublic(photo)}>Make public</button>}><button type="button" onClick={() => makePrivate(photo)}>Make private</button></Show></article>}</For></div></section></Show>
   </main>;
 }
 `;
@@ -14559,7 +16052,7 @@ function svelteTodoAppTemplate() {
 
 <main>
   <header><img class="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>
-  {#if $session.providers.google?.enabled && !$session.isAuthenticated()}<button type="button" onclick={() => auth.signIn("google")}>Sign in with Google</button>{/if}
+  {#if !$session.isAuthenticated()}{#each Object.entries($session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable) as [provider]}<button type="button" onclick={() => auth.signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>{/each}{/if}
   <form onsubmit={(event) => { event.preventDefault(); submit(); }}><input bind:value={text} aria-label="Todo" /><button disabled={$addTodo.loading}>Add</button></form>
   {#if $todos.loading}<p>Loading\u2026</p>{:else if $todos.error}<p role="alert">{$todos.error.message}</p>{:else}<ul>{#each $todos.data ?? [] as todo (todo.id)}<li>{todo.text}</li>{/each}</ul>{/if}
 </main>
@@ -14583,14 +16076,14 @@ function svelteGuestbookAppTemplate() {
   const maxLength = 280;
   let body = "";
   let authError = "";
-  async function signIn() { authError = ""; const result = await auth.signIn("google"); if (result.error) authError = result.error.message; }
+  async function signIn(provider: string) { authError = ""; const result = await auth.signIn(provider); if (result.error) authError = result.error.message; }
   async function signOut() { authError = ""; const result = await auth.signOut(); if (result.error) authError = result.error.message; }
   async function submit() { const message = body.trim(); if (!message || message.length > maxLength) return; const result = await sign.run(message); if (!result.error) body = ""; }
   function initials(name: string) { return name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?"; }
 </script>
 
 <main class="shell">
-  <section class="intro"><div><img class="mark" src={mark} alt="" /><p class="eyebrow">Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div class="auth-panel"><span>{$session.auth?.displayName ?? "Anonymous"}</span>{#if !$session.isAuthenticated()}<button type="button" onclick={signIn}>Sign in with Google</button>{:else}<button class="secondary" type="button" onclick={signOut}>Sign out</button>{/if}{#if authError}<p class="error">{authError}</p>{/if}</div></section>
+  <section class="intro"><div><img class="mark" src={mark} alt="" /><p class="eyebrow">Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div class="auth-panel"><span>{$session.auth?.displayName ?? "Anonymous"}</span>{#if !$session.isAuthenticated()}{#each Object.entries($session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable) as [provider]}<button type="button" onclick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>{/each}{:else}<button class="secondary" type="button" onclick={signOut}>Sign out</button>{/if}{#if authError}<p class="error">{authError}</p>{/if}</div></section>
   <form onsubmit={(event) => { event.preventDefault(); submit(); }}><textarea bind:value={body} maxlength={maxLength} placeholder="Write something kind, sharp, or strangely memorable."></textarea><div class="row"><span>{maxLength - body.length} characters left</span><button disabled={!body.trim() || $sign.loading}>Sign guestbook</button></div>{#if $sign.error}<p class="error">{$sign.error.message}</p>{/if}</form>
   {#if $entries.loading}<p>Loading\u2026</p>{:else if $entries.error}<p class="error" role="alert">{$entries.error.message}</p>{:else}<section class="entries">{#each $entries.data ?? [] as entry (entry.id)}<article><span class="badge">{entry.authorPicture ? "" : initials(entry.authorName)}</span>{#if entry.authorPicture}<img src={entry.authorPicture} alt="" />{/if}<div><strong>{entry.authorName}</strong><time datetime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time><p>{entry.body}</p></div></article>{/each}</section>{/if}
 </main>
@@ -14608,18 +16101,18 @@ function sveltePhotoLibraryAppTemplate() {
   const publicPhotos = queryStore("publicPhotos"); const personalPhotos = queryStore("personalPhotos");
   const recordPhoto = mutationStore("recordPhoto"); const updatePhotoIsPublic = mutationStore("updatePhotoIsPublic"); const updatePhotoImageUrl = mutationStore("updatePhotoImageUrl"); const updatePhotoPublicUrlId = mutationStore("updatePhotoPublicUrlId");
   let title = "", selectedFile: File | null = null, publish = false, message = "";
-  $: isGoogleUser = $session.auth?.provider === "google";
-  async function signIn() { message = ""; const result = await auth.signIn("google"); if (result.error) message = result.error.message; }
+  $: availableProviders = Object.entries($session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
+  async function signIn(provider: string) { message = ""; const result = await auth.signIn(provider); if (result.error) message = result.error.message; }
   async function signOut() { message = ""; const result = await auth.signOut(); if (result.error) message = result.error.message; }
   async function requireMutation(store: any,...args: any[]){const result=await store.run(...args);if(result.error)throw result.error;return result;}
   async function submit() { if (!selectedFile) return; message = "Uploading..."; try { const file = await files.upload(selectedFile); const shouldPublish = !$session.isAuthenticated() || publish; const publicUrl = shouldPublish ? await files.publicUrl(file.id,{noExpiry:true}) : null; const result = await recordPhoto.run({title,file,isPublic:shouldPublish,publicUrl}); if (result.error) { message=result.error.message; return; } title="";selectedFile=null;publish=false;message=shouldPublish?"Photo added to the public gallery.":"Photo saved privately."; } catch(error){message=error instanceof Error?error.message:"Upload failed.";} }
   async function makePublic(photo: any){ try{const publicUrl=await files.publicUrl(photo.fileId,{noExpiry:true});await requireMutation(updatePhotoImageUrl,photo.id,publicUrl.url);await requireMutation(updatePhotoPublicUrlId,photo.id,publicUrl.id);await requireMutation(updatePhotoIsPublic,photo.id,true);}catch(error){message=error instanceof Error?error.message:"Could not publish photo.";} }
   async function makePrivate(photo: any){ try{if(photo.publicUrlId)await files.revokePublicUrl(photo.publicUrlId);await requireMutation(updatePhotoIsPublic,photo.id,false);await requireMutation(updatePhotoImageUrl,photo.id,"");await requireMutation(updatePhotoPublicUrlId,photo.id,"");}catch(error){message=error instanceof Error?error.message:"Could not hide photo.";} }
 </script>
-<main class="shell"><header><div><img class="mark" src={mark} alt=""/><p>Sporades Storage</p><h1>Photo Library</h1></div><div><span>{$session.auth?.displayName??"Anonymous"}</span>{#if isGoogleUser}<button onclick={signOut}>Sign out</button>{:else}<button onclick={signIn}>Sign in with Google</button>{/if}</div></header>
+<main class="shell"><header><div><img class="mark" src={mark} alt=""/><p>Sporades Storage</p><h1>Photo Library</h1></div><div><span>{$session.auth?.displayName??"Anonymous"}</span>{#if $session.isAuthenticated()}<button onclick={signOut}>Sign out</button>{:else}{#each availableProviders as [provider]}<button onclick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>{/each}{/if}</div></header>
 <form onsubmit={(event)=>{event.preventDefault();submit();}}><input bind:value={title} placeholder="Caption"/><input type="file" accept="image/*" onchange={(event)=>selectedFile=event.currentTarget.files?.[0]??null}/><label><input type="checkbox" bind:checked={publish} disabled={!$session.isAuthenticated()}/>{$session.isAuthenticated()?"Publish to gallery":"Anonymous uploads are public"}</label><button disabled={!selectedFile||$recordPhoto.loading}>Upload photo</button>{#if message}<p>{message}</p>{/if}</form>
 <section><h2>Public gallery</h2><div class="grid">{#each $publicPhotos.data??[] as photo(photo.id)}<article><img src={photo.imageUrl} alt={photo.title}/><strong>{photo.title}</strong><span>{photo.ownerName}</span></article>{/each}</div></section>
-{#if isGoogleUser}<section><h2>My library</h2>{#each $personalPhotos.data??[] as photo(photo.id)}<article class="library"><div><strong>{photo.title}</strong><span>{photo.status}</span></div>{#if photo.isPublic}<button onclick={()=>makePrivate(photo)}>Make private</button>{:else}<button onclick={()=>makePublic(photo)}>Make public</button>{/if}</article>{/each}</section>{/if}</main>
+{#if $session.isAuthenticated()}<section><h2>My library</h2>{#each $personalPhotos.data??[] as photo(photo.id)}<article class="library"><div><strong>{photo.title}</strong><span>{photo.status}</span></div>{#if photo.isPublic}<button onclick={()=>makePrivate(photo)}>Make private</button>{:else}<button onclick={()=>makePublic(photo)}>Make public</button>{/if}</article>{/each}</section>{/if}</main>
 <style>:global(body){margin:0;background:#f7f7f2;font-family:system-ui,sans-serif}.shell{width:min(1080px,calc(100% - 32px));margin:auto;padding:40px 0}header,header div,form,.library{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.mark{width:2rem}h1{font-size:clamp(2.2rem,7vw,5rem);margin:0}form,.library{background:white;border:1px solid #d8ddd2;border-radius:8px;padding:14px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}.grid article{background:white}.grid img{width:100%;aspect-ratio:4/3;object-fit:cover}button{background:#245f73;color:white;border:0;border-radius:8px;padding:12px}</style>
 `;
 }
@@ -14742,7 +16235,7 @@ async function submit() {
 <template>
   <main>
     <header><img class="mark" src="./sporades-mark.svg" alt="" /><h1>Sporades Todos</h1></header>
-    <button v-if="session.providers.google?.enabled && !session.isAuthenticated()" type="button" @click="auth.signIn('google')">Sign in with Google</button>
+    <template v-if="!session.isAuthenticated()"><button v-for="[provider] in Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable)" :key="provider" type="button" @click="auth.signIn(provider)">Sign in with {{ provider[0].toUpperCase() + provider.slice(1) }}</button></template>
     <form @submit.prevent="submit"><input v-model="text" aria-label="Todo" /><button :disabled="addTodo.loading">Add</button></form>
     <p v-if="todos.loading">Loading\u2026</p>
     <p v-else-if="todos.error" role="alert">{{ todos.error.message }}</p>
@@ -14772,9 +16265,9 @@ const body = ref("");
 const authError = ref("");
 const remaining = computed(() => maxLength - body.value.length);
 
-async function signInWithGoogle() {
+async function signIn(provider: string) {
   authError.value = "";
-  const result = await auth.signIn("google");
+  const result = await auth.signIn(provider);
   if (result.error) authError.value = result.error.message;
 }
 
@@ -14802,7 +16295,7 @@ function initials(name: string) {
       <div><img class="mark" src="./sporades-mark.svg" alt="" /><p class="eyebrow">Sporades guestbook</p><h1>Leave a note from this island.</h1></div>
       <div class="auth-panel">
         <span>{{ session.auth?.displayName ?? "Anonymous" }}</span>
-        <button v-if="!session.isAuthenticated()" type="button" @click="signInWithGoogle">Sign in with Google</button>
+        <template v-if="!session.isAuthenticated()"><button v-for="[provider] in Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable)" :key="provider" type="button" @click="signIn(provider)">Sign in with {{ provider[0].toUpperCase() + provider.slice(1) }}</button></template>
         <button v-else class="secondary-button" type="button" @click="signOut">Sign out</button>
         <p v-if="authError" class="error">{{ authError }}</p>
       </div>
@@ -14859,10 +16352,10 @@ const title = ref("");
 const selectedFile = ref<File | null>(null);
 const publish = ref(false);
 const message = ref("");
-const isGoogleUser = computed(() => session.auth?.provider === "google");
+const availableProviders = computed(() => Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable));
 
 function selectFile(event: Event) { selectedFile.value = (event.currentTarget as HTMLInputElement).files?.[0] ?? null; }
-async function signInWithGoogle() { message.value = ""; const result = await auth.signIn("google"); if (result.error) message.value = result.error.message; }
+async function signIn(provider: string) { message.value = ""; const result = await auth.signIn(provider); if (result.error) message.value = result.error.message; }
 async function signOut() { message.value = ""; const result = await auth.signOut(); if (result.error) message.value = result.error.message; }
 
 async function submit() {
@@ -14871,7 +16364,7 @@ async function submit() {
   try {
     const file = await files.upload(selectedFile.value);
     const shouldPublish = !session.isAuthenticated() || publish.value;
-    // Google-authenticated uploads stay private unless the user explicitly opts in.
+    // Authenticated uploads stay private unless the user explicitly opts in.
     const publicUrl = shouldPublish ? await files.publicUrl(file.id, { noExpiry: true }) : null;
     const result = await recordPhoto.run({ title: title.value, file, isPublic: shouldPublish, publicUrl });
     if (result.error) { message.value = result.error.message; return; }
@@ -14903,14 +16396,14 @@ async function makePrivate(photo: any) {
 
 <template>
   <main class="shell">
-    <header class="topbar"><div><img class="mark" src="./sporades-mark.svg" alt="" /><p class="eyebrow">Sporades Storage</p><h1>Photo Library</h1></div><div class="auth-panel"><span>{{ session.auth?.displayName ?? "Anonymous" }}</span><button v-if="isGoogleUser" class="secondary-button" @click="signOut">Sign out</button><button v-else @click="signInWithGoogle">Sign in with Google</button></div></header>
+    <header class="topbar"><div><img class="mark" src="./sporades-mark.svg" alt="" /><p class="eyebrow">Sporades Storage</p><h1>Photo Library</h1></div><div class="auth-panel"><span>{{ session.auth?.displayName ?? "Anonymous" }}</span><button v-if="session.isAuthenticated()" class="secondary-button" @click="signOut">Sign out</button><template v-else><button v-for="[provider] in availableProviders" :key="provider" @click="signIn(provider)">Sign in with {{ provider[0].toUpperCase() + provider.slice(1) }}</button></template></div></header>
     <form class="uploader" @submit.prevent="submit">
       <input v-model="title" placeholder="Caption" /><input type="file" accept="image/*" @change="selectFile" />
       <label :class="session.isAuthenticated() ? 'check' : 'check muted'"><input v-model="publish" type="checkbox" :checked="!session.isAuthenticated() || publish" :disabled="!session.isAuthenticated()" />{{ session.isAuthenticated() ? "Publish to gallery" : "Anonymous uploads are public" }}</label>
       <button :disabled="!selectedFile || recordPhoto.loading">Upload photo</button><p v-if="message" class="message">{{ message }}</p>
     </form>
     <section><h2>Public gallery</h2><p v-if="publicPhotos.error" role="alert">{{ publicPhotos.error.message }}</p><div class="grid"><article v-for="photo in publicPhotos.data ?? []" :key="photo.id" class="photo"><img :src="photo.imageUrl" :alt="photo.title" /><div><strong>{{ photo.title }}</strong><span>{{ photo.ownerName }}</span></div></article></div></section>
-    <section v-if="isGoogleUser"><h2>My library</h2><div class="list"><article v-for="photo in personalPhotos.data ?? []" :key="photo.id" class="library-row"><div><strong>{{ photo.title }}</strong><span>{{ photo.status }}</span></div><button v-if="photo.isPublic" class="secondary-button" @click="makePrivate(photo)">Make private</button><button v-else @click="makePublic(photo)">Make public</button></article></div></section>
+    <section v-if="session.isAuthenticated()"><h2>My library</h2><div class="list"><article v-for="photo in personalPhotos.data ?? []" :key="photo.id" class="library-row"><div><strong>{{ photo.title }}</strong><span>{{ photo.status }}</span></div><button v-if="photo.isPublic" class="secondary-button" @click="makePrivate(photo)">Make private</button><button v-else @click="makePublic(photo)">Make public</button></article></div></section>
   </main>
 </template>
 
@@ -15432,7 +16925,7 @@ export default capsule({
         .filter((photo) => photo.imageUrl),
     ),
     personalPhotos: query((ctx) => {
-      if (ctx.auth.provider !== "google") {
+      if (ctx.auth.isGuest) {
         return [];
       }
 
@@ -15482,7 +16975,7 @@ export default capsule({
       }
 
       const title = globalThis.String(input.title ?? file.name).trim() || file.name;
-      const isPublic = ctx.auth.provider === "google" ? globalThis.Boolean(input.isPublic) : true;
+      const isPublic = ctx.auth.isGuest ? true : globalThis.Boolean(input.isPublic);
       const imageUrl = isPublic ? globalThis.String(input.publicUrl?.url ?? "") : "";
       const publicUrlId = isPublic ? globalThis.String(input.publicUrl?.id ?? "") : "";
       if (isPublic && !imageUrl) {
@@ -15919,11 +17412,13 @@ function App() {
   return (
     <main>
       <h1>Sporades Todos</h1>
-      {session.providers.google?.enabled && session.providers.google?.configured && !session.isAuthenticated() ? (
-        <button type="button" onClick={() => auth.signIn("google")}>
-          Sign in with Google
-        </button>
-      ) : null}
+      {!session.isAuthenticated() ? Object.entries(session.providers)
+        .filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable)
+        .map(([provider]) => (
+          <button key={provider} type="button" onClick={() => auth.signIn(provider)}>
+            Sign in with {provider[0].toUpperCase() + provider.slice(1)}
+          </button>
+        )) : null}
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -15963,11 +17458,13 @@ function App() {
   return (
     <main>
       <h1>Sporades Todos</h1>
-      {session.providers.google?.enabled && session.providers.google?.configured && !session.isAuthenticated() ? (
-        <button type="button" onClick={() => auth.signIn("google")}>
-          Sign in with Google
-        </button>
-      ) : null}
+      {!session.isAuthenticated() ? Object.entries(session.providers)
+        .filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable)
+        .map(([provider]) => (
+          <button key={provider} type="button" onClick={() => auth.signIn(provider)}>
+            Sign in with {provider[0].toUpperCase() + provider.slice(1)}
+          </button>
+        )) : null}
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -16008,10 +17505,11 @@ function App() {
   const [body, setBody] = useState("");
   const [authError, setAuthError] = useState("");
   const remaining = maxLength - body.length;
+  const availableProviders = Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
 
-  async function signInWithGoogle() {
+  async function signIn(provider: string) {
     setAuthError("");
-    const result = await auth.signIn("google");
+    const result = await auth.signIn(provider);
     if (result.error) {
       setAuthError(result.error.message);
     }
@@ -16044,9 +17542,7 @@ function App() {
         <div class="auth-panel">
           <span>{session.auth?.displayName ?? "Anonymous"}</span>
           {!session.isAuthenticated() ? (
-            <button type="button" onClick={signInWithGoogle}>
-              Sign in with Google
-            </button>
+            availableProviders.map(([provider]) => <button key={provider} type="button" onClick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>)
           ) : (
             <button class="secondary-button" type="button" onClick={signOut}>
               Sign out
@@ -16141,10 +17637,11 @@ function App() {
   const [body, setBody] = useState("");
   const [authError, setAuthError] = useState("");
   const remaining = maxLength - body.length;
+  const availableProviders = Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
 
-  async function signInWithGoogle() {
+  async function signIn(provider: string) {
     setAuthError("");
-    const result = await auth.signIn("google");
+    const result = await auth.signIn(provider);
     if (result.error) {
       setAuthError(result.error.message);
     }
@@ -16177,9 +17674,7 @@ function App() {
         <div className="auth-panel">
           <span>{session.auth?.displayName ?? "Anonymous"}</span>
           {!session.isAuthenticated() ? (
-            <button type="button" onClick={signInWithGoogle}>
-              Sign in with Google
-            </button>
+            availableProviders.map(([provider]) => <button key={provider} type="button" onClick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>)
           ) : (
             <button className="secondary-button" type="button" onClick={signOut}>
               Sign out
@@ -16280,11 +17775,11 @@ function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [publish, setPublish] = useState(false);
   const [message, setMessage] = useState("");
-  const isGoogleUser = session.auth?.provider === "google";
+  const availableProviders = Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
 
-  async function signInWithGoogle() {
+  async function signIn(provider: string) {
     setMessage("");
-    const result = await auth.signIn("google");
+    const result = await auth.signIn(provider);
     if (result.error) setMessage(result.error.message);
   }
 
@@ -16346,7 +17841,7 @@ function App() {
   }
 
   const gallery = publicPhotos.data ?? [];
-  const mine = isGoogleUser ? personalPhotos.data ?? [] : [];
+  const mine = session.isAuthenticated() ? personalPhotos.data ?? [] : [];
 
   return (
     <main class="shell">
@@ -16358,14 +17853,12 @@ function App() {
         </div>
         <div class="auth-panel">
           <span>{session.auth?.displayName ?? "Anonymous"}</span>
-          {isGoogleUser ? (
+          {session.isAuthenticated() ? (
             <button class="secondary-button" type="button" onClick={signOut}>
               Sign out
             </button>
           ) : (
-            <button type="button" onClick={signInWithGoogle}>
-              Sign in with Google
-            </button>
+            availableProviders.map(([provider]) => <button key={provider} type="button" onClick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>)
           )}
         </div>
       </header>
@@ -16407,7 +17900,7 @@ function App() {
         </div>
       </section>
 
-      {isGoogleUser ? (
+      {session.isAuthenticated() ? (
         <section>
           <h2>My library</h2>
           <div class="list">
@@ -16484,11 +17977,11 @@ function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [publish, setPublish] = useState(false);
   const [message, setMessage] = useState("");
-  const isGoogleUser = session.auth?.provider === "google";
+  const availableProviders = Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
 
-  async function signInWithGoogle() {
+  async function signIn(provider: string) {
     setMessage("");
-    const result = await auth.signIn("google");
+    const result = await auth.signIn(provider);
     if (result.error) setMessage(result.error.message);
   }
 
@@ -16550,7 +18043,7 @@ function App() {
   }
 
   const gallery = publicPhotos.data ?? [];
-  const mine = isGoogleUser ? personalPhotos.data ?? [] : [];
+  const mine = session.isAuthenticated() ? personalPhotos.data ?? [] : [];
 
   return (
     <main className="shell">
@@ -16562,14 +18055,12 @@ function App() {
         </div>
         <div className="auth-panel">
           <span>{session.auth?.displayName ?? "Anonymous"}</span>
-          {isGoogleUser ? (
+          {session.isAuthenticated() ? (
             <button className="secondary-button" type="button" onClick={signOut}>
               Sign out
             </button>
           ) : (
-            <button type="button" onClick={signInWithGoogle}>
-              Sign in with Google
-            </button>
+            availableProviders.map(([provider]) => <button key={provider} type="button" onClick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>)
           )}
         </div>
       </header>
@@ -16611,7 +18102,7 @@ function App() {
         </div>
       </section>
 
-      {isGoogleUser ? (
+      {session.isAuthenticated() ? (
         <section>
           <h2>My library</h2>
           <div className="list">
@@ -16732,9 +18223,9 @@ function escapeHtml(value) {
 }
 
 // src/capsule-services.ts
-import { randomBytes as randomBytes4 } from "node:crypto";
-import { mkdir as mkdir4, readFile as readFile5, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
-import path5 from "node:path";
+import { randomBytes as randomBytes5 } from "node:crypto";
+import { mkdir as mkdir4, readFile as readFile5, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
+import path6 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
 var SUPPORTED_DATABASE_ENGINES = /* @__PURE__ */ new Set(["libsql", "postgres"]);
 var SUPPORTED_STORAGE_ENGINES = /* @__PURE__ */ new Set(["minio"]);
@@ -16746,9 +18237,9 @@ var MINIO_IMAGE = "quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z";
 var MINIO_ROOT_USER = "sporades";
 var MINIO_BUCKET = "sporades-files";
 var MINIO_REGION = "us-east-1";
-var CAPSULE_SERVICES_COMPOSE_FILE = path5.join(".sporades", "compose", "capsule-services.compose.yml");
-var CAPSULE_SERVICES_STATE_DIR = path5.join(".sporades", "services");
-var CAPSULE_SERVICES_CREDENTIALS_FILE = path5.join(".sporades", "services", "credentials.json");
+var CAPSULE_SERVICES_COMPOSE_FILE = path6.join(".sporades", "compose", "capsule-services.compose.yml");
+var CAPSULE_SERVICES_STATE_DIR = path6.join(".sporades", "services");
+var CAPSULE_SERVICES_CREDENTIALS_FILE = path6.join(".sporades", "services", "credentials.json");
 function validateCapsuleServicesConfig(services) {
   if (services === void 0) {
     return null;
@@ -16773,13 +18264,13 @@ function validateCapsuleServicesConfig(services) {
   return services;
 }
 async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
-  const composePath = path5.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
+  const composePath = path6.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   if (!hasDeclaredCapsuleServices(config)) {
-    await rm3(composePath, { force: true });
+    await rm4(composePath, { force: true });
     return null;
   }
   validateCapsuleServicesConfig(config.services);
-  await mkdir4(path5.dirname(composePath), { recursive: true });
+  await mkdir4(path6.dirname(composePath), { recursive: true });
   const credentials = await loadOrCreateCapsuleServiceCredentials(projectDir);
   const model = capsuleServicesComposeModel(config, projectDir, {
     credentials,
@@ -16787,7 +18278,7 @@ async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
   });
   await Promise.all(Object.values(model.services).map((service) => mkdir4(service.stateDir, { recursive: true })));
   const source = renderCapsuleServicesCompose(model);
-  await writeFile4(composePath, source);
+  await writeFile5(composePath, source);
   return {
     path: composePath,
     relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
@@ -16795,7 +18286,7 @@ async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
   };
 }
 async function loadOrCreateCapsuleServiceCredentials(projectDir) {
-  const credentialsPath = path5.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
+  const credentialsPath = path6.join(projectDir, CAPSULE_SERVICES_CREDENTIALS_FILE);
   let existing = {};
   try {
     const parsed = JSON.parse(await readFile5(credentialsPath, "utf8"));
@@ -16806,13 +18297,13 @@ async function loadOrCreateCapsuleServiceCredentials(projectDir) {
   }
   const credentials = {
     databaseUser: typeof existing.databaseUser === "string" && existing.databaseUser ? existing.databaseUser : POSTGRES_USER,
-    databasePassword: typeof existing.databasePassword === "string" && existing.databasePassword ? existing.databasePassword : randomBytes4(24).toString("base64url"),
+    databasePassword: typeof existing.databasePassword === "string" && existing.databasePassword ? existing.databasePassword : randomBytes5(24).toString("base64url"),
     storageAccessKey: typeof existing.storageAccessKey === "string" && existing.storageAccessKey ? existing.storageAccessKey : MINIO_ROOT_USER,
-    storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes4(24).toString("base64url")
+    storageSecretKey: typeof existing.storageSecretKey === "string" && existing.storageSecretKey ? existing.storageSecretKey : randomBytes5(24).toString("base64url")
   };
   if (credentials.databaseUser !== existing.databaseUser || credentials.databasePassword !== existing.databasePassword || credentials.storageAccessKey !== existing.storageAccessKey || credentials.storageSecretKey !== existing.storageSecretKey) {
-    await mkdir4(path5.dirname(credentialsPath), { recursive: true });
-    await writeFile4(credentialsPath, `${JSON.stringify(credentials, null, 2)}
+    await mkdir4(path6.dirname(credentialsPath), { recursive: true });
+    await writeFile5(credentialsPath, `${JSON.stringify(credentials, null, 2)}
 `, { mode: 384 });
   }
   return credentials;
@@ -16859,7 +18350,7 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd(), options
       name: `sporades-${projectSlug}-database`,
       engine: engineModel.engine,
       image: engineModel.image,
-      stateDir: path5.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "database"),
+      stateDir: path6.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "database"),
       targetPort: engineModel.targetPort,
       volumeTarget: engineModel.volumeTarget,
       environment: engineModel.environment,
@@ -16877,7 +18368,7 @@ function capsuleServicesComposeModel(config, projectDir = process.cwd(), options
       name: `sporades-${projectSlug}-storage`,
       engine: "minio",
       image: MINIO_IMAGE,
-      stateDir: path5.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "storage"),
+      stateDir: path6.join(projectDir, CAPSULE_SERVICES_STATE_DIR, "storage"),
       targetPort: 9e3,
       volumeTarget: "/data",
       environment: {
@@ -17353,13 +18844,19 @@ Manage local auth configuration and identity simulation.
 Commands:
   status              Print auth provider status
   clients             List connected Dev session clients
-  set google          Configure Google OAuth credentials
+  set <provider>      Configure or disable anonymous, email, Google, Microsoft, Apple, or Facebook
   as email            Simulate a local email identity
 
 Options:
-  --client-id <id>        Google OAuth client ID
-  --client-secret <secret> Google OAuth client secret
-  --client-json <path>    Read Google OAuth credentials JSON
+  --client-id <id>        OAuth client/app ID (Apple Services ID)
+  --client-secret <secret> OAuth client/app secret
+  --client-json <path>    Read provider-specific credentials JSON
+  --tenant <tenant>       Microsoft tenant (default: common)
+  --team-id <id>          Apple Developer Team ID
+  --key-id <id>           Apple Sign in key ID
+  --private-key <pem>     Apple private key (stored only in Server env)
+  --graph-version <name>  Facebook Graph API version
+  --disable               Disable the selected provider without changing siblings
   --email <address>       Simulated email identity
   --display-name <name>   Simulated display name
   --picture <url>         Simulated profile picture URL
@@ -17566,9 +19063,9 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
 
 // src/cli/doctor.ts
 import { spawn, spawnSync } from "node:child_process";
-import { lstat as lstat4, readFile as readFile7, realpath as realpath2 } from "node:fs/promises";
+import { lstat as lstat5, readFile as readFile7, realpath as realpath2 } from "node:fs/promises";
 import { connect } from "node:net";
-import path7 from "node:path";
+import path8 from "node:path";
 
 // src/cli/cli-support.ts
 function errorDetails3(error) {
@@ -17595,8 +19092,8 @@ function writeResult(result, failed = false) {
 
 // src/cli/project-config.ts
 import { createHash as createHash3 } from "node:crypto";
-import { chmod, mkdir as mkdir5, readFile as readFile6, writeFile as writeFile5 } from "node:fs/promises";
-import path6 from "node:path";
+import { chmod, mkdir as mkdir5, readFile as readFile6, writeFile as writeFile6 } from "node:fs/promises";
+import path7 from "node:path";
 var SECURITY_SESSIONS = /* @__PURE__ */ new Set(["dev", "public-dev", "container", "hosted"]);
 var DEFAULT_CSP_DIRECTIVES = {
   "default-src": ["'self'"],
@@ -17630,7 +19127,7 @@ var SUPPORTED_PROJECT_KEYS = /* @__PURE__ */ new Set([
   "template"
 ]);
 async function readProjectConfig(projectDir) {
-  const configPath = path6.join(projectDir, "sporades.json");
+  const configPath = path7.join(projectDir, "sporades.json");
   const raw = await readRequiredFile2(
     configPath,
     "Missing project configuration: sporades.json",
@@ -17766,10 +19263,10 @@ async function resolveLocalContainerSshAccess(config, projectDir) {
   if (lines.length === 0) {
     return { enabled: false, authorizedKeysPath: null, keyCount: 0 };
   }
-  const sshDir = path6.join(projectDir, ".sporades", "ssh");
-  const authorizedKeysPath = path6.join(sshDir, "authorized_keys");
+  const sshDir = path7.join(projectDir, ".sporades", "ssh");
+  const authorizedKeysPath = path7.join(sshDir, "authorized_keys");
   await mkdir5(sshDir, { recursive: true });
-  await writeFile5(authorizedKeysPath, `${lines.join("\n")}
+  await writeFile6(authorizedKeysPath, `${lines.join("\n")}
 `, { mode: 420 });
   await chmod(authorizedKeysPath, 420);
   return {
@@ -17856,13 +19353,13 @@ function resolveProjectFileReference(filePath, projectDir) {
   if (filePath.startsWith("~/")) {
     const home = process.env.HOME;
     if (home) {
-      return path6.join(home, filePath.slice(2));
+      return path7.join(home, filePath.slice(2));
     }
   }
-  if (path6.isAbsolute(filePath)) {
+  if (path7.isAbsolute(filePath)) {
     return filePath;
   }
-  return path6.join(projectDir, filePath);
+  return path7.join(projectDir, filePath);
 }
 function normaliseAuthorizedKeyMaterial(material, source) {
   if (looksLikePrivateKey(material)) {
@@ -18120,7 +19617,7 @@ async function publicDevPostureCheck(options) {
 }
 async function readRunningPublicDevSession(projectDir) {
   try {
-    const session = JSON.parse(await readFile7(path7.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
+    const session = JSON.parse(await readFile7(path8.join(projectDir, ".sporades", "dev-session.json"), "utf8"));
     return Boolean(session.publicDev || session.public || session.security?.cors?.publicDev);
   } catch {
     return false;
@@ -18176,7 +19673,7 @@ async function sshFollowUpCommand(options) {
 }
 async function capsuleAuthoringAclPostureCheck(options) {
   const projectDir = typeof options.projectDir === "string" ? options.projectDir : process.cwd();
-  const serverEntry = path7.join(projectDir, "server", "index.ts");
+  const serverEntry = path8.join(projectDir, "server", "index.ts");
   try {
     const serverSource = await readFile7(serverEntry, "utf8");
     const serverModuleSource = await bundleServerCapsuleModule({
@@ -18368,7 +19865,7 @@ async function resolveHostedDoctorTarget(options) {
 }
 async function readDoctorRemoteBinding(projectDir) {
   try {
-    const binding = JSON.parse(await readFile7(path7.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
+    const binding = JSON.parse(await readFile7(path8.join(projectDir, ".sporades", "remote-binding.json"), "utf8"));
     return binding && typeof binding === "object" && !Array.isArray(binding) ? binding : null;
   } catch {
     return null;
@@ -18642,7 +20139,7 @@ async function runHostJsonCommand(args, projectDir) {
   });
 }
 async function devSessionChecks(options) {
-  const session = await readOptionalJsonFile(path7.join(options.projectDir, ".sporades", "dev-session.json"));
+  const session = await readOptionalJsonFile(path8.join(options.projectDir, ".sporades", "dev-session.json"));
   if (!session) {
     return [
       {
@@ -18655,7 +20152,7 @@ async function devSessionChecks(options) {
         hint: "Run `sporades dev status` to inspect Dev session state, or start one with `sporades dev`.",
         commands: ["sporades dev status"],
         details: {
-          bindingPath: path7.join(".sporades", "dev-session.json"),
+          bindingPath: path8.join(".sporades", "dev-session.json"),
           exists: false
         }
       },
@@ -18684,7 +20181,7 @@ async function devSessionChecks(options) {
       hint: bindingValid ? "Inspect live Dev state with `sporades dev status`." : "Restart the Dev session with `sporades dev`.",
       commands: ["sporades dev status"],
       details: {
-        bindingPath: path7.join(".sporades", "dev-session.json"),
+        bindingPath: path8.join(".sporades", "dev-session.json"),
         exists: true,
         port: bindingValid ? port : null,
         pid: session.pid ?? null,
@@ -18709,7 +20206,7 @@ async function devSessionChecks(options) {
   ];
 }
 async function localContainerChecks(options) {
-  const bindingPath = path7.join(options.projectDir, ".sporades", "binding.json");
+  const bindingPath = path8.join(options.projectDir, ".sporades", "binding.json");
   const binding = await readOptionalJsonFile(bindingPath);
   if (!binding?.containerId) {
     return [
@@ -18723,7 +20220,7 @@ async function localContainerChecks(options) {
         hint: "Run `sporades deploy status` to inspect local Container session state, or start one with `sporades deploy`.",
         commands: ["sporades deploy status"],
         details: {
-          bindingPath: path7.join(".sporades", "binding.json"),
+          bindingPath: path8.join(".sporades", "binding.json"),
           exists: false
         }
       }
@@ -18740,7 +20237,7 @@ async function localContainerChecks(options) {
       hint: "Inspect local Container state with `sporades deploy status`.",
       commands: ["sporades deploy status"],
       details: {
-        bindingPath: path7.join(".sporades", "binding.json"),
+        bindingPath: path8.join(".sporades", "binding.json"),
         exists: true,
         containerId: binding.containerId,
         containerName: binding.containerName ?? null
@@ -18855,7 +20352,7 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
       details: { framework: null, toolchain: null, htmlEntry: null, public: null }
     };
   }
-  const consumer = await readPublicTreeConsumer(path7.join(projectDir, ".sporades", "build"), "container").catch(() => null);
+  const consumer = await readPublicTreeConsumer(path8.join(projectDir, ".sporades", "build"), "container").catch(() => null);
   if (!consumer || consumer.tree !== release.publicTree || consumer.token !== release.consumerToken || consumer.identity !== binding.containerId) {
     return {
       id: "doctor.container.client-release",
@@ -18884,12 +20381,12 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
   }
   const source = publicMount.Source ?? publicMount.SourcePath;
   try {
-    const expected = path7.join(projectDir, ".sporades", "build", ".public-trees", release.publicTree);
+    const expected = path8.join(projectDir, ".sporades", "build", ".public-trees", release.publicTree);
     const [actualRoot, expectedRoot, sourceStats, expectedStats] = await Promise.all([
       realpath2(source),
       realpath2(expected),
-      lstat4(source),
-      lstat4(expected)
+      lstat5(source),
+      lstat5(expected)
     ]);
     if (sourceStats.isSymbolicLink() || expectedStats.isSymbolicLink() || !expectedStats.isDirectory() || actualRoot !== expectedRoot) {
       throw new Error("unsafe-or-mismatched-public-root");
@@ -19001,13 +20498,13 @@ function localCapsuleServicesFromConfig(config, projectDir) {
     return null;
   }
   return {
-    path: path7.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
+    path: path8.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
     relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
     ...capsuleServicesComposeModel(config, projectDir)
   };
 }
 async function generatedComposeCheck(capsuleServices, projectDir, scope) {
-  const composePath = path7.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
+  const composePath = path8.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   let raw = "";
   try {
     raw = await readFile7(composePath, "utf8");
@@ -19061,7 +20558,7 @@ async function capsuleServicesRuntimeStateCheck(capsuleServices, projectDir, sco
       },
       volume: {
         type: "bind",
-        path: path7.join(CAPSULE_SERVICES_STATE_DIR, name),
+        path: path8.join(CAPSULE_SERVICES_STATE_DIR, name),
         exists: volumeExists
       },
       containerName: service.name,
@@ -19166,14 +20663,14 @@ async function readOptionalJsonFile(filePath) {
       return null;
     }
     if (error instanceof SyntaxError) {
-      throw commandError4(`Invalid Runtime metadata: ${path7.basename(filePath)}`, `Delete or fix ${path7.relative(process.cwd(), filePath)}, then rerun \`sporades doctor\`.`);
+      throw commandError4(`Invalid Runtime metadata: ${path8.basename(filePath)}`, `Delete or fix ${path8.relative(process.cwd(), filePath)}, then rerun \`sporades doctor\`.`);
     }
     throw error;
   }
 }
 async function pathExists(targetPath) {
   try {
-    await lstat4(targetPath);
+    await lstat5(targetPath);
     return true;
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
@@ -19479,11 +20976,11 @@ var CLI_VERSION = "0.6.1";
 
 // src/cli/sporades.ts
 var SUPPORTED_TEMPLATES = new Set(CLIENT_TEMPLATES);
-var DEV_SESSION_FILE = path8.join(".sporades", "dev-session.json");
-var DEV_DATABASE_ENV_FILE = path8.join(".sporades", "dev-database-env.json");
+var DEV_SESSION_FILE = path9.join(".sporades", "dev-session.json");
+var DEV_DATABASE_ENV_FILE = path9.join(".sporades", "dev-database-env.json");
 var DEV_INSPECTION_TOKEN_HEADER = "x-sporades-inspection-token";
-var CONTAINER_BINDING_FILE = path8.join(".sporades", "binding.json");
-var REMOTE_BINDING_FILE = path8.join(".sporades", "remote-binding.json");
+var CONTAINER_BINDING_FILE = path9.join(".sporades", "binding.json");
+var REMOTE_BINDING_FILE = path9.join(".sporades", "remote-binding.json");
 var DEV_REBUILD_DEBOUNCE_MS = 100;
 var DEV_WATCH_SIGNATURE_POLL_MS = 250;
 var DEFAULT_HOST_SCHEME = "https";
@@ -19495,7 +20992,7 @@ var MAX_HOST_LOG_LINES = 1e4;
 var HOST_LOG_SOURCES = /* @__PURE__ */ new Set(["http", "stdout", "stderr"]);
 var HOST_HEALTH_PATH = "/__sporades/health";
 var DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW = ".github/workflows/sporades-autodeploy.yml";
-var CLI_ROOT = path8.resolve(path8.dirname(fileURLToPath(import.meta.url)), "..");
+var CLI_ROOT = path9.resolve(path9.dirname(fileURLToPath(import.meta.url)), "..");
 main().catch((error) => {
   writeResult(
     {
@@ -19730,7 +21227,7 @@ function parseCreateArgs(args) {
     install,
     git,
     json,
-    projectDir: path8.resolve(process.cwd(), name)
+    projectDir: path9.resolve(process.cwd(), name)
   };
 }
 function parseDevArgs(args) {
@@ -19902,6 +21399,12 @@ function parseAuthArgs(args) {
   let clientId = null;
   let clientSecret = null;
   let clientJson = null;
+  let tenant = null;
+  let teamId = null;
+  let keyId = null;
+  let privateKey = null;
+  let graphVersion = null;
+  let disable = false;
   let email = null;
   let displayName = null;
   let picture = null;
@@ -19921,6 +21424,24 @@ function parseAuthArgs(args) {
         break;
       case "--client-json":
         clientJson = readFlagValue(rest, ++index, "--client-json");
+        break;
+      case "--tenant":
+        tenant = readFlagValue(rest, ++index, "--tenant");
+        break;
+      case "--team-id":
+        teamId = readFlagValue(rest, ++index, "--team-id");
+        break;
+      case "--key-id":
+        keyId = readFlagValue(rest, ++index, "--key-id");
+        break;
+      case "--private-key":
+        privateKey = readFlagValue(rest, ++index, "--private-key");
+        break;
+      case "--graph-version":
+        graphVersion = readFlagValue(rest, ++index, "--graph-version");
+        break;
+      case "--disable":
+        disable = true;
         break;
       case "--email":
         email = readFlagValue(rest, ++index, "--email");
@@ -19955,27 +21476,42 @@ function parseAuthArgs(args) {
       }
       return { subcommand, provider: simulatedProvider, email, displayName, picture, port, client, json, projectDir: process.cwd() };
     case "set":
-      if (provider === "google") {
-        if (clientJson) {
-          const credentials = readProviderClientCredentials(provider, clientJson, process.cwd());
-          clientId ??= credentials.clientId;
-          clientSecret ??= credentials.clientSecret;
-        }
-        if (!clientId || !clientSecret) {
+      if (!provider || !["anonymous", "email", "google", "microsoft", "apple", "facebook"].includes(provider)) {
+        break;
+      }
+      if (clientJson) {
+        const credentials = readProviderClientCredentials(provider, clientJson, process.cwd());
+        clientId ??= credentials.clientId;
+        clientSecret ??= credentials.clientSecret;
+        tenant ??= credentials.tenant;
+        teamId ??= credentials.teamId;
+        keyId ??= credentials.keyId;
+        privateKey ??= credentials.privateKey;
+        graphVersion ??= credentials.graphVersion;
+      }
+      if (!disable && !["anonymous", "email"].includes(provider)) {
+        const missing = provider === "apple" ? !clientId || !teamId || !keyId || !privateKey : !clientId || !clientSecret;
+        if (missing) {
           throw commandError4(
-            "Missing Google OAuth credentials.",
-            "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`."
+            `Missing ${providerLabel2(provider)} OAuth credentials.`,
+            provider === "apple" ? "Provide `--client-id`, `--team-id`, `--key-id`, and `--private-key`, or use `--client-json <path>`." : `Run \`sporades auth set ${provider} --client-id <id> --client-secret <secret>\` or use \`--client-json <path>\`.`
           );
         }
-        return { subcommand, provider, clientId, clientSecret, json, projectDir: process.cwd() };
       }
-      break;
+      if (provider === "facebook" && graphVersion !== null && graphVersion !== "v23.0") {
+        throw commandError4(
+          "Unsupported Facebook Graph API version.",
+          "Use `--graph-version v23.0`.",
+          { graphVersion }
+        );
+      }
+      return { subcommand, provider, clientId, clientSecret, tenant, teamId, keyId, privateKey, graphVersion, disable, json, projectDir: process.cwd() };
     default:
       break;
   }
   throw commandError4(
     "Unknown auth command.",
-    "Use `sporades auth status`, `sporades auth clients`, `sporades auth set google`, or `sporades auth as email`."
+    "Use `sporades auth status`, `sporades auth clients`, `sporades auth set <provider>`, or `sporades auth as email`."
   );
 }
 function parseEnvArgs(args) {
@@ -20052,7 +21588,7 @@ function parseHostArgs(args) {
   let subname = null;
   let lines = null;
   let restart = false;
-  let verify = false;
+  let verify2 = false;
   let fallbackToPreviousRelease = false;
   let branch = "main";
   let file = DEFAULT_GITHUB_AUTODEPLOY_WORKFLOW;
@@ -20091,7 +21627,7 @@ function parseHostArgs(args) {
         restart = true;
         break;
       case "--verify":
-        verify = true;
+        verify2 = true;
         restart = true;
         break;
       case "--fallback-to-previous-release":
@@ -20342,13 +21878,13 @@ function parseHostArgs(args) {
       if (subname) {
         validateCapsuleSubname(subname);
       }
-      if (fallbackToPreviousRelease && !verify) {
+      if (fallbackToPreviousRelease && !verify2) {
         throw commandError4(
           "Release fallback requires verification.",
           "Use `sporades host push --verify --fallback-to-previous-release`."
         );
       }
-      return { subcommand, hostAlias, subname, restart, verify, fallbackToPreviousRelease, json, projectDir: process.cwd() };
+      return { subcommand, hostAlias, subname, restart, verify: verify2, fallbackToPreviousRelease, json, projectDir: process.cwd() };
     case "github": {
       const [area, action, ...extra] = positional;
       if (area !== "workflow" || action !== "write") {
@@ -20414,20 +21950,14 @@ function parseHostArgs(args) {
   }
 }
 function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
-  if (provider !== "google") {
-    throw commandError4(
-      `Unsupported auth provider credentials file: ${provider}`,
-      "Use explicit --client-id and --client-secret values for this provider."
-    );
-  }
-  const resolvedPath = path8.resolve(projectDir, clientJsonPath);
+  const resolvedPath = path9.resolve(projectDir, clientJsonPath);
   let raw;
   try {
     raw = readFileSync2(resolvedPath, "utf8");
   } catch {
     throw commandError4(
       `Unable to read OAuth client JSON: ${clientJsonPath}`,
-      "Check the file path and retry `sporades auth set google --client-json <path>`."
+      `Check the file path and retry \`sporades auth set ${provider} --client-json <path>\`.`
     );
   }
   let parsed;
@@ -20439,17 +21969,46 @@ function readProviderClientCredentials(provider, clientJsonPath, projectDir) {
       "Download a valid OAuth client credentials JSON file from the provider and retry."
     );
   }
-  const client = parsed.web;
-  if (!client?.client_id || !client?.client_secret) {
+  const credentials = parseProviderCredentialDocument(provider, parsed);
+  if (!credentials) {
+    if (provider === "google") {
+      throw commandError4(
+        "OAuth client JSON is missing Google client credentials.",
+        "Use a Google OAuth Web application JSON file containing `web.client_id` and `web.client_secret`."
+      );
+    }
     throw commandError4(
-      "OAuth client JSON is missing Google client credentials.",
-      "Use a Google OAuth Web application JSON file containing `web.client_id` and `web.client_secret`."
+      `OAuth client JSON is missing ${providerLabel2(provider)} credentials.`,
+      `Use a ${providerLabel2(provider)} credentials JSON file with the fields documented by \`sporades auth --help\`.`
     );
   }
-  return {
-    clientId: client.client_id,
-    clientSecret: client.client_secret
-  };
+  return credentials;
+}
+function parseProviderCredentialDocument(provider, value) {
+  if (!isLooseRecord(value)) {
+    return null;
+  }
+  switch (provider) {
+    case "google":
+      return isLooseRecord(value.web) && hasNonEmptyString(value.web, "client_id") && hasNonEmptyString(value.web, "client_secret") ? { clientId: value.web.client_id, clientSecret: value.web.client_secret } : null;
+    case "microsoft":
+      return hasNonEmptyString(value, "clientId") && hasNonEmptyString(value, "clientSecret") && (value.tenant === void 0 || hasNonEmptyString(value, "tenant")) ? { clientId: value.clientId, clientSecret: value.clientSecret, tenant: value.tenant ?? "common" } : null;
+    case "apple":
+      return hasNonEmptyString(value, "servicesId") && hasNonEmptyString(value, "teamId") && hasNonEmptyString(value, "keyId") && hasNonEmptyString(value, "privateKey") ? { clientId: value.servicesId, teamId: value.teamId, keyId: value.keyId, privateKey: value.privateKey } : null;
+    case "facebook":
+      return hasNonEmptyString(value, "appId") && hasNonEmptyString(value, "appSecret") && (value.graphVersion === void 0 || hasNonEmptyString(value, "graphVersion")) ? { clientId: value.appId, clientSecret: value.appSecret, graphVersion: value.graphVersion ?? null } : null;
+    default:
+      return null;
+  }
+}
+function isLooseRecord(value) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+function hasNonEmptyString(value, key) {
+  return typeof value[key] === "string" && value[key].length > 0;
+}
+function providerLabel2(provider) {
+  return `${provider[0]?.toUpperCase() ?? ""}${provider.slice(1)}`;
 }
 function parseLogsArgs(args) {
   let json = false;
@@ -20564,9 +22123,9 @@ async function createProject(options) {
   });
   await Promise.all(
     Object.entries(files).map(async ([relativePath, contents]) => {
-      const filePath = path8.join(options.projectDir, relativePath);
-      await mkdir6(path8.dirname(filePath), { recursive: true });
-      await writeFile6(filePath, contents);
+      const filePath = path9.join(options.projectDir, relativePath);
+      await mkdir6(path9.dirname(filePath), { recursive: true });
+      await writeFile7(filePath, contents);
     })
   );
   if (options.install) {
@@ -20589,7 +22148,7 @@ async function runDoctor(options) {
   }
 }
 function defaultSporadesDependency() {
-  const packageJsonPath = path8.join(CLI_ROOT, "package.json");
+  const packageJsonPath = path9.join(CLI_ROOT, "package.json");
   try {
     const packageJson = JSON.parse(readFileSync2(packageJsonPath, "utf8"));
     if (typeof packageJson.version === "string" && packageJson.version.trim()) {
@@ -20691,11 +22250,11 @@ async function inspectDevJobs(options) {
     throw commandError4("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades jobs`.");
   }
   const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir);
-  const bundle = path8.join(options.projectDir, ".sporades", "build", "server.mjs");
+  const bundle = path9.join(options.projectDir, ".sporades", "build", "server.mjs");
   const result = spawnSync2(process.execPath, [bundle, "--sporades-action", "jobs.inspect"], {
     cwd: options.projectDir,
     encoding: "utf8",
-    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path8.join(options.projectDir, ".sporades", "data.db") }
+    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path9.join(options.projectDir, ".sporades", "data.db") }
   });
   parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades jobs`.");
 }
@@ -20707,17 +22266,17 @@ async function inspectDevSchedules(options) {
     throw commandError4("No running Sporades dev session found.", "Start one with `sporades dev` from this project, then retry `sporades schedules`.");
   }
   const serviceEnv = await readActiveDevDatabaseServiceEnv(options.projectDir, "schedules");
-  const bundle = path8.join(options.projectDir, ".sporades", "build", "server.mjs");
+  const bundle = path9.join(options.projectDir, ".sporades", "build", "server.mjs");
   const result = spawnSync2(process.execPath, [bundle, "--sporades-action", "schedules.inspect"], {
     cwd: options.projectDir,
     encoding: "utf8",
-    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path8.join(options.projectDir, ".sporades", "data.db") }
+    env: { ...process.env, ...serviceEnv, SPORADES_DATABASE_PATH: path9.join(options.projectDir, ".sporades", "data.db") }
   });
   parseInspectionProcess(result, "Restart `sporades dev` to refresh the generated Bundle, then retry `sporades schedules`.");
 }
 async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
   try {
-    return JSON.parse(await readFile8(path8.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
+    return JSON.parse(await readFile8(path9.join(projectDir, DEV_DATABASE_ENV_FILE), "utf8"));
   } catch (error) {
     if (errorDetails3(error).code !== "ENOENT") throw commandError4("Invalid active Dev database adapter metadata.", `Restart \`sporades dev\`, then retry \`sporades ${command}\`.`);
   }
@@ -20730,8 +22289,8 @@ async function readActiveDevDatabaseServiceEnv(projectDir, command = "jobs") {
 }
 async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
   const databaseEnv = Object.fromEntries(Object.entries(serviceEnv).filter(([key, value]) => key.startsWith("SPORADES_SERVICE_DATABASE_") && typeof value === "string"));
-  const filePath = path8.join(projectDir, DEV_DATABASE_ENV_FILE);
-  await mkdir6(path8.dirname(filePath), { recursive: true });
+  const filePath = path9.join(projectDir, DEV_DATABASE_ENV_FILE);
+  await mkdir6(path9.dirname(filePath), { recursive: true });
   const previous = await readFile8(filePath).catch((error) => {
     if (errorDetails3(error).code === "ENOENT") return null;
     throw error;
@@ -20739,17 +22298,17 @@ async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
   await replaceFileAtomically(filePath, `${JSON.stringify(databaseEnv)}
 `);
   return async () => {
-    if (previous === null) await rm4(filePath, { force: true });
+    if (previous === null) await rm5(filePath, { force: true });
     else await replaceFileAtomically(filePath, previous);
   };
 }
 async function replaceFileAtomically(filePath, contents) {
   const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
-    await writeFile6(temporaryPath, contents, { mode: 384 });
-    await rename3(temporaryPath, filePath);
+    await writeFile7(temporaryPath, contents, { mode: 384 });
+    await rename4(temporaryPath, filePath);
   } finally {
-    await rm4(temporaryPath, { force: true });
+    await rm5(temporaryPath, { force: true });
   }
 }
 async function inspectContainerJobs(options) {
@@ -20870,8 +22429,8 @@ async function startDevSession(options) {
   });
   let runtimeServiceEnv = capsuleServiceEnv;
   const inspectionToken = createDevInspectionToken();
-  const sessionFilePath = path8.join(options.projectDir, DEV_SESSION_FILE);
-  const databasePath = path8.join(options.projectDir, ".sporades", "data.db");
+  const sessionFilePath = path9.join(options.projectDir, DEV_SESSION_FILE);
+  const databasePath = path9.join(options.projectDir, ".sporades", "data.db");
   const runtime = await createDevRuntime({
     databasePath,
     serverSource: bundle.serverRuntime.source,
@@ -21037,7 +22596,7 @@ async function startDevSession(options) {
   const address = server.address();
   const actualPort = typeof address === "object" && address ? address.port : port;
   const url = `http://localhost:${actualPort}`;
-  await writeFile6(
+  await writeFile7(
     sessionFilePath,
     `${JSON.stringify(
       {
@@ -21306,12 +22865,12 @@ async function startDevSession(options) {
     for (const watcher of watchers) {
       watcher.close();
     }
-    rm4(path8.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
+    rm5(path9.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
     });
     websocketHub.disconnectAll();
     await runtime.shutdown();
     server.close(async () => {
-      await rm4(sessionFilePath, { force: true });
+      await rm5(sessionFilePath, { force: true });
       process.off("unhandledRejection", onUnhandledRejection);
       process.off("uncaughtException", onUncaughtException);
       process.exit(0);
@@ -21392,7 +22951,7 @@ async function createDevRuntime(options) {
   };
 }
 function createDevInspectionToken() {
-  return randomBytes5(32).toString("hex");
+  return randomBytes6(32).toString("hex");
 }
 function requireDevInspectionToken(request, response, expectedToken) {
   if (devInspectionTokenMatches(request.headers[DEV_INSPECTION_TOKEN_HEADER], expectedToken)) {
@@ -21424,11 +22983,11 @@ async function importCapsuleDefinition(moduleSource) {
 }
 function watchDevInputs(projectDir, onChange) {
   const watchedPaths = [
-    { path: path8.join(projectDir, "server"), affectsServerRuntime: true },
-    { path: path8.join(projectDir, "client"), affectsServerRuntime: false },
-    { path: path8.join(projectDir, "shared"), affectsServerRuntime: true },
-    { path: path8.join(projectDir, "index.html"), affectsServerRuntime: false },
-    { path: path8.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true }
+    { path: path9.join(projectDir, "server"), affectsServerRuntime: true },
+    { path: path9.join(projectDir, "client"), affectsServerRuntime: false },
+    { path: path9.join(projectDir, "shared"), affectsServerRuntime: true },
+    { path: path9.join(projectDir, "index.html"), affectsServerRuntime: false },
+    { path: path9.join(projectDir, "sporades.json"), affectsServerRuntime: false, configChanged: true }
   ];
   const watchers = [];
   let debounceTimer = null;
@@ -21527,7 +23086,7 @@ function collectPathSignature(filePath, entries) {
       return;
     }
     for (const child of children) {
-      collectPathSignature(path8.join(filePath, child), entries);
+      collectPathSignature(path9.join(filePath, child), entries);
     }
     return;
   }
@@ -21590,16 +23149,18 @@ async function manageAuth(options) {
   switch (options.subcommand) {
     case "status": {
       const config2 = await readProjectConfig(options.projectDir);
-      const envPath = path8.join(options.projectDir, ".env.sporades.server");
-      const serverEnv = parseServerEnv(await readServerEnvFile(envPath));
+      const envPath2 = path9.join(options.projectDir, ".env.sporades.server");
+      const serverEnv = parseServerEnv(await readServerEnvFile(envPath2));
       const status2 = authStatus2(config2, serverEnv);
       if (options.json) {
         writeResult({ ok: true, data: status2, error: null });
       } else {
         process.stdout.write(`Auth mode: ${status2.mode}
 `);
-        process.stdout.write(`Google OAuth: ${status2.google.configured ? "configured" : "not configured"}
+        for (const [provider, state] of Object.entries(status2.providers)) {
+          process.stdout.write(`${providerLabel2(provider)}: ${state.enabled ? "enabled" : "disabled"}, ${state.configured ? "configured" : "not configured"}, runtime ${state.runtimeAvailable ? "available" : "unavailable"}
 `);
+        }
       }
       return;
     }
@@ -21651,29 +23212,55 @@ async function manageAuth(options) {
     default:
       break;
   }
-  const configPath = path8.join(options.projectDir, "sporades.json");
+  const configPath = path9.join(options.projectDir, "sporades.json");
   const config = await readProjectConfig(options.projectDir);
+  const existingAuth = config.auth && typeof config.auth === "object" ? config.auth : {};
+  const existingProviders = existingAuth.providers && typeof existingAuth.providers === "object" ? { ...existingAuth.providers } : {};
+  if (existingAuth.google && existingProviders.google === void 0) {
+    existingProviders.google = { enabled: true, ...existingAuth.google };
+  }
+  if (existingProviders.anonymous === void 0) {
+    existingProviders.anonymous = { enabled: true };
+  }
+  const previous = existingProviders[options.provider] && typeof existingProviders[options.provider] === "object" ? existingProviders[options.provider] : {};
+  const providerConfig = { ...previous, enabled: !options.disable };
+  const envValues = {};
+  if (["google", "microsoft", "facebook"].includes(options.provider) && !options.disable) {
+    const prefix = options.provider.toUpperCase();
+    providerConfig.clientIdEnv = `${prefix}_CLIENT_ID`;
+    providerConfig.clientSecretEnv = `${prefix}_CLIENT_SECRET`;
+    envValues[providerConfig.clientIdEnv] = options.clientId;
+    envValues[providerConfig.clientSecretEnv] = options.clientSecret;
+  }
+  if (options.provider === "microsoft" && !options.disable) {
+    providerConfig.tenant = options.tenant ?? previous.tenant ?? "common";
+  }
+  if (options.provider === "facebook" && !options.disable) {
+    providerConfig.graphVersion = options.graphVersion ?? previous.graphVersion ?? "v23.0";
+  }
+  if (options.provider === "apple" && !options.disable) {
+    providerConfig.clientId = options.clientId;
+    providerConfig.teamId = options.teamId;
+    providerConfig.keyId = options.keyId;
+    providerConfig.privateKeyEnv = "APPLE_PRIVATE_KEY";
+    envValues.APPLE_PRIVATE_KEY = options.privateKey;
+  }
+  existingProviders[options.provider] = providerConfig;
+  const enabledSibling = Object.entries(existingProviders).find(
+    ([provider, value]) => provider !== "anonymous" && provider !== options.provider && (value === true || value?.enabled !== false)
+  )?.[0];
   config.auth = {
-    mode: "google",
-    google: {
-      clientIdEnv: "GOOGLE_CLIENT_ID",
-      clientSecretEnv: "GOOGLE_CLIENT_SECRET"
-    }
+    mode: options.disable && existingAuth.mode === options.provider ? enabledSibling ?? "anonymous" : options.disable ? existingAuth.mode ?? "anonymous" : options.provider,
+    providers: existingProviders
   };
-  await writeFile6(configPath, `${JSON.stringify(config, null, 2)}
-`);
-  await upsertServerEnvValues(path8.join(options.projectDir, ".env.sporades.server"), {
-    GOOGLE_CLIENT_ID: options.clientId,
-    GOOGLE_CLIENT_SECRET: options.clientSecret
-  });
-  const status = authStatus2(config, {
-    GOOGLE_CLIENT_ID: options.clientId,
-    GOOGLE_CLIENT_SECRET: options.clientSecret
-  });
+  const envPath = path9.join(options.projectDir, ".env.sporades.server");
+  await writeAuthConfiguration(configPath, envPath, config, envValues);
+  const status = authStatus2(config, parseServerEnv(await readServerEnvFile(envPath)));
   if (options.json) {
     writeResult({ ok: true, data: status, error: null });
   } else {
-    process.stdout.write("Google OAuth configured.\n");
+    process.stdout.write(`${providerLabel2(options.provider)} auth ${options.disable ? "disabled" : "configured"}.
+`);
     process.stdout.write("Restart any running Sporades dev session so the server reloads auth configuration.\n");
   }
 }
@@ -21714,7 +23301,7 @@ async function manageEnv(options) {
       return;
     }
     case "import": {
-      const envPath = path8.resolve(options.projectDir, options.file ?? ".env.sporades.server");
+      const envPath = path9.resolve(options.projectDir, options.file ?? ".env.sporades.server");
       if (options.sealed) {
         const envelope2 = await readPortableSealedServerEnvEnvelope(envPath);
         await writeSealedServerEnv(paths, envelope2);
@@ -21722,20 +23309,20 @@ async function manageEnv(options) {
           ...envelopeSummary(envelope2, paths),
           imported: true,
           sealed: true,
-          source: normalisePathForOutput(path8.relative(options.projectDir, envPath) || envPath)
+          source: normalisePathForOutput(path9.relative(options.projectDir, envPath) || envPath)
         });
         return;
       }
       const env = parseServerEnv(await readServerEnvFile(envPath));
       const keyPair = await ensureSealedServerEnvKeyPair(paths);
       const envelope = sealServerEnv(env, keyPair.publicKey, {
-        source: normalisePathForOutput(path8.relative(options.projectDir, envPath) || envPath)
+        source: normalisePathForOutput(path9.relative(options.projectDir, envPath) || envPath)
       });
       await writeSealedServerEnv(paths, envelope);
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         imported: true,
-        source: normalisePathForOutput(path8.relative(options.projectDir, envPath) || envPath),
+        source: normalisePathForOutput(path9.relative(options.projectDir, envPath) || envPath),
         privateKeyConfigured: true
       });
       return;
@@ -21746,7 +23333,7 @@ async function manageEnv(options) {
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         privateKeyConfigured: Boolean(keyPair?.privateKey),
-        legacyServerEnvFilePresent: (await readServerEnvFile(path8.join(options.projectDir, ".env.sporades.server"))).exists
+        legacyServerEnvFilePresent: (await readServerEnvFile(path9.join(options.projectDir, ".env.sporades.server"))).exists
       });
       return;
     }
@@ -21757,15 +23344,15 @@ async function manageEnv(options) {
       }
       const exported = exportedEnvelope(envelope);
       if (options.output) {
-        const outputPath = path8.resolve(options.projectDir, options.output);
-        await mkdir6(path8.dirname(outputPath), { recursive: true });
-        await writeFile6(outputPath, `${JSON.stringify(exported, null, 2)}
+        const outputPath = path9.resolve(options.projectDir, options.output);
+        await mkdir6(path9.dirname(outputPath), { recursive: true });
+        await writeFile7(outputPath, `${JSON.stringify(exported, null, 2)}
 `, { mode: 384 });
       }
       await writeEnvResult(options, {
         ...envelopeSummary(envelope, paths),
         exported: true,
-        outputPath: options.output ? path8.resolve(options.projectDir, options.output) : null,
+        outputPath: options.output ? path9.resolve(options.projectDir, options.output) : null,
         envelope: options.output ? null : exported
       });
       return;
@@ -21789,12 +23376,12 @@ async function manageEnv(options) {
         hostDomain: profile.domain,
         ...options.subname ? { subname: options.subname } : {}
       });
-      const hostEnvelopePath = path8.join(
+      const hostEnvelopePath = path9.join(
         paths.hosts,
         options.subname ? `${options.hostAlias}.${options.subname}.server-env.sealed.json` : `${options.hostAlias}.server-env.sealed.json`
       );
-      await mkdir6(path8.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
-      await writeFile6(hostEnvelopePath, `${JSON.stringify(hostEnvelope, null, 2)}
+      await mkdir6(path9.dirname(hostEnvelopePath), { recursive: true, mode: 448 });
+      await writeFile7(hostEnvelopePath, `${JSON.stringify(hostEnvelope, null, 2)}
 `, { mode: 384 });
       if (!options.subname) {
         await writeHostConfig(hostConfig);
@@ -21982,9 +23569,9 @@ async function manageHost(options) {
       const config = await readHostConfig();
       const resolved = resolveHostProfile(config, options.hostAlias);
       const binding = createRemoteBinding(resolved.alias, resolved.profile, options.subname);
-      const bindingPath = path8.join(options.projectDir, REMOTE_BINDING_FILE);
-      await mkdir6(path8.dirname(bindingPath), { recursive: true });
-      await writeFile6(bindingPath, `${JSON.stringify(binding, null, 2)}
+      const bindingPath = path9.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir6(path9.dirname(bindingPath), { recursive: true });
+      await writeFile7(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
       if (options.json) {
         writeResult({ ok: true, data: { bindingPath, binding, localOnly: true, authoritative: false }, error: null });
@@ -22015,9 +23602,9 @@ async function manageHost(options) {
         }
         throw commandError4(result.error.message, result.error.hint);
       }
-      const bindingPath = path8.join(options.projectDir, REMOTE_BINDING_FILE);
-      await mkdir6(path8.dirname(bindingPath), { recursive: true });
-      await writeFile6(bindingPath, `${JSON.stringify(binding, null, 2)}
+      const bindingPath = path9.join(options.projectDir, REMOTE_BINDING_FILE);
+      await mkdir6(path9.dirname(bindingPath), { recursive: true });
+      await writeFile7(bindingPath, `${JSON.stringify(binding, null, 2)}
 `);
       const data = {
         ...result.data,
@@ -22479,7 +24066,7 @@ async function resolveLocalContainerSshAccessForAudit(config, projectDir, surfac
 }
 async function emitCliSshAuditEvent(config, projectDir, details) {
   const logPath = projectLogPath(config, projectDir);
-  await mkdir6(path8.dirname(logPath), { recursive: true });
+  await mkdir6(path9.dirname(logPath), { recursive: true });
   const input = createPrivilegedAuditLogInput({
     actorKind: "platform",
     source: "cli",
@@ -22512,25 +24099,25 @@ function explicitSshConfigured(config) {
   return Boolean(config && typeof config === "object" && Object.hasOwn(config, "ssh"));
 }
 function projectLogPath(config, projectDir) {
-  return config?.logs?.jsonlPath ?? config?.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path8.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
+  return config?.logs?.jsonlPath ?? config?.logging?.jsonlPath ?? process.env.SPORADES_LOG_PATH ?? path9.join(projectDir, ".sporades", "data", "logs", "events.jsonl");
 }
 function readProjectConfigSync(projectDir) {
-  const raw = readFileSync2(path8.join(projectDir, "sporades.json"), "utf8");
+  const raw = readFileSync2(path9.join(projectDir, "sporades.json"), "utf8");
   return JSON.parse(raw);
 }
 async function startContainerSession(options) {
   const config = await readProjectConfig(options.projectDir);
   const port = options.port ?? config.deploy?.port ?? 4e3;
-  const runtimeDir = path8.join(options.projectDir, ".sporades");
-  const containerName = `sporades-${config.name ?? path8.basename(options.projectDir)}`;
-  const bindingPath = path8.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const runtimeDir = path9.join(options.projectDir, ".sporades");
+  const containerName = `sporades-${config.name ?? path9.basename(options.projectDir)}`;
+  const bindingPath = path9.join(options.projectDir, CONTAINER_BINDING_FILE);
   const existingBinding = await readContainerBinding(bindingPath);
-  const previousConsumer = await readPublicTreeConsumer(path8.join(runtimeDir, "build"), "container");
+  const previousConsumer = await readPublicTreeConsumer(path9.join(runtimeDir, "build"), "container");
   verifyContainerReplacementOwnership(existingBinding, previousConsumer, containerName);
   const sshAccess = await resolveLocalContainerSshAccessForAudit(config, options.projectDir, "sporades/deploy", "container-ssh-config");
   const capsuleServices = await writeCapsuleServicesCompose(options.projectDir, config);
   const bundle = await createBundle(options.projectDir, config, { publishLegacy: false });
-  const dataDir = path8.join(runtimeDir, "data");
+  const dataDir = path9.join(runtimeDir, "data");
   const runtimeUser = sshAccess.enabled ? baseImageRuntimeUser() : localContainerRuntimeUser();
   await mkdir6(dataDir, { recursive: true });
   await prepareRuntimeDataPath(dataDir);
@@ -22544,7 +24131,7 @@ async function startContainerSession(options) {
     clientRelease = {
       framework: config.client?.framework ?? "react",
       toolchain: configuredClientToolchain(config),
-      publicTree: path8.basename(bundle.staticFiles.publicDir),
+      publicTree: path9.basename(bundle.staticFiles.publicDir),
       ...await summarizePublicTree(bundle.staticFiles.publicDir)
     };
   } catch (error) {
@@ -22594,7 +24181,7 @@ async function startContainerSession(options) {
     "127.0.0.1::22"
   ] : [];
   const bundleMountArgs = bundle.containerMounts.files.flatMap((mount) => ["--volume", formatMount(mount)]);
-  const containerTransactionToken = randomBytes5(16).toString("hex");
+  const containerTransactionToken = randomBytes6(16).toString("hex");
   const capsuleServicesNetworkArgs = capsuleServices ? ["--network", capsuleServices.networks.services] : [];
   const capsuleServicesEnvArgs = Object.entries(containerCapsuleServices.env ?? {}).flatMap(([key, value]) => [
     "--env",
@@ -22638,7 +24225,7 @@ async function startContainerSession(options) {
     SPORADES_BASE_IMAGE.image,
     ...sshAccess.enabled ? ["/usr/local/bin/sporades-start"] : ["node", "/app/server.mjs"]
   ];
-  const rollbackName = `${containerName}-rollback-${process.pid}-${randomBytes5(4).toString("hex")}`;
+  const rollbackName = `${containerName}-rollback-${process.pid}-${randomBytes6(4).toString("hex")}`;
   const oldName = String(existingContainer?.Name ?? existingBinding?.containerName ?? containerName).replace(/^\//, "");
   const oldWasRunning = Boolean(existingContainer?.State?.Running);
   let oldRenamed = false;
@@ -22732,7 +24319,7 @@ async function startContainerSession(options) {
     }
     try {
       if (existingBinding) await replaceContainerBinding(bindingPath, existingBinding);
-      else await rm4(bindingPath, { force: true });
+      else await rm5(bindingPath, { force: true });
     } catch {
       rollbackFailures.push("binding");
     }
@@ -22805,7 +24392,7 @@ async function startContainerSession(options) {
 }
 async function inspectLocalContainerSsh(options) {
   const config = await readProjectConfig(options.projectDir);
-  const bindingPath = path8.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path9.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     const data2 = localContainerSshState({
@@ -22985,7 +24572,7 @@ async function fetchInspectionDatabase(options) {
   ) ?? inspectContainerDatabase(options);
 }
 async function readDevSession(projectDir) {
-  const sessionPath = path8.join(projectDir, DEV_SESSION_FILE);
+  const sessionPath = path9.join(projectDir, DEV_SESSION_FILE);
   const raw = await readRequiredFile3(
     sessionPath,
     "No running Sporades dev session found.",
@@ -23139,8 +24726,8 @@ async function inspectContainerDatabase(options) {
 function resolveLocalContainerDatabasePath(options) {
   const container = resolveLocalContainerTarget(options);
   const mount = container.mounts.find((entry) => entry.Destination === "/app/data");
-  const dataDir = mount?.Source ?? path8.join(options.projectDir, ".sporades", "data");
-  return path8.join(dataDir, "data.db");
+  const dataDir = mount?.Source ?? path9.join(options.projectDir, ".sporades", "data");
+  return path9.join(dataDir, "data.db");
 }
 function resolveLocalContainerTarget(options) {
   if (options.port) {
@@ -23153,7 +24740,7 @@ function resolveLocalContainerTarget(options) {
       return { containerId, mounts: inspectDockerMounts(options.projectDir, containerId) };
     }
   }
-  const bindingPath = path8.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path9.join(options.projectDir, CONTAINER_BINDING_FILE);
   let binding = null;
   try {
     binding = JSON.parse(readFileSync2(bindingPath, "utf8"));
@@ -23252,9 +24839,8 @@ function withDevInspectionTokenHeader(session, fetchOptions = {}) {
     }
   };
 }
-async function upsertServerEnvValues(envPath, values) {
-  const existing = await readServerEnvFile(envPath);
-  const lines = existing.raw ? existing.raw.split(/\r?\n/) : [];
+function renderServerEnvValues(existingRaw, values) {
+  const lines = existingRaw ? existingRaw.split(/\r?\n/) : [];
   const pending = new Map(Object.entries(values));
   const nextLines = lines.map((line) => {
     const trimmed = line.trim();
@@ -23268,14 +24854,36 @@ async function upsertServerEnvValues(envPath, values) {
     }
     const value = pending.get(key);
     pending.delete(key);
-    return `${key}=${value}`;
+    return `${key}=${serializeServerEnvValue(value)}`;
   });
   for (const [key, value] of pending) {
-    nextLines.push(`${key}=${value}`);
+    nextLines.push(`${key}=${serializeServerEnvValue(value)}`);
   }
-  await writeFile6(envPath, `${nextLines.filter((line, index) => line || index < nextLines.length - 1).join("\n")}
-`);
-  parseServerEnv(await readServerEnvFile(envPath));
+  return `${nextLines.filter((line, index) => line || index < nextLines.length - 1).join("\n")}
+`;
+}
+function serializeServerEnvValue(value) {
+  const stringValue = String(value);
+  return stringValue.trim() !== stringValue || /[\r\n"'\\]/.test(stringValue) ? JSON.stringify(stringValue) : stringValue;
+}
+async function writeAuthConfiguration(configPath, envPath, config, envValues) {
+  const previousEnv = await readServerEnvFile(envPath);
+  const nextConfig = `${JSON.stringify(config, null, 2)}
+`;
+  const nextEnv = Object.keys(envValues).length > 0 ? renderServerEnvValues(previousEnv.raw, envValues) : previousEnv.raw;
+  parseServerEnv({ exists: previousEnv.exists || Object.keys(envValues).length > 0, raw: nextEnv });
+  await replaceFilesAtomically([
+    {
+      path: configPath,
+      label: "project configuration",
+      contents: nextConfig
+    },
+    ...Object.keys(envValues).length > 0 ? [{
+      path: envPath,
+      label: "server environment",
+      contents: nextEnv
+    }] : []
+  ]);
 }
 async function readRequiredFile3(filePath, message, hint) {
   try {
@@ -23305,7 +24913,7 @@ async function readContainerBinding(bindingPath) {
 }
 async function readRemoteBinding(projectDir) {
   try {
-    return JSON.parse(await readFile8(path8.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
+    return JSON.parse(await readFile8(path9.join(projectDir, REMOTE_BINDING_FILE), "utf8"));
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       return null;
@@ -23352,13 +24960,13 @@ async function readHostConfig() {
 }
 async function writeHostConfig(config) {
   const filePath = hostConfigPath();
-  await mkdir6(path8.dirname(filePath), { recursive: true });
-  await writeFile6(filePath, `${JSON.stringify(normaliseHostConfig(config), null, 2)}
+  await mkdir6(path9.dirname(filePath), { recursive: true });
+  await writeFile7(filePath, `${JSON.stringify(normaliseHostConfig(config), null, 2)}
 `);
 }
 function hostConfigPath() {
-  const configDir = process.env.SPORADES_CONFIG_DIR ?? path8.join(process.env.XDG_CONFIG_HOME ?? path8.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
-  return path8.join(configDir, "hosts.json");
+  const configDir = process.env.SPORADES_CONFIG_DIR ?? path9.join(process.env.XDG_CONFIG_HOME ?? path9.join(process.env.HOME ?? process.cwd(), ".config"), "sporades");
+  return path9.join(configDir, "hosts.json");
 }
 function normaliseHostConfig(value = {}) {
   return {
@@ -23484,7 +25092,7 @@ async function prepareHostPushSealedServerEnv(options) {
   const paths = sealedServerEnvPaths(options.projectDir);
   const envelope = await readSealedServerEnv(paths);
   if (!envelope) {
-    const legacyEnvFile = await readServerEnvFile(path8.join(options.projectDir, ".env.sporades.server"));
+    const legacyEnvFile = await readServerEnvFile(path9.join(options.projectDir, ".env.sporades.server"));
     const legacyValues = legacyEnvFile.exists ? parseServerEnv(legacyEnvFile) : {};
     if (Object.keys(legacyValues).length > 0) {
       throw commandError4(
@@ -23501,7 +25109,7 @@ async function prepareHostPushSealedServerEnv(options) {
     return null;
   }
   const keyPair = await readKeyPair(paths);
-  const legacyServerEnvFilePresent = (await readServerEnvFile(path8.join(options.projectDir, ".env.sporades.server"))).exists;
+  const legacyServerEnvFilePresent = (await readServerEnvFile(path9.join(options.projectDir, ".env.sporades.server"))).exists;
   if (!keyPair?.privateKey) {
     throw missingLocalSealedServerEnvSourceError({
       localPrivateKeyConfigured: false,
@@ -23584,10 +25192,10 @@ async function readHostedCapsuleSealedEnvPublicKey(alias, profile, subname, proj
 }
 async function createHostReleaseArchive(options) {
   const releaseId = createHostReleaseId();
-  const hostPushDir = path8.join(options.projectDir, ".sporades", "host-push");
+  const hostPushDir = path9.join(options.projectDir, ".sporades", "host-push");
   await mkdir6(hostPushDir, { recursive: true });
-  const localArchive = path8.join(hostPushDir, `${releaseId}.tar.gz`);
-  const packageDir = path8.join(hostPushDir, `${releaseId}-files`);
+  const localArchive = path9.join(hostPushDir, `${releaseId}.tar.gz`);
+  const packageDir = path9.join(hostPushDir, `${releaseId}-files`);
   const remoteArchive = posixJoin2(options.profile.remoteRoot, "incoming", `${releaseId}.tar.gz`);
   const sealedServerEnv = await createHostReleaseSealedServerEnv(options);
   const publicFiles = await listHostedPublicFiles(options.bundle.staticFiles.publicDir);
@@ -23605,29 +25213,29 @@ async function createHostReleaseArchive(options) {
     updatePolicyMode: readBaseImageUpdatePolicy(options.projectConfig),
     publicFiles
   });
-  await rm4(packageDir, { recursive: true, force: true });
-  await mkdir6(path8.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
-  await mkdir6(path8.join(packageDir, ".sporades", "ssh"), { recursive: true });
-  await cp(options.bundle.staticFiles.publicDir, path8.join(packageDir, "public"), { recursive: true, errorOnExist: true });
+  await rm5(packageDir, { recursive: true, force: true });
+  await mkdir6(path9.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
+  await mkdir6(path9.join(packageDir, ".sporades", "ssh"), { recursive: true });
+  await cp(options.bundle.staticFiles.publicDir, path9.join(packageDir, "public"), { recursive: true, errorOnExist: true });
   const releaseConfig = sanitizeHostedReleaseConfig(options.projectConfig, options.sshAccess);
   await Promise.all([
-    writeFile6(path8.join(packageDir, "server.mjs"), await readFile8(path8.join(options.bundle.buildDir, "server.mjs"), "utf8")),
-    writeFile6(path8.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
+    writeFile7(path9.join(packageDir, "server.mjs"), await readFile8(path9.join(options.bundle.buildDir, "server.mjs"), "utf8")),
+    writeFile7(path9.join(packageDir, "sporades.json"), `${JSON.stringify(releaseConfig, null, 2)}
 `)
   ]);
   if (options.bundle.containerMounts.serverEnv) {
-    await writeFile6(path8.join(packageDir, ".env.sporades.server"), await readFile8(options.bundle.containerMounts.serverEnv.host, "utf8"));
+    await writeFile7(path9.join(packageDir, ".env.sporades.server"), await readFile8(options.bundle.containerMounts.serverEnv.host, "utf8"));
   }
   if (sealedServerEnv) {
-    await writeFile6(
-      path8.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+    await writeFile7(
+      path9.join(packageDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
       `${JSON.stringify(sealedServerEnv.envelope, null, 2)}
 `
     );
   }
   if (options.sshAccess?.enabled) {
-    const authorizedKeysPath = path8.join(packageDir, ".sporades", "ssh", "authorized_keys");
-    await writeFile6(authorizedKeysPath, `${options.sshAccess.lines.join("\n")}
+    const authorizedKeysPath = path9.join(packageDir, ".sporades", "ssh", "authorized_keys");
+    await writeFile7(authorizedKeysPath, `${options.sshAccess.lines.join("\n")}
 `, { mode: 420 });
     await chmod2(authorizedKeysPath, 420);
   }
@@ -23668,9 +25276,9 @@ async function createHostReleaseArchive(options) {
 async function listHostedPublicFiles(root, directory = root) {
   const files = [];
   for (const entry of await readdir2(directory, { withFileTypes: true })) {
-    const entryPath = path8.join(directory, entry.name);
+    const entryPath = path9.join(directory, entry.name);
     if (entry.isDirectory()) files.push(...await listHostedPublicFiles(root, entryPath));
-    else if (entry.isFile()) files.push(`public/${path8.relative(root, entryPath).split(path8.sep).join("/")}`);
+    else if (entry.isFile()) files.push(`public/${path9.relative(root, entryPath).split(path9.sep).join("/")}`);
     else throw commandError4("Invalid Hosted Capsule public tree.", "Rebuild a normalized public tree containing regular files only.");
   }
   return files.sort();
@@ -23761,7 +25369,7 @@ function uploadHostReleaseArchive(options) {
 }
 function createHostReleaseId(now = /* @__PURE__ */ new Date()) {
   const timestamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
-  return `${timestamp}-${randomBytes5(4).toString("hex")}`;
+  return `${timestamp}-${randomBytes6(4).toString("hex")}`;
 }
 function normaliseHostLogEntries(data) {
   if (!Array.isArray(data?.entries)) {
@@ -23961,12 +25569,12 @@ function remoteHostHelperPath(profile) {
   return `${profile.remoteRoot}/bin/sporades-host-helper`;
 }
 function localHostHelperPath() {
-  return path8.join(path8.dirname(fileURLToPath(import.meta.url)), "sporades-host-helper.js");
+  return path9.join(path9.dirname(fileURLToPath(import.meta.url)), "sporades-host-helper.js");
 }
 function upgradeHostHelper(options) {
   const localHelper = localHostHelperPath();
   const remoteHelper = remoteHostHelperPath(options.profile);
-  const remoteBin = path8.posix.dirname(remoteHelper);
+  const remoteBin = path9.posix.dirname(remoteHelper);
   try {
     if (!statSync(localHelper).isFile()) {
       throw new Error("not a file");
@@ -24027,9 +25635,9 @@ async function writeGithubAutodeployWorkflow(options) {
     subname: options.subname,
     branch: options.branch
   });
-  const outputPath = path8.resolve(options.projectDir, options.file);
-  const relativeFile = path8.relative(options.projectDir, outputPath) || options.file;
-  if (relativeFile === ".." || relativeFile.startsWith(`..${path8.sep}`) || path8.isAbsolute(relativeFile)) {
+  const outputPath = path9.resolve(options.projectDir, options.file);
+  const relativeFile = path9.relative(options.projectDir, outputPath) || options.file;
+  if (relativeFile === ".." || relativeFile.startsWith(`..${path9.sep}`) || path9.isAbsolute(relativeFile)) {
     throw commandError4(
       "Invalid GitHub workflow file path.",
       "Pass a relative path inside the project, such as `.github/workflows/sporades-autodeploy.yml`."
@@ -24068,8 +25676,8 @@ async function writeGithubAutodeployWorkflow(options) {
       throw error;
     }
   }
-  await mkdir6(path8.dirname(outputPath), { recursive: true });
-  await writeFile6(outputPath, workflow);
+  await mkdir6(path9.dirname(outputPath), { recursive: true });
+  await writeFile7(outputPath, workflow);
   return {
     ok: true,
     data: {
@@ -24082,7 +25690,7 @@ async function writeGithubAutodeployWorkflow(options) {
   };
 }
 function normalisePathForOutput(filePath) {
-  return filePath.split(path8.sep).join("/");
+  return filePath.split(path9.sep).join("/");
 }
 function posixJoin2(...segments) {
   return segments.map((segment, index) => {
@@ -24185,7 +25793,7 @@ function validateGithubWorkflowBranch(branch) {
   }
 }
 function validateGithubWorkflowFile(filePath) {
-  if (!filePath || path8.isAbsolute(filePath) || filePath.includes("\0")) {
+  if (!filePath || path9.isAbsolute(filePath) || filePath.includes("\0")) {
     throw commandError4("Invalid GitHub workflow file path.", "Pass a relative path such as `.github/workflows/sporades-autodeploy.yml`.");
   }
 }
@@ -24227,7 +25835,7 @@ function runDocker(args, cwd, message, hint) {
 async function printLocalCapsuleServiceStatus(options, surface) {
   const config = await readProjectConfig(options.projectDir);
   const capsuleServices = localCapsuleServicesFromConfig2(config, options.projectDir);
-  const binding = surface === "deploy" ? await readContainerBinding(path8.join(options.projectDir, CONTAINER_BINDING_FILE)) : null;
+  const binding = surface === "deploy" ? await readContainerBinding(path9.join(options.projectDir, CONTAINER_BINDING_FILE)) : null;
   const data = {
     ...binding?.containerId ? {
       container: {
@@ -24254,7 +25862,7 @@ function localCapsuleServicesFromConfig2(config, projectDir) {
   }
   validateCapsuleServicesConfig(config.services);
   return {
-    path: path8.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
+    path: path9.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE),
     relativePath: CAPSULE_SERVICES_COMPOSE_FILE,
     ...capsuleServicesComposeModel(config, projectDir)
   };
@@ -24263,7 +25871,7 @@ function hasDeclaredLocalCapsuleServices(config) {
   return Boolean(config.services?.database || config.services?.storage);
 }
 async function requireLocalContainerBinding(options, action) {
-  const bindingPath = path8.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path9.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     throw commandError4(
@@ -24318,7 +25926,7 @@ async function restartLocalContainerSession(options) {
   }
 }
 async function removeLocalContainerSession(options) {
-  const bindingPath = path8.join(options.projectDir, CONTAINER_BINDING_FILE);
+  const bindingPath = path9.join(options.projectDir, CONTAINER_BINDING_FILE);
   const binding = await readContainerBinding(bindingPath);
   if (!binding?.containerId) {
     if (options.missingOk) {
@@ -24329,7 +25937,7 @@ async function removeLocalContainerSession(options) {
       "Run `sporades deploy` before `sporades deploy remove`."
     );
   }
-  const buildDir = path8.join(options.projectDir, ".sporades", "build");
+  const buildDir = path9.join(options.projectDir, ".sporades", "build");
   const currentConsumer = await readPublicTreeConsumer(buildDir, "container");
   const bindingExpectation = binding.clientRelease?.consumerToken ? { token: binding.clientRelease.consumerToken, identity: binding.containerId } : null;
   let claimedConsumer = null;
@@ -24340,7 +25948,7 @@ async function removeLocalContainerSession(options) {
     claimedConsumer = await writePublicTreeConsumer(
       buildDir,
       "container",
-      path8.join(buildDir, ".public-trees", currentConsumer.tree),
+      path9.join(buildDir, ".public-trees", currentConsumer.tree),
       currentConsumer.identity,
       bindingExpectation
     );
@@ -24370,7 +25978,7 @@ async function removeLocalContainerSession(options) {
     "container",
     claimedConsumer ? { token: claimedConsumer.token, identity: claimedConsumer.identity } : null
   );
-  await rm4(bindingPath, { force: true });
+  await rm5(bindingPath, { force: true });
   const services = options.stopServices === false ? {} : await stopLocalCapsuleServices({ ...options, silent: true });
   const container = containerLifecycleSummary("removed", binding);
   if (options.silent) {
@@ -24420,7 +26028,7 @@ async function resetLocalCapsuleServices(options) {
     );
     await Promise.all(
       Object.values(capsuleServices.services).map(
-        (service) => rm4(service.stateDir, { recursive: true, force: true })
+        (service) => rm5(service.stateDir, { recursive: true, force: true })
       )
     );
     const removedImages = removeSporadesOwnedCapsuleImages(capsuleServices, options.projectDir);
@@ -24467,7 +26075,7 @@ async function localCapsuleServicesStatus(capsuleServices, projectDir) {
       },
       volume: {
         type: "bind",
-        path: path8.join(CAPSULE_SERVICES_STATE_DIR, name),
+        path: path9.join(CAPSULE_SERVICES_STATE_DIR, name),
         exists: await pathExists2(service.stateDir)
       },
       containerName: service.name,
@@ -24518,7 +26126,7 @@ function dockerResourceExists(args, cwd) {
 }
 async function pathExists2(targetPath) {
   try {
-    await lstat5(targetPath);
+    await lstat6(targetPath);
     return true;
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
@@ -24537,7 +26145,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
       service: name,
       status: "starting",
       engine: service.engine,
-      statePath: path8.join(CAPSULE_SERVICES_STATE_DIR, name)
+      statePath: path9.join(CAPSULE_SERVICES_STATE_DIR, name)
     });
   }
   try {
@@ -24588,7 +26196,7 @@ async function startCapsuleServices(capsuleServices, projectDir, options = {}) {
       service: name,
       status: "ready",
       engine: service.engine,
-      statePath: path8.join(CAPSULE_SERVICES_STATE_DIR, name),
+      statePath: path9.join(CAPSULE_SERVICES_STATE_DIR, name),
       host: connection.host,
       port: connection.port
     });
@@ -24650,7 +26258,7 @@ function capsuleServicesJsonSummary(capsuleServices, status) {
         engine: service.engine,
         network: capsuleServices.networks.services,
         containerName: service.name,
-        statePath: path8.join(CAPSULE_SERVICES_STATE_DIR, name)
+        statePath: path9.join(CAPSULE_SERVICES_STATE_DIR, name)
       }
     ])
   );
@@ -24895,7 +26503,7 @@ function ensureLocalBaseImage(cwd) {
   if (pull.status === 0) {
     return;
   }
-  const dockerfilePath = path8.join(CLI_ROOT, "Dockerfile.base");
+  const dockerfilePath = path9.join(CLI_ROOT, "Dockerfile.base");
   try {
     const stats = statSync(dockerfilePath);
     if (!stats.isFile()) {
@@ -24929,13 +26537,13 @@ function runDockerCleanup(args, cwd, message, hint, force = false) {
   throw commandError4(message, hint);
 }
 async function replaceContainerBinding(bindingPath, binding) {
-  const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes5(8).toString("hex")}.tmp`;
+  const temporaryPath = `${bindingPath}.${process.pid}-${randomBytes6(8).toString("hex")}.tmp`;
   try {
-    await writeFile6(temporaryPath, `${JSON.stringify(binding, null, 2)}
+    await writeFile7(temporaryPath, `${JSON.stringify(binding, null, 2)}
 `, { flag: "wx" });
-    await rename3(temporaryPath, bindingPath);
+    await rename4(temporaryPath, bindingPath);
   } finally {
-    await rm4(temporaryPath, { force: true });
+    await rm5(temporaryPath, { force: true });
   }
 }
 function verifyContainerReplacementOwnership(binding, consumer, expectedContainerName) {
@@ -24951,25 +26559,25 @@ function verifyContainerReplacementOwnership(binding, consumer, expectedContaine
   }
 }
 async function acquireContainerLifecycleLock(projectDir) {
-  const lockDir = path8.join(projectDir, ".sporades", ".container-lifecycle-lock");
-  await mkdir6(path8.dirname(lockDir), { recursive: true });
-  const token = randomBytes5(16).toString("hex");
-  const ownerPath = path8.join(lockDir, "owner.json");
+  const lockDir = path9.join(projectDir, ".sporades", ".container-lifecycle-lock");
+  await mkdir6(path9.dirname(lockDir), { recursive: true });
+  const token = randomBytes6(16).toString("hex");
+  const ownerPath = path9.join(lockDir, "owner.json");
   for (let attempt = 0; attempt < 500; attempt += 1) {
     try {
       await mkdir6(lockDir);
-      await writeFile6(ownerPath, `${JSON.stringify({ pid: process.pid, processStart: await getProcessStartIdentity(process.pid), token })}
+      await writeFile7(ownerPath, `${JSON.stringify({ pid: process.pid, processStart: await getProcessStartIdentity(process.pid), token })}
 `);
       return async () => {
         const owner = await readFile8(ownerPath, "utf8").then(JSON.parse).catch(() => null);
         if (owner?.token !== token) throw commandError4("Container lifecycle lock ownership changed.", "Preserve the successor lifecycle lock.");
-        await rm4(lockDir, { recursive: true, force: true });
+        await rm5(lockDir, { recursive: true, force: true });
       };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
       const owner = await readFile8(ownerPath, "utf8").then(JSON.parse).catch(() => null);
       if (owner === null) {
-        const age = Date.now() - await lstat5(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
+        const age = Date.now() - await lstat6(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
         if (age <= 1e3) {
           await new Promise((resolve) => setTimeout(resolve, 10));
           continue;
@@ -24980,7 +26588,7 @@ async function acquireContainerLifecycleLock(projectDir) {
         owner && Number.isInteger(owner.pid) && owner.pid > 0 && typeof owner.token === "string" && (actualStart !== null && owner.processStart === actualStart || actualStart === null && processIsLiveForContainerLock(owner.pid))
       );
       if (!live) {
-        await rm4(lockDir, { recursive: true, force: true });
+        await rm5(lockDir, { recursive: true, force: true });
         continue;
       }
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -25007,7 +26615,7 @@ function formatMount(mount) {
 async function prepareRuntimeDataPath(targetPath) {
   let stats;
   try {
-    stats = await lstat5(targetPath);
+    stats = await lstat6(targetPath);
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       return;
@@ -25024,7 +26632,7 @@ async function prepareRuntimeDataPath(targetPath) {
     await chmod2(targetPath, 448);
     const entries = await readdir2(targetPath, { withFileTypes: true });
     for (const entry of entries) {
-      await prepareRuntimeDataPath(path8.join(targetPath, entry.name));
+      await prepareRuntimeDataPath(path9.join(targetPath, entry.name));
     }
     return;
   }

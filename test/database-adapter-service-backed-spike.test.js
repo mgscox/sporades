@@ -64,6 +64,7 @@ test("spike proof: a service-backed SQLite-compatible adapter can run representa
       adapter.insertAuthSession({
         token: "session-1",
         userId: "user-1",
+        provider: "email",
         createdAt: now,
         expiresAt: "2026-08-03T10:00:00.000Z",
       });

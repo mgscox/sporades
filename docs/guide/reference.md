@@ -1124,8 +1124,138 @@ sporades auth status
 sporades auth status --json
 ```
 
-The status command reports which providers are enabled and whether configured
-providers have the required Server env values.
+The status command reports every built-in provider's `enabled`, `configured`,
+and `runtimeAvailable` state. OAuth entries report their callback path and, when
+the provider accepts it, the exact local callback URL for a fixed Dev port.
+Apple requires an HTTPS callback: its status has a null `callbackUrl` locally
+and guidance to use the Capsule's Hosted HTTPS origin or an HTTPS development
+tunnel. JSON output contains env-var names and non-secret options, never
+credential values.
+Facebook status and client provider state also report the effective
+`graphVersion`. A genuinely omitted value is normalized to `v23.0`; explicit
+null, non-string, malformed, and unsupported values leave Facebook unavailable.
+
+### Configure OAuth Providers
+
+`sporades auth set <provider>` merges one provider into the existing provider
+map. It does not replace configured siblings or turn off Anonymous sessions.
+
+```sh
+sporades auth set microsoft --client-id <id> --client-secret <secret> --tenant organizations
+sporades auth set apple --client-id <services-id> --team-id <team-id> --key-id <key-id> --private-key <pem>
+sporades auth set facebook --client-id <app-id> --client-secret <app-secret> --graph-version v23.0
+sporades auth set email
+sporades auth set microsoft --disable
+```
+
+Google, Microsoft, Apple, and Facebook accept provider-specific credential
+files through `--client-json`. Sporades stores secret values only in Server env
+(or Sealed Server env after import); `sporades.json` keeps provider shape,
+non-secret options, and env-var names. Restart a running Dev session after any
+provider change.
+
+Apple private keys may be supplied as ordinary multiline PEM values in the
+credential JSON file. Sporades serializes them reversibly into one Server env
+entry; it does not copy the key into `sporades.json` or command output. Register
+`/__sporades/auth/apple/callback` on an HTTPS origin. Do not register a
+localhost or plain-HTTP callback for Apple.
+
+### Configure Sign in with Apple
+
+In Apple Developer, create or select all of the following:
+
+- an App ID with Sign in with Apple enabled;
+- a Services ID used as the OAuth `client_id`;
+- a Website URL on the Capsule's public HTTPS domain;
+- the exact return URL
+  `https://<capsule-domain>/__sporades/auth/apple/callback`;
+- a Sign in with Apple private key, recording its Key ID and the developer
+  account's Team ID.
+
+The Website URL and return URL must use an HTTPS domain. Apple sign-in is hidden
+from generated sign-in controls on HTTP, localhost, and IP-address origins, and
+an attempted start fails before redirect with guidance to use an HTTPS
+development tunnel or Hosted Capsule.
+
+Sporades does not trust `X-Forwarded-Host` or `X-Forwarded-Proto` merely because
+a client supplied them. Behind an HTTPS tunnel or reverse proxy, configure the
+exact public origin with `SPORADES_PUBLIC_ORIGIN`. The browser `Origin`, `Host`,
+and any forwarded host/protocol headers must agree with that configured origin.
+Without a configured public origin, OAuth uses the validated request `Host` and
+the actual TLS socket; forwarded headers are rejected. Keep the Capsule runtime
+unreachable from untrusted networks when a reverse proxy is its public edge.
+
+Configure the provider directly:
+
+```sh
+sporades auth set apple \
+  --client-id com.example.capsule.web \
+  --team-id ABCDE12345 \
+  --key-id 1A2B3C4D5E \
+  --private-key "$(cat AuthKey_1A2B3C4D5E.p8)"
+```
+
+For automation, prefer a provider credential JSON file:
+
+```json
+{
+  "servicesId": "com.example.capsule.web",
+  "teamId": "ABCDE12345",
+  "keyId": "1A2B3C4D5E",
+  "privateKey": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+}
+```
+
+```sh
+sporades auth set apple --client-json ./apple-sign-in.json
+```
+
+The private key is stored only in Server env (or Sealed Server env). At each
+code exchange Sporades signs a short-lived ES256 client-secret JWT in memory;
+the generated credential, private key, authorization code, and Apple tokens
+are not returned to the browser or written to normal logs.
+
+The Apple key must be an unencrypted private EC key on P-256 (`prime256v1`), as
+issued by Apple. RSA keys, other EC curves, public-only keys, encrypted keys,
+and malformed PEM fail with a bounded credential error before code exchange.
+
+Apple returns the person's name only on the first authorization. Sporades
+accepts the bounded `form_post` payload, sanitizes the name, and saves it in the
+same Auth transaction as the verified Provider identity. Later sign-ins work
+without a name. Private-relay email may change or disappear; the verified Apple
+`sub` claim remains the account identity key.
+
+If Apple reports a redirect mismatch, compare the registered return URL
+character-for-character with the HTTPS callback generated from the public
+Capsule origin. If signing fails, confirm that the Team ID, Key ID, Services ID,
+and `.p8` private key belong together. If relay mail does not arrive, verify
+the domain and sender registration in Apple's private email relay settings.
+Cancellation and failed callbacks spend the local OAuth state, so restart
+sign-in rather than replaying the callback. The `form_post` body is capped at
+16 KiB and accepts only an unambiguous URL-encoded callback. Once one exact
+state value is identified, duplicate code/error/user values, mixed
+success/cancellation responses, and malformed downstream fields spend that
+state before failing. Form names and values require strict UTF-8 and reject
+encoded or raw control characters, replacement characters, and Unicode
+noncharacters. A duplicate or malformed state, malformed parameter name,
+unsupported media type, or oversized body cannot identify a trustworthy state
+and therefore fails without consuming one.
+
+Apple identity tokens and signing-key responses are bounded before JSON
+parsing. Sporades accepts only plain-object JWT headers and claims, verifies
+RS256 against a matching Apple signing JWK, and reloads Apple's key set on each
+completion so ordinary key rotation does not require a runtime restart.
+
+Provider updates stage `sporades.json` and Server env replacements beside their
+targets, then commit them with atomic renames. If either commit fails, Sporades
+attempts every required restore and reports whether recovery completed without
+printing file contents. Transaction targets are compared as absolute,
+lexically-normalized paths before any filesystem operation, so `a`, `./a`, and
+`dir/../a` cannot enter the transaction twice. The generic helper does not
+dereference symlinks, detect hard-link aliases, or infer case-folding volume
+identity; callers must provide canonical non-symlink targets, must not repeat an
+inode through hard links, and must use the filesystem's canonical case. The
+OAuth command uses its two fixed normal project-file paths.
 
 ### Configure Google OAuth
 
@@ -1175,6 +1305,71 @@ Restart any running Dev session after changing auth configuration.
 
 > Run `sporades env import` after setting auth values if you want them in Sealed Server env.
 
+### Configure Facebook Login
+
+Create a Meta app with Facebook Login for the Capsule. Sporades supports Meta
+Graph API `v23.0`; configure it explicitly or allow the CLI to write that
+default:
+
+```sh
+sporades auth set facebook \
+  --client-id <app-id> \
+  --client-secret <app-secret> \
+  --graph-version v23.0
+```
+
+The App ID is stored through `FACEBOOK_CLIENT_ID` and the App Secret through
+`FACEBOOK_CLIENT_SECRET` in Server env. `sporades.json`, `auth status`, client
+messages, inspection output, and normal logs never contain the secret or a
+Facebook access token.
+
+In Facebook Login settings, register the exact Valid OAuth Redirect URI:
+
+```text
+http://localhost:4000/__sporades/auth/facebook/callback
+```
+
+Replace the origin and port with the value reported for the Capsule, including
+the Hosted HTTPS origin in production. Do not add or remove a trailing slash.
+The browser performs a top-level redirect; Capsule client code uses
+`auth.signIn("facebook")` and does not import the Facebook JavaScript SDK.
+
+Sporades requests `public_profile,email` and reads only `id,name,email,picture`
+from Graph `/v23.0/me`. The stable Facebook `id` is required. Email, name, and
+picture are optional, so declining email does not block sign-in.
+
+While the Meta app is in Development mode, sign-in is limited to app
+administrators, developers, and testers. Add test accounts or roles before
+testing; switch the app to Live only after its required setup and review are
+complete. Restart Sporades Dev after changing credentials or Graph version.
+
+If Facebook sign-in fails:
+
+- `FACEBOOK_APP_RESTRICTED`: check Development/Live mode and the account's app
+  role or tester access.
+- `FACEBOOK_PERMISSION_DENIED`: retry and grant the requested permissions.
+  Email may still be declined without preventing login.
+- `FACEBOOK_REDIRECT_MISMATCH`: copy the exact callback URL from
+  `sporades auth status --json` into Valid OAuth Redirect URIs.
+- `FACEBOOK_EXCHANGE_FAILED`: check the App ID, App Secret, app mode, and
+  callback URI.
+- `FACEBOOK_GRAPH_FAILED` or `FACEBOOK_PROFILE_ID_MISSING`: check Graph API
+  access and that the supported `v23.0` `/me` response includes a stable `id`.
+
+Sporades accepts only the built-in HTTPS Facebook and Graph endpoints in normal
+operation. Redirect responses are refused, requests have finite deadlines, and
+provider JSON is capped before parsing. For an opt-in real-browser regression
+tracer, install Playwright and Chrome, then run:
+
+```sh
+SPORADES_REAL_FACEBOOK_BROWSER=1 node --test test/facebook-oauth-browser.test.js
+```
+
+The tracer scaffolds a real React Capsule, clicks its runtime-derived Facebook
+button in Chrome, and observes top-level navigation at a loopback authorization
+receiver. Its insecure loopback seam is process-only and cannot be enabled from
+`sporades.json`.
+
 
 #### Using OAuth sign-in in the client
 
@@ -1183,7 +1378,11 @@ Client sign-in uses the provider name:
 ```tsx
 import { auth } from "sporades/client";
 
-await auth.signIn("google");
+for (const [provider, state] of Object.entries(session.providers)) {
+  if (state.enabled && state.configured && state.runtimeAvailable) {
+    await auth.signIn(provider);
+  }
+}
 ```
 
 ### Use Email Auth

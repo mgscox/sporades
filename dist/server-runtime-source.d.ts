@@ -256,6 +256,27 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
         updatedAt: any;
     }): StatementResultingChanges;
     findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
+    findAuthIdentityByProviderSubject(provider: any, subject: any): any;
+    findLegacyAuthIdentitiesByProviderEmail(provider: any, email: any): any;
+    insertAuthIdentity(row: {
+        id: any;
+        userId: any;
+        provider: any;
+        subject: any;
+        email: any;
+        displayName: any;
+        picture: any;
+        createdAt: any;
+        updatedAt: any;
+    }): StatementResultingChanges;
+    updateAuthIdentity(row: {
+        id: any;
+        subject: any;
+        email: any;
+        displayName: any;
+        picture: any;
+        updatedAt: any;
+    }): StatementResultingChanges;
     insertAuthUser(row: {
         id: any;
         createdAt: any;
@@ -285,25 +306,22 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
     insertAuthSession(row: {
         token: any;
         userId: any;
+        provider: any;
         createdAt: any;
         expiresAt: any;
     }): StatementResultingChanges;
     deleteAuthSession(token: any): StatementResultingChanges;
     refreshAuthSession(token: any, expiresAt: any): StatementResultingChanges;
+    setAuthSessionProvider(token: any, provider: any): StatementResultingChanges;
     rotateAuthSession(previousToken: any, row: {
         token: any;
         userId: any;
+        provider: any;
         createdAt: any;
         expiresAt: any;
     }): StatementResultingChanges;
     readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null;
-    insertOAuthState(row: {
-        state: any;
-        sessionToken: any;
-        returnTo: any;
-        redirectUri: any;
-        createdAt: any;
-    }): StatementResultingChanges;
+    insertOAuthState(row: LooseRecord): StatementResultingChanges;
     consumeOAuthState(state: any): Record<string, SQLOutputValue> | null;
     emailCredentialExists(email: any): boolean;
     insertEmailCredential(row: {
@@ -525,6 +543,11 @@ export declare function createPostgresDatabaseAdapter(options: {
     }>;
     writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord): Promise<void>;
     ensureAuthStorage(authConfig?: any): Promise<void>;
+    insertOAuthState(row: LooseRecord): Promise<{
+        changes: number;
+        lastInsertRowid: any;
+    }>;
+    consumeOAuthState(state: string): Promise<any>;
     ensureLogStorage(): Promise<void>;
     ensureFileStorage(): Promise<void>;
     ensureUserPreferencesStorage(): Promise<void>;
@@ -816,6 +839,27 @@ export declare function createPostgresDatabaseAdapter(options: {
     markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges;
     fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null;
     findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
+    findAuthIdentityByProviderSubject(provider: any, subject: any): any;
+    findLegacyAuthIdentitiesByProviderEmail(provider: any, email: any): any;
+    insertAuthIdentity(row: {
+        id: any;
+        userId: any;
+        provider: any;
+        subject: any;
+        email: any;
+        displayName: any;
+        picture: any;
+        createdAt: any;
+        updatedAt: any;
+    }): StatementResultingChanges;
+    updateAuthIdentity(row: {
+        id: any;
+        subject: any;
+        email: any;
+        displayName: any;
+        picture: any;
+        updatedAt: any;
+    }): StatementResultingChanges;
     insertAuthUser(row: {
         id: any;
         createdAt: any;
@@ -845,26 +889,21 @@ export declare function createPostgresDatabaseAdapter(options: {
     insertAuthSession(row: {
         token: any;
         userId: any;
+        provider: any;
         createdAt: any;
         expiresAt: any;
     }): StatementResultingChanges;
     deleteAuthSession(token: any): StatementResultingChanges;
     refreshAuthSession(token: any, expiresAt: any): StatementResultingChanges;
+    setAuthSessionProvider(token: any, provider: any): StatementResultingChanges;
     rotateAuthSession(previousToken: any, row: {
         token: any;
         userId: any;
+        provider: any;
         createdAt: any;
         expiresAt: any;
     }): StatementResultingChanges;
     readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null;
-    insertOAuthState(row: {
-        state: any;
-        sessionToken: any;
-        returnTo: any;
-        redirectUri: any;
-        createdAt: any;
-    }): StatementResultingChanges;
-    consumeOAuthState(state: any): Record<string, SQLOutputValue> | null;
     emailCredentialExists(email: any): boolean;
     insertEmailCredential(row: {
         email: any;
@@ -939,6 +978,10 @@ export declare function createLibsqlDatabaseAdapter(options: {
     readRecentLogEvents(limit?: number): Promise<any>;
     ensureFileStorage(): Promise<void>;
     ensureAuthStorage(authConfig?: any): Promise<void>;
+    insertOAuthState(row: LooseRecord): Promise<{
+        changes: number;
+        lastInsertRowid: bigint | undefined;
+    }>;
     consumeOAuthState(state: any): Promise<any>;
     migrateAppSchema(schema: {
         tables: {
@@ -1107,6 +1150,27 @@ export declare function createLibsqlDatabaseAdapter(options: {
         updatedAt: any;
     }): StatementResultingChanges;
     findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
+    findAuthIdentityByProviderSubject(provider: any, subject: any): any;
+    findLegacyAuthIdentitiesByProviderEmail(provider: any, email: any): any;
+    insertAuthIdentity(row: {
+        id: any;
+        userId: any;
+        provider: any;
+        subject: any;
+        email: any;
+        displayName: any;
+        picture: any;
+        createdAt: any;
+        updatedAt: any;
+    }): StatementResultingChanges;
+    updateAuthIdentity(row: {
+        id: any;
+        subject: any;
+        email: any;
+        displayName: any;
+        picture: any;
+        updatedAt: any;
+    }): StatementResultingChanges;
     insertAuthUser(row: {
         id: any;
         createdAt: any;
@@ -1136,25 +1200,21 @@ export declare function createLibsqlDatabaseAdapter(options: {
     insertAuthSession(row: {
         token: any;
         userId: any;
+        provider: any;
         createdAt: any;
         expiresAt: any;
     }): StatementResultingChanges;
     deleteAuthSession(token: any): StatementResultingChanges;
     refreshAuthSession(token: any, expiresAt: any): StatementResultingChanges;
+    setAuthSessionProvider(token: any, provider: any): StatementResultingChanges;
     rotateAuthSession(previousToken: any, row: {
         token: any;
         userId: any;
+        provider: any;
         createdAt: any;
         expiresAt: any;
     }): StatementResultingChanges;
     readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null;
-    insertOAuthState(row: {
-        state: any;
-        sessionToken: any;
-        returnTo: any;
-        redirectUri: any;
-        createdAt: any;
-    }): StatementResultingChanges;
     emailCredentialExists(email: any): boolean;
     insertEmailCredential(row: {
         email: any;

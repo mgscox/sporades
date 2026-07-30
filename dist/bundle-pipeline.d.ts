@@ -22,18 +22,16 @@ export type NormalizedProviderConfig = {
     enabled: boolean;
     clientIdEnv: string | null;
     clientSecretEnv: string | null;
+    clientId: string | null;
+    teamId: string | null;
+    keyId: string | null;
+    privateKeyEnv: string | null;
+    tenant: string | null;
+    graphVersion: string | null;
 };
 export type NormalizedAuthConfig = {
     mode: string;
-    providers: {
-        anonymous: {
-            enabled: boolean;
-        };
-        google: NormalizedProviderConfig;
-        email: {
-            enabled: boolean;
-        };
-    };
+    providers: Record<string, NormalizedProviderConfig>;
 };
 export type FrameworkBundleConfig = {
     framework: string;
@@ -122,22 +120,9 @@ export declare function readServerEnvFile(envPath: PathLike | FileHandle): Promi
 export declare function parseServerEnv(envFile: ServerEnvFile): ServerEnv;
 export declare function authStatus(config: ProjectConfig, serverEnv: ServerEnv): {
     mode: string;
-    providers: {
-        anonymous: {
-            enabled: boolean;
-        };
-        google: {
-            enabled: boolean;
-            configured: boolean;
-            clientIdEnv: string | null;
-            clientSecretEnv: string | null;
-        };
-        email?: {
-            enabled: boolean;
-        };
-    };
+    providers: Record<string, JsonRecord>;
     google: {
-        configured: boolean;
+        configured: unknown;
         clientIdEnv: string | null;
         clientSecretEnv: string | null;
     };

@@ -142,7 +142,7 @@ Sporades currently includes:
 - Local Docker Container sessions for production-like staging tests.
 - Hosted Capsules on SSH-reachable Host servers, routed through Caddy and run in
   hardened Docker containers.
-- Runtime-owned auth with anonymous sessions, email auth, Google OAuth, and
+- Runtime-owned auth with anonymous sessions, email auth, Google OAuth, Sign in with Apple, and
   local identity simulation for tests and agents.
 - Runtime-owned current-user preferences exposed through `sporades/client`
   without app preference tables. Preferences follow the Sporades user identity,
