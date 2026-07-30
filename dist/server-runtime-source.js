@@ -19,7 +19,10 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     encodeMimeBase64,
     normalizeMailMessage,
     normalizePostmarkProvider,
+    normalizeMailgunProvider,
+    serializeMailgunJson,
     captureMailProviderDataObject,
+    captureMailProviderDataArray,
     unsupportedMailProviderField,
     normalizeMailAddresses,
     normalizeMailAddress,
@@ -771,6 +774,10 @@ function normalizeMailMessage(input, defaultFrom, vendor = "generic") {
             providerHeaders = normalizePostmarkProvider(provider);
             provider = undefined;
         }
+        else if (vendor === "mailgun") {
+            providerHeaders = normalizeMailgunProvider(provider);
+            provider = undefined;
+        }
         else {
             if ("headers" in provider)
                 invalid("Provider header overrides are not supported by the configured SMTP vendor.");
@@ -825,6 +832,39 @@ function captureMailProviderDataObject(value, label) {
             invalid(`field \`${stringKey}\` must not be an accessor`);
         }
         entries.push([stringKey, ownDescriptor.value]);
+    }
+    return entries;
+}
+function captureMailProviderDataArray(value, label) {
+    const invalid = (detail) => {
+        throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", `Pass \`${label}\` as an ordinary data array; ${detail}.`);
+    };
+    if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype) {
+        invalid("custom prototypes and non-array values are not supported");
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    for (const key of Reflect.ownKeys(descriptors)) {
+        if (typeof key !== "string")
+            invalid("symbol fields are not supported");
+        const stringKey = key;
+        if (stringKey === "length")
+            continue;
+        if (!/^(?:0|[1-9]\d*)$/.test(stringKey) || Number(stringKey) >= value.length) {
+            invalid(`field \`${stringKey}\` is not an array index`);
+        }
+        const descriptor = descriptors[stringKey];
+        if (!descriptor.enumerable)
+            invalid(`field \`${stringKey}\` must be enumerable`);
+        if (!Object.prototype.hasOwnProperty.call(descriptor, "value"))
+            invalid(`field \`${stringKey}\` must not be an accessor`);
+    }
+    const entries = [];
+    for (let index = 0; index < value.length; index += 1) {
+        const descriptor = descriptors[String(index)];
+        if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, "value")) {
+            invalid(`index ${index} must be an own data property`);
+        }
+        entries.push(descriptor.value);
     }
     return entries;
 }
@@ -892,6 +932,227 @@ function normalizePostmarkProvider(provider) {
         headers.push({ name: "X-PM-Message-Stream", value: messageStream });
     }
     return headers;
+}
+function normalizeMailgunProvider(provider) {
+    const allowed = new Set([
+        "tags",
+        "variables",
+        "recipientVariables",
+        "templateName",
+        "templateVersion",
+        "templateVariables",
+        "tracking",
+        "testMode",
+        "deliveryTime",
+        "deliverWithin",
+        "deliveryTimeOptimizePeriod",
+        "timeZoneLocalize",
+    ]);
+    const providerEntries = captureMailProviderDataObject(provider, "provider");
+    const unsupported = (field) => {
+        throw mailError("UNSUPPORTED_MAIL_PROVIDER_FIELD", `Unsupported Mailgun provider field: ${field}.`, `Use only ${[...allowed].map((allowedField) => `\`${allowedField}\``).join(", ")} in the Mailgun provider object.`);
+    };
+    const unsupportedFields = providerEntries.map(([field]) => field).filter((field) => !allowed.has(field)).sort();
+    if (unsupportedFields.length > 0)
+        unsupported(unsupportedFields[0]);
+    const providerData = new Map(providerEntries);
+    const invalid = (hint) => {
+        throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", hint);
+    };
+    const headers = [];
+    const controlFreeString = (field, value, maximum = 128) => {
+        if (typeof value !== "string" || value.length < 1 || value.length > maximum || /[\x00-\x1f\x7f]/.test(value)) {
+            invalid(`Pass \`provider.${field}\` as a non-empty string of at most ${maximum} characters without control characters.`);
+        }
+        return value;
+    };
+    const booleanHeader = (field, name) => {
+        if (!providerData.has(field))
+            return;
+        const value = providerData.get(field);
+        if (typeof value !== "boolean")
+            invalid(`Pass \`provider.${field}\` as a boolean.`);
+        headers.push({ name, value: value ? "yes" : "no" });
+    };
+    if (providerData.has("tags")) {
+        const tags = providerData.get("tags");
+        if (!Array.isArray(tags) || tags.length < 1 || tags.length > 3) {
+            invalid("Pass `provider.tags` as an array containing one to three Mailgun tags.");
+        }
+        for (const tag of captureMailProviderDataArray(tags, "provider.tags")) {
+            if (typeof tag !== "string" || tag.length < 1 || tag.length > 128 || /[^\x20-\x7e]/.test(tag)) {
+                invalid("Pass each Mailgun tag as 1 to 128 printable ASCII characters.");
+            }
+            headers.push({ name: "X-Mailgun-Tag", value: tag });
+        }
+    }
+    for (const [field, name, maximum] of [
+        ["variables", "X-Mailgun-Variables", 4096],
+        ["recipientVariables", "X-Mailgun-Recipient-Variables", 32 * 1024],
+    ]) {
+        if (!providerData.has(field))
+            continue;
+        const value = providerData.get(field);
+        if (field === "variables") {
+            try {
+                captureMailProviderDataObject(value, "provider.variables");
+            }
+            catch {
+                invalid("Pass `provider.variables` as a plain JSON dictionary.");
+            }
+        }
+        const json = serializeMailgunJson(value, `provider.${field}`, maximum);
+        if (field === "recipientVariables") {
+            const entries = captureMailProviderDataObject(value, "provider.recipientVariables");
+            if (entries.length < 1 || entries.length > 1000) {
+                invalid("Pass `provider.recipientVariables` for one to 1000 recipients.");
+            }
+            for (const [recipient, variables] of entries) {
+                try {
+                    const address = normalizeMailAddress(recipient, "provider.recipientVariables");
+                    if (address.email !== recipient || address.name !== undefined)
+                        throw new Error("not plain");
+                    captureMailProviderDataObject(variables, `provider.recipientVariables.${recipient}`);
+                }
+                catch {
+                    invalid("Use plain ASCII recipient email addresses mapped to variable objects in `provider.recipientVariables`.");
+                }
+            }
+        }
+        headers.push({ name, value: json });
+    }
+    for (const [field, name] of [
+        ["templateName", "X-Mailgun-Template-Name"],
+        ["templateVersion", "X-Mailgun-Template-Version"],
+    ]) {
+        if (providerData.has(field))
+            headers.push({ name, value: controlFreeString(field, providerData.get(field)) });
+    }
+    if (providerData.has("templateVariables")) {
+        try {
+            captureMailProviderDataObject(providerData.get("templateVariables"), "provider.templateVariables");
+        }
+        catch {
+            invalid("Pass `provider.templateVariables` as a plain JSON dictionary.");
+        }
+        headers.push({
+            name: "X-Mailgun-Template-Variables",
+            value: serializeMailgunJson(providerData.get("templateVariables"), "provider.templateVariables", 32 * 1024),
+        });
+    }
+    if (providerData.has("tracking")) {
+        const tracking = providerData.get("tracking");
+        if (typeof tracking === "boolean") {
+            headers.push({ name: "X-Mailgun-Track", value: tracking ? "yes" : "no" });
+        }
+        else {
+            const entries = captureMailProviderDataObject(tracking, "provider.tracking");
+            const trackingAllowed = new Set(["enabled", "clicks", "opens", "pixelLocationTop"]);
+            const unknown = entries.map(([field]) => field).filter((field) => !trackingAllowed.has(field)).sort();
+            if (unknown.length > 0)
+                unsupported(`tracking.${unknown[0]}`);
+            const data = new Map(entries);
+            for (const [field, name] of [
+                ["enabled", "X-Mailgun-Track"],
+                ["clicks", "X-Mailgun-Track-Clicks"],
+                ["opens", "X-Mailgun-Track-Opens"],
+                ["pixelLocationTop", "X-Mailgun-Track-Pixel-Location-Top"],
+            ]) {
+                if (!data.has(field))
+                    continue;
+                const value = data.get(field);
+                if (field === "clicks") {
+                    if (typeof value !== "boolean" && value !== "htmlonly") {
+                        invalid("Pass `provider.tracking.clicks` as a boolean or `htmlonly`.");
+                    }
+                    headers.push({ name, value: value === "htmlonly" ? value : value ? "yes" : "no" });
+                }
+                else {
+                    if (typeof value !== "boolean")
+                        invalid(`Pass \`provider.tracking.${field}\` as a boolean.`);
+                    headers.push({ name, value: value ? "yes" : "no" });
+                }
+            }
+        }
+    }
+    booleanHeader("testMode", "X-Mailgun-Drop-Message");
+    if (providerData.has("deliveryTime")) {
+        const deliveryTime = controlFreeString("deliveryTime", providerData.get("deliveryTime"));
+        if (!/^(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun), \d{2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d{4} (?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d [+-](?:[01]\d|2[0-3])[0-5]\d$/.test(deliveryTime)
+            || !Number.isFinite(Date.parse(deliveryTime))) {
+            invalid("Pass `provider.deliveryTime` in RFC 2822 format, for example `Fri, 14 Oct 2011 12:00:00 +0000`.");
+        }
+        headers.push({ name: "X-Mailgun-Deliver-By", value: deliveryTime });
+    }
+    if (providerData.has("deliverWithin")) {
+        const deliverWithin = controlFreeString("deliverWithin", providerData.get("deliverWithin"), 6);
+        const match = deliverWithin.match(/^(?:(\d{1,2})h)?(?:(\d{1,2})m)?$/);
+        const minutes = match ? Number(match[1] ?? 0) * 60 + Number(match[2] ?? 0) : 0;
+        if (!match || minutes < 5 || minutes > 24 * 60) {
+            invalid("Pass `provider.deliverWithin` in Mailgun's `1h30m` format, from 5m through 24h.");
+        }
+        headers.push({ name: "X-Mailgun-Deliver-Within", value: deliverWithin });
+    }
+    if (providerData.has("deliveryTimeOptimizePeriod")) {
+        const period = controlFreeString("deliveryTimeOptimizePeriod", providerData.get("deliveryTimeOptimizePeriod"), 5);
+        if (!/^[1-9]\d{0,2}h$/.test(period))
+            invalid("Pass `provider.deliveryTimeOptimizePeriod` in Mailgun's hours format, such as `24h`.");
+        headers.push({ name: "X-Mailgun-Delivery-Time-Optimize-Period", value: period });
+    }
+    if (providerData.has("timeZoneLocalize")) {
+        const localize = controlFreeString("timeZoneLocalize", providerData.get("timeZoneLocalize"), 7);
+        const valid24Hour = /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(localize);
+        const valid12Hour = /^(?:0[1-9]|1[0-2]):[0-5]\d(?:am|pm)$/.test(localize);
+        if (!valid24Hour && !valid12Hour)
+            invalid("Pass `provider.timeZoneLocalize` as `HH:mm` or `hh:mmaa`.");
+        headers.push({ name: "X-Mailgun-Time-Zone-Localize", value: localize });
+    }
+    return headers;
+}
+function serializeMailgunJson(value, label, maximumBytes) {
+    const seen = new Set();
+    const normalize = (candidate, path) => {
+        if (candidate === null || typeof candidate === "string" || typeof candidate === "boolean")
+            return candidate;
+        if (typeof candidate === "number" && Number.isFinite(candidate))
+            return candidate;
+        if (Array.isArray(candidate)) {
+            if (seen.has(candidate))
+                throw new Error(`${path} is cyclic`);
+            seen.add(candidate);
+            const result = captureMailProviderDataArray(candidate, path)
+                .map((entry, index) => normalize(entry, `${path}[${index}]`));
+            seen.delete(candidate);
+            return result;
+        }
+        if (candidate && typeof candidate === "object") {
+            if (seen.has(candidate))
+                throw new Error(`${path} is cyclic`);
+            seen.add(candidate);
+            const entries = captureMailProviderDataObject(candidate, path).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0);
+            const result = Object.create(null);
+            for (const [key, entry] of entries)
+                result[key] = normalize(entry, `${path}.${key}`);
+            seen.delete(candidate);
+            return result;
+        }
+        throw new Error(`${path} is not JSON-compatible`);
+    };
+    let json;
+    try {
+        json = JSON.stringify(normalize(value, label));
+    }
+    catch {
+        throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", `Pass \`${label}\` as JSON-compatible plain data without accessors, symbols, hidden fields, custom prototypes, cycles, or non-finite numbers.`);
+    }
+    const asciiJson = json?.replace(/[^\x20-\x7e]/g, (character) => {
+        const code = character.charCodeAt(0);
+        return `\\u${code.toString(16).padStart(4, "0")}`;
+    });
+    if (asciiJson === undefined || Buffer.byteLength(asciiJson) > maximumBytes) {
+        throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", `Keep \`${label}\` within ${maximumBytes} UTF-8 bytes.`);
+    }
+    return asciiJson;
 }
 function mailJsonSize(value) {
     const seen = new Set();

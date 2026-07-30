@@ -116,3 +116,75 @@ must be strings of at most 80 characters. Message Stream IDs use Postmark's
 lowercase 30-character identifier format. Sporades rejects unsupported fields,
 case-colliding metadata keys, control characters, and attempts to pass raw or
 protected headers before opening an SMTP connection.
+
+### Mailgun SMTP extensions
+
+Set `mail.smtp.vendor` to `mailgun` to translate supported fields from the
+common `provider` object into Mailgun's documented `X-Mailgun-*` SMTP headers.
+The transport remains ordinary SMTP; Sporades neither uses nor requires a
+Mailgun SDK. Keep the SMTP credentials referenced through Sealed Server env.
+
+```json
+{
+  "mail": {
+    "smtp": {
+      "vendor": "mailgun",
+      "host": "smtp.mailgun.org",
+      "port": 587,
+      "tls": {
+        "mode": "required-starttls",
+        "rejectUnauthorized": true
+      },
+      "auth": {
+        "method": "PLAIN",
+        "usernameEnv": "MAILGUN_SMTP_USERNAME",
+        "passwordEnv": "MAILGUN_SMTP_PASSWORD"
+      },
+      "defaultFrom": "Capsule <mail@example.com>"
+    }
+  }
+}
+```
+
+```ts
+await ctx.mail.send({
+  to: "recipient@example.com",
+  subject: "Welcome",
+  htmlBody: "<p>Welcome to the Capsule.</p>",
+  provider: {
+    tags: ["welcome", "new-customer"],
+    variables: { accountId: "account-123" },
+    recipientVariables: {
+      "recipient@example.com": { firstName: "Amy" }
+    },
+    templateName: "welcome-email",
+    templateVersion: "v2",
+    templateVariables: { firstName: "Amy" },
+    tracking: {
+      enabled: true,
+      clicks: "htmlonly",
+      opens: true,
+      pixelLocationTop: true
+    },
+    testMode: false,
+    deliveryTime: "Fri, 14 Oct 2011 12:00:00 +0000",
+    deliverWithin: "1h30m",
+    deliveryTimeOptimizePeriod: "24h",
+    timeZoneLocalize: "14:30"
+  }
+});
+```
+
+Mailgun accepts up to three printable ASCII tags of 128 characters each.
+`variables` and `templateVariables` are JSON dictionaries;
+`recipientVariables` maps up to 1,000 plain recipient addresses to JSON
+dictionaries. Sporades sorts object keys before serialization, limits user
+variables to 4 KiB and the larger recipient/template variable maps to 32 KiB,
+and escapes non-ASCII data in the MIME header value. Provider fields cannot
+override message, MIME, authentication, or transport headers. Unsupported
+fields and malformed values fail before an SMTP connection is opened.
+
+Tracking booleans become Mailgun `yes` or `no` values; click tracking also
+accepts `htmlonly`. `deliveryTime` uses RFC 2822 format, `deliverWithin` ranges
+from `5m` through `24h`, the optimization period uses an hours value such as
+`24h`, and timezone localization uses `HH:mm` or `hh:mmaa`.

@@ -54,6 +54,15 @@ const postmarkConfig = {
   },
 };
 
+const mailgunConfig = {
+  mail: {
+    smtp: {
+      ...smtpConfig.mail.smtp,
+      vendor: "mailgun",
+    },
+  },
+};
+
 async function withDatabase(config, capsule, options, run) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-mail-"));
   const database = await openDevDatabase(
@@ -345,6 +354,212 @@ test("Postmark reads only complete own data properties from plain provider objec
   assert.equal(headers.includes("inherited-tag"), false);
 });
 
+test("Mailgun provider fields become exact SMTP MIME headers", async () => {
+  const captured = [];
+  const transport = {
+    async send(message) {
+      captured.push(buildSmtpMessage({ ...message, messageId: "<mailgun@example.com>" }));
+      return { messageId: "<mailgun@example.com>", accepted: ["to@example.com"], rejected: [] };
+    },
+    close() {},
+  };
+  await withDatabase(mailgunConfig, {
+    mutations: {
+      send: mutation((ctx) => ctx.mail.send({
+        to: "to@example.com",
+        subject: "Mailgun extensions",
+        htmlBody: "<p>Hello</p>",
+        provider: {
+          tags: ["welcome", "new-customer"],
+          variables: { zeta: 2, account: { tier: "pro", active: true } },
+          recipientVariables: {
+            "z@example.com": { name: "Zed" },
+            "a@example.com": { name: "Amy" },
+          },
+          templateName: "welcome-email",
+          templateVersion: "v2",
+          templateVariables: { surname: "Müller", firstName: "Amy" },
+          tracking: { enabled: true, clicks: "htmlonly", opens: false, pixelLocationTop: true },
+          testMode: true,
+          deliveryTime: "Fri, 14 Oct 2011 12:00:00 +0000",
+          deliverWithin: "1h30m",
+          deliveryTimeOptimizePeriod: "24h",
+          timeZoneLocalize: "14:30",
+        },
+      })),
+    },
+  }, { mailTransportFactory: () => transport }, async (database) => {
+    const result = await runMutation(database, user, "send", []);
+    assert.equal(result.ok, true);
+  });
+
+  const headerBlock = captured[0].split("\r\n\r\n")[0];
+  const mailgunHeaders = headerBlock
+    .split("\r\n")
+    .filter((line) => line.startsWith("X-Mailgun-") || /^[ \t]/.test(line));
+  assert.deepEqual(mailgunHeaders, [
+    "X-Mailgun-Tag: welcome",
+    "X-Mailgun-Tag: new-customer",
+    "X-Mailgun-Variables: {\"account\":{\"active\":true,\"tier\":\"pro\"},\"zeta\":2}",
+    "X-Mailgun-Recipient-Variables:",
+    " {\"a@example.com\":{\"name\":\"Amy\"},\"z@example.com\":{\"name\":\"Zed\"}}",
+    "X-Mailgun-Template-Name: welcome-email",
+    "X-Mailgun-Template-Version: v2",
+    "X-Mailgun-Template-Variables: {\"firstName\":\"Amy\",\"surname\":\"M\\u00fcller\"}",
+    "X-Mailgun-Track: yes",
+    "X-Mailgun-Track-Clicks: htmlonly",
+    "X-Mailgun-Track-Opens: no",
+    "X-Mailgun-Track-Pixel-Location-Top: yes",
+    "X-Mailgun-Drop-Message: yes",
+    "X-Mailgun-Deliver-By: Fri, 14 Oct 2011 12:00:00 +0000",
+    "X-Mailgun-Deliver-Within: 1h30m",
+    "X-Mailgun-Delivery-Time-Optimize-Period: 24h",
+    "X-Mailgun-Time-Zone-Localize: 14:30",
+  ]);
+});
+
+test("Mailgun rejects unsupported, malformed, oversized, and protected provider data before SMTP delivery", async () => {
+  let sends = 0;
+  const transport = {
+    async send() {
+      sends += 1;
+      return { messageId: "<unexpected@example.com>", accepted: [], rejected: [] };
+    },
+    close() {},
+  };
+  await withDatabase(mailgunConfig, {
+    mutations: {
+      send: mutation((ctx, provider) => ctx.mail.send({
+        to: "to@example.com",
+        subject: "Mailgun validation",
+        htmlBody: "<p>Hello</p>",
+        provider,
+      })),
+    },
+  }, { mailTransportFactory: () => transport }, async (database) => {
+    for (const field of ["headers", "from", "to", "subject", "htmlBody", "authentication"]) {
+      const result = await runMutation(database, user, "send", [{ [field]: "unsafe" }]);
+      assert.equal(result.error.code, "UNSUPPORTED_MAIL_PROVIDER_FIELD");
+      assert.match(result.error.message, new RegExp(`\\b${field}\\b`));
+    }
+    const invalid = [
+      { tags: [] },
+      { tags: ["one", "two", "three", "four"] },
+      { tags: ["x".repeat(129)] },
+      { tags: ["ümlaut"] },
+      { tags: ["welcome\r\nBcc: attacker@example.com"] },
+      { variables: { bad: undefined } },
+      { variables: [] },
+      { variables: { bad: Number.NaN } },
+      { variables: { bad: "x".repeat(4097) } },
+      { recipientVariables: [] },
+      { recipientVariables: { "not-an-address": { name: "Amy" } } },
+      { recipientVariables: Object.fromEntries(Array.from({ length: 1001 }, (_, index) => [`user${index}@example.com`, { id: index }])) },
+      { templateName: "unsafe\r\nBcc: attacker@example.com" },
+      { templateVersion: "" },
+      { templateVariables: { bad: 1n } },
+      { templateVariables: [] },
+      { tracking: { enabled: "yes" } },
+      { tracking: { clicks: "all" } },
+      { testMode: "yes" },
+      { deliveryTime: "tomorrow" },
+      { deliverWithin: "4m" },
+      { deliverWithin: "24h1m" },
+      { deliveryTimeOptimizePeriod: "24 hours" },
+      { timeZoneLocalize: "25:00" },
+    ];
+    for (const provider of invalid) {
+      const result = await runMutation(database, user, "send", [provider]);
+      assert.equal(result.error.code, "INVALID_MAIL_MESSAGE", String(Object.keys(provider)[0]));
+    }
+    const nestedUnknown = await runMutation(database, user, "send", [{ tracking: { protectedHeader: true } }]);
+    assert.equal(nestedUnknown.error.code, "UNSUPPORTED_MAIL_PROVIDER_FIELD");
+    assert.match(nestedUnknown.error.message, /tracking\.protectedHeader/);
+  });
+  assert.equal(sends, 0);
+});
+
+test("Mailgun provider JSON reads only complete own data descriptors and is deterministic", async () => {
+  const captured = [];
+  let getterCalls = 0;
+  const transport = {
+    async send(message) {
+      captured.push(buildSmtpMessage({ ...message, messageId: "<mailgun-descriptors@example.com>" }));
+      return { messageId: "<mailgun-descriptors@example.com>", accepted: ["to@example.com"], rejected: [] };
+    },
+    close() {},
+  };
+  await withDatabase(mailgunConfig, {
+    mutations: {
+      send: mutation((ctx, provider) => ctx.mail.send({
+        to: "to@example.com",
+        subject: "Mailgun descriptors",
+        htmlBody: "<p>Hello</p>",
+        provider,
+      })),
+    },
+  }, { mailTransportFactory: () => transport }, async (database) => {
+    const inherited = Object.create({ tags: ["inherited"] });
+    const accessor = {};
+    Object.defineProperty(accessor, "variables", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return { unsafe: true };
+      },
+    });
+    const nestedAccessor = {};
+    Object.defineProperty(nestedAccessor, "unsafe", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return true;
+      },
+    });
+    const nonEnumerable = { variables: {} };
+    Object.defineProperty(nonEnumerable.variables, "hidden", { enumerable: false, value: true });
+    const symbol = { variables: { visible: true } };
+    symbol.variables[Symbol("hidden")] = true;
+    const accessorTags = ["safe"];
+    Object.defineProperty(accessorTags, "0", {
+      enumerable: true,
+      get() {
+        getterCalls += 1;
+        return "unsafe";
+      },
+    });
+    const symbolTags = ["safe"];
+    symbolTags[Symbol("hidden")] = "unsafe";
+    const sparseTags = new Array(1);
+    for (const provider of [
+      inherited,
+      accessor,
+      { variables: nestedAccessor },
+      nonEnumerable,
+      symbol,
+      { tags: accessorTags },
+      { tags: symbolTags },
+      { tags: sparseTags },
+    ]) {
+      const result = await runMutation(database, user, "send", [provider]);
+      assert.equal(result.error.code, "INVALID_MAIL_MESSAGE");
+    }
+    assert.equal(getterCalls, 0);
+    assert.equal(captured.length, 0);
+
+    const variables = Object.assign(Object.create(null), {
+      z: 1,
+      a: Object.assign(Object.create(null), { second: 2, first: 1 }),
+    });
+    const provider = Object.assign(Object.create(null), { variables });
+    const valid = await runMutation(database, user, "send", [provider]);
+    assert.equal(valid.ok, true);
+  });
+
+  const headers = captured[0].split("\r\n\r\n")[0];
+  assert.match(headers, /X-Mailgun-Variables: \{"a":\{"first":1,"second":2\},"z":1\}/);
+});
+
 test("SMTP transport failures use stable safe mail errors", async () => {
   const cases = [
     ["ETIMEDOUT", "MAIL_TIMEOUT"],
@@ -542,6 +757,7 @@ test("generated Server Bundles carry the generic mail runtime helpers", async ()
     assert.match(source, /function createMailRuntime/);
     assert.match(source, /function createMailTransport/);
     assert.match(source, /function normalizePostmarkProvider/);
+    assert.match(source, /function normalizeMailgunProvider/);
     assert.match(source, /function validateMailConfig/);
     await writeFile(bundlePath, source);
     const checked = spawnSync(process.execPath, ["--check", bundlePath], { encoding: "utf8" });
