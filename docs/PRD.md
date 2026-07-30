@@ -448,6 +448,9 @@ callback path but never suggests localhost or plain HTTP; operators register
 the path against a Hosted HTTPS origin or an HTTPS development tunnel.
 Provider configuration updates stage all file replacements before mutation and
 recover the exact prior config and Server env state when a commit fails.
+Duplicate lexical target aliases are rejected before filesystem inspection;
+transaction callers provide canonical non-symlink targets rather than relying
+on symlink or hard-link identity discovery.
 
 Session records store `createdAt` and `expiresAt` lifecycle metadata. By
 default a session expires 30 days after creation or refresh. Missing, invalid,

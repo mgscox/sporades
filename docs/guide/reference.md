@@ -1130,7 +1130,13 @@ localhost or plain-HTTP callback for Apple.
 Provider updates stage `sporades.json` and Server env replacements beside their
 targets, then commit them with atomic renames. If either commit fails, Sporades
 attempts every required restore and reports whether recovery completed without
-printing file contents.
+printing file contents. Transaction targets are compared as absolute,
+lexically-normalized paths before any filesystem operation, so `a`, `./a`, and
+`dir/../a` cannot enter the transaction twice. The generic helper does not
+dereference symlinks, detect hard-link aliases, or infer case-folding volume
+identity; callers must provide canonical non-symlink targets, must not repeat an
+inode through hard links, and must use the filesystem's canonical case. The
+OAuth command uses its two fixed normal project-file paths.
 
 ### Configure Google OAuth
 

@@ -88,6 +88,14 @@ transaction. Every replacement is fully staged before target mutation, commits
 through atomic rename, and retains bounded recovery evidence if independent
 restores do not all succeed.
 
+The transaction rejects duplicate absolute lexical identities before inspection
+or staging, including dot and parent-segment aliases. It deliberately does not
+resolve symlinks, hard-link inode aliases, or filesystem-specific case folding:
+generic callers must provide canonical non-symlink paths, must not repeat an
+inode through hard links, and must use canonical filesystem case. The auth
+workflow uses fixed `sporades.json` and `.env.sporades.server` targets satisfying
+that boundary for normal project files.
+
 After `sporades auth set <provider>`, any running dev session must be restarted.
 The dev session loads Server env and auth configuration at startup, so a restart
 is required before redirect and code-exchange behavior reflects the new

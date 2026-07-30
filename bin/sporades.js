@@ -12990,6 +12990,7 @@ async function replaceFilesAtomically(replacements, options = {}) {
   if (replacements.length === 0) {
     return;
   }
+  validateDistinctTargets(replacements);
   const execute = options.execute ?? defaultExecutor;
   const token = `${process.pid}-${randomBytes4(8).toString("hex")}`;
   const entries = [];
@@ -13087,7 +13088,13 @@ async function recoverEntries(entries, execute) {
           }, () => rename3(entry.backupPath, entry.path));
           entry.originalMoved = false;
         } catch (failure) {
-          failures.push(recoveryFailure("restore", entry.label, asOperationFailure(failure).cause));
+          const backupRemains = await artifactExists(entry.backupPath);
+          const targetExistsAfterFailure = await artifactExists(entry.path);
+          if (!backupRemains && targetExistsAfterFailure) {
+            entry.originalMoved = false;
+          } else {
+            failures.push(recoveryFailure("restore", entry.label, asOperationFailure(failure).cause));
+          }
         }
       } else if (entry.originalMoved) {
         failures.push({ action: "restore", label: entry.label, code: "BACKUP_MISSING" });
@@ -13102,7 +13109,11 @@ async function recoverEntries(entries, execute) {
         }, () => rm3(entry.path, { force: true }));
         entry.replacementMayExist = false;
       } catch (failure) {
-        failures.push(recoveryFailure("remove", entry.label, asOperationFailure(failure).cause));
+        if (await artifactExists(entry.path)) {
+          failures.push(recoveryFailure("remove", entry.label, asOperationFailure(failure).cause));
+        } else {
+          entry.replacementMayExist = false;
+        }
       }
     }
   }
@@ -13116,7 +13127,9 @@ async function recoverEntries(entries, execute) {
         artifactPath: entry.temporaryPath
       }, () => rm3(entry.temporaryPath, { force: true }));
     } catch (failure) {
-      failures.push(recoveryFailure("remove-temp", entry.label, asOperationFailure(failure).cause));
+      if (await artifactExists(entry.temporaryPath)) {
+        failures.push(recoveryFailure("remove-temp", entry.label, asOperationFailure(failure).cause));
+      }
     }
   }
   return failures;
@@ -13137,7 +13150,9 @@ async function cleanupCommittedEntries(entries, execute) {
           artifactPath
         }, () => rm3(artifactPath, { force: true }));
       } catch (failure) {
-        failures.push(recoveryFailure(action, entry.label, asOperationFailure(failure).cause));
+        if (await artifactExists(artifactPath)) {
+          failures.push(recoveryFailure(action, entry.label, asOperationFailure(failure).cause));
+        }
       }
     }
   }
@@ -13177,6 +13192,24 @@ function asOperationFailure(value) {
 }
 function recoveryFailure(action, label, cause) {
   return { action, label, code: errorCode2(cause) };
+}
+function validateDistinctTargets(replacements) {
+  const identities = /* @__PURE__ */ new Set();
+  for (const replacement of replacements) {
+    const identity = path5.resolve(replacement.path);
+    if (identities.has(identity)) {
+      throw transactionError({
+        operation: {
+          phase: "validate",
+          action: "reject-duplicate",
+          label: "transaction",
+          targetPath: ""
+        },
+        cause: Object.assign(new Error("Duplicate transaction target."), { code: "DUPLICATE_TARGET" })
+      }, []);
+    }
+    identities.add(identity);
+  }
 }
 function transactionError(originalFailure, recoveryFailures, recoveryOverride) {
   const recovery = recoveryOverride ?? (recoveryFailures.length === 0 ? "complete" : "incomplete");

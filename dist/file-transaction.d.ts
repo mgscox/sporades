@@ -1,5 +1,5 @@
 export type FileTransactionOperation = {
-    phase: "inspect" | "stage" | "commit" | "rollback" | "cleanup";
+    phase: "validate" | "inspect" | "stage" | "commit" | "rollback" | "cleanup";
     action: string;
     label: string;
     targetPath: string;

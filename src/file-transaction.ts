@@ -3,7 +3,7 @@ import { lstat, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export type FileTransactionOperation = {
-  phase: "inspect" | "stage" | "commit" | "rollback" | "cleanup";
+  phase: "validate" | "inspect" | "stage" | "commit" | "rollback" | "cleanup";
   action: string;
   label: string;
   targetPath: string;
@@ -21,6 +21,8 @@ export type FileReplacement = {
   contents: string | Uint8Array;
 };
 
+// Target identity is lexical and absolute. Callers must supply canonical,
+// non-symlink paths and must not repeat an inode through hard links.
 type TransactionEntry = FileReplacement & {
   temporaryPath: string;
   backupPath: string;
@@ -49,6 +51,7 @@ export async function replaceFilesAtomically(
   if (replacements.length === 0) {
     return;
   }
+  validateDistinctTargets(replacements);
   const execute = options.execute ?? defaultExecutor;
   const token = `${process.pid}-${randomBytes(8).toString("hex")}`;
   const entries: TransactionEntry[] = [];
@@ -151,7 +154,13 @@ async function recoverEntries(entries: TransactionEntry[], execute: FileTransact
           }, () => rename(entry.backupPath, entry.path));
           entry.originalMoved = false;
         } catch (failure) {
-          failures.push(recoveryFailure("restore", entry.label, asOperationFailure(failure).cause));
+          const backupRemains = await artifactExists(entry.backupPath);
+          const targetExistsAfterFailure = await artifactExists(entry.path);
+          if (!backupRemains && targetExistsAfterFailure) {
+            entry.originalMoved = false;
+          } else {
+            failures.push(recoveryFailure("restore", entry.label, asOperationFailure(failure).cause));
+          }
         }
       } else if (entry.originalMoved) {
         failures.push({ action: "restore", label: entry.label, code: "BACKUP_MISSING" });
@@ -166,7 +175,11 @@ async function recoverEntries(entries: TransactionEntry[], execute: FileTransact
         }, () => rm(entry.path, { force: true }));
         entry.replacementMayExist = false;
       } catch (failure) {
-        failures.push(recoveryFailure("remove", entry.label, asOperationFailure(failure).cause));
+        if (await artifactExists(entry.path)) {
+          failures.push(recoveryFailure("remove", entry.label, asOperationFailure(failure).cause));
+        } else {
+          entry.replacementMayExist = false;
+        }
       }
     }
   }
@@ -181,7 +194,9 @@ async function recoverEntries(entries: TransactionEntry[], execute: FileTransact
         artifactPath: entry.temporaryPath,
       }, () => rm(entry.temporaryPath, { force: true }));
     } catch (failure) {
-      failures.push(recoveryFailure("remove-temp", entry.label, asOperationFailure(failure).cause));
+      if (await artifactExists(entry.temporaryPath)) {
+        failures.push(recoveryFailure("remove-temp", entry.label, asOperationFailure(failure).cause));
+      }
     }
   }
   return failures;
@@ -203,7 +218,9 @@ async function cleanupCommittedEntries(entries: TransactionEntry[], execute: Fil
           artifactPath,
         }, () => rm(artifactPath, { force: true }));
       } catch (failure) {
-        failures.push(recoveryFailure(action, entry.label, asOperationFailure(failure).cause));
+        if (await artifactExists(artifactPath)) {
+          failures.push(recoveryFailure(action, entry.label, asOperationFailure(failure).cause));
+        }
       }
     }
   }
@@ -256,6 +273,25 @@ function asOperationFailure(value: unknown): OperationFailure {
 
 function recoveryFailure(action: string, label: string, cause: unknown): RecoveryFailure {
   return { action, label, code: errorCode(cause) };
+}
+
+function validateDistinctTargets(replacements: FileReplacement[]) {
+  const identities = new Set<string>();
+  for (const replacement of replacements) {
+    const identity = path.resolve(replacement.path);
+    if (identities.has(identity)) {
+      throw transactionError({
+        operation: {
+          phase: "validate",
+          action: "reject-duplicate",
+          label: "transaction",
+          targetPath: "",
+        },
+        cause: Object.assign(new Error("Duplicate transaction target."), { code: "DUPLICATE_TARGET" }),
+      }, []);
+    }
+    identities.add(identity);
+  }
 }
 
 function transactionError(
