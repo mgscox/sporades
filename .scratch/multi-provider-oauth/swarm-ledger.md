@@ -11,7 +11,7 @@ was discarded as non-authoritative environment noise.
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 01 | review | None | `716075b` | `codex/multi-provider-oauth-01` / `/private/tmp/sporades-multi-provider-oauth-swarm/issue-01` | `/root/oauth_01` | `4dff228` | `/root/oauth_01_review` | pending; prior `313d6bf` REQUEST_CHANGES void for replacement SHA | — | rework focused 4 pass; adapter 69 pass, 0 fail, 1 Postgres opt-in skip; Container/Dev callback 3 pass; type/generated/docs green | worker complete; replacement review active |
+| 01 | accepted | None | `716075b` | `codex/multi-provider-oauth-01` / `/private/tmp/sporades-multi-provider-oauth-swarm/issue-01` | `/root/oauth_01` | `4dff228` | `/root/oauth_01_review` | ACCEPT for `716075b...4dff228`; prior `313d6bf` REQUEST_CHANGES void for replacement SHA | — | review: focused security/migration 5 pass; adapter 70 pass, 0 fail, 1 Postgres opt-in skip; Container/Dev callback 3 pass; type/generated/docs green | worker and review complete; awaiting integration |
 | 02 | blocked | 01 | — | — | — | — | — | — | — | — | — |
 | 03 | blocked | 02 | — | — | — | — | — | — | — | — | — |
 | 04 | blocked | 02, 03 | — | — | — | — | — | — | — | — | — |
