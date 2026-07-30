@@ -90,6 +90,8 @@ const app = capsule({
         occurrence.scheduleName.toUpperCase();
         occurrence.scheduledFor.toUpperCase();
         ctx.signal.throwIfAborted();
+        // @ts-expect-error Schedule payload factories do not have direct mail authority.
+        await ctx.mail.send({ to: "recipient@example.com", subject: "denied", textBody: "denied" });
         return ctx.privileged.run({ operation: "schedules.payload.read", targetResourceKind: "capsule-db" }, () => ({ text: occurrence.scheduledFor }));
       },
     }),
@@ -118,6 +120,8 @@ const app = capsule({
         const userExists = ctx.acl.db.exists("users", row?.authorId ?? "missing");
         // @ts-expect-error ACL policy contexts cannot start privileged server-role work.
         ctx.privileged.run({ operation: "acl.bad", targetResourceKind: "capsule-db" }, () => true);
+        // @ts-expect-error ACL policy contexts cannot send mail.
+        ctx.mail.send({ to: "recipient@example.com", subject: "denied", textBody: "denied" });
         if (file) {
           file.bucket.toUpperCase();
           // @ts-expect-error ACL file metadata exposes logical bucket names, not internal bucket row IDs.
@@ -165,6 +169,11 @@ const app = capsule({
       }, async (privilegedCtx) => {
         privilegedCtx.auth.userId satisfies "__privileged__";
         const allJobs = await privilegedCtx.jobs.list();
+        await privilegedCtx.mail.send({
+          to: "recipient@example.com",
+          subject: "Privileged report",
+          textBody: "Ready",
+        });
         allJobs.nextCursor?.toUpperCase();
         const schedules = await privilegedCtx.schedules.list();
         schedules[0]?.name.toUpperCase();
@@ -194,6 +203,13 @@ const app = capsule({
       // @ts-expect-error requireAuth options accept a boolean linked flag only.
       requireAuth(ctx, { linked: "yes" });
       ctx.log.info("adding", text.trim());
+      await ctx.mail.send({
+        to: [{ email: "recipient@example.com", name: "Recipient" }],
+        cc: "copy@example.com",
+        subject: "Todo added",
+        textBody: text,
+        provider: { trace: "types" },
+      });
       return ctx.db.todos.insert({
         text: text.trim(),
         ownerId: ctx.auth.userId,
@@ -206,6 +222,7 @@ const app = capsule({
   endpoints: {
     ping: endpoint({ method: "GET", path: "/ping" }, async (ctx) => {
       await Promise.resolve();
+      await ctx.mail.send({ to: "recipient@example.com", subject: "Ping", htmlBody: "<p>Ping</p>" });
       return {
         path: ctx.request.path,
         userId: requireAuth(ctx).userId,

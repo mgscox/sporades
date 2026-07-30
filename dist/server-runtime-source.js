@@ -1,10 +1,25 @@
 import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { validateMailConfig } from "./mail-config.js";
 const PRIVILEGED_AUTH_USER_ID = "__privileged__";
 const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
 const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
 export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
+    validateMailConfig,
+    createMailRuntime,
+    createMailTransport,
+    connectSmtpSocket,
+    createSmtpResponseReader,
+    smtpCommand,
+    smtpRecipientCommand,
+    buildSmtpMessage,
+    normalizeMailMessage,
+    normalizeMailAddresses,
+    normalizeMailAddress,
+    mailError,
+    normalizeMailTransportError,
+    mailJsonSize,
     normalizeJourneyPolicy,
     normalizeJourneyState,
     validateJourneyJson,
@@ -646,8 +661,448 @@ function sanitizeResponseHeaders(headers) {
         return normalized !== "x-powered-by" && normalized !== "server";
     }));
 }
+function mailError(code, message, hint, cause = undefined) {
+    const error = new Error(message);
+    error.code = code;
+    error.hint = hint;
+    if (cause !== undefined)
+        Object.defineProperty(error, "cause", { value: cause, enumerable: false });
+    return error;
+}
+function createMailRuntime(mailConfig, serverEnv, options = {}) {
+    const smtp = mailConfig?.smtp;
+    if (!smtp) {
+        return {
+            async send() {
+                throw mailError("MAIL_DISABLED", "Mail delivery is disabled.", "Configure `mail.smtp` in sporades.json and restart the Capsule runtime.");
+            },
+            close() { },
+        };
+    }
+    const username = serverEnv[smtp.auth.usernameEnv];
+    const password = serverEnv[smtp.auth.passwordEnv];
+    if (typeof username !== "string" || typeof password !== "string") {
+        throw mailError("MAIL_CREDENTIAL_MISSING", "SMTP credentials are unavailable.", "Set the configured SMTP username and password keys in Server env, then restart the Capsule runtime.");
+    }
+    const resolvedSmtp = {
+        vendor: smtp.vendor,
+        host: smtp.host,
+        port: smtp.port,
+        tls: {
+            mode: smtp.tls.mode,
+            rejectUnauthorized: smtp.tls.rejectUnauthorized !== false,
+        },
+        auth: { method: smtp.auth.method, username, password },
+        defaultFrom: smtp.defaultFrom,
+        connectionTimeoutMs: smtp.connectionTimeoutMs ?? 10_000,
+        socketTimeoutMs: smtp.socketTimeoutMs ?? 30_000,
+    };
+    const factory = options.mailTransportFactory ?? createMailTransport;
+    const transport = factory(resolvedSmtp);
+    if (!transport || typeof transport.send !== "function") {
+        throw mailError("MAIL_CONNECTION_FAILED", "SMTP transport could not be created.", "Check the SMTP configuration and restart the Capsule runtime.");
+    }
+    return {
+        async send(input) {
+            const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom);
+            try {
+                const result = await transport.send(message);
+                return {
+                    messageId: String(result?.messageId ?? ""),
+                    accepted: Array.isArray(result?.accepted) ? result.accepted.map(String) : [],
+                    rejected: Array.isArray(result?.rejected) ? result.rejected.map(String) : [],
+                };
+            }
+            catch (error) {
+                throw normalizeMailTransportError(error);
+            }
+        },
+        close() {
+            return transport.close?.();
+        },
+    };
+}
+function normalizeMailMessage(input, defaultFrom) {
+    const invalid = (hint) => {
+        throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", hint);
+    };
+    if (!input || typeof input !== "object" || Array.isArray(input))
+        invalid("Pass one mail message object.");
+    const allowed = new Set(["to", "cc", "bcc", "from", "replyTo", "subject", "textBody", "htmlBody", "provider"]);
+    const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+    if (unknown.length > 0)
+        invalid(`Remove unsupported mail fields: ${unknown.sort().join(", ")}.`);
+    const from = normalizeMailAddresses(input.from ?? defaultFrom, "from", false);
+    if (from.length !== 1)
+        invalid("Pass exactly one sender in `from`, or configure `mail.smtp.defaultFrom`.");
+    const to = normalizeMailAddresses(input.to, "to", true);
+    const cc = normalizeMailAddresses(input.cc, "cc", false);
+    const bcc = normalizeMailAddresses(input.bcc, "bcc", false);
+    if (to.length + cc.length + bcc.length === 0)
+        invalid("Pass at least one recipient in `to`, `cc`, or `bcc`.");
+    if (to.length + cc.length + bcc.length > 100)
+        invalid("Use at most 100 recipients in one mail message.");
+    const replyTo = normalizeMailAddresses(input.replyTo, "replyTo", false);
+    if (replyTo.length > 1)
+        invalid("Pass at most one `replyTo` address.");
+    if (typeof input.subject !== "string" || input.subject.length < 1 || input.subject.length > 998 || /[\r\n\0]/.test(input.subject)) {
+        invalid("Pass a non-empty subject of at most 998 characters without control characters.");
+    }
+    if (input.textBody === undefined && input.htmlBody === undefined)
+        invalid("Pass at least one of `textBody` or `htmlBody`.");
+    for (const field of ["textBody", "htmlBody"]) {
+        const value = input[field];
+        if (value !== undefined && (typeof value !== "string" || value.length > 1024 * 1024 || /\0/.test(value))) {
+            invalid(`Pass \`${field}\` as a string of at most 1 MiB without null characters.`);
+        }
+    }
+    let provider = input.provider;
+    if (provider !== undefined) {
+        if (!provider || typeof provider !== "object" || Array.isArray(provider))
+            invalid("Pass `provider` as a JSON object.");
+        if ("headers" in provider)
+            invalid("Provider header overrides are not supported by the configured SMTP vendor.");
+        try {
+            if (mailJsonSize(provider) > 32 * 1024)
+                invalid("Keep `provider` fields within 32 KiB.");
+        }
+        catch {
+            invalid("Pass only JSON-compatible values in `provider`.");
+        }
+    }
+    return {
+        from: from[0],
+        to,
+        cc,
+        bcc,
+        ...(replyTo[0] ? { replyTo: replyTo[0] } : {}),
+        subject: input.subject,
+        ...(input.textBody !== undefined ? { textBody: input.textBody } : {}),
+        ...(input.htmlBody !== undefined ? { htmlBody: input.htmlBody } : {}),
+        ...(provider !== undefined ? { provider } : {}),
+    };
+}
+function mailJsonSize(value) {
+    const seen = new Set();
+    const json = JSON.stringify(value, (_key, candidate) => {
+        if (typeof candidate === "bigint" || typeof candidate === "function" || typeof candidate === "symbol" || candidate === undefined) {
+            throw new Error("not JSON");
+        }
+        if (candidate && typeof candidate === "object") {
+            if (seen.has(candidate))
+                throw new Error("cyclic");
+            seen.add(candidate);
+        }
+        return candidate;
+    });
+    if (typeof json !== "string")
+        throw new Error("not JSON");
+    return Buffer.byteLength(json);
+}
+function normalizeMailAddresses(value, field, required) {
+    if (value === undefined || value === null) {
+        if (required)
+            return [];
+        return [];
+    }
+    const values = Array.isArray(value) ? value : [value];
+    if (values.length === 0 && required)
+        return [];
+    return values.map((entry) => normalizeMailAddress(entry, field));
+}
+function normalizeMailAddress(value, field) {
+    let email;
+    let name;
+    if (typeof value === "string") {
+        if (/[\r\n\0]/.test(value) || value.length > 320) {
+            throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", `Pass valid ${field} addresses without control characters.`);
+        }
+        const match = value.match(/^\s*(?:(.*?)\s*)?<([^<>]+)>\s*$/);
+        email = match ? match[2] : value.trim();
+        name = match?.[1]?.trim().replace(/^"(.*)"$/, "$1") || undefined;
+    }
+    else if (value && typeof value === "object" && !Array.isArray(value) && Object.keys(value).every((key) => key === "email" || key === "name")) {
+        email = value.email;
+        name = value.name;
+    }
+    if (typeof email !== "string" || email.length < 3 || email.length > 254 || !/^[^\s@<>]+@[^\s@<>]+$/.test(email) || /[\r\n\0]/.test(email)) {
+        throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", `Pass valid ${field} email addresses.`);
+    }
+    if (name !== undefined && (typeof name !== "string" || name.length > 200 || /[\r\n\0]/.test(name))) {
+        throw mailError("INVALID_MAIL_MESSAGE", "Invalid mail message.", `Pass valid ${field} display names without control characters.`);
+    }
+    return { email, ...(name ? { name } : {}) };
+}
+function normalizeMailTransportError(error) {
+    if (typeof error?.code === "string" && error.code.startsWith("MAIL_"))
+        return error;
+    const code = String(error?.code ?? "");
+    if (code === "ETIMEDOUT" || code === "ESOCKETTIMEDOUT") {
+        return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.", error);
+    }
+    if (code === "EAUTH")
+        return mailError("MAIL_AUTH_FAILED", "SMTP authentication failed.", "Check the SMTP Server env credentials and authentication method.", error);
+    if (code === "ETLS")
+        return mailError("MAIL_TLS_FAILED", "SMTP TLS negotiation failed.", "Check the SMTP TLS mode, port, and certificate policy.", error);
+    if (code === "EREJECTED")
+        return mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipients, and provider delivery policy.", error);
+    return mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.", error);
+}
+function createMailTransport(smtp) {
+    const sockets = new Set();
+    let closed = false;
+    return {
+        async send(message) {
+            if (closed) {
+                const error = new Error("closed");
+                error.code = "ECONNECTION";
+                throw error;
+            }
+            const socket = await connectSmtpSocket(smtp);
+            sockets.add(socket);
+            const reader = createSmtpResponseReader(socket, smtp.socketTimeoutMs);
+            try {
+                await reader.expect([220]);
+                const ehlo = await smtpCommand(socket, reader, `EHLO sporades.local`, [250]);
+                if (smtp.tls.mode === "required-starttls" || smtp.tls.mode === "opportunistic") {
+                    if (/\bSTARTTLS\b/i.test(ehlo.text)) {
+                        await smtpCommand(socket, reader, "STARTTLS", [220]);
+                        const tls = await import("node:tls");
+                        const upgraded = tls.connect({
+                            socket,
+                            servername: smtp.host,
+                            rejectUnauthorized: smtp.tls.rejectUnauthorized,
+                        });
+                        sockets.delete(socket);
+                        sockets.add(upgraded);
+                        reader.replaceSocket(upgraded);
+                        await new Promise((resolve, reject) => {
+                            upgraded.once("secureConnect", resolve);
+                            upgraded.once("error", reject);
+                        }).catch((cause) => {
+                            const error = new Error("TLS negotiation failed");
+                            error.code = "ETLS";
+                            error.cause = cause;
+                            throw error;
+                        });
+                        await smtpCommand(upgraded, reader, "EHLO sporades.local", [250]);
+                    }
+                    else if (smtp.tls.mode === "required-starttls") {
+                        const error = new Error("STARTTLS unavailable");
+                        error.code = "ETLS";
+                        throw error;
+                    }
+                }
+                const activeSocket = reader.socket();
+                if (smtp.auth.method === "PLAIN") {
+                    const credential = Buffer.from(`\0${smtp.auth.username}\0${smtp.auth.password}`).toString("base64");
+                    await smtpCommand(activeSocket, reader, `AUTH PLAIN ${credential}`, [235], "EAUTH");
+                }
+                else {
+                    await smtpCommand(activeSocket, reader, "AUTH LOGIN", [334], "EAUTH");
+                    await smtpCommand(activeSocket, reader, Buffer.from(smtp.auth.username).toString("base64"), [334], "EAUTH");
+                    await smtpCommand(activeSocket, reader, Buffer.from(smtp.auth.password).toString("base64"), [235], "EAUTH");
+                }
+                await smtpCommand(activeSocket, reader, `MAIL FROM:<${message.from.email}>`, [250]);
+                const accepted = [];
+                const rejected = [];
+                for (const recipient of [...message.to, ...message.cc, ...message.bcc]) {
+                    if (await smtpRecipientCommand(activeSocket, reader, recipient.email))
+                        accepted.push(recipient.email);
+                    else
+                        rejected.push(recipient.email);
+                }
+                if (accepted.length === 0) {
+                    const error = new Error("all recipients rejected");
+                    error.code = "EREJECTED";
+                    throw error;
+                }
+                await smtpCommand(activeSocket, reader, "DATA", [354]);
+                const messageId = `<${randomUUID()}@sporades.local>`;
+                const raw = buildSmtpMessage({ ...message, messageId }).replace(/(^|\r\n)\./g, "$1..");
+                activeSocket.write(`${raw}\r\n.\r\n`);
+                const delivered = await reader.expect([250], "EREJECTED");
+                activeSocket.write("QUIT\r\n");
+                return {
+                    messageId: delivered.messageId ?? messageId,
+                    accepted,
+                    rejected,
+                };
+            }
+            finally {
+                reader.close();
+                for (const candidate of [...sockets]) {
+                    if (candidate === socket || candidate === reader.socket()) {
+                        sockets.delete(candidate);
+                        candidate.destroy();
+                    }
+                }
+            }
+        },
+        close() {
+            closed = true;
+            for (const socket of sockets)
+                socket.destroy();
+            sockets.clear();
+        },
+    };
+}
+async function connectSmtpSocket(smtp) {
+    let socket;
+    if (smtp.tls.mode === "implicit") {
+        const tls = await import("node:tls");
+        socket = tls.connect({ host: smtp.host, port: smtp.port, servername: smtp.host, rejectUnauthorized: smtp.tls.rejectUnauthorized });
+    }
+    else {
+        const net = await import("node:net");
+        socket = net.connect({ host: smtp.host, port: smtp.port });
+    }
+    socket.setTimeout(smtp.socketTimeoutMs, () => {
+        const error = new Error("socket timeout");
+        error.code = "ESOCKETTIMEDOUT";
+        socket.destroy(error);
+    });
+    const event = smtp.tls.mode === "implicit" ? "secureConnect" : "connect";
+    await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+            const error = new Error("connection timeout");
+            error.code = "ETIMEDOUT";
+            socket.destroy(error);
+        }, smtp.connectionTimeoutMs);
+        socket.once(event, () => {
+            clearTimeout(timer);
+            resolve(undefined);
+        });
+        socket.once("error", (error) => {
+            clearTimeout(timer);
+            reject(error);
+        });
+    });
+    return socket;
+}
+function createSmtpResponseReader(initialSocket, timeoutMs) {
+    let activeSocket = initialSocket;
+    let buffer = "";
+    let pending = null;
+    const onData = (chunk) => {
+        buffer += chunk.toString("utf8");
+        pending?.();
+    };
+    activeSocket.on("data", onData);
+    const replaceSocket = (next) => {
+        activeSocket.off("data", onData);
+        activeSocket = next;
+        activeSocket.on("data", onData);
+    };
+    return {
+        socket: () => activeSocket,
+        replaceSocket,
+        async expect(expected, failureCode = "ECONNECTION") {
+            const deadline = Date.now() + timeoutMs;
+            while (true) {
+                const lines = buffer.split("\r\n");
+                let consumed = 0;
+                let complete = null;
+                for (const line of lines.slice(0, -1)) {
+                    consumed += line.length + 2;
+                    if (/^\d{3} /.test(line)) {
+                        const code = Number(line.slice(0, 3));
+                        const responseLines = buffer.slice(0, consumed).trimEnd();
+                        complete = { code, text: responseLines, messageId: responseLines.match(/<[^<>\r\n]+>/)?.[0] };
+                        break;
+                    }
+                }
+                if (complete) {
+                    buffer = buffer.slice(consumed);
+                    if (!expected.includes(complete.code)) {
+                        const error = new Error("unexpected SMTP response");
+                        error.code = failureCode;
+                        error.smtpCode = complete.code;
+                        throw error;
+                    }
+                    return complete;
+                }
+                const remaining = deadline - Date.now();
+                if (remaining <= 0) {
+                    const error = new Error("SMTP response timeout");
+                    error.code = "ESOCKETTIMEDOUT";
+                    throw error;
+                }
+                await new Promise((resolve, reject) => {
+                    const timer = setTimeout(() => {
+                        cleanup();
+                        const error = new Error("SMTP response timeout");
+                        error.code = "ESOCKETTIMEDOUT";
+                        reject(error);
+                    }, remaining);
+                    const onError = (error) => { cleanup(); reject(error); };
+                    const onClose = () => {
+                        cleanup();
+                        const error = new Error("SMTP connection closed");
+                        error.code = "ECONNECTION";
+                        reject(error);
+                    };
+                    const cleanup = () => {
+                        clearTimeout(timer);
+                        activeSocket.off("error", onError);
+                        activeSocket.off("close", onClose);
+                        pending = null;
+                    };
+                    pending = () => { cleanup(); resolve(); };
+                    activeSocket.once("error", onError);
+                    activeSocket.once("close", onClose);
+                });
+            }
+        },
+        close() {
+            activeSocket.off("data", onData);
+            pending = null;
+        },
+    };
+}
+async function smtpCommand(socket, reader, command, expected, failureCode = "ECONNECTION") {
+    socket.write(`${command}\r\n`);
+    return reader.expect(expected, failureCode);
+}
+async function smtpRecipientCommand(socket, reader, email) {
+    socket.write(`RCPT TO:<${email}>\r\n`);
+    try {
+        await reader.expect([250, 251], "EREJECTED");
+        return true;
+    }
+    catch (error) {
+        if (error?.code === "EREJECTED" && error?.smtpCode >= 400 && error?.smtpCode <= 599)
+            return false;
+        throw error;
+    }
+}
+function buildSmtpMessage(message) {
+    const formatAddress = (address) => address.name
+        ? `"${address.name.replace(/(["\\])/g, "\\$1")}" <${address.email}>`
+        : address.email;
+    const headers = [
+        `From: ${formatAddress(message.from)}`,
+        `To: ${message.to.map(formatAddress).join(", ")}`,
+        ...(message.cc.length ? [`Cc: ${message.cc.map(formatAddress).join(", ")}`] : []),
+        ...(message.replyTo ? [`Reply-To: ${formatAddress(message.replyTo)}`] : []),
+        `Subject: ${message.subject}`,
+        `Date: ${new Date().toUTCString()}`,
+        `Message-ID: ${message.messageId ?? `<${randomUUID()}@sporades.local>`}`,
+        "MIME-Version: 1.0",
+    ];
+    if (message.textBody !== undefined && message.htmlBody !== undefined) {
+        const boundary = `sporades-${randomUUID()}`;
+        headers.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+        return `${headers.join("\r\n")}\r\n\r\n--${boundary}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${Buffer.from(message.textBody).toString("base64")}\r\n--${boundary}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n${Buffer.from(message.htmlBody).toString("base64")}\r\n--${boundary}--`;
+    }
+    const html = message.htmlBody !== undefined;
+    headers.push(`Content-Type: ${html ? "text/html" : "text/plain"}; charset=utf-8`, "Content-Transfer-Encoding: base64");
+    return `${headers.join("\r\n")}\r\n\r\n${Buffer.from(html ? message.htmlBody : message.textBody).toString("base64")}`;
+}
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
     const path = await import("node:path");
+    validateMailConfig(config.mail);
+    const mail = createMailRuntime(config.mail, serverEnv, options);
     const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
     const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
     // Handler sources extracted from Capsule server code are re-created with
@@ -704,6 +1159,7 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
         jobScheduleProvenanceByContext: new WeakMap(),
         rowCache,
         serverEnv,
+        mail,
         authConfig: authStatus(config, serverEnv),
         securityPolicy: resolveRuntimeSecurityPolicy(config),
         fileStorage,
@@ -719,9 +1175,11 @@ export async function openDevDatabase(databasePath, serverSource, serverEnv = {}
                 database.clock.clearTimer(database.__jobWakeTimer);
                 database.__jobWakeTimer = null;
             }
+            const mailResult = database.mail.close();
             const sqliteResult = database.sqlite.close();
             const storageResult = database.fileStorage.close();
-            return storageResult ?? sqliteResult;
+            const pending = [mailResult, storageResult, sqliteResult].filter((result) => result && typeof result.then === "function");
+            return pending.length > 0 ? Promise.all(pending) : undefined;
         },
     };
     database.init = async () => {
@@ -3485,6 +3943,7 @@ function createPrivilegedHandlerContext(database, context, signal) {
     privilegedContext.privileged = createContextPrivilegedApi(database, () => holder.current);
     privilegedContext.jobs = createPrivilegedJobApi(database, () => holder.current);
     privilegedContext.schedules = createPrivilegedScheduleApi(database, () => holder.current);
+    privilegedContext.mail = database.mail;
     return privilegedContext;
 }
 function createPrivilegedScheduleApi(database, contextGetter) {
@@ -5500,6 +5959,7 @@ function createEndpointContext(database, endpointRequest, session) {
     context.db = createEndpointDatabaseApi(database, () => holder.current);
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
+    context.mail = database.mail;
     return context;
 }
 function createContextHolder(context) {
@@ -5512,7 +5972,7 @@ function createContextHolder(context) {
     return holder;
 }
 function createTableAclContext(context, database) {
-    const { db, privileged, jobs, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
+    const { db, privileged, jobs, mail, request, __pendingAclWrites, __sporadesContextHolder, ...aclContext } = context ?? {};
     return {
         ...aclContext,
         acl: createAclHelpers(database),
@@ -8618,6 +9078,7 @@ function createMutationContext(database, auth) {
     context.db = createEndpointDatabaseApi(database, () => holder.current);
     context.privileged = createContextPrivilegedApi(database, () => holder.current);
     context.jobs = createCurrentUserJobApi(database, () => holder.current);
+    context.mail = database.mail;
     return context;
 }
 function createCurrentUserJobApi(database, contextGetter) {

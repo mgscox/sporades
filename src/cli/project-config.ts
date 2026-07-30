@@ -5,7 +5,10 @@ import path from "node:path";
 import { normaliseBaseImageUpdatePolicy } from "../base-image.js";
 import { validateCapsuleServicesConfig } from "../capsule-services.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, defaultClientToolchain, isClientFramework, isClientToolchain, supportsClientCapability } from "../client-capabilities.js";
+import { validateMailConfig } from "../mail-config.js";
 import { commandError, errorDetails, type LooseRecord } from "./cli-support.js";
+
+export { validateMailConfig } from "../mail-config.js";
 
 export const SECURITY_SESSIONS = new Set(["dev", "public-dev", "container", "hosted"]);
 
@@ -32,6 +35,7 @@ const SUPPORTED_PROJECT_KEYS = new Set([
   "id",
   "logging",
   "logs",
+  "mail",
   "name",
   "release",
   "security",
@@ -57,6 +61,7 @@ export async function readProjectConfig(projectDir: string) {
   validateSecurityConfig(config.security);
   validateClientConfig(config.client);
   validateSchedulingConfig(config.scheduling);
+  validateMailConfig(config.mail);
   validateCapsuleServicesConfig(config.services);
   return config;
 }

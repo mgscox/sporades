@@ -251,6 +251,7 @@ Every handler receives a runtime-owned context:
 | `ctx.env` | Server-only values from Server env. |
 | `ctx.log` | Runtime logger captured by Sporades inspection surfaces. |
 | `ctx.messages` | App-message fan-out API. |
+| `ctx.mail` | Server-only provider-independent SMTP delivery. |
 | `ctx.request` | Custom endpoint request details, only for endpoint handlers. |
 
 Query, mutation, Custom endpoint, App message, context middleware, and mutation
