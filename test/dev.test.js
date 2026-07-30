@@ -429,7 +429,10 @@ function sessionState() {
   return {
     loading: false,
     auth: null,
-    providers: { anonymous: { enabled: true }, google: { enabled: true } },
+    providers: {
+      anonymous: { enabled: true, configured: true, runtimeAvailable: true },
+      google: { enabled: true, configured: true, runtimeAvailable: true },
+    },
     isAuthenticated() { return Boolean(this.auth && !this.auth.isGuest && this.auth.provider !== "anonymous"); },
   };
 }
@@ -615,7 +618,7 @@ test("real Inferno Guestbook renders, mutates, handles auth errors, and cleans l
   await withTempDir(async (dir) => {
     const projectDir = await createInfernoTemplate(dir, "inferno-guestbook-behavior", "guestbook", { toolchain: "vite" });
     const calls = [], entries = litSource({ data: [{ id: "e1", authorName: "Athos", body: "All for one", createdAt: "2026-07-12T12:00:00Z" }], error: null, loading: false });
-    const session = litSource({ auth: null, providers: { google: { enabled: true } }, error: null, loading: false });
+    const session = litSource({ auth: null, providers: { google: { enabled: true, configured: true, runtimeAvailable: true } }, error: null, loading: false });
     const harness = await mountInfernoTemplate(projectDir, { auth: { ...authStub(), async signIn() { return { data: null, error: { message: "Auth refused" } }; } }, session, queries: { entries }, mutations: { sign: { async run(value) { calls.push(value); return { data: null, error: null }; } } } });
     try {
       assert.match(harness.text(), /Leave a note from this island.*All for one/s);
@@ -3433,7 +3436,7 @@ test("sporades dev bundles and serves a scaffolded React photo library capsule",
       assert.match(serverBundle, /personalPhotos/);
       assert.match(clientBundle, /Photo Library/);
       assert.match(clientBundle, /upload\(/);
-      assert.match(clientBundle, /Sign in with Google/);
+      assert.match(clientBundle, /runtimeAvailable/);
       assert.doesNotMatch(clientBundle, /better-auth|googleapis|gapi|accounts\.google/);
 
       const rootResponse = await fetch(started.data.url);
@@ -3468,7 +3471,7 @@ test("sporades dev bundles and serves a scaffolded Preact photo library capsule"
       const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
       assert.match(clientBundle, /Photo Library/);
       assert.match(clientBundle, /My library/);
-      assert.match(clientBundle, /Sign in with Google/);
+      assert.match(clientBundle, /runtimeAvailable/);
       assert.doesNotMatch(clientBundle, /react-dom|better-auth|googleapis|gapi|accounts\.google/);
 
       const rootResponse = await fetch(started.data.url);
@@ -5400,10 +5403,10 @@ test("sporades dev reloads sporades.json on rebuild failure and keeps the last R
         child,
         (event) => !event.ok && event.data.event === "rebuild" && event.data.status === "failed",
       );
-      assert.equal(failed.error.message, "Google OAuth is not fully configured.");
+      assert.equal(failed.error.message, "Google auth is not fully configured.");
       assert.equal(
         failed.error.hint,
-        "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`.",
+        "Run `sporades auth set google --client-id <id> --client-secret <secret>` or use `--client-json <path>`.",
       );
 
       socket.send(JSON.stringify({ id: "auth-after", type: "auth.get" }));
@@ -7539,8 +7542,42 @@ test("sporades dev rejects Google auth mode when required env values are missing
       ok: false,
       data: null,
       error: {
-        message: "Google OAuth is not fully configured.",
-        hint: "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`.",
+        message: "Google auth is not fully configured.",
+        hint: "Run `sporades auth set google --client-id <id> --client-secret <secret>` or use `--client-json <path>`. Register callback URL http://localhost:4000/__sporades/auth/google/callback.",
+      },
+    });
+  });
+});
+
+test("sporades dev gives provider-specific OAuth guidance with the exact safe callback URL", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "oauth-guidance-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "oauth-guidance-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 4105;
+    config.auth = {
+      providers: {
+        anonymous: true,
+        microsoft: {
+          clientIdEnv: "MICROSOFT_CLIENT_ID",
+          clientSecretEnv: "MICROSOFT_CLIENT_SECRET",
+          tenant: "organizations",
+        },
+      },
+    };
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "MICROSOFT_CLIENT_ID=partial-id\n");
+
+    const result = await runCli(["dev", "--json"], { cwd: projectDir });
+    assert.equal(result.code, 1);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Microsoft auth is not fully configured.",
+        hint: "Run `sporades auth set microsoft --client-id <id> --client-secret <secret>` or use `--client-json <path>`. Register callback URL http://localhost:4105/__sporades/auth/microsoft/callback.",
       },
     });
   });
@@ -7572,7 +7609,7 @@ test("sporades dev rejects unsupported auth providers with structured JSON", asy
       data: null,
       error: {
         message: "Unsupported auth provider: mastodon",
-        hint: "Use supported auth providers: anonymous, google, email.",
+        hint: "Use supported auth providers: anonymous, email, google, microsoft, apple, facebook.",
       },
     });
   });
@@ -7613,18 +7650,11 @@ test("WebSocket auth.get reports enabled providers from multi-provider config", 
       const auth = await readSocketMessage(socket);
 
       assert.equal(auth.id, "auth-1");
-      assert.deepEqual(auth.data.providers, {
-        anonymous: {
-          enabled: true,
-        },
-        google: {
-          enabled: true,
-          configured: true,
-        },
-        email: {
-          enabled: true,
-        },
-      });
+      assert.deepEqual(Object.keys(auth.data.providers), ["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
+      assert.deepEqual(auth.data.providers.anonymous, { enabled: true, configured: true, runtimeAvailable: true });
+      assert.deepEqual(auth.data.providers.email, { enabled: true, configured: true, runtimeAvailable: true });
+      assert.deepEqual(auth.data.providers.google, { enabled: true, configured: true, runtimeAvailable: true });
+      assert.deepEqual(auth.data.providers.microsoft, { enabled: false, configured: false, runtimeAvailable: false });
       assert.doesNotMatch(JSON.stringify(auth.data.providers), /GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET|client-secret/);
     } finally {
       socket?.close();

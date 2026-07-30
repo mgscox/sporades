@@ -27,14 +27,16 @@ export type NormalizedProviderConfig = {
   enabled: boolean;
   clientIdEnv: string | null;
   clientSecretEnv: string | null;
+  clientId: string | null;
+  teamId: string | null;
+  keyId: string | null;
+  privateKeyEnv: string | null;
+  tenant: string | null;
+  graphVersion: string | null;
 };
 export type NormalizedAuthConfig = {
   mode: string;
-  providers: {
-    anonymous: { enabled: boolean };
-    google: NormalizedProviderConfig;
-    email: { enabled: boolean };
-  };
+  providers: Record<string, NormalizedProviderConfig>;
 };
 export type FrameworkBundleConfig = {
   framework: string;
@@ -45,7 +47,9 @@ export type FrameworkBundleConfig = {
   jsxFactory?: string;
 };
 
-const SUPPORTED_AUTH_PROVIDERS = new Set(["anonymous", "google", "email"]);
+const AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"] as const;
+const SUPPORTED_AUTH_PROVIDERS = new Set<string>(AUTH_PROVIDER_ORDER);
+const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google"]);
 
 export async function createBundle(
   projectDir: string,
@@ -441,35 +445,45 @@ function parseEnvValue(value: string) {
 export function authStatus(config: ProjectConfig, serverEnv: ServerEnv) {
   const authConfig = config.auth ?? { mode: "anonymous" };
   const normalized = normalizeAuthConfig(authConfig);
-  const clientIdEnv = normalized.providers.google.clientIdEnv;
-  const clientSecretEnv = normalized.providers.google.clientSecretEnv;
-  const providers: {
-    anonymous: { enabled: boolean };
-    google: { enabled: boolean; configured: boolean; clientIdEnv: string | null; clientSecretEnv: string | null };
-    email?: { enabled: boolean };
-  } = {
-    anonymous: {
-      enabled: normalized.providers.anonymous.enabled,
-    },
-    google: {
-      enabled: normalized.providers.google.enabled,
-      configured: Boolean(clientIdEnv && clientSecretEnv && serverEnv[clientIdEnv] && serverEnv[clientSecretEnv]),
-      clientIdEnv,
-      clientSecretEnv,
-    },
-  };
-  if (normalized.providers.email.enabled) {
-    providers.email = {
-      enabled: true,
+  const providers: Record<string, JsonRecord> = {};
+  const port: number = typeof config.dev === "object" && config.dev && typeof (config.dev as JsonRecord).port === "number"
+    ? Number((config.dev as JsonRecord).port)
+    : typeof config.deploy === "object" && config.deploy && typeof (config.deploy as JsonRecord).port === "number"
+      ? Number((config.deploy as JsonRecord).port)
+      : 4000;
+  for (const providerName of AUTH_PROVIDER_ORDER) {
+    const provider = normalized.providers[providerName];
+    const configured = providerConfigured(providerName, provider, serverEnv);
+    const result: JsonRecord = {
+      enabled: provider.enabled,
+      configured,
+      runtimeAvailable: RUNTIME_AUTH_PROVIDERS.has(providerName),
     };
+    if (providerName === "google" || providerName === "microsoft" || providerName === "facebook") {
+      result.clientIdEnv = provider.clientIdEnv;
+      result.clientSecretEnv = provider.clientSecretEnv;
+    }
+    if (providerName === "microsoft") result.tenant = provider.tenant;
+    if (providerName === "facebook") result.graphVersion = provider.graphVersion;
+    if (providerName === "apple") {
+      result.clientId = provider.clientId;
+      result.teamId = provider.teamId;
+      result.keyId = provider.keyId;
+      result.privateKeyEnv = provider.privateKeyEnv;
+    }
+    if (!["anonymous", "email"].includes(providerName)) {
+      result.callbackPath = `/__sporades/auth/${providerName}/callback`;
+      result.callbackUrl = port > 0 ? `http://localhost:${port}${result.callbackPath}` : null;
+    }
+    providers[providerName] = result;
   }
   return {
     mode: normalized.mode,
     providers,
     google: {
       configured: providers.google.configured,
-      clientIdEnv,
-      clientSecretEnv,
+      clientIdEnv: normalized.providers.google.clientIdEnv,
+      clientSecretEnv: normalized.providers.google.clientSecretEnv,
     },
   };
 }
@@ -480,7 +494,7 @@ function normalizeAuthConfig(authConfig: AuthConfig): NormalizedAuthConfig {
     if (!SUPPORTED_AUTH_PROVIDERS.has(provider)) {
       throw commandError(
         `Unsupported auth provider: ${provider}`,
-        "Use supported auth providers: anonymous, google, email.",
+        `Use supported auth providers: ${AUTH_PROVIDER_ORDER.join(", ")}.`,
       );
     }
   }
@@ -491,54 +505,98 @@ function normalizeAuthConfig(authConfig: AuthConfig): NormalizedAuthConfig {
   const emailConfig = readProviderConfig(providerConfig.email);
   const anonymousConfig = readProviderConfig(providerConfig.anonymous);
   const anonymousEnabled = providerConfig.anonymous === undefined ? true : anonymousConfig.enabled;
-  const mode = typeof authConfig.mode === "string" ? authConfig.mode : googleEnabled ? "google" : "anonymous";
+  const mode = typeof authConfig.mode === "string" ? String(authConfig.mode) : googleEnabled ? "google" : "anonymous";
 
   return {
     mode,
     providers: {
       anonymous: {
         enabled: anonymousEnabled,
+        ...emptyProviderConfig(),
       },
       google: {
+        ...emptyProviderConfig(),
         enabled: googleEnabled,
         clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv,
         clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv,
       },
       email: {
         enabled: emailConfig.enabled,
+        ...emptyProviderConfig(),
       },
+      microsoft: readProviderConfig(providerConfig.microsoft),
+      apple: readProviderConfig(providerConfig.apple),
+      facebook: readProviderConfig(providerConfig.facebook),
     },
   };
 }
 
 function readProviderConfig(config: unknown): NormalizedProviderConfig {
   if (config === true) {
-    return { enabled: true, clientIdEnv: null, clientSecretEnv: null };
+    return { enabled: true, ...emptyProviderConfig() };
   }
   if (config === false || config === undefined || config === null) {
-    return { enabled: false, clientIdEnv: null, clientSecretEnv: null };
+    return { enabled: false, ...emptyProviderConfig() };
   }
   if (!isRecord(config)) {
-    return { enabled: false, clientIdEnv: null, clientSecretEnv: null };
+    return { enabled: false, ...emptyProviderConfig() };
   }
   return {
     enabled: config.enabled !== false,
     clientIdEnv: typeof config.clientIdEnv === "string" ? config.clientIdEnv : null,
     clientSecretEnv: typeof config.clientSecretEnv === "string" ? config.clientSecretEnv : null,
+    clientId: typeof config.clientId === "string" ? config.clientId : null,
+    teamId: typeof config.teamId === "string" ? config.teamId : null,
+    keyId: typeof config.keyId === "string" ? config.keyId : null,
+    privateKeyEnv: typeof config.privateKeyEnv === "string" ? config.privateKeyEnv : null,
+    tenant: typeof config.tenant === "string" ? config.tenant : null,
+    graphVersion: typeof config.graphVersion === "string" ? config.graphVersion : null,
   };
 }
 
 function validateAuthConfig(config: ProjectConfig, serverEnv: ServerEnv) {
   const status = authStatus(config, serverEnv);
-  if (!status.providers.google.enabled) {
-    return;
-  }
-  if (!status.google.configured) {
+  for (const provider of AUTH_PROVIDER_ORDER) {
+    const state = status.providers[provider];
+    if (!state.enabled || state.configured) continue;
+    const callback = typeof state.callbackUrl === "string" ? ` Register callback URL ${state.callbackUrl}.` : "";
     throw commandError(
-      "Google OAuth is not fully configured.",
-      "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`.",
+      `${providerLabel(provider)} auth is not fully configured.`,
+      `${providerConfigurationHint(provider)}${callback}`,
     );
   }
+}
+
+function emptyProviderConfig() {
+  return {
+    clientIdEnv: null,
+    clientSecretEnv: null,
+    clientId: null,
+    teamId: null,
+    keyId: null,
+    privateKeyEnv: null,
+    tenant: null,
+    graphVersion: null,
+  };
+}
+
+function providerConfigured(provider: string, config: NormalizedProviderConfig, serverEnv: ServerEnv) {
+  if (provider === "anonymous" || provider === "email") return true;
+  if (provider === "apple") {
+    return Boolean(config.clientId && config.teamId && config.keyId && config.privateKeyEnv && serverEnv[config.privateKeyEnv]);
+  }
+  return Boolean(config.clientIdEnv && config.clientSecretEnv && serverEnv[config.clientIdEnv] && serverEnv[config.clientSecretEnv]);
+}
+
+function providerLabel(provider: (typeof AUTH_PROVIDER_ORDER)[number]) {
+  return `${provider[0].toUpperCase()}${provider.slice(1)}`;
+}
+
+function providerConfigurationHint(provider: string) {
+  if (provider === "apple") {
+    return "Run `sporades auth set apple --client-id <services-id> --team-id <team-id> --key-id <key-id> --private-key <pem>` or use `--client-json <path>`.";
+  }
+  return `Run \`sporades auth set ${provider} --client-id <id> --client-secret <secret>\` or use \`--client-json <path>\`.`;
 }
 
 async function readRequiredFile(filePath: PathLike | FileHandle, message: string, hint: string) {

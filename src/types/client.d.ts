@@ -61,7 +61,8 @@ export type AuthState = {
 
 export type ProviderState = {
   enabled: boolean;
-  configured?: boolean;
+  configured: boolean;
+  runtimeAvailable: boolean;
 };
 
 /** Provider availability reported by the server runtime. */
@@ -69,6 +70,9 @@ export type AuthProviders = Record<string, ProviderState> & {
   anonymous?: ProviderState;
   google?: ProviderState;
   email?: ProviderState;
+  microsoft?: ProviderState;
+  apple?: ProviderState;
+  facebook?: ProviderState;
 };
 
 export type EmailCredentials = {

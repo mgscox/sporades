@@ -52,6 +52,12 @@ This issue does not add a general auth dependency. The existing runtime already 
 
 Provider secrets remain in Server env. `sporades.json` stores the env var names, not secret values. The runtime reads the configured client ID and client secret from Server env during code exchange.
 
+The provider-neutral configuration supports Anonymous, Email, Google,
+Microsoft, Apple, and Facebook. Each provider reports enabled, configured, and
+runtime-available states independently; a provider can therefore be fully
+configured before its runtime protocol adapter is available. Updating one
+provider merges it into the existing provider map and preserves siblings.
+
 Google OAuth can be configured either with explicit values:
 
 ```sh
@@ -64,9 +70,11 @@ or from a downloaded Google OAuth client JSON file:
 sporades auth set google --client-json ./client_secret_google.json
 ```
 
-The JSON parser is provider-specific: for Google it reads Web application
-credentials from `web.client_id` and `web.client_secret`. Other providers can add
-their own credential-file shape behind the same `--client-json` flag.
+The JSON parser is provider-specific: Google reads Web application credentials,
+Microsoft reads client ID, client secret, and tenant, Apple reads Services ID,
+Team ID, Key ID, and private key, and Facebook reads app ID, app secret, and an
+optional Graph version. All parsers remain behind the same `--client-json`
+provider configuration seam.
 
 After `sporades auth set <provider>`, any running dev session must be restarted.
 The dev session loads Server env and auth configuration at startup, so a restart

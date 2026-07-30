@@ -433,9 +433,14 @@ Supported provider behavior:
 | Anonymous | `auth.providers.anonymous`, legacy `auth.mode`, or unset | Creates a persistent anonymous Sporades session. |
 | Email | `auth.providers.email` | `auth.signUp("email", ...)` links the current session; `auth.signIn("email", ...)` resolves the account later. |
 | Google | `auth.providers.google` with env var names, or legacy Google mode | `auth.signIn("google")` starts a server-owned OAuth redirect and links the verified provider identity. |
+| Microsoft | `auth.providers.microsoft` with client env names and tenant | Configuration is provider-neutral; runtime availability is reported separately from credential completeness. |
+| Apple | `auth.providers.apple` with Services ID, Team ID, Key ID, and private-key env name | Configuration stores non-secret identifiers while the private key remains in Server env. |
+| Facebook | `auth.providers.facebook` with app env names and optional Graph version | Configuration is provider-neutral; runtime availability is reported separately from credential completeness. |
 
-Provider secrets live in Server env. `sporades.json` stores provider shape and
-env var names, not secret values.
+Provider secrets live in Server env. `sporades.json` stores provider shape,
+non-secret options, and env var names, not secret values. Configuring or
+disabling one provider merges that provider without replacing siblings or
+implicitly disabling Anonymous sessions.
 
 Session records store `createdAt` and `expiresAt` lifecycle metadata. By
 default a session expires 30 days after creation or refresh. Missing, invalid,

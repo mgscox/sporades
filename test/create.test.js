@@ -88,7 +88,7 @@ test("sporades command --help prints command-specific help", async () => {
   const cases = [
     ["create", /^Usage: sporades create <name> \[options\]/, /--template <name>/],
     ["dev", /^Usage: sporades dev \[status\|stop\|reset\] \[options\]/, /--public/],
-    ["auth", /^Usage: sporades auth <command> \[options\]/, /set google/],
+    ["auth", /^Usage: sporades auth <command> \[options\]/, /set <provider>/],
     ["security", /^Usage: sporades security \[options\]/, /--session <name>/],
     ["doctor", /^Usage: sporades doctor \[options\]/, /--strict/],
     ["env", /^Usage: sporades env <command> \[options\]/, /reencrypt/],
@@ -237,6 +237,10 @@ test("sporades create writes a runnable React todo scaffold when requested", asy
     assert.match(clientEntry, /createHooks/);
     assert.match(clientEntry, /useQuery\("todos"\)/);
     assert.match(clientEntry, /useMutation\("addTodo"\)/);
+    assert.match(clientEntry, /Object\.entries\(session\.providers\)/);
+    assert.match(clientEntry, /state\.enabled && state\.configured && state\.runtimeAvailable/);
+    assert.match(clientEntry, /auth\.signIn\(provider\)/);
+    assert.doesNotMatch(clientEntry, /providers\.google|auth\.signIn\("google"\)/);
 
     const agents = await readFile(path.join(projectDir, "AGENTS.md"), "utf8");
     assert.match(agents, /Template: todo/);
@@ -286,9 +290,9 @@ test("sporades create writes a runnable React guestbook scaffold when requested"
     assert.match(clientEntry, /useAuth/);
     assert.match(clientEntry, /useQuery\("entries"\)/);
     assert.match(clientEntry, /useMutation\("sign"\)/);
-    assert.match(clientEntry, /auth\.signIn\("google"\)/);
+    assert.match(clientEntry, /auth\.signIn\(provider\)/);
     assert.match(clientEntry, /auth\.signOut\(\)/);
-    assert.match(clientEntry, /Sign in with Google/);
+    assert.match(clientEntry, /state\.enabled && state\.configured && state\.runtimeAvailable/);
     assert.match(clientEntry, /Sign out/);
     assert.doesNotMatch(clientEntry, /providers\.google\?\.configured/);
     assert.match(clientEntry, /authorPicture/);
@@ -473,7 +477,7 @@ test("sporades create writes a minimal React photo library scaffold when request
     assert.match(serverEntry, /publicPhotos: query/);
     assert.match(serverEntry, /\.where\("isPublic", true\)/);
     assert.match(serverEntry, /personalPhotos: query/);
-    assert.match(serverEntry, /ctx\.auth\.provider !== "google"/);
+    assert.match(serverEntry, /ctx\.auth\.isGuest/);
     assert.match(serverEntry, /recordPhoto: mutation/);
     assert.match(serverEntry, /job, mutation, Number, query, schedule, String, table/);
     assert.match(serverEntry, /timestampPhotoNames: job/);
@@ -481,7 +485,7 @@ test("sporades create writes a minimal React photo library scaffold when request
     assert.match(serverEntry, /job: "timestampPhotoNames"/);
     assert.match(serverEntry, /toISOString\(\)\.slice\(11, 16\)/);
     assert.match(serverEntry, /ctx\.db\.photos\.update/);
-    assert.match(serverEntry, /ctx\.auth\.provider === "google" \? globalThis\.Boolean\(input\.isPublic\) : true/);
+    assert.match(serverEntry, /ctx\.auth\.isGuest \? true : globalThis\.Boolean\(input\.isPublic\)/);
     assert.match(serverEntry, /throw new Error\("Public photos need a public file URL\."\)/);
     assert.match(serverEntry, /ctx\.db\.photos\.insert/);
 
@@ -498,7 +502,7 @@ test("sporades create writes a minimal React photo library scaffold when request
     assert.match(clientEntry, /files\.upload/);
     assert.match(clientEntry, /files\.publicUrl/);
     assert.match(clientEntry, /files\.revokePublicUrl/);
-    assert.match(clientEntry, /auth\.signIn\("google"\)/);
+    assert.match(clientEntry, /auth\.signIn\(provider\)/);
     assert.match(clientEntry, /auth\.signOut\(\)/);
     assert.match(clientEntry, /Public gallery/);
     assert.match(clientEntry, /My library/);
@@ -870,7 +874,7 @@ test("sporades create rejects unsupported Vue toolchains and admits every comple
       if (template === "guestbook") {
         assert.match(app, /useQuery\("entries"\)/);
         assert.match(app, /useMutation\("sign"\)/);
-        assert.match(app, /auth\.signIn\("google"\)/);
+        assert.match(app, /auth\.signIn\(provider\)/);
         assert.match(app, /authorPicture/);
       } else if (template === "photo-library") {
         assert.match(app, /files\.upload\(selectedFile\.value\)/);
@@ -1164,9 +1168,9 @@ test("sporades create writes a runnable Preact guestbook scaffold", async () => 
     assert.match(clientEntry, /createHooks\(\{ useState, useEffect \}\)/);
     assert.match(clientEntry, /useQuery\("entries"\)/);
     assert.match(clientEntry, /useMutation\("sign"\)/);
-    assert.match(clientEntry, /auth\.signIn\("google"\)/);
+    assert.match(clientEntry, /auth\.signIn\(provider\)/);
     assert.match(clientEntry, /auth\.signOut\(\)/);
-    assert.match(clientEntry, /Sign in with Google/);
+    assert.match(clientEntry, /state\.enabled && state\.configured && state\.runtimeAvailable/);
     assert.match(clientEntry, /Sign out/);
     assert.doesNotMatch(clientEntry, /providers\.google\?\.configured/);
     assert.match(clientEntry, /onInput=/);
@@ -1214,7 +1218,7 @@ test("sporades create writes a runnable Preact photo library scaffold", async ()
     assert.match(clientEntry, /useMutation\("updatePhotoIsPublic"\)/);
     assert.match(clientEntry, /files\.upload/);
     assert.match(clientEntry, /files\.publicUrl/);
-    assert.match(clientEntry, /auth\.signIn\("google"\)/);
+    assert.match(clientEntry, /auth\.signIn\(provider\)/);
     assert.match(clientEntry, /auth\.signOut\(\)/);
     assert.match(clientEntry, /Photo Library/);
     assert.doesNotMatch(clientEntry, /react-dom|better-auth|googleapis|gapi|oauth|accounts\.google/i);
@@ -1276,29 +1280,11 @@ test("sporades auth status reports anonymous and Google OAuth configuration stat
     const projectDir = path.join(dir, "todo-island");
     const anonymousStatus = await runCli(["auth", "status", "--json"], { cwd: projectDir });
     assert.equal(anonymousStatus.code, 0, anonymousStatus.stderr);
-    assert.deepEqual(JSON.parse(anonymousStatus.stdout), {
-      ok: true,
-      data: {
-        mode: "anonymous",
-        providers: {
-          anonymous: {
-            enabled: true,
-          },
-          google: {
-            enabled: false,
-            configured: false,
-            clientIdEnv: null,
-            clientSecretEnv: null,
-          },
-        },
-        google: {
-          configured: false,
-          clientIdEnv: null,
-          clientSecretEnv: null,
-        },
-      },
-      error: null,
-    });
+    const anonymousData = JSON.parse(anonymousStatus.stdout).data;
+    assert.equal(anonymousData.mode, "anonymous");
+    assert.deepEqual(anonymousData.providers.anonymous, { enabled: true, configured: true, runtimeAvailable: true });
+    assert.equal(anonymousData.providers.google.configured, false);
+    assert.deepEqual(Object.keys(anonymousData.providers), ["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
 
     const setResult = await runCli(
       ["auth", "set", "google", "--client-id", "google-client-id", "--client-secret", "super-secret", "--json"],
@@ -1306,34 +1292,17 @@ test("sporades auth status reports anonymous and Google OAuth configuration stat
     );
     assert.equal(setResult.code, 0, setResult.stderr);
     assert.doesNotMatch(setResult.stdout, /super-secret/);
-    assert.deepEqual(JSON.parse(setResult.stdout), {
-      ok: true,
-      data: {
-        mode: "google",
-        providers: {
-          anonymous: {
-            enabled: true,
-          },
-          google: {
-            enabled: true,
-            configured: true,
-            clientIdEnv: "GOOGLE_CLIENT_ID",
-            clientSecretEnv: "GOOGLE_CLIENT_SECRET",
-          },
-        },
-        google: {
-          configured: true,
-          clientIdEnv: "GOOGLE_CLIENT_ID",
-          clientSecretEnv: "GOOGLE_CLIENT_SECRET",
-        },
-      },
-      error: null,
-    });
+    const setData = JSON.parse(setResult.stdout).data;
+    assert.equal(setData.mode, "google");
+    assert.equal(setData.providers.anonymous.enabled, true);
+    assert.equal(setData.providers.google.configured, true);
+    assert.equal(setData.providers.google.runtimeAvailable, true);
 
     const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
-    assert.deepEqual(config.auth, {
-      mode: "google",
+    assert.deepEqual(config.auth.providers, {
+      anonymous: { enabled: true },
       google: {
+        enabled: true,
         clientIdEnv: "GOOGLE_CLIENT_ID",
         clientSecretEnv: "GOOGLE_CLIENT_SECRET",
       },
@@ -1375,32 +1344,11 @@ test("sporades auth status reports multi-provider configuration without secrets"
     const status = await runCli(["auth", "status", "--json"], { cwd: projectDir });
     assert.equal(status.code, 0, status.stderr);
     assert.doesNotMatch(status.stdout, /google-client-id|super-secret/);
-    assert.deepEqual(JSON.parse(status.stdout), {
-      ok: true,
-      data: {
-        mode: "google",
-        providers: {
-          anonymous: {
-            enabled: true,
-          },
-          google: {
-            enabled: true,
-            configured: true,
-            clientIdEnv: "GOOGLE_CLIENT_ID",
-            clientSecretEnv: "GOOGLE_CLIENT_SECRET",
-          },
-          email: {
-            enabled: true,
-          },
-        },
-        google: {
-          configured: true,
-          clientIdEnv: "GOOGLE_CLIENT_ID",
-          clientSecretEnv: "GOOGLE_CLIENT_SECRET",
-        },
-      },
-      error: null,
-    });
+    const data = JSON.parse(status.stdout).data;
+    assert.equal(data.mode, "google");
+    assert.deepEqual(data.providers.email, { enabled: true, configured: true, runtimeAvailable: true });
+    assert.equal(data.providers.google.configured, true);
+    assert.equal(data.providers.microsoft.enabled, false);
   });
 });
 
@@ -1428,29 +1376,10 @@ test("sporades auth set google can read a Google OAuth client JSON file", async 
     });
     assert.equal(setResult.code, 0, setResult.stderr);
     assert.doesNotMatch(setResult.stdout, /json-client-secret/);
-    assert.deepEqual(JSON.parse(setResult.stdout), {
-      ok: true,
-      data: {
-        mode: "google",
-        providers: {
-          anonymous: {
-            enabled: true,
-          },
-          google: {
-            enabled: true,
-            configured: true,
-            clientIdEnv: "GOOGLE_CLIENT_ID",
-            clientSecretEnv: "GOOGLE_CLIENT_SECRET",
-          },
-        },
-        google: {
-          configured: true,
-          clientIdEnv: "GOOGLE_CLIENT_ID",
-          clientSecretEnv: "GOOGLE_CLIENT_SECRET",
-        },
-      },
-      error: null,
-    });
+    const data = JSON.parse(setResult.stdout).data;
+    assert.equal(data.mode, "google");
+    assert.equal(data.providers.google.configured, true);
+    assert.equal(data.providers.google.runtimeAvailable, true);
 
     const envFile = await readFile(path.join(projectDir, ".env.sporades.server"), "utf8");
     assert.match(envFile, /^GOOGLE_CLIENT_ID=json-client-id\.apps\.googleusercontent\.com$/m);
@@ -1480,5 +1409,104 @@ test("sporades auth set google rejects invalid OAuth client JSON files", async (
         hint: "Use a Google OAuth Web application JSON file containing `web.client_id` and `web.client_secret`.",
       },
     });
+  });
+});
+
+test("sporades auth set merges OAuth providers, supports explicit disablement, and redacts every secret", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "oauth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "oauth-island");
+
+    const google = await runCli(
+      ["auth", "set", "google", "--client-id", "google-id", "--client-secret", "google-secret", "--json"],
+      { cwd: projectDir },
+    );
+    assert.equal(google.code, 0, google.stderr);
+    const microsoft = await runCli(
+      ["auth", "set", "microsoft", "--client-id", "microsoft-id", "--client-secret", "microsoft-secret", "--tenant", "organizations", "--json"],
+      { cwd: projectDir },
+    );
+    assert.equal(microsoft.code, 0, microsoft.stdout || microsoft.stderr);
+    const disabled = await runCli(["auth", "set", "microsoft", "--disable", "--json"], { cwd: projectDir });
+    assert.equal(disabled.code, 0, disabled.stderr);
+
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.deepEqual(config.auth.providers, {
+      anonymous: { enabled: true },
+      google: {
+        enabled: true,
+        clientIdEnv: "GOOGLE_CLIENT_ID",
+        clientSecretEnv: "GOOGLE_CLIENT_SECRET",
+      },
+      microsoft: {
+        enabled: false,
+        clientIdEnv: "MICROSOFT_CLIENT_ID",
+        clientSecretEnv: "MICROSOFT_CLIENT_SECRET",
+        tenant: "organizations",
+      },
+    });
+    assert.doesNotMatch(JSON.stringify(config), /google-secret|microsoft-secret/);
+    const env = await readFile(path.join(projectDir, ".env.sporades.server"), "utf8");
+    assert.match(env, /^GOOGLE_CLIENT_SECRET=google-secret$/m);
+    assert.match(env, /^MICROSOFT_CLIENT_SECRET=microsoft-secret$/m);
+
+    const data = JSON.parse(disabled.stdout).data;
+    assert.equal(data.providers.anonymous.enabled, true);
+    assert.equal(data.providers.google.configured, true);
+    assert.equal(data.providers.google.runtimeAvailable, true);
+    assert.equal(data.providers.microsoft.enabled, false);
+    assert.equal(data.providers.microsoft.configured, true);
+    assert.equal(data.providers.microsoft.runtimeAvailable, false);
+    assert.doesNotMatch(disabled.stdout, /google-secret|microsoft-secret|google-id|microsoft-id/);
+  });
+});
+
+test("sporades auth set parses provider-specific credential files and reports all providers without live OAuth calls", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "oauth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "oauth-island");
+    await writeFile(path.join(projectDir, "microsoft.json"), JSON.stringify({
+      clientId: "ms-id",
+      clientSecret: "ms-secret",
+      tenant: "common",
+    }));
+    await writeFile(path.join(projectDir, "apple.json"), JSON.stringify({
+      servicesId: "com.example.web",
+      teamId: "TEAM123",
+      keyId: "KEY123",
+      privateKey: "apple-private-key",
+    }));
+    await writeFile(path.join(projectDir, "facebook.json"), JSON.stringify({
+      appId: "facebook-id",
+      appSecret: "facebook-secret",
+      graphVersion: "v23.0",
+    }));
+
+    for (const [provider, file] of [["microsoft", "microsoft.json"], ["apple", "apple.json"], ["facebook", "facebook.json"]]) {
+      const result = await runCli(["auth", "set", provider, "--client-json", file, "--json"], { cwd: projectDir });
+      assert.equal(result.code, 0, `${provider}: ${result.stdout || result.stderr}`);
+      assert.doesNotMatch(result.stdout, /ms-secret|apple-private-key|facebook-secret/);
+    }
+    const email = await runCli(["auth", "set", "email", "--json"], { cwd: projectDir });
+    assert.equal(email.code, 0, email.stderr);
+
+    const statusResult = await runCli(["auth", "status", "--json"], { cwd: projectDir });
+    assert.equal(statusResult.code, 0, statusResult.stderr);
+    const status = JSON.parse(statusResult.stdout).data;
+    assert.deepEqual(Object.keys(status.providers), ["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
+    assert.equal(status.providers.email.configured, true);
+    assert.equal(status.providers.email.runtimeAvailable, true);
+    assert.equal(status.providers.microsoft.configured, true);
+    assert.equal(status.providers.microsoft.runtimeAvailable, false);
+    assert.equal(status.providers.apple.configured, true);
+    assert.equal(status.providers.facebook.configured, true);
+    assert.equal(status.providers.apple.callbackUrl, "http://localhost:4000/__sporades/auth/apple/callback");
+    assert.doesNotMatch(statusResult.stdout, /ms-secret|apple-private-key|facebook-secret|facebook-id|ms-id/);
   });
 });

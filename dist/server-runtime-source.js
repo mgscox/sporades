@@ -267,6 +267,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     authStatus,
     normalizeAuthConfig,
     readProviderConfig,
+    emptyProviderConfig,
     createFileStorageTables,
     createRuntimeFileStorageAdapter,
     createLocalFileStorageAdapter,
@@ -9579,39 +9580,57 @@ function formatMutationResult(message, mutationName, result) {
 function authStatus(config, serverEnv) {
     const authConfig = config.auth ?? { mode: "anonymous" };
     const normalized = normalizeAuthConfig(authConfig);
-    const clientIdEnv = normalized.providers.google.clientIdEnv;
-    const clientSecretEnv = normalized.providers.google.clientSecretEnv;
-    const providers = {
-        anonymous: {
-            enabled: normalized.providers.anonymous.enabled,
-        },
-        google: {
-            enabled: normalized.providers.google.enabled,
-            configured: Boolean(clientIdEnv && clientSecretEnv && serverEnv[clientIdEnv] && serverEnv[clientSecretEnv]),
-            clientIdEnv,
-            clientSecretEnv,
-        },
-    };
-    if (normalized.providers.email.enabled) {
-        providers.email = {
-            enabled: true,
+    const providerOrder = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
+    const runtimeProviders = new Set(["anonymous", "email", "google"]);
+    const providers = {};
+    const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4000;
+    for (const providerName of providerOrder) {
+        const provider = normalized.providers[providerName];
+        const configured = providerName === "anonymous" || providerName === "email"
+            ? true
+            : providerName === "apple"
+                ? Boolean(provider.clientId && provider.teamId && provider.keyId && provider.privateKeyEnv && serverEnv[provider.privateKeyEnv])
+                : Boolean(provider.clientIdEnv && provider.clientSecretEnv && serverEnv[provider.clientIdEnv] && serverEnv[provider.clientSecretEnv]);
+        const state = {
+            enabled: provider.enabled,
+            configured,
+            runtimeAvailable: runtimeProviders.has(providerName),
         };
+        if (["google", "microsoft", "facebook"].includes(providerName)) {
+            state.clientIdEnv = provider.clientIdEnv;
+            state.clientSecretEnv = provider.clientSecretEnv;
+        }
+        if (providerName === "microsoft")
+            state.tenant = provider.tenant;
+        if (providerName === "facebook")
+            state.graphVersion = provider.graphVersion;
+        if (providerName === "apple") {
+            state.clientId = provider.clientId;
+            state.teamId = provider.teamId;
+            state.keyId = provider.keyId;
+            state.privateKeyEnv = provider.privateKeyEnv;
+        }
+        if (!["anonymous", "email"].includes(providerName)) {
+            state.callbackPath = `/__sporades/auth/${providerName}/callback`;
+            state.callbackUrl = port > 0 ? `http://localhost:${port}${state.callbackPath}` : null;
+        }
+        providers[providerName] = state;
     }
     return {
         mode: normalized.mode,
         providers,
         google: {
             configured: providers.google.configured,
-            clientIdEnv,
-            clientSecretEnv,
+            clientIdEnv: normalized.providers.google.clientIdEnv,
+            clientSecretEnv: normalized.providers.google.clientSecretEnv,
         },
     };
 }
 function normalizeAuthConfig(authConfig) {
     const providerConfig = authConfig.providers ?? {};
     for (const provider of Object.keys(providerConfig)) {
-        if (!["anonymous", "google", "email"].includes(provider)) {
-            throw commandError(`Unsupported auth provider: ${provider}`, "Use supported auth providers: anonymous, google, email.");
+        if (!["anonymous", "email", "google", "microsoft", "apple", "facebook"].includes(provider)) {
+            throw commandError(`Unsupported auth provider: ${provider}`, "Use supported auth providers: anonymous, email, google, microsoft, apple, facebook.");
         }
     }
     const googleConfig = readProviderConfig(providerConfig.google);
@@ -9626,43 +9645,53 @@ function normalizeAuthConfig(authConfig) {
         providers: {
             anonymous: {
                 enabled: anonymousEnabled,
+                ...emptyProviderConfig(),
             },
             google: {
+                ...emptyProviderConfig(),
                 enabled: googleEnabled,
                 clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv ?? null,
                 clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv ?? null,
             },
             email: {
                 enabled: emailConfig.enabled,
+                ...emptyProviderConfig(),
             },
+            microsoft: readProviderConfig(providerConfig.microsoft),
+            apple: readProviderConfig(providerConfig.apple),
+            facebook: readProviderConfig(providerConfig.facebook),
         },
     };
 }
 function readProviderConfig(config) {
     if (config === true) {
-        return { enabled: true };
+        return { enabled: true, ...emptyProviderConfig() };
     }
     if (config === false || config === undefined || config === null) {
-        return { enabled: false };
+        return { enabled: false, ...emptyProviderConfig() };
     }
     return {
         enabled: config.enabled !== false,
         clientIdEnv: config.clientIdEnv ?? null,
         clientSecretEnv: config.clientSecretEnv ?? null,
+        clientId: config.clientId ?? null,
+        teamId: config.teamId ?? null,
+        keyId: config.keyId ?? null,
+        privateKeyEnv: config.privateKeyEnv ?? null,
+        tenant: config.tenant ?? null,
+        graphVersion: config.graphVersion ?? null,
     };
+}
+function emptyProviderConfig() {
+    return { clientIdEnv: null, clientSecretEnv: null, clientId: null, teamId: null, keyId: null, privateKeyEnv: null, tenant: null, graphVersion: null };
 }
 function authProvidersForClient(authConfig) {
     const providers = {};
     for (const [name, provider] of Object.entries(authConfig.providers)) {
-        if (name === "google") {
-            providers.google = {
-                enabled: provider.enabled,
-                configured: provider.configured,
-            };
-            continue;
-        }
         providers[name] = {
             enabled: provider.enabled,
+            configured: provider.configured,
+            runtimeAvailable: provider.runtimeAvailable,
         };
     }
     return providers;

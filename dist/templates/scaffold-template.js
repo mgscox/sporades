@@ -156,7 +156,7 @@ export class App extends Component {
   componentDidMount() { this.session.componentDidMount(); this.todos.componentDidMount(); }
   componentWillUnmount() { this.todos.componentWillUnmount(); this.session.componentWillUnmount(); }
   async submit(event: Event) { event.preventDefault(); const value = this.text.trim(); if (!value) return; const result = await this.addTodo.run(value); if (!result.error) { this.text = ""; this.forceUpdate(); } }
-  render() { const query = this.todos.state; return <main className="shell"><header><img className="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>{this.session.state.providers.google?.enabled && !this.session.isAuthenticated() ? <button type="button" onClick={() => auth.signIn("google")}>Sign in with Google</button> : null}<form onSubmit={(event) => this.submit(event)}><input aria-label="Todo" value={this.text} onInput={(event) => { this.text = (event.currentTarget as HTMLInputElement).value; this.forceUpdate(); }} /><button disabled={this.addTodo.state.loading || !this.text.trim()}>Add</button></form>{query.loading ? <p>Loading…</p> : query.error ? <p role="alert">{query.error.message}</p> : <ul>{(query.data ?? []).map((todo) => <li key={todo.id}>{todo.text}</li>)}</ul>}</main>; }
+  render() { const query = this.todos.state; const providers = Object.entries(this.session.state.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable); return <main className="shell"><header><img className="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>{!this.session.isAuthenticated() ? providers.map(([provider]) => <button key={provider} type="button" onClick={() => auth.signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>) : null}<form onSubmit={(event) => this.submit(event)}><input aria-label="Todo" value={this.text} onInput={(event) => { this.text = (event.currentTarget as HTMLInputElement).value; this.forceUpdate(); }} /><button disabled={this.addTodo.state.loading || !this.text.trim()}>Add</button></form>{query.loading ? <p>Loading…</p> : query.error ? <p role="alert">{query.error.message}</p> : <ul>{(query.data ?? []).map((todo) => <li key={todo.id}>{todo.text}</li>)}</ul>}</main>; }
 }
 export function mountInfernoApp(target: Element) { render(<App />, target); }
 mountInfernoApp(document.getElementById("app")!);
@@ -172,9 +172,9 @@ type Entry={id:string;authorName:string;authorPicture?:string;createdAt:string;b
 const {authAdapter,mutationAdapter,queryAdapter}=createInfernoAdapters();const maxLength=280;export const infernoMark=mark;
 export class App extends Component { session=authAdapter(this);entries=queryAdapter<Entry[]>(this,"entries");sign=mutationAdapter(this,"sign");body="";notice="";
 componentDidMount(){this.session.componentDidMount();this.entries.componentDidMount();} componentWillUnmount(){this.entries.componentWillUnmount();this.session.componentWillUnmount();}
-async signIn(){this.notice="";const r=await auth.signIn("google");if(r.error)this.notice=r.error.message;this.forceUpdate();} async signOut(){this.notice="";const r=await auth.signOut();if(r.error)this.notice=r.error.message;this.forceUpdate();}
+async signIn(provider:string){this.notice="";const r=await auth.signIn(provider);if(r.error)this.notice=r.error.message;this.forceUpdate();} async signOut(){this.notice="";const r=await auth.signOut();if(r.error)this.notice=r.error.message;this.forceUpdate();}
 async submit(e:Event){e.preventDefault();const value=this.body.trim();if(!value||value.length>maxLength)return;const r=await this.sign.run(value);if(!r.error)this.body="";this.forceUpdate();}
-render(){const remaining=maxLength-this.body.length;return <main className="shell"><header><div><p>Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div><span>{this.session.state.auth?.displayName??"Anonymous"}</span>{this.session.isAuthenticated()?<button type="button" onClick={()=>this.signOut()}>Sign out</button>:<button type="button" onClick={()=>this.signIn()}>Sign in with Google</button>}{this.notice?<p role="alert">{this.notice}</p>:null}</div></header><form onSubmit={(e)=>this.submit(e)}><textarea value={this.body} maxLength={maxLength} onInput={(e)=>{this.body=(e.currentTarget as HTMLTextAreaElement).value;this.forceUpdate();}}/><span>{remaining} characters left</span><button disabled={!this.body.trim()||this.sign.state.loading}>Sign guestbook</button>{this.sign.state.error?<p role="alert">{this.sign.state.error.message}</p>:null}</form><section>{(this.entries.state.data??[]).map(entry=><article key={entry.id}><strong>{entry.authorName}</strong><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time><p>{entry.body}</p></article>)}</section></main>}}
+render(){const remaining=maxLength-this.body.length,providers=Object.entries(this.session.state.providers).filter(([,state])=>state.enabled&&state.configured&&state.runtimeAvailable);return <main className="shell"><header><div><p>Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div><span>{this.session.state.auth?.displayName??"Anonymous"}</span>{this.session.isAuthenticated()?<button type="button" onClick={()=>this.signOut()}>Sign out</button>:providers.map(([provider])=><button key={provider} type="button" onClick={()=>this.signIn(provider)}>Sign in with {provider[0].toUpperCase()+provider.slice(1)}</button>)}{this.notice?<p role="alert">{this.notice}</p>:null}</div></header><form onSubmit={(e)=>this.submit(e)}><textarea value={this.body} maxLength={maxLength} onInput={(e)=>{this.body=(e.currentTarget as HTMLTextAreaElement).value;this.forceUpdate();}}/><span>{remaining} characters left</span><button disabled={!this.body.trim()||this.sign.state.loading}>Sign guestbook</button>{this.sign.state.error?<p role="alert">{this.sign.state.error.message}</p>:null}</form><section>{(this.entries.state.data??[]).map(entry=><article key={entry.id}><strong>{entry.authorName}</strong><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time><p>{entry.body}</p></article>)}</section></main>}}
 export function mountInfernoApp(target:Element){render(<App/>,target);} mountInfernoApp(document.getElementById("app")!);
 `;
 }
@@ -188,11 +188,11 @@ type Photo={id:string;title:string;fileId:string;imageUrl:string;ownerName:strin
 const {authAdapter,mutationAdapter,queryAdapter}=createInfernoAdapters();export const infernoMark=mark;
 export class App extends Component {session=authAdapter(this);publicPhotos=queryAdapter<Photo[]>(this,"publicPhotos");personalPhotos=queryAdapter<Photo[]>(this,"personalPhotos");record=mutationAdapter(this,"recordPhoto");setPublic=mutationAdapter(this,"updatePhotoIsPublic");setImage=mutationAdapter(this,"updatePhotoImageUrl");setPublicId=mutationAdapter(this,"updatePhotoPublicUrlId");title="";selected:File|null=null;publish=false;message="";
 componentDidMount(){this.session.componentDidMount();this.publicPhotos.componentDidMount();this.personalPhotos.componentDidMount();}componentWillUnmount(){this.personalPhotos.componentWillUnmount();this.publicPhotos.componentWillUnmount();this.session.componentWillUnmount();}
-async signIn(){this.message="";const r=await auth.signIn("google");if(r.error)this.message=r.error.message;this.forceUpdate();}async signOut(){this.message="";const r=await auth.signOut();if(r.error)this.message=r.error.message;this.forceUpdate();}
+async signIn(provider:string){this.message="";const r=await auth.signIn(provider);if(r.error)this.message=r.error.message;this.forceUpdate();}async signOut(){this.message="";const r=await auth.signOut();if(r.error)this.message=r.error.message;this.forceUpdate();}
 async requireMutation(mutation:any,...args:any[]){const result=await mutation.run(...args);if(result.error)throw new Error(result.error.message);return result;}
 async submit(e:Event){e.preventDefault();if(!this.selected)return;this.message="Uploading...";this.forceUpdate();try{const file=await files.upload(this.selected);const shouldPublish=!this.session.isAuthenticated()||this.publish;const publicUrl=shouldPublish?await files.publicUrl(file.id,{noExpiry:true}):null;const r=await this.record.run({title:this.title,file,isPublic:shouldPublish,publicUrl});if(r.error){this.message=r.error.message;return;}this.title="";this.selected=null;this.publish=false;this.message=shouldPublish?"Photo added to the public gallery.":"Photo saved privately.";}catch(error){this.message=error instanceof Error?error.message:"Upload failed.";}finally{this.forceUpdate();}}
 async makePublic(photo:Photo){this.message="";try{const url=await files.publicUrl(photo.fileId,{noExpiry:true});await this.requireMutation(this.setImage,photo.id,url.url);await this.requireMutation(this.setPublicId,photo.id,url.id);await this.requireMutation(this.setPublic,photo.id,true);}catch(error){this.message=error instanceof Error?error.message:"Could not publish photo.";}this.forceUpdate();}async makePrivate(photo:Photo){this.message="";try{if(photo.publicUrlId)await files.revokePublicUrl(photo.publicUrlId);await this.requireMutation(this.setPublic,photo.id,false);await this.requireMutation(this.setImage,photo.id,"");await this.requireMutation(this.setPublicId,photo.id,"");}catch(error){this.message=error instanceof Error?error.message:"Could not hide photo.";}this.forceUpdate();}
-render(){const google=this.session.state.auth?.provider==="google",gallery=this.publicPhotos.state.data??[],mine=google?this.personalPhotos.state.data??[]:[];return <main className="shell"><header><div><p>Sporades Storage</p><h1>Photo Library</h1></div>{google?<button onClick={()=>this.signOut()}>Sign out</button>:<button onClick={()=>this.signIn()}>Sign in with Google</button>}</header><form onSubmit={(e)=>this.submit(e)}><input value={this.title} placeholder="Caption" onInput={(e)=>{this.title=(e.currentTarget as HTMLInputElement).value;this.forceUpdate();}}/><input type="file" accept="image/*" onChange={(e)=>{this.selected=(e.currentTarget as HTMLInputElement).files?.[0]??null;this.forceUpdate();}}/><label><input type="checkbox" checked={!this.session.isAuthenticated()||this.publish} disabled={!this.session.isAuthenticated()} onChange={(e)=>{this.publish=(e.currentTarget as HTMLInputElement).checked;this.forceUpdate();}}/>{this.session.isAuthenticated()?"Publish to gallery":"Anonymous uploads are public"}</label><button disabled={!this.selected||this.record.state.loading}>Upload photo</button>{this.message?<p role="status">{this.message}</p>:null}</form><h2>Public gallery</h2><section>{gallery.map(p=><article key={p.id}><img src={p.imageUrl} alt={p.title}/><strong>{p.title}</strong><span>{p.ownerName}</span></article>)}</section>{google?<section><h2>My library</h2>{mine.map(p=><article key={p.id}><strong>{p.title}</strong><span>{p.status}</span>{p.isPublic?<button onClick={()=>this.makePrivate(p)}>Make private</button>:<button onClick={()=>this.makePublic(p)}>Make public</button>}</article>)}</section>:null}</main>}}
+render(){const signedIn=this.session.isAuthenticated(),providers=Object.entries(this.session.state.providers).filter(([,state])=>state.enabled&&state.configured&&state.runtimeAvailable),gallery=this.publicPhotos.state.data??[],mine=signedIn?this.personalPhotos.state.data??[]:[];return <main className="shell"><header><div><p>Sporades Storage</p><h1>Photo Library</h1></div>{signedIn?<button onClick={()=>this.signOut()}>Sign out</button>:providers.map(([provider])=><button key={provider} onClick={()=>this.signIn(provider)}>Sign in with {provider[0].toUpperCase()+provider.slice(1)}</button>)}</header><form onSubmit={(e)=>this.submit(e)}><input value={this.title} placeholder="Caption" onInput={(e)=>{this.title=(e.currentTarget as HTMLInputElement).value;this.forceUpdate();}}/><input type="file" accept="image/*" onChange={(e)=>{this.selected=(e.currentTarget as HTMLInputElement).files?.[0]??null;this.forceUpdate();}}/><label><input type="checkbox" checked={!signedIn||this.publish} disabled={!signedIn} onChange={(e)=>{this.publish=(e.currentTarget as HTMLInputElement).checked;this.forceUpdate();}}/>{signedIn?"Publish to gallery":"Anonymous uploads are public"}</label><button disabled={!this.selected||this.record.state.loading}>Upload photo</button>{this.message?<p role="status">{this.message}</p>:null}</form><h2>Public gallery</h2><section>{gallery.map(p=><article key={p.id}><img src={p.imageUrl} alt={p.title}/><strong>{p.title}</strong><span>{p.ownerName}</span></article>)}</section>{signedIn?<section><h2>My library</h2>{mine.map(p=><article key={p.id}><strong>{p.title}</strong><span>{p.status}</span>{p.isPublic?<button onClick={()=>this.makePrivate(p)}>Make private</button>:<button onClick={()=>this.makePublic(p)}>Make public</button>}</article>)}</section>:null}</main>}}
 export function mountInfernoApp(target:Element){render(<App/>,target);} mountInfernoApp(document.getElementById("app")!);
 `;
 }
@@ -269,7 +269,7 @@ class SporadesApp extends LitElement {
   text = "";
   static styles = css\`:host{display:block;max-width:42rem;margin:3rem auto;font-family:system-ui,sans-serif;color:#15211d}header,form{display:flex;gap:.75rem;align-items:center}.mark{width:2rem;height:2rem}li{margin-block:.5rem}\`;
   async submit(event: SubmitEvent) { event.preventDefault(); const value = this.text.trim(); if (!value) return; const result = await this.addTodo.run(value); if (!result.error) { this.text = ""; this.requestUpdate(); } }
-  render() { const query = this.todos.state; return html\`<main><header><img class="mark" src=\${mark} alt=""><h1>Sporades Todos</h1></header>\${this.session.state.providers.google?.enabled && !this.session.isAuthenticated() ? html\`<button @click=\${() => auth.signIn("google")}>Sign in with Google</button>\` : null}<form @submit=\${(event: SubmitEvent) => this.submit(event)}><input aria-label="Todo" .value=\${this.text} @input=\${(event: InputEvent) => { this.text = (event.currentTarget as HTMLInputElement).value; }}><button ?disabled=\${this.addTodo.state.loading}>Add</button></form>\${query.loading ? html\`<p>Loading…</p>\` : query.error ? html\`<p role="alert">\${query.error.message}</p>\` : html\`<ul>\${(query.data ?? []).map((todo) => html\`<li>\${todo.text}</li>\`)}</ul>\`}</main>\`; }
+  render() { const query = this.todos.state; const providers = Object.entries(this.session.state.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable); return html\`<main><header><img class="mark" src=\${mark} alt=""><h1>Sporades Todos</h1></header>\${!this.session.isAuthenticated() ? providers.map(([provider]) => html\`<button @click=\${() => auth.signIn(provider)}>Sign in with \${provider[0].toUpperCase() + provider.slice(1)}</button>\`) : null}<form @submit=\${(event: SubmitEvent) => this.submit(event)}><input aria-label="Todo" .value=\${this.text} @input=\${(event: InputEvent) => { this.text = (event.currentTarget as HTMLInputElement).value; }}><button ?disabled=\${this.addTodo.state.loading}>Add</button></form>\${query.loading ? html\`<p>Loading…</p>\` : query.error ? html\`<p role="alert">\${query.error.message}</p>\` : html\`<ul>\${(query.data ?? []).map((todo) => html\`<li>\${todo.text}</li>\`)}</ul>\`}</main>\`; }
 }
 customElements.define("sporades-app", SporadesApp);
 `;
@@ -285,10 +285,10 @@ class SporadesApp extends LitElement {
   session = authController(this); entries = queryController<any[]>(this, "entries"); sign = mutationController(this, "sign");
   body = ""; authError = ""; maxLength = 280;
   static styles = css\`:host{display:block;max-width:920px;margin:auto;padding:48px 0;font-family:system-ui,sans-serif}.intro,.row,.auth{display:flex;justify-content:space-between;gap:16px;align-items:center}form,article{background:white;border:1px solid #ded6ca;border-radius:8px;padding:16px;margin-top:24px}textarea{width:100%;min-height:116px;box-sizing:border-box}.entries{display:grid;gap:12px}.mark{width:2rem}button{padding:10px 14px}.error{color:#a33b28}\`;
-  async signIn() { this.authError = ""; const result = await auth.signIn("google"); if (result.error) this.authError = result.error.message; this.requestUpdate(); }
+  async signIn(provider: string) { this.authError = ""; const result = await auth.signIn(provider); if (result.error) this.authError = result.error.message; this.requestUpdate(); }
   async signOut() { this.authError = ""; const result = await auth.signOut(); if (result.error) this.authError = result.error.message; this.requestUpdate(); }
   async submit(event: SubmitEvent) { event.preventDefault(); const message = this.body.trim(); if (!message || message.length > this.maxLength) return; const result = await this.sign.run(message); if (!result.error) this.body = ""; this.requestUpdate(); }
-  render() { const entries = this.entries.state; return html\`<main><section class="intro"><div><img class="mark" src=\${mark} alt=""><p>Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div class="auth"><span>\${this.session.state.auth?.displayName ?? "Anonymous"}</span>\${this.session.isAuthenticated() ? html\`<button @click=\${() => this.signOut()}>Sign out</button>\` : html\`<button @click=\${() => this.signIn()}>Sign in with Google</button>\`}\${this.authError ? html\`<p class="error">\${this.authError}</p>\` : null}</div></section><form @submit=\${(event: SubmitEvent) => this.submit(event)}><textarea .value=\${this.body} maxlength=\${this.maxLength} @input=\${(event: InputEvent) => { this.body = (event.currentTarget as HTMLTextAreaElement).value; this.requestUpdate(); }}></textarea><div class="row"><span>\${this.maxLength - this.body.length} characters left</span><button ?disabled=\${!this.body.trim() || this.sign.state.loading}>Sign guestbook</button></div>\${this.sign.state.error ? html\`<p class="error">\${this.sign.state.error.message}</p>\` : null}</form>\${entries.loading ? html\`<p>Loading…</p>\` : entries.error ? html\`<p role="alert" class="error">\${entries.error.message}</p>\` : html\`<section class="entries">\${(entries.data ?? []).map((entry) => html\`<article><strong>\${entry.authorName}</strong><time>\${new Date(entry.createdAt).toLocaleString()}</time><p>\${entry.body}</p></article>\`)}</section>\`}</main>\`; }
+  render() { const entries = this.entries.state; const providers = Object.entries(this.session.state.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable); return html\`<main><section class="intro"><div><img class="mark" src=\${mark} alt=""><p>Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div class="auth"><span>\${this.session.state.auth?.displayName ?? "Anonymous"}</span>\${this.session.isAuthenticated() ? html\`<button @click=\${() => this.signOut()}>Sign out</button>\` : providers.map(([provider]) => html\`<button @click=\${() => this.signIn(provider)}>Sign in with \${provider[0].toUpperCase() + provider.slice(1)}</button>\`)}\${this.authError ? html\`<p class="error">\${this.authError}</p>\` : null}</div></section><form @submit=\${(event: SubmitEvent) => this.submit(event)}><textarea .value=\${this.body} maxlength=\${this.maxLength} @input=\${(event: InputEvent) => { this.body = (event.currentTarget as HTMLTextAreaElement).value; this.requestUpdate(); }}></textarea><div class="row"><span>\${this.maxLength - this.body.length} characters left</span><button ?disabled=\${!this.body.trim() || this.sign.state.loading}>Sign guestbook</button></div>\${this.sign.state.error ? html\`<p class="error">\${this.sign.state.error.message}</p>\` : null}</form>\${entries.loading ? html\`<p>Loading…</p>\` : entries.error ? html\`<p role="alert" class="error">\${entries.error.message}</p>\` : html\`<section class="entries">\${(entries.data ?? []).map((entry) => html\`<article><strong>\${entry.authorName}</strong><time>\${new Date(entry.createdAt).toLocaleString()}</time><p>\${entry.body}</p></article>\`)}</section>\`}</main>\`; }
 }
 customElements.define("sporades-app", SporadesApp);
 `;
@@ -306,13 +306,13 @@ class SporadesApp extends LitElement {
   title = ""; selectedFile: File | null = null; publish = false; message = "";
   static styles = css\`:host{display:block;max-width:1080px;margin:auto;padding:40px 0;font-family:system-ui,sans-serif}header,header div,form,.library{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.mark{width:2rem}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}.grid img{width:100%;aspect-ratio:4/3;object-fit:cover}form,.library{background:white;padding:14px;border:1px solid #d8ddd2}\`;
   async requireMutation(mutation: any, ...args: any[]) { const result = await mutation.run(...args); if (result.error) throw result.error; }
-  async signIn() { this.message = ""; const result = await auth.signIn("google"); if (result.error) this.message = result.error.message; this.requestUpdate(); }
+  async signIn(provider: string) { this.message = ""; const result = await auth.signIn(provider); if (result.error) this.message = result.error.message; this.requestUpdate(); }
   async signOut() { this.message = ""; const result = await auth.signOut(); if (result.error) this.message = result.error.message; this.requestUpdate(); }
   async submit(event: SubmitEvent) { event.preventDefault(); if (!this.selectedFile) return; this.message = "Uploading..."; this.requestUpdate(); try { const file = await files.upload(this.selectedFile); const isPublic = !this.session.isAuthenticated() || this.publish; const publicUrl = isPublic ? await files.publicUrl(file.id, { noExpiry: true }) : null; const result = await this.recordPhoto.run({ title: this.title, file, isPublic, publicUrl }); if (result.error) { this.message = result.error.message; } else { this.title = ""; this.selectedFile = null; this.publish = false; this.message = isPublic ? "Photo added to the public gallery." : "Photo saved privately."; } } catch (error) { this.message = error instanceof Error ? error.message : "Upload failed."; } this.requestUpdate(); }
   async makePublic(photo: any) { try { const publicUrl = await files.publicUrl(photo.fileId, { noExpiry: true }); await this.requireMutation(this.updatePhotoImageUrl, photo.id, publicUrl.url); await this.requireMutation(this.updatePhotoPublicUrlId, photo.id, publicUrl.id); await this.requireMutation(this.updatePhotoIsPublic, photo.id, true); } catch (error) { this.message = error instanceof Error ? error.message : "Could not publish photo."; } this.requestUpdate(); }
   async makePrivate(photo: any) { try { if (photo.publicUrlId) await files.revokePublicUrl(photo.publicUrlId); await this.requireMutation(this.updatePhotoIsPublic, photo.id, false); await this.requireMutation(this.updatePhotoImageUrl, photo.id, ""); await this.requireMutation(this.updatePhotoPublicUrlId, photo.id, ""); } catch (error) { this.message = error instanceof Error ? error.message : "Could not hide photo."; } this.requestUpdate(); }
   renderPhoto(photo: any) { return html\`<article><img src=\${photo.imageUrl} alt=\${photo.title}><strong>\${photo.title}</strong><span>\${photo.ownerName}</span></article>\`; }
-  render() { const google = this.session.state.auth?.provider === "google"; return html\`<main><header><div><img class="mark" src=\${mark} alt=""><h1>Photo Library</h1></div><div><span>\${this.session.state.auth?.displayName ?? "Anonymous"}</span><button @click=\${() => google ? this.signOut() : this.signIn()}>\${google ? "Sign out" : "Sign in with Google"}</button></div></header><form @submit=\${(event: SubmitEvent) => this.submit(event)}><input placeholder="Caption" .value=\${this.title} @input=\${(event: InputEvent) => this.title = (event.currentTarget as HTMLInputElement).value}><input type="file" accept="image/*" @change=\${(event: Event) => { this.selectedFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null; this.requestUpdate(); }}><label><input type="checkbox" .checked=\${!this.session.isAuthenticated() || this.publish} ?disabled=\${!this.session.isAuthenticated()} @change=\${(event: Event) => { this.publish = (event.currentTarget as HTMLInputElement).checked; this.requestUpdate(); }}>\${this.session.isAuthenticated() ? "Publish to gallery" : "Anonymous uploads are public"}</label><button ?disabled=\${!this.selectedFile || this.recordPhoto.state.loading}>Upload photo</button>\${this.message ? html\`<p role="status">\${this.message}</p>\` : null}</form><section><h2>Public gallery</h2><div class="grid">\${(this.publicPhotos.state.data ?? []).map((photo) => this.renderPhoto(photo))}</div></section>\${google ? html\`<section><h2>My library</h2>\${(this.personalPhotos.state.data ?? []).map((photo) => html\`<article class="library"><strong>\${photo.title}</strong><span>\${photo.status}</span><button @click=\${() => photo.isPublic ? this.makePrivate(photo) : this.makePublic(photo)}>\${photo.isPublic ? "Make private" : "Make public"}</button></article>\`)}</section>\` : null}</main>\`; }
+  render() { const signedIn = this.session.isAuthenticated(); const providers = Object.entries(this.session.state.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable); return html\`<main><header><div><img class="mark" src=\${mark} alt=""><h1>Photo Library</h1></div><div><span>\${this.session.state.auth?.displayName ?? "Anonymous"}</span>\${signedIn ? html\`<button @click=\${() => this.signOut()}>Sign out</button>\` : providers.map(([provider]) => html\`<button @click=\${() => this.signIn(provider)}>Sign in with \${provider[0].toUpperCase() + provider.slice(1)}</button>\`)}</div></header><form @submit=\${(event: SubmitEvent) => this.submit(event)}><input placeholder="Caption" .value=\${this.title} @input=\${(event: InputEvent) => this.title = (event.currentTarget as HTMLInputElement).value}><input type="file" accept="image/*" @change=\${(event: Event) => { this.selectedFile = (event.currentTarget as HTMLInputElement).files?.[0] ?? null; this.requestUpdate(); }}><label><input type="checkbox" .checked=\${!signedIn || this.publish} ?disabled=\${!signedIn} @change=\${(event: Event) => { this.publish = (event.currentTarget as HTMLInputElement).checked; this.requestUpdate(); }}>\${signedIn ? "Publish to gallery" : "Anonymous uploads are public"}</label><button ?disabled=\${!this.selectedFile || this.recordPhoto.state.loading}>Upload photo</button>\${this.message ? html\`<p role="status">\${this.message}</p>\` : null}</form><section><h2>Public gallery</h2><div class="grid">\${(this.publicPhotos.state.data ?? []).map((photo) => this.renderPhoto(photo))}</div></section>\${signedIn ? html\`<section><h2>My library</h2>\${(this.personalPhotos.state.data ?? []).map((photo) => html\`<article class="library"><strong>\${photo.title}</strong><span>\${photo.status}</span><button @click=\${() => photo.isPublic ? this.makePrivate(photo) : this.makePublic(photo)}>\${photo.isPublic ? "Make private" : "Make public"}</button></article>\`)}</section>\` : null}</main>\`; }
 }
 customElements.define("sporades-app", SporadesApp);
 `;
@@ -386,7 +386,7 @@ function solidBlankAppTemplate() {
     return `import { Show } from "solid-js";\nimport { createAuth } from "./sporades";\nimport mark from "./sporades-mark.svg";\n\nexport default function App() {\n  const session = createAuth();\n  return (\n    <main>\n      <img class="mark" src={mark} alt="" />\n      <h1>Blank Sporades Capsule</h1>\n      <Show when={!session.state().loading} fallback={<p>Connecting…</p>}>\n        <p>Start building in server/index.ts and client/App.tsx.</p>\n      </Show>\n    </main>\n  );\n}\n`;
 }
 function solidTodoAppTemplate() {
-    return `import { createSignal, For, Show } from "solid-js";\nimport { auth } from "sporades/client";\nimport type { Todo } from "../shared/types";\nimport { createAuth, createMutation, createQuery } from "./sporades";\nimport mark from "./sporades-mark.svg";\n\nexport default function App() {\n  const session = createAuth();\n  const todos = createQuery<Todo[]>("todos");\n  const addTodo = createMutation("addTodo");\n  const [text, setText] = createSignal("");\n\n  async function submit(event: SubmitEvent) {\n    event.preventDefault();\n    const value = text().trim();\n    if (!value) return;\n    const result = await addTodo.run(value);\n    if (!result.error) setText("");\n  }\n\n  return (\n    <main>\n      <header><img class="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>\n      <Show when={session.state().providers.google?.enabled && !session.isAuthenticated()}>\n        <button type="button" onClick={() => auth.signIn("google")}>Sign in with Google</button>\n      </Show>\n      <form onSubmit={submit}>\n        <input aria-label="Todo" value={text()} onInput={(event) => setText(event.currentTarget.value)} />\n        <button disabled={addTodo.state().loading}>Add</button>\n      </form>\n      <Show when={!todos().loading} fallback={<p>Loading…</p>}>\n        <Show when={!todos().error} fallback={<p role="alert">{todos().error?.message}</p>}>\n          <ul><For each={todos().data ?? []}>{(todo) => <li>{todo.text}</li>}</For></ul>\n        </Show>\n      </Show>\n    </main>\n  );\n}\n`;
+    return `import { createSignal, For, Show } from "solid-js";\nimport { auth } from "sporades/client";\nimport type { Todo } from "../shared/types";\nimport { createAuth, createMutation, createQuery } from "./sporades";\nimport mark from "./sporades-mark.svg";\n\nexport default function App() {\n  const session = createAuth();\n  const todos = createQuery<Todo[]>("todos");\n  const addTodo = createMutation("addTodo");\n  const [text, setText] = createSignal("");\n  const providers = () => Object.entries(session.state().providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);\n\n  async function submit(event: SubmitEvent) {\n    event.preventDefault();\n    const value = text().trim();\n    if (!value) return;\n    const result = await addTodo.run(value);\n    if (!result.error) setText("");\n  }\n\n  return (\n    <main>\n      <header><img class="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>\n      <Show when={!session.isAuthenticated()}><For each={providers()}>{([provider]) => <button type="button" onClick={() => auth.signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>}</For></Show>\n      <form onSubmit={submit}>\n        <input aria-label="Todo" value={text()} onInput={(event) => setText(event.currentTarget.value)} />\n        <button disabled={addTodo.state().loading}>Add</button>\n      </form>\n      <Show when={!todos().loading} fallback={<p>Loading…</p>}>\n        <Show when={!todos().error} fallback={<p role="alert">{todos().error?.message}</p>}>\n          <ul><For each={todos().data ?? []}>{(todo) => <li>{todo.text}</li>}</For></ul>\n        </Show>\n      </Show>\n    </main>\n  );\n}\n`;
 }
 function solidGuestbookAppTemplate() {
     return `import { createSignal, For, Show } from "solid-js";
@@ -402,7 +402,7 @@ export default function App() {
   const [authError, setAuthError] = createSignal("");
   const maxLength = 280;
   const initials = (name: string) => name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?";
-  async function signIn() { setAuthError(""); const result = await auth.signIn("google"); if (result.error) setAuthError(result.error.message); }
+  async function signIn(provider: string) { setAuthError(""); const result = await auth.signIn(provider); if (result.error) setAuthError(result.error.message); }
   async function signOut() { setAuthError(""); const result = await auth.signOut(); if (result.error) setAuthError(result.error.message); }
   async function submit(event: SubmitEvent) {
     event.preventDefault();
@@ -413,7 +413,7 @@ export default function App() {
   }
   return <main class="shell">
     <section class="intro"><div><img class="mark" src={mark} alt="" /><p class="eyebrow">Sporades guestbook</p><h1>Leave a note from this island.</h1></div>
-      <div class="auth-panel"><span>{session.state().auth?.displayName ?? "Anonymous"}</span><Show when={!session.isAuthenticated()} fallback={<button class="secondary" type="button" onClick={signOut}>Sign out</button>}><button type="button" onClick={signIn}>Sign in with Google</button></Show><Show when={authError()}><p class="error">{authError()}</p></Show></div></section>
+      <div class="auth-panel"><span>{session.state().auth?.displayName ?? "Anonymous"}</span><Show when={!session.isAuthenticated()} fallback={<button class="secondary" type="button" onClick={signOut}>Sign out</button>}><For each={Object.entries(session.state().providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable)}>{([provider]) => <button type="button" onClick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>}</For></Show><Show when={authError()}><p class="error">{authError()}</p></Show></div></section>
     <form onSubmit={submit}><textarea value={body()} maxLength={maxLength} placeholder="Write something kind, sharp, or strangely memorable." onInput={(event) => setBody(event.currentTarget.value)} /><div class="row"><span>{maxLength - body().length} characters left</span><button type="submit" disabled={!body().trim() || sign.state().loading}>Sign guestbook</button></div><Show when={sign.state().error}><p class="error">{sign.state().error?.message}</p></Show></form>
     <Show when={!entries().loading} fallback={<p>Loading…</p>}><Show when={!entries().error} fallback={<p class="error" role="alert">{entries().error?.message}</p>}><section class="entries"><For each={entries().data ?? []}>{(entry) => <article><Show when={entry.authorPicture} fallback={<span class="badge">{initials(entry.authorName)}</span>}><img src={entry.authorPicture} alt="" /></Show><div><strong>{entry.authorName}</strong><time dateTime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time><p>{entry.body}</p></div></article>}</For></section></Show></Show>
   </main>;
@@ -431,8 +431,8 @@ export default function App() {
   const publicPhotos = createQuery<any[]>("publicPhotos"), personalPhotos = createQuery<any[]>("personalPhotos");
   const recordPhoto = createMutation("recordPhoto"), updatePhotoIsPublic = createMutation("updatePhotoIsPublic"), updatePhotoImageUrl = createMutation("updatePhotoImageUrl"), updatePhotoPublicUrlId = createMutation("updatePhotoPublicUrlId");
   const [title, setTitle] = createSignal(""), [selectedFile, setSelectedFile] = createSignal<File | null>(null), [publish, setPublish] = createSignal(false), [message, setMessage] = createSignal("");
-  const isGoogleUser = () => session.state().auth?.provider === "google";
-  async function signIn() { setMessage(""); const result = await auth.signIn("google"); if (result.error) setMessage(result.error.message); }
+  const providers = () => Object.entries(session.state().providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
+  async function signIn(provider: string) { setMessage(""); const result = await auth.signIn(provider); if (result.error) setMessage(result.error.message); }
   async function signOut() { setMessage(""); const result = await auth.signOut(); if (result.error) setMessage(result.error.message); }
   async function requireMutation(mutation: any, ...args: any[]) { const result = await mutation.run(...args); if (result.error) throw result.error; return result; }
   async function submit(event: SubmitEvent) {
@@ -441,10 +441,10 @@ export default function App() {
   }
   async function makePublic(photo: any) { setMessage(""); try { const publicUrl = await files.publicUrl(photo.fileId, { noExpiry: true }); await requireMutation(updatePhotoImageUrl, photo.id, publicUrl.url); await requireMutation(updatePhotoPublicUrlId, photo.id, publicUrl.id); await requireMutation(updatePhotoIsPublic, photo.id, true); } catch (error) { setMessage(error instanceof Error ? error.message : "Could not publish photo."); } }
   async function makePrivate(photo: any) { setMessage(""); try { if (photo.publicUrlId) await files.revokePublicUrl(photo.publicUrlId); await requireMutation(updatePhotoIsPublic, photo.id, false); await requireMutation(updatePhotoImageUrl, photo.id, ""); await requireMutation(updatePhotoPublicUrlId, photo.id, ""); } catch (error) { setMessage(error instanceof Error ? error.message : "Could not hide photo."); } }
-  return <main class="shell"><header><div><img class="mark" src={mark} alt="" /><p>Sporades Storage</p><h1>Photo Library</h1></div><div><span>{session.state().auth?.displayName ?? "Anonymous"}</span><Show when={isGoogleUser()} fallback={<button type="button" onClick={signIn}>Sign in with Google</button>}><button type="button" onClick={signOut}>Sign out</button></Show></div></header>
+  return <main class="shell"><header><div><img class="mark" src={mark} alt="" /><p>Sporades Storage</p><h1>Photo Library</h1></div><div><span>{session.state().auth?.displayName ?? "Anonymous"}</span><Show when={session.isAuthenticated()} fallback={<For each={providers()}>{([provider]) => <button type="button" onClick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>}</For>}><button type="button" onClick={signOut}>Sign out</button></Show></div></header>
     <form onSubmit={submit}><input value={title()} onInput={(event) => setTitle(event.currentTarget.value)} placeholder="Caption" /><input type="file" accept="image/*" onChange={(event) => setSelectedFile(event.currentTarget.files?.[0] ?? null)} /><label><input type="checkbox" checked={!session.isAuthenticated() || publish()} disabled={!session.isAuthenticated()} onChange={(event) => setPublish(event.currentTarget.checked)} />{session.isAuthenticated() ? "Publish to gallery" : "Anonymous uploads are public"}</label><button type="submit" disabled={!selectedFile() || recordPhoto.state().loading}>Upload photo</button><Show when={message()}><p>{message()}</p></Show></form>
     <section><h2>Public gallery</h2><Show when={publicPhotos().error}><p role="alert">{publicPhotos().error?.message}</p></Show><div class="grid"><For each={publicPhotos().data ?? []}>{(photo) => <article><img src={photo.imageUrl} alt={photo.title} /><strong>{photo.title}</strong><span>{photo.ownerName}</span></article>}</For></div></section>
-    <Show when={isGoogleUser()}><section><h2>My library</h2><div class="list"><For each={personalPhotos().data ?? []}>{(photo) => <article class="library"><div><strong>{photo.title}</strong><span>{photo.status}</span></div><Show when={photo.isPublic} fallback={<button type="button" onClick={() => makePublic(photo)}>Make public</button>}><button type="button" onClick={() => makePrivate(photo)}>Make private</button></Show></article>}</For></div></section></Show>
+    <Show when={session.isAuthenticated()}><section><h2>My library</h2><div class="list"><For each={personalPhotos().data ?? []}>{(photo) => <article class="library"><div><strong>{photo.title}</strong><span>{photo.status}</span></div><Show when={photo.isPublic} fallback={<button type="button" onClick={() => makePublic(photo)}>Make public</button>}><button type="button" onClick={() => makePrivate(photo)}>Make private</button></Show></article>}</For></div></section></Show>
   </main>;
 }
 `;
@@ -558,7 +558,7 @@ function svelteTodoAppTemplate() {
 
 <main>
   <header><img class="mark" src={mark} alt="" /><h1>Sporades Todos</h1></header>
-  {#if $session.providers.google?.enabled && !$session.isAuthenticated()}<button type="button" onclick={() => auth.signIn("google")}>Sign in with Google</button>{/if}
+  {#if !$session.isAuthenticated()}{#each Object.entries($session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable) as [provider]}<button type="button" onclick={() => auth.signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>{/each}{/if}
   <form onsubmit={(event) => { event.preventDefault(); submit(); }}><input bind:value={text} aria-label="Todo" /><button disabled={$addTodo.loading}>Add</button></form>
   {#if $todos.loading}<p>Loading…</p>{:else if $todos.error}<p role="alert">{$todos.error.message}</p>{:else}<ul>{#each $todos.data ?? [] as todo (todo.id)}<li>{todo.text}</li>{/each}</ul>{/if}
 </main>
@@ -582,14 +582,14 @@ function svelteGuestbookAppTemplate() {
   const maxLength = 280;
   let body = "";
   let authError = "";
-  async function signIn() { authError = ""; const result = await auth.signIn("google"); if (result.error) authError = result.error.message; }
+  async function signIn(provider: string) { authError = ""; const result = await auth.signIn(provider); if (result.error) authError = result.error.message; }
   async function signOut() { authError = ""; const result = await auth.signOut(); if (result.error) authError = result.error.message; }
   async function submit() { const message = body.trim(); if (!message || message.length > maxLength) return; const result = await sign.run(message); if (!result.error) body = ""; }
   function initials(name: string) { return name.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?"; }
 </script>
 
 <main class="shell">
-  <section class="intro"><div><img class="mark" src={mark} alt="" /><p class="eyebrow">Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div class="auth-panel"><span>{$session.auth?.displayName ?? "Anonymous"}</span>{#if !$session.isAuthenticated()}<button type="button" onclick={signIn}>Sign in with Google</button>{:else}<button class="secondary" type="button" onclick={signOut}>Sign out</button>{/if}{#if authError}<p class="error">{authError}</p>{/if}</div></section>
+  <section class="intro"><div><img class="mark" src={mark} alt="" /><p class="eyebrow">Sporades guestbook</p><h1>Leave a note from this island.</h1></div><div class="auth-panel"><span>{$session.auth?.displayName ?? "Anonymous"}</span>{#if !$session.isAuthenticated()}{#each Object.entries($session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable) as [provider]}<button type="button" onclick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>{/each}{:else}<button class="secondary" type="button" onclick={signOut}>Sign out</button>{/if}{#if authError}<p class="error">{authError}</p>{/if}</div></section>
   <form onsubmit={(event) => { event.preventDefault(); submit(); }}><textarea bind:value={body} maxlength={maxLength} placeholder="Write something kind, sharp, or strangely memorable."></textarea><div class="row"><span>{maxLength - body.length} characters left</span><button disabled={!body.trim() || $sign.loading}>Sign guestbook</button></div>{#if $sign.error}<p class="error">{$sign.error.message}</p>{/if}</form>
   {#if $entries.loading}<p>Loading…</p>{:else if $entries.error}<p class="error" role="alert">{$entries.error.message}</p>{:else}<section class="entries">{#each $entries.data ?? [] as entry (entry.id)}<article><span class="badge">{entry.authorPicture ? "" : initials(entry.authorName)}</span>{#if entry.authorPicture}<img src={entry.authorPicture} alt="" />{/if}<div><strong>{entry.authorName}</strong><time datetime={entry.createdAt}>{new Date(entry.createdAt).toLocaleString()}</time><p>{entry.body}</p></div></article>{/each}</section>{/if}
 </main>
@@ -607,18 +607,18 @@ function sveltePhotoLibraryAppTemplate() {
   const publicPhotos = queryStore("publicPhotos"); const personalPhotos = queryStore("personalPhotos");
   const recordPhoto = mutationStore("recordPhoto"); const updatePhotoIsPublic = mutationStore("updatePhotoIsPublic"); const updatePhotoImageUrl = mutationStore("updatePhotoImageUrl"); const updatePhotoPublicUrlId = mutationStore("updatePhotoPublicUrlId");
   let title = "", selectedFile: File | null = null, publish = false, message = "";
-  $: isGoogleUser = $session.auth?.provider === "google";
-  async function signIn() { message = ""; const result = await auth.signIn("google"); if (result.error) message = result.error.message; }
+  $: availableProviders = Object.entries($session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
+  async function signIn(provider: string) { message = ""; const result = await auth.signIn(provider); if (result.error) message = result.error.message; }
   async function signOut() { message = ""; const result = await auth.signOut(); if (result.error) message = result.error.message; }
   async function requireMutation(store: any,...args: any[]){const result=await store.run(...args);if(result.error)throw result.error;return result;}
   async function submit() { if (!selectedFile) return; message = "Uploading..."; try { const file = await files.upload(selectedFile); const shouldPublish = !$session.isAuthenticated() || publish; const publicUrl = shouldPublish ? await files.publicUrl(file.id,{noExpiry:true}) : null; const result = await recordPhoto.run({title,file,isPublic:shouldPublish,publicUrl}); if (result.error) { message=result.error.message; return; } title="";selectedFile=null;publish=false;message=shouldPublish?"Photo added to the public gallery.":"Photo saved privately."; } catch(error){message=error instanceof Error?error.message:"Upload failed.";} }
   async function makePublic(photo: any){ try{const publicUrl=await files.publicUrl(photo.fileId,{noExpiry:true});await requireMutation(updatePhotoImageUrl,photo.id,publicUrl.url);await requireMutation(updatePhotoPublicUrlId,photo.id,publicUrl.id);await requireMutation(updatePhotoIsPublic,photo.id,true);}catch(error){message=error instanceof Error?error.message:"Could not publish photo.";} }
   async function makePrivate(photo: any){ try{if(photo.publicUrlId)await files.revokePublicUrl(photo.publicUrlId);await requireMutation(updatePhotoIsPublic,photo.id,false);await requireMutation(updatePhotoImageUrl,photo.id,"");await requireMutation(updatePhotoPublicUrlId,photo.id,"");}catch(error){message=error instanceof Error?error.message:"Could not hide photo.";} }
 </script>
-<main class="shell"><header><div><img class="mark" src={mark} alt=""/><p>Sporades Storage</p><h1>Photo Library</h1></div><div><span>{$session.auth?.displayName??"Anonymous"}</span>{#if isGoogleUser}<button onclick={signOut}>Sign out</button>{:else}<button onclick={signIn}>Sign in with Google</button>{/if}</div></header>
+<main class="shell"><header><div><img class="mark" src={mark} alt=""/><p>Sporades Storage</p><h1>Photo Library</h1></div><div><span>{$session.auth?.displayName??"Anonymous"}</span>{#if $session.isAuthenticated()}<button onclick={signOut}>Sign out</button>{:else}{#each availableProviders as [provider]}<button onclick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>{/each}{/if}</div></header>
 <form onsubmit={(event)=>{event.preventDefault();submit();}}><input bind:value={title} placeholder="Caption"/><input type="file" accept="image/*" onchange={(event)=>selectedFile=event.currentTarget.files?.[0]??null}/><label><input type="checkbox" bind:checked={publish} disabled={!$session.isAuthenticated()}/>{$session.isAuthenticated()?"Publish to gallery":"Anonymous uploads are public"}</label><button disabled={!selectedFile||$recordPhoto.loading}>Upload photo</button>{#if message}<p>{message}</p>{/if}</form>
 <section><h2>Public gallery</h2><div class="grid">{#each $publicPhotos.data??[] as photo(photo.id)}<article><img src={photo.imageUrl} alt={photo.title}/><strong>{photo.title}</strong><span>{photo.ownerName}</span></article>{/each}</div></section>
-{#if isGoogleUser}<section><h2>My library</h2>{#each $personalPhotos.data??[] as photo(photo.id)}<article class="library"><div><strong>{photo.title}</strong><span>{photo.status}</span></div>{#if photo.isPublic}<button onclick={()=>makePrivate(photo)}>Make private</button>{:else}<button onclick={()=>makePublic(photo)}>Make public</button>{/if}</article>{/each}</section>{/if}</main>
+{#if $session.isAuthenticated()}<section><h2>My library</h2>{#each $personalPhotos.data??[] as photo(photo.id)}<article class="library"><div><strong>{photo.title}</strong><span>{photo.status}</span></div>{#if photo.isPublic}<button onclick={()=>makePrivate(photo)}>Make private</button>{:else}<button onclick={()=>makePublic(photo)}>Make public</button>{/if}</article>{/each}</section>{/if}</main>
 <style>:global(body){margin:0;background:#f7f7f2;font-family:system-ui,sans-serif}.shell{width:min(1080px,calc(100% - 32px));margin:auto;padding:40px 0}header,header div,form,.library{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}.mark{width:2rem}h1{font-size:clamp(2.2rem,7vw,5rem);margin:0}form,.library{background:white;border:1px solid #d8ddd2;border-radius:8px;padding:14px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}.grid article{background:white}.grid img{width:100%;aspect-ratio:4/3;object-fit:cover}button{background:#245f73;color:white;border:0;border-radius:8px;padding:12px}</style>
 `;
 }
@@ -729,7 +729,7 @@ async function submit() {
 <template>
   <main>
     <header><img class="mark" src="./sporades-mark.svg" alt="" /><h1>Sporades Todos</h1></header>
-    <button v-if="session.providers.google?.enabled && !session.isAuthenticated()" type="button" @click="auth.signIn('google')">Sign in with Google</button>
+    <template v-if="!session.isAuthenticated()"><button v-for="[provider] in Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable)" :key="provider" type="button" @click="auth.signIn(provider)">Sign in with {{ provider[0].toUpperCase() + provider.slice(1) }}</button></template>
     <form @submit.prevent="submit"><input v-model="text" aria-label="Todo" /><button :disabled="addTodo.loading">Add</button></form>
     <p v-if="todos.loading">Loading…</p>
     <p v-else-if="todos.error" role="alert">{{ todos.error.message }}</p>
@@ -759,9 +759,9 @@ const body = ref("");
 const authError = ref("");
 const remaining = computed(() => maxLength - body.value.length);
 
-async function signInWithGoogle() {
+async function signIn(provider: string) {
   authError.value = "";
-  const result = await auth.signIn("google");
+  const result = await auth.signIn(provider);
   if (result.error) authError.value = result.error.message;
 }
 
@@ -789,7 +789,7 @@ function initials(name: string) {
       <div><img class="mark" src="./sporades-mark.svg" alt="" /><p class="eyebrow">Sporades guestbook</p><h1>Leave a note from this island.</h1></div>
       <div class="auth-panel">
         <span>{{ session.auth?.displayName ?? "Anonymous" }}</span>
-        <button v-if="!session.isAuthenticated()" type="button" @click="signInWithGoogle">Sign in with Google</button>
+        <template v-if="!session.isAuthenticated()"><button v-for="[provider] in Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable)" :key="provider" type="button" @click="signIn(provider)">Sign in with {{ provider[0].toUpperCase() + provider.slice(1) }}</button></template>
         <button v-else class="secondary-button" type="button" @click="signOut">Sign out</button>
         <p v-if="authError" class="error">{{ authError }}</p>
       </div>
@@ -846,10 +846,10 @@ const title = ref("");
 const selectedFile = ref<File | null>(null);
 const publish = ref(false);
 const message = ref("");
-const isGoogleUser = computed(() => session.auth?.provider === "google");
+const availableProviders = computed(() => Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable));
 
 function selectFile(event: Event) { selectedFile.value = (event.currentTarget as HTMLInputElement).files?.[0] ?? null; }
-async function signInWithGoogle() { message.value = ""; const result = await auth.signIn("google"); if (result.error) message.value = result.error.message; }
+async function signIn(provider: string) { message.value = ""; const result = await auth.signIn(provider); if (result.error) message.value = result.error.message; }
 async function signOut() { message.value = ""; const result = await auth.signOut(); if (result.error) message.value = result.error.message; }
 
 async function submit() {
@@ -858,7 +858,7 @@ async function submit() {
   try {
     const file = await files.upload(selectedFile.value);
     const shouldPublish = !session.isAuthenticated() || publish.value;
-    // Google-authenticated uploads stay private unless the user explicitly opts in.
+    // Authenticated uploads stay private unless the user explicitly opts in.
     const publicUrl = shouldPublish ? await files.publicUrl(file.id, { noExpiry: true }) : null;
     const result = await recordPhoto.run({ title: title.value, file, isPublic: shouldPublish, publicUrl });
     if (result.error) { message.value = result.error.message; return; }
@@ -890,14 +890,14 @@ async function makePrivate(photo: any) {
 
 <template>
   <main class="shell">
-    <header class="topbar"><div><img class="mark" src="./sporades-mark.svg" alt="" /><p class="eyebrow">Sporades Storage</p><h1>Photo Library</h1></div><div class="auth-panel"><span>{{ session.auth?.displayName ?? "Anonymous" }}</span><button v-if="isGoogleUser" class="secondary-button" @click="signOut">Sign out</button><button v-else @click="signInWithGoogle">Sign in with Google</button></div></header>
+    <header class="topbar"><div><img class="mark" src="./sporades-mark.svg" alt="" /><p class="eyebrow">Sporades Storage</p><h1>Photo Library</h1></div><div class="auth-panel"><span>{{ session.auth?.displayName ?? "Anonymous" }}</span><button v-if="session.isAuthenticated()" class="secondary-button" @click="signOut">Sign out</button><template v-else><button v-for="[provider] in availableProviders" :key="provider" @click="signIn(provider)">Sign in with {{ provider[0].toUpperCase() + provider.slice(1) }}</button></template></div></header>
     <form class="uploader" @submit.prevent="submit">
       <input v-model="title" placeholder="Caption" /><input type="file" accept="image/*" @change="selectFile" />
       <label :class="session.isAuthenticated() ? 'check' : 'check muted'"><input v-model="publish" type="checkbox" :checked="!session.isAuthenticated() || publish" :disabled="!session.isAuthenticated()" />{{ session.isAuthenticated() ? "Publish to gallery" : "Anonymous uploads are public" }}</label>
       <button :disabled="!selectedFile || recordPhoto.loading">Upload photo</button><p v-if="message" class="message">{{ message }}</p>
     </form>
     <section><h2>Public gallery</h2><p v-if="publicPhotos.error" role="alert">{{ publicPhotos.error.message }}</p><div class="grid"><article v-for="photo in publicPhotos.data ?? []" :key="photo.id" class="photo"><img :src="photo.imageUrl" :alt="photo.title" /><div><strong>{{ photo.title }}</strong><span>{{ photo.ownerName }}</span></div></article></div></section>
-    <section v-if="isGoogleUser"><h2>My library</h2><div class="list"><article v-for="photo in personalPhotos.data ?? []" :key="photo.id" class="library-row"><div><strong>{{ photo.title }}</strong><span>{{ photo.status }}</span></div><button v-if="photo.isPublic" class="secondary-button" @click="makePrivate(photo)">Make private</button><button v-else @click="makePublic(photo)">Make public</button></article></div></section>
+    <section v-if="session.isAuthenticated()"><h2>My library</h2><div class="list"><article v-for="photo in personalPhotos.data ?? []" :key="photo.id" class="library-row"><div><strong>{{ photo.title }}</strong><span>{{ photo.status }}</span></div><button v-if="photo.isPublic" class="secondary-button" @click="makePrivate(photo)">Make private</button><button v-else @click="makePublic(photo)">Make public</button></article></div></section>
   </main>
 </template>
 
@@ -1404,7 +1404,7 @@ export default capsule({
         .filter((photo) => photo.imageUrl),
     ),
     personalPhotos: query((ctx) => {
-      if (ctx.auth.provider !== "google") {
+      if (ctx.auth.isGuest) {
         return [];
       }
 
@@ -1454,7 +1454,7 @@ export default capsule({
       }
 
       const title = globalThis.String(input.title ?? file.name).trim() || file.name;
-      const isPublic = ctx.auth.provider === "google" ? globalThis.Boolean(input.isPublic) : true;
+      const isPublic = ctx.auth.isGuest ? true : globalThis.Boolean(input.isPublic);
       const imageUrl = isPublic ? globalThis.String(input.publicUrl?.url ?? "") : "";
       const publicUrlId = isPublic ? globalThis.String(input.publicUrl?.id ?? "") : "";
       if (isPublic && !imageUrl) {
@@ -1891,11 +1891,13 @@ function App() {
   return (
     <main>
       <h1>Sporades Todos</h1>
-      {session.providers.google?.enabled && session.providers.google?.configured && !session.isAuthenticated() ? (
-        <button type="button" onClick={() => auth.signIn("google")}>
-          Sign in with Google
-        </button>
-      ) : null}
+      {!session.isAuthenticated() ? Object.entries(session.providers)
+        .filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable)
+        .map(([provider]) => (
+          <button key={provider} type="button" onClick={() => auth.signIn(provider)}>
+            Sign in with {provider[0].toUpperCase() + provider.slice(1)}
+          </button>
+        )) : null}
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -1935,11 +1937,13 @@ function App() {
   return (
     <main>
       <h1>Sporades Todos</h1>
-      {session.providers.google?.enabled && session.providers.google?.configured && !session.isAuthenticated() ? (
-        <button type="button" onClick={() => auth.signIn("google")}>
-          Sign in with Google
-        </button>
-      ) : null}
+      {!session.isAuthenticated() ? Object.entries(session.providers)
+        .filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable)
+        .map(([provider]) => (
+          <button key={provider} type="button" onClick={() => auth.signIn(provider)}>
+            Sign in with {provider[0].toUpperCase() + provider.slice(1)}
+          </button>
+        )) : null}
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -1980,10 +1984,11 @@ function App() {
   const [body, setBody] = useState("");
   const [authError, setAuthError] = useState("");
   const remaining = maxLength - body.length;
+  const availableProviders = Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
 
-  async function signInWithGoogle() {
+  async function signIn(provider: string) {
     setAuthError("");
-    const result = await auth.signIn("google");
+    const result = await auth.signIn(provider);
     if (result.error) {
       setAuthError(result.error.message);
     }
@@ -2016,9 +2021,7 @@ function App() {
         <div class="auth-panel">
           <span>{session.auth?.displayName ?? "Anonymous"}</span>
           {!session.isAuthenticated() ? (
-            <button type="button" onClick={signInWithGoogle}>
-              Sign in with Google
-            </button>
+            availableProviders.map(([provider]) => <button key={provider} type="button" onClick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>)
           ) : (
             <button class="secondary-button" type="button" onClick={signOut}>
               Sign out
@@ -2113,10 +2116,11 @@ function App() {
   const [body, setBody] = useState("");
   const [authError, setAuthError] = useState("");
   const remaining = maxLength - body.length;
+  const availableProviders = Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
 
-  async function signInWithGoogle() {
+  async function signIn(provider: string) {
     setAuthError("");
-    const result = await auth.signIn("google");
+    const result = await auth.signIn(provider);
     if (result.error) {
       setAuthError(result.error.message);
     }
@@ -2149,9 +2153,7 @@ function App() {
         <div className="auth-panel">
           <span>{session.auth?.displayName ?? "Anonymous"}</span>
           {!session.isAuthenticated() ? (
-            <button type="button" onClick={signInWithGoogle}>
-              Sign in with Google
-            </button>
+            availableProviders.map(([provider]) => <button key={provider} type="button" onClick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>)
           ) : (
             <button className="secondary-button" type="button" onClick={signOut}>
               Sign out
@@ -2252,11 +2254,11 @@ function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [publish, setPublish] = useState(false);
   const [message, setMessage] = useState("");
-  const isGoogleUser = session.auth?.provider === "google";
+  const availableProviders = Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
 
-  async function signInWithGoogle() {
+  async function signIn(provider: string) {
     setMessage("");
-    const result = await auth.signIn("google");
+    const result = await auth.signIn(provider);
     if (result.error) setMessage(result.error.message);
   }
 
@@ -2318,7 +2320,7 @@ function App() {
   }
 
   const gallery = publicPhotos.data ?? [];
-  const mine = isGoogleUser ? personalPhotos.data ?? [] : [];
+  const mine = session.isAuthenticated() ? personalPhotos.data ?? [] : [];
 
   return (
     <main class="shell">
@@ -2330,14 +2332,12 @@ function App() {
         </div>
         <div class="auth-panel">
           <span>{session.auth?.displayName ?? "Anonymous"}</span>
-          {isGoogleUser ? (
+          {session.isAuthenticated() ? (
             <button class="secondary-button" type="button" onClick={signOut}>
               Sign out
             </button>
           ) : (
-            <button type="button" onClick={signInWithGoogle}>
-              Sign in with Google
-            </button>
+            availableProviders.map(([provider]) => <button key={provider} type="button" onClick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>)
           )}
         </div>
       </header>
@@ -2379,7 +2379,7 @@ function App() {
         </div>
       </section>
 
-      {isGoogleUser ? (
+      {session.isAuthenticated() ? (
         <section>
           <h2>My library</h2>
           <div class="list">
@@ -2456,11 +2456,11 @@ function App() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [publish, setPublish] = useState(false);
   const [message, setMessage] = useState("");
-  const isGoogleUser = session.auth?.provider === "google";
+  const availableProviders = Object.entries(session.providers).filter(([, state]) => state.enabled && state.configured && state.runtimeAvailable);
 
-  async function signInWithGoogle() {
+  async function signIn(provider: string) {
     setMessage("");
-    const result = await auth.signIn("google");
+    const result = await auth.signIn(provider);
     if (result.error) setMessage(result.error.message);
   }
 
@@ -2522,7 +2522,7 @@ function App() {
   }
 
   const gallery = publicPhotos.data ?? [];
-  const mine = isGoogleUser ? personalPhotos.data ?? [] : [];
+  const mine = session.isAuthenticated() ? personalPhotos.data ?? [] : [];
 
   return (
     <main className="shell">
@@ -2534,14 +2534,12 @@ function App() {
         </div>
         <div className="auth-panel">
           <span>{session.auth?.displayName ?? "Anonymous"}</span>
-          {isGoogleUser ? (
+          {session.isAuthenticated() ? (
             <button className="secondary-button" type="button" onClick={signOut}>
               Sign out
             </button>
           ) : (
-            <button type="button" onClick={signInWithGoogle}>
-              Sign in with Google
-            </button>
+            availableProviders.map(([provider]) => <button key={provider} type="button" onClick={() => signIn(provider)}>Sign in with {provider[0].toUpperCase() + provider.slice(1)}</button>)
           )}
         </div>
       </header>
@@ -2583,7 +2581,7 @@ function App() {
         </div>
       </section>
 
-      {isGoogleUser ? (
+      {session.isAuthenticated() ? (
         <section>
           <h2>My library</h2>
           <div className="list">

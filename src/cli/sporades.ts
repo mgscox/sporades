@@ -614,6 +614,12 @@ function parseAuthArgs(args: string[]): LooseRecord {
   let clientId = null;
   let clientSecret = null;
   let clientJson = null;
+  let tenant = null;
+  let teamId = null;
+  let keyId = null;
+  let privateKey = null;
+  let graphVersion = null;
+  let disable = false;
   let email = null;
   let displayName = null;
   let picture = null;
@@ -638,6 +644,30 @@ function parseAuthArgs(args: string[]): LooseRecord {
 
       case "--client-json":
         clientJson = readFlagValue(rest, ++index, "--client-json");
+        break;
+
+      case "--tenant":
+        tenant = readFlagValue(rest, ++index, "--tenant");
+        break;
+
+      case "--team-id":
+        teamId = readFlagValue(rest, ++index, "--team-id");
+        break;
+
+      case "--key-id":
+        keyId = readFlagValue(rest, ++index, "--key-id");
+        break;
+
+      case "--private-key":
+        privateKey = readFlagValue(rest, ++index, "--private-key");
+        break;
+
+      case "--graph-version":
+        graphVersion = readFlagValue(rest, ++index, "--graph-version");
+        break;
+
+      case "--disable":
+        disable = true;
         break;
 
       case "--email":
@@ -682,21 +712,33 @@ function parseAuthArgs(args: string[]): LooseRecord {
       return { subcommand, provider: simulatedProvider, email, displayName, picture, port, client, json, projectDir: process.cwd() };
 
     case "set":
-      if (provider === "google") {
-        if (clientJson) {
-          const credentials = readProviderClientCredentials(provider, clientJson, process.cwd());
-          clientId ??= credentials.clientId;
-          clientSecret ??= credentials.clientSecret;
-        }
-        if (!clientId || !clientSecret) {
+      if (!provider || !["anonymous", "email", "google", "microsoft", "apple", "facebook"].includes(provider)) {
+        break;
+      }
+      if (clientJson) {
+        const credentials = readProviderClientCredentials(provider, clientJson, process.cwd());
+        clientId ??= credentials.clientId;
+        clientSecret ??= credentials.clientSecret;
+        tenant ??= credentials.tenant;
+        teamId ??= credentials.teamId;
+        keyId ??= credentials.keyId;
+        privateKey ??= credentials.privateKey;
+        graphVersion ??= credentials.graphVersion;
+      }
+      if (!disable && !["anonymous", "email"].includes(provider)) {
+        const missing = provider === "apple"
+          ? !clientId || !teamId || !keyId || !privateKey
+          : !clientId || !clientSecret;
+        if (missing) {
           throw commandError(
-            "Missing Google OAuth credentials.",
-            "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`.",
+            `Missing ${providerLabel(provider)} OAuth credentials.`,
+            provider === "apple"
+              ? "Provide `--client-id`, `--team-id`, `--key-id`, and `--private-key`, or use `--client-json <path>`."
+              : `Run \`sporades auth set ${provider} --client-id <id> --client-secret <secret>\` or use \`--client-json <path>\`.`,
           );
         }
-        return { subcommand, provider, clientId, clientSecret, json, projectDir: process.cwd() };
       }
-      break;
+      return { subcommand, provider, clientId, clientSecret, tenant, teamId, keyId, privateKey, graphVersion, disable, json, projectDir: process.cwd() };
 
     default:
       break;
@@ -704,7 +746,7 @@ function parseAuthArgs(args: string[]): LooseRecord {
 
   throw commandError(
     "Unknown auth command.",
-    "Use `sporades auth status`, `sporades auth clients`, `sporades auth set google`, or `sporades auth as email`.",
+    "Use `sporades auth status`, `sporades auth clients`, `sporades auth set <provider>`, or `sporades auth as email`.",
   );
 }
 
@@ -1193,12 +1235,6 @@ function parseHostArgs(args: string[]): LooseRecord {
 }
 
 function readProviderClientCredentials(provider: string, clientJsonPath: string, projectDir: string) {
-  if (provider !== "google") {
-    throw commandError(
-      `Unsupported auth provider credentials file: ${provider}`,
-      "Use explicit --client-id and --client-secret values for this provider.",
-    );
-  }
   const resolvedPath = path.resolve(projectDir, clientJsonPath);
   let raw;
   try {
@@ -1206,7 +1242,7 @@ function readProviderClientCredentials(provider: string, clientJsonPath: string,
   } catch {
     throw commandError(
       `Unable to read OAuth client JSON: ${clientJsonPath}`,
-      "Check the file path and retry `sporades auth set google --client-json <path>`.",
+      `Check the file path and retry \`sporades auth set ${provider} --client-json <path>\`.`,
     );
   }
 
@@ -1220,18 +1256,38 @@ function readProviderClientCredentials(provider: string, clientJsonPath: string,
     );
   }
 
-  const client = parsed.web;
-  if (!client?.client_id || !client?.client_secret) {
+  const parsers: Record<string, (value: any) => LooseRecord | null> = {
+    google: (value) => value.web?.client_id && value.web?.client_secret
+      ? { clientId: value.web.client_id, clientSecret: value.web.client_secret }
+      : null,
+    microsoft: (value) => value.clientId && value.clientSecret
+      ? { clientId: value.clientId, clientSecret: value.clientSecret, tenant: value.tenant ?? "common" }
+      : null,
+    apple: (value) => value.servicesId && value.teamId && value.keyId && value.privateKey
+      ? { clientId: value.servicesId, teamId: value.teamId, keyId: value.keyId, privateKey: value.privateKey }
+      : null,
+    facebook: (value) => value.appId && value.appSecret
+      ? { clientId: value.appId, clientSecret: value.appSecret, graphVersion: value.graphVersion ?? null }
+      : null,
+  };
+  const credentials = parsers[provider]?.(parsed) ?? null;
+  if (!credentials) {
+    if (provider === "google") {
+      throw commandError(
+        "OAuth client JSON is missing Google client credentials.",
+        "Use a Google OAuth Web application JSON file containing `web.client_id` and `web.client_secret`.",
+      );
+    }
     throw commandError(
-      "OAuth client JSON is missing Google client credentials.",
-      "Use a Google OAuth Web application JSON file containing `web.client_id` and `web.client_secret`.",
+      `OAuth client JSON is missing ${providerLabel(provider)} credentials.`,
+      `Use a ${providerLabel(provider)} credentials JSON file with the fields documented by \`sporades auth --help\`.`,
     );
   }
+  return credentials;
+}
 
-  return {
-    clientId: client.client_id,
-    clientSecret: client.client_secret,
-  };
+function providerLabel(provider: string) {
+  return `${provider[0]?.toUpperCase() ?? ""}${provider.slice(1)}`;
 }
 
 function parseLogsArgs(args: string[]): LooseRecord {
@@ -2466,7 +2522,9 @@ async function manageAuth(options: LooseRecord) {
         writeResult({ ok: true, data: status, error: null });
       } else {
         process.stdout.write(`Auth mode: ${status.mode}\n`);
-        process.stdout.write(`Google OAuth: ${status.google.configured ? "configured" : "not configured"}\n`);
+        for (const [provider, state] of Object.entries(status.providers) as [string, any][]) {
+          process.stdout.write(`${providerLabel(provider)}: ${state.enabled ? "enabled" : "disabled"}, ${state.configured ? "configured" : "not configured"}, runtime ${state.runtimeAvailable ? "available" : "unavailable"}\n`);
+        }
       }
       return;
     }
@@ -2526,27 +2584,61 @@ async function manageAuth(options: LooseRecord) {
 
   const configPath = path.join(options.projectDir, "sporades.json");
   const config = await readProjectConfig(options.projectDir);
+  const existingAuth = config.auth && typeof config.auth === "object" ? config.auth : {};
+  const existingProviders = existingAuth.providers && typeof existingAuth.providers === "object"
+    ? { ...existingAuth.providers }
+    : {};
+  if (existingAuth.google && existingProviders.google === undefined) {
+    existingProviders.google = { enabled: true, ...existingAuth.google };
+  }
+  if (existingProviders.anonymous === undefined) {
+    existingProviders.anonymous = { enabled: true };
+  }
+  const previous = existingProviders[options.provider] && typeof existingProviders[options.provider] === "object"
+    ? existingProviders[options.provider]
+    : {};
+  const providerConfig: LooseRecord = { ...previous, enabled: !options.disable };
+  const envValues: Record<string, string> = {};
+  if (["google", "microsoft", "facebook"].includes(options.provider) && !options.disable) {
+    const prefix = options.provider.toUpperCase();
+    providerConfig.clientIdEnv = `${prefix}_CLIENT_ID`;
+    providerConfig.clientSecretEnv = `${prefix}_CLIENT_SECRET`;
+    envValues[providerConfig.clientIdEnv] = options.clientId;
+    envValues[providerConfig.clientSecretEnv] = options.clientSecret;
+  }
+  if (options.provider === "microsoft" && !options.disable) {
+    providerConfig.tenant = options.tenant ?? previous.tenant ?? "common";
+  }
+  if (options.provider === "facebook" && !options.disable && options.graphVersion) {
+    providerConfig.graphVersion = options.graphVersion;
+  }
+  if (options.provider === "apple" && !options.disable) {
+    providerConfig.clientId = options.clientId;
+    providerConfig.teamId = options.teamId;
+    providerConfig.keyId = options.keyId;
+    providerConfig.privateKeyEnv = "APPLE_PRIVATE_KEY";
+    envValues.APPLE_PRIVATE_KEY = options.privateKey;
+  }
+  existingProviders[options.provider] = providerConfig;
+  const enabledSibling = Object.entries(existingProviders).find(([provider, value]: [string, any]) =>
+    provider !== "anonymous" && provider !== options.provider && (value === true || value?.enabled !== false),
+  )?.[0];
   config.auth = {
-    mode: "google",
-    google: {
-      clientIdEnv: "GOOGLE_CLIENT_ID",
-      clientSecretEnv: "GOOGLE_CLIENT_SECRET",
-    },
+    mode: options.disable && existingAuth.mode === options.provider
+      ? enabledSibling ?? "anonymous"
+      : options.disable ? existingAuth.mode ?? "anonymous" : options.provider,
+    providers: existingProviders,
   };
   await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
-  await upsertServerEnvValues(path.join(options.projectDir, ".env.sporades.server"), {
-    GOOGLE_CLIENT_ID: options.clientId,
-    GOOGLE_CLIENT_SECRET: options.clientSecret,
-  });
-
-  const status = authStatus(config, {
-    GOOGLE_CLIENT_ID: options.clientId,
-    GOOGLE_CLIENT_SECRET: options.clientSecret,
-  });
+  const envPath = path.join(options.projectDir, ".env.sporades.server");
+  if (Object.keys(envValues).length > 0) {
+    await upsertServerEnvValues(envPath, envValues);
+  }
+  const status = authStatus(config, parseServerEnv(await readServerEnvFile(envPath)));
   if (options.json) {
     writeResult({ ok: true, data: status, error: null });
   } else {
-    process.stdout.write("Google OAuth configured.\n");
+    process.stdout.write(`${providerLabel(options.provider)} auth ${options.disable ? "disabled" : "configured"}.\n`);
     process.stdout.write("Restart any running Sporades dev session so the server reloads auth configuration.\n");
   }
 }

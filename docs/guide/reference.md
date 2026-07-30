@@ -1094,8 +1094,29 @@ sporades auth status
 sporades auth status --json
 ```
 
-The status command reports which providers are enabled and whether configured
-providers have the required Server env values.
+The status command reports every built-in provider's `enabled`, `configured`,
+and `runtimeAvailable` state. OAuth entries also report their exact local
+callback URL when the Dev port is fixed. JSON output contains env-var names and
+non-secret options, never credential values.
+
+### Configure OAuth Providers
+
+`sporades auth set <provider>` merges one provider into the existing provider
+map. It does not replace configured siblings or turn off Anonymous sessions.
+
+```sh
+sporades auth set microsoft --client-id <id> --client-secret <secret> --tenant organizations
+sporades auth set apple --client-id <services-id> --team-id <team-id> --key-id <key-id> --private-key <pem>
+sporades auth set facebook --client-id <app-id> --client-secret <app-secret>
+sporades auth set email
+sporades auth set microsoft --disable
+```
+
+Google, Microsoft, Apple, and Facebook accept provider-specific credential
+files through `--client-json`. Sporades stores secret values only in Server env
+(or Sealed Server env after import); `sporades.json` keeps provider shape,
+non-secret options, and env-var names. Restart a running Dev session after any
+provider change.
 
 ### Configure Google OAuth
 
@@ -1153,7 +1174,11 @@ Client sign-in uses the provider name:
 ```tsx
 import { auth } from "sporades/client";
 
-await auth.signIn("google");
+for (const [provider, state] of Object.entries(session.providers)) {
+  if (state.enabled && state.configured && state.runtimeAvailable) {
+    await auth.signIn(provider);
+  }
+}
 ```
 
 ### Use Email Auth

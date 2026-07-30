@@ -309,6 +309,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   authStatus,
   normalizeAuthConfig,
   readProviderConfig,
+  emptyProviderConfig,
   createFileStorageTables,
   createRuntimeFileStorageAdapter,
   createLocalFileStorageAdapter,
@@ -10392,31 +10393,47 @@ function formatMutationResult(message: LooseRecord, mutationName: any, result: L
 function authStatus(config: LooseRecord, serverEnv: LooseRecord) {
   const authConfig = config.auth ?? { mode: "anonymous" };
   const normalized = normalizeAuthConfig(authConfig);
-  const clientIdEnv = normalized.providers.google.clientIdEnv;
-  const clientSecretEnv = normalized.providers.google.clientSecretEnv;
-  const providers: LooseRecord = {
-    anonymous: {
-      enabled: normalized.providers.anonymous.enabled,
-    },
-    google: {
-      enabled: normalized.providers.google.enabled,
-      configured: Boolean(clientIdEnv && clientSecretEnv && serverEnv[clientIdEnv] && serverEnv[clientSecretEnv]),
-      clientIdEnv,
-      clientSecretEnv,
-    },
-  };
-  if (normalized.providers.email.enabled) {
-    providers.email = {
-      enabled: true,
+  const providerOrder = ["anonymous", "email", "google", "microsoft", "apple", "facebook"] as const;
+  const runtimeProviders = new Set(["anonymous", "email", "google"]);
+  const providers: LooseRecord = {};
+  const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4000;
+  for (const providerName of providerOrder) {
+    const provider = normalized.providers[providerName];
+    const configured = providerName === "anonymous" || providerName === "email"
+      ? true
+      : providerName === "apple"
+        ? Boolean(provider.clientId && provider.teamId && provider.keyId && provider.privateKeyEnv && serverEnv[provider.privateKeyEnv])
+        : Boolean(provider.clientIdEnv && provider.clientSecretEnv && serverEnv[provider.clientIdEnv] && serverEnv[provider.clientSecretEnv]);
+    const state: LooseRecord = {
+      enabled: provider.enabled,
+      configured,
+      runtimeAvailable: runtimeProviders.has(providerName),
     };
+    if (["google", "microsoft", "facebook"].includes(providerName)) {
+      state.clientIdEnv = provider.clientIdEnv;
+      state.clientSecretEnv = provider.clientSecretEnv;
+    }
+    if (providerName === "microsoft") state.tenant = provider.tenant;
+    if (providerName === "facebook") state.graphVersion = provider.graphVersion;
+    if (providerName === "apple") {
+      state.clientId = provider.clientId;
+      state.teamId = provider.teamId;
+      state.keyId = provider.keyId;
+      state.privateKeyEnv = provider.privateKeyEnv;
+    }
+    if (!["anonymous", "email"].includes(providerName)) {
+      state.callbackPath = `/__sporades/auth/${providerName}/callback`;
+      state.callbackUrl = port > 0 ? `http://localhost:${port}${state.callbackPath}` : null;
+    }
+    providers[providerName] = state;
   }
   return {
     mode: normalized.mode,
     providers,
     google: {
       configured: providers.google.configured,
-      clientIdEnv,
-      clientSecretEnv,
+      clientIdEnv: normalized.providers.google.clientIdEnv,
+      clientSecretEnv: normalized.providers.google.clientSecretEnv,
     },
   };
 }
@@ -10424,10 +10441,10 @@ function authStatus(config: LooseRecord, serverEnv: LooseRecord) {
 function normalizeAuthConfig(authConfig: LooseRecord) {
   const providerConfig = authConfig.providers ?? {};
   for (const provider of Object.keys(providerConfig)) {
-    if (!["anonymous", "google", "email"].includes(provider)) {
+    if (!["anonymous", "email", "google", "microsoft", "apple", "facebook"].includes(provider)) {
       throw commandError(
         `Unsupported auth provider: ${provider}`,
-        "Use supported auth providers: anonymous, google, email.",
+        "Use supported auth providers: anonymous, email, google, microsoft, apple, facebook.",
       );
     }
   }
@@ -10445,45 +10462,56 @@ function normalizeAuthConfig(authConfig: LooseRecord) {
     providers: {
       anonymous: {
         enabled: anonymousEnabled,
+        ...emptyProviderConfig(),
       },
       google: {
+        ...emptyProviderConfig(),
         enabled: googleEnabled,
         clientIdEnv: googleConfig.clientIdEnv ?? legacyGoogle.clientIdEnv ?? null,
         clientSecretEnv: googleConfig.clientSecretEnv ?? legacyGoogle.clientSecretEnv ?? null,
       },
       email: {
         enabled: emailConfig.enabled,
+        ...emptyProviderConfig(),
       },
+      microsoft: readProviderConfig(providerConfig.microsoft),
+      apple: readProviderConfig(providerConfig.apple),
+      facebook: readProviderConfig(providerConfig.facebook),
     },
   };
 }
 
 function readProviderConfig(config: any) {
   if (config === true) {
-    return { enabled: true };
+    return { enabled: true, ...emptyProviderConfig() };
   }
   if (config === false || config === undefined || config === null) {
-    return { enabled: false };
+    return { enabled: false, ...emptyProviderConfig() };
   }
   return {
     enabled: config.enabled !== false,
     clientIdEnv: config.clientIdEnv ?? null,
     clientSecretEnv: config.clientSecretEnv ?? null,
+    clientId: config.clientId ?? null,
+    teamId: config.teamId ?? null,
+    keyId: config.keyId ?? null,
+    privateKeyEnv: config.privateKeyEnv ?? null,
+    tenant: config.tenant ?? null,
+    graphVersion: config.graphVersion ?? null,
   };
+}
+
+function emptyProviderConfig() {
+  return { clientIdEnv: null, clientSecretEnv: null, clientId: null, teamId: null, keyId: null, privateKeyEnv: null, tenant: null, graphVersion: null };
 }
 
 function authProvidersForClient(authConfig: LooseRecord) {
   const providers: LooseRecord = {};
   for (const [name, provider] of Object.entries(authConfig.providers) as [string, any][]) {
-    if (name === "google") {
-      providers.google = {
-        enabled: provider.enabled,
-        configured: provider.configured,
-      };
-      continue;
-    }
     providers[name] = {
       enabled: provider.enabled,
+      configured: provider.configured,
+      runtimeAvailable: provider.runtimeAvailable,
     };
   }
   return providers;
