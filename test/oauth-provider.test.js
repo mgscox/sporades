@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -16,6 +17,10 @@ import {
 } from "../dist/server-runtime-source.js";
 
 const beginOAuthSignIn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "beginOAuthSignIn");
+const oauthProviderTestEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "oauthProviderTestEndpoint");
+const isOAuthLoopbackHostname = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "isOAuthLoopbackHostname");
+const fetchBoundedOAuthJson = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "fetchBoundedOAuthJson");
+const completeOpenIdOAuthCodeExchange = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "completeOpenIdOAuthCodeExchange");
 const verifyGoogleIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "verifyGoogleIdentityToken");
 const verifyAppleIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "verifyAppleIdentityToken");
 const createAppleClientSecret = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createAppleClientSecret");
@@ -28,6 +33,367 @@ const loadMicrosoftJwks = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name =
 const completeMicrosoftOAuth = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "completeMicrosoftOAuth");
 const linkProviderIdentity = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkProviderIdentity");
 const execFileAsync = promisify(execFile);
+
+test("provider endpoint overrides require the explicit loopback-only test seam", () => {
+  const original = process.env.SPORADES_OAUTH_TEST_ENDPOINTS;
+  try {
+    delete process.env.SPORADES_OAUTH_TEST_ENDPOINTS;
+    assert.equal(
+      oauthProviderTestEndpoint("http://127.0.0.1:9000/token", "https://provider.example/token"),
+      "https://provider.example/token",
+    );
+    process.env.SPORADES_OAUTH_TEST_ENDPOINTS = "1";
+    assert.equal(
+      oauthProviderTestEndpoint("https://attacker.example/token", "https://provider.example/token"),
+      "https://provider.example/token",
+    );
+    assert.equal(
+      oauthProviderTestEndpoint("http://127.0.0.1:9000/token", "https://provider.example/token"),
+      "http://127.0.0.1:9000/token",
+    );
+    assert.equal(
+      oauthProviderTestEndpoint("https://[::1]:9000/token", "https://provider.example/token"),
+      "https://[::1]:9000/token",
+    );
+    for (const endpoint of [
+      "http://127.0.0.2:9000/token",
+      "http://[::2]:9000/token",
+      "http://user@127.0.0.1:9000/token",
+      "http://user:password@[::1]:9000/token",
+    ]) {
+      assert.equal(
+        oauthProviderTestEndpoint(endpoint, "https://provider.example/token"),
+        "https://provider.example/token",
+      );
+    }
+    assert.equal(isOAuthLoopbackHostname("127.0.0.1"), true);
+    assert.equal(isOAuthLoopbackHostname("[::1]"), true);
+    assert.equal(isOAuthLoopbackHostname("::1"), true);
+    assert.equal(isOAuthLoopbackHostname("127.0.0.2"), false);
+    assert.equal(isOAuthLoopbackHostname("[::2]"), false);
+  } finally {
+    if (original === undefined) delete process.env.SPORADES_OAUTH_TEST_ENDPOINTS;
+    else process.env.SPORADES_OAUTH_TEST_ENDPOINTS = original;
+  }
+});
+
+test("bounded OAuth JSON fetch refuses every redirect and closes stalled or oversized bodies", async () => {
+  let receiverRequests = 0;
+  let redirectStatus = 301;
+  const receiver = createServer((_request, response) => {
+    receiverRequests += 1;
+    response.end("{}");
+  });
+  await new Promise((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+  const receiverPort = receiver.address().port;
+  let mode = "redirect";
+  const source = createServer((request, response) => {
+    if (mode === "redirect") {
+      response.writeHead(redirectStatus, { location: `http://127.0.0.1:${receiverPort}/receiver` });
+      response.end();
+      return;
+    }
+    if (mode === "http") {
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end('{"privateKey":"upstream"}');
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    if (mode === "stall") {
+      response.write('{"privateKey":"partial');
+      return;
+    }
+    if (mode === "malformed") {
+      response.end('{"privateKey":"broken"');
+      return;
+    }
+    response.write(`{"padding":"${"x".repeat(70 * 1024)}"}`);
+    response.end();
+  });
+  await new Promise((resolve) => source.listen(0, "127.0.0.1", resolve));
+  const sourcePort = source.address().port;
+  const policy = {
+    maxBytes: 64 * 1024,
+    timeoutProperty: "__oauthJwksTimeoutMs",
+    defaultTimeoutMs: 5_000,
+    unavailableCode: "OAUTH_TEST_KEYS_UNAVAILABLE",
+    unavailableMessage: "Signing keys were unavailable.",
+    unavailableHint: "Retry.",
+    invalidCode: "OAUTH_TEST_KEYS_INVALID",
+    invalidMessage: "Signing keys were invalid.",
+    invalidHint: "Retry.",
+  };
+  try {
+    for (const status of [301, 302, 307, 308]) {
+      redirectStatus = status;
+      await assert.rejects(
+        fetchBoundedOAuthJson({}, `http://127.0.0.1:${sourcePort}/redirect`, {}, policy),
+        (error) => error.code === "OAUTH_TEST_KEYS_UNAVAILABLE",
+      );
+    }
+    assert.equal(receiverRequests, 0);
+
+    source.closeIdleConnections();
+    await new Promise((resolve) => setImmediate(resolve));
+    mode = "stall";
+    await assert.rejects(
+      fetchBoundedOAuthJson(
+        { __oauthJwksTimeoutMs: 30 },
+        `http://127.0.0.1:${sourcePort}/stall`,
+        {},
+        policy,
+      ),
+      (error) => error.code === "OAUTH_TEST_KEYS_UNAVAILABLE" &&
+        !/privateKey|partial/i.test(`${error.message} ${error.hint}`),
+    );
+    const cleanupDeadline = Date.now() + 500;
+    while (source._connections !== 0 && Date.now() < cleanupDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    assert.equal(source._connections, 0);
+
+    mode = "oversized";
+    await assert.rejects(
+      fetchBoundedOAuthJson({}, `http://127.0.0.1:${sourcePort}/oversized`, {}, policy),
+      (error) => error.code === "OAUTH_TEST_KEYS_INVALID",
+    );
+
+    mode = "malformed";
+    await assert.rejects(
+      fetchBoundedOAuthJson({}, `http://127.0.0.1:${sourcePort}/malformed`, {}, policy),
+      (error) => error.code === "OAUTH_TEST_KEYS_INVALID" &&
+        !/privateKey|broken/i.test(`${error.message} ${error.hint}`),
+    );
+
+    mode = "http";
+    await assert.rejects(
+      fetchBoundedOAuthJson({}, `http://127.0.0.1:${sourcePort}/http`, {}, policy),
+      (error) => error.code === "OAUTH_TEST_KEYS_UNAVAILABLE" &&
+        !/privateKey|upstream/i.test(`${error.message} ${error.hint}`),
+    );
+  } finally {
+    await new Promise((resolve) => source.close(resolve));
+    await new Promise((resolve) => receiver.close(resolve));
+  }
+});
+
+test("Google and Apple JWKS failures retain bounded provider key taxonomy", async () => {
+  await withTempDatabase(async (database) => {
+    const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const token = signedJwt(privateKey, "provider-key", {});
+    const originalFetch = globalThis.fetch;
+    try {
+      for (const verifyToken of [verifyGoogleIdentityToken, verifyAppleIdentityToken]) {
+        globalThis.fetch = async () => new Response("{malformed", { status: 200 });
+        await assert.rejects(
+          verifyToken(database, token, "nonce"),
+          (error) => error.code === "OAUTH_ID_TOKEN_KEYS_INVALID" &&
+            !/malformed/i.test(`${error.message} ${error.hint}`),
+        );
+        globalThis.fetch = async () => new Response("private upstream body", { status: 503 });
+        await assert.rejects(
+          verifyToken(database, token, "nonce"),
+          (error) => error.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE" &&
+            !/private upstream body/i.test(`${error.message} ${error.hint}`),
+        );
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("Microsoft discovery accepts an exact IPv6 loopback override when IPv6 is available", async (t) => {
+  const server = createServer((_request, response) => {
+    const origin = `http://[::1]:${server.address().port}`;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      issuer: "https://login.microsoftonline.com/{tenantid}/v2.0",
+      authorization_endpoint: `${origin}/authorize`,
+      token_endpoint: `${origin}/token`,
+      jwks_uri: `${origin}/keys`,
+    }));
+  });
+  try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "::1", resolve);
+    });
+  } catch (error) {
+    if (error?.code === "EADDRNOTAVAIL" || error?.code === "EAFNOSUPPORT") {
+      t.skip("IPv6 loopback is unavailable on this platform.");
+      return;
+    }
+    throw error;
+  }
+  const originalEndpoints = process.env.SPORADES_OAUTH_TEST_ENDPOINTS;
+  const originalDiscovery = process.env.SPORADES_MICROSOFT_DISCOVERY_URL;
+  try {
+    process.env.SPORADES_OAUTH_TEST_ENDPOINTS = "1";
+    process.env.SPORADES_MICROSOFT_DISCOVERY_URL = `http://[::1]:${server.address().port}/discovery`;
+    const database = {
+      authConfig: {
+        providers: {
+          microsoft: {
+            clientIdEnv: "MICROSOFT_CLIENT_ID",
+            clientSecretEnv: "MICROSOFT_CLIENT_SECRET",
+          },
+        },
+      },
+      __microsoftOidcTimeoutMs: 500,
+    };
+    const discovery = await discoverMicrosoftOpenIdConfiguration(database, "organizations");
+    assert.equal(new URL(discovery.jwks_uri).hostname, "[::1]");
+  } finally {
+    if (originalEndpoints === undefined) delete process.env.SPORADES_OAUTH_TEST_ENDPOINTS;
+    else process.env.SPORADES_OAUTH_TEST_ENDPOINTS = originalEndpoints;
+    if (originalDiscovery === undefined) delete process.env.SPORADES_MICROSOFT_DISCOVERY_URL;
+    else process.env.SPORADES_MICROSOFT_DISCOVERY_URL = originalDiscovery;
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("provider auth exposes one internal completion and linking seam", () => {
+  const names = new Set(SERVER_RUNTIME_SOURCE_FUNCTIONS.map((fn) => fn.name));
+  assert.equal(names.has("linkProviderIdentity"), true);
+  assert.equal(names.has("completeOpenIdOAuthCodeExchange"), true);
+  assert.equal(names.has("linkGoogleAccount"), false);
+  assert.equal(names.has("completeGoogleOAuth"), false);
+});
+
+test("shared OpenID exchange refuses credential-bearing HTTP redirects", async () => {
+  let receiverRequests = 0;
+  let receiverBody = "";
+  let redirectStatus = 307;
+  const receiver = createServer(async (request, response) => {
+    receiverRequests += 1;
+    for await (const chunk of request) receiverBody += chunk;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({ id_token: "redirected-token" }));
+  });
+  await new Promise((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+  const receiverPort = receiver.address().port;
+  const redirector = createServer((_request, response) => {
+    response.writeHead(redirectStatus, { location: `http://127.0.0.1:${receiverPort}/stolen` });
+    response.end();
+  });
+  await new Promise((resolve) => redirector.listen(0, "127.0.0.1", resolve));
+  const redirectorPort = redirector.address().port;
+  try {
+    for (const status of [307, 308]) {
+      redirectStatus = status;
+      await assert.rejects(
+        completeOpenIdOAuthCodeExchange({}, { nonce: "nonce" }, {
+          tokenUrl: `http://127.0.0.1:${redirectorPort}/token`,
+          parameters: { code: "authorization-code", client_secret: "super-secret" },
+          exchangeMessage: "Example OAuth code exchange failed.",
+          exchangeHint: "Retry Example sign-in.",
+          responseMessage: "Example OAuth response was invalid.",
+          tokenMessage: "Example OAuth response did not include a valid identity token.",
+          tokenHint: "Retry Example sign-in.",
+          verify: async () => ({ subject: "must-not-run" }),
+        }),
+        (error) => error.code === "OAUTH_EXCHANGE_FAILED",
+      );
+    }
+    assert.equal(receiverRequests, 0);
+    assert.doesNotMatch(receiverBody, /authorization-code|super-secret/);
+  } finally {
+    await new Promise((resolve) => redirector.close(resolve));
+    await new Promise((resolve) => receiver.close(resolve));
+  }
+});
+
+test("shared OpenID exchange bounds status, malformed, oversized, and stalled response bodies", async () => {
+  const originalFetch = globalThis.fetch;
+  const contract = {
+    tokenUrl: "https://provider.example/token",
+    parameters: { code: "authorization-code", client_secret: "super-secret" },
+    exchangeMessage: "Example OAuth code exchange failed.",
+    exchangeHint: "Retry Example sign-in.",
+    responseMessage: "Example OAuth response was invalid.",
+    tokenMessage: "Example OAuth response did not include a valid identity token.",
+    tokenHint: "Retry Example sign-in.",
+    exchangeCode: "EXAMPLE_EXCHANGE_FAILED",
+    timeoutCode: "EXAMPLE_EXCHANGE_TIMEOUT",
+    timeoutMessage: "Example OAuth code exchange timed out.",
+    verify: async () => ({ subject: "verified" }),
+  };
+  const assertSafeFailure = async (response, code, message) => {
+    globalThis.fetch = async () => response;
+    await assert.rejects(
+      completeOpenIdOAuthCodeExchange({}, { nonce: "nonce" }, contract),
+      (error) => {
+        assert.equal(error.code, code);
+        assert.equal(error.message, message);
+        assert.doesNotMatch(`${error.message} ${error.hint}`, /super-secret|upstream-private|authorization-code/);
+        return true;
+      },
+    );
+  };
+  try {
+    await assertSafeFailure(
+      new Response("upstream-private", { status: 400 }),
+      "EXAMPLE_EXCHANGE_FAILED",
+      "Example OAuth code exchange failed.",
+    );
+    await assertSafeFailure(
+      new Response('{"upstream-private":', { status: 200 }),
+      "EXAMPLE_EXCHANGE_FAILED",
+      "Example OAuth response was invalid.",
+    );
+
+    let cancelled = false;
+    const oversized = new Response(new ReadableStream({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(70 * 1024));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }), { status: 200 });
+    await assertSafeFailure(
+      oversized,
+      "EXAMPLE_EXCHANGE_FAILED",
+      "Example OAuth response was invalid.",
+    );
+    assert.equal(cancelled, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  let closedResolve;
+  const closed = new Promise((resolve) => { closedResolve = resolve; });
+  const stalled = createServer((request, response) => {
+    request.on("close", closedResolve);
+    response.on("close", closedResolve);
+    response.writeHead(200, { "content-type": "application/json" });
+    response.write('{"upstream-private":"partial');
+  });
+  await new Promise((resolve) => stalled.listen(0, "127.0.0.1", resolve));
+  const stalledPort = stalled.address().port;
+  const startedAt = Date.now();
+  try {
+    await assert.rejects(
+      completeOpenIdOAuthCodeExchange(
+        { __oauthExchangeTimeoutMs: 25 },
+        { nonce: "nonce" },
+        { ...contract, tokenUrl: `http://127.0.0.1:${stalledPort}/token` },
+      ),
+      (error) => {
+        assert.equal(error.code, "EXAMPLE_EXCHANGE_TIMEOUT");
+        assert.equal(error.message, "Example OAuth code exchange timed out.");
+        assert.doesNotMatch(`${error.message} ${error.hint}`, /upstream-private|partial|super-secret/);
+        return true;
+      },
+    );
+    await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 500))]);
+    assert.ok(Date.now() - startedAt < 1_000);
+    assert.equal(stalled._connections, 0);
+  } finally {
+    await new Promise((resolve) => stalled.close(resolve));
+  }
+});
 
 async function withTempDatabase(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-oauth-provider-"));
@@ -225,6 +591,141 @@ test("runtime OAuth provider seam completes query and form-post callbacks with p
   });
 });
 
+test("an all-provider Capsule dispatches each sign-in intent only to its selected adapter", async () => {
+  await withTempDatabase(async (database) => {
+    const calls = [];
+    database.__oauthProviderAdapters = Object.fromEntries(
+      ["google", "microsoft", "apple", "facebook"].map((provider) => [
+        provider,
+        {
+          provider,
+          responseMode: provider === "apple" ? "form_post" : "query",
+          enabled: true,
+          begin(context) {
+            calls.push({ adapter: provider, requested: context.provider });
+            return { url: `https://${provider}.example/authorize?state=${context.state}` };
+          },
+        },
+      ]),
+    );
+
+    for (const provider of ["google", "microsoft", "apple", "facebook"]) {
+      const session = await resolveAnonymousSession(database, null);
+      const started = await beginOAuthSignIn(database, session, provider, {
+        origin: "https://capsule.example.test",
+        returnTo: "https://capsule.example.test/account",
+      });
+      assert.equal(started.ok, true);
+      assert.equal(new URL(started.url).hostname, `${provider}.example`);
+      assert.deepEqual(calls.at(-1), { adapter: provider, requested: provider });
+      assert.equal(calls.length, ["google", "microsoft", "apple", "facebook"].indexOf(provider) + 1);
+    }
+  });
+});
+
+test("provider callbacks coexist across same-email, absent-email, switching, returning, and conflict paths", async () => {
+  await withTempDatabase(async (database) => {
+    const profiles = new Map();
+    database.__oauthProviderAdapters = Object.fromEntries(
+      ["google", "microsoft", "apple", "facebook"].map((provider) => [
+        provider,
+        {
+          provider,
+          responseMode: provider === "apple" ? "form_post" : "query",
+          enabled: true,
+          begin(context) {
+            return { url: `https://${provider}.example/authorize?state=${context.state}` };
+          },
+          async complete() {
+            return profiles.get(provider);
+          },
+        },
+      ]),
+    );
+    const complete = async (provider, session, profile) => {
+      profiles.set(provider, profile);
+      const started = await beginOAuthSignIn(database, session, provider, {
+        origin: "https://capsule.example.test",
+        returnTo: "https://capsule.example.test/account",
+      });
+      const state = new URL(started.url).searchParams.get("state");
+      const response = responseRecorder();
+      const request = provider === "apple"
+        ? formPostRequest(`/__sporades/auth/${provider}/callback`, { state, code: `${provider}-code` })
+        : { method: "GET", url: `/__sporades/auth/${provider}/callback?state=${state}&code=${provider}-code`, headers: {} };
+      await routeSporadesAuth(database, request, response);
+      return response;
+    };
+
+    const googleSession = await resolveAnonymousSession(database, null);
+    assert.equal((await complete("google", googleSession, {
+      subject: "google-owner",
+      email: "same@example.com",
+      emailVerified: true,
+      displayName: "Google Owner",
+    })).statusCode, 302);
+    const googleUserId = database.sqlite.readAuthSessionWithUser(googleSession.token).userId;
+
+    const independentMicrosoft = await resolveAnonymousSession(database, null);
+    assert.equal((await complete("microsoft", independentMicrosoft, {
+      subject: "tenant:microsoft-independent",
+      email: "same@example.com",
+      displayName: "Microsoft Independent",
+    })).statusCode, 302);
+    const microsoftUserId = database.sqlite.readAuthSessionWithUser(independentMicrosoft.token).userId;
+    assert.notEqual(microsoftUserId, googleUserId, "mutable email must not bridge users across providers");
+
+    assert.equal((await complete("microsoft", googleSession, {
+      subject: "tenant:microsoft-owner",
+      email: "same@example.com",
+      displayName: "Microsoft Owner",
+    })).statusCode, 302);
+    assert.equal(database.sqlite.readAuthSessionWithUser(googleSession.token).provider, "microsoft");
+    assert.equal(database.sqlite.readAuthSessionWithUser(googleSession.token).userId, googleUserId);
+
+    assert.equal((await complete("facebook", googleSession, {
+      subject: "facebook-owner",
+      email: null,
+      displayName: "Facebook Owner",
+    })).statusCode, 302);
+    assert.equal(database.sqlite.findAuthIdentityByProviderSubject("facebook", "facebook-owner").email, null);
+    assert.equal(database.sqlite.readAuthSessionWithUser(googleSession.token).provider, "facebook");
+
+    assert.equal((await complete("apple", googleSession, {
+      subject: "apple-owner",
+      email: null,
+      displayName: null,
+    })).statusCode, 302);
+    const returningApple = await resolveAnonymousSession(database, null);
+    assert.equal((await complete("apple", returningApple, {
+      subject: "apple-owner",
+      email: "relay@privaterelay.appleid.com",
+      displayName: null,
+    })).statusCode, 302);
+    assert.equal(database.sqlite.readAuthSessionWithUser(returningApple.token).userId, googleUserId);
+    assert.equal(database.sqlite.readAuthSessionWithUser(returningApple.token).provider, "apple");
+
+    const conflict = await complete("apple", independentMicrosoft, {
+      subject: "apple-owner",
+      email: "same@example.com",
+      displayName: "Conflict",
+    });
+    assert.equal(conflict.statusCode, 500);
+    assert.match(conflict.body, /AUTH_IDENTITY_CONFLICT/);
+    assert.equal(database.sqlite.readAuthSessionWithUser(independentMicrosoft.token).userId, microsoftUserId);
+    assert.equal(database.sqlite.readAuthSessionWithUser(independentMicrosoft.token).provider, "microsoft");
+
+    const identities = database.sqlite.prepare(
+      "SELECT provider, subject, userId FROM sporades_auth_identities ORDER BY provider, subject",
+    ).all();
+    assert.deepEqual(
+      identities.filter((identity) => identity.userId === googleUserId).map((identity) => identity.provider),
+      ["apple", "facebook", "google", "microsoft"],
+    );
+    assert.equal(identities.filter((identity) => identity.userId === microsoftUserId).length, 1);
+  });
+});
+
 test("OAuth state is single-use across mismatch, expiry, cancellation, and completion failure", async () => {
   await withTempDatabase(async (database) => {
     database.__oauthProviderAdapters = {
@@ -343,7 +844,7 @@ test("Google identity tokens require signature, issuer, audience, expiry, nonce,
     jwk.kid = kid;
     jwk.alg = "RS256";
     jwk.use = "sig";
-    database.authConfig.google.clientIdEnv = "GOOGLE_CLIENT_ID";
+    database.authConfig.providers.google.clientIdEnv = "GOOGLE_CLIENT_ID";
     database.serverEnv.GOOGLE_CLIENT_ID = "client-id";
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async () => new Response(JSON.stringify({ keys: [jwk] }), {
@@ -945,6 +1446,7 @@ test("Microsoft discovery and JWKS cache maps prune expired state and cap distin
     database.__microsoftOidcNowMs = 1_000;
     const originalFetch = globalThis.fetch;
     const originalDiscoveryOverride = process.env.SPORADES_MICROSOFT_DISCOVERY_URL;
+    const originalTestEndpoints = process.env.SPORADES_OAUTH_TEST_ENDPOINTS;
     let heldDiscoveryRelease;
     let heldJwksRelease;
     const heldDiscoveryGate = new Promise((resolve) => { heldDiscoveryRelease = resolve; });
@@ -967,6 +1469,7 @@ test("Microsoft discovery and JWKS cache maps prune expired state and cap distin
       return new Response(JSON.stringify({ keys: [], marker: value }));
     };
     try {
+      process.env.SPORADES_OAUTH_TEST_ENDPOINTS = "1";
       for (let index = 0; index < 40; index += 1) {
         database.authConfig.providers.microsoft.clientIdEnv = `MICROSOFT_CLIENT_ID_${index}`;
         await discoverMicrosoftOpenIdConfiguration(database, "organizations");
@@ -1030,6 +1533,8 @@ test("Microsoft discovery and JWKS cache maps prune expired state and cap distin
     } finally {
       if (originalDiscoveryOverride === undefined) delete process.env.SPORADES_MICROSOFT_DISCOVERY_URL;
       else process.env.SPORADES_MICROSOFT_DISCOVERY_URL = originalDiscoveryOverride;
+      if (originalTestEndpoints === undefined) delete process.env.SPORADES_OAUTH_TEST_ENDPOINTS;
+      else process.env.SPORADES_OAUTH_TEST_ENDPOINTS = originalTestEndpoints;
       globalThis.fetch = originalFetch;
     }
   });
@@ -1143,6 +1648,7 @@ test("Microsoft cache tuple encoding separates delimiter-bearing discovery, JWKS
     configureMicrosoft(database);
     const originalFetch = globalThis.fetch;
     const originalDiscoveryOverride = process.env.SPORADES_MICROSOFT_DISCOVERY_URL;
+    const originalTestEndpoints = process.env.SPORADES_OAUTH_TEST_ENDPOINTS;
     let fetches = 0;
     globalThis.fetch = async (url) => {
       fetches += 1;
@@ -1159,6 +1665,7 @@ test("Microsoft cache tuple encoding separates delimiter-bearing discovery, JWKS
       return new Response(JSON.stringify({ keys: [], marker: value }));
     };
     try {
+      process.env.SPORADES_OAUTH_TEST_ENDPOINTS = "1";
       process.env.SPORADES_MICROSOFT_DISCOVERY_URL = "http://127.0.0.1/discovery|segment";
       database.authConfig.providers.microsoft.clientIdEnv = "CLIENT";
       const discoveryA = await discoverMicrosoftOpenIdConfiguration(database, "organizations");
@@ -1197,6 +1704,8 @@ test("Microsoft cache tuple encoding separates delimiter-bearing discovery, JWKS
     } finally {
       if (originalDiscoveryOverride === undefined) delete process.env.SPORADES_MICROSOFT_DISCOVERY_URL;
       else process.env.SPORADES_MICROSOFT_DISCOVERY_URL = originalDiscoveryOverride;
+      if (originalTestEndpoints === undefined) delete process.env.SPORADES_OAUTH_TEST_ENDPOINTS;
+      else process.env.SPORADES_OAUTH_TEST_ENDPOINTS = originalTestEndpoints;
       globalThis.fetch = originalFetch;
     }
   });
@@ -1832,9 +2341,17 @@ test("Apple client secret is a short-lived ES256 JWT and identity tokens are ver
         });
         await assert.rejects(
           verifyAppleIdentityToken(database, signedJwt(privateKey, kid, claims), "expected-nonce"),
-          (error) => error.code?.startsWith("OAUTH_ID_TOKEN_"),
+          (error) => error.code === "OAUTH_ID_TOKEN_KEYS_INVALID",
         );
       }
+
+      globalThis.fetch = async () => new Response(JSON.stringify({
+        keys: [{ ...jwk, kid: "different-valid-key" }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+      await assert.rejects(
+        verifyAppleIdentityToken(database, signedJwt(privateKey, kid, claims), "expected-nonce"),
+        (error) => error.code === "OAUTH_ID_TOKEN_INVALID",
+      );
 
       globalThis.fetch = async () => new Response(JSON.stringify({ keys: [jwk], padding: "x".repeat(70 * 1024) }), {
         status: 200,
@@ -1842,7 +2359,7 @@ test("Apple client secret is a short-lived ES256 JWT and identity tokens are ver
       });
       await assert.rejects(
         verifyAppleIdentityToken(database, signedJwt(privateKey, kid, claims), "expected-nonce"),
-        (error) => error.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
+        (error) => error.code === "OAUTH_ID_TOKEN_KEYS_INVALID",
       );
 
       const rotated = generateKeyPairSync("rsa", { modulusLength: 2048 });

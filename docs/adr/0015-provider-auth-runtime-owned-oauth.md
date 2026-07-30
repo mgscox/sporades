@@ -89,7 +89,15 @@ Authentication provenance belongs to the Session rather than the shared user.
 Each authenticated Session records the provider used for that Session, so
 linking another Provider identity cannot rewrite the provider reported by
 already-authenticated Sessions for the same user. Existing Session tokens and
-Sporades user IDs survive the additive storage migration. Legacy Google rows
+Sporades user IDs survive the additive storage migration. The historical
+`sporades_auth_users.provider` value remains only as migration input for old
+databases; new linking and profile updates do not mutate it, and runtime
+identity or Session decisions never read it after Session provenance has been
+backfilled. New user rows write the constant `anonymous` migration marker
+required by the legacy non-null schema; selected provider values live only on
+Provider identities, Sessions, and other provenance-bearing records. The
+runtime adapter no longer exposes a provider-and-email user lookup, and email
+credential reads exclude the legacy column. Legacy Google rows
 are claimed by the next verified Google subject during a compatibility window
 only when Google reports the matching email as verified and exactly one
 eligible legacy identity matches it. Unverified or ambiguous legacy matches
@@ -115,6 +123,39 @@ entries are present, and its configured Graph version is supported.
 When `graphVersion` is genuinely absent it is normalized once to `v23.0`, which
 is then reported consistently by CLI status, runtime status, and client provider
 state. An explicitly supplied invalid value never enters that defaulting path.
+
+Legacy `auth.mode: "google"`, `auth.google`, and the top-level Google status
+field are compatibility shims only. Normalization immediately maps them into
+the common provider map, and runtime dispatch, callback completion, error
+shaping, identity linking, and Session work continue through the same
+provider-neutral seams as every other OAuth provider.
+
+Production OAuth protocol endpoints are fixed by the built-in adapters.
+Google and Apple endpoint overrides are admitted only when the process-only
+`SPORADES_OAUTH_TEST_ENDPOINTS=1` seam is enabled and the replacement URL is an
+exact IPv4 or IPv6 loopback URL without credentials or a fragment. Facebook
+and Microsoft retain equally bounded process-only protocol test seams.
+`sporades.json` and Server env cannot select production OAuth endpoints.
+The shared Google/Apple token exchanger refuses redirects, applies one bounded
+deadline across headers and body streaming, caps the response before JSON
+allocation, and cancels and releases failed response readers. Status,
+timeout, malformed, and oversized failures retain provider-owned safe messages
+and codes without reflecting response bodies, authorization codes, or client
+credentials.
+Google and Apple signing-key loads use the same transport boundary: redirects
+are refused, one finite deadline covers headers and streamed bodies, responses
+are capped at 64 KiB before parsing, and failed readers are cancelled and
+released. Network, HTTP, redirect, and timeout failures remain
+`OAUTH_ID_TOKEN_KEYS_UNAVAILABLE`; malformed and oversized key documents remain
+`OAUTH_ID_TOKEN_KEYS_INVALID`. The process-only provider test seam accepts exact
+IPv4 or IPv6 loopback hosts, including URL-normalized `[::1]`, while rejecting
+credentials and near-loopback or non-loopback hosts.
+
+Durable Jobs capture provider provenance from the exact handler context at
+enqueue time in `actorProvider`. Execution, retries, and restarts replay that
+captured value rather than consulting another active Session or the user row.
+Jobs created before this column existed migrate to the bounded `anonymous`
+fallback. Privileged Jobs continue to use the reserved privileged actor branch.
 
 Google OAuth can be configured either with explicit values:
 

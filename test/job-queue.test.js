@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 
-import { openDevDatabase, runMutation, SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
+import { createControllableRuntimeClock, openDevDatabase, runMutation, SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
 import { job, mutation } from "../dist/server.js";
 
 function auth(userId) {
@@ -13,6 +13,146 @@ function auth(userId) {
 
 const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
 const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
+const runCurrentUserJobWorker = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runCurrentUserJobWorker");
+
+test("Jobs capture enqueue-time Session provider provenance across later provider switches", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-provider-"));
+  const seen = [];
+  const capsule = {
+    jobs: {
+      recordProvider: job((ctx) => {
+        seen.push(ctx.auth.provider);
+        if (seen.length === 1) throw new Error("retry once");
+        return ctx.auth.provider;
+      }),
+    },
+    mutations: {
+      enqueue: mutation((ctx) =>
+        ctx.jobs.enqueue("recordProvider", null, {
+          availableAt: "2999-01-01T00:00:00.000Z",
+          retry: { maxAttempts: 2, delayMs: 0 },
+        })),
+    },
+  };
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, { name: "jobs" }, capsule, { clock });
+  try {
+    const now = new Date().toISOString();
+    database.sqlite.prepare(
+      "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run("provider-user", now, "Provider User", null, null, 1, 0, "anonymous");
+    database.sqlite.prepare(
+      "INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)",
+    ).run("google-session", "provider-user", "google", now, "2999-01-01T00:00:00.000Z");
+
+    const enqueued = await runMutation(database, {
+      userId: "provider-user",
+      displayName: "Provider User",
+      email: null,
+      picture: null,
+      isAuthenticated: true,
+      isGuest: false,
+      provider: "google",
+    }, "enqueue", []);
+    assert.equal(enqueued.ok, true);
+
+    database.sqlite.prepare(
+      "INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)",
+    ).run("microsoft-session", "provider-user", "microsoft", new Date(Date.now() + 1_000).toISOString(), "2999-01-01T00:00:00.000Z");
+    database.sqlite.prepare("UPDATE sporades_jobs SET availableAt = ?, status = 'queued' WHERE id = ?")
+      .run("2000-01-01T00:00:00.000Z", enqueued.data.id);
+    await runCurrentUserJobWorker(database);
+
+    assert.deepEqual(seen, ["google", "google"]);
+    assert.equal(database.sqlite.prepare("SELECT actorProvider FROM sporades_jobs WHERE id = ?").get(enqueued.data.id).actorProvider, "google");
+  } finally {
+    database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("durable Jobs replay captured provider provenance after runtime restart", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-provider-restart-"));
+  const databasePath = path.join(dir, "data.db");
+  const seen = [];
+  const capsule = {
+    jobs: { recordProvider: job((ctx) => seen.push(ctx.auth.provider)) },
+    mutations: {
+      enqueue: mutation((ctx) =>
+        ctx.jobs.enqueue("recordProvider", null, { availableAt: "2999-01-01T00:00:00.000Z" })),
+    },
+  };
+  const clock = createControllableRuntimeClock("2030-01-01T00:00:00.000Z");
+  let database = await openDevDatabase(databasePath, "", {}, { name: "jobs" }, capsule, { clock });
+  try {
+    const now = clock.now().toISOString();
+    database.sqlite.prepare(
+      "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run("restart-user", now, "Restart User", null, null, 1, 0, "anonymous");
+    const enqueued = await runMutation(database, {
+      userId: "restart-user",
+      displayName: "Restart User",
+      email: null,
+      picture: null,
+      isAuthenticated: true,
+      isGuest: false,
+      provider: "facebook",
+    }, "enqueue", []);
+    database.close();
+
+    database = await openDevDatabase(databasePath, "", {}, { name: "jobs" }, capsule, { clock });
+    database.sqlite.prepare(
+      "INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)",
+    ).run("later-email-session", "restart-user", "email", new Date(clock.now().getTime() + 1_000).toISOString(), "2999-01-01T00:00:00.000Z");
+    database.sqlite.prepare("UPDATE sporades_jobs SET availableAt = ?, status = 'queued' WHERE id = ?")
+      .run("2000-01-01T00:00:00.000Z", enqueued.data.id);
+    await runCurrentUserJobWorker(database);
+
+    assert.deepEqual(seen, ["facebook"]);
+    assert.equal(database.sqlite.prepare("SELECT actorProvider FROM sporades_jobs WHERE id = ?").get(enqueued.data.id).actorProvider, "facebook");
+  } finally {
+    database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("legacy Jobs migrate to bounded anonymous provider provenance", async () => {
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-job-provider-legacy-"));
+  const databasePath = path.join(dir, "data.db");
+  const { DatabaseSync } = await import("node:sqlite");
+  const legacy = new DatabaseSync(databasePath);
+  const now = "2030-01-01T00:00:00.000Z";
+  try {
+    legacy.exec(
+      "CREATE TABLE sporades_jobs (" +
+      "id TEXT PRIMARY KEY, handler TEXT NOT NULL, enqueuedByUserId TEXT NOT NULL, actorUserId TEXT NOT NULL, " +
+      "payload TEXT NOT NULL, status TEXT NOT NULL, availableAt TEXT NOT NULL, attempts INTEGER NOT NULL, " +
+      "idempotencyKey TEXT, result TEXT, failure TEXT, createdAt TEXT NOT NULL, startedAt TEXT, completedAt TEXT, failedAt TEXT)",
+    );
+    legacy.prepare(
+      "INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run("legacy-job", "recordProvider", "legacy-user", "legacy-user", "null", "queued", "2000-01-01T00:00:00.000Z", 0, now);
+  } finally {
+    legacy.close();
+  }
+
+  const seen = [];
+  const clock = createControllableRuntimeClock(now);
+  const database = await openDevDatabase(databasePath, "", {}, { name: "jobs" }, {
+    jobs: { recordProvider: job((ctx) => seen.push(ctx.auth.provider)) },
+  }, { clock });
+  try {
+    database.sqlite.prepare(
+      "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run("legacy-user", now, "Legacy User", null, null, 1, 0, "google");
+    await runCurrentUserJobWorker(database);
+    assert.deepEqual(seen, ["anonymous"]);
+    assert.equal(database.sqlite.prepare("SELECT actorProvider FROM sporades_jobs WHERE id = 'legacy-job'").get().actorProvider, "anonymous");
+  } finally {
+    database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
 
 test("current users can enqueue, execute, get, and list their own durable jobs", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-jobs-"));

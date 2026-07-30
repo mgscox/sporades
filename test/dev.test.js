@@ -8324,6 +8324,7 @@ test("Google auth callback exchanges the code server-side and links the current 
         env: {
           SPORADES_GOOGLE_TOKEN_URL: google.tokenUrl,
           SPORADES_GOOGLE_JWKS_URL: google.jwksUrl,
+          SPORADES_OAUTH_TEST_ENDPOINTS: "1",
         },
       });
       let socket;
@@ -8620,7 +8621,10 @@ test("Microsoft full-page redirect completes through discovered endpoints and pr
     await withFakeMicrosoftServer(async (microsoft) => {
       const child = startCli(["dev", "--json"], {
         cwd: projectDir,
-        env: { SPORADES_MICROSOFT_DISCOVERY_URL: microsoft.discoveryUrl },
+        env: {
+          SPORADES_MICROSOFT_DISCOVERY_URL: microsoft.discoveryUrl,
+          SPORADES_OAUTH_TEST_ENDPOINTS: "1",
+        },
       });
       let socket;
       try {
@@ -8778,6 +8782,7 @@ test("Apple HTTPS browser tracer completes form-post auth without client-side Ap
         env: {
           SPORADES_APPLE_TOKEN_URL: apple.tokenUrl,
           SPORADES_APPLE_JWKS_URL: apple.jwksUrl,
+          SPORADES_OAUTH_TEST_ENDPOINTS: "1",
         },
       });
       let httpsSocket;
@@ -9441,6 +9446,7 @@ test("sporades db dump returns structured table data from the running dev sessio
                 "handler",
                 "enqueuedByUserId",
                 "actorUserId",
+                "actorProvider",
                 "payload",
                 "status",
                 "availableAt",
@@ -10389,6 +10395,7 @@ test("a scaffolded guestbook stores Google-linked author metadata from ctx.auth"
         env: {
           SPORADES_GOOGLE_TOKEN_URL: google.tokenUrl,
           SPORADES_GOOGLE_JWKS_URL: google.jwksUrl,
+          SPORADES_OAUTH_TEST_ENDPOINTS: "1",
         },
       });
       let socket;

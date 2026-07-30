@@ -3481,6 +3481,7 @@ export default capsule({
           SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db"),
           SPORADES_GOOGLE_TOKEN_URL: google.tokenUrl,
           SPORADES_GOOGLE_JWKS_URL: google.jwksUrl,
+          SPORADES_OAUTH_TEST_ENDPOINTS: "1",
         },
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -3575,6 +3576,7 @@ export default capsule({
           PORT: String(port),
           SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db"),
           SPORADES_MICROSOFT_DISCOVERY_URL: microsoft.discoveryUrl,
+          SPORADES_OAUTH_TEST_ENDPOINTS: "1",
         },
         stdio: ["ignore", "pipe", "pipe"],
       });

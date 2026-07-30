@@ -423,7 +423,7 @@ session token in `localStorage` and sends it over the WebSocket connection.
 Custom endpoint requests may also send the token in the
 `x-sporades-session-token` header.
 
-Every browser receives an anonymous session by default. Provider auth links to
+Every browser receives an Anonymous Session by default. Provider auth links to
 the existing anonymous account so data created before sign-in follows the user.
 
 Supported provider behavior:
@@ -464,7 +464,7 @@ Session records store `createdAt` and `expiresAt` lifecycle metadata. By
 default a session expires 30 days after creation or refresh. Missing, invalid,
 or expired session tokens resolve to a fresh anonymous session. Email sign-up
 and sign-in rotate the current session token when the linked identity changes.
-Google and Microsoft sign-in refresh the current session token during the server-owned OAuth
+Google, Microsoft, Apple, and Facebook sign-in refresh the current Session during the server-owned OAuth
 callback, preserving the redirect flow without exposing a token handoff in the
 browser.
 Facebook sign-in follows the same Session-linking contract. Its App Secret and
@@ -473,6 +473,24 @@ ID and optional selected email, name, and picture profile fields.
 An absent Facebook Graph version defaults to `v23.0`; a supplied null,
 non-string, malformed, or unsupported version is not treated as absent and
 leaves the provider configured/runtime unavailable.
+
+Provider identity authority is the stored `(provider, subject)` identity and
+authentication provenance belongs to each Session. The legacy provider column
+on a user row is migration data only: linking another provider may update the
+shared profile but cannot rewrite the provider reported by another Session.
+Legacy Google configuration and status fields normalize immediately into the
+provider-neutral runtime contract. Production provider endpoints are fixed;
+process-only endpoint overrides are admitted solely by explicit loopback test
+seams and cannot be configured through `sporades.json` or Server env.
+Provider token exchanges refuse redirects, use bounded deadlines and streamed
+response limits, and never expose authorization codes, client credentials, or
+provider response bodies. Current-user Jobs persist the enqueueing Session's
+provider provenance and replay it across retries and runtime restarts; later
+provider switches cannot rewrite an already-enqueued Job actor.
+Google, Apple, and Microsoft signing-key and OpenID metadata loads apply the
+same redirect, deadline, streamed-size, cancellation, and safe-error boundary.
+Process-only provider endpoint overrides accept exact IPv4 and IPv6 loopback
+hosts without credentials and reject near-loopback or non-loopback targets.
 
 `sporades auth as <provider> ... --json` is a dev-session helper for tests and
 agents. It creates or resolves simulated local identities and can push the

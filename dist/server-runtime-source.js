@@ -64,6 +64,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     jobError,
     boundedJobJson,
     jobState,
+    jobActorProvider,
     normalizeJobRetry,
     cancelJob,
     jobSummary,
@@ -380,9 +381,12 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     emailAuthDisabledError,
     beginOAuthSignIn,
     oauthProviderAdapter,
+    isOAuthLoopbackHostname,
+    oauthProviderTestEndpoint,
+    fetchBoundedOAuthJson,
+    completeOpenIdOAuthCodeExchange,
     createGoogleOAuthProviderAdapter,
     createAppleOAuthProviderAdapter,
-    completeGoogleOAuth,
     createFacebookOAuthProviderAdapter,
     facebookOAuthCallbackError,
     facebookOAuthEndpoint,
@@ -425,7 +429,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     validateConsumedOAuthCallbackParameters,
     normalizeReturnTo,
     linkProviderIdentity,
-    linkGoogleAccount,
     writeRedirect,
     createWebSocketAccept,
     createWebSocketHub,
@@ -1380,15 +1383,16 @@ function jobHandlersFromCapsuleDefinition(capsuleDefinition) {
 }
 async function ensureJobStorage(sqlite) {
     await sqlite.exec("CREATE TABLE IF NOT EXISTS sporades_jobs (" +
-        "id TEXT PRIMARY KEY, handler TEXT NOT NULL, enqueuedByUserId TEXT NOT NULL, actorUserId TEXT NOT NULL, " +
+        "id TEXT PRIMARY KEY, handler TEXT NOT NULL, enqueuedByUserId TEXT NOT NULL, actorUserId TEXT NOT NULL, actorProvider TEXT, " +
         "payload TEXT NOT NULL, status TEXT NOT NULL, availableAt TEXT NOT NULL, attempts INTEGER NOT NULL, " +
         "idempotencyKey TEXT, result TEXT, failure TEXT, createdAt TEXT NOT NULL, startedAt TEXT, completedAt TEXT, failedAt TEXT)");
     await sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_jobs_idempotency ON sporades_jobs(handler, actorUserId, idempotencyKey) WHERE idempotencyKey IS NOT NULL");
     await sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_jobs_runnable ON sporades_jobs(status, availableAt, id)");
     const columns = await sqlite.prepare("PRAGMA table_info(sporades_jobs)").all();
-    for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"]])
+    for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]])
         if (!columns.some((column) => column.name === name))
             await sqlite.exec(`ALTER TABLE sporades_jobs ADD COLUMN ${name} ${type}`);
+    await sqlite.exec("UPDATE sporades_jobs SET actorProvider = 'anonymous' WHERE actorProvider IS NULL OR actorProvider = ''");
 }
 async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
     if (config.services?.database?.engine === "libsql" &&
@@ -1852,10 +1856,6 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         saveUserPreferences(row) {
             return this.prepare("INSERT OR REPLACE INTO sporades_user_preferences (userId, value, updatedAt) VALUES (?, ?, ?)").run(row.userId, row.value, row.updatedAt);
         },
-        findAuthUserByProviderEmail(provider, email) {
-            const row = this.prepare("SELECT id FROM sporades_auth_users WHERE provider = ? AND email = ?").get(provider, email) ?? null;
-            return isReservedAuthUserId(row?.id) ? null : row;
-        },
         findAuthIdentityByProviderSubject(provider, subject) {
             const row = this.prepare("SELECT id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt " +
                 "FROM sporades_auth_identities WHERE provider = ? AND subject = ?").get(provider, subject) ?? null;
@@ -1886,7 +1886,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         },
         linkAuthUser(row) {
             assertNotReservedAuthUserId(row.id);
-            return this.prepare("UPDATE sporades_auth_users SET displayName = ?, email = ?, picture = ?, isAuthenticated = ?, isGuest = ?, provider = ? WHERE id = ?").run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.id);
+            return this.prepare("UPDATE sporades_auth_users SET displayName = ?, email = ?, picture = ?, isAuthenticated = ?, isGuest = ? WHERE id = ?").run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.id);
         },
         insertAuthSession(row) {
             assertNotReservedAuthUserId(row.userId);
@@ -1907,7 +1907,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         },
         readAuthSessionWithUser(token) {
             const row = this.prepare("SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, " +
-                "COALESCE(s.provider, u.provider) AS provider " +
+                "s.provider AS provider " +
                 "FROM sporades_auth_sessions s " +
                 "JOIN sporades_auth_users u ON u.id = s.userId " +
                 "WHERE s.token = ?").get(token) ?? null;
@@ -1938,7 +1938,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
             return this.prepare("INSERT INTO sporades_auth_email_credentials (email, userId, passwordHash, passwordSalt, createdAt) VALUES (?, ?, ?, ?, ?)").run(row.email, row.userId, row.passwordHash, row.passwordSalt, row.createdAt);
         },
         findEmailCredentialWithUser(email) {
-            const row = (this.prepare("SELECT c.email, c.userId, c.passwordHash, c.passwordSalt, u.displayName, u.picture, u.isAuthenticated, u.isGuest, u.provider " +
+            const row = (this.prepare("SELECT c.email, c.userId, c.passwordHash, c.passwordSalt, u.displayName, u.picture, u.isAuthenticated, u.isGuest " +
                 "FROM sporades_auth_email_credentials c " +
                 "JOIN sporades_auth_users u ON u.id = c.userId " +
                 "WHERE c.email = ?").get(email) ?? null);
@@ -6856,10 +6856,19 @@ export async function simulateLocalIdentitySession(database, options = {}) {
     const now = new Date().toISOString();
     const token = createSessionToken();
     return await database.sqlite.withTransaction(async (tx) => {
-        const existing = await tx.findAuthUserByProviderEmail(provider, email);
-        const userId = existing?.id ?? randomUUID();
-        if (existing) {
+        const subject = `local:${email}`;
+        const identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
+        const userId = identity?.userId ?? randomUUID();
+        if (identity) {
             await tx.updateAuthUserProfile({ id: userId, displayName, picture, isAuthenticated: 1, isGuest: 0 });
+            await tx.updateAuthIdentity({
+                id: identity.id,
+                subject,
+                email,
+                displayName,
+                picture,
+                updatedAt: now,
+            });
         }
         else {
             await tx.insertAuthUser({
@@ -6870,7 +6879,18 @@ export async function simulateLocalIdentitySession(database, options = {}) {
                 picture,
                 isAuthenticated: 1,
                 isGuest: 0,
+                provider: "anonymous",
+            });
+            await tx.insertAuthIdentity({
+                id: randomUUID(),
+                userId,
                 provider,
+                subject,
+                email,
+                displayName,
+                picture,
+                createdAt: now,
+                updatedAt: now,
             });
         }
         await tx.insertAuthSession({ token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
@@ -8019,23 +8039,123 @@ function oauthProviderAdapter(database, provider) {
     if (database.__oauthProviderAdapters?.[provider]) {
         return database.__oauthProviderAdapters[provider];
     }
-    if (provider === "google") {
-        return createGoogleOAuthProviderAdapter(database);
+    const factories = {
+        google: createGoogleOAuthProviderAdapter,
+        facebook: createFacebookOAuthProviderAdapter,
+        apple: createAppleOAuthProviderAdapter,
+        microsoft: createMicrosoftOAuthProviderAdapter,
+    };
+    return factories[provider]?.(database) ?? null;
+}
+function isOAuthLoopbackHostname(hostname) {
+    if (typeof hostname !== "string")
+        return false;
+    const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    return normalized === "127.0.0.1" || normalized === "::1";
+}
+function oauthProviderTestEndpoint(override, productionUrl) {
+    if (typeof override !== "string" || process.env.SPORADES_OAUTH_TEST_ENDPOINTS !== "1") {
+        return productionUrl;
     }
-    if (provider === "facebook") {
-        return createFacebookOAuthProviderAdapter(database);
+    try {
+        const url = new URL(override);
+        if (!["http:", "https:"].includes(url.protocol) ||
+            !isOAuthLoopbackHostname(url.hostname) ||
+            url.username ||
+            url.password ||
+            url.hash) {
+            return productionUrl;
+        }
+        return url.toString();
     }
-    if (provider === "apple") {
-        return createAppleOAuthProviderAdapter(database);
+    catch {
+        return productionUrl;
     }
-    if (provider === "microsoft") {
-        return createMicrosoftOAuthProviderAdapter(database);
+}
+async function fetchBoundedOAuthJson(database, url, request, policy) {
+    const configuredTimeout = Number(database?.[policy.timeoutProperty]);
+    const defaultTimeoutMs = Number.isFinite(policy.defaultTimeoutMs)
+        ? Math.min(Math.max(Math.floor(policy.defaultTimeoutMs), 1), 10_000)
+        : 5_000;
+    const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout >= 1 && configuredTimeout <= 10_000
+        ? Math.floor(configuredTimeout)
+        : defaultTimeoutMs;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const signal = controller.signal;
+    try {
+        const response = await fetch(url, {
+            ...request,
+            redirect: "error",
+            signal,
+        });
+        if (!response?.ok) {
+            try {
+                await response?.body?.cancel?.();
+            }
+            catch { /* response disposal is best effort */ }
+            throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
+        }
+        try {
+            return await readBoundedJsonBody(response, policy.maxBytes);
+        }
+        catch (error) {
+            if (error?.name === "AbortError" || signal.aborted) {
+                throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
+            }
+            throw commandError(policy.invalidMessage, policy.invalidHint, policy.invalidCode);
+        }
     }
-    return null;
+    catch (error) {
+        if (error?.code === policy.unavailableCode || error?.code === policy.invalidCode)
+            throw error;
+        throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
+    }
+    finally {
+        clearTimeout(timeout);
+    }
+}
+async function completeOpenIdOAuthCodeExchange(database, context, contract) {
+    const timeoutMs = Number.isInteger(database?.__oauthExchangeTimeoutMs)
+        ? Math.min(Math.max(database.__oauthExchangeTimeoutMs, 10), 30_000)
+        : 10_000;
+    const signal = AbortSignal.timeout(timeoutMs);
+    const exchangeCode = contract.exchangeCode ?? "OAUTH_EXCHANGE_FAILED";
+    const timeoutCode = contract.timeoutCode ?? "OAUTH_EXCHANGE_TIMEOUT";
+    let tokenResponse;
+    try {
+        tokenResponse = await fetch(contract.tokenUrl, {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams(contract.parameters),
+            redirect: "error",
+            signal,
+        });
+    }
+    catch (error) {
+        const timedOut = error?.name === "TimeoutError" || error?.name === "AbortError";
+        throw commandError(timedOut ? (contract.timeoutMessage ?? contract.exchangeMessage) : contract.exchangeMessage, contract.exchangeHint, timedOut ? timeoutCode : exchangeCode);
+    }
+    if (!tokenResponse.ok) {
+        await tokenResponse.body?.cancel?.().catch?.(() => { });
+        throw commandError(contract.exchangeMessage, contract.exchangeHint, exchangeCode);
+    }
+    let token;
+    try {
+        token = await readBoundedJsonResponse(tokenResponse, 64 * 1024);
+    }
+    catch (error) {
+        const timedOut = signal.aborted || error?.name === "TimeoutError" || error?.name === "AbortError";
+        throw commandError(timedOut ? (contract.timeoutMessage ?? contract.exchangeMessage) : contract.responseMessage, contract.exchangeHint, timedOut ? timeoutCode : exchangeCode);
+    }
+    if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
+        throw commandError(contract.tokenMessage, contract.tokenHint, "OAUTH_ID_TOKEN_INVALID");
+    }
+    return await contract.verify(database, token.id_token, context.nonce);
 }
 function createGoogleOAuthProviderAdapter(database) {
-    const google = database.authConfig.google;
-    const configured = Boolean(database.authConfig.providers.google.enabled && google.configured);
+    const google = database.authConfig.providers.google;
+    const configured = Boolean(google.enabled && google.configured);
     return {
         provider: "google",
         responseMode: "query",
@@ -8055,7 +8175,25 @@ function createGoogleOAuthProviderAdapter(database) {
             return { url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` };
         },
         complete(context) {
-            return completeGoogleOAuth(database, context);
+            const clientId = database.serverEnv[google.clientIdEnv];
+            const clientSecret = database.serverEnv[google.clientSecretEnv];
+            return completeOpenIdOAuthCodeExchange(database, context, {
+                tokenUrl: oauthProviderTestEndpoint(process.env.SPORADES_GOOGLE_TOKEN_URL, "https://oauth2.googleapis.com/token"),
+                parameters: {
+                    code: context.code,
+                    client_id: clientId,
+                    client_secret: clientSecret,
+                    redirect_uri: context.redirectUri,
+                    grant_type: "authorization_code",
+                    code_verifier: context.pkceVerifier,
+                },
+                exchangeMessage: "Google OAuth code exchange failed.",
+                exchangeHint: "Check the Google OAuth client configuration and retry sign-in.",
+                responseMessage: "Google OAuth response was invalid.",
+                tokenMessage: "Google OAuth response did not include a valid identity token.",
+                tokenHint: "Check the Google OAuth client configuration and retry sign-in.",
+                verify: verifyGoogleIdentityToken,
+            });
         },
     };
 }
@@ -8109,7 +8247,7 @@ function appleOAuthOriginEligible(origin) {
 }
 async function completeAppleOAuth(database, context) {
     const apple = database.authConfig.providers.apple;
-    const tokenUrl = process.env.SPORADES_APPLE_TOKEN_URL ?? "https://appleid.apple.com/auth/token";
+    const tokenUrl = oauthProviderTestEndpoint(process.env.SPORADES_APPLE_TOKEN_URL, "https://appleid.apple.com/auth/token");
     let clientSecret;
     try {
         clientSecret = createAppleClientSecret(database);
@@ -8117,37 +8255,22 @@ async function completeAppleOAuth(database, context) {
     catch {
         throw commandError("Apple client credential could not be generated.", "Check the Apple Team ID, Key ID, Services ID, and private key, then retry sign-in.", "OAUTH_CLIENT_CREDENTIAL_INVALID");
     }
-    let tokenResponse;
-    try {
-        tokenResponse = await fetch(tokenUrl, {
-            method: "POST",
-            headers: { "content-type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
-                code: context.code,
-                client_id: apple.clientId,
-                client_secret: clientSecret,
-                redirect_uri: context.redirectUri,
-                grant_type: "authorization_code",
-            }),
-        });
-    }
-    catch {
-        throw commandError("Apple OAuth code exchange failed.", "Check the Apple OAuth configuration and retry sign-in.", "OAUTH_EXCHANGE_FAILED");
-    }
-    if (!tokenResponse.ok) {
-        throw commandError("Apple OAuth code exchange failed.", "Check the Apple OAuth configuration and exact callback URL, then retry sign-in.", "OAUTH_EXCHANGE_FAILED");
-    }
-    let token;
-    try {
-        token = await tokenResponse.json();
-    }
-    catch {
-        throw commandError("Apple OAuth response was invalid.", "Check the Apple OAuth configuration and retry sign-in.", "OAUTH_EXCHANGE_FAILED");
-    }
-    if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
-        throw commandError("Apple OAuth response did not include a valid identity token.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
-    }
-    const identity = await verifyAppleIdentityToken(database, token.id_token, context.nonce);
+    const identity = await completeOpenIdOAuthCodeExchange(database, context, {
+        tokenUrl,
+        parameters: {
+            code: context.code,
+            client_id: apple.clientId,
+            client_secret: clientSecret,
+            redirect_uri: context.redirectUri,
+            grant_type: "authorization_code",
+        },
+        exchangeMessage: "Apple OAuth code exchange failed.",
+        exchangeHint: "Check the Apple OAuth configuration and exact callback URL, then retry sign-in.",
+        responseMessage: "Apple OAuth response was invalid.",
+        tokenMessage: "Apple OAuth response did not include a valid identity token.",
+        tokenHint: "Retry Apple sign-in.",
+        verify: verifyAppleIdentityToken,
+    });
     const authorizationUser = parseAppleAuthorizationUser(context.parameters?.get("user"));
     return {
         ...identity,
@@ -8186,44 +8309,6 @@ function createAppleClientSecret(database, nowSeconds = Math.floor(Date.now() / 
         throw commandError("Apple client credential is invalid.", "Configure the unencrypted P-256 private key issued for Sign in with Apple.", "OAUTH_CLIENT_CREDENTIAL_INVALID");
     }
     return `${header}.${claims}.${signatureBytes.toString("base64url")}`;
-}
-async function completeGoogleOAuth(database, context) {
-    const google = database.authConfig.google;
-    const tokenUrl = process.env.SPORADES_GOOGLE_TOKEN_URL ?? "https://oauth2.googleapis.com/token";
-    const clientId = database.serverEnv[google.clientIdEnv];
-    const clientSecret = database.serverEnv[google.clientSecretEnv];
-    let tokenResponse;
-    try {
-        tokenResponse = await fetch(tokenUrl, {
-            method: "POST",
-            headers: { "content-type": "application/x-www-form-urlencoded" },
-            body: new URLSearchParams({
-                code: context.code,
-                client_id: clientId,
-                client_secret: clientSecret,
-                redirect_uri: context.redirectUri,
-                grant_type: "authorization_code",
-                code_verifier: context.pkceVerifier,
-            }),
-        });
-    }
-    catch {
-        throw commandError("Google OAuth code exchange failed.", "Check the Google OAuth client configuration and retry sign-in.", "OAUTH_EXCHANGE_FAILED");
-    }
-    if (!tokenResponse.ok) {
-        throw commandError("Google OAuth code exchange failed.", "Check the Google OAuth client configuration and retry sign-in.", "OAUTH_EXCHANGE_FAILED");
-    }
-    let token;
-    try {
-        token = await tokenResponse.json();
-    }
-    catch {
-        throw commandError("Google OAuth response was invalid.", "Check the Google OAuth client configuration and retry sign-in.", "OAUTH_EXCHANGE_FAILED");
-    }
-    if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
-        throw commandError("Google OAuth response did not include a valid identity token.", "Check the Google OAuth client configuration and retry sign-in.", "OAUTH_ID_TOKEN_INVALID");
-    }
-    return await verifyGoogleIdentityToken(database, token.id_token, context.nonce);
 }
 function createFacebookOAuthProviderAdapter(database) {
     const facebook = database.authConfig.providers.facebook;
@@ -8501,19 +8586,35 @@ async function verifyGoogleIdentityToken(database, token, expectedNonce) {
     if (header.alg !== "RS256" || typeof header.kid !== "string") {
         throw commandError("Google identity token used an unsupported signature.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
     }
-    const jwksUrl = process.env.SPORADES_GOOGLE_JWKS_URL ?? "https://www.googleapis.com/oauth2/v3/certs";
+    const jwksUrl = oauthProviderTestEndpoint(process.env.SPORADES_GOOGLE_JWKS_URL, "https://www.googleapis.com/oauth2/v3/certs");
     let jwks;
     try {
-        const response = await fetch(jwksUrl);
-        if (!response.ok) {
-            throw new Error("jwks");
-        }
-        jwks = await response.json();
+        jwks = await fetchBoundedOAuthJson(database, jwksUrl, {}, {
+            maxBytes: 64 * 1024,
+            timeoutProperty: "__oauthJwksTimeoutMs",
+            defaultTimeoutMs: 5_000,
+            unavailableCode: "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
+            unavailableMessage: "Google signing keys could not be loaded.",
+            unavailableHint: "Retry Google sign-in.",
+            invalidCode: "OAUTH_ID_TOKEN_KEYS_INVALID",
+            invalidMessage: "Google signing keys were invalid.",
+            invalidHint: "Retry Google sign-in.",
+        });
     }
-    catch {
+    catch (error) {
+        if (error?.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE" || error?.code === "OAUTH_ID_TOKEN_KEYS_INVALID")
+            throw error;
         throw commandError("Google signing keys could not be loaded.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
     }
-    const jwk = Array.isArray(jwks?.keys) ? jwks.keys.find((candidate) => candidate.kid === header.kid && candidate.kty === "RSA") : null;
+    const keys = isPlainJsonObject(jwks) && Array.isArray(jwks.keys) && jwks.keys.length <= 32 ? jwks.keys : null;
+    if (!keys) {
+        throw commandError("Google signing keys were invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
+    }
+    const jwk = keys.find((candidate) => isPlainJsonObject(candidate) &&
+        candidate.kid === header.kid &&
+        candidate.kty === "RSA" &&
+        typeof candidate.n === "string" &&
+        typeof candidate.e === "string");
     if (!jwk) {
         throw commandError("Google identity token signing key was not recognized.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
     }
@@ -8525,7 +8626,7 @@ async function verifyGoogleIdentityToken(database, token, expectedNonce) {
     catch {
         signatureCheckFailed = true;
     }
-    const clientId = database.serverEnv[database.authConfig.google.clientIdEnv];
+    const clientId = database.serverEnv[database.authConfig.providers.google.clientIdEnv];
     const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
     const validIssuer = claims.iss === "https://accounts.google.com" || claims.iss === "accounts.google.com";
     const validSubject = typeof claims.sub === "string" &&
@@ -8583,15 +8684,18 @@ async function discoverMicrosoftOpenIdConfiguration(database, tenant) {
     if (!selectedTenant) {
         throw commandError("Microsoft tenant configuration is invalid.", "Use common, organizations, consumers, a tenant GUID, or a verified tenant domain.", "OAUTH_TENANT_INVALID");
     }
-    const discoveryOverride = process.env.SPORADES_MICROSOFT_DISCOVERY_URL;
-    const discoveryUrl = discoveryOverride ??
-        `https://login.microsoftonline.com/${encodeURIComponent(selectedTenant)}/v2.0/.well-known/openid-configuration`;
+    const productionDiscoveryUrl = `https://login.microsoftonline.com/${encodeURIComponent(selectedTenant)}/v2.0/.well-known/openid-configuration`;
+    const discoveryUrl = oauthProviderTestEndpoint(process.env.SPORADES_MICROSOFT_DISCOVERY_URL, productionDiscoveryUrl);
+    const discoveryOverride = discoveryUrl !== productionDiscoveryUrl;
     let discoveryOrigin;
     try {
         const parsedDiscoveryUrl = new URL(discoveryUrl);
         const loopbackOverride = discoveryOverride &&
             parsedDiscoveryUrl.protocol === "http:" &&
-            ["127.0.0.1", "::1", "localhost"].includes(parsedDiscoveryUrl.hostname);
+            isOAuthLoopbackHostname(parsedDiscoveryUrl.hostname) &&
+            !parsedDiscoveryUrl.username &&
+            !parsedDiscoveryUrl.password &&
+            !parsedDiscoveryUrl.hash;
         const microsoftDiscovery = !discoveryOverride &&
             parsedDiscoveryUrl.protocol === "https:" &&
             parsedDiscoveryUrl.hostname === "login.microsoftonline.com";
@@ -8682,45 +8786,11 @@ async function discoverMicrosoftOpenIdConfiguration(database, tenant) {
     }
 }
 async function fetchMicrosoftOidcJson(database, url, request, policy) {
-    const configuredTimeout = Number(database.__microsoftOidcTimeoutMs);
-    const timeoutMs = Number.isFinite(configuredTimeout) && configuredTimeout >= 1 && configuredTimeout <= 10_000
-        ? Math.floor(configuredTimeout)
-        : 5_000;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
-    const signal = controller.signal;
-    let response;
-    try {
-        response = await fetch(url, {
-            ...request,
-            redirect: "error",
-            signal,
-        });
-        if (!response?.ok) {
-            try {
-                await response?.body?.cancel?.();
-            }
-            catch { /* response disposal is best effort */ }
-            throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
-        }
-        try {
-            return await readBoundedJsonBody(response, policy.maxBytes);
-        }
-        catch (error) {
-            if (error?.name === "AbortError" || signal.aborted) {
-                throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
-            }
-            throw commandError(policy.invalidMessage, policy.invalidHint, policy.invalidCode);
-        }
-    }
-    catch (error) {
-        if (error?.code === policy.unavailableCode || error?.code === policy.invalidCode)
-            throw error;
-        throw commandError(policy.unavailableMessage, policy.unavailableHint, policy.unavailableCode);
-    }
-    finally {
-        clearTimeout(timeout);
-    }
+    return await fetchBoundedOAuthJson(database, url, request, {
+        ...policy,
+        timeoutProperty: "__microsoftOidcTimeoutMs",
+        defaultTimeoutMs: 5_000,
+    });
 }
 async function readBoundedJsonBody(response, maxBytes) {
     const declaredLength = Number(response.headers?.get?.("content-length"));
@@ -8954,27 +9024,38 @@ async function verifyAppleIdentityToken(database, token, expectedNonce) {
         (header.typ !== undefined && header.typ !== "JWT")) {
         throw commandError("Apple identity token used an unsupported signature.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
     }
-    const jwksUrl = process.env.SPORADES_APPLE_JWKS_URL ?? "https://appleid.apple.com/auth/keys";
+    const jwksUrl = oauthProviderTestEndpoint(process.env.SPORADES_APPLE_JWKS_URL, "https://appleid.apple.com/auth/keys");
     let jwks;
     try {
-        const response = await fetch(jwksUrl);
-        if (!response.ok)
-            throw new Error("jwks");
-        jwks = await readBoundedJsonResponse(response, 64 * 1024);
+        jwks = await fetchBoundedOAuthJson(database, jwksUrl, {}, {
+            maxBytes: 64 * 1024,
+            timeoutProperty: "__oauthJwksTimeoutMs",
+            defaultTimeoutMs: 5_000,
+            unavailableCode: "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
+            unavailableMessage: "Apple signing keys could not be loaded.",
+            unavailableHint: "Retry Apple sign-in.",
+            invalidCode: "OAUTH_ID_TOKEN_KEYS_INVALID",
+            invalidMessage: "Apple signing keys were invalid.",
+            invalidHint: "Retry Apple sign-in.",
+        });
     }
-    catch {
+    catch (error) {
+        if (error?.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE" || error?.code === "OAUTH_ID_TOKEN_KEYS_INVALID")
+            throw error;
         throw commandError("Apple signing keys could not be loaded.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
     }
     const keys = isPlainJsonObject(jwks) && Array.isArray(jwks.keys) && jwks.keys.length <= 32 ? jwks.keys : null;
+    if (!keys) {
+        throw commandError("Apple signing keys were invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_INVALID");
+    }
     const jwk = keys
-        ? keys.find((candidate) => isPlainJsonObject(candidate) &&
-            candidate.kid === header.kid &&
-            candidate.kty === "RSA" &&
-            candidate.use === "sig" &&
-            candidate.alg === "RS256" &&
-            typeof candidate.n === "string" &&
-            typeof candidate.e === "string")
-        : null;
+        .find((candidate) => isPlainJsonObject(candidate) &&
+        candidate.kid === header.kid &&
+        candidate.kty === "RSA" &&
+        candidate.use === "sig" &&
+        candidate.alg === "RS256" &&
+        typeof candidate.n === "string" &&
+        typeof candidate.e === "string");
     if (!jwk) {
         throw commandError("Apple identity token signing key was not recognized.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
     }
@@ -9027,8 +9108,10 @@ function parseBoundedJwtObject(value) {
 }
 async function readBoundedJsonResponse(response, maxBytes) {
     const contentLength = Number(response.headers?.get?.("content-length"));
-    if (Number.isFinite(contentLength) && contentLength > maxBytes)
+    if (Number.isFinite(contentLength) && contentLength > maxBytes) {
+        await response.body?.cancel?.().catch?.(() => { });
         throw new Error("Response too large");
+    }
     const chunks = [];
     let size = 0;
     if (response.body?.getReader) {
@@ -9044,16 +9127,25 @@ async function readBoundedJsonResponse(response, maxBytes) {
                 chunks.push(Buffer.from(result.value));
             }
         }
+        catch (error) {
+            await reader.cancel().catch(() => { });
+            throw error;
+        }
         finally {
-            if (size > maxBytes)
-                await reader.cancel().catch(() => { });
+            reader.releaseLock();
         }
     }
     else {
-        const bytes = Buffer.from(await response.arrayBuffer());
-        if (bytes.length > maxBytes)
-            throw new Error("Response too large");
-        chunks.push(bytes);
+        try {
+            const bytes = Buffer.from(await response.arrayBuffer());
+            if (bytes.length > maxBytes)
+                throw new Error("Response too large");
+            chunks.push(bytes);
+        }
+        catch (error) {
+            await response.body?.cancel?.().catch?.(() => { });
+            throw error;
+        }
     }
     const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
     if (!isPlainJsonObject(parsed))
@@ -9402,9 +9494,6 @@ async function linkProviderIdentity(database, session, provider, profile) {
         }
         return { ok: true, auth };
     });
-}
-async function linkGoogleAccount(database, session, profile) {
-    return await linkProviderIdentity(database, session, "google", profile);
 }
 function writeRedirect(response, location) {
     response.writeHead(302, { location });
@@ -10432,7 +10521,7 @@ function createCurrentUserJobApi(database, contextGetter) {
             if (Number.isNaN(Date.parse(availableAt)))
                 throw jobError("INVALID_JOB_OPTIONS", "Invalid Job availability time.", "Pass an ISO 8601 availableAt value.");
             const retry = normalizeJobRetry(options.retry);
-            const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
+            const row = { id, handler: handlerName, enqueuedByUserId: context.__jobEnqueuedBy ?? context.auth.userId, actorUserId: context.auth.userId, actorProvider: jobActorProvider(context.auth), payload: payloadJson, status: availableAt > now ? "delayed" : "queued", availableAt, attempts: 0, idempotencyKey: idempotencyKey ?? null, createdAt: now, retryJson: JSON.stringify(retry), attemptHistory: "[]", scheduleName: scheduleProvenance?.scheduleName ?? null, scheduledFor: scheduleProvenance?.scheduledFor ?? null };
             if (database.__transactionActive) {
                 const pendingContext = context.__jobParentContext ?? context;
                 pendingContext.__pendingJobEnqueues ??= [];
@@ -10441,7 +10530,7 @@ function createCurrentUserJobApi(database, contextGetter) {
                 return jobState(row, true);
             }
             try {
-                await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)").run(id, handlerName, row.enqueuedByUserId, row.actorUserId, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+                await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)").run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
             }
             catch (error) {
                 if (idempotencyKey) {
@@ -10538,6 +10627,12 @@ function jobState(row, includeDetail) {
     if (row.cancelRequestedAt)
         state.cancelRequestedAt = row.cancelRequestedAt;
     return state;
+}
+function jobActorProvider(auth) {
+    const provider = auth?.provider;
+    if (typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider))
+        return provider;
+    return auth?.isGuest ? "anonymous" : "authenticated";
 }
 /** Read the bounded operator view of every Job in one adapter snapshot. */
 export async function inspectRuntimeJobs(adapter) {
@@ -10690,7 +10785,7 @@ async function flushPendingJobEnqueues(context) {
     context.__pendingJobsFlushed = true;
     const queueDatabase = context.__jobQueueDatabase;
     for (const row of context.__pendingJobEnqueues) {
-        await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory, row.scheduleName ?? null, row.scheduledFor ?? null);
+        await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory, row.scheduleName ?? null, row.scheduledFor ?? null);
     }
     scheduleCurrentUserJobWorker(queueDatabase);
 }
@@ -10740,10 +10835,18 @@ async function runCurrentUserJobWorker(database) {
                     result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...(row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {}) } }, (privilegedCtx) => handler.handler(privilegedCtx, JSON.parse(row.payload)));
                 }
                 else {
-                    const user = await database.sqlite.prepare("SELECT * FROM sporades_auth_users WHERE id = ?").get(row.actorUserId);
+                    const user = await database.sqlite.prepare("SELECT id, displayName, email, picture, isAuthenticated, isGuest FROM sporades_auth_users WHERE id = ?").get(row.actorUserId);
                     if (!user)
                         throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");
-                    const auth = { userId: user.id, displayName: user.displayName, email: user.email, picture: user.picture, isAuthenticated: Boolean(user.isAuthenticated), isGuest: Boolean(user.isGuest), provider: user.provider };
+                    const auth = {
+                        userId: user.id,
+                        displayName: user.displayName,
+                        email: user.email,
+                        picture: user.picture,
+                        isAuthenticated: Boolean(user.isAuthenticated),
+                        isGuest: Boolean(user.isGuest),
+                        provider: jobActorProvider({ provider: row.actorProvider, isGuest: Boolean(user.isGuest) }),
+                    };
                     const context = createMutationContext(database, auth);
                     context.signal = abortController.signal;
                     result = await handler.handler(context, JSON.parse(row.payload));

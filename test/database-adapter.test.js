@@ -48,7 +48,7 @@ async function withTempDir(fn) {
 const createRuntimeLogSink = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createRuntimeLogSink");
 const emitPrivilegedAuditEvent = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "emitPrivilegedAuditEvent");
 const extractEndpoints = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "extractEndpoints");
-const linkGoogleAccount = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkGoogleAccount");
+const linkProviderIdentity = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkProviderIdentity");
 const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
 const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
 
@@ -4070,6 +4070,10 @@ test("sessions and local identity simulation cannot resolve the privileged senti
       assert.equal(simulated.ok, true);
       assert.notEqual(simulated.data.auth.userId, "__privileged__");
       assert.equal(
+        database.sqlite.prepare("SELECT provider FROM sporades_auth_users WHERE id = ?").get(simulated.data.auth.userId).provider,
+        "anonymous",
+      );
+      assert.equal(
         database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_auth_users WHERE id = ?").get("__privileged__").count,
         1,
       );
@@ -4444,22 +4448,18 @@ test("email sign-in throttling allows attempts again after the cooldown window",
   });
 });
 
-test("OAuth provider linking rolls back auth state when session refresh fails", async () => {
+test("provider-neutral OAuth linking rolls back non-Google auth state when session refresh fails", async () => {
   await withTempDir(async (dir) => {
     const originalFetch = globalThis.fetch;
     const database = await openDevDatabase(
       path.join(dir, "data.db"),
       "",
-      { GOOGLE_CLIENT_ID: "client-id", GOOGLE_CLIENT_SECRET: "client-secret" },
+      {},
       {
         auth: {
           providers: {
             anonymous: true,
-            google: {
-              enabled: true,
-              clientIdEnv: "GOOGLE_CLIENT_ID",
-              clientSecretEnv: "GOOGLE_CLIENT_SECRET",
-            },
+            facebook: true,
           },
         },
       },
@@ -4472,17 +4472,18 @@ test("OAuth provider linking rolls back auth state when session refresh fails", 
         state: "link-state",
         sessionToken: session.token,
         returnTo: "http://127.0.0.1/app",
-        redirectUri: "http://127.0.0.1/__sporades/auth/google/callback",
+        provider: "facebook",
+        redirectUri: "http://127.0.0.1/__sporades/auth/facebook/callback",
         createdAt: new Date().toISOString(),
       });
       database.__oauthProviderAdapters = {
-        google: {
-          provider: "google",
+        facebook: {
+          provider: "facebook",
           responseMode: "query",
           enabled: true,
           async complete() {
             return {
-              sub: "google-subject-ada",
+              sub: "facebook-subject-ada",
               email: "ada@example.com",
               emailVerified: true,
               name: "Ada",
@@ -4498,7 +4499,7 @@ test("OAuth provider linking rolls back auth state when session refresh fails", 
       const response = createResponseRecorder();
       await routeSporadesAuth(
         database,
-        { method: "GET", url: "/__sporades/auth/google/callback?state=link-state&code=good-code" },
+        { method: "GET", url: "/__sporades/auth/facebook/callback?state=link-state&code=good-code" },
         response,
       );
 
@@ -4506,8 +4507,11 @@ test("OAuth provider linking rolls back auth state when session refresh fails", 
       const preservedSession = baseAdapter.readAuthSessionWithUser(session.token);
       assert.equal(preservedSession.provider, "anonymous");
       assert.equal(preservedSession.isGuest, 1);
-      assert.equal(baseAdapter.findAuthUserByProviderEmail("google", "ada@example.com"), null);
-      assert.equal(baseAdapter.findAuthIdentityByProviderSubject("google", "google-subject-ada"), null);
+      assert.equal(
+        baseAdapter.prepare("SELECT id FROM sporades_auth_users WHERE email = ?").get("ada@example.com"),
+        undefined,
+      );
+      assert.equal(baseAdapter.findAuthIdentityByProviderSubject("facebook", "facebook-subject-ada"), null);
       assert.equal(baseAdapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get("link-state"), undefined);
     } finally {
       globalThis.fetch = originalFetch;
@@ -4525,7 +4529,7 @@ test("Provider identities use stable subjects and Sessions retain their own auth
     try {
       const firstSession = await resolveAnonymousSession(database, null);
       await updateCurrentUserPreferences(database, firstSession.auth, { theme: "dark", density: "comfortable" });
-      const first = await linkGoogleAccount(database, firstSession, {
+      const first = await linkProviderIdentity(database, firstSession, "google", {
         subject: "google-subject-1",
         email: null,
         displayName: "Ada",
@@ -4534,10 +4538,15 @@ test("Provider identities use stable subjects and Sessions retain their own auth
       assert.equal(first.ok, true);
       assert.equal(first.auth.userId, firstSession.auth.userId);
       assert.equal(database.sqlite.readAuthSessionWithUser(firstSession.token).provider, "google");
+      assert.equal(
+        database.sqlite.prepare("SELECT provider FROM sporades_auth_users WHERE id = ?").get(first.auth.userId).provider,
+        "anonymous",
+        "linking an identity must not rewrite the legacy user provider marker",
+      );
 
       const secondSession = await resolveAnonymousSession(database, null);
       await updateCurrentUserPreferences(database, secondSession.auth, { density: "compact", locale: "en-GB" });
-      const second = await linkGoogleAccount(database, secondSession, {
+      const second = await linkProviderIdentity(database, secondSession, "google", {
         subject: "google-subject-1",
         email: "ada.changed@example.com",
         displayName: "Ada Changed",
@@ -4576,6 +4585,11 @@ test("Provider identities use stable subjects and Sessions retain their own auth
       });
       assert.equal(email.ok, true);
       assert.equal(database.sqlite.readAuthSessionWithUser(email.sessionToken).provider, "email");
+      assert.equal(
+        database.sqlite.prepare("SELECT provider FROM sporades_auth_users WHERE id = ?").get(email.auth.userId).provider,
+        "anonymous",
+        "email registration must not make the legacy user provider marker authoritative",
+      );
 
       const secondEmailAnonymous = await resolveAnonymousSession(database, null);
       const secondEmail = await signInWithEmail(database, secondEmailAnonymous, {
@@ -4583,7 +4597,7 @@ test("Provider identities use stable subjects and Sessions retain their own auth
         password: "correct horse battery staple",
       });
       const secondEmailSession = await resolveAnonymousSession(database, secondEmail.sessionToken);
-      const linkedSecondProvider = await linkGoogleAccount(database, secondEmailSession, {
+      const linkedSecondProvider = await linkProviderIdentity(database, secondEmailSession, "google", {
         subject: "google-subject-grace",
         email: "grace.google@example.com",
         displayName: "Grace via Google",
@@ -4603,7 +4617,7 @@ test("Provider identities use stable subjects and Sessions retain their own auth
       assert.equal(database.sqlite.readAuthSessionWithUser(thirdEmail.sessionToken).provider, "email");
 
       const conflictSession = await resolveAnonymousSession(database, email.sessionToken);
-      const conflict = await linkGoogleAccount(database, conflictSession, {
+      const conflict = await linkProviderIdentity(database, conflictSession, "google", {
         subject: "google-subject-1",
         email: "collision@example.com",
         displayName: "Collision",
@@ -4748,7 +4762,7 @@ test("legacy Google auth storage migrates without changing existing Session toke
       assert.equal(session.auth.userId, "legacy-user");
       assert.equal(session.auth.provider, "google");
 
-      const linked = await linkGoogleAccount(database, session, {
+      const linked = await linkProviderIdentity(database, session, "google", {
         subject: "verified-google-subject",
         email: "legacy@example.com",
         emailVerified: true,
@@ -4768,7 +4782,7 @@ test("legacy Google auth storage migrates without changing existing Session toke
       );
 
       const freshSession = await resolveAnonymousSession(database, null);
-      const subjectOnly = await linkGoogleAccount(database, freshSession, {
+      const subjectOnly = await linkProviderIdentity(database, freshSession, "google", {
         subject: "verified-google-subject",
         email: "changed-unverified@example.com",
         emailVerified: false,
@@ -4819,7 +4833,7 @@ test("legacy Google identity claiming fails closed for unverified or ambiguous m
       }
 
       const unverifiedSession = await resolveAnonymousSession(database, null);
-      const unverified = await linkGoogleAccount(database, unverifiedSession, {
+      const unverified = await linkProviderIdentity(database, unverifiedSession, "google", {
         subject: "new-google-subject",
         email: "shared@example.com",
         emailVerified: false,
@@ -4830,7 +4844,7 @@ test("legacy Google identity claiming fails closed for unverified or ambiguous m
       assert.equal(unverified.error.code, "AUTH_LEGACY_IDENTITY_UNVERIFIED_EMAIL");
 
       const verifiedSession = await resolveAnonymousSession(database, null);
-      const ambiguous = await linkGoogleAccount(database, verifiedSession, {
+      const ambiguous = await linkProviderIdentity(database, verifiedSession, "google", {
         subject: "new-google-subject",
         email: "shared@example.com",
         emailVerified: true,
@@ -4879,7 +4893,7 @@ test("Google OAuth callback preserves structured Provider identity conflicts", a
     );
     try {
       const ownerSession = await resolveAnonymousSession(database, null);
-      const owner = await linkGoogleAccount(database, ownerSession, {
+      const owner = await linkProviderIdentity(database, ownerSession, "google", {
         subject: "owned-google-subject",
         email: "owner@example.com",
         emailVerified: true,
@@ -4958,7 +4972,10 @@ test("local identity simulation rolls back the auth user when session insertion 
           }),
         /insert simulated session exploded/,
       );
-      assert.equal(baseAdapter.findAuthUserByProviderEmail("email", "local@example.com"), null);
+      assert.equal(
+        baseAdapter.prepare("SELECT id FROM sporades_auth_users WHERE email = ?").get("local@example.com"),
+        undefined,
+      );
     } finally {
       database.close();
     }
@@ -5083,7 +5100,6 @@ function wrapAsyncRuntimeAdapter(adapter) {
     "markFileDeleted",
     "fileRowForOwner",
     "ensureAuthStorage",
-    "findAuthUserByProviderEmail",
     "findAuthIdentityByProviderSubject",
     "findLegacyAuthIdentitiesByProviderEmail",
     "insertAuthIdentity",
