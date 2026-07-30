@@ -1114,7 +1114,10 @@ function encodeMimeHeaderValue(value, quoteAscii = false) {
     const chunks = [];
     let current = "";
     for (const character of text) {
-        if (current && Buffer.byteLength(current + character) > 45) {
+        // 39 UTF-8 bytes encode to at most 64 encoded-word characters. That leaves
+        // room for the longest emitted field prefix (`Reply-To: `) while keeping
+        // every encoded-word header line within RFC 2047's 76-character limit.
+        if (current && Buffer.byteLength(current + character) > 39) {
             chunks.push(current);
             current = "";
         }

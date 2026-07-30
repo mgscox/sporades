@@ -225,10 +225,11 @@ test("MIME generation encodes Unicode headers, folds headers, and wraps base64 b
     name: `Recipient ${index}`,
   }));
   const mime = buildSmtpMessage({
-    from: { email: "sender@example.com", name: "Équipe Sporades" },
+    from: { email: "sender@example.com", name: "Équipe Sporades ".repeat(12) },
     to: recipients,
     cc: [],
     bcc: [],
+    replyTo: { email: "reply@example.com", name: "Réponse Sporades ".repeat(12) },
     subject: `Résumé ${"long subject ".repeat(100)}`,
     textBody: "long body ".repeat(500),
     messageId: "<mime-test@sporades.local>",
@@ -238,6 +239,10 @@ test("MIME generation encodes Unicode headers, folds headers, and wraps base64 b
   assert.equal(headerBlock.includes("Résumé"), false);
   assert.match(headerBlock, /=\?UTF-8\?B\?/);
   assert.equal(headerBlock.split("\r\n").every((line) => line.length <= 998), true);
+  assert.equal(
+    headerBlock.split("\r\n").filter((line) => line.includes("=?UTF-8?B?")).every((line) => line.length <= 76),
+    true,
+  );
   assert.equal(body.split("\r\n").every((line) => line.length <= 76), true);
 });
 

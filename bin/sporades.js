@@ -3085,7 +3085,7 @@ function encodeMimeHeaderValue(value, quoteAscii = false) {
   const chunks = [];
   let current = "";
   for (const character of text) {
-    if (current && Buffer.byteLength(current + character) > 45) {
+    if (current && Buffer.byteLength(current + character) > 39) {
       chunks.push(current);
       current = "";
     }
