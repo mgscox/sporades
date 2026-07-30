@@ -11,7 +11,7 @@ was discarded as non-authoritative environment noise.
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 01 | review | None | `716075b` | `codex/multi-provider-oauth-01` / `/private/tmp/sporades-multi-provider-oauth-swarm/issue-01` | `/root/oauth_01` | `313d6bf` | `/root/oauth_01_review` | pending | — | RED stable-subject test; focused adapter/runtime/generated/docs/type gates green; Postgres opt-in skipped; broad reruns documented by worker | worker complete; review active |
+| 01 | rework | None | `716075b` | `codex/multi-provider-oauth-01` / `/private/tmp/sporades-multi-provider-oauth-swarm/issue-01` | `/root/oauth_01` | `313d6bf` | `/root/oauth_01_review` | REQUEST_CHANGES: Session fixture gate red; legacy email bridge unsafe when unverified or ambiguous; callback drops conflict code | — | focused identity/type/generated checks green; reviewer adapter gate 67 pass, 1 fail, 1 Postgres opt-in skip | worker rework active; prior verdict pinned only to `313d6bf` |
 | 02 | blocked | 01 | — | — | — | — | — | — | — | — | — |
 | 03 | blocked | 02 | — | — | — | — | — | — | — | — | — |
 | 04 | blocked | 02, 03 | — | — | — | — | — | — | — | — | — |
