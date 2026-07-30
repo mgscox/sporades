@@ -506,6 +506,49 @@ test("implicit TLS validates the configured server name when the SMTP host is an
   }
 });
 
+test("implicit TLS rejects an untrusted certificate by default on every supported Node", async () => {
+  const server = await startTestSmtpServer({ implicitTls: true });
+  const config = {
+    name: "untrusted-implicit-tls",
+    mail: {
+      smtp: {
+        vendor: "generic",
+        host: "127.0.0.1",
+        port: server.port,
+        tls: {
+          mode: "implicit",
+          servername: "smtp.internal.example",
+        },
+        auth: { method: "none" },
+        defaultFrom: "relay@example.com",
+      },
+    },
+  };
+  try {
+    await withDatabase(config, {
+      mutations: {
+        send: mutation((ctx) => ctx.mail.send({
+          to: "recipient@example.com",
+          subject: "must fail closed",
+          textBody: "untrusted certificate",
+        })),
+      },
+    }, {}, async (database) => {
+      const result = await runMutation(database, user, "send", []);
+      assert.equal(result.ok, false);
+      assert.deepEqual(result.error, {
+        code: "MAIL_TLS_FAILED",
+        message: "SMTP TLS negotiation failed.",
+        hint: "Check the SMTP TLS mode, port, and certificate policy.",
+      });
+    });
+    assert.equal(server.messages.length, 0);
+    assert.equal(server.commands.some((command) => /^MAIL FROM:/i.test(command)), false);
+  } finally {
+    await server.close();
+  }
+});
+
 test("TLS server name is forwarded for implicit and upgraded STARTTLS sockets", () => {
   assert.match(String(connectSmtpSocket), /servername:\s*smtp\.tls\.servername\s*\?\?\s*smtp\.host/);
   assert.match(String(createMailTransport), /servername:\s*smtp\.tls\.servername\s*\?\?\s*smtp\.host/);
