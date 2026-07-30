@@ -17,8 +17,8 @@ gates, and obtain re-review if the merge changes accepted SMTP behavior.
 
 | Issue | State | Blockers | Base SHA | Branch / worktree | Worker | Worker SHA | Reviewer | Verdict | Merged SHA | Tests | Cleanup |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| 01 | done | None | `ac20cf1` | `codex/smtp-mail-01` / `/private/tmp/sporades-smtp-mail-swarm/issue-01` | `/root/smtp_01` | `c16b7a4` | `/root/smtp_01_review` | ACCEPT; prior replacement SHAs REQUEST_CHANGES and void | `ab731ed` | integration 95 pass, 0 fail, 2 opt-in skip; live Mailjet STARTTLS 1 pass, 0 skip; build/generated/diff green | worker worktree clean; remove after status commit |
-| 02 | ready | 01 done | — | — | — | — | — | — | — | — | — |
+| 01 | done | None | `ac20cf1` | `codex/smtp-mail-01` / removed worktree | `/root/smtp_01` | `c16b7a4` | `/root/smtp_01_review` | ACCEPT; prior replacement SHAs REQUEST_CHANGES and void | `ab731ed` | integration 95 pass, 0 fail, 2 opt-in skip; live Mailjet STARTTLS 1 pass, 0 skip; build/generated/diff green | worktree removed; branch retained for audit history |
+| 02 | working | 01 done | `6b0d35f` | `codex/smtp-mail-02` / `/private/tmp/sporades-smtp-mail-swarm/issue-02` | `/root/smtp_02` | — | — | — | — | worker TDD active | dependencies installed; worker active |
 | 03 | ready | 01 done | — | — | — | — | — | — | — | — | — |
 | 04 | ready | 01 done | — | — | — | — | — | — | — | — | — |
 | 05 | blocked | 02, 03, 04 | — | — | — | — | — | — | — | — | — |
