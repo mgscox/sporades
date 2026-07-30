@@ -1558,7 +1558,7 @@ test("sporades auth set parses provider-specific credential files and reports al
   });
 });
 
-test("sporades auth set rolls back sporades.json when the server env update fails", async () => {
+test("sporades auth set leaves config and env exact when transaction staging fails", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "oauth-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
@@ -1582,14 +1582,19 @@ test("sporades auth set rolls back sporades.json when the server env update fail
       privateKey: "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----\n",
     }));
 
-    await chmod(envPath, 0o444);
+    await chmod(projectDir, 0o555);
     try {
       const result = await runCli(["auth", "set", "apple", "--client-json", "apple.json", "--json"], { cwd: projectDir });
       assert.equal(result.code, 1, result.stdout || result.stderr);
+      assert.doesNotMatch(`${result.stdout}${result.stderr}`, /secret|apple\.json|sporades-create-/);
+      const payload = JSON.parse(result.stdout);
+      assert.equal(payload.error.message, "Unable to update OAuth configuration atomically.");
+      assert.equal(payload.error.diagnostics.recovery, "complete");
     } finally {
-      await chmod(envPath, 0o600);
+      await chmod(projectDir, 0o755);
     }
     assert.equal(await readFile(configPath, "utf8"), configBefore);
     assert.equal(await readFile(envPath, "utf8"), envBefore);
+    assert.deepEqual((await readdir(projectDir)).filter((name) => name.includes(".sporades-tx-")), []);
   });
 });

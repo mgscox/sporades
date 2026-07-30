@@ -1127,6 +1127,11 @@ entry; it does not copy the key into `sporades.json` or command output. Register
 `/__sporades/auth/apple/callback` on an HTTPS origin. Do not register a
 localhost or plain-HTTP callback for Apple.
 
+Provider updates stage `sporades.json` and Server env replacements beside their
+targets, then commit them with atomic renames. If either commit fails, Sporades
+attempts every required restore and reports whether recovery completed without
+printing file contents.
+
 ### Configure Google OAuth
 
 Create a Google OAuth **Web application** client. In Google Console, set:

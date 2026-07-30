@@ -7,6 +7,7 @@ import { appendFile, chmod, cp, lstat, mkdir, readdir, readFile, rename, rm, wri
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../bundle-pipeline.js";
+import { replaceFilesAtomically } from "../file-transaction.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TEMPLATES, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, defaultClientToolchain, isClientFramework, isClientToolchain, resolveClientCapability, supportsClientCapability } from "../client-capabilities.js";
 import { discardPublicTree, getProcessStartIdentity, readPublicAsset, readPublicTreeConsumer, removePublicTreeConsumer, restorePublicTreeConsumer, summarizePublicTree, writePublicTreeConsumer, } from "../public-tree.js";
 import { SPORADES_BASE_IMAGE, baseImageLabels, baseImageRuntimeUser, } from "../base-image.js";
@@ -3811,37 +3812,24 @@ function serializeServerEnvValue(value) {
         : stringValue;
 }
 async function writeAuthConfiguration(configPath, envPath, config, envValues) {
-    const previousConfig = await readFile(configPath, "utf8");
     const previousEnv = await readServerEnvFile(envPath);
     const nextConfig = `${JSON.stringify(config, null, 2)}\n`;
     const nextEnv = Object.keys(envValues).length > 0
         ? renderServerEnvValues(previousEnv.raw, envValues)
         : previousEnv.raw;
     parseServerEnv({ exists: previousEnv.exists || Object.keys(envValues).length > 0, raw: nextEnv });
-    let configWritten = false;
-    let envWriteStarted = false;
-    try {
-        await writeFile(configPath, nextConfig);
-        configWritten = true;
-        if (Object.keys(envValues).length > 0) {
-            envWriteStarted = true;
-            await writeFile(envPath, nextEnv);
-        }
-    }
-    catch (error) {
-        if (configWritten) {
-            await writeFile(configPath, previousConfig);
-        }
-        if (envWriteStarted && previousEnv.exists) {
-            try {
-                await writeFile(envPath, previousEnv.raw);
-            }
-            catch {
-                // The original env write can fail before changing a read-only file.
-            }
-        }
-        throw error;
-    }
+    await replaceFilesAtomically([
+        {
+            path: configPath,
+            label: "project configuration",
+            contents: nextConfig,
+        },
+        ...(Object.keys(envValues).length > 0 ? [{
+                path: envPath,
+                label: "server environment",
+                contents: nextEnv,
+            }] : []),
+    ]);
 }
 async function readRequiredFile(filePath, message, hint) {
     try {

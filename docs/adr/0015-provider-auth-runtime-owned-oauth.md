@@ -83,6 +83,11 @@ the stable `/__sporades/auth/apple/callback` path and directs operators to
 register it on the Capsule's Hosted HTTPS origin or an HTTPS development
 tunnel; `callbackUrl` remains null until an eligible HTTPS origin is known.
 
+Provider configuration and Server env changes use a shared same-directory file
+transaction. Every replacement is fully staged before target mutation, commits
+through atomic rename, and retains bounded recovery evidence if independent
+restores do not all succeed.
+
 After `sporades auth set <provider>`, any running dev session must be restarted.
 The dev session loads Server env and auth configuration at startup, so a restart
 is required before redirect and code-exchange behavior reflects the new
