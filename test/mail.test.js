@@ -1492,6 +1492,108 @@ test("Capsule code cannot inspect raw SMTP transport failure details", async () 
   });
 });
 
+test("SMTP failure normalization never executes hostile code properties and still logs safely", async () => {
+  let getterCalls = 0;
+  const rawDetail = "AUTH LOGIN password-secret inherited@example.com provider response";
+  const ownAccessor = new Error("own accessor");
+  Object.defineProperty(ownAccessor, "code", {
+    enumerable: true,
+    get() {
+      getterCalls += 1;
+      throw new Error(rawDetail);
+    },
+  });
+  const inheritedAccessor = Object.create(Object.defineProperty({}, "code", {
+    get() {
+      getterCalls += 1;
+      throw new Error(rawDetail);
+    },
+  }));
+  inheritedAccessor.message = rawDetail;
+  const trapped = new Proxy(new Error(rawDetail), {
+    getOwnPropertyDescriptor() {
+      throw new Error(rawDetail);
+    },
+    get() {
+      throw new Error(rawDetail);
+    },
+  });
+  const failures = [ownAccessor, inheritedAccessor, trapped];
+  let index = 0;
+  const transport = {
+    async send() {
+      throw failures[index++];
+    },
+    close() {},
+  };
+  await withDatabase(smtpConfig, {
+    mutations: {
+      send: mutation((ctx) => ctx.mail.send({
+        to: "recipient@example.com",
+        subject: "hostile failure",
+        textBody: "hostile failure",
+      })),
+    },
+  }, { mailTransportFactory: () => transport }, async (database) => {
+    for (let failureIndex = 0; failureIndex < failures.length; failureIndex += 1) {
+      const result = await runMutation(database, user, "send", []);
+      assert.deepEqual(result.error, {
+        code: "MAIL_CONNECTION_FAILED",
+        message: "SMTP delivery failed.",
+        hint: "Check the SMTP host, port, network access, and provider status.",
+      });
+    }
+    assert.equal(getterCalls, 0);
+    const events = database.log.tail().filter((event) => event.event === "mail.delivery");
+    assert.equal(events.length, failures.length);
+    for (const event of events) {
+      assert.equal(event.level, "error");
+      assert.equal(event.data.result, "MAIL_CONNECTION_FAILED");
+    }
+    const serialized = JSON.stringify(events);
+    assert.equal(serialized.includes(rawDetail), false);
+    assert.equal(serialized.includes("password-secret"), false);
+    assert.equal(serialized.includes("inherited@example.com"), false);
+  });
+});
+
+test("mail transport close is idempotent across shutdown and database close", async () => {
+  for (const kind of ["sync", "async"]) {
+    const dir = await mkdtemp(path.join(tmpdir(), `sporades-mail-${kind}-close-`));
+    let closeCalls = 0;
+    const firstResult = kind === "async" ? Promise.resolve(`${kind}-closed`) : `${kind}-closed`;
+    const database = await openDevDatabase(
+      path.join(dir, "data.db"),
+      "",
+      { SMTP_USERNAME: "user-secret", SMTP_PASSWORD: "password-secret" },
+      smtpConfig,
+      {},
+      {
+        mailTransportFactory: () => ({
+          async send() {
+            return { messageId: "<close@example.com>", accepted: [], rejected: [] };
+          },
+          close() {
+            closeCalls += 1;
+            return firstResult;
+          },
+        }),
+      },
+    );
+    try {
+      const directFirst = database.mail.close();
+      assert.strictEqual(directFirst, firstResult);
+      assert.strictEqual(database.mail.close(), firstResult);
+      await database.shutdown();
+      await database.close();
+      assert.strictEqual(database.mail.close(), firstResult);
+      assert.equal(closeCalls, 1, kind);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("concurrent and repeated shutdown calls run the lifecycle hook and mail close once", async () => {
   let releaseHook;
   const hookBarrier = new Promise((resolve) => {
@@ -1546,8 +1648,9 @@ test("concurrent and repeated shutdown calls run the lifecycle hook and mail clo
     assert.equal(hookCalls, 1);
     assert.equal(sends, 1);
     assert.equal(closes, 1);
-  } finally {
     await database.close();
+    assert.equal(closes, 1);
+  } finally {
     await rm(dir, { recursive: true, force: true });
   }
 });

@@ -74,6 +74,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   normalizeMailAddress,
   mailError,
   normalizeMailTransportError,
+  safeMailTransportCode,
   mailJsonSize,
   normalizeJourneyPolicy,
   normalizeJourneyState,
@@ -797,6 +798,8 @@ function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv, options: Loos
   if (!transport || typeof transport.send !== "function") {
     throw mailError("MAIL_CONNECTION_FAILED", "SMTP transport could not be created.", "Check the SMTP configuration and restart the Capsule runtime.");
   }
+  let closeStarted = false;
+  let closeResult: any;
   return {
     async send(input: any) {
       const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
@@ -859,7 +862,10 @@ function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv, options: Loos
       }
     },
     close() {
-      return transport.close?.();
+      if (closeStarted) return closeResult;
+      closeStarted = true;
+      closeResult = transport.close?.();
+      return closeResult;
     },
   };
 }
@@ -1481,7 +1487,7 @@ function normalizeMailAddress(value: any, field: string) {
 }
 
 function normalizeMailTransportError(error: any) {
-  const code = String(error?.code ?? "");
+  const code = safeMailTransportCode(error);
   if (code === "ETIMEDOUT" || code === "ESOCKETTIMEDOUT") {
     return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.");
   }
@@ -1501,6 +1507,17 @@ function normalizeMailTransportError(error: any) {
     return mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipients, and provider delivery policy.");
   }
   return mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
+}
+
+function safeMailTransportCode(error: any) {
+  if (error === null || (typeof error !== "object" && typeof error !== "function")) return "";
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(error, "code");
+    if (!descriptor || !Object.prototype.hasOwnProperty.call(descriptor, "value")) return "";
+    return typeof descriptor.value === "string" ? descriptor.value : "";
+  } catch {
+    return "";
+  }
 }
 
 function createMailTransport(smtp: any) {
