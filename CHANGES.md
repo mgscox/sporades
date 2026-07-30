@@ -1,13 +1,10 @@
 # Changes
 
-## Unreleased - 2026-07-29
+## Unreleased - 2026-07-30
 
-Changes since v0.5.0.
+Changes since v0.6.0.
 
 ### 🐛 Bug Fixes
 
-- Ensure esbuild dep and allowScript versions dont drift (36757e3).
-
-### 🧪 Tests
-
-- Run endpoint handlers from bundled capsules (a760693).
+- Test for minor bump (996c1e7).
+- Fix bundled email sign-in constants (307c8ea).
