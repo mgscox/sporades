@@ -246,6 +246,24 @@ test("MIME generation encodes Unicode headers, folds headers, and wraps base64 b
   assert.equal(body.split("\r\n").every((line) => line.length <= 76), true);
 });
 
+test("encoded display names fold before a short mailbox would push the line past 76 characters", () => {
+  const displayName = `${"🙂".repeat(9)}abc`;
+  const mime = buildSmtpMessage({
+    from: { email: "a@bc", name: displayName },
+    to: [{ email: "to@example.com" }],
+    cc: [],
+    bcc: [],
+    replyTo: { email: "a@bcd", name: displayName },
+    subject: "Encoded address line",
+    textBody: "body",
+    messageId: "<encoded-address@sporades.local>",
+  });
+  const headerLines = mime.split("\r\n\r\n")[0].split("\r\n");
+  const encodedLines = headerLines.filter((line) => line.includes("=?UTF-8?B?"));
+  assert.equal(encodedLines.length >= 2, true);
+  assert.equal(encodedLines.every((line) => line.length <= 76), true);
+});
+
 test("configured SMTP credentials must resolve from Server env before startup", async () => {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-mail-credentials-"));
   try {

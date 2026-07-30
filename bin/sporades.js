@@ -3102,10 +3102,12 @@ function foldMimeHeader(name, value) {
   for (const token of tokens) {
     if (!token) continue;
     const separator = line === prefix || line === " " ? "" : " ";
-    if (line.length + separator.length + token.length <= 78 || line === prefix) {
-      line += `${separator}${token}`;
+    const candidate = `${line}${separator}${token}`;
+    const lineLimit = candidate.includes("=?UTF-8?B?") ? 76 : 78;
+    if (candidate.length <= lineLimit) {
+      line = candidate;
     } else {
-      lines.push(line);
+      lines.push(line === prefix ? line.trimEnd() : line);
       line = ` ${token}`;
     }
   }
