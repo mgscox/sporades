@@ -10,17 +10,18 @@ both query and `form_post` response modes at
 
 Each authorization attempt has opaque, single-use state bound to the provider,
 current Sporades Session, exact callback URI, same-origin return URL, creation
-and expiry times, nonce, and PKCE verifier. Callback state is consumed before
-cancellation, provider exchange, identity verification, linking, or Session
-work, so every terminal failure requires a fresh attempt. Provider errors are
-returned as bounded Sporades errors; provider response bodies and tokens are
-not sent to clients, logged, or persisted.
+and expiry times, nonce, and PKCE verifier. Callback state is atomically
+consumed before cancellation, provider exchange, identity verification,
+linking, or Session work, so every terminal failure requires a fresh attempt.
+Provider errors are returned as bounded Sporades errors; provider response
+bodies and tokens are not sent to clients, logged, or persisted.
 
 The built-in Google adapter uses authorization-code flow with PKCE and nonce.
 It verifies the returned ID token signature against Google's JWKS and requires
 Google issuer, configured audience, unexpired `exp`, matching nonce, and a
-non-empty `sub` before producing the verified Provider identity. Access tokens
-are not used as identity evidence.
+non-empty string `sub` of at most 255 printable ASCII characters before
+producing the verified Provider identity. Access tokens are not used as
+identity evidence.
 
 Provider identity is stored separately from the Sporades user. A verified
 `(provider, subject)` pair identifies the Provider identity; provider email,

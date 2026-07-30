@@ -4010,9 +4010,8 @@ async function createPostgresDatabaseAdapter(options) {
     },
     async consumeOAuthState(state) {
       const row = await this.prepare(
-        "SELECT state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier FROM sporades_auth_oauth_states WHERE state = ?"
+        "DELETE FROM sporades_auth_oauth_states WHERE state = ? RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier"
       ).get(state);
-      await this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
       return row ?? null;
     },
     async ensureLogStorage() {
@@ -4669,7 +4668,9 @@ function postgresRuntimeColumnName(name) {
     passwordhash: "passwordHash",
     passwordsalt: "passwordSalt",
     sessiontoken: "sessionToken",
+    returnto: "returnTo",
     redirecturi: "redirectUri",
+    pkceverifier: "pkceVerifier",
     capsulename: "capsuleName",
     capsuleid: "capsuleId",
     releaseid: "releaseId",
@@ -4822,11 +4823,9 @@ async function createLibsqlDatabaseAdapter(options) {
       ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
     },
     async consumeOAuthState(state) {
-      const row = await this.prepare(
-        "SELECT state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier FROM sporades_auth_oauth_states WHERE state = ?"
+      return await this.prepare(
+        "DELETE FROM sporades_auth_oauth_states WHERE state = ? RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier"
       ).get(state) ?? null;
-      await this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
-      return row;
     },
     async migrateAppSchema(schema) {
       return await this.withTransaction((transaction) => migrateLibsqlAppSchema(transaction, schema));
@@ -9600,7 +9599,8 @@ async function verifyGoogleIdentityToken(database, token, expectedNonce) {
   const clientId = database.serverEnv[database.authConfig.google.clientIdEnv];
   const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
   const validIssuer = claims.iss === "https://accounts.google.com" || claims.iss === "accounts.google.com";
-  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED" : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID" : !validIssuer ? "OAUTH_ID_TOKEN_ISSUER_INVALID" : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID" : typeof claims.exp !== "number" || claims.exp <= Math.floor(Date.now() / 1e3) ? "OAUTH_ID_TOKEN_EXPIRED" : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID" : !normalizeSimulatedText(claims.sub) ? "OAUTH_ID_TOKEN_SUBJECT_INVALID" : null;
+  const validSubject = typeof claims.sub === "string" && claims.sub.length <= 255 && /^[\x21-\x7e]+$/.test(claims.sub);
+  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED" : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID" : !validIssuer ? "OAUTH_ID_TOKEN_ISSUER_INVALID" : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID" : typeof claims.exp !== "number" || claims.exp <= Math.floor(Date.now() / 1e3) ? "OAUTH_ID_TOKEN_EXPIRED" : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID" : !validSubject ? "OAUTH_ID_TOKEN_SUBJECT_INVALID" : null;
   if (invalidCode) {
     throw commandError("Google identity token failed verification.", "Retry Google sign-in.", invalidCode);
   }
@@ -9620,7 +9620,8 @@ function decodeJwtPart(value) {
 }
 async function linkProviderIdentity(database, session, provider, profile) {
   const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
-  const providerName = provider === "google" ? "Google" : "OAuth";
+  const safeProvider = typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider) ? provider : "provider";
+  const providerName = safeProvider === "google" ? "Google" : safeProvider;
   if (!subject) {
     return {
       ok: false,
@@ -9662,8 +9663,8 @@ async function linkProviderIdentity(database, session, provider, profile) {
         ok: false,
         error: {
           code: "AUTH_IDENTITY_CONFLICT",
-          message: "Google identity is already linked to another account.",
-          hint: "Sign out before using this Google identity, or sign in with the account it is already linked to."
+          message: `${providerName} identity is already linked to another account.`,
+          hint: `Sign out before using this ${providerName} identity, or sign in with the account it is already linked to.`
         }
       };
     }

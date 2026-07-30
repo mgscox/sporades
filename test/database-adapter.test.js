@@ -1142,6 +1142,69 @@ test("libSQL database adapter supports runtime storage, migrations, health, and 
   });
 });
 
+test("libSQL OAuth state consumption has exactly one winner under concurrent callbacks", async () => {
+  await withTempDir(async (dir) => {
+    let selectCount = 0;
+    let releaseSelects;
+    const bothSelected = new Promise((resolve) => {
+      releaseSelects = resolve;
+    });
+    await withFakeLibsqlService(
+      path.join(dir, "oauth-state-race.db"),
+      {
+        async beforeStatement(sql) {
+          if (/SELECT state, provider, sessionToken.+sporades_auth_oauth_states/s.test(sql)) {
+            selectCount += 1;
+            if (selectCount === 2) {
+              releaseSelects();
+            }
+            await bothSelected;
+          }
+        },
+      },
+      async ({ url }) => {
+        const adapter = await createLibsqlDatabaseAdapter({ url });
+        try {
+          await adapter.ensureAuthStorage();
+          const createdAt = new Date().toISOString();
+          await adapter.insertOAuthState({
+            state: "one-use-state",
+            provider: "google",
+            sessionToken: "session",
+            returnTo: "http://127.0.0.1/",
+            redirectUri: "http://127.0.0.1/__sporades/auth/google/callback",
+            createdAt,
+            expiresAt: new Date(Date.now() + 60_000).toISOString(),
+            nonce: "nonce",
+            pkceVerifier: "verifier",
+          });
+          const consumed = await Promise.all([
+            adapter.consumeOAuthState("one-use-state"),
+            adapter.consumeOAuthState("one-use-state"),
+          ]);
+          assert.equal(consumed.filter(Boolean).length, 1);
+          assert.deepEqual(
+            {
+              provider: consumed.find(Boolean).provider,
+              sessionToken: consumed.find(Boolean).sessionToken,
+              returnTo: consumed.find(Boolean).returnTo,
+              pkceVerifier: consumed.find(Boolean).pkceVerifier,
+            },
+            {
+              provider: "google",
+              sessionToken: "session",
+              returnTo: "http://127.0.0.1/",
+              pkceVerifier: "verifier",
+            },
+          );
+        } finally {
+          await adapter.close();
+        }
+      },
+    );
+  });
+});
+
 test(
   "Postgres database adapter supports runtime storage, migrations, health, and inspection paths",
   { skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the Postgres adapter integration test." },
@@ -1221,6 +1284,36 @@ test(
         updatedAt: now,
       });
       assert.equal((await adapter.findAuthIdentityByProviderSubject("google", "postgres-google-subject")).userId, "user-1");
+      await adapter.insertOAuthState({
+        state: "postgres-one-use-state",
+        provider: "google",
+        sessionToken: "session-1",
+        returnTo: "http://127.0.0.1/",
+        redirectUri: "http://127.0.0.1/__sporades/auth/google/callback",
+        createdAt: now,
+        expiresAt: "2026-07-04T10:10:00.000Z",
+        nonce: "nonce",
+        pkceVerifier: "verifier",
+      });
+      const postgresStateWinners = await Promise.all([
+        adapter.consumeOAuthState("postgres-one-use-state"),
+        adapter.consumeOAuthState("postgres-one-use-state"),
+      ]);
+      assert.equal(postgresStateWinners.filter(Boolean).length, 1);
+      assert.deepEqual(
+        {
+          provider: postgresStateWinners.find(Boolean).provider,
+          sessionToken: postgresStateWinners.find(Boolean).sessionToken,
+          returnTo: postgresStateWinners.find(Boolean).returnTo,
+          pkceVerifier: postgresStateWinners.find(Boolean).pkceVerifier,
+        },
+        {
+          provider: "google",
+          sessionToken: "session-1",
+          returnTo: "http://127.0.0.1/",
+          pkceVerifier: "verifier",
+        },
+      );
 
       await adapter.ensureFileStorage();
       await adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });

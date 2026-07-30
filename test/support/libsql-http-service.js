@@ -109,14 +109,14 @@ async function executeStatement(adapter, stmt, options) {
   const sql = stmt?.sql ?? "";
   const args = (stmt?.args ?? []).map(decodeValue);
   await options.beforeStatement?.(sql, args);
-  if (/^\s*(?:select|pragma)\b/i.test(sql)) {
+  if (/^\s*(?:select|pragma)\b/i.test(sql) || /\breturning\b/i.test(sql)) {
     const statement = adapter.prepare(sql);
     const rows = statement.all(...args);
     const columns = statement.columns();
     return {
       cols: columns.map((column) => ({ name: column.name })),
       rows: rows.map((row) => columns.map((column) => encodeValue(row[column.name]))),
-      affected_row_count: 0,
+      affected_row_count: rows.length,
       last_insert_rowid: null,
     };
   }

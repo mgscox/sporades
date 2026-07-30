@@ -15,6 +15,7 @@ import {
 
 const beginOAuthSignIn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "beginOAuthSignIn");
 const verifyGoogleIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "verifyGoogleIdentityToken");
+const linkProviderIdentity = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkProviderIdentity");
 
 async function withTempDatabase(fn) {
   const dir = await mkdtemp(path.join(tmpdir(), "sporades-oauth-provider-"));
@@ -303,6 +304,11 @@ test("Google identity tokens require signature, issuer, audience, expiry, nonce,
         signedJwt(privateKey, kid, { ...baseClaims, exp: Math.floor(Date.now() / 1000) - 1 }),
         signedJwt(privateKey, kid, { ...baseClaims, nonce: "wrong-nonce" }),
         signedJwt(privateKey, kid, { ...baseClaims, sub: "" }),
+        signedJwt(privateKey, kid, { ...baseClaims, sub: {} }),
+        signedJwt(privateKey, kid, { ...baseClaims, sub: ["subject"] }),
+        signedJwt(privateKey, kid, { ...baseClaims, sub: 42 }),
+        signedJwt(privateKey, kid, { ...baseClaims, sub: null }),
+        signedJwt(privateKey, kid, { ...baseClaims, sub: "x".repeat(257) }),
       ];
       for (const token of invalidCases) {
         await assert.rejects(
@@ -313,5 +319,31 @@ test("Google identity tokens require signature, issuer, audience, expiry, nonce,
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+test("common provider linking reports non-Google identity conflicts neutrally", async () => {
+  await withTempDatabase(async (database) => {
+    const ownerSession = await resolveAnonymousSession(database, null);
+    assert.equal((await linkProviderIdentity(database, ownerSession, "contoso", {
+      subject: "shared-subject",
+      displayName: "Owner",
+    })).ok, true);
+
+    const challengerGuest = await resolveAnonymousSession(database, null);
+    assert.equal((await linkProviderIdentity(database, challengerGuest, "rival", {
+      subject: "rival-subject",
+      displayName: "Challenger",
+    })).ok, true);
+    const challengerSession = await resolveAnonymousSession(database, challengerGuest.token);
+    const conflict = await linkProviderIdentity(database, challengerSession, "contoso", {
+      subject: "shared-subject",
+      displayName: "Owner",
+    });
+
+    assert.equal(conflict.ok, false);
+    assert.equal(conflict.error.code, "AUTH_IDENTITY_CONFLICT");
+    assert.doesNotMatch(`${conflict.error.message} ${conflict.error.hint}`, /Google/i);
+    assert.match(conflict.error.message, /contoso|provider/i);
   });
 });
