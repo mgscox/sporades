@@ -107,13 +107,6 @@ function signedJwtWithHeader(privateKey, headerValue, claims) {
   return `${header}.${payload}.${signature}`;
 }
 
-function signedJwtWithHeader(privateKey, headerValue, claims) {
-  const header = Buffer.from(JSON.stringify(headerValue)).toString("base64url");
-  const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
-  const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString("base64url");
-  return `${header}.${payload}.${signature}`;
-}
-
 function configureMicrosoft(database, tenant = "organizations") {
   database.authConfig.providers.microsoft = {
     enabled: true,

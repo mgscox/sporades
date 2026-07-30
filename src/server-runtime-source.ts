@@ -8546,7 +8546,7 @@ export async function routeSporadesAuth(database: LooseRecord, request: Incoming
         throw mappedError;
       }
       const actionRequired = ["consent_required", "interaction_required", "login_required"].includes(providerError);
-      const cancelled = providerError === "access_denied";
+      const cancelled = ["access_denied", "user_cancelled", "user_cancelled_authorize"].includes(providerError);
       throw commandError(
         actionRequired
           ? "OAuth provider requires additional user action."
