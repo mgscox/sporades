@@ -449,7 +449,11 @@ the path against a Hosted HTTPS origin or an HTTPS development tunnel. Apple
 availability is origin-aware: HTTP, localhost, and IP-address origins cannot
 start the flow. The first-authorization name is sanitized and persisted while
 later callbacks may omit it; private-relay email is profile data rather than
-the identity key.
+the identity key. Forwarding headers are authoritative only when they agree
+with the configured public origin; otherwise OAuth derives its origin from the
+actual TLS connection and validated Host. Apple client signing accepts only an
+unencrypted P-256 private key, and callback/JWT/JWKS inputs are bounded and
+unambiguous before identity work.
 Provider configuration updates stage all file replacements before mutation and
 recover the exact prior config and Server env state when a commit fails.
 Duplicate lexical target aliases are rejected before filesystem inspection;

@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse, IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { WithImplicitCoercion } from "buffer";
 import { BinaryLike, KeyObject } from "node:crypto";
-import { createHash, createHmac, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
+import { createHash, createHmac, createPrivateKey, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
 import { PathLike, PathOrFileDescriptor, appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { SQLOutputValue, StatementResultingChanges, StatementColumnMetadata } from "node:sqlite";
 import { Duplex } from "stream";
@@ -68,6 +68,9 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   isSameOriginRequest,
   isLocalDevOrigin,
   normalizeOrigin,
+  resolveOAuthRequestOrigin,
+  singleHttpHeader,
+  validatedRequestHost,
   appendVaryHeader,
   sanitizeResponseHeaders,
   createSqliteDatabaseAdapter,
@@ -433,11 +436,17 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   createAppleClientSecret,
   verifyGoogleIdentityToken,
   verifyAppleIdentityToken,
+  parseBoundedJwtObject,
+  readBoundedJsonResponse,
+  isPlainJsonObject,
   appleOAuthOriginEligible,
   parseAppleAuthorizationUser,
   sanitizeAppleNamePart,
   decodeJwtPart,
   readOAuthCallbackParameters,
+  oauthFormContentTypeValid,
+  validateOAuthCallbackEncoding,
+  validateConsumedOAuthCallbackParameters,
   normalizeReturnTo,
   linkProviderIdentity,
   linkGoogleAccount,
@@ -708,6 +717,59 @@ function normalizeOrigin(value: any) {
   }
   try {
     return new URL(value).origin;
+  } catch {
+    return null;
+  }
+}
+
+function resolveOAuthRequestOrigin(policy: LooseRecord, request: RuntimeRequestLike) {
+  const configuredOrigin = normalizeOrigin(policy?.cors?.publicOrigin);
+  const originHeader = normalizeOrigin(singleHttpHeader(request.headers.origin));
+  const hostHeader = singleHttpHeader(request.headers.host);
+  const forwardedHost = singleHttpHeader(request.headers["x-forwarded-host"]);
+  const forwardedProto = singleHttpHeader(request.headers["x-forwarded-proto"])?.toLowerCase() ?? null;
+  if (
+    (request.headers.host !== undefined && !hostHeader) ||
+    (request.headers.origin !== undefined && !singleHttpHeader(request.headers.origin)) ||
+    (request.headers["x-forwarded-host"] !== undefined && !forwardedHost) ||
+    (request.headers["x-forwarded-proto"] !== undefined && !forwardedProto)
+  ) return null;
+
+  if (configuredOrigin) {
+    const configured = new URL(configuredOrigin);
+    if (originHeader && originHeader !== configuredOrigin) return null;
+    if (validatedRequestHost(hostHeader, configured.protocol) !== configured.host) return null;
+    if (forwardedHost && validatedRequestHost(forwardedHost, configured.protocol) !== configured.host) return null;
+    if (forwardedProto && `${forwardedProto}:` !== configured.protocol) return null;
+    return configuredOrigin;
+  }
+
+  if (forwardedHost || forwardedProto) return null;
+  const protocol = request.socket?.encrypted === true ? "https:" : "http:";
+  const host = validatedRequestHost(hostHeader, protocol);
+  if (!host) return null;
+  const actualOrigin = `${protocol}//${host}`;
+  if (originHeader && originHeader !== actualOrigin) return null;
+  return actualOrigin;
+}
+
+function singleHttpHeader(value: any) {
+  if (Array.isArray(value)) {
+    if (value.length !== 1) return null;
+    value = value[0];
+  }
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.includes(",")) return null;
+  return trimmed;
+}
+
+function validatedRequestHost(value: any, protocol: string) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9.:[\]-]+$/.test(value)) return null;
+  try {
+    const url = new URL(`${protocol}//${value}`);
+    if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) return null;
+    return url.host.toLowerCase();
   } catch {
     return null;
   }
@@ -7724,7 +7786,7 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
         ].join("\r\n"),
       );
 
-      const origin = requestOrigin(request);
+      const origin = resolveOAuthRequestOrigin(policy, request);
       const now = new Date().toISOString();
       const client: any = {
         id: `client-${(nextClientId++).toString(36)}`,
@@ -7903,22 +7965,6 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
       return [...clients].slice(-1);
     }
     return [...clients].filter((client) => client.id === target);
-  }
-
-  function requestOrigin(request: RuntimeRequestLike) {
-    const forwardedProto = firstForwardedHeader(request.headers["x-forwarded-proto"]);
-    const forwardedHost = firstForwardedHeader(request.headers["x-forwarded-host"]);
-    const protocol = forwardedProto === "https" || forwardedProto === "http" ? forwardedProto : request.socket?.encrypted ? "https" : "http";
-    const host = forwardedHost || request.headers.host;
-    return `${protocol}://${host}`;
-  }
-
-  function firstForwardedHeader(value: any) {
-    const raw = Array.isArray(value) ? value[0] : value;
-    return String(raw ?? "")
-      .split(",")[0]
-      .trim()
-      .toLowerCase();
   }
 
   function summarizeAuthForClientList(auth: LooseRecord) {
@@ -8444,8 +8490,9 @@ export async function routeSporadesAuth(database: LooseRecord, request: Incoming
     writeEndpointError(response, error);
     return true;
   }
-  const state = parameters.get("state");
-  if (!state) {
+  const states = parameters.getAll("state");
+  const state = states.length === 1 ? states[0] : null;
+  if (!state || states.length !== 1) {
     writeEndpointError(response, commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK"));
     return true;
   }
@@ -8455,6 +8502,7 @@ export async function routeSporadesAuth(database: LooseRecord, request: Incoming
     return true;
   }
   try {
+    validateConsumedOAuthCallbackParameters(parameters);
     if (stateRow.provider !== provider) {
       throw commandError("OAuth provider did not match the sign-in request.", "Retry sign-in from the app.", "OAUTH_PROVIDER_MISMATCH");
     }
@@ -8518,11 +8566,44 @@ async function readOAuthCallbackParameters(request: IncomingMessage, requestUrl:
   if (request.method === "GET") {
     return requestUrl.searchParams;
   }
-  if (request.method !== "POST" || !String(request.headers["content-type"] ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded")) {
+  if (request.method !== "POST" || !oauthFormContentTypeValid(request.headers["content-type"])) {
     throw commandError("Unsupported OAuth callback request.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
   }
-  const body = await readRequestBytes(request, 16 * 1024);
-  return new URLSearchParams(body.toString("utf8"));
+  const body = await readLimitedRequestBody(request, 16 * 1024);
+  const encoded = body.toString("utf8");
+  validateOAuthCallbackEncoding(encoded);
+  return new URLSearchParams(encoded);
+}
+
+function oauthFormContentTypeValid(value: any) {
+  const raw = singleHttpHeader(value);
+  if (!raw) return false;
+  const parts = raw.split(";").map((part) => part.trim());
+  if (parts.shift()?.toLowerCase() !== "application/x-www-form-urlencoded") return false;
+  if (parts.length === 0) return true;
+  if (parts.length !== 1) return false;
+  const match = parts[0].match(/^charset\s*=\s*(?:"utf-8"|utf-8)$/i);
+  return Boolean(match);
+}
+
+function validateOAuthCallbackEncoding(value: string) {
+  if (/[\u0000\r\n]/.test(value) || /%(?![0-9a-fA-F]{2})/.test(value)) {
+    throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+  }
+}
+
+function validateConsumedOAuthCallbackParameters(parameters: URLSearchParams) {
+  for (const name of ["code", "error", "user"]) {
+    if (parameters.getAll(name).length > 1) {
+      throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+    }
+  }
+  if (parameters.has("code") && parameters.has("error")) {
+    throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+  }
+  if (parameters.has("error") && parameters.has("user")) {
+    throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+  }
 }
 
 async function beginOAuthSignIn(database: LooseRecord, session: LooseRecord, provider: string, options: LooseRecord) {
@@ -8540,6 +8621,16 @@ async function beginOAuthSignIn(database: LooseRecord, session: LooseRecord, pro
     };
   }
   const origin = options.origin;
+  if (!normalizeOrigin(origin) || normalizeOrigin(origin) !== origin) {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_ORIGIN_INVALID",
+        message: "OAuth sign-in requires a trusted request origin.",
+        hint: "Use the Capsule origin directly, or configure SPORADES_PUBLIC_ORIGIN for a trusted HTTPS reverse proxy.",
+      },
+    };
+  }
   if (provider === "apple" && !appleOAuthOriginEligible(origin)) {
     return {
       ok: false,
@@ -8761,8 +8852,37 @@ async function completeAppleOAuth(database: LooseRecord, context: LooseRecord) {
 function createAppleClientSecret(database: LooseRecord, nowSeconds = Math.floor(Date.now() / 1000)) {
   const apple = database.authConfig.providers.apple;
   const privateKey = database.serverEnv[apple.privateKeyEnv];
-  if (!privateKey || !apple.clientId || !apple.teamId || !apple.keyId) {
-    throw new Error("Incomplete Apple client credential");
+  if (
+    !privateKey ||
+    ![apple.clientId, apple.teamId, apple.keyId].every((value) =>
+      typeof value === "string" && /^[\x21-\x7e]{1,255}$/.test(value))
+  ) {
+    throw commandError(
+      "Apple client credential is invalid.",
+      "Configure a matching Apple Services ID, Team ID, Key ID, and unencrypted P-256 private key.",
+      "OAUTH_CLIENT_CREDENTIAL_INVALID",
+    );
+  }
+  let signingKey;
+  try {
+    signingKey = createPrivateKey(privateKey);
+  } catch {
+    throw commandError(
+      "Apple client credential is invalid.",
+      "Configure an unencrypted Apple P-256 private key in PKCS#8 PEM format.",
+      "OAUTH_CLIENT_CREDENTIAL_INVALID",
+    );
+  }
+  if (
+    signingKey.type !== "private" ||
+    signingKey.asymmetricKeyType !== "ec" ||
+    signingKey.asymmetricKeyDetails?.namedCurve !== "prime256v1"
+  ) {
+    throw commandError(
+      "Apple client credential is invalid.",
+      "Configure the unencrypted P-256 private key issued for Sign in with Apple.",
+      "OAUTH_CLIENT_CREDENTIAL_INVALID",
+    );
   }
   const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: apple.keyId, typ: "JWT" })).toString("base64url");
   const claims = Buffer.from(JSON.stringify({
@@ -8772,12 +8892,19 @@ function createAppleClientSecret(database: LooseRecord, nowSeconds = Math.floor(
     aud: "https://appleid.apple.com",
     sub: apple.clientId,
   })).toString("base64url");
-  const signature = sign(
+  const signatureBytes = sign(
     "sha256",
     Buffer.from(`${header}.${claims}`),
-    { key: privateKey, dsaEncoding: "ieee-p1363" },
-  ).toString("base64url");
-  return `${header}.${claims}.${signature}`;
+    { key: signingKey, dsaEncoding: "ieee-p1363" },
+  );
+  if (signatureBytes.length !== 64) {
+    throw commandError(
+      "Apple client credential is invalid.",
+      "Configure the unencrypted P-256 private key issued for Sign in with Apple.",
+      "OAUTH_CLIENT_CREDENTIAL_INVALID",
+    );
+  }
+  return `${header}.${claims}.${signatureBytes.toString("base64url")}`;
 }
 
 async function completeGoogleOAuth(database: LooseRecord, context: LooseRecord) {
@@ -9246,6 +9373,9 @@ async function verifyGoogleIdentityToken(database: LooseRecord, token: string, e
 }
 
 async function verifyAppleIdentityToken(database: LooseRecord, token: string, expectedNonce: string) {
+  if (typeof token !== "string" || token.length > 16 * 1024) {
+    throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
   const parts = token.split(".");
   if (parts.length !== 3) {
     throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
@@ -9253,12 +9383,17 @@ async function verifyAppleIdentityToken(database: LooseRecord, token: string, ex
   let header;
   let claims;
   try {
-    header = JSON.parse(decodeJwtPart(parts[0]).toString("utf8"));
-    claims = JSON.parse(decodeJwtPart(parts[1]).toString("utf8"));
+    header = parseBoundedJwtObject(parts[0]);
+    claims = parseBoundedJwtObject(parts[1]);
   } catch {
     throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
-  if (header.alg !== "RS256" || typeof header.kid !== "string" || header.kid.length > 255) {
+  if (
+    header.alg !== "RS256" ||
+    typeof header.kid !== "string" ||
+    !/^[\x21-\x7e]{1,255}$/.test(header.kid) ||
+    (header.typ !== undefined && header.typ !== "JWT")
+  ) {
     throw commandError("Apple identity token used an unsupported signature.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   const jwksUrl = process.env.SPORADES_APPLE_JWKS_URL ?? "https://appleid.apple.com/auth/keys";
@@ -9266,12 +9401,20 @@ async function verifyAppleIdentityToken(database: LooseRecord, token: string, ex
   try {
     const response = await fetch(jwksUrl);
     if (!response.ok) throw new Error("jwks");
-    jwks = await response.json();
+    jwks = await readBoundedJsonResponse(response, 64 * 1024);
   } catch {
     throw commandError("Apple signing keys could not be loaded.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
   }
-  const jwk = Array.isArray(jwks?.keys)
-    ? jwks.keys.find((candidate: LooseRecord) => candidate.kid === header.kid && candidate.kty === "RSA")
+  const keys = isPlainJsonObject(jwks) && Array.isArray(jwks.keys) && jwks.keys.length <= 32 ? jwks.keys : null;
+  const jwk = keys
+    ? keys.find((candidate: LooseRecord) =>
+      isPlainJsonObject(candidate) &&
+      candidate.kid === header.kid &&
+      candidate.kty === "RSA" &&
+      candidate.use === "sig" &&
+      candidate.alg === "RS256" &&
+      typeof candidate.n === "string" &&
+      typeof candidate.e === "string")
     : null;
   if (!jwk) {
     throw commandError("Apple identity token signing key was not recognized.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
@@ -9289,16 +9432,20 @@ async function verifyAppleIdentityToken(database: LooseRecord, token: string, ex
     signatureCheckFailed = true;
   }
   const clientId = database.authConfig.providers.apple.clientId;
-  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  const audiences = typeof claims.aud === "string"
+    ? [claims.aud]
+    : Array.isArray(claims.aud) && claims.aud.length > 0 && claims.aud.length <= 8 && claims.aud.every((audience: any) => typeof audience === "string")
+      ? claims.aud
+      : [];
   const validSubject = typeof claims.sub === "string" &&
     claims.sub.length <= 255 &&
     /^[\x21-\x7e]+$/.test(claims.sub);
   const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED"
     : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID"
-    : claims.iss !== "https://appleid.apple.com" ? "OAUTH_ID_TOKEN_ISSUER_INVALID"
+    : typeof claims.iss !== "string" || claims.iss !== "https://appleid.apple.com" ? "OAUTH_ID_TOKEN_ISSUER_INVALID"
     : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID"
-    : typeof claims.exp !== "number" || claims.exp <= Math.floor(Date.now() / 1000) ? "OAUTH_ID_TOKEN_EXPIRED"
-    : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID"
+    : !Number.isSafeInteger(claims.exp) || claims.exp <= Math.floor(Date.now() / 1000) ? "OAUTH_ID_TOKEN_EXPIRED"
+    : typeof claims.nonce !== "string" || claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID"
     : !validSubject ? "OAUTH_ID_TOKEN_SUBJECT_INVALID"
     : null;
   if (invalidCode) {
@@ -9311,6 +9458,47 @@ async function verifyAppleIdentityToken(database: LooseRecord, token: string, ex
     displayName: null,
     picture: null,
   };
+}
+
+function parseBoundedJwtObject(value: string) {
+  if (typeof value !== "string" || value.length > 12 * 1024) throw new Error("Invalid JWT part");
+  const bytes = decodeJwtPart(value);
+  if (bytes.length === 0 || bytes.length > 8 * 1024) throw new Error("Invalid JWT part");
+  const parsed = JSON.parse(bytes.toString("utf8"));
+  if (!isPlainJsonObject(parsed)) throw new Error("Invalid JWT object");
+  return parsed;
+}
+
+async function readBoundedJsonResponse(response: LooseRecord, maxBytes: number) {
+  const contentLength = Number(response.headers?.get?.("content-length"));
+  if (Number.isFinite(contentLength) && contentLength > maxBytes) throw new Error("Response too large");
+  const chunks = [];
+  let size = 0;
+  if (response.body?.getReader) {
+    const reader = response.body.getReader();
+    try {
+      while (true) {
+        const result = await reader.read();
+        if (result.done) break;
+        size += result.value.byteLength;
+        if (size > maxBytes) throw new Error("Response too large");
+        chunks.push(Buffer.from(result.value));
+      }
+    } finally {
+      if (size > maxBytes) await reader.cancel().catch(() => {});
+    }
+  } else {
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > maxBytes) throw new Error("Response too large");
+    chunks.push(bytes);
+  }
+  const parsed = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+  if (!isPlainJsonObject(parsed)) throw new Error("Invalid JSON object");
+  return parsed;
+}
+
+function isPlainJsonObject(value: any) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype;
 }
 
 function parseAppleAuthorizationUser(value: any) {

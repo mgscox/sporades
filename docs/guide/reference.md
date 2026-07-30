@@ -1147,6 +1147,14 @@ from generated sign-in controls on HTTP, localhost, and IP-address origins, and
 an attempted start fails before redirect with guidance to use an HTTPS
 development tunnel or Hosted Capsule.
 
+Sporades does not trust `X-Forwarded-Host` or `X-Forwarded-Proto` merely because
+a client supplied them. Behind an HTTPS tunnel or reverse proxy, configure the
+exact public origin with `SPORADES_PUBLIC_ORIGIN`. The browser `Origin`, `Host`,
+and any forwarded host/protocol headers must agree with that configured origin.
+Without a configured public origin, OAuth uses the validated request `Host` and
+the actual TLS socket; forwarded headers are rejected. Keep the Capsule runtime
+unreachable from untrusted networks when a reverse proxy is its public edge.
+
 Configure the provider directly:
 
 ```sh
@@ -1177,6 +1185,10 @@ code exchange Sporades signs a short-lived ES256 client-secret JWT in memory;
 the generated credential, private key, authorization code, and Apple tokens
 are not returned to the browser or written to normal logs.
 
+The Apple key must be an unencrypted private EC key on P-256 (`prime256v1`), as
+issued by Apple. RSA keys, other EC curves, public-only keys, encrypted keys,
+and malformed PEM fail with a bounded credential error before code exchange.
+
 Apple returns the person's name only on the first authorization. Sporades
 accepts the bounded `form_post` payload, sanitizes the name, and saves it in the
 same Auth transaction as the verified Provider identity. Later sign-ins work
@@ -1189,7 +1201,17 @@ Capsule origin. If signing fails, confirm that the Team ID, Key ID, Services ID,
 and `.p8` private key belong together. If relay mail does not arrive, verify
 the domain and sender registration in Apple's private email relay settings.
 Cancellation and failed callbacks spend the local OAuth state, so restart
-sign-in rather than replaying the callback.
+sign-in rather than replaying the callback. The `form_post` body is capped at
+16 KiB and accepts only an unambiguous URL-encoded callback. Once one exact
+state value is identified, duplicate code/error/user values and mixed
+success/cancellation responses spend that state before failing. A duplicate
+state, unsupported media type, malformed encoding, or oversized body cannot
+identify a trustworthy state and therefore fails without consuming one.
+
+Apple identity tokens and signing-key responses are bounded before JSON
+parsing. Sporades accepts only plain-object JWT headers and claims, verifies
+RS256 against a matching Apple signing JWK, and reloads Apple's key set on each
+completion so ordinary key rotation does not require a runtime restart.
 
 Provider updates stage `sporades.json` and Server env replacements beside their
 targets, then commit them with atomic renames. If either commit fails, Sporades

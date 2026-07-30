@@ -18,6 +18,7 @@ const verifyGoogleIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => f
 const verifyAppleIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "verifyAppleIdentityToken");
 const createAppleClientSecret = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createAppleClientSecret");
 const appleOAuthOriginEligible = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "appleOAuthOriginEligible");
+const resolveOAuthRequestOrigin = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "resolveOAuthRequestOrigin");
 const linkProviderIdentity = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkProviderIdentity");
 
 async function withTempDatabase(fn) {
@@ -60,6 +61,17 @@ function formPostRequest(url, values) {
   return request;
 }
 
+function rawFormPostRequest(url, body, contentType = "application/x-www-form-urlencoded") {
+  const request = Readable.from([Buffer.from(body)]);
+  request.method = "POST";
+  request.url = url;
+  request.headers = {
+    "content-type": contentType,
+    "content-length": String(Buffer.byteLength(body)),
+  };
+  return request;
+}
+
 function providerAdapter(overrides = {}) {
   return {
     provider: "test",
@@ -76,7 +88,11 @@ function providerAdapter(overrides = {}) {
 }
 
 function signedJwt(privateKey, kid, claims) {
-  const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid })).toString("base64url");
+  return signedJwtWithHeader(privateKey, { alg: "RS256", typ: "JWT", kid }, claims);
+}
+
+function signedJwtWithHeader(privateKey, headerValue, claims) {
+  const header = Buffer.from(JSON.stringify(headerValue)).toString("base64url");
   const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString("base64url");
   return `${header}.${payload}.${signature}`;
@@ -433,6 +449,126 @@ test("Apple only starts on eligible HTTPS domain origins and sends the exact web
   });
 });
 
+test("OAuth origin resolution ignores untrusted forwarding and requires configured-origin header agreement", () => {
+  const noPublicOrigin = { cors: { publicOrigin: null } };
+  assert.equal(resolveOAuthRequestOrigin(noPublicOrigin, {
+    headers: {
+      host: "127.0.0.1:4000",
+      "x-forwarded-host": "spoofed.example.test",
+      "x-forwarded-proto": "https",
+    },
+    socket: { encrypted: false },
+  }), null);
+  assert.equal(resolveOAuthRequestOrigin(noPublicOrigin, {
+    headers: { host: "localhost:4000", origin: "http://localhost:4000" },
+    socket: { encrypted: false },
+  }), "http://localhost:4000");
+  assert.equal(resolveOAuthRequestOrigin(noPublicOrigin, {
+    headers: { host: "capsule.example.test", origin: "https://capsule.example.test" },
+    socket: { encrypted: true },
+  }), "https://capsule.example.test");
+  assert.equal(resolveOAuthRequestOrigin(noPublicOrigin, {
+    headers: { host: "other.example.test", origin: "https://capsule.example.test" },
+    socket: { encrypted: true },
+  }), null);
+
+  const hostedPolicy = { cors: { publicOrigin: "https://capsule.example.test" } };
+  const matchingProxyRequest = {
+    headers: {
+      host: "capsule.example.test",
+      origin: "https://capsule.example.test",
+      "x-forwarded-host": "capsule.example.test",
+      "x-forwarded-proto": "https",
+    },
+    socket: { encrypted: false },
+  };
+  assert.equal(resolveOAuthRequestOrigin(hostedPolicy, matchingProxyRequest), "https://capsule.example.test");
+  for (const request of [
+    { ...matchingProxyRequest, headers: { ...matchingProxyRequest.headers, origin: "https://evil.example" } },
+    { ...matchingProxyRequest, headers: { ...matchingProxyRequest.headers, host: "evil.example" } },
+    { ...matchingProxyRequest, headers: { ...matchingProxyRequest.headers, "x-forwarded-host": "evil.example" } },
+    { ...matchingProxyRequest, headers: { ...matchingProxyRequest.headers, "x-forwarded-proto": "http" } },
+  ]) {
+    assert.equal(resolveOAuthRequestOrigin(hostedPolicy, request), null);
+  }
+});
+
+test("OAuth form-post callbacks reject ambiguous or malformed input with deliberate state spending", async () => {
+  await withTempDatabase(async (database) => {
+    database.__oauthProviderAdapters = {
+      apple: providerAdapter({ provider: "apple", responseMode: "form_post" }),
+    };
+    async function start() {
+      const session = await resolveAnonymousSession(database, null);
+      const result = await beginOAuthSignIn(database, session, "apple", {
+        origin: "https://capsule.example.test",
+        returnTo: "https://capsule.example.test/after",
+      });
+      return new URL(result.url).searchParams.get("state");
+    }
+    async function callback(body, contentType) {
+      const response = responseRecorder();
+      await routeSporadesAuth(database, rawFormPostRequest("/__sporades/auth/apple/callback", body, contentType), response);
+      return response;
+    }
+
+    let state = await start();
+    let response = await callback(`state=${state}&code=one&code=two`);
+    assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
+    assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+
+    for (const ambiguous of [
+      "error=access_denied&error=user_cancelled",
+      "code=one&user=%7B%7D&user=%7B%7D",
+    ]) {
+      state = await start();
+      response = await callback(`state=${state}&${ambiguous}`);
+      assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
+      assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+    }
+
+    state = await start();
+    response = await callback(`state=${state}&code=one&error=access_denied`);
+    assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
+    assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+
+    state = await start();
+    response = await callback(`state=${state}&state=other&code=one`);
+    assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
+    assert.ok(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
+
+    for (const contentType of [
+      "text/plain",
+      "application/x-www-form-urlencodedish",
+      "application/x-www-form-urlencoded; charset=iso-8859-1",
+      "application/x-www-form-urlencoded; surprise=yes",
+      "application/x-www-form-urlencoded; charset",
+    ]) {
+      state = await start();
+      response = await callback(`state=${state}&code=one`, contentType);
+      assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
+      assert.ok(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
+    }
+
+    state = await start();
+    response = await callback(`state=${state}&code=%GG`);
+    assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
+    assert.ok(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
+
+    state = await start();
+    response = await callback(`state=${state}&code=${"x".repeat(17 * 1024)}`);
+    assert.equal(response.statusCode, 413);
+    assert.ok(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
+
+    state = await start();
+    response = await callback(
+      `state=${state}&code=valid`,
+      "Application/X-Www-Form-Urlencoded; Charset=\"UTF-8\"",
+    );
+    assert.equal(response.statusCode, 302, response.body);
+  });
+});
+
 test("Apple client secret is a short-lived ES256 JWT and identity tokens are verified strictly", async () => {
   await withTempDatabase(async (database) => {
     const { publicKey: clientPublicKey, privateKey: clientPrivateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -459,6 +595,7 @@ test("Apple client secret is a short-lived ES256 JWT and identity tokens are ver
     assert.equal(clientClaims.iat, now);
     assert.ok(clientClaims.exp > now);
     assert.ok(clientClaims.exp - now <= 300);
+    assert.equal(Buffer.from(clientSignaturePart, "base64url").length, 64);
     assert.equal(
       verify(
         "sha256",
@@ -468,6 +605,22 @@ test("Apple client secret is a short-lived ES256 JWT and identity tokens are ver
       ),
       true,
     );
+
+    const invalidPrivateKeys = [
+      generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+      generateKeyPairSync("ec", { namedCurve: "secp384r1" }).privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+      clientPublicKey.export({ format: "pem", type: "spki" }).toString(),
+      clientPrivateKey.export({ format: "pem", type: "pkcs8", cipher: "aes-256-cbc", passphrase: "encrypted" }).toString(),
+      "not-a-key",
+    ];
+    for (const privateKey of invalidPrivateKeys) {
+      database.serverEnv.APPLE_PRIVATE_KEY = privateKey;
+      assert.throws(
+        () => createAppleClientSecret(database, now),
+        (error) => error.code === "OAUTH_CLIENT_CREDENTIAL_INVALID" && !String(error.message).includes(privateKey),
+      );
+    }
+    database.serverEnv.APPLE_PRIVATE_KEY = clientPrivateKey.export({ format: "pem", type: "pkcs8" }).toString();
 
     const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
     const { privateKey: attackerKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -506,12 +659,64 @@ test("Apple client secret is a short-lived ES256 JWT and identity tokens are ver
         signedJwt(privateKey, kid, { ...claims, exp: Math.floor(Date.now() / 1000) - 1 }),
         signedJwt(privateKey, kid, { ...claims, nonce: "wrong" }),
         signedJwt(privateKey, kid, { ...claims, sub: "" }),
+        signedJwt(privateKey, kid, null),
+        signedJwt(privateKey, kid, []),
+        signedJwt(privateKey, kid, "claims"),
+        signedJwt(privateKey, kid, { ...claims, aud: { client: "com.example.web" } }),
+        signedJwt(privateKey, kid, { ...claims, exp: "soon" }),
+        signedJwt(privateKey, kid, { ...claims, nonce: ["expected-nonce"] }),
+        signedJwt(privateKey, kid, { ...claims, sub: ["apple-stable-subject"] }),
+        signedJwtWithHeader(privateKey, null, claims),
+        signedJwtWithHeader(privateKey, [], claims),
+        signedJwtWithHeader(privateKey, "header", claims),
       ]) {
         await assert.rejects(
           verifyAppleIdentityToken(database, token, "expected-nonce"),
           (error) => error.code?.startsWith("OAUTH_ID_TOKEN_"),
         );
       }
+
+      globalThis.fetch = async () => new Response(JSON.stringify({
+        keys: [{ ...jwk, use: "enc" }, { ...jwk, use: "sig", alg: "RS512" }],
+      }), { status: 200, headers: { "content-type": "application/json" } });
+      await assert.rejects(
+        verifyAppleIdentityToken(database, signedJwt(privateKey, kid, claims), "expected-nonce"),
+        (error) => error.code === "OAUTH_ID_TOKEN_INVALID",
+      );
+
+      for (const malformedJwks of [null, [], "jwks", { keys: {} }, { keys: Array.from({ length: 33 }, () => jwk) }]) {
+        globalThis.fetch = async () => new Response(JSON.stringify(malformedJwks), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+        await assert.rejects(
+          verifyAppleIdentityToken(database, signedJwt(privateKey, kid, claims), "expected-nonce"),
+          (error) => error.code?.startsWith("OAUTH_ID_TOKEN_"),
+        );
+      }
+
+      globalThis.fetch = async () => new Response(JSON.stringify({ keys: [jwk], padding: "x".repeat(70 * 1024) }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+      await assert.rejects(
+        verifyAppleIdentityToken(database, signedJwt(privateKey, kid, claims), "expected-nonce"),
+        (error) => error.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE",
+      );
+
+      const rotated = generateKeyPairSync("rsa", { modulusLength: 2048 });
+      const rotatedJwk = rotated.publicKey.export({ format: "jwk" });
+      Object.assign(rotatedJwk, { kid: "rotated-key", alg: "RS256", use: "sig" });
+      globalThis.fetch = async () => new Response(JSON.stringify({ keys: [rotatedJwk] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+      const rotatedIdentity = await verifyAppleIdentityToken(
+        database,
+        signedJwt(rotated.privateKey, "rotated-key", claims),
+        "expected-nonce",
+      );
+      assert.equal(rotatedIdentity.subject, "apple-stable-subject");
     } finally {
       globalThis.fetch = originalFetch;
     }

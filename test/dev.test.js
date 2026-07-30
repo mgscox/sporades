@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { access, chmod, lstat, mkdtemp, mkdir, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
+import { createServer as createHttpsServer, request as httpsRequest } from "node:https";
 import { connect } from "node:net";
+import { connect as connectTls } from "node:tls";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -38,6 +40,17 @@ async function withTempDir(fn) {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+}
+
+async function getTestAvailablePort() {
+  const server = createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const port = server.address().port;
+  await new Promise((resolve) => server.close(resolve));
+  return port;
 }
 
 async function snapshotProjectTree(root, current = root) {
@@ -1064,6 +1077,101 @@ async function withFakeAppleServer(fn) {
     });
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+async function withAppleHttpsTunnel(upstreamUrl, publicPort, fn) {
+  const upstream = new URL(upstreamUrl);
+  const [key, cert] = await Promise.all([
+    readFile(path.join(repoRoot, "test", "support", "apple-tls-key.pem")),
+    readFile(path.join(repoRoot, "test", "support", "apple-tls-cert.pem")),
+  ]);
+  let publicOrigin = null;
+  const tunnelSockets = new Set();
+  const forwardedHeaders = (headers) => ({
+    ...headers,
+    host: new URL(publicOrigin).host,
+    origin: headers.origin ?? publicOrigin,
+    "x-forwarded-host": new URL(publicOrigin).host,
+    "x-forwarded-proto": "https",
+  });
+  const proxy = createHttpsServer({ key, cert }, (request, response) => {
+    const outgoing = httpRequest({
+      hostname: upstream.hostname,
+      port: upstream.port,
+      method: request.method,
+      path: request.url,
+      headers: forwardedHeaders(request.headers),
+    }, (upstreamResponse) => {
+      response.writeHead(upstreamResponse.statusCode, upstreamResponse.headers);
+      upstreamResponse.pipe(response);
+    });
+    outgoing.on("error", (error) => response.destroy(error));
+    request.pipe(outgoing);
+  });
+  proxy.on("upgrade", (request, socket, head) => {
+    const upstreamSocket = connect(Number(upstream.port), upstream.hostname, () => {
+      const headers = forwardedHeaders(request.headers);
+      upstreamSocket.write([
+        `${request.method} ${request.url} HTTP/${request.httpVersion}`,
+        ...Object.entries(headers).map(([name, value]) => `${name}: ${value}`),
+        "",
+        "",
+      ].join("\r\n"));
+      if (head.length > 0) upstreamSocket.write(head);
+      socket.pipe(upstreamSocket).pipe(socket);
+    });
+    upstreamSocket.on("error", () => socket.destroy());
+  });
+  proxy.on("connection", (socket) => {
+    tunnelSockets.add(socket);
+    socket.on("close", () => tunnelSockets.delete(socket));
+  });
+  await new Promise((resolve, reject) => {
+    proxy.once("error", reject);
+    proxy.listen(publicPort, "127.0.0.1", resolve);
+  });
+  publicOrigin = `https://apple.example.test:${proxy.address().port}`;
+  try {
+    return await fn({
+      publicOrigin,
+      socketOptions: {
+        connectHost: "127.0.0.1",
+        connectionTokenBaseUrl: upstreamUrl,
+      },
+      postForm(pathname, values) {
+        const body = new URLSearchParams(values).toString();
+        return new Promise((resolve, reject) => {
+          const request = httpsRequest({
+            hostname: "127.0.0.1",
+            port: proxy.address().port,
+            path: pathname,
+            method: "POST",
+            rejectUnauthorized: false,
+            servername: "apple.example.test",
+            headers: {
+              host: new URL(publicOrigin).host,
+              origin: publicOrigin,
+              "content-type": "application/x-www-form-urlencoded",
+              "content-length": Buffer.byteLength(body),
+            },
+          }, (response) => {
+            let responseBody = "";
+            response.on("data", (chunk) => { responseBody += chunk; });
+            response.on("end", () => resolve({
+              status: response.statusCode,
+              headers: response.headers,
+              body: responseBody,
+            }));
+          });
+          request.on("error", reject);
+          request.end(body);
+        });
+      },
+    });
+  } finally {
+    for (const socket of tunnelSockets) socket.destroy();
+    await new Promise((resolve) => proxy.close(resolve));
   }
 }
 
@@ -8345,7 +8453,7 @@ test("Facebook auth callback uses the versioned server-owned Graph flow and acce
   });
 });
 
-test("Google auth sign-in uses forwarded https origin behind a proxy", async () => {
+test("Google auth rejects spoofed forwarding without a configured public origin", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
       cwd: dir,
@@ -8381,9 +8489,8 @@ test("Google auth sign-in uses forwarded https origin behind a proxy", async () 
         returnTo: "https://photos.example.test/library",
       });
       const signIn = await socket.readJson();
-      assert.equal(signIn.type, "auth.redirect");
-      const signInUrl = new URL(signIn.data.url);
-      assert.equal(signInUrl.searchParams.get("redirect_uri"), "https://photos.example.test/__sporades/auth/google/callback");
+      assert.equal(signIn.type, "error");
+      assert.equal(signIn.error.code, "OAUTH_ORIGIN_INVALID");
     } finally {
       socket?.close();
       child.kill("SIGTERM");
@@ -8414,6 +8521,11 @@ test("Apple HTTPS browser tracer completes form-post auth without client-side Ap
     }));
     const setResult = await runCli(["auth", "set", "apple", "--client-json", credentialsPath, "--json"], { cwd: projectDir });
     assert.equal(setResult.code, 0, setResult.stderr);
+    const tlsPort = await getTestAvailablePort();
+    const publicOrigin = `https://apple.example.test:${tlsPort}`;
+    const configured = JSON.parse(await readFile(configPath, "utf8"));
+    configured.__sporadesPublicOrigin = publicOrigin;
+    await writeFile(configPath, `${JSON.stringify(configured, null, 2)}\n`);
 
     await withFakeAppleServer(async (apple) => {
       const child = startCli(["dev", "--json"], {
@@ -8423,81 +8535,75 @@ test("Apple HTTPS browser tracer completes form-post auth without client-side Ap
           SPORADES_APPLE_JWKS_URL: apple.jwksUrl,
         },
       });
-      let localSocket;
       let httpsSocket;
       try {
         const started = await waitForJsonLine(child);
         assert.equal(started.ok, true, JSON.stringify(started));
-        localSocket = await openSocket(started.data.url);
-        localSocket.send(JSON.stringify({ id: "local-auth", type: "auth.get" }));
-        const localAuth = await readSocketMessage(localSocket);
-        assert.equal(localAuth.data.providers.apple.configured, true);
-        assert.equal(localAuth.data.providers.apple.runtimeAvailable, false);
+        await withAppleHttpsTunnel(started.data.url, tlsPort, async (tunnel) => {
+          httpsSocket = await openSocketWithHeaders(started.data.url, {
+            host: new URL(tunnel.publicOrigin).host,
+            origin: tunnel.publicOrigin,
+            "x-forwarded-host": new URL(tunnel.publicOrigin).host,
+            "x-forwarded-proto": "https",
+          });
+          httpsSocket.sendJson({ id: "auth", type: "auth.get" });
+          const anonymous = await httpsSocket.readJson();
+          assert.equal(anonymous.data.providers.apple.configured, true);
+          assert.equal(anonymous.data.providers.apple.runtimeAvailable, true);
+          const userId = anonymous.data.auth.userId;
+          httpsSocket.sendJson({ id: "todos", type: "query.subscribe", query: "todos" });
+          assert.deepEqual((await httpsSocket.readJson()).data, []);
+          httpsSocket.sendJson({
+            id: "signin",
+            type: "auth.signIn",
+            provider: "apple",
+            returnTo: `${tunnel.publicOrigin}/account`,
+          });
+          const redirect = await httpsSocket.readJson();
+          assert.equal(redirect.type, "auth.redirect");
+          const authorization = new URL(redirect.data.url);
+          assert.equal(authorization.searchParams.get("redirect_uri"), `${tunnel.publicOrigin}/__sporades/auth/apple/callback`);
+          apple.setNonce(authorization.searchParams.get("nonce"));
 
-        httpsSocket = await openSocketWithHeaders(started.data.url, {
-          "x-forwarded-host": "apple.example.test",
-          "x-forwarded-proto": "https",
-        });
-        httpsSocket.sendJson({ id: "auth", type: "auth.get" });
-        const anonymous = await httpsSocket.readJson();
-        assert.equal(anonymous.data.providers.apple.runtimeAvailable, true);
-        const userId = anonymous.data.auth.userId;
-        httpsSocket.sendJson({ id: "todos", type: "query.subscribe", query: "todos" });
-        assert.deepEqual((await httpsSocket.readJson()).data, []);
-        httpsSocket.sendJson({
-          id: "signin",
-          type: "auth.signIn",
-          provider: "apple",
-          returnTo: "https://apple.example.test/account",
-        });
-        const redirect = await httpsSocket.readJson();
-        assert.equal(redirect.type, "auth.redirect");
-        const authorization = new URL(redirect.data.url);
-        assert.equal(authorization.searchParams.get("redirect_uri"), "https://apple.example.test/__sporades/auth/apple/callback");
-        apple.setNonce(authorization.searchParams.get("nonce"));
-
-        const callback = await fetch(`${started.data.url}/__sporades/auth/apple/callback`, {
-          method: "POST",
-          redirect: "manual",
-          headers: { "content-type": "application/x-www-form-urlencoded" },
-          body: new URLSearchParams({
+          const callback = await tunnel.postForm("/__sporades/auth/apple/callback", {
             state: authorization.searchParams.get("state"),
             code: "apple-code",
             user: JSON.stringify({ name: { firstName: "Mira", lastName: "Chen" } }),
-          }),
+          });
+          assert.equal(callback.status, 302, callback.body);
+          assert.equal(callback.headers.location, `${tunnel.publicOrigin}/account`);
+          assert.equal(apple.requests[0].body.redirect_uri, `${tunnel.publicOrigin}/__sporades/auth/apple/callback`);
+          assert.ok(apple.requests[0].body.client_secret);
+
+          httpsSocket.sendJson({ id: "linked", type: "auth.get" });
+          const linked = await httpsSocket.readJson();
+          assert.equal(linked.data.auth.userId, userId);
+          assert.equal(linked.data.auth.provider, "apple");
+          assert.equal(linked.data.auth.displayName, "Mira Chen");
+          assert.equal(linked.data.auth.email, "mira@privaterelay.appleid.com");
+
+          httpsSocket.sendJson({ id: "preference-write", type: "preferences.update", patch: { appleTheme: "orchard" } });
+          const preferenceWrite = await httpsSocket.readJson();
+          assert.deepEqual(preferenceWrite.data.preferences, { appleTheme: "orchard" });
+          httpsSocket.sendJson({ id: "preference-read", type: "preferences.get" });
+          const preferenceRead = await httpsSocket.readJson();
+          assert.deepEqual(preferenceRead.data.preferences, { appleTheme: "orchard" });
+
+          httpsSocket.sendJson({ id: "todo", type: "mutation.run", mutation: "addTodo", args: ["Verified Apple owner"] });
+          assert.equal((await httpsSocket.readJson()).error, null);
+          const todoRefresh = await httpsSocket.readJson();
+          assert.equal(todoRefresh.data[0].text, "Verified Apple owner");
+
+          httpsSocket.sendJson({ id: "signout", type: "auth.signOut" });
+          assert.equal((await httpsSocket.readJson()).type, "auth.signOut.result");
+          httpsSocket.sendJson({ id: "signed-out", type: "auth.get" });
+          assert.equal((await httpsSocket.readJson()).data.auth.provider, "anonymous");
+          const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
+          assert.doesNotMatch(clientBundle, /appleid\\.auth|appleid\\.apple\\.com|SignInWithApple|AppleID\\.auth/);
+          httpsSocket.close();
+          httpsSocket = null;
         });
-        assert.equal(callback.status, 302, await callback.text());
-        assert.equal(callback.headers.get("location"), "https://apple.example.test/account");
-        assert.equal(apple.requests[0].body.redirect_uri, "https://apple.example.test/__sporades/auth/apple/callback");
-        assert.ok(apple.requests[0].body.client_secret);
-
-        httpsSocket.sendJson({ id: "linked", type: "auth.get" });
-        const linked = await httpsSocket.readJson();
-        assert.equal(linked.data.auth.userId, userId);
-        assert.equal(linked.data.auth.provider, "apple");
-        assert.equal(linked.data.auth.displayName, "Mira Chen");
-        assert.equal(linked.data.auth.email, "mira@privaterelay.appleid.com");
-
-        httpsSocket.sendJson({ id: "preference-write", type: "preferences.update", patch: { appleTheme: "orchard" } });
-        const preferenceWrite = await httpsSocket.readJson();
-        assert.deepEqual(preferenceWrite.data.preferences, { appleTheme: "orchard" });
-        httpsSocket.sendJson({ id: "preference-read", type: "preferences.get" });
-        const preferenceRead = await httpsSocket.readJson();
-        assert.deepEqual(preferenceRead.data.preferences, { appleTheme: "orchard" });
-
-        httpsSocket.sendJson({ id: "todo", type: "mutation.run", mutation: "addTodo", args: ["Verified Apple owner"] });
-        assert.equal((await httpsSocket.readJson()).error, null);
-        const todoRefresh = await httpsSocket.readJson();
-        assert.equal(todoRefresh.data[0].text, "Verified Apple owner");
-
-        httpsSocket.sendJson({ id: "signout", type: "auth.signOut" });
-        assert.equal((await httpsSocket.readJson()).type, "auth.signOut.result");
-        httpsSocket.sendJson({ id: "signed-out", type: "auth.get" });
-        assert.equal((await httpsSocket.readJson()).data.auth.provider, "anonymous");
-        const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
-        assert.doesNotMatch(clientBundle, /appleid\\.auth|appleid\\.apple\\.com|SignInWithApple|AppleID\\.auth/);
       } finally {
-        localSocket?.close();
         httpsSocket?.close();
         child.kill("SIGTERM");
         await new Promise((resolve) => child.once("exit", resolve));
@@ -12523,12 +12629,19 @@ function installSessionTokenEnvelope(socket, sessionToken) {
   };
 }
 
-async function openSocketWithHeaders(baseUrl, headers = {}) {
-  const connectionToken = await readPageConnectionToken(baseUrl);
+async function openSocketWithHeaders(baseUrl, headers = {}, options = {}) {
+  const connectionToken = await readPageConnectionToken(options.connectionTokenBaseUrl ?? baseUrl);
   return new Promise((resolve, reject) => {
     const url = new URL("/__sporades/ws", baseUrl);
     url.searchParams.set("connectionToken", connectionToken);
-    const socket = connect(Number(url.port), url.hostname);
+    const socket = url.protocol === "https:"
+      ? connectTls({
+          host: options.connectHost ?? url.hostname,
+          port: Number(url.port || 443),
+          servername: url.hostname,
+          rejectUnauthorized: false,
+        })
+      : connect(Number(url.port), options.connectHost ?? url.hostname);
     const key = randomBytes(16).toString("base64");
     let buffer = Buffer.alloc(0);
     const timeout = setTimeout(() => {
