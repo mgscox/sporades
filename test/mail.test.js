@@ -6,11 +6,7 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import {
-  createServer as createTlsServer,
-  getCACertificates,
-  setDefaultCACertificates,
-} from "node:tls";
+import * as tls from "node:tls";
 
 import { validateMailConfig } from "../dist/cli/project-config.js";
 import { openDevDatabase, runMutation, runQuery, SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
@@ -89,7 +85,6 @@ const smtp2goConfig = {
       port: 2525,
       tls: {
         mode: "required-starttls",
-        rejectUnauthorized: true,
         servername: "mail.smtp2go.com",
       },
       auth: {
@@ -170,7 +165,7 @@ async function startTestSmtpServer({ implicitTls = false } = {}) {
       }
     });
   };
-  const server = implicitTls ? createTlsServer(tlsOptions, handle) : createNetServer(handle);
+  const server = implicitTls ? tls.createServer(tlsOptions, handle) : createNetServer(handle);
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(0, "127.0.0.1", resolve);
@@ -210,6 +205,80 @@ test("mail.smtp configuration rejects ambiguous, incomplete, and unsafe declarat
     [{ smtp: { ...smtpConfig.mail.smtp, tls: { ...smtpConfig.mail.smtp.tls, servername: "bad name" } } }, /Invalid SMTP TLS server name/],
   ];
   for (const [mail, expected] of invalid) assert.throws(() => validateMailConfig(mail), expected);
+});
+
+test("mail configuration snapshots complete own data without executing getters", () => {
+  const makeConfig = () => structuredClone(smtpConfig.mail);
+  const layers = [
+    ["mail", (config) => config],
+    ["smtp", (config) => config.smtp],
+    ["tls", (config) => config.smtp.tls],
+    ["auth", (config) => config.smtp.auth],
+  ];
+  for (const [label, select] of layers) {
+    for (const attack of ["accessor", "hidden", "symbol", "inherited", "custom-prototype"]) {
+      const config = makeConfig();
+      let getterCalls = 0;
+      let candidate = select(config);
+      if (attack === "accessor") {
+        Object.defineProperty(candidate, "unknown", {
+          enumerable: true,
+          get() {
+            getterCalls += 1;
+            return "surprise";
+          },
+        });
+      } else if (attack === "hidden") {
+        Object.defineProperty(candidate, "unknown", { enumerable: false, value: "surprise" });
+      } else if (attack === "symbol") {
+        candidate[Symbol("unknown")] = "surprise";
+      } else {
+        const prototype = attack === "inherited" ? { unknown: "surprise" } : { custom: true };
+        Object.setPrototypeOf(candidate, prototype);
+      }
+      assert.throws(
+        () => validateMailConfig(config),
+        (error) => error.code === "INVALID_MAIL_CONFIG",
+        `${label} ${attack}`,
+      );
+      assert.equal(getterCalls, 0, `${label} ${attack} executed a getter`);
+    }
+  }
+
+  for (const attack of ["inherited", "hidden", "accessor", "symbol"]) {
+    const config = {
+      smtp: {
+        ...smtpConfig.mail.smtp,
+        tls: { mode: "disabled" },
+        auth: { method: "none" },
+      },
+    };
+    let getterCalls = 0;
+    if (attack === "inherited") {
+      Object.setPrototypeOf(config.smtp.auth, { usernameEnv: "SMTP_USERNAME" });
+    } else if (attack === "hidden") {
+      Object.defineProperty(config.smtp.auth, "usernameEnv", { enumerable: false, value: "SMTP_USERNAME" });
+    } else if (attack === "accessor") {
+      Object.defineProperty(config.smtp.auth, "usernameEnv", {
+        enumerable: true,
+        get() {
+          getterCalls += 1;
+          return "SMTP_USERNAME";
+        },
+      });
+    } else {
+      config.smtp.auth[Symbol("usernameEnv")] = "SMTP_USERNAME";
+    }
+    assert.throws(() => validateMailConfig(config), (error) => error.code === "INVALID_MAIL_CONFIG");
+    assert.equal(getterCalls, 0);
+  }
+
+  const nullPrototype = structuredClone(smtpConfig.mail);
+  Object.setPrototypeOf(nullPrototype, null);
+  Object.setPrototypeOf(nullPrototype.smtp, null);
+  Object.setPrototypeOf(nullPrototype.smtp.tls, null);
+  Object.setPrototypeOf(nullPrototype.smtp.auth, null);
+  assert.doesNotThrow(() => validateMailConfig(nullPrototype));
 });
 
 test("SMTP2GO-shaped configuration reaches the generic SMTP transport", async () => {
@@ -253,6 +322,7 @@ test("SMTP2GO-shaped configuration reaches the generic SMTP transport", async ()
   assert.equal(capturedSmtp.host, "mail.smtp2go.com");
   assert.equal(capturedSmtp.port, 2525);
   assert.equal(capturedSmtp.tls.mode, "required-starttls");
+  assert.equal(capturedSmtp.tls.rejectUnauthorized, true);
   assert.equal(capturedSmtp.tls.servername, "mail.smtp2go.com");
   assert.equal(capturedSmtp.auth.method, "LOGIN");
   assert.match(capturedMessages[0], /\r\nX-Smtp2go-Campaign: onboarding\r\n/);
@@ -317,6 +387,37 @@ test("generic provider headers reject unsafe names, values, fields, and descript
   });
 });
 
+test("generic X-* header admission is case-insensitive while preserving spelling", async () => {
+  let raw;
+  await withDatabase(smtpConfig, {
+    mutations: {
+      send: mutation((ctx) => ctx.mail.send({
+        to: "to@example.com",
+        subject: "case",
+        textBody: "body",
+        provider: {
+          headers: {
+            "x-test": "lower",
+            "x-TeSt-Two": "mixed",
+          },
+        },
+      })),
+    },
+  }, {
+    mailTransportFactory: () => ({
+      async send(message) {
+        raw = buildSmtpMessage({ ...message, messageId: "<case@test>" });
+        return { messageId: "<case@test>", accepted: ["to@example.com"], rejected: [] };
+      },
+      close() {},
+    }),
+  }, async (database) => {
+    assert.equal((await runMutation(database, user, "send", [])).ok, true);
+  });
+  assert.match(raw, /\r\nx-test: lower\r\n/);
+  assert.match(raw, /\r\nx-TeSt-Two: mixed\r\n/);
+});
+
 test("explicitly unauthenticated plaintext and opportunistic local relays never send AUTH", async () => {
   for (const mode of ["disabled", "opportunistic"]) {
     const server = await startTestSmtpServer();
@@ -355,11 +456,18 @@ test("explicitly unauthenticated plaintext and opportunistic local relays never 
   }
 });
 
-test("implicit TLS validates the configured server name when the SMTP host is an IP address", async () => {
+test("implicit TLS validates the configured server name when the SMTP host is an IP address", async (t) => {
+  if (
+    typeof tls.getCACertificates !== "function"
+    || typeof tls.setDefaultCACertificates !== "function"
+  ) {
+    t.skip("Runtime trust injection requires Node 22.19+; default certificate rejection is covered through resolved transport configuration.");
+    return;
+  }
   const server = await startTestSmtpServer({ implicitTls: true });
   const cert = await readFile(new URL("./fixtures/smtp-test-cert.pem", import.meta.url), "utf8");
-  const previousDefaultCAs = getCACertificates("default");
-  setDefaultCACertificates([...previousDefaultCAs, cert]);
+  const previousDefaultCAs = tls.getCACertificates("default");
+  tls.setDefaultCACertificates([...previousDefaultCAs, cert]);
   const config = {
     name: "implicit-tls-relay",
     mail: {
@@ -393,7 +501,7 @@ test("implicit TLS validates the configured server name when the SMTP host is an
     assert.equal(server.commands.some((command) => /^AUTH /i.test(command)), false);
     assert.equal(server.messages.length, 1);
   } finally {
-    setDefaultCACertificates(previousDefaultCAs);
+    tls.setDefaultCACertificates(previousDefaultCAs);
     await server.close();
   }
 });

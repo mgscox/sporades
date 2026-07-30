@@ -52,7 +52,8 @@ export async function readProjectConfig(projectDir) {
     validateSecurityConfig(config.security);
     validateClientConfig(config.client);
     validateSchedulingConfig(config.scheduling);
-    validateMailConfig(config.mail);
+    if (config.mail !== undefined)
+        config.mail = validateMailConfig(config.mail);
     validateCapsuleServicesConfig(config.services);
     return config;
 }

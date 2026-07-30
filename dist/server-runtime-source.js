@@ -857,7 +857,7 @@ function normalizeGenericProvider(provider) {
     ];
     const headers = [];
     for (const entry of headerEntries) {
-        if (!/^X-[A-Za-z0-9](?:[A-Za-z0-9-]{0,125})$/.test(entry.name)) {
+        if (!/^[Xx]-[A-Za-z0-9](?:[A-Za-z0-9-]{0,125})$/.test(entry.name)) {
             throw mailError("INVALID_MAIL_MESSAGE", "Invalid generic SMTP provider data.", `Pass \`provider.headers.${entry.name}\` as a custom X-* header name containing only ASCII letters, numbers, and hyphens.`);
         }
         if (protectedNames.has(entry.normalizedName) || protectedPrefixes.some((prefix) => entry.normalizedName.startsWith(prefix))) {
@@ -1727,8 +1727,8 @@ function encodeMimeBase64(value) {
 }
 export async function openDevDatabase(databasePath, serverSource, serverEnv = {}, config = {}, capsuleDefinition = null, options = {}) {
     const path = await import("node:path");
-    validateMailConfig(config.mail);
-    const mail = createMailRuntime(config.mail, serverEnv, options);
+    const mailConfig = validateMailConfig(config.mail);
+    const mail = createMailRuntime(mailConfig, serverEnv, options);
     const schedulePayloadFactoryTimeoutMs = resolveSchedulePayloadFactoryTimeoutMs(config);
     const journeySessionInactivityMinutes = resolveJourneySessionInactivityMinutes(config);
     // Handler sources extracted from Capsule server code are re-created with
