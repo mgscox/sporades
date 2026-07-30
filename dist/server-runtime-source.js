@@ -1032,8 +1032,8 @@ function normalizeMailgunProvider(provider) {
     ]) {
         if (providerData.has(field)) {
             const value = controlFreeString(field, providerData.get(field));
-            if (value.trim() !== value || /\s{2,}/.test(value)) {
-                invalid(`Pass \`provider.${field}\` without leading, trailing, or repeated whitespace.`);
+            if (!/^[\x21-\x7e](?:[\x20-\x7e]*[\x21-\x7e])?$/.test(value) || / {2,}/.test(value)) {
+                invalid(`Pass \`provider.${field}\` as printable ASCII with only single internal spaces.`);
             }
             headers.push({ name, value });
         }
@@ -1542,47 +1542,52 @@ function foldMimeHeader(name, value) {
 }
 function foldMailgunJsonHeader(name, value) {
     const text = String(value);
-    const atoms = [];
-    let atom = "";
-    let inString = false;
-    let escaped = false;
-    for (const character of text) {
-        atom += character;
-        if (inString) {
-            if (escaped)
-                escaped = false;
-            else if (character === "\\")
-                escaped = true;
-            else if (character === "\"")
-                inString = false;
+    const tokens = [];
+    for (let index = 0; index < text.length;) {
+        const character = text[index];
+        if ("{}[],:".includes(character)) {
+            tokens.push(character);
+            index += 1;
+            continue;
         }
-        else if (character === "\"") {
-            inString = true;
+        const start = index;
+        if (character === "\"") {
+            index += 1;
+            let escaped = false;
+            while (index < text.length) {
+                const next = text[index];
+                index += 1;
+                if (escaped)
+                    escaped = false;
+                else if (next === "\\")
+                    escaped = true;
+                else if (next === "\"")
+                    break;
+            }
         }
-        else if (character === "," || character === ":" || character === "{" || character === "[") {
-            atoms.push(atom);
-            atom = "";
+        else {
+            while (index < text.length && !"{}[],:\"".includes(text[index]))
+                index += 1;
         }
+        tokens.push(text.slice(start, index));
     }
-    if (atom)
-        atoms.push(atom);
     const prefix = `${name}: `;
     const lines = [];
     let line = prefix;
-    for (const candidateAtom of atoms) {
-        if (candidateAtom.length > 997) {
+    for (const token of tokens) {
+        if (token.length > 997) {
             throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", `${name} JSON keys and values must each encode within 997 characters so Sporades can fold them before SMTP delivery.`);
         }
-        if (`${line}${candidateAtom}`.length <= 78) {
-            line += candidateAtom;
+        if (`${line}${token}`.length <= 78) {
+            line += token;
             continue;
         }
         if (line !== prefix && line !== " ") {
             lines.push(line);
-            line = ` ${candidateAtom}`;
+            line = ` ${token}`;
         }
         else {
-            line += candidateAtom;
+            line += token;
         }
         if (line.length > 998) {
             throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", `${name} contains a JSON token that cannot be folded within SMTP's 998-character line limit.`);

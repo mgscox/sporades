@@ -410,8 +410,8 @@ test("Mailgun provider fields become exact SMTP MIME headers", async () => {
     "X-Mailgun-Tag: welcome",
     "X-Mailgun-Tag: new-customer",
     "X-Mailgun-Variables: {\"account\":{\"active\":true,\"tier\":\"pro\"},\"zeta\":2}",
-    "X-Mailgun-Recipient-Variables: {\"a@example.com\":{\"name\":\"Amy\"},",
-    " \"z@example.com\":{\"name\":\"Zed\"}}",
+    "X-Mailgun-Recipient-Variables: {\"a@example.com\":{\"name\":\"Amy\"},\"z@example.com\"",
+    " :{\"name\":\"Zed\"}}",
     "X-Mailgun-Template-Name: welcome-email",
     "X-Mailgun-Template-Version: v2",
     "X-Mailgun-Template-Variables: {\"firstName\":\"Amy\",\"surname\":\"M\\u00fcller\"}",
@@ -464,7 +464,9 @@ test("Mailgun rejects unsupported, malformed, oversized, and protected provider 
       { variables: [] },
       { variables: { bad: Number.NaN } },
       { variables: { bad: "x".repeat(4097) } },
-      { variables: { ["x".repeat(1200)]: "value" } },
+      { variables: { ["x".repeat(996)]: "value" } },
+      { variables: { value: "x".repeat(996) } },
+      { variables: { nested: ["x".repeat(996)] } },
       { recipientVariables: [] },
       { recipientVariables: { "not-an-address": { name: "Amy" } } },
       { recipientVariables: { "person@example.com": { note: "x".repeat(1200) } } },
@@ -473,10 +475,16 @@ test("Mailgun rejects unsupported, malformed, oversized, and protected provider 
       { templateName: " leading" },
       { templateName: "trailing " },
       { templateName: "repeated  whitespace" },
+      { templateName: "non\u00a0breaking" },
+      { templateName: "em\u2003space" },
+      { templateName: "tab\tspace" },
       { templateVersion: "" },
       { templateVersion: " leading" },
       { templateVersion: "trailing " },
       { templateVersion: "repeated  whitespace" },
+      { templateVersion: "non\u00a0breaking" },
+      { templateVersion: "em\u2003space" },
+      { templateVersion: "tab\tspace" },
       { templateVariables: { bad: 1n } },
       { templateVariables: [] },
       { templateVariables: { note: "x".repeat(1200) } },
@@ -628,6 +636,48 @@ test("Mailgun JSON headers preserve string whitespace and fold payloads larger t
   }
   for (const line of message.split("\r\n\r\n")[0].split("\r\n")) assert.ok(line.length <= 998, `overlong MIME header line: ${line.length}`);
   assert.equal(readMimeHeader(message, "X-Mailgun-Delivery-Time-Optimize-Period"), "72h");
+});
+
+test("Mailgun JSON tokens accept 997 serialized characters and reject the next character pre-transport", async () => {
+  const captured = [];
+  let sends = 0;
+  const transport = {
+    async send(message) {
+      sends += 1;
+      captured.push(buildSmtpMessage({ ...message, messageId: "<mailgun-token-boundary@example.com>" }));
+      return { messageId: "<mailgun-token-boundary@example.com>", accepted: ["to@example.com"], rejected: [] };
+    },
+    close() {},
+  };
+  const maximum = "x".repeat(995);
+  await withDatabase(mailgunConfig, {
+    mutations: {
+      send: mutation((ctx, provider) => ctx.mail.send({
+        to: "to@example.com",
+        subject: "Mailgun token boundary",
+        htmlBody: "<p>Hello</p>",
+        provider,
+      })),
+    },
+  }, { mailTransportFactory: () => transport }, async (database) => {
+    const valid = await runMutation(database, user, "send", [{
+      variables: {
+        [maximum]: maximum,
+        nested: [maximum],
+      },
+      templateName: "welcome email",
+      templateVersion: "version 2",
+    }]);
+    assert.equal(valid.ok, true);
+  });
+  assert.equal(sends, 1);
+  assert.deepEqual(JSON.parse(readMimeHeader(captured[0], "X-Mailgun-Variables")), {
+    [maximum]: maximum,
+    nested: [maximum],
+  });
+  assert.match(captured[0], /^X-Mailgun-Template-Name: welcome email$/m);
+  assert.match(captured[0], /^X-Mailgun-Template-Version: version 2$/m);
+  for (const line of captured[0].split("\r\n\r\n")[0].split("\r\n")) assert.ok(line.length <= 998);
 });
 
 test("SMTP transport failures use stable safe mail errors", async () => {

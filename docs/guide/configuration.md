@@ -187,9 +187,10 @@ Each serialized JSON key or value token must fit within a 997-character
 continuation line; larger individual tokens are rejected during message
 normalization even when the complete object remains below its byte limit.
 
-Tags, template names, and template versions may contain single internal spaces,
-but leading, trailing, and repeated whitespace is rejected before SMTP delivery
-so MIME folding cannot silently change provider identifiers.
+Tags, template names, and template versions use printable ASCII and may contain
+single internal U+0020 spaces, but leading, trailing, repeated, and Unicode
+whitespace is rejected before SMTP delivery so MIME folding cannot silently
+change provider identifiers.
 
 Tracking booleans become Mailgun `yes` or `no` values; click tracking also
 accepts `htmlonly`. `deliveryTime` uses RFC 2822 format, `deliverWithin` ranges
