@@ -1,4 +1,4 @@
-import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual, verify } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 const PRIVILEGED_AUTH_USER_ID = "__privileged__";
 const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
@@ -378,6 +378,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     beginOAuthSignIn,
     oauthProviderAdapter,
     createGoogleOAuthProviderAdapter,
+    createAppleOAuthProviderAdapter,
     completeGoogleOAuth,
     createFacebookOAuthProviderAdapter,
     facebookOAuthCallbackError,
@@ -386,7 +387,13 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     cancelFacebookOAuthResponse,
     readFacebookOAuthJson,
     completeFacebookOAuth,
+    completeAppleOAuth,
+    createAppleClientSecret,
     verifyGoogleIdentityToken,
+    verifyAppleIdentityToken,
+    appleOAuthOriginEligible,
+    parseAppleAuthorizationUser,
+    sanitizeAppleNamePart,
     decodeJwtPart,
     readOAuthCallbackParameters,
     normalizeReturnTo,
@@ -7179,8 +7186,11 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
         }
         const database = getDatabase();
         const messageSessionToken = typeof message.sessionToken === "string" && message.sessionToken.length > 0 ? message.sessionToken : client.session.token;
+        const previousAuth = client.session.auth;
         const resolvedSession = await resolveAnonymousSession(database, messageSessionToken ?? null);
-        if (client.session.auth.userId && client.session.auth.userId !== resolvedSession.auth.userId)
+        if (previousAuth.userId && (previousAuth.userId !== resolvedSession.auth.userId ||
+            previousAuth.provider !== resolvedSession.auth.provider ||
+            Boolean(previousAuth.isAuthenticated) !== Boolean(resolvedSession.auth.isAuthenticated)))
             retireJourney(client);
         client.session = resolvedSession;
         if (message.type === "auth.get") {
@@ -7563,7 +7573,7 @@ export function createWebSocketHub(getDatabase, trustedRefresh = null) {
             data: {
                 sessionToken: client.session.token,
                 auth: client.session.auth,
-                providers: authProvidersForClient(database.authConfig),
+                providers: authProvidersForClient(database.authConfig, client.origin),
             },
             error: null,
         });
@@ -7724,6 +7734,16 @@ async function beginOAuthSignIn(database, session, provider, options) {
         };
     }
     const origin = options.origin;
+    if (provider === "apple" && !appleOAuthOriginEligible(origin)) {
+        return {
+            ok: false,
+            error: {
+                code: "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED",
+                message: "Apple sign-in requires an HTTPS domain origin.",
+                hint: "Use an HTTPS development tunnel or a Hosted Capsule with an HTTPS domain, then register its exact Apple callback URL.",
+            },
+        };
+    }
     const redirectUri = `${origin}/__sporades/auth/${provider}/callback`;
     const returnTo = normalizeReturnTo(options.returnTo, origin);
     const state = randomBytes(32).toString("base64url");
@@ -7801,6 +7821,9 @@ function oauthProviderAdapter(database, provider) {
     if (provider === "facebook") {
         return createFacebookOAuthProviderAdapter(database);
     }
+    if (provider === "apple") {
+        return createAppleOAuthProviderAdapter(database);
+    }
     return null;
 }
 function createGoogleOAuthProviderAdapter(database) {
@@ -7828,6 +7851,118 @@ function createGoogleOAuthProviderAdapter(database) {
             return completeGoogleOAuth(database, context);
         },
     };
+}
+function createAppleOAuthProviderAdapter(database) {
+    const apple = database.authConfig.providers.apple;
+    const configured = Boolean(apple.enabled && apple.configured);
+    return {
+        provider: "apple",
+        responseMode: "form_post",
+        enabled: configured,
+        begin(context) {
+            if (!appleOAuthOriginEligible(new URL(context.redirectUri).origin)) {
+                throw commandError("Apple sign-in requires an HTTPS domain origin.", "Use an HTTPS development tunnel or a Hosted Capsule with an HTTPS domain.", "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED");
+            }
+            const params = new URLSearchParams({
+                client_id: apple.clientId,
+                redirect_uri: context.redirectUri,
+                response_type: "code",
+                response_mode: "form_post",
+                scope: "name email",
+                state: context.state,
+                nonce: context.nonce,
+            });
+            return { url: `https://appleid.apple.com/auth/authorize?${params.toString()}` };
+        },
+        complete(context) {
+            return completeAppleOAuth(database, context);
+        },
+    };
+}
+function appleOAuthOriginEligible(origin) {
+    try {
+        const url = new URL(String(origin));
+        const hostname = url.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+        if (url.protocol !== "https:" || url.username || url.password || !hostname)
+            return false;
+        if (hostname === "localhost" || hostname.endsWith(".localhost"))
+            return false;
+        if (hostname.includes(":"))
+            return false;
+        if (/^\d+(?:\.\d+){3}$/.test(hostname))
+            return false;
+        const labels = hostname.split(".");
+        return hostname.length <= 253 &&
+            labels.length >= 2 &&
+            labels.every((label) => /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i.test(label));
+    }
+    catch {
+        return false;
+    }
+}
+async function completeAppleOAuth(database, context) {
+    const apple = database.authConfig.providers.apple;
+    const tokenUrl = process.env.SPORADES_APPLE_TOKEN_URL ?? "https://appleid.apple.com/auth/token";
+    let clientSecret;
+    try {
+        clientSecret = createAppleClientSecret(database);
+    }
+    catch {
+        throw commandError("Apple client credential could not be generated.", "Check the Apple Team ID, Key ID, Services ID, and private key, then retry sign-in.", "OAUTH_CLIENT_CREDENTIAL_INVALID");
+    }
+    let tokenResponse;
+    try {
+        tokenResponse = await fetch(tokenUrl, {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({
+                code: context.code,
+                client_id: apple.clientId,
+                client_secret: clientSecret,
+                redirect_uri: context.redirectUri,
+                grant_type: "authorization_code",
+            }),
+        });
+    }
+    catch {
+        throw commandError("Apple OAuth code exchange failed.", "Check the Apple OAuth configuration and retry sign-in.", "OAUTH_EXCHANGE_FAILED");
+    }
+    if (!tokenResponse.ok) {
+        throw commandError("Apple OAuth code exchange failed.", "Check the Apple OAuth configuration and exact callback URL, then retry sign-in.", "OAUTH_EXCHANGE_FAILED");
+    }
+    let token;
+    try {
+        token = await tokenResponse.json();
+    }
+    catch {
+        throw commandError("Apple OAuth response was invalid.", "Check the Apple OAuth configuration and retry sign-in.", "OAUTH_EXCHANGE_FAILED");
+    }
+    if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
+        throw commandError("Apple OAuth response did not include a valid identity token.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    }
+    const identity = await verifyAppleIdentityToken(database, token.id_token, context.nonce);
+    const authorizationUser = parseAppleAuthorizationUser(context.parameters?.get("user"));
+    return {
+        ...identity,
+        displayName: authorizationUser?.displayName ?? null,
+    };
+}
+function createAppleClientSecret(database, nowSeconds = Math.floor(Date.now() / 1000)) {
+    const apple = database.authConfig.providers.apple;
+    const privateKey = database.serverEnv[apple.privateKeyEnv];
+    if (!privateKey || !apple.clientId || !apple.teamId || !apple.keyId) {
+        throw new Error("Incomplete Apple client credential");
+    }
+    const header = Buffer.from(JSON.stringify({ alg: "ES256", kid: apple.keyId, typ: "JWT" })).toString("base64url");
+    const claims = Buffer.from(JSON.stringify({
+        iss: apple.teamId,
+        iat: nowSeconds,
+        exp: nowSeconds + 300,
+        aud: "https://appleid.apple.com",
+        sub: apple.clientId,
+    })).toString("base64url");
+    const signature = sign("sha256", Buffer.from(`${header}.${claims}`), { key: privateKey, dsaEncoding: "ieee-p1363" }).toString("base64url");
+    return `${header}.${claims}.${signature}`;
 }
 async function completeGoogleOAuth(database, context) {
     const google = database.authConfig.google;
@@ -8192,6 +8327,108 @@ async function verifyGoogleIdentityToken(database, token, expectedNonce) {
         picture: normalizeSimulatedText(claims.picture),
     };
 }
+async function verifyAppleIdentityToken(database, token, expectedNonce) {
+    const parts = token.split(".");
+    if (parts.length !== 3) {
+        throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    }
+    let header;
+    let claims;
+    try {
+        header = JSON.parse(decodeJwtPart(parts[0]).toString("utf8"));
+        claims = JSON.parse(decodeJwtPart(parts[1]).toString("utf8"));
+    }
+    catch {
+        throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    }
+    if (header.alg !== "RS256" || typeof header.kid !== "string" || header.kid.length > 255) {
+        throw commandError("Apple identity token used an unsupported signature.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    }
+    const jwksUrl = process.env.SPORADES_APPLE_JWKS_URL ?? "https://appleid.apple.com/auth/keys";
+    let jwks;
+    try {
+        const response = await fetch(jwksUrl);
+        if (!response.ok)
+            throw new Error("jwks");
+        jwks = await response.json();
+    }
+    catch {
+        throw commandError("Apple signing keys could not be loaded.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
+    }
+    const jwk = Array.isArray(jwks?.keys)
+        ? jwks.keys.find((candidate) => candidate.kid === header.kid && candidate.kty === "RSA")
+        : null;
+    if (!jwk) {
+        throw commandError("Apple identity token signing key was not recognized.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
+    }
+    let signatureValid = false;
+    let signatureCheckFailed = false;
+    try {
+        signatureValid = verify("RSA-SHA256", Buffer.from(`${parts[0]}.${parts[1]}`), { key: jwk, format: "jwk" }, decodeJwtPart(parts[2]));
+    }
+    catch {
+        signatureCheckFailed = true;
+    }
+    const clientId = database.authConfig.providers.apple.clientId;
+    const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+    const validSubject = typeof claims.sub === "string" &&
+        claims.sub.length <= 255 &&
+        /^[\x21-\x7e]+$/.test(claims.sub);
+    const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED"
+        : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID"
+            : claims.iss !== "https://appleid.apple.com" ? "OAUTH_ID_TOKEN_ISSUER_INVALID"
+                : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID"
+                    : typeof claims.exp !== "number" || claims.exp <= Math.floor(Date.now() / 1000) ? "OAUTH_ID_TOKEN_EXPIRED"
+                        : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID"
+                            : !validSubject ? "OAUTH_ID_TOKEN_SUBJECT_INVALID"
+                                : null;
+    if (invalidCode) {
+        throw commandError("Apple identity token failed verification.", "Retry Apple sign-in.", invalidCode);
+    }
+    return {
+        subject: claims.sub,
+        email: normalizeSimulatedEmail(claims.email),
+        emailVerified: claims.email_verified === true || claims.email_verified === "true",
+        displayName: null,
+        picture: null,
+    };
+}
+function parseAppleAuthorizationUser(value) {
+    if (value === null || value === undefined || value === "")
+        return null;
+    if (typeof value !== "string" || Buffer.byteLength(value, "utf8") > 8 * 1024) {
+        throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+    }
+    let user;
+    try {
+        user = JSON.parse(value);
+    }
+    catch {
+        throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+    }
+    if (!user || typeof user !== "object" || Array.isArray(user) ||
+        (user.name !== undefined && (!user.name || typeof user.name !== "object" || Array.isArray(user.name)))) {
+        throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+    }
+    const firstName = sanitizeAppleNamePart(user.name?.firstName);
+    const lastName = sanitizeAppleNamePart(user.name?.lastName);
+    const displayName = [firstName, lastName].filter(Boolean).join(" ") || null;
+    return { displayName };
+}
+function sanitizeAppleNamePart(value) {
+    if (value === null || value === undefined || value === "")
+        return null;
+    if (typeof value !== "string") {
+        throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+    }
+    const text = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+    if (!text)
+        return null;
+    if (text.length > 128) {
+        throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
+    }
+    return text;
+}
 function decodeJwtPart(value) {
     if (!/^[A-Za-z0-9_-]+$/.test(value)) {
         throw new Error("Invalid JWT encoding");
@@ -8214,8 +8451,8 @@ async function linkProviderIdentity(database, session, provider, profile) {
         };
     }
     return await database.sqlite.withTransaction(async (tx) => {
-        const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? null;
         let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
+        const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
         if (!identity && email && provider === "google") {
             const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
             if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
@@ -8250,7 +8487,7 @@ async function linkProviderIdentity(database, session, provider, profile) {
                 },
             };
         }
-        const displayName = normalizeSimulatedText(profile.displayName) ?? email ?? `${providerName} user`;
+        const displayName = normalizeSimulatedText(profile.displayName) ?? identity?.displayName ?? email ?? `${providerName} user`;
         const auth = {
             userId: identity?.userId ?? session.auth.userId,
             displayName,
@@ -9861,7 +10098,7 @@ function authStatus(config, serverEnv) {
     const authConfig = config.auth ?? { mode: "anonymous" };
     const normalized = normalizeAuthConfig(authConfig);
     const providerOrder = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
-    const runtimeProviders = new Set(["anonymous", "email", "google", "facebook"]);
+    const runtimeProviders = new Set(["anonymous", "email", "google", "apple", "facebook"]);
     const providers = {};
     const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4000;
     for (const providerName of providerOrder) {
@@ -9988,13 +10225,13 @@ function readFacebookProviderConfig(config) {
 function emptyProviderConfig() {
     return { clientIdEnv: null, clientSecretEnv: null, clientId: null, teamId: null, keyId: null, privateKeyEnv: null, tenant: null, graphVersion: null };
 }
-function authProvidersForClient(authConfig) {
+function authProvidersForClient(authConfig, origin = null) {
     const providers = {};
     for (const [name, provider] of Object.entries(authConfig.providers)) {
         providers[name] = {
             enabled: provider.enabled,
             configured: provider.configured,
-            runtimeAvailable: provider.runtimeAvailable,
+            runtimeAvailable: provider.runtimeAvailable && (name !== "apple" || appleOAuthOriginEligible(origin)),
             ...(name === "facebook"
                 ? { graphVersion: provider.graphVersion === "__invalid__" ? null : provider.graphVersion }
                 : {}),

@@ -434,7 +434,7 @@ Supported provider behavior:
 | Email | `auth.providers.email` | `auth.signUp("email", ...)` links the current session; `auth.signIn("email", ...)` resolves the account later. |
 | Google | `auth.providers.google` with env var names, or legacy Google mode | `auth.signIn("google")` starts a server-owned OAuth redirect and links the verified provider identity. |
 | Microsoft | `auth.providers.microsoft` with client env names and tenant | Configuration is provider-neutral; runtime availability is reported separately from credential completeness. |
-| Apple | `auth.providers.apple` with Services ID, Team ID, Key ID, and private-key env name | Configuration stores non-secret identifiers while the private key remains in Server env. |
+| Apple | `auth.providers.apple` with Services ID, Team ID, Key ID, and private-key env name | HTTPS-domain-only server-owned `form_post` flow; runtime ES256 client credential and strictly verified Apple subject link the current Anonymous account. |
 | Facebook | `auth.providers.facebook` with app env names and Graph `v23.0` | `auth.signIn("facebook")` starts a server-owned authorization-code redirect, requires the stable Graph profile ID, and accepts profiles without email. |
 
 Provider secrets live in Server env. `sporades.json` stores provider shape,
@@ -445,7 +445,11 @@ implicitly disabling Anonymous sessions.
 Apple private keys support multiline PEM input and must round-trip exactly
 through Server env serialization. Apple callback guidance exposes the stable
 callback path but never suggests localhost or plain HTTP; operators register
-the path against a Hosted HTTPS origin or an HTTPS development tunnel.
+the path against a Hosted HTTPS origin or an HTTPS development tunnel. Apple
+availability is origin-aware: HTTP, localhost, and IP-address origins cannot
+start the flow. The first-authorization name is sanitized and persisted while
+later callbacks may omit it; private-relay email is profile data rather than
+the identity key.
 Provider configuration updates stage all file replacements before mutation and
 recover the exact prior config and Server env state when a commit fails.
 Duplicate lexical target aliases are rejected before filesystem inspection;

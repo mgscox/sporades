@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
-import { generateKeyPairSync, sign } from "node:crypto";
+import { generateKeyPairSync, sign, verify } from "node:crypto";
 import test from "node:test";
 
 import {
@@ -15,6 +15,9 @@ import {
 
 const beginOAuthSignIn = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "beginOAuthSignIn");
 const verifyGoogleIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "verifyGoogleIdentityToken");
+const verifyAppleIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "verifyAppleIdentityToken");
+const createAppleClientSecret = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createAppleClientSecret");
+const appleOAuthOriginEligible = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "appleOAuthOriginEligible");
 const linkProviderIdentity = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkProviderIdentity");
 
 async function withTempDatabase(fn) {
@@ -345,5 +348,269 @@ test("common provider linking reports non-Google identity conflicts neutrally", 
     assert.equal(conflict.error.code, "AUTH_IDENTITY_CONFLICT");
     assert.doesNotMatch(`${conflict.error.message} ${conflict.error.hint}`, /Google/i);
     assert.match(conflict.error.message, /contoso|provider/i);
+  });
+});
+
+test("Apple only starts on eligible HTTPS domain origins and sends the exact web authorization contract", async () => {
+  await withTempDatabase(async (database) => {
+    const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    database.authConfig.providers.apple = {
+      enabled: true,
+      configured: true,
+      runtimeAvailable: true,
+      clientId: "com.example.web",
+      teamId: "TEAM123456",
+      keyId: "KEY1234567",
+      privateKeyEnv: "APPLE_PRIVATE_KEY",
+    };
+    database.serverEnv.APPLE_PRIVATE_KEY = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+
+    for (const origin of [
+      "http://capsule.example.test",
+      "https://localhost:4000",
+      "https://127.0.0.1:4000",
+      "https://[::1]:4000",
+    ]) {
+      assert.equal(appleOAuthOriginEligible(origin), false);
+      const session = await resolveAnonymousSession(database, null);
+      const result = await beginOAuthSignIn(database, session, "apple", { origin, returnTo: `${origin}/after` });
+      assert.equal(result.ok, false);
+      assert.equal(result.error.code, "OAUTH_APPLE_HTTPS_ORIGIN_REQUIRED");
+      assert.match(result.error.hint, /HTTPS.*domain|tunnel|Hosted/i);
+      assert.equal(database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_auth_oauth_states").get().count, 0);
+    }
+
+    const origin = "https://capsule.example.test";
+    assert.equal(appleOAuthOriginEligible(origin), true);
+    const session = await resolveAnonymousSession(database, null);
+    const result = await beginOAuthSignIn(database, session, "apple", { origin, returnTo: `${origin}/after` });
+    assert.equal(result.ok, true);
+    const authorization = new URL(result.url);
+    assert.equal(authorization.origin, "https://appleid.apple.com");
+    assert.equal(authorization.pathname, "/auth/authorize");
+    assert.equal(authorization.searchParams.get("client_id"), "com.example.web");
+    assert.equal(authorization.searchParams.get("redirect_uri"), `${origin}/__sporades/auth/apple/callback`);
+    assert.equal(authorization.searchParams.get("response_type"), "code");
+    assert.equal(authorization.searchParams.get("response_mode"), "form_post");
+    assert.equal(authorization.searchParams.get("scope"), "name email");
+    assert.ok(authorization.searchParams.get("state"));
+    assert.ok(authorization.searchParams.get("nonce"));
+    assert.equal(authorization.searchParams.has("code_challenge"), false);
+
+    database.serverEnv.APPLE_PRIVATE_KEY = "not-a-private-key";
+    const invalidCredentialResponse = responseRecorder();
+    await routeSporadesAuth(database, formPostRequest("/__sporades/auth/apple/callback", {
+      state: authorization.searchParams.get("state"),
+      code: "cannot-exchange",
+    }), invalidCredentialResponse);
+    assert.equal(invalidCredentialResponse.statusCode, 500);
+    assert.match(invalidCredentialResponse.body, /OAUTH_CLIENT_CREDENTIAL_INVALID/);
+    assert.doesNotMatch(invalidCredentialResponse.body, /not-a-private-key|cannot-exchange/);
+    assert.equal(
+      database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(authorization.searchParams.get("state")),
+      undefined,
+    );
+
+    database.serverEnv.APPLE_PRIVATE_KEY = privateKey.export({ format: "pem", type: "pkcs8" }).toString();
+    const cancelledStart = await beginOAuthSignIn(database, await resolveAnonymousSession(database, null), "apple", {
+      origin,
+      returnTo: `${origin}/after`,
+    });
+    const cancelledState = new URL(cancelledStart.url).searchParams.get("state");
+    const cancelledResponse = responseRecorder();
+    await routeSporadesAuth(database, formPostRequest("/__sporades/auth/apple/callback", {
+      state: cancelledState,
+      error: "user_cancelled_authorize",
+      error_description: "private-provider-detail",
+    }), cancelledResponse);
+    assert.equal(cancelledResponse.statusCode, 500);
+    assert.match(cancelledResponse.body, /OAUTH_PROVIDER_CANCELLED/);
+    assert.doesNotMatch(cancelledResponse.body, /private-provider-detail/);
+    assert.equal(
+      database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(cancelledState),
+      undefined,
+    );
+  });
+});
+
+test("Apple client secret is a short-lived ES256 JWT and identity tokens are verified strictly", async () => {
+  await withTempDatabase(async (database) => {
+    const { publicKey: clientPublicKey, privateKey: clientPrivateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    database.authConfig.providers.apple = {
+      enabled: true,
+      configured: true,
+      runtimeAvailable: true,
+      clientId: "com.example.web",
+      teamId: "TEAM123456",
+      keyId: "KEY1234567",
+      privateKeyEnv: "APPLE_PRIVATE_KEY",
+    };
+    database.serverEnv.APPLE_PRIVATE_KEY = clientPrivateKey.export({ format: "pem", type: "pkcs8" }).toString();
+
+    const now = 2_000_000_000;
+    const clientSecret = createAppleClientSecret(database, now);
+    const [clientHeaderPart, clientClaimsPart, clientSignaturePart] = clientSecret.split(".");
+    const clientHeader = JSON.parse(Buffer.from(clientHeaderPart, "base64url").toString());
+    const clientClaims = JSON.parse(Buffer.from(clientClaimsPart, "base64url").toString());
+    assert.deepEqual(clientHeader, { alg: "ES256", kid: "KEY1234567", typ: "JWT" });
+    assert.equal(clientClaims.iss, "TEAM123456");
+    assert.equal(clientClaims.sub, "com.example.web");
+    assert.equal(clientClaims.aud, "https://appleid.apple.com");
+    assert.equal(clientClaims.iat, now);
+    assert.ok(clientClaims.exp > now);
+    assert.ok(clientClaims.exp - now <= 300);
+    assert.equal(
+      verify(
+        "sha256",
+        Buffer.from(`${clientHeaderPart}.${clientClaimsPart}`),
+        { key: clientPublicKey, dsaEncoding: "ieee-p1363" },
+        Buffer.from(clientSignaturePart, "base64url"),
+      ),
+      true,
+    );
+
+    const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const { privateKey: attackerKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const kid = "apple-signing-key";
+    const jwk = publicKey.export({ format: "jwk" });
+    Object.assign(jwk, { kid, alg: "RS256", use: "sig" });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({ keys: [jwk] }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+    const claims = {
+      iss: "https://appleid.apple.com",
+      aud: "com.example.web",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      nonce: "expected-nonce",
+      sub: "apple-stable-subject",
+      email: "relay@privaterelay.appleid.com",
+      email_verified: "true",
+    };
+    try {
+      assert.deepEqual(
+        await verifyAppleIdentityToken(database, signedJwt(privateKey, kid, claims), "expected-nonce"),
+        {
+          subject: "apple-stable-subject",
+          email: "relay@privaterelay.appleid.com",
+          emailVerified: true,
+          displayName: null,
+          picture: null,
+        },
+      );
+      for (const token of [
+        signedJwt(attackerKey, kid, claims),
+        signedJwt(privateKey, kid, { ...claims, iss: "https://attacker.example" }),
+        signedJwt(privateKey, kid, { ...claims, aud: "wrong-service" }),
+        signedJwt(privateKey, kid, { ...claims, exp: Math.floor(Date.now() / 1000) - 1 }),
+        signedJwt(privateKey, kid, { ...claims, nonce: "wrong" }),
+        signedJwt(privateKey, kid, { ...claims, sub: "" }),
+      ]) {
+        await assert.rejects(
+          verifyAppleIdentityToken(database, token, "expected-nonce"),
+          (error) => error.code?.startsWith("OAUTH_ID_TOKEN_"),
+        );
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("Apple form-post links the anonymous user, sanitizes first-login name, and later resolves by subject without name or email", async () => {
+  await withTempDatabase(async (database) => {
+    const { privateKey: clientPrivateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const { publicKey: applePublicKey, privateKey: applePrivateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const kid = "apple-key";
+    const jwk = applePublicKey.export({ format: "jwk" });
+    Object.assign(jwk, { kid, alg: "RS256", use: "sig" });
+    database.authConfig.providers.apple = {
+      enabled: true,
+      configured: true,
+      runtimeAvailable: true,
+      clientId: "com.example.web",
+      teamId: "TEAM123456",
+      keyId: "KEY1234567",
+      privateKeyEnv: "APPLE_PRIVATE_KEY",
+    };
+    database.serverEnv.APPLE_PRIVATE_KEY = clientPrivateKey.export({ format: "pem", type: "pkcs8" }).toString();
+    const originalFetch = globalThis.fetch;
+    let expectedNonce = "";
+    let includeEmail = true;
+    let tokenRequestBody = null;
+    globalThis.fetch = async (url, init) => {
+      if (String(url).includes("/auth/token")) {
+        tokenRequestBody = new URLSearchParams(init.body);
+        return new Response(JSON.stringify({
+          id_token: signedJwt(applePrivateKey, kid, {
+            iss: "https://appleid.apple.com",
+            aud: "com.example.web",
+            exp: Math.floor(Date.now() / 1000) + 300,
+            nonce: expectedNonce,
+            sub: "stable-apple-subject",
+            ...(includeEmail ? { email: "relay@privaterelay.appleid.com", email_verified: "true" } : {}),
+          }),
+        }), { status: 200, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ keys: [jwk] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    try {
+      const firstGuest = await resolveAnonymousSession(database, null);
+      const firstStart = await beginOAuthSignIn(database, firstGuest, "apple", {
+        origin: "https://capsule.example.test",
+        returnTo: "https://capsule.example.test/after",
+      });
+      const firstState = new URL(firstStart.url).searchParams.get("state");
+      expectedNonce = database.sqlite.prepare("SELECT nonce FROM sporades_auth_oauth_states WHERE state = ?").get(firstState).nonce;
+      const firstResponse = responseRecorder();
+      await routeSporadesAuth(database, formPostRequest("/__sporades/auth/apple/callback", {
+        state: firstState,
+        code: "first-code",
+        user: JSON.stringify({
+          email: "untrusted@example.test",
+          name: { firstName: "  Ada\u0000 ", lastName: " Lovelace  " },
+        }),
+      }), firstResponse);
+      assert.equal(firstResponse.statusCode, 302, firstResponse.body);
+      assert.equal(firstResponse.headers.location, "https://capsule.example.test/after");
+      assert.equal(tokenRequestBody.get("client_id"), "com.example.web");
+      assert.equal(tokenRequestBody.get("redirect_uri"), "https://capsule.example.test/__sporades/auth/apple/callback");
+      assert.equal(tokenRequestBody.get("grant_type"), "authorization_code");
+      assert.equal(tokenRequestBody.get("code"), "first-code");
+      assert.ok(tokenRequestBody.get("client_secret"));
+      assert.doesNotMatch(firstResponse.body, /client_secret|PRIVATE KEY|relay@/i);
+
+      const firstSession = database.sqlite.readAuthSessionWithUser(firstGuest.token);
+      assert.equal(firstSession.provider, "apple");
+      assert.equal(firstSession.userId, firstGuest.auth.userId);
+      assert.equal(firstSession.displayName, "Ada Lovelace");
+      assert.equal(firstSession.email, "relay@privaterelay.appleid.com");
+
+      includeEmail = false;
+      const returningGuest = await resolveAnonymousSession(database, null);
+      const returningStart = await beginOAuthSignIn(database, returningGuest, "apple", {
+        origin: "https://capsule.example.test",
+        returnTo: "https://capsule.example.test/account",
+      });
+      const returningState = new URL(returningStart.url).searchParams.get("state");
+      expectedNonce = database.sqlite.prepare("SELECT nonce FROM sporades_auth_oauth_states WHERE state = ?").get(returningState).nonce;
+      const returningResponse = responseRecorder();
+      await routeSporadesAuth(database, formPostRequest("/__sporades/auth/apple/callback", {
+        state: returningState,
+        code: "return-code",
+      }), returningResponse);
+      assert.equal(returningResponse.statusCode, 302, returningResponse.body);
+      const returningSession = database.sqlite.readAuthSessionWithUser(returningGuest.token);
+      assert.equal(returningSession.provider, "apple");
+      assert.equal(returningSession.userId, firstGuest.auth.userId);
+      assert.equal(returningSession.displayName, "Ada Lovelace");
+      assert.equal(returningSession.email, "relay@privaterelay.appleid.com");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

@@ -161,7 +161,7 @@ function validatePublicTreeFileSet(files) {
 }
 
 // src/server-runtime-source.ts
-import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual, verify } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 function logPayloadMaxBytes(config = {}) {
   const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);

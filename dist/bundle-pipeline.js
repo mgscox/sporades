@@ -8,7 +8,7 @@ import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateAc
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, clientFrameworkCapability, defaultClientToolchain, isClientToolchain, supportsClientCapability } from "./client-capabilities.js";
 const AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
 const SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
-const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "facebook"]);
+const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "apple", "facebook"]);
 export async function createBundle(projectDir, config, options = {}) {
     const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
     const toolchain = readClientToolchain(config.client?.toolchain ?? defaultClientToolchain(frameworkBundleConfig.framework), frameworkBundleConfig.framework);

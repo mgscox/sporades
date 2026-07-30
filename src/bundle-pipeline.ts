@@ -49,7 +49,7 @@ export type FrameworkBundleConfig = {
 
 const AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"] as const;
 const SUPPORTED_AUTH_PROVIDERS = new Set<string>(AUTH_PROVIDER_ORDER);
-const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "facebook"]);
+const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "apple", "facebook"]);
 
 export async function createBundle(
   projectDir: string,

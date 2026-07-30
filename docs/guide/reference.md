@@ -1130,6 +1130,67 @@ entry; it does not copy the key into `sporades.json` or command output. Register
 `/__sporades/auth/apple/callback` on an HTTPS origin. Do not register a
 localhost or plain-HTTP callback for Apple.
 
+### Configure Sign in with Apple
+
+In Apple Developer, create or select all of the following:
+
+- an App ID with Sign in with Apple enabled;
+- a Services ID used as the OAuth `client_id`;
+- a Website URL on the Capsule's public HTTPS domain;
+- the exact return URL
+  `https://<capsule-domain>/__sporades/auth/apple/callback`;
+- a Sign in with Apple private key, recording its Key ID and the developer
+  account's Team ID.
+
+The Website URL and return URL must use an HTTPS domain. Apple sign-in is hidden
+from generated sign-in controls on HTTP, localhost, and IP-address origins, and
+an attempted start fails before redirect with guidance to use an HTTPS
+development tunnel or Hosted Capsule.
+
+Configure the provider directly:
+
+```sh
+sporades auth set apple \
+  --client-id com.example.capsule.web \
+  --team-id ABCDE12345 \
+  --key-id 1A2B3C4D5E \
+  --private-key "$(cat AuthKey_1A2B3C4D5E.p8)"
+```
+
+For automation, prefer a provider credential JSON file:
+
+```json
+{
+  "servicesId": "com.example.capsule.web",
+  "teamId": "ABCDE12345",
+  "keyId": "1A2B3C4D5E",
+  "privateKey": "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----"
+}
+```
+
+```sh
+sporades auth set apple --client-json ./apple-sign-in.json
+```
+
+The private key is stored only in Server env (or Sealed Server env). At each
+code exchange Sporades signs a short-lived ES256 client-secret JWT in memory;
+the generated credential, private key, authorization code, and Apple tokens
+are not returned to the browser or written to normal logs.
+
+Apple returns the person's name only on the first authorization. Sporades
+accepts the bounded `form_post` payload, sanitizes the name, and saves it in the
+same Auth transaction as the verified Provider identity. Later sign-ins work
+without a name. Private-relay email may change or disappear; the verified Apple
+`sub` claim remains the account identity key.
+
+If Apple reports a redirect mismatch, compare the registered return URL
+character-for-character with the HTTPS callback generated from the public
+Capsule origin. If signing fails, confirm that the Team ID, Key ID, Services ID,
+and `.p8` private key belong together. If relay mail does not arrive, verify
+the domain and sender registration in Apple's private email relay settings.
+Cancellation and failed callbacks spend the local OAuth state, so restart
+sign-in rather than replaying the callback.
+
 Provider updates stage `sporades.json` and Server env replacements beside their
 targets, then commit them with atomic renames. If either commit fails, Sporades
 attempts every required restore and reports whether recovery completed without

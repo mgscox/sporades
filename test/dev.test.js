@@ -1008,6 +1008,65 @@ async function withFakeFacebookServer(fn) {
   }
 }
 
+async function withFakeAppleServer(fn) {
+  const requests = [];
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: "jwk" });
+  Object.assign(jwk, { kid: "fake-apple-key", alg: "RS256", use: "sig" });
+  let nonce = null;
+  const identityToken = () => {
+    const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid: jwk.kid })).toString("base64url");
+    const payload = Buffer.from(JSON.stringify({
+      iss: "https://appleid.apple.com",
+      aud: "com.example.web",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      nonce,
+      sub: "apple-subject-mira",
+      email: "mira@privaterelay.appleid.com",
+      email_verified: "true",
+    })).toString("base64url");
+    const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString("base64url");
+    return `${header}.${payload}.${signature}`;
+  };
+  const server = createServer(async (request, response) => {
+    const requestUrl = new URL(request.url, "http://127.0.0.1");
+    requests.push({ method: request.method, path: requestUrl.pathname });
+    if (request.method === "POST" && requestUrl.pathname === "/token") {
+      const body = await new Promise((resolve) => {
+        let raw = "";
+        request.on("data", (chunk) => { raw += chunk; });
+        request.on("end", () => resolve(new URLSearchParams(raw)));
+      });
+      requests.at(-1).body = Object.fromEntries(body.entries());
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ id_token: identityToken(), token_type: "Bearer" }));
+      return;
+    }
+    if (request.method === "GET" && requestUrl.pathname === "/jwks") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ keys: [jwk] }));
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const port = server.address().port;
+  try {
+    return await fn({
+      tokenUrl: `http://127.0.0.1:${port}/token`,
+      jwksUrl: `http://127.0.0.1:${port}/jwks`,
+      requests,
+      setNonce(value) { nonce = value; },
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
 test("sporades dev bundles and serves a scaffolded React todo capsule", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -8330,6 +8389,120 @@ test("Google auth sign-in uses forwarded https origin behind a proxy", async () 
       child.kill("SIGTERM");
       await new Promise((resolve) => child.once("exit", resolve));
     }
+  });
+});
+
+test("Apple HTTPS browser tracer completes form-post auth without client-side Apple SDK code", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "apple-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "apple-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
+    const credentialsPath = path.join(projectDir, "apple.json");
+    await writeFile(credentialsPath, JSON.stringify({
+      servicesId: "com.example.web",
+      teamId: "TEAM123456",
+      keyId: "KEY1234567",
+      privateKey: privateKey.export({ format: "pem", type: "pkcs8" }).toString(),
+    }));
+    const setResult = await runCli(["auth", "set", "apple", "--client-json", credentialsPath, "--json"], { cwd: projectDir });
+    assert.equal(setResult.code, 0, setResult.stderr);
+
+    await withFakeAppleServer(async (apple) => {
+      const child = startCli(["dev", "--json"], {
+        cwd: projectDir,
+        env: {
+          SPORADES_APPLE_TOKEN_URL: apple.tokenUrl,
+          SPORADES_APPLE_JWKS_URL: apple.jwksUrl,
+        },
+      });
+      let localSocket;
+      let httpsSocket;
+      try {
+        const started = await waitForJsonLine(child);
+        assert.equal(started.ok, true, JSON.stringify(started));
+        localSocket = await openSocket(started.data.url);
+        localSocket.send(JSON.stringify({ id: "local-auth", type: "auth.get" }));
+        const localAuth = await readSocketMessage(localSocket);
+        assert.equal(localAuth.data.providers.apple.configured, true);
+        assert.equal(localAuth.data.providers.apple.runtimeAvailable, false);
+
+        httpsSocket = await openSocketWithHeaders(started.data.url, {
+          "x-forwarded-host": "apple.example.test",
+          "x-forwarded-proto": "https",
+        });
+        httpsSocket.sendJson({ id: "auth", type: "auth.get" });
+        const anonymous = await httpsSocket.readJson();
+        assert.equal(anonymous.data.providers.apple.runtimeAvailable, true);
+        const userId = anonymous.data.auth.userId;
+        httpsSocket.sendJson({ id: "todos", type: "query.subscribe", query: "todos" });
+        assert.deepEqual((await httpsSocket.readJson()).data, []);
+        httpsSocket.sendJson({
+          id: "signin",
+          type: "auth.signIn",
+          provider: "apple",
+          returnTo: "https://apple.example.test/account",
+        });
+        const redirect = await httpsSocket.readJson();
+        assert.equal(redirect.type, "auth.redirect");
+        const authorization = new URL(redirect.data.url);
+        assert.equal(authorization.searchParams.get("redirect_uri"), "https://apple.example.test/__sporades/auth/apple/callback");
+        apple.setNonce(authorization.searchParams.get("nonce"));
+
+        const callback = await fetch(`${started.data.url}/__sporades/auth/apple/callback`, {
+          method: "POST",
+          redirect: "manual",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            state: authorization.searchParams.get("state"),
+            code: "apple-code",
+            user: JSON.stringify({ name: { firstName: "Mira", lastName: "Chen" } }),
+          }),
+        });
+        assert.equal(callback.status, 302, await callback.text());
+        assert.equal(callback.headers.get("location"), "https://apple.example.test/account");
+        assert.equal(apple.requests[0].body.redirect_uri, "https://apple.example.test/__sporades/auth/apple/callback");
+        assert.ok(apple.requests[0].body.client_secret);
+
+        httpsSocket.sendJson({ id: "linked", type: "auth.get" });
+        const linked = await httpsSocket.readJson();
+        assert.equal(linked.data.auth.userId, userId);
+        assert.equal(linked.data.auth.provider, "apple");
+        assert.equal(linked.data.auth.displayName, "Mira Chen");
+        assert.equal(linked.data.auth.email, "mira@privaterelay.appleid.com");
+
+        httpsSocket.sendJson({ id: "preference-write", type: "preferences.update", patch: { appleTheme: "orchard" } });
+        const preferenceWrite = await httpsSocket.readJson();
+        assert.deepEqual(preferenceWrite.data.preferences, { appleTheme: "orchard" });
+        httpsSocket.sendJson({ id: "preference-read", type: "preferences.get" });
+        const preferenceRead = await httpsSocket.readJson();
+        assert.deepEqual(preferenceRead.data.preferences, { appleTheme: "orchard" });
+
+        httpsSocket.sendJson({ id: "todo", type: "mutation.run", mutation: "addTodo", args: ["Verified Apple owner"] });
+        assert.equal((await httpsSocket.readJson()).error, null);
+        const todoRefresh = await httpsSocket.readJson();
+        assert.equal(todoRefresh.data[0].text, "Verified Apple owner");
+
+        httpsSocket.sendJson({ id: "signout", type: "auth.signOut" });
+        assert.equal((await httpsSocket.readJson()).type, "auth.signOut.result");
+        httpsSocket.sendJson({ id: "signed-out", type: "auth.get" });
+        assert.equal((await httpsSocket.readJson()).data.auth.provider, "anonymous");
+        const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
+        assert.doesNotMatch(clientBundle, /appleid\\.auth|appleid\\.apple\\.com|SignInWithApple|AppleID\\.auth/);
+      } finally {
+        localSocket?.close();
+        httpsSocket?.close();
+        child.kill("SIGTERM");
+        await new Promise((resolve) => child.once("exit", resolve));
+      }
+    });
   });
 });
 
