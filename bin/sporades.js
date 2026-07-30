@@ -2291,6 +2291,9 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   oauthProviderAdapter,
   createGoogleOAuthProviderAdapter,
   completeGoogleOAuth,
+  createFacebookOAuthProviderAdapter,
+  facebookOAuthCallbackError,
+  completeFacebookOAuth,
   verifyGoogleIdentityToken,
   decodeJwtPart,
   readOAuthCallbackParameters,
@@ -9366,6 +9369,10 @@ async function routeSporadesAuth(database, request, response) {
     }
     const providerError = parameters.get("error");
     if (providerError) {
+      const mappedError = adapter.callbackError?.(parameters);
+      if (mappedError) {
+        throw mappedError;
+      }
       throw commandError(
         "OAuth sign-in was cancelled or declined.",
         "Retry sign-in when you are ready.",
@@ -9385,7 +9392,16 @@ async function routeSporadesAuth(database, request, response) {
       parameters
     });
     const session = await resolveAnonymousSession(database, stateRow.sessionToken);
-    const result = await linkProviderIdentity(database, session, provider, profile);
+    let result;
+    try {
+      result = await linkProviderIdentity(database, session, provider, profile);
+    } catch {
+      throw commandError(
+        "OAuth account linking failed.",
+        "Retry sign-in. If the problem persists, check the database connection.",
+        "AUTH_TRANSACTION_FAILED"
+      );
+    }
     if (!result.ok) {
       throw commandError(result.error?.message, result.error?.hint ?? "Retry sign-in from the app.", result.error?.code);
     }
@@ -9490,6 +9506,9 @@ function oauthProviderAdapter(database, provider) {
   if (provider === "google") {
     return createGoogleOAuthProviderAdapter(database);
   }
+  if (provider === "facebook") {
+    return createFacebookOAuthProviderAdapter(database);
+  }
   return null;
 }
 function createGoogleOAuthProviderAdapter(database) {
@@ -9553,6 +9572,185 @@ async function completeGoogleOAuth(database, context) {
     throw commandError("Google OAuth response did not include a valid identity token.", "Check the Google OAuth client configuration and retry sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   return await verifyGoogleIdentityToken(database, token.id_token, context.nonce);
+}
+function createFacebookOAuthProviderAdapter(database) {
+  const facebook = database.authConfig.providers.facebook;
+  const graphVersion = facebook.graphVersion ?? "v23.0";
+  const configured = Boolean(
+    facebook.enabled && facebook.configured && facebook.runtimeAvailable && graphVersion === "v23.0"
+  );
+  return {
+    provider: "facebook",
+    responseMode: "query",
+    enabled: configured,
+    begin(context) {
+      const clientId = database.serverEnv[facebook.clientIdEnv];
+      const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: context.redirectUri,
+        response_type: "code",
+        scope: "public_profile,email",
+        state: context.state
+      });
+      const authorizationUrl = process.env.SPORADES_FACEBOOK_AUTH_URL ?? `https://www.facebook.com/${graphVersion}/dialog/oauth`;
+      return { url: `${authorizationUrl}?${params.toString()}` };
+    },
+    callbackError(parameters) {
+      return facebookOAuthCallbackError(parameters);
+    },
+    complete(context) {
+      return completeFacebookOAuth(database, context);
+    }
+  };
+}
+function facebookOAuthCallbackError(parameters) {
+  const reason = parameters.get("error_reason");
+  const code = parameters.get("error_code");
+  const description = parameters.get("error_description")?.toLowerCase() ?? "";
+  if (reason === "user_denied" || code === "200") {
+    return commandError(
+      "Facebook permissions were declined or are unavailable.",
+      "Allow the requested public profile and email permissions, then retry sign-in.",
+      "FACEBOOK_PERMISSION_DENIED"
+    );
+  }
+  if (code === "191") {
+    return commandError(
+      "Facebook rejected the OAuth redirect URI.",
+      "Register the exact Sporades callback URL in the Facebook app settings, then retry sign-in.",
+      "FACEBOOK_REDIRECT_MISMATCH"
+    );
+  }
+  if (description.includes("development mode") || description.includes("app is not set up") || description.includes("app not set up") || description.includes("app is not available")) {
+    return commandError(
+      "Facebook sign-in is unavailable for this account.",
+      "Check the Facebook app mode and tester access, then retry sign-in.",
+      "FACEBOOK_APP_RESTRICTED"
+    );
+  }
+  return null;
+}
+async function completeFacebookOAuth(database, context) {
+  const facebook = database.authConfig.providers.facebook;
+  const graphVersion = facebook.graphVersion ?? "v23.0";
+  if (graphVersion !== "v23.0") {
+    throw commandError(
+      "Facebook Graph API version is unsupported.",
+      "Configure Facebook Graph API version v23.0 and retry sign-in.",
+      "FACEBOOK_GRAPH_VERSION_UNSUPPORTED"
+    );
+  }
+  const clientId = database.serverEnv[facebook.clientIdEnv];
+  const clientSecret = database.serverEnv[facebook.clientSecretEnv];
+  const tokenUrl = process.env.SPORADES_FACEBOOK_TOKEN_URL ?? `https://graph.facebook.com/${graphVersion}/oauth/access_token`;
+  let tokenResponse;
+  try {
+    tokenResponse = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code: context.code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: context.redirectUri
+      })
+    });
+  } catch {
+    throw commandError(
+      "Facebook OAuth code exchange failed.",
+      "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
+      "FACEBOOK_EXCHANGE_FAILED"
+    );
+  }
+  if (!tokenResponse.ok) {
+    throw commandError(
+      "Facebook OAuth code exchange failed.",
+      "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
+      "FACEBOOK_EXCHANGE_FAILED"
+    );
+  }
+  let token;
+  try {
+    const body = await tokenResponse.text();
+    if (Buffer.byteLength(body, "utf8") > 64 * 1024) throw new Error("response too large");
+    token = JSON.parse(body);
+  } catch {
+    throw commandError(
+      "Facebook OAuth response was invalid.",
+      "Check the Facebook app configuration and retry sign-in.",
+      "FACEBOOK_EXCHANGE_FAILED"
+    );
+  }
+  if (typeof token?.access_token !== "string" || token.access_token.length < 1 || token.access_token.length > 16 * 1024) {
+    throw commandError(
+      "Facebook OAuth response did not include a valid access token.",
+      "Check the Facebook app configuration and retry sign-in.",
+      "FACEBOOK_EXCHANGE_FAILED"
+    );
+  }
+  const graphUrl = new URL(
+    process.env.SPORADES_FACEBOOK_GRAPH_URL ?? `https://graph.facebook.com/${graphVersion}/me`
+  );
+  graphUrl.searchParams.set("fields", "id,name,email,picture");
+  let graphResponse;
+  try {
+    graphResponse = await fetch(graphUrl, {
+      headers: { authorization: `Bearer ${token.access_token}` }
+    });
+  } catch {
+    throw commandError(
+      "Facebook profile could not be loaded.",
+      "Check Facebook Graph API access and retry sign-in.",
+      "FACEBOOK_GRAPH_FAILED"
+    );
+  }
+  if (!graphResponse.ok) {
+    throw commandError(
+      "Facebook profile could not be loaded.",
+      "Check Facebook Graph API access and retry sign-in.",
+      "FACEBOOK_GRAPH_FAILED"
+    );
+  }
+  let profile;
+  try {
+    const body = await graphResponse.text();
+    if (Buffer.byteLength(body, "utf8") > 64 * 1024) throw new Error("response too large");
+    profile = JSON.parse(body);
+  } catch {
+    throw commandError(
+      "Facebook profile response was invalid.",
+      "Check Facebook Graph API access and retry sign-in.",
+      "FACEBOOK_GRAPH_FAILED"
+    );
+  }
+  if (typeof profile?.id !== "string" || profile.id.length < 1 || profile.id.length > 255 || !/^[\x21-\x7e]+$/.test(profile.id)) {
+    throw commandError(
+      "Facebook profile is missing a stable identifier.",
+      "Retry Facebook sign-in. Sporades requires the Facebook profile id.",
+      "FACEBOOK_PROFILE_ID_MISSING"
+    );
+  }
+  const email = typeof profile.email === "string" && profile.email.length <= 320 ? profile.email.trim().toLowerCase() || null : null;
+  const displayName = typeof profile.name === "string" && profile.name.length <= 512 ? profile.name.trim() || null : null;
+  const pictureCandidate = profile.picture?.data?.url;
+  let picture = null;
+  if (typeof pictureCandidate === "string" && pictureCandidate.length <= 2048) {
+    try {
+      const pictureUrl = new URL(pictureCandidate);
+      if (pictureUrl.protocol === "https:" || pictureUrl.protocol === "http:") {
+        picture = pictureUrl.toString();
+      }
+    } catch {
+      picture = null;
+    }
+  }
+  return {
+    subject: profile.id,
+    email,
+    emailVerified: null,
+    displayName,
+    picture
+  };
 }
 async function verifyGoogleIdentityToken(database, token, expectedNonce) {
   const parts = token.split(".");
@@ -9622,7 +9820,7 @@ function decodeJwtPart(value) {
 async function linkProviderIdentity(database, session, provider, profile) {
   const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
   const safeProvider = typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider) ? provider : "provider";
-  const providerName = safeProvider === "google" ? "Google" : safeProvider;
+  const providerName = `${safeProvider[0].toUpperCase()}${safeProvider.slice(1)}`;
   if (!subject) {
     return {
       ok: false,
@@ -11221,16 +11419,17 @@ function authStatus(config, serverEnv) {
   const authConfig = config.auth ?? { mode: "anonymous" };
   const normalized = normalizeAuthConfig(authConfig);
   const providerOrder = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
-  const runtimeProviders = /* @__PURE__ */ new Set(["anonymous", "email", "google"]);
+  const runtimeProviders = /* @__PURE__ */ new Set(["anonymous", "email", "google", "facebook"]);
   const providers = {};
   const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4e3;
   for (const providerName of providerOrder) {
     const provider = normalized.providers[providerName];
-    const configured = providerName === "anonymous" || providerName === "email" ? true : providerName === "apple" ? Boolean(provider.clientId && provider.teamId && provider.keyId && provider.privateKeyEnv && serverEnv[provider.privateKeyEnv]) : Boolean(provider.clientIdEnv && provider.clientSecretEnv && serverEnv[provider.clientIdEnv] && serverEnv[provider.clientSecretEnv]);
+    const credentialsConfigured = providerName === "anonymous" || providerName === "email" ? true : providerName === "apple" ? Boolean(provider.clientId && provider.teamId && provider.keyId && provider.privateKeyEnv && serverEnv[provider.privateKeyEnv]) : Boolean(provider.clientIdEnv && provider.clientSecretEnv && serverEnv[provider.clientIdEnv] && serverEnv[provider.clientSecretEnv]);
+    const configured = providerName === "facebook" ? credentialsConfigured && (provider.graphVersion === null || provider.graphVersion === "v23.0") : credentialsConfigured;
     const state = {
       enabled: provider.enabled,
       configured,
-      runtimeAvailable: runtimeProviders.has(providerName)
+      runtimeAvailable: providerName === "facebook" ? Boolean(provider.enabled && configured) : runtimeProviders.has(providerName)
     };
     if (["google", "microsoft", "facebook"].includes(providerName)) {
       state.clientIdEnv = provider.clientIdEnv;
@@ -12400,7 +12599,7 @@ function publicTreeError(message, hint, diagnostics) {
 // src/bundle-pipeline.ts
 var AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
 var SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
-var RUNTIME_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "email", "google"]);
+var RUNTIME_AUTH_PROVIDERS = /* @__PURE__ */ new Set(["anonymous", "email", "google", "facebook"]);
 async function createBundle(projectDir, config, options = {}) {
   const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
   const toolchain = readClientToolchain(config.client?.toolchain ?? defaultClientToolchain(frameworkBundleConfig.framework), frameworkBundleConfig.framework);
@@ -12771,7 +12970,7 @@ function authStatus2(config, serverEnv) {
     const result = {
       enabled: provider.enabled,
       configured,
-      runtimeAvailable: RUNTIME_AUTH_PROVIDERS.has(providerName)
+      runtimeAvailable: providerName === "facebook" ? Boolean(provider.enabled && configured) : RUNTIME_AUTH_PROVIDERS.has(providerName)
     };
     if (providerName === "google" || providerName === "microsoft" || providerName === "facebook") {
       result.clientIdEnv = provider.clientIdEnv;
@@ -12897,7 +13096,11 @@ function providerConfigured(provider, config, serverEnv) {
   if (provider === "apple") {
     return Boolean(config.clientId && config.teamId && config.keyId && config.privateKeyEnv && serverEnv[config.privateKeyEnv]);
   }
-  return Boolean(config.clientIdEnv && config.clientSecretEnv && serverEnv[config.clientIdEnv] && serverEnv[config.clientSecretEnv]);
+  const credentialsConfigured = Boolean(config.clientIdEnv && config.clientSecretEnv && serverEnv[config.clientIdEnv] && serverEnv[config.clientSecretEnv]);
+  if (provider === "facebook") {
+    return credentialsConfigured && (config.graphVersion === null || config.graphVersion === "v23.0");
+  }
+  return credentialsConfigured;
 }
 function providerLabel(provider) {
   return `${provider[0].toUpperCase()}${provider.slice(1)}`;
@@ -19439,6 +19642,13 @@ function parseAuthArgs(args) {
           );
         }
       }
+      if (provider === "facebook" && graphVersion !== null && graphVersion !== "v23.0") {
+        throw commandError4(
+          "Unsupported Facebook Graph API version.",
+          "Use `--graph-version v23.0`.",
+          { graphVersion }
+        );
+      }
       return { subcommand, provider, clientId, clientSecret, tenant, teamId, keyId, privateKey, graphVersion, disable, json, projectDir: process.cwd() };
     default:
       break;
@@ -21169,8 +21379,8 @@ async function manageAuth(options) {
   if (options.provider === "microsoft" && !options.disable) {
     providerConfig.tenant = options.tenant ?? previous.tenant ?? "common";
   }
-  if (options.provider === "facebook" && !options.disable && options.graphVersion) {
-    providerConfig.graphVersion = options.graphVersion;
+  if (options.provider === "facebook" && !options.disable) {
+    providerConfig.graphVersion = options.graphVersion ?? previous.graphVersion ?? "v23.0";
   }
   if (options.provider === "apple" && !options.disable) {
     providerConfig.clientId = options.clientId;

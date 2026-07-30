@@ -435,7 +435,7 @@ Supported provider behavior:
 | Google | `auth.providers.google` with env var names, or legacy Google mode | `auth.signIn("google")` starts a server-owned OAuth redirect and links the verified provider identity. |
 | Microsoft | `auth.providers.microsoft` with client env names and tenant | Configuration is provider-neutral; runtime availability is reported separately from credential completeness. |
 | Apple | `auth.providers.apple` with Services ID, Team ID, Key ID, and private-key env name | Configuration stores non-secret identifiers while the private key remains in Server env. |
-| Facebook | `auth.providers.facebook` with app env names and optional Graph version | Configuration is provider-neutral; runtime availability is reported separately from credential completeness. |
+| Facebook | `auth.providers.facebook` with app env names and Graph `v23.0` | `auth.signIn("facebook")` starts a server-owned authorization-code redirect, requires the stable Graph profile ID, and accepts profiles without email. |
 
 Provider secrets live in Server env. `sporades.json` stores provider shape,
 non-secret options, and env var names, not secret values. Configuring or
@@ -459,6 +459,9 @@ and sign-in rotate the current session token when the linked identity changes.
 Google sign-in refreshes the current session token during the server-owned OAuth
 callback, preserving the redirect flow without exposing a token handoff in the
 browser.
+Facebook sign-in follows the same Session-linking contract. Its App Secret and
+access token remain server-only; the runtime persists only the stable Facebook
+ID and optional selected email, name, and picture profile fields.
 
 `sporades auth as <provider> ... --json` is a dev-session helper for tests and
 agents. It creates or resolves simulated local identities and can push the

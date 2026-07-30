@@ -533,6 +533,9 @@ function parseAuthArgs(args) {
                         : `Run \`sporades auth set ${provider} --client-id <id> --client-secret <secret>\` or use \`--client-json <path>\`.`);
                 }
             }
+            if (provider === "facebook" && graphVersion !== null && graphVersion !== "v23.0") {
+                throw commandError("Unsupported Facebook Graph API version.", "Use `--graph-version v23.0`.", { graphVersion });
+            }
             return { subcommand, provider, clientId, clientSecret, tenant, teamId, keyId, privateKey, graphVersion, disable, json, projectDir: process.cwd() };
         default:
             break;
@@ -2212,8 +2215,8 @@ async function manageAuth(options) {
     if (options.provider === "microsoft" && !options.disable) {
         providerConfig.tenant = options.tenant ?? previous.tenant ?? "common";
     }
-    if (options.provider === "facebook" && !options.disable && options.graphVersion) {
-        providerConfig.graphVersion = options.graphVersion;
+    if (options.provider === "facebook" && !options.disable) {
+        providerConfig.graphVersion = options.graphVersion ?? previous.graphVersion ?? "v23.0";
     }
     if (options.provider === "apple" && !options.disable) {
         providerConfig.clientId = options.clientId;

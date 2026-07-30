@@ -8,7 +8,7 @@ import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateAc
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, clientFrameworkCapability, defaultClientToolchain, isClientToolchain, supportsClientCapability } from "./client-capabilities.js";
 const AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
 const SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
-const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google"]);
+const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "facebook"]);
 export async function createBundle(projectDir, config, options = {}) {
     const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
     const toolchain = readClientToolchain(config.client?.toolchain ?? defaultClientToolchain(frameworkBundleConfig.framework), frameworkBundleConfig.framework);
@@ -404,7 +404,9 @@ export function authStatus(config, serverEnv) {
         const result = {
             enabled: provider.enabled,
             configured,
-            runtimeAvailable: RUNTIME_AUTH_PROVIDERS.has(providerName),
+            runtimeAvailable: providerName === "facebook"
+                ? Boolean(provider.enabled && configured)
+                : RUNTIME_AUTH_PROVIDERS.has(providerName),
         };
         if (providerName === "google" || providerName === "microsoft" || providerName === "facebook") {
             result.clientIdEnv = provider.clientIdEnv;
@@ -533,7 +535,11 @@ function providerConfigured(provider, config, serverEnv) {
     if (provider === "apple") {
         return Boolean(config.clientId && config.teamId && config.keyId && config.privateKeyEnv && serverEnv[config.privateKeyEnv]);
     }
-    return Boolean(config.clientIdEnv && config.clientSecretEnv && serverEnv[config.clientIdEnv] && serverEnv[config.clientSecretEnv]);
+    const credentialsConfigured = Boolean(config.clientIdEnv && config.clientSecretEnv && serverEnv[config.clientIdEnv] && serverEnv[config.clientSecretEnv]);
+    if (provider === "facebook") {
+        return credentialsConfigured && (config.graphVersion === null || config.graphVersion === "v23.0");
+    }
+    return credentialsConfigured;
 }
 function providerLabel(provider) {
     return `${provider[0].toUpperCase()}${provider.slice(1)}`;

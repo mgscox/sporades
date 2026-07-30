@@ -420,6 +420,9 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   oauthProviderAdapter,
   createGoogleOAuthProviderAdapter,
   completeGoogleOAuth,
+  createFacebookOAuthProviderAdapter,
+  facebookOAuthCallbackError,
+  completeFacebookOAuth,
   verifyGoogleIdentityToken,
   decodeJwtPart,
   readOAuthCallbackParameters,
@@ -8451,6 +8454,10 @@ export async function routeSporadesAuth(database: LooseRecord, request: Incoming
     }
     const providerError = parameters.get("error");
     if (providerError) {
+      const mappedError = adapter.callbackError?.(parameters);
+      if (mappedError) {
+        throw mappedError;
+      }
       throw commandError(
         "OAuth sign-in was cancelled or declined.",
         "Retry sign-in when you are ready.",
@@ -8470,7 +8477,16 @@ export async function routeSporadesAuth(database: LooseRecord, request: Incoming
       parameters,
     });
     const session = await resolveAnonymousSession(database, stateRow.sessionToken);
-    const result = await linkProviderIdentity(database, session, provider, profile);
+    let result;
+    try {
+      result = await linkProviderIdentity(database, session, provider, profile);
+    } catch {
+      throw commandError(
+        "OAuth account linking failed.",
+        "Retry sign-in. If the problem persists, check the database connection.",
+        "AUTH_TRANSACTION_FAILED",
+      );
+    }
     if (!result.ok) {
       throw commandError(result.error?.message, result.error?.hint ?? "Retry sign-in from the app.", result.error?.code);
     }
@@ -8581,6 +8597,9 @@ function oauthProviderAdapter(database: LooseRecord, provider: string) {
   if (provider === "google") {
     return createGoogleOAuthProviderAdapter(database);
   }
+  if (provider === "facebook") {
+    return createFacebookOAuthProviderAdapter(database);
+  }
   return null;
 }
 
@@ -8646,6 +8665,203 @@ async function completeGoogleOAuth(database: LooseRecord, context: LooseRecord) 
     throw commandError("Google OAuth response did not include a valid identity token.", "Check the Google OAuth client configuration and retry sign-in.", "OAUTH_ID_TOKEN_INVALID");
   }
   return await verifyGoogleIdentityToken(database, token.id_token, context.nonce);
+}
+
+function createFacebookOAuthProviderAdapter(database: LooseRecord) {
+  const facebook = database.authConfig.providers.facebook;
+  const graphVersion = facebook.graphVersion ?? "v23.0";
+  const configured = Boolean(
+    facebook.enabled &&
+    facebook.configured &&
+    facebook.runtimeAvailable &&
+    graphVersion === "v23.0",
+  );
+  return {
+    provider: "facebook",
+    responseMode: "query",
+    enabled: configured,
+    begin(context: LooseRecord) {
+      const clientId = database.serverEnv[facebook.clientIdEnv];
+      const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: context.redirectUri,
+        response_type: "code",
+        scope: "public_profile,email",
+        state: context.state,
+      });
+      const authorizationUrl = process.env.SPORADES_FACEBOOK_AUTH_URL ??
+        `https://www.facebook.com/${graphVersion}/dialog/oauth`;
+      return { url: `${authorizationUrl}?${params.toString()}` };
+    },
+    callbackError(parameters: URLSearchParams) {
+      return facebookOAuthCallbackError(parameters);
+    },
+    complete(context: LooseRecord) {
+      return completeFacebookOAuth(database, context);
+    },
+  };
+}
+
+function facebookOAuthCallbackError(parameters: URLSearchParams) {
+  const reason = parameters.get("error_reason");
+  const code = parameters.get("error_code");
+  const description = parameters.get("error_description")?.toLowerCase() ?? "";
+  if (reason === "user_denied" || code === "200") {
+    return commandError(
+      "Facebook permissions were declined or are unavailable.",
+      "Allow the requested public profile and email permissions, then retry sign-in.",
+      "FACEBOOK_PERMISSION_DENIED",
+    );
+  }
+  if (code === "191") {
+    return commandError(
+      "Facebook rejected the OAuth redirect URI.",
+      "Register the exact Sporades callback URL in the Facebook app settings, then retry sign-in.",
+      "FACEBOOK_REDIRECT_MISMATCH",
+    );
+  }
+  if (
+    description.includes("development mode") ||
+    description.includes("app is not set up") ||
+    description.includes("app not set up") ||
+    description.includes("app is not available")
+  ) {
+    return commandError(
+      "Facebook sign-in is unavailable for this account.",
+      "Check the Facebook app mode and tester access, then retry sign-in.",
+      "FACEBOOK_APP_RESTRICTED",
+    );
+  }
+  return null;
+}
+
+async function completeFacebookOAuth(database: LooseRecord, context: LooseRecord) {
+  const facebook = database.authConfig.providers.facebook;
+  const graphVersion = facebook.graphVersion ?? "v23.0";
+  if (graphVersion !== "v23.0") {
+    throw commandError(
+      "Facebook Graph API version is unsupported.",
+      "Configure Facebook Graph API version v23.0 and retry sign-in.",
+      "FACEBOOK_GRAPH_VERSION_UNSUPPORTED",
+    );
+  }
+  const clientId = database.serverEnv[facebook.clientIdEnv];
+  const clientSecret = database.serverEnv[facebook.clientSecretEnv];
+  const tokenUrl = process.env.SPORADES_FACEBOOK_TOKEN_URL ??
+    `https://graph.facebook.com/${graphVersion}/oauth/access_token`;
+  let tokenResponse;
+  try {
+    tokenResponse = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code: context.code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: context.redirectUri,
+      }),
+    });
+  } catch {
+    throw commandError(
+      "Facebook OAuth code exchange failed.",
+      "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
+      "FACEBOOK_EXCHANGE_FAILED",
+    );
+  }
+  if (!tokenResponse.ok) {
+    throw commandError(
+      "Facebook OAuth code exchange failed.",
+      "Check the Facebook app credentials and exact callback URL, then retry sign-in.",
+      "FACEBOOK_EXCHANGE_FAILED",
+    );
+  }
+  let token;
+  try {
+    const body = await tokenResponse.text();
+    if (Buffer.byteLength(body, "utf8") > 64 * 1024) throw new Error("response too large");
+    token = JSON.parse(body);
+  } catch {
+    throw commandError(
+      "Facebook OAuth response was invalid.",
+      "Check the Facebook app configuration and retry sign-in.",
+      "FACEBOOK_EXCHANGE_FAILED",
+    );
+  }
+  if (typeof token?.access_token !== "string" || token.access_token.length < 1 || token.access_token.length > 16 * 1024) {
+    throw commandError(
+      "Facebook OAuth response did not include a valid access token.",
+      "Check the Facebook app configuration and retry sign-in.",
+      "FACEBOOK_EXCHANGE_FAILED",
+    );
+  }
+
+  const graphUrl = new URL(
+    process.env.SPORADES_FACEBOOK_GRAPH_URL ?? `https://graph.facebook.com/${graphVersion}/me`,
+  );
+  graphUrl.searchParams.set("fields", "id,name,email,picture");
+  let graphResponse;
+  try {
+    graphResponse = await fetch(graphUrl, {
+      headers: { authorization: `Bearer ${token.access_token}` },
+    });
+  } catch {
+    throw commandError(
+      "Facebook profile could not be loaded.",
+      "Check Facebook Graph API access and retry sign-in.",
+      "FACEBOOK_GRAPH_FAILED",
+    );
+  }
+  if (!graphResponse.ok) {
+    throw commandError(
+      "Facebook profile could not be loaded.",
+      "Check Facebook Graph API access and retry sign-in.",
+      "FACEBOOK_GRAPH_FAILED",
+    );
+  }
+  let profile;
+  try {
+    const body = await graphResponse.text();
+    if (Buffer.byteLength(body, "utf8") > 64 * 1024) throw new Error("response too large");
+    profile = JSON.parse(body);
+  } catch {
+    throw commandError(
+      "Facebook profile response was invalid.",
+      "Check Facebook Graph API access and retry sign-in.",
+      "FACEBOOK_GRAPH_FAILED",
+    );
+  }
+  if (typeof profile?.id !== "string" || profile.id.length < 1 || profile.id.length > 255 || !/^[\x21-\x7e]+$/.test(profile.id)) {
+    throw commandError(
+      "Facebook profile is missing a stable identifier.",
+      "Retry Facebook sign-in. Sporades requires the Facebook profile id.",
+      "FACEBOOK_PROFILE_ID_MISSING",
+    );
+  }
+  const email = typeof profile.email === "string" && profile.email.length <= 320
+    ? profile.email.trim().toLowerCase() || null
+    : null;
+  const displayName = typeof profile.name === "string" && profile.name.length <= 512
+    ? profile.name.trim() || null
+    : null;
+  const pictureCandidate = profile.picture?.data?.url;
+  let picture = null;
+  if (typeof pictureCandidate === "string" && pictureCandidate.length <= 2048) {
+    try {
+      const pictureUrl = new URL(pictureCandidate);
+      if (pictureUrl.protocol === "https:" || pictureUrl.protocol === "http:") {
+        picture = pictureUrl.toString();
+      }
+    } catch {
+      picture = null;
+    }
+  }
+  return {
+    subject: profile.id,
+    email,
+    emailVerified: null,
+    displayName,
+    picture,
+  };
 }
 
 async function verifyGoogleIdentityToken(database: LooseRecord, token: string, expectedNonce: string) {
@@ -8729,7 +8945,7 @@ async function linkProviderIdentity(database: LooseRecord, session: LooseRecord,
   const safeProvider = typeof provider === "string" && /^[a-z0-9][a-z0-9-]{0,63}$/.test(provider)
     ? provider
     : "provider";
-  const providerName = safeProvider === "google" ? "Google" : safeProvider;
+  const providerName = `${safeProvider[0].toUpperCase()}${safeProvider.slice(1)}`;
   if (!subject) {
     return {
       ok: false,
@@ -10394,20 +10610,25 @@ function authStatus(config: LooseRecord, serverEnv: LooseRecord) {
   const authConfig = config.auth ?? { mode: "anonymous" };
   const normalized = normalizeAuthConfig(authConfig);
   const providerOrder = ["anonymous", "email", "google", "microsoft", "apple", "facebook"] as const;
-  const runtimeProviders = new Set(["anonymous", "email", "google"]);
+  const runtimeProviders = new Set(["anonymous", "email", "google", "facebook"]);
   const providers: LooseRecord = {};
   const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4000;
   for (const providerName of providerOrder) {
     const provider = normalized.providers[providerName];
-    const configured = providerName === "anonymous" || providerName === "email"
+    const credentialsConfigured = providerName === "anonymous" || providerName === "email"
       ? true
       : providerName === "apple"
         ? Boolean(provider.clientId && provider.teamId && provider.keyId && provider.privateKeyEnv && serverEnv[provider.privateKeyEnv])
         : Boolean(provider.clientIdEnv && provider.clientSecretEnv && serverEnv[provider.clientIdEnv] && serverEnv[provider.clientSecretEnv]);
+    const configured = providerName === "facebook"
+      ? credentialsConfigured && (provider.graphVersion === null || provider.graphVersion === "v23.0")
+      : credentialsConfigured;
     const state: LooseRecord = {
       enabled: provider.enabled,
       configured,
-      runtimeAvailable: runtimeProviders.has(providerName),
+      runtimeAvailable: providerName === "facebook"
+        ? Boolean(provider.enabled && configured)
+        : runtimeProviders.has(providerName),
     };
     if (["google", "microsoft", "facebook"].includes(providerName)) {
       state.clientIdEnv = provider.clientIdEnv;

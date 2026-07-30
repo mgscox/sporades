@@ -1110,7 +1110,7 @@ map. It does not replace configured siblings or turn off Anonymous sessions.
 ```sh
 sporades auth set microsoft --client-id <id> --client-secret <secret> --tenant organizations
 sporades auth set apple --client-id <services-id> --team-id <team-id> --key-id <key-id> --private-key <pem>
-sporades auth set facebook --client-id <app-id> --client-secret <app-secret>
+sporades auth set facebook --client-id <app-id> --client-secret <app-secret> --graph-version v23.0
 sporades auth set email
 sporades auth set microsoft --disable
 ```
@@ -1185,6 +1185,57 @@ Sporades writes Google auth values to `.env.sporades.server` and stores the envi
 Restart any running Dev session after changing auth configuration.
 
 > Run `sporades env import` after setting auth values if you want them in Sealed Server env.
+
+### Configure Facebook Login
+
+Create a Meta app with Facebook Login for the Capsule. Sporades supports Meta
+Graph API `v23.0`; configure it explicitly or allow the CLI to write that
+default:
+
+```sh
+sporades auth set facebook \
+  --client-id <app-id> \
+  --client-secret <app-secret> \
+  --graph-version v23.0
+```
+
+The App ID is stored through `FACEBOOK_CLIENT_ID` and the App Secret through
+`FACEBOOK_CLIENT_SECRET` in Server env. `sporades.json`, `auth status`, client
+messages, inspection output, and normal logs never contain the secret or a
+Facebook access token.
+
+In Facebook Login settings, register the exact Valid OAuth Redirect URI:
+
+```text
+http://localhost:4000/__sporades/auth/facebook/callback
+```
+
+Replace the origin and port with the value reported for the Capsule, including
+the Hosted HTTPS origin in production. Do not add or remove a trailing slash.
+The browser performs a top-level redirect; Capsule client code uses
+`auth.signIn("facebook")` and does not import the Facebook JavaScript SDK.
+
+Sporades requests `public_profile,email` and reads only `id,name,email,picture`
+from Graph `/v23.0/me`. The stable Facebook `id` is required. Email, name, and
+picture are optional, so declining email does not block sign-in.
+
+While the Meta app is in Development mode, sign-in is limited to app
+administrators, developers, and testers. Add test accounts or roles before
+testing; switch the app to Live only after its required setup and review are
+complete. Restart Sporades Dev after changing credentials or Graph version.
+
+If Facebook sign-in fails:
+
+- `FACEBOOK_APP_RESTRICTED`: check Development/Live mode and the account's app
+  role or tester access.
+- `FACEBOOK_PERMISSION_DENIED`: retry and grant the requested permissions.
+  Email may still be declined without preventing login.
+- `FACEBOOK_REDIRECT_MISMATCH`: copy the exact callback URL from
+  `sporades auth status --json` into Valid OAuth Redirect URIs.
+- `FACEBOOK_EXCHANGE_FAILED`: check the App ID, App Secret, app mode, and
+  callback URI.
+- `FACEBOOK_GRAPH_FAILED` or `FACEBOOK_PROFILE_ID_MISSING`: check Graph API
+  access and that the supported `v23.0` `/me` response includes a stable `id`.
 
 
 #### Using OAuth sign-in in the client

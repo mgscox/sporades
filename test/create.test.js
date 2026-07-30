@@ -1544,6 +1544,8 @@ test("sporades auth set parses provider-specific credential files and reports al
     assert.equal(status.providers.microsoft.runtimeAvailable, false);
     assert.equal(status.providers.apple.configured, true);
     assert.equal(status.providers.facebook.configured, true);
+    assert.equal(status.providers.facebook.runtimeAvailable, true);
+    assert.equal(status.providers.facebook.graphVersion, "v23.0");
     assert.equal(status.providers.apple.callbackPath, "/__sporades/auth/apple/callback");
     assert.equal(status.providers.apple.callbackUrl, null);
     assert.match(status.providers.apple.callbackGuidance, /HTTPS/i);
@@ -1555,6 +1557,43 @@ test("sporades auth set parses provider-specific credential files and reports al
       parseServerEnv({ exists: true, raw: envRaw }).APPLE_PRIVATE_KEY,
       applePrivateKey,
     );
+  });
+});
+
+test("sporades auth set facebook defaults to and validates the supported Graph version", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "facebook-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "facebook-island");
+
+    const configured = await runCli(
+      ["auth", "set", "facebook", "--client-id", "facebook-id", "--client-secret", "facebook-secret", "--json"],
+      { cwd: projectDir },
+    );
+    assert.equal(configured.code, 0, configured.stdout || configured.stderr);
+    const status = JSON.parse(configured.stdout).data.providers.facebook;
+    assert.equal(status.graphVersion, "v23.0");
+    assert.equal(status.configured, true);
+    assert.equal(status.runtimeAvailable, true);
+    assert.doesNotMatch(configured.stdout, /facebook-id|facebook-secret/);
+
+    const unsupported = await runCli(
+      ["auth", "set", "facebook", "--client-id", "new-id", "--client-secret", "new-secret", "--graph-version", "v99.0", "--json"],
+      { cwd: projectDir },
+    );
+    assert.equal(unsupported.code, 1);
+    assert.deepEqual(JSON.parse(unsupported.stdout), {
+      ok: false,
+      data: null,
+      error: {
+        message: "Unsupported Facebook Graph API version.",
+        hint: "Use `--graph-version v23.0`.",
+        diagnostics: { graphVersion: "v99.0" },
+      },
+    });
+    assert.doesNotMatch(`${unsupported.stdout}${unsupported.stderr}`, /new-secret/);
   });
 });
 

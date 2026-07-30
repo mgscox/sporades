@@ -968,6 +968,46 @@ async function withFakeGoogleServer(fn) {
   }
 }
 
+async function withFakeFacebookServer(fn) {
+  const requests = [];
+  const server = createServer(async (request, response) => {
+    const requestUrl = new URL(request.url, "http://127.0.0.1");
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    requests.push({
+      method: request.method,
+      path: requestUrl.pathname,
+      query: Object.fromEntries(requestUrl.searchParams),
+      body: Object.fromEntries(new URLSearchParams(body)),
+      authorization: request.headers.authorization ?? null,
+    });
+    response.writeHead(200, { "content-type": "application/json" });
+    if (requestUrl.pathname === "/token") {
+      response.end(JSON.stringify({ access_token: "facebook-provider-access-token", token_type: "bearer" }));
+      return;
+    }
+    response.end(JSON.stringify({
+      id: "facebook-subject-mira",
+      name: "Mira Without Email",
+      picture: { data: { url: "https://example.com/mira-facebook.png" } },
+    }));
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const port = server.address().port;
+  try {
+    return await fn({
+      tokenUrl: `http://127.0.0.1:${port}/token`,
+      graphUrl: `http://127.0.0.1:${port}/v23.0/me`,
+      requests,
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
 test("sporades dev bundles and serves a scaffolded React todo capsule", async () => {
   await withTempDir(async (dir) => {
     const createResult = await runCli(["create", "todo-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
@@ -8108,6 +8148,129 @@ test("Google auth callback exchanges the code server-side and links the current 
 
         socket.send(JSON.stringify({ id: "query-3", type: "query.subscribe", query: "todos" }));
         assert.deepEqual((await readSocketMessage(socket)).data, []);
+      } finally {
+        socket?.close();
+        child.kill("SIGTERM");
+        await new Promise((resolve) => child.once("exit", resolve));
+      }
+    });
+  });
+});
+
+test("Facebook auth callback uses the versioned server-owned Graph flow and accepts a profile without email", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "facebook-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "facebook-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    const setResult = await runCli(
+      ["auth", "set", "facebook", "--client-id", "facebook-app-id", "--client-secret", "facebook-app-secret", "--graph-version", "v23.0", "--json"],
+      { cwd: projectDir },
+    );
+    assert.equal(setResult.code, 0, setResult.stdout || setResult.stderr);
+
+    await withFakeFacebookServer(async (facebook) => {
+      const child = startCli(["dev", "--json"], {
+        cwd: projectDir,
+        env: {
+          SPORADES_FACEBOOK_TOKEN_URL: facebook.tokenUrl,
+          SPORADES_FACEBOOK_GRAPH_URL: facebook.graphUrl,
+        },
+      });
+      let socket;
+      try {
+        const started = await waitForJsonLine(child);
+        assert.equal(started.ok, true, JSON.stringify(started));
+        socket = await openSocket(started.data.url);
+        socket.send(JSON.stringify({ id: "auth-1", type: "auth.get" }));
+        const anonymous = await readSocketMessage(socket);
+        const anonymousUserId = anonymous.data.auth.userId;
+        assert.deepEqual(anonymous.data.providers.facebook, {
+          enabled: true,
+          configured: true,
+          runtimeAvailable: true,
+        });
+
+        socket.send(JSON.stringify({
+          id: "signin-1",
+          type: "auth.signIn",
+          provider: "facebook",
+          returnTo: `${started.data.url}/after`,
+        }));
+        const signIn = await readSocketMessage(socket);
+        assert.equal(signIn.type, "auth.redirect");
+        const signInUrl = new URL(signIn.data.url);
+        assert.equal(signInUrl.origin, "https://www.facebook.com");
+        assert.equal(signInUrl.pathname, "/v23.0/dialog/oauth");
+        assert.equal(signInUrl.searchParams.get("client_id"), "facebook-app-id");
+        assert.equal(signInUrl.searchParams.get("scope"), "public_profile,email");
+        assert.equal(signInUrl.searchParams.get("response_type"), "code");
+        assert.match(signInUrl.searchParams.get("redirect_uri"), /\/__sporades\/auth\/facebook\/callback$/);
+        assert.notEqual(signInUrl.searchParams.get("state"), anonymous.data.sessionToken);
+        assert.doesNotMatch(signIn.data.url, /facebook-app-secret/);
+
+        const callbackResponse = await fetch(
+          `${started.data.url}/__sporades/auth/facebook/callback?code=server-owned-code&state=${signInUrl.searchParams.get("state")}`,
+          { redirect: "manual" },
+        );
+        assert.equal(callbackResponse.status, 302);
+        assert.equal(callbackResponse.headers.get("location"), `${started.data.url}/after`);
+        assert.deepEqual(facebook.requests[0], {
+          method: "POST",
+          path: "/token",
+          query: {},
+          body: {
+            code: "server-owned-code",
+            client_id: "facebook-app-id",
+            client_secret: "facebook-app-secret",
+            redirect_uri: `${started.data.url}/__sporades/auth/facebook/callback`,
+          },
+          authorization: null,
+        });
+        assert.deepEqual(facebook.requests[1], {
+          method: "GET",
+          path: "/v23.0/me",
+          query: { fields: "id,name,email,picture" },
+          body: {},
+          authorization: "Bearer facebook-provider-access-token",
+        });
+
+        socket.send(JSON.stringify({ id: "auth-2", type: "auth.get" }));
+        const linked = await readSocketMessage(socket);
+        assert.deepEqual(linked.data.auth, {
+          userId: anonymousUserId,
+          displayName: "Mira Without Email",
+          email: null,
+          picture: "https://example.com/mira-facebook.png",
+          isAuthenticated: true,
+          isGuest: false,
+          provider: "facebook",
+        });
+        assert.equal(linked.data.sessionToken, anonymous.data.sessionToken);
+
+        const { DatabaseSync } = await import("node:sqlite");
+        const sqlite = new DatabaseSync(path.join(projectDir, ".sporades", "data.db"));
+        try {
+          const persisted = sqlite.prepare(
+            "SELECT provider, subject, email, displayName, picture FROM sporades_auth_identities WHERE provider = ?",
+          ).get("facebook");
+          assert.deepEqual({ ...persisted }, {
+            provider: "facebook",
+            subject: "facebook-subject-mira",
+            email: null,
+            displayName: "Mira Without Email",
+            picture: "https://example.com/mira-facebook.png",
+          });
+          assert.doesNotMatch(JSON.stringify(persisted), /facebook-provider-access-token/);
+        } finally {
+          sqlite.close();
+        }
       } finally {
         socket?.close();
         child.kill("SIGTERM");

@@ -49,7 +49,7 @@ export type FrameworkBundleConfig = {
 
 const AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"] as const;
 const SUPPORTED_AUTH_PROVIDERS = new Set<string>(AUTH_PROVIDER_ORDER);
-const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google"]);
+const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "facebook"]);
 
 export async function createBundle(
   projectDir: string,
@@ -465,7 +465,9 @@ export function authStatus(config: ProjectConfig, serverEnv: ServerEnv) {
     const result: JsonRecord = {
       enabled: provider.enabled,
       configured,
-      runtimeAvailable: RUNTIME_AUTH_PROVIDERS.has(providerName),
+      runtimeAvailable: providerName === "facebook"
+        ? Boolean(provider.enabled && configured)
+        : RUNTIME_AUTH_PROVIDERS.has(providerName),
     };
     if (providerName === "google" || providerName === "microsoft" || providerName === "facebook") {
       result.clientIdEnv = provider.clientIdEnv;
@@ -602,7 +604,11 @@ function providerConfigured(provider: string, config: NormalizedProviderConfig, 
   if (provider === "apple") {
     return Boolean(config.clientId && config.teamId && config.keyId && config.privateKeyEnv && serverEnv[config.privateKeyEnv]);
   }
-  return Boolean(config.clientIdEnv && config.clientSecretEnv && serverEnv[config.clientIdEnv] && serverEnv[config.clientSecretEnv]);
+  const credentialsConfigured = Boolean(config.clientIdEnv && config.clientSecretEnv && serverEnv[config.clientIdEnv] && serverEnv[config.clientSecretEnv]);
+  if (provider === "facebook") {
+    return credentialsConfigured && (config.graphVersion === null || config.graphVersion === "v23.0");
+  }
+  return credentialsConfigured;
 }
 
 function providerLabel(provider: (typeof AUTH_PROVIDER_ORDER)[number]) {

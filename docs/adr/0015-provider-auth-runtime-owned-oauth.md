@@ -23,6 +23,15 @@ non-empty string `sub` of at most 255 printable ASCII characters before
 producing the verified Provider identity. Access tokens are not used as
 identity evidence.
 
+The built-in Facebook adapter uses a full-page authorization-code flow and the
+exact callback URI stored with opaque, single-use state. It requests only
+`public_profile` and `email`, exchanges the code with the App Secret on the
+server, then reads `id,name,email,picture` from the explicitly supported Meta
+Graph API `v23.0` `/me` interface. The stable string `id` is required and is
+the Provider identity subject. Email, name, and picture are optional; a user
+who declines email access can still sign in. Provider access tokens and raw
+Graph response bodies remain local to the adapter and are never profile fields.
+
 Provider identity is stored separately from the Sporades user. A verified
 `(provider, subject)` pair identifies the Provider identity; provider email,
 display name, and picture are nullable, mutable profile attributes and are not
@@ -57,6 +66,8 @@ Microsoft, Apple, and Facebook. Each provider reports enabled, configured, and
 runtime-available states independently; a provider can therefore be fully
 configured before its runtime protocol adapter is available. Updating one
 provider merges it into the existing provider map and preserves siblings.
+Facebook is runtime-available only when enabled, its App ID and App Secret env
+entries are present, and its configured Graph version is supported.
 
 Google OAuth can be configured either with explicit values:
 
