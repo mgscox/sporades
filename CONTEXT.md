@@ -212,6 +212,18 @@ Missing or invalid endpoint tokens resolve to a fresh Anonymous session rather t
 A real authentication method, such as email or Google OAuth, linked to an existing Anonymous session. The user's data follows them because the auth method is linked to the existing account, not a new one.
 _Avoid_: upgrade, migration (those are schema concerns, not auth)
 
+**Provider identity**:
+A runtime-owned association between one Sporades user and one external authentication provider's stable subject. The `(provider, subject)` pair is the identity key; email, display name, and picture are mutable, nullable profile attributes. One Sporades user may own multiple Provider identities.
+_Avoid_: provider email, social user, OAuth profile
+
+**Provider subject**:
+The stable, provider-issued identifier for one external identity, such as Google's verified `sub` claim. It is meaningful only together with its provider and does not change when profile email or display details change.
+_Avoid_: email key, username, profile ID
+
+**Session provenance**:
+The authentication provider recorded on one Session. It reports how that Session authenticated independently of other Sessions or Provider identities linked to the same Sporades user.
+_Avoid_: user provider, account type, current linked provider
+
 **Auth transaction**:
 The Transaction boundary for one user-visible auth action that touches multiple runtime-owned auth records. Sign-up, sign-in, provider linking, OAuth callback handling, and session rotation should leave auth storage in a known outcome; for example, a failed sign-up must not leave a created user behind, failed session rotation keeps the old Session token valid, and a failed OAuth callback spends its OAuth state so the user restarts the local OAuth flow.
 _Avoid_: partial sign-up, orphaned auth row, best-effort auth update

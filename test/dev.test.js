@@ -920,6 +920,7 @@ async function withFakeGoogleServer(fn) {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify({
+          sub: "google-subject-mira",
           email: "mira@example.com",
           name: "Mira",
           picture: "https://example.com/mira.png",
@@ -5571,6 +5572,7 @@ test("sporades dev restarts server runtime and accepts new WebSocket connections
       assert.deepEqual(JSON.parse(listResult.stdout).data.tables, [
         "notes",
         "sporades",
+        "sporades_auth_identities",
         "sporades_auth_oauth_states",
         "sporades_auth_sessions",
         "sporades_auth_users",
@@ -8529,6 +8531,7 @@ test("sporades db list returns tables from the running dev session database", as
         data: {
           tables: [
             "sporades",
+            "sporades_auth_identities",
             "sporades_auth_oauth_states",
             "sporades_auth_sessions",
             "sporades_auth_users",
@@ -8588,13 +8591,18 @@ test("sporades db dump returns structured table data from the running dev sessio
               ],
             },
             {
+              name: "sporades_auth_identities",
+              columns: ["id", "userId", "provider", "subject", "email", "displayName", "picture", "createdAt", "updatedAt"],
+              rows: [],
+            },
+            {
               name: "sporades_auth_oauth_states",
               columns: ["state", "sessionToken", "returnTo", "redirectUri", "createdAt"],
               rows: [],
             },
             {
               name: "sporades_auth_sessions",
-              columns: ["token", "userId", "createdAt", "expiresAt"],
+              columns: ["token", "userId", "provider", "createdAt", "expiresAt"],
               rows: [],
             },
             {
@@ -8722,6 +8730,7 @@ test("sporades db query runs read-only SQL against the running dev session datab
           columns: ["name"],
           rows: [
             { name: "sporades" },
+            { name: "sporades_auth_identities" },
             { name: "sporades_auth_oauth_states" },
             { name: "sporades_auth_sessions" },
             { name: "sporades_auth_users" },

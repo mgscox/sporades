@@ -48,6 +48,7 @@ async function withTempDir(fn) {
 const createRuntimeLogSink = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createRuntimeLogSink");
 const emitPrivilegedAuditEvent = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "emitPrivilegedAuditEvent");
 const extractEndpoints = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "extractEndpoints");
+const linkGoogleAccount = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkGoogleAccount");
 const runEndpoint = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runEndpoint");
 const runAppMessage = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "runAppMessage");
 
@@ -1059,10 +1060,23 @@ test("libSQL database adapter supports runtime storage, migrations, health, and 
         await adapter.insertAuthSession({
           token: "session-1",
           userId: "user-1",
+          provider: "email",
           createdAt: now,
           expiresAt: "2026-08-03T10:00:00.000Z",
         });
         assert.equal((await adapter.readAuthSessionWithUser("session-1")).email, "libsql@example.com");
+        await adapter.insertAuthIdentity({
+          id: "identity-1",
+          userId: "user-1",
+          provider: "google",
+          subject: "libsql-google-subject",
+          email: null,
+          displayName: "LibSQL User",
+          picture: null,
+          createdAt: now,
+          updatedAt: now,
+        });
+        assert.equal((await adapter.findAuthIdentityByProviderSubject("google", "libsql-google-subject")).userId, "user-1");
 
         await adapter.ensureFileStorage();
         await adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });
@@ -1136,7 +1150,7 @@ test(
     const database = { adapter, sqlite: adapter };
     try {
       await adapter.exec(
-        "DROP TABLE IF EXISTS notes, sporades, sporades_auth_users, sporades_auth_sessions, sporades_auth_email_credentials, " +
+        "DROP TABLE IF EXISTS notes, sporades, sporades_auth_users, sporades_auth_sessions, sporades_auth_identities, sporades_auth_email_credentials, " +
           "sporades_auth_oauth_states, sporades_file_buckets, sporades_files, sporades_file_uploads, sporades_file_public_urls, " +
           "sporades_log_events",
       );
@@ -1190,10 +1204,23 @@ test(
       await adapter.insertAuthSession({
         token: "session-1",
         userId: "user-1",
+        provider: "email",
         createdAt: now,
         expiresAt: "2026-08-03T10:00:00.000Z",
       });
       assert.equal((await adapter.readAuthSessionWithUser("session-1")).email, "postgres@example.com");
+      await adapter.insertAuthIdentity({
+        id: "identity-1",
+        userId: "user-1",
+        provider: "google",
+        subject: "postgres-google-subject",
+        email: null,
+        displayName: "Postgres User",
+        picture: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      assert.equal((await adapter.findAuthIdentityByProviderSubject("google", "postgres-google-subject")).userId, "user-1");
 
       await adapter.ensureFileStorage();
       await adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });
@@ -1449,6 +1476,7 @@ test("SQLite database adapter owns runtime storage for auth, files, logs, and sy
       adapter.insertAuthSession({
         token: "session-1",
         userId: "user-1",
+        provider: "anonymous",
         createdAt: now,
         expiresAt: "2026-08-03T10:00:00.000Z",
       });
@@ -1472,9 +1500,22 @@ test("SQLite database adapter owns runtime storage for auth, files, logs, and sy
         provider: "email",
       });
       assert.equal(adapter.findEmailCredentialWithUser("mira@example.com").displayName, "Mira");
+      adapter.insertAuthIdentity({
+        id: "identity-1",
+        userId: "user-1",
+        provider: "google",
+        subject: "sqlite-google-subject",
+        email: null,
+        displayName: "Mira",
+        picture: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      assert.equal(adapter.findAuthIdentityByProviderSubject("google", "sqlite-google-subject").userId, "user-1");
       adapter.rotateAuthSession("session-1", {
         token: "session-2",
         userId: "user-1",
+        provider: "email",
         createdAt: "2026-07-04T11:00:00.000Z",
         expiresAt: "2026-08-03T11:00:00.000Z",
       });
@@ -4350,6 +4391,7 @@ test("OAuth provider linking rolls back auth state when session refresh fails", 
         }
         return new Response(
           JSON.stringify({
+            sub: "google-subject-ada",
             email: "ada@example.com",
             name: "Ada",
             picture: "https://example.com/ada.png",
@@ -4372,9 +4414,265 @@ test("OAuth provider linking rolls back auth state when session refresh fails", 
       assert.equal(preservedSession.provider, "anonymous");
       assert.equal(preservedSession.isGuest, 1);
       assert.equal(baseAdapter.findAuthUserByProviderEmail("google", "ada@example.com"), null);
+      assert.equal(baseAdapter.findAuthIdentityByProviderSubject("google", "google-subject-ada"), null);
       assert.equal(baseAdapter.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get("link-state"), undefined);
     } finally {
       globalThis.fetch = originalFetch;
+      database.close();
+    }
+  });
+});
+
+test("Provider identities use stable subjects and Sessions retain their own authentication provenance", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true, email: { enabled: true }, google: { enabled: true } } },
+    });
+
+    try {
+      const firstSession = await resolveAnonymousSession(database, null);
+      await updateCurrentUserPreferences(database, firstSession.auth, { theme: "dark", density: "comfortable" });
+      const first = await linkGoogleAccount(database, firstSession, {
+        subject: "google-subject-1",
+        email: null,
+        displayName: "Ada",
+        picture: null,
+      });
+      assert.equal(first.ok, true);
+      assert.equal(first.auth.userId, firstSession.auth.userId);
+      assert.equal(database.sqlite.readAuthSessionWithUser(firstSession.token).provider, "google");
+
+      const secondSession = await resolveAnonymousSession(database, null);
+      await updateCurrentUserPreferences(database, secondSession.auth, { density: "compact", locale: "en-GB" });
+      const second = await linkGoogleAccount(database, secondSession, {
+        subject: "google-subject-1",
+        email: "ada.changed@example.com",
+        displayName: "Ada Changed",
+        picture: "https://example.com/ada.png",
+      });
+      assert.equal(second.ok, true);
+      assert.equal(second.auth.userId, first.auth.userId);
+      assert.equal(database.sqlite.readAuthSessionWithUser(secondSession.token).provider, "google");
+      assert.deepEqual(JSON.parse(database.sqlite.readUserPreferences(first.auth.userId).value), {
+        theme: "dark",
+        density: "compact",
+        locale: "en-GB",
+      });
+
+      const identity = database.sqlite.findAuthIdentityByProviderSubject("google", "google-subject-1");
+      assert.deepEqual(
+        {
+          userId: identity.userId,
+          email: identity.email,
+          displayName: identity.displayName,
+          picture: identity.picture,
+        },
+        {
+          userId: first.auth.userId,
+          email: "ada.changed@example.com",
+          displayName: "Ada Changed",
+          picture: "https://example.com/ada.png",
+        },
+      );
+
+      const emailSession = await resolveAnonymousSession(database, null);
+      const email = await signUpWithEmail(database, emailSession, "email", {
+        email: "grace@example.com",
+        password: "correct horse battery staple",
+        name: "Grace",
+      });
+      assert.equal(email.ok, true);
+      assert.equal(database.sqlite.readAuthSessionWithUser(email.sessionToken).provider, "email");
+
+      const secondEmailAnonymous = await resolveAnonymousSession(database, null);
+      const secondEmail = await signInWithEmail(database, secondEmailAnonymous, {
+        email: "grace@example.com",
+        password: "correct horse battery staple",
+      });
+      const secondEmailSession = await resolveAnonymousSession(database, secondEmail.sessionToken);
+      const linkedSecondProvider = await linkGoogleAccount(database, secondEmailSession, {
+        subject: "google-subject-grace",
+        email: "grace.google@example.com",
+        displayName: "Grace via Google",
+        picture: null,
+      });
+      assert.equal(linkedSecondProvider.ok, true);
+      assert.equal(linkedSecondProvider.auth.userId, email.auth.userId);
+      assert.equal(database.sqlite.readAuthSessionWithUser(secondEmail.sessionToken).provider, "google");
+      assert.equal(database.sqlite.readAuthSessionWithUser(email.sessionToken).provider, "email");
+
+      const thirdEmailAnonymous = await resolveAnonymousSession(database, null);
+      const thirdEmail = await signInWithEmail(database, thirdEmailAnonymous, {
+        email: "grace@example.com",
+        password: "correct horse battery staple",
+      });
+      assert.equal(thirdEmail.auth.provider, "email");
+      assert.equal(database.sqlite.readAuthSessionWithUser(thirdEmail.sessionToken).provider, "email");
+
+      const conflictSession = await resolveAnonymousSession(database, email.sessionToken);
+      const conflict = await linkGoogleAccount(database, conflictSession, {
+        subject: "google-subject-1",
+        email: "collision@example.com",
+        displayName: "Collision",
+        picture: null,
+      });
+      assert.deepEqual(conflict, {
+        ok: false,
+        error: {
+          code: "AUTH_IDENTITY_CONFLICT",
+          message: "Google identity is already linked to another account.",
+          hint: "Sign out before using this Google identity, or sign in with the account it is already linked to.",
+        },
+      });
+      assert.equal(database.sqlite.readAuthSessionWithUser(email.sessionToken).userId, email.auth.userId);
+      const preservedIdentity = database.sqlite.findAuthIdentityByProviderSubject("google", "google-subject-1");
+      assert.equal(preservedIdentity.userId, first.auth.userId);
+      assert.equal(preservedIdentity.email, "ada.changed@example.com");
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("one Sporades user can own multiple Provider identities while reserved and duplicate ownership stays impossible", async () => {
+  await withTempDir(async (dir) => {
+    const database = await openDevDatabase(path.join(dir, "data.db"), "", {}, {
+      auth: { providers: { anonymous: true } },
+    });
+    try {
+      const session = await resolveAnonymousSession(database, null);
+      const now = new Date().toISOString();
+      database.sqlite.insertAuthIdentity({
+        id: "identity-google",
+        userId: session.auth.userId,
+        provider: "google",
+        subject: "subject-google",
+        email: null,
+        displayName: "Ada",
+        picture: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      database.sqlite.insertAuthIdentity({
+        id: "identity-microsoft",
+        userId: session.auth.userId,
+        provider: "microsoft",
+        subject: "subject-microsoft",
+        email: "ada@example.com",
+        displayName: "Ada",
+        picture: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      assert.equal(
+        database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_auth_identities WHERE userId = ?").get(session.auth.userId).count,
+        2,
+      );
+      assert.throws(
+        () =>
+          database.sqlite.insertAuthIdentity({
+            id: "identity-google-duplicate",
+            userId: session.auth.userId,
+            provider: "google",
+            subject: "subject-google",
+            email: "changed@example.com",
+            displayName: "Changed",
+            picture: null,
+            createdAt: now,
+            updatedAt: now,
+          }),
+        /unique/i,
+      );
+      assert.throws(
+        () =>
+          database.sqlite.insertAuthIdentity({
+            id: "identity-reserved",
+            userId: "__privileged__",
+            provider: "google",
+            subject: "reserved-subject",
+            email: null,
+            displayName: null,
+            picture: null,
+            createdAt: now,
+            updatedAt: now,
+          }),
+        /reserved/i,
+      );
+      database.sqlite.prepare(
+        "INSERT INTO sporades_auth_identities " +
+        "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(
+        "identity-forged-reserved",
+        "__privileged__",
+        "google",
+        "reserved-subject",
+        null,
+        null,
+        null,
+        now,
+        now,
+      );
+      assert.equal(database.sqlite.findAuthIdentityByProviderSubject("google", "reserved-subject"), null);
+    } finally {
+      database.close();
+    }
+  });
+});
+
+test("legacy Google auth storage migrates without changing existing Session tokens or Sporades user IDs", async () => {
+  await withTempDir(async (dir) => {
+    const databasePath = path.join(dir, "data.db");
+    const legacy = await createSqliteDatabaseAdapter(databasePath);
+    const now = new Date().toISOString();
+    const expiresAt = new Date(Date.parse(now) + 60_000).toISOString();
+    legacy.exec(
+      "CREATE TABLE sporades_auth_users (" +
+      "id TEXT PRIMARY KEY, createdAt TEXT NOT NULL, displayName TEXT NOT NULL, email TEXT, picture TEXT, " +
+      "isAuthenticated INTEGER NOT NULL, isGuest INTEGER NOT NULL, provider TEXT NOT NULL)",
+    );
+    legacy.exec(
+      "CREATE TABLE sporades_auth_sessions (" +
+      "token TEXT PRIMARY KEY, userId TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL)",
+    );
+    legacy.prepare(
+      "INSERT INTO sporades_auth_users " +
+      "(id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+    ).run("legacy-user", now, "Legacy Ada", "legacy@example.com", null, 1, 0, "google");
+    legacy.prepare("INSERT INTO sporades_auth_sessions (token, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?)").run(
+      "legacy-token",
+      "legacy-user",
+      now,
+      expiresAt,
+    );
+    legacy.close();
+
+    const database = await openDevDatabase(databasePath, "", {}, {
+      auth: { providers: { anonymous: true, google: { enabled: true } } },
+    });
+    try {
+      const session = await resolveAnonymousSession(database, "legacy-token");
+      assert.equal(session.token, "legacy-token");
+      assert.equal(session.auth.userId, "legacy-user");
+      assert.equal(session.auth.provider, "google");
+
+      const linked = await linkGoogleAccount(database, session, {
+        subject: "verified-google-subject",
+        email: "legacy@example.com",
+        displayName: "Ada Verified",
+        picture: null,
+      });
+      assert.equal(linked.ok, true);
+      assert.equal(linked.auth.userId, "legacy-user");
+      assert.equal(database.sqlite.readAuthSessionWithUser("legacy-token").userId, "legacy-user");
+      assert.equal(
+        database.sqlite.findAuthIdentityByProviderSubject("google", "verified-google-subject").userId,
+        "legacy-user",
+      );
+      assert.equal(
+        database.sqlite.prepare("SELECT COUNT(*) AS count FROM sporades_auth_identities WHERE userId = ?").get("legacy-user").count,
+        1,
+      );
+    } finally {
       database.close();
     }
   });
@@ -4526,12 +4824,17 @@ function wrapAsyncRuntimeAdapter(adapter) {
     "fileRowForOwner",
     "ensureAuthStorage",
     "findAuthUserByProviderEmail",
+    "findAuthIdentityByProviderSubject",
+    "findLegacyAuthIdentityByProviderEmail",
+    "insertAuthIdentity",
+    "updateAuthIdentity",
     "insertAuthUser",
     "updateAuthUserProfile",
     "linkAuthUser",
     "insertAuthSession",
     "deleteAuthSession",
     "refreshAuthSession",
+    "setAuthSessionProvider",
     "rotateAuthSession",
     "readAuthSessionWithUser",
     "insertOAuthState",

@@ -256,6 +256,27 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
         updatedAt: any;
     }): StatementResultingChanges;
     findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
+    findAuthIdentityByProviderSubject(provider: any, subject: any): any;
+    findLegacyAuthIdentityByProviderEmail(provider: any, email: any): any;
+    insertAuthIdentity(row: {
+        id: any;
+        userId: any;
+        provider: any;
+        subject: any;
+        email: any;
+        displayName: any;
+        picture: any;
+        createdAt: any;
+        updatedAt: any;
+    }): StatementResultingChanges;
+    updateAuthIdentity(row: {
+        id: any;
+        subject: any;
+        email: any;
+        displayName: any;
+        picture: any;
+        updatedAt: any;
+    }): StatementResultingChanges;
     insertAuthUser(row: {
         id: any;
         createdAt: any;
@@ -285,14 +306,17 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
     insertAuthSession(row: {
         token: any;
         userId: any;
+        provider: any;
         createdAt: any;
         expiresAt: any;
     }): StatementResultingChanges;
     deleteAuthSession(token: any): StatementResultingChanges;
     refreshAuthSession(token: any, expiresAt: any): StatementResultingChanges;
+    setAuthSessionProvider(token: any, provider: any): StatementResultingChanges;
     rotateAuthSession(previousToken: any, row: {
         token: any;
         userId: any;
+        provider: any;
         createdAt: any;
         expiresAt: any;
     }): StatementResultingChanges;
@@ -816,6 +840,27 @@ export declare function createPostgresDatabaseAdapter(options: {
     markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges;
     fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null;
     findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
+    findAuthIdentityByProviderSubject(provider: any, subject: any): any;
+    findLegacyAuthIdentityByProviderEmail(provider: any, email: any): any;
+    insertAuthIdentity(row: {
+        id: any;
+        userId: any;
+        provider: any;
+        subject: any;
+        email: any;
+        displayName: any;
+        picture: any;
+        createdAt: any;
+        updatedAt: any;
+    }): StatementResultingChanges;
+    updateAuthIdentity(row: {
+        id: any;
+        subject: any;
+        email: any;
+        displayName: any;
+        picture: any;
+        updatedAt: any;
+    }): StatementResultingChanges;
     insertAuthUser(row: {
         id: any;
         createdAt: any;
@@ -845,14 +890,17 @@ export declare function createPostgresDatabaseAdapter(options: {
     insertAuthSession(row: {
         token: any;
         userId: any;
+        provider: any;
         createdAt: any;
         expiresAt: any;
     }): StatementResultingChanges;
     deleteAuthSession(token: any): StatementResultingChanges;
     refreshAuthSession(token: any, expiresAt: any): StatementResultingChanges;
+    setAuthSessionProvider(token: any, provider: any): StatementResultingChanges;
     rotateAuthSession(previousToken: any, row: {
         token: any;
         userId: any;
+        provider: any;
         createdAt: any;
         expiresAt: any;
     }): StatementResultingChanges;
@@ -1107,6 +1155,27 @@ export declare function createLibsqlDatabaseAdapter(options: {
         updatedAt: any;
     }): StatementResultingChanges;
     findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
+    findAuthIdentityByProviderSubject(provider: any, subject: any): any;
+    findLegacyAuthIdentityByProviderEmail(provider: any, email: any): any;
+    insertAuthIdentity(row: {
+        id: any;
+        userId: any;
+        provider: any;
+        subject: any;
+        email: any;
+        displayName: any;
+        picture: any;
+        createdAt: any;
+        updatedAt: any;
+    }): StatementResultingChanges;
+    updateAuthIdentity(row: {
+        id: any;
+        subject: any;
+        email: any;
+        displayName: any;
+        picture: any;
+        updatedAt: any;
+    }): StatementResultingChanges;
     insertAuthUser(row: {
         id: any;
         createdAt: any;
@@ -1136,14 +1205,17 @@ export declare function createLibsqlDatabaseAdapter(options: {
     insertAuthSession(row: {
         token: any;
         userId: any;
+        provider: any;
         createdAt: any;
         expiresAt: any;
     }): StatementResultingChanges;
     deleteAuthSession(token: any): StatementResultingChanges;
     refreshAuthSession(token: any, expiresAt: any): StatementResultingChanges;
+    setAuthSessionProvider(token: any, provider: any): StatementResultingChanges;
     rotateAuthSession(previousToken: any, row: {
         token: any;
         userId: any;
+        provider: any;
         createdAt: any;
         expiresAt: any;
     }): StatementResultingChanges;

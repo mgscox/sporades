@@ -180,6 +180,7 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   activePrivilegedFileAccess,
   privilegedAuthUserId,
   isReservedAuthUserId,
+  authIdentityRowUnlessReserved,
   assertNotReservedAuthUserId,
   createPrivilegedAuditLogInput,
   normalizePrivilegedAuditActorKind,
@@ -369,8 +370,12 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   removeFileVersionBestEffort,
   contentTypeForFile,
   createAnonymousAuthTables,
+  createProviderIdentityTables,
+  createLibsqlProviderIdentityTables,
   createUserPreferencesTables,
   ensureSessionLifecycleColumns,
+  ensureSessionProvenanceColumn,
+  ensureLibsqlSessionProvenanceColumn,
   sessionExpiresAt,
   isExpiredSession,
   createSessionToken,
@@ -387,6 +392,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   updateCurrentUserPreferences,
   normalizePreferencesPatch,
   createPreferencesError,
+  normalizeSimulatedEmail,
+  normalizeSimulatedText,
   authProvidersForClient,
   routeSporadesAuth,
   signUpWithEmail,
@@ -1901,6 +1908,32 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       const row = this.prepare("SELECT id FROM sporades_auth_users WHERE provider = ? AND email = ?").get(provider, email) ?? null;
       return isReservedAuthUserId(row?.id) ? null : row;
     },
+    findAuthIdentityByProviderSubject(provider: any, subject: any) {
+      const row = this.prepare(
+        "SELECT id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt " +
+        "FROM sporades_auth_identities WHERE provider = ? AND subject = ?",
+      ).get(provider, subject) ?? null;
+      return authIdentityRowUnlessReserved(row);
+    },
+    findLegacyAuthIdentityByProviderEmail(provider: any, email: any) {
+      const row = this.prepare(
+        "SELECT id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt " +
+        "FROM sporades_auth_identities WHERE provider = ? AND email = ? AND subject LIKE 'legacy:%' ORDER BY createdAt LIMIT 1",
+      ).get(provider, email) ?? null;
+      return authIdentityRowUnlessReserved(row);
+    },
+    insertAuthIdentity(row: { id: any; userId: any; provider: any; subject: any; email: any; displayName: any; picture: any; createdAt: any; updatedAt: any; }) {
+      assertNotReservedAuthUserId(row.userId);
+      return this.prepare(
+        "INSERT INTO sporades_auth_identities " +
+        "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(row.id, row.userId, row.provider, row.subject, row.email, row.displayName, row.picture, row.createdAt, row.updatedAt);
+    },
+    updateAuthIdentity(row: { id: any; subject: any; email: any; displayName: any; picture: any; updatedAt: any; }) {
+      return this.prepare(
+        "UPDATE sporades_auth_identities SET subject = ?, email = ?, displayName = ?, picture = ?, updatedAt = ? WHERE id = ?",
+      ).run(row.subject, row.email, row.displayName, row.picture, row.updatedAt, row.id);
+    },
     insertAuthUser(row: { id: any; createdAt: any; displayName: any; email: any; picture: any; isAuthenticated: any; isGuest: any; provider: any; }) {
       assertNotReservedAuthUserId(row.id);
       return this.prepare(
@@ -1921,11 +1954,12 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
         "UPDATE sporades_auth_users SET displayName = ?, email = ?, picture = ?, isAuthenticated = ?, isGuest = ?, provider = ? WHERE id = ?",
       ).run(row.displayName, row.email, row.picture, row.isAuthenticated, row.isGuest, row.provider, row.id);
     },
-    insertAuthSession(row: { token: any; userId: any; createdAt: any; expiresAt: any; }) {
+    insertAuthSession(row: { token: any; userId: any; provider: any; createdAt: any; expiresAt: any; }) {
       assertNotReservedAuthUserId(row.userId);
-      return this.prepare("INSERT INTO sporades_auth_sessions (token, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?)").run(
+      return this.prepare("INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)").run(
         row.token,
         row.userId,
+        row.provider,
         row.createdAt,
         row.expiresAt,
       );
@@ -1936,11 +1970,15 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     refreshAuthSession(token: any, expiresAt: any) {
       return this.prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE token = ?").run(expiresAt, token);
     },
-    rotateAuthSession(previousToken: any, row: { token: any; userId: any; createdAt: any; expiresAt: any; }) {
+    setAuthSessionProvider(token: any, provider: any) {
+      return this.prepare("UPDATE sporades_auth_sessions SET provider = ? WHERE token = ?").run(provider, token);
+    },
+    rotateAuthSession(previousToken: any, row: { token: any; userId: any; provider: any; createdAt: any; expiresAt: any; }) {
       assertNotReservedAuthUserId(row.userId);
-      return this.prepare("UPDATE sporades_auth_sessions SET token = ?, userId = ?, createdAt = ?, expiresAt = ? WHERE token = ?").run(
+      return this.prepare("UPDATE sporades_auth_sessions SET token = ?, userId = ?, provider = ?, createdAt = ?, expiresAt = ? WHERE token = ?").run(
         row.token,
         row.userId,
+        row.provider,
         row.createdAt,
         row.expiresAt,
         previousToken,
@@ -1948,7 +1986,8 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     },
     readAuthSessionWithUser(token: any) {
       const row = this.prepare(
-        "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, u.provider " +
+        "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, " +
+        "COALESCE(s.provider, u.provider) AS provider " +
         "FROM sporades_auth_sessions s " +
         "JOIN sporades_auth_users u ON u.id = s.userId " +
         "WHERE s.token = ?",
@@ -2238,9 +2277,28 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
         "token TEXT PRIMARY KEY, " +
         "userId TEXT NOT NULL, " +
+        "provider TEXT NOT NULL, " +
         "createdAt TEXT NOT NULL, " +
         "expiresAt TEXT NOT NULL" +
         ")",
+      );
+      await this.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN IF NOT EXISTS provider TEXT");
+      await this.exec(
+        "UPDATE sporades_auth_sessions SET provider = " +
+        "COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') " +
+        "WHERE provider IS NULL",
+      );
+      await this.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_auth_identities (" +
+        "id TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, " +
+        "displayName TEXT, picture TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, UNIQUE(provider, subject))",
+      );
+      await this.exec(
+        "INSERT INTO sporades_auth_identities " +
+        "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) " +
+        "SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt " +
+        "FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' " +
+        "AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)",
       );
       if (authConfig?.providers?.email?.enabled) {
         await this.exec(
@@ -3214,11 +3272,14 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
         "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
         "token TEXT PRIMARY KEY, " +
         "userId TEXT NOT NULL, " +
+        "provider TEXT NOT NULL, " +
         "createdAt TEXT NOT NULL, " +
         "expiresAt TEXT NOT NULL" +
         ")",
       );
       await ensureLibsqlSessionLifecycleColumns(this);
+      await ensureLibsqlSessionProvenanceColumn(this);
+      await createLibsqlProviderIdentityTables(this);
       if (authConfig?.providers?.email?.enabled) {
         await this.exec(
           "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
@@ -4015,6 +4076,13 @@ function privilegedAuthUserId() {
 
 function isReservedAuthUserId(userId: any) {
   return userId === privilegedAuthUserId();
+}
+
+function authIdentityRowUnlessReserved(rowOrPromise: any) {
+  if (rowOrPromise && typeof rowOrPromise.then === "function") {
+    return rowOrPromise.then((row: any) => (isReservedAuthUserId(row?.userId) ? null : row));
+  }
+  return isReservedAuthUserId(rowOrPromise?.userId) ? null : rowOrPromise;
 }
 
 function assertNotReservedAuthUserId(userId: any) {
@@ -7439,7 +7507,7 @@ export async function simulateLocalIdentitySession(database: LooseRecord, option
         provider,
       });
     }
-    await tx.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
+    await tx.insertAuthSession({ token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
 
     const auth = {
       userId,
@@ -8440,46 +8508,73 @@ async function fetchGoogleProfile(accessToken: any) {
   }
   const profile = await profileResponse.json() as LooseRecord;
   return {
-    email: profile.email,
-    displayName: profile.name ?? profile.email,
+    subject: profile.sub,
+    email: profile.email ?? null,
+    displayName: profile.name ?? profile.email ?? "Google user",
     picture: profile.picture ?? null,
   };
 }
 
 async function linkGoogleAccount(database: LooseRecord, session: LooseRecord, profile: LooseRecord) {
-  if (!profile.email) {
+  const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
+  if (!subject) {
     return {
       ok: false,
       error: {
-        message: "Google profile is missing an email address.",
-        hint: "Retry Google sign-in with an email-bearing account.",
+        message: "Google profile is missing a stable subject.",
+        hint: "Retry Google sign-in. Sporades requires Google's verified subject claim.",
       },
     };
   }
 
   return await database.sqlite.withTransaction(async (tx: LooseRecord) => {
-    const existingUser = await tx.findAuthUserByProviderEmail("google", profile.email);
+    const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? null;
+    let identity = await tx.findAuthIdentityByProviderSubject("google", subject);
+    if (!identity && email) {
+      identity = await tx.findLegacyAuthIdentityByProviderEmail("google", email);
+    }
+    if (identity && !session.auth.isGuest && identity.userId !== session.auth.userId) {
+      return {
+        ok: false,
+        error: {
+          code: "AUTH_IDENTITY_CONFLICT",
+          message: "Google identity is already linked to another account.",
+          hint: "Sign out before using this Google identity, or sign in with the account it is already linked to.",
+        },
+      };
+    }
+    const displayName = normalizeSimulatedText(profile.displayName) ?? email ?? "Google user";
     const auth = {
-      userId: existingUser?.id ?? session.auth.userId,
-      displayName: profile.displayName ?? profile.email,
-      email: profile.email,
+      userId: identity?.userId ?? session.auth.userId,
+      displayName,
+      email,
       picture: profile.picture ?? null,
       isAuthenticated: true,
       isGuest: false,
       provider: "google",
     };
-    if (session.auth.isGuest && existingUser?.id && existingUser.id !== session.auth.userId) {
-      await tx.linkAuthUser({
-        id: auth.userId,
+    const now = new Date().toISOString();
+    if (identity) {
+      await tx.updateAuthIdentity({
+        id: identity.id,
+        subject,
+        email,
         displayName: auth.displayName,
-        email: auth.email,
         picture: auth.picture,
-        isAuthenticated: 1,
-        isGuest: 0,
-        provider: "google",
+        updatedAt: now,
       });
-      await moveSessionToUserOnAdapter(database, tx, session, auth.userId);
-      return { ok: true, auth };
+    } else {
+      await tx.insertAuthIdentity({
+        id: randomUUID(),
+        userId: auth.userId,
+        provider: "google",
+        subject,
+        email,
+        displayName: auth.displayName,
+        picture: auth.picture,
+        createdAt: now,
+        updatedAt: now,
+      });
     }
     await tx.linkAuthUser({
       id: auth.userId,
@@ -8490,7 +8585,12 @@ async function linkGoogleAccount(database: LooseRecord, session: LooseRecord, pr
       isGuest: 0,
       provider: "google",
     });
-    await refreshSessionOnAdapter(tx, session.token);
+    if (session.auth.isGuest && identity?.userId && identity.userId !== session.auth.userId) {
+      await moveSessionToUserOnAdapter(database, tx, session, auth.userId, "google");
+    } else {
+      await tx.setAuthSessionProvider(session.token, "google");
+      await refreshSessionOnAdapter(tx, session.token);
+    }
     return { ok: true, auth };
   });
 }
@@ -8557,7 +8657,7 @@ export async function signUpWithEmail(database: LooseRecord, session: LooseRecor
       isGuest: 0,
       provider: "email",
     });
-    return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId), auth };
+    return { ok: true, sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"), auth };
   });
 }
 
@@ -8590,11 +8690,11 @@ export async function signInWithEmail(database: LooseRecord, session: any, crede
     picture: row.picture,
     isAuthenticated: Boolean(row.isAuthenticated),
     isGuest: Boolean(row.isGuest),
-    provider: row.provider,
+    provider: "email",
   };
   return await database.sqlite.withTransaction(async (tx: LooseRecord) => ({
     ok: true,
-    sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId),
+    sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"),
     auth,
   }));
 }
@@ -8769,11 +8869,14 @@ function createAnonymousAuthTables(sqlite: LooseRecord, authConfig: LooseRecord 
     "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
     "token TEXT PRIMARY KEY, " +
     "userId TEXT NOT NULL, " +
+    "provider TEXT NOT NULL, " +
     "createdAt TEXT NOT NULL, " +
     "expiresAt TEXT NOT NULL" +
     ")",
   );
   ensureSessionLifecycleColumns(sqlite);
+  ensureSessionProvenanceColumn(sqlite);
+  createProviderIdentityTables(sqlite);
   if (authConfig?.providers?.email?.enabled) {
     sqlite.exec(
       "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
@@ -8793,6 +8896,30 @@ function createAnonymousAuthTables(sqlite: LooseRecord, authConfig: LooseRecord 
     "redirectUri TEXT NOT NULL, " +
     "createdAt TEXT NOT NULL" +
     ")",
+  );
+}
+
+function createProviderIdentityTables(sqlite: LooseRecord) {
+  sqlite.exec(
+    "CREATE TABLE IF NOT EXISTS sporades_auth_identities (" +
+    "id TEXT PRIMARY KEY, " +
+    "userId TEXT NOT NULL, " +
+    "provider TEXT NOT NULL, " +
+    "subject TEXT NOT NULL, " +
+    "email TEXT, " +
+    "displayName TEXT, " +
+    "picture TEXT, " +
+    "createdAt TEXT NOT NULL, " +
+    "updatedAt TEXT NOT NULL, " +
+    "UNIQUE(provider, subject)" +
+    ")",
+  );
+  sqlite.exec(
+    "INSERT INTO sporades_auth_identities " +
+    "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) " +
+    "SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt " +
+    "FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' " +
+    "AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)",
   );
 }
 
@@ -8817,6 +8944,19 @@ function ensureSessionLifecycleColumns(sqlite: LooseRecord) {
   }
 }
 
+function ensureSessionProvenanceColumn(sqlite: LooseRecord) {
+  const columns = sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
+  const hasProvider = columns.some((column: { name: string; }) => column.name === "provider");
+  if (!hasProvider) {
+    sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN provider TEXT");
+  }
+  sqlite.exec(
+    "UPDATE sporades_auth_sessions SET provider = " +
+    "COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') " +
+    "WHERE provider IS NULL",
+  );
+}
+
 async function ensureLibsqlSessionLifecycleColumns(sqlite: { engine?: string; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => Promise<void>; ensureLogStorage?: () => Promise<void>; insertLogIndexEvent?: (event: any) => Promise<void>; pruneLogIndex?: (limit: any) => Promise<void>; readRecentLogEvents?: (limit?: number) => Promise<any>; ensureFileStorage?: () => Promise<void>; ensureAuthStorage?: (authConfig?: null) => Promise<void>; consumeOAuthState?: (state: any) => Promise<any>; migrateAppSchema?: (schema: any) => Promise<void>; migrateExistingAppTable?: (existingTable: any, nextTable: any) => Promise<void>; listInspectableTables?: () => Promise<any>; dumpInspectableDatabase?: () => Promise<{ name: any; columns: any; rows: any; }[]>; runReadOnlyInspectionQuery?: (sql: any) => Promise<{ ok: boolean; data: { columns: any; rows: any; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }>; checkHealth?: () => Promise<{ ok: boolean; }>; withTransaction?: (fn: any) => Promise<any>; close?: () => Promise<void>; exec: any; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; findAuthUserByProviderEmail?: (provider: any, email: any) => Record<string, SQLOutputValue> | null; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; createAppTable?: (table: any, tableName?: any) => any; referenceExists?: (field: any, value: any) => boolean; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; }) {
   const columns = await sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
   const hasExpiresAt = columns.some((column: { name: string; }) => column.name === "expiresAt");
@@ -8826,6 +8966,33 @@ async function ensureLibsqlSessionLifecycleColumns(sqlite: { engine?: string; wr
       .prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE expiresAt IS NULL")
       .run(sessionExpiresAt(new Date().toISOString()));
   }
+}
+
+async function ensureLibsqlSessionProvenanceColumn(sqlite: LooseRecord) {
+  const columns = await sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
+  if (!columns.some((column: { name: string; }) => column.name === "provider")) {
+    await sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN provider TEXT");
+  }
+  await sqlite.exec(
+    "UPDATE sporades_auth_sessions SET provider = " +
+    "COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') " +
+    "WHERE provider IS NULL",
+  );
+}
+
+async function createLibsqlProviderIdentityTables(sqlite: LooseRecord) {
+  await sqlite.exec(
+    "CREATE TABLE IF NOT EXISTS sporades_auth_identities (" +
+    "id TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, " +
+    "displayName TEXT, picture TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, UNIQUE(provider, subject))",
+  );
+  await sqlite.exec(
+    "INSERT INTO sporades_auth_identities " +
+    "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) " +
+    "SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt " +
+    "FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' " +
+    "AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)",
+  );
 }
 
 function splitSqlStatements(sql: any) {
@@ -8925,28 +9092,29 @@ async function refreshSessionOnAdapter(sqlite: LooseRecord, token: any) {
   return expiresAt;
 }
 
-async function rotateSession(database: LooseRecord, session: LooseRecord, userId: any) {
-  return await database.sqlite.withTransaction(async (tx: LooseRecord) => rotateSessionOnAdapter(database, tx, session, userId));
+async function rotateSession(database: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
+  return await database.sqlite.withTransaction(async (tx: LooseRecord) => rotateSessionOnAdapter(database, tx, session, userId, provider));
 }
 
-async function rotateSessionOnAdapter(database: LooseRecord, sqlite: LooseRecord, session: LooseRecord, userId: any) {
+async function rotateSessionOnAdapter(database: LooseRecord, sqlite: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
   const now = new Date().toISOString();
   const token = createSessionToken();
   await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
-  await sqlite.rotateAuthSession(session.token, { token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
+  await sqlite.rotateAuthSession(session.token, { token, userId, provider, createdAt: now, expiresAt: sessionExpiresAt(now) });
   return token;
 }
 
-async function moveSessionToUser(database: LooseRecord, session: LooseRecord, userId: any) {
-  return await database.sqlite.withTransaction(async (tx: LooseRecord) => moveSessionToUserOnAdapter(database, tx, session, userId));
+async function moveSessionToUser(database: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
+  return await database.sqlite.withTransaction(async (tx: LooseRecord) => moveSessionToUserOnAdapter(database, tx, session, userId, provider));
 }
 
-async function moveSessionToUserOnAdapter(database: LooseRecord, sqlite: LooseRecord, session: LooseRecord, userId: any) {
+async function moveSessionToUserOnAdapter(database: LooseRecord, sqlite: LooseRecord, session: LooseRecord, userId: any, provider = session.auth.provider) {
   const now = new Date().toISOString();
   await migrateAnonymousPreferences(database, session.auth, userId, sqlite);
   await sqlite.rotateAuthSession(session.token, {
     token: session.token,
     userId,
+    provider,
     createdAt: now,
     expiresAt: sessionExpiresAt(now),
   });
@@ -9005,7 +9173,7 @@ export async function resolveAnonymousSession(database: LooseRecord, sessionToke
       isGuest: 1,
       provider: "anonymous",
     });
-    await tx.insertAuthSession({ token, userId, createdAt: now, expiresAt: sessionExpiresAt(now) });
+    await tx.insertAuthSession({ token, userId, provider: "anonymous", createdAt: now, expiresAt: sessionExpiresAt(now) });
   });
   return {
     token,

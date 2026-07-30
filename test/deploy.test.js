@@ -462,6 +462,7 @@ async function withFakeGoogleServer(fn) {
       response.writeHead(200, { "content-type": "application/json" });
       response.end(
         JSON.stringify({
+          sub: "google-subject-mira",
           email: "mira@example.com",
           name: "Mira",
           picture: "https://example.com/mira.png",
@@ -2207,6 +2208,7 @@ test("sporades logs and db can inspect a local Container session by published po
       source: "sqlite-file",
       tables: [
         "sporades",
+        "sporades_auth_identities",
         "sporades_auth_oauth_states",
         "sporades_auth_sessions",
         "sporades_auth_users",

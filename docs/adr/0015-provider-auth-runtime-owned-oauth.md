@@ -2,6 +2,28 @@
 
 Sporades v2 implements Google provider auth in the server runtime rather than adding a browser auth SDK or trusting client-supplied profile data. The browser client sends only sign-in intent through `auth.signIn("google")`; the server creates an opaque OAuth state, stores the current Sporades session token and return URL, generates the Google authorization URL, handles `/__sporades/auth/google/callback`, exchanges the authorization code, fetches Google profile data with the returned access token, and links that identity to the existing anonymous account.
 
+Provider identity is stored separately from the Sporades user. A verified
+`(provider, subject)` pair identifies the Provider identity; provider email,
+display name, and picture are nullable, mutable profile attributes and are not
+identity keys. A single Sporades user may have multiple Provider identities.
+Linking a new identity to an Anonymous session preserves that session's
+Sporades user ID. Resolving an existing identity moves the current Anonymous
+Session to its existing user while retaining the established anonymous
+preference merge behavior.
+
+Authentication provenance belongs to the Session rather than the shared user.
+Each authenticated Session records the provider used for that Session, so
+linking another Provider identity cannot rewrite the provider reported by
+already-authenticated Sessions for the same user. Existing Session tokens and
+Sporades user IDs survive the additive storage migration. Legacy Google rows
+are claimed by the next verified Google subject during a compatibility window;
+new and claimed identities are subsequently resolved only by stable subject.
+
+An authenticated user cannot claim a Provider identity owned by another user.
+That attempt returns a structured `AUTH_IDENTITY_CONFLICT`, and identity,
+account, Session, and preference writes remain unchanged inside the Auth
+transaction.
+
 This issue does not add a general auth dependency. The existing runtime already owns anonymous sessions in SQLite, and the v2 requirement is a narrow provider-linking flow with a small public surface. Keeping the implementation in Sporades-owned tables avoids exposing provider SDKs or Better Auth internals to app code while preserving a future path to replace the internals behind the same `auth.signIn(provider)` client API.
 
 Provider secrets remain in Server env. `sporades.json` stores the env var names, not secret values. The runtime reads the configured client ID and client secret from Server env during code exchange.
