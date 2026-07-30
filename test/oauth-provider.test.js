@@ -62,12 +62,13 @@ function formPostRequest(url, values) {
 }
 
 function rawFormPostRequest(url, body, contentType = "application/x-www-form-urlencoded") {
-  const request = Readable.from([Buffer.from(body)]);
+  const bytes = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  const request = Readable.from([bytes]);
   request.method = "POST";
   request.url = url;
   request.headers = {
     "content-type": contentType,
-    "content-length": String(Buffer.byteLength(body)),
+    "content-length": String(bytes.length),
   };
   return request;
 }
@@ -553,7 +554,64 @@ test("OAuth form-post callbacks reject ambiguous or malformed input with deliber
     state = await start();
     response = await callback(`state=${state}&code=%GG`);
     assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
+    assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+
+    for (const encodedControl of ["%00", "%01", "%09", "%0D", "%7F", "%C2%80"]) {
+      for (const field of ["code", "error", "user"]) {
+        state = await start();
+        response = await callback(`state=${state}&${field}=${encodedControl}`);
+        assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
+        assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+      }
+      state = await start();
+      response = await callback(`state=${encodedControl}&code=one`);
+      assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
+      assert.ok(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
+
+      state = await start();
+      response = await callback(`state=${state}&co${encodedControl}de=one`);
+      assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
+      assert.ok(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
+    }
+
+    for (const rawControl of [0x00, 0x01, 0x09, 0x0d, 0x7f]) {
+      state = await start();
+      response = await callback(Buffer.concat([
+        Buffer.from(`state=${state}&code=`),
+        Buffer.from([rawControl]),
+      ]));
+      assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
+      assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+    }
+
+    for (const invalidUtf8 of [Buffer.from([0xc3, 0x28]), Buffer.from([0xc0, 0xaf]), Buffer.from([0xed, 0xa0, 0x80])]) {
+      state = await start();
+      response = await callback(Buffer.concat([Buffer.from(`state=${state}&code=`), invalidUtf8]));
+      assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
+      assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+
+      state = await start();
+      response = await callback(Buffer.concat([Buffer.from("state="), invalidUtf8, Buffer.from("&code=one")]));
+      assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
+      assert.ok(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
+    }
+
+    state = await start();
+    response = await callback(`state=${state}&co%00de=one`);
+    assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
     assert.ok(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state));
+
+    state = await start();
+    response = await callback(`state=${state}&code=%C3%28`);
+    assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
+    assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+
+    for (const forbiddenScalar of ["%EF%BF%BD", "%EF%B7%90", "%F0%9F%BF%BE"]) {
+      state = await start();
+      response = await callback(`state=${state}&code=${forbiddenScalar}`);
+      assert.match(response.body, /OAUTH_INVALID_CALLBACK/);
+      assert.equal(database.sqlite.prepare("SELECT state FROM sporades_auth_oauth_states WHERE state = ?").get(state), undefined);
+    }
 
     state = await start();
     response = await callback(`state=${state}&code=${"x".repeat(17 * 1024)}`);
@@ -562,7 +620,7 @@ test("OAuth form-post callbacks reject ambiguous or malformed input with deliber
 
     state = await start();
     response = await callback(
-      `state=${state}&code=valid`,
+      `state=${state}&code=valid&user=${encodeURIComponent(JSON.stringify({ name: { firstName: "Zoë", lastName: "张" } }))}`,
       "Application/X-Www-Form-Urlencoded; Charset=\"UTF-8\"",
     );
     assert.equal(response.statusCode, 302, response.body);
@@ -777,7 +835,7 @@ test("Apple form-post links the anonymous user, sanitizes first-login name, and 
         code: "first-code",
         user: JSON.stringify({
           email: "untrusted@example.test",
-          name: { firstName: "  Ada\u0000 ", lastName: " Lovelace  " },
+          name: { firstName: "  Zoë\u0000 ", lastName: " 张  " },
         }),
       }), firstResponse);
       assert.equal(firstResponse.statusCode, 302, firstResponse.body);
@@ -792,7 +850,7 @@ test("Apple form-post links the anonymous user, sanitizes first-login name, and 
       const firstSession = database.sqlite.readAuthSessionWithUser(firstGuest.token);
       assert.equal(firstSession.provider, "apple");
       assert.equal(firstSession.userId, firstGuest.auth.userId);
-      assert.equal(firstSession.displayName, "Ada Lovelace");
+      assert.equal(firstSession.displayName, "Zoë 张");
       assert.equal(firstSession.email, "relay@privaterelay.appleid.com");
 
       includeEmail = false;
@@ -812,7 +870,7 @@ test("Apple form-post links the anonymous user, sanitizes first-login name, and 
       const returningSession = database.sqlite.readAuthSessionWithUser(returningGuest.token);
       assert.equal(returningSession.provider, "apple");
       assert.equal(returningSession.userId, firstGuest.auth.userId);
-      assert.equal(returningSession.displayName, "Ada Lovelace");
+      assert.equal(returningSession.displayName, "Zoë 张");
       assert.equal(returningSession.email, "relay@privaterelay.appleid.com");
     } finally {
       globalThis.fetch = originalFetch;

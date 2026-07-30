@@ -2316,7 +2316,9 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   decodeJwtPart,
   readOAuthCallbackParameters,
   oauthFormContentTypeValid,
-  validateOAuthCallbackEncoding,
+  parseOAuthFormBody,
+  decodeOAuthFormComponent,
+  validateOAuthCallbackScalar,
   validateConsumedOAuthCallbackParameters,
   normalizeReturnTo,
   linkProviderIdentity,
@@ -9390,16 +9392,17 @@ async function routeSporadesAuth(database, request, response) {
     return false;
   }
   const provider = match[1];
-  let parameters;
+  let callbackParameters;
   try {
-    parameters = await readOAuthCallbackParameters(request, requestUrl);
+    callbackParameters = await readOAuthCallbackParameters(request, requestUrl);
   } catch (error) {
     writeEndpointError(response, error);
     return true;
   }
+  const parameters = callbackParameters.parameters;
   const states = parameters.getAll("state");
   const state = states.length === 1 ? states[0] : null;
-  if (!state || states.length !== 1) {
+  if (!callbackParameters.stateTrustworthy || !state || states.length !== 1) {
     writeEndpointError(response, commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK"));
     return true;
   }
@@ -9409,6 +9412,9 @@ async function routeSporadesAuth(database, request, response) {
     return true;
   }
   try {
+    if (callbackParameters.error) {
+      throw callbackParameters.error;
+    }
     validateConsumedOAuthCallbackParameters(parameters);
     if (stateRow.provider !== provider) {
       throw commandError("OAuth provider did not match the sign-in request.", "Retry sign-in from the app.", "OAUTH_PROVIDER_MISMATCH");
@@ -9469,15 +9475,17 @@ async function routeSporadesAuth(database, request, response) {
 }
 async function readOAuthCallbackParameters(request, requestUrl) {
   if (request.method === "GET") {
-    return requestUrl.searchParams;
+    return {
+      parameters: requestUrl.searchParams,
+      error: null,
+      stateTrustworthy: true
+    };
   }
   if (request.method !== "POST" || !oauthFormContentTypeValid(request.headers["content-type"])) {
     throw commandError("Unsupported OAuth callback request.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
   }
   const body = await readLimitedRequestBody(request, 16 * 1024);
-  const encoded = body.toString("utf8");
-  validateOAuthCallbackEncoding(encoded);
-  return new URLSearchParams(encoded);
+  return parseOAuthFormBody(body);
 }
 function oauthFormContentTypeValid(value) {
   const raw = singleHttpHeader(value);
@@ -9489,9 +9497,74 @@ function oauthFormContentTypeValid(value) {
   const match = parts[0].match(/^charset\s*=\s*(?:"utf-8"|utf-8)$/i);
   return Boolean(match);
 }
-function validateOAuthCallbackEncoding(value) {
-  if (/[\u0000\r\n]/.test(value) || /%(?![0-9a-fA-F]{2})/.test(value)) {
-    throw commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+function parseOAuthFormBody(body) {
+  const parameters = new URLSearchParams();
+  let error = null;
+  let stateTrustworthy = true;
+  const invalidCallback = () => commandError(
+    "Invalid OAuth callback.",
+    "Retry sign-in from the app.",
+    "OAUTH_INVALID_CALLBACK"
+  );
+  for (let start = 0; start <= body.length; ) {
+    let end = body.indexOf(38, start);
+    if (end === -1) end = body.length;
+    const separator = body.indexOf(61, start);
+    const hasSeparator = separator !== -1 && separator < end;
+    const rawName = body.subarray(start, hasSeparator ? separator : end);
+    const rawValue = body.subarray(hasSeparator ? separator + 1 : end, end);
+    let name = null;
+    let value = null;
+    try {
+      name = decodeOAuthFormComponent(rawName);
+    } catch {
+      stateTrustworthy = false;
+      error ??= invalidCallback();
+    }
+    if (name !== null) {
+      try {
+        value = decodeOAuthFormComponent(rawValue);
+      } catch {
+        if (name === "state") stateTrustworthy = false;
+        error ??= invalidCallback();
+      }
+    }
+    if (name !== null && value !== null) {
+      parameters.append(name, value);
+    }
+    if (end === body.length) break;
+    start = end + 1;
+  }
+  return { parameters, error, stateTrustworthy };
+}
+function decodeOAuthFormComponent(raw) {
+  const bytes = [];
+  for (let index = 0; index < raw.length; index += 1) {
+    const byte = raw[index];
+    if (byte === 43) {
+      bytes.push(32);
+      continue;
+    }
+    if (byte === 37) {
+      if (index + 2 >= raw.length) throw new Error("Malformed percent escape.");
+      const pair = raw.subarray(index + 1, index + 3).toString("ascii");
+      if (!/^[0-9a-fA-F]{2}$/.test(pair)) throw new Error("Malformed percent escape.");
+      bytes.push(Number.parseInt(pair, 16));
+      index += 2;
+      continue;
+    }
+    bytes.push(byte);
+  }
+  const value = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
+  validateOAuthCallbackScalar(value);
+  return value;
+}
+function validateOAuthCallbackScalar(value) {
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    if (codePoint <= 31 || codePoint >= 127 && codePoint <= 159 || codePoint === 65533 || codePoint >= 64976 && codePoint <= 65007 || (codePoint & 65535) === 65534 || (codePoint & 65535) === 65535) {
+      throw new Error("Invalid callback character.");
+    }
   }
 }
 function validateConsumedOAuthCallbackParameters(parameters) {

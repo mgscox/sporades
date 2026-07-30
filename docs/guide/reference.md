@@ -1203,10 +1203,13 @@ the domain and sender registration in Apple's private email relay settings.
 Cancellation and failed callbacks spend the local OAuth state, so restart
 sign-in rather than replaying the callback. The `form_post` body is capped at
 16 KiB and accepts only an unambiguous URL-encoded callback. Once one exact
-state value is identified, duplicate code/error/user values and mixed
-success/cancellation responses spend that state before failing. A duplicate
-state, unsupported media type, malformed encoding, or oversized body cannot
-identify a trustworthy state and therefore fails without consuming one.
+state value is identified, duplicate code/error/user values, mixed
+success/cancellation responses, and malformed downstream fields spend that
+state before failing. Form names and values require strict UTF-8 and reject
+encoded or raw control characters, replacement characters, and Unicode
+noncharacters. A duplicate or malformed state, malformed parameter name,
+unsupported media type, or oversized body cannot identify a trustworthy state
+and therefore fails without consuming one.
 
 Apple identity tokens and signing-key responses are bounded before JSON
 parsing. Sporades accepts only plain-object JWT headers and claims, verifies
