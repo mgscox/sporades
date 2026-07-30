@@ -1340,6 +1340,65 @@ button in Chrome, and observes top-level navigation at a loopback authorization
 receiver. Its insecure loopback seam is process-only and cannot be enabled from
 `sporades.json`.
 
+### Configure Microsoft sign-in
+
+Create an app registration in the Microsoft Entra admin center. Choose the
+supported account types that match the Capsule's tenant selection, add a
+**Web** redirect URI, and create a client secret. The redirect URI must exactly
+match the Capsule origin plus:
+
+```text
+/__sporades/auth/microsoft/callback
+```
+
+For example, a fixed local Dev session on port 4000 uses:
+
+```text
+http://localhost:4000/__sporades/auth/microsoft/callback
+```
+
+A Hosted Capsule uses its public HTTPS origin. Configure the registration with:
+
+```sh
+sporades auth set microsoft \
+  --client-id <application-client-id> \
+  --client-secret <client-secret> \
+  --tenant organizations
+```
+
+`--tenant` accepts:
+
+- `common` for work, school, and personal Microsoft accounts;
+- `organizations` for work and school accounts;
+- `consumers` for personal Microsoft accounts;
+- one tenant GUID or verified tenant domain for a single organization.
+
+A Microsoft credential JSON file with `clientId`, `clientSecret`, and optional
+`tenant` fields can be used through `--client-json`. The default tenant is
+`common`. Sporades writes credentials to Server env and stores only env-var
+names and the tenant selection in `sporades.json`. Restart a running Dev
+session after changing the registration.
+
+Microsoft sign-in uses discovery-owned OpenID Connect endpoints and requests
+only `openid profile email`. Sporades performs a full-page authorization-code
+redirect with PKCE, state, and nonce, exchanges the code on the server, and
+verifies the signed ID token. No Microsoft SDK or access token enters Capsule
+client code. A verified tenant ID plus subject is the identity key; email and
+`preferred_username` are optional mutable profile claims.
+
+If sign-in fails:
+
+- `OAUTH_PROVIDER_ACTION_REQUIRED` means the user must complete a Microsoft
+  consent or account prompt;
+- `OAUTH_TENANT_REJECTED` means the account is outside the configured tenant;
+- `OAUTH_EXCHANGE_FAILED` commonly means the secret or exact callback URI does
+  not match the app registration;
+- `OAUTH_ID_TOKEN_*` means signed identity evidence failed verification.
+
+Provider response details and tokens are deliberately omitted from browser
+errors and normal logs. Start a new sign-in after any failure because OAuth
+state is single-use.
+
 
 #### Using OAuth sign-in in the client
 
@@ -1442,7 +1501,8 @@ queries, and mutations.
 Because Anonymous sessions are real Sporades accounts, preferences written
 before sign-up or provider sign-in move to the signed-in identity when the
 current user is still Anonymous. This applies when an Anonymous user signs up
-with email, signs in to an existing email account, or completes Google OAuth.
+with email, signs in to an existing email account, or completes Google or
+Microsoft provider sign-in.
 If the signed-in account already has preferences, the Anonymous preferences are
 shallow-merged over the stored signed-in preferences so the current browser's
 explicit Anonymous choices win for matching keys.

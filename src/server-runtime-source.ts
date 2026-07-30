@@ -442,6 +442,12 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   appleOAuthOriginEligible,
   parseAppleAuthorizationUser,
   sanitizeAppleNamePart,
+  createMicrosoftOAuthProviderAdapter,
+  completeMicrosoftOAuth,
+  discoverMicrosoftOpenIdConfiguration,
+  verifyMicrosoftIdentityToken,
+  microsoftTenantAllowsClaims,
+  validMicrosoftTenant,
   decodeJwtPart,
   readOAuthCallbackParameters,
   oauthFormContentTypeValid,
@@ -8529,10 +8535,16 @@ export async function routeSporadesAuth(database: LooseRecord, request: Incoming
       if (mappedError) {
         throw mappedError;
       }
+      const actionRequired = ["consent_required", "interaction_required", "login_required"].includes(providerError);
+      const cancelled = providerError === "access_denied";
       throw commandError(
-        "OAuth sign-in was cancelled or declined.",
-        "Retry sign-in when you are ready.",
-        "OAUTH_PROVIDER_CANCELLED",
+        actionRequired
+          ? "OAuth provider requires additional user action."
+          : cancelled ? "OAuth sign-in was cancelled or declined." : "OAuth provider rejected the sign-in request.",
+        actionRequired
+          ? "Retry sign-in and complete the provider's consent or account prompt."
+          : cancelled ? "Retry sign-in when you are ready." : "Check the provider credentials, tenant, and callback URI, then retry sign-in.",
+        actionRequired ? "OAUTH_PROVIDER_ACTION_REQUIRED" : cancelled ? "OAUTH_PROVIDER_CANCELLED" : "OAUTH_PROVIDER_REJECTED",
       );
     }
     const code = parameters.get("code");
@@ -8807,6 +8819,9 @@ function oauthProviderAdapter(database: LooseRecord, provider: string) {
   }
   if (provider === "apple") {
     return createAppleOAuthProviderAdapter(database);
+  }
+  if (provider === "microsoft") {
+    return createMicrosoftOAuthProviderAdapter(database);
   }
   return null;
 }
@@ -9459,6 +9474,252 @@ async function verifyGoogleIdentityToken(database: LooseRecord, token: string, e
   };
 }
 
+function createMicrosoftOAuthProviderAdapter(database: LooseRecord) {
+  const microsoft = database.authConfig.providers.microsoft;
+  const configured = Boolean(microsoft.enabled && microsoft.configured);
+  return {
+    provider: "microsoft",
+    responseMode: "query",
+    enabled: configured,
+    async begin(context: LooseRecord) {
+      const discovery = await discoverMicrosoftOpenIdConfiguration(microsoft.tenant);
+      const clientId = database.serverEnv[microsoft.clientIdEnv];
+      const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: context.redirectUri,
+        response_type: "code",
+        response_mode: "query",
+        scope: "openid profile email",
+        state: context.state,
+        nonce: context.nonce,
+        code_challenge: context.pkceChallenge,
+        code_challenge_method: "S256",
+      });
+      return { url: `${discovery.authorization_endpoint}?${params.toString()}` };
+    },
+    complete(context: LooseRecord) {
+      return completeMicrosoftOAuth(database, context);
+    },
+  };
+}
+
+async function discoverMicrosoftOpenIdConfiguration(tenant: string) {
+  const selectedTenant = validMicrosoftTenant(tenant) ? tenant : null;
+  if (!selectedTenant) {
+    throw commandError(
+      "Microsoft tenant configuration is invalid.",
+      "Use common, organizations, consumers, a tenant GUID, or a verified tenant domain.",
+      "OAUTH_TENANT_INVALID",
+    );
+  }
+  const discoveryOverride = process.env.SPORADES_MICROSOFT_DISCOVERY_URL;
+  const discoveryUrl = discoveryOverride ??
+    `https://login.microsoftonline.com/${encodeURIComponent(selectedTenant)}/v2.0/.well-known/openid-configuration`;
+  let discoveryOrigin;
+  try {
+    const parsedDiscoveryUrl = new URL(discoveryUrl);
+    const loopbackOverride = discoveryOverride &&
+      parsedDiscoveryUrl.protocol === "http:" &&
+      ["127.0.0.1", "::1", "localhost"].includes(parsedDiscoveryUrl.hostname);
+    const microsoftDiscovery = !discoveryOverride &&
+      parsedDiscoveryUrl.protocol === "https:" &&
+      parsedDiscoveryUrl.hostname === "login.microsoftonline.com";
+    if (!loopbackOverride && !microsoftDiscovery) throw new Error("untrusted discovery");
+    discoveryOrigin = parsedDiscoveryUrl.origin;
+  } catch {
+    throw commandError(
+      "Microsoft OpenID discovery URL was invalid.",
+      "Use the Microsoft identity platform discovery endpoint.",
+      "OAUTH_DISCOVERY_INVALID",
+    );
+  }
+  let discovery;
+  try {
+    const response = await fetch(discoveryUrl);
+    if (!response.ok) throw new Error("discovery");
+    discovery = await response.json();
+  } catch {
+    throw commandError(
+      "Microsoft OpenID configuration could not be loaded.",
+      "Check Microsoft tenant selection and network access, then retry sign-in.",
+      "OAUTH_DISCOVERY_UNAVAILABLE",
+    );
+  }
+  const required = ["issuer", "authorization_endpoint", "token_endpoint", "jwks_uri"];
+  if (!required.every((key) => typeof discovery?.[key] === "string" && discovery[key].length <= 2048)) {
+    throw commandError(
+      "Microsoft OpenID configuration was invalid.",
+      "Check Microsoft tenant selection and retry sign-in.",
+      "OAUTH_DISCOVERY_INVALID",
+    );
+  }
+  try {
+    const endpointUrls = ["authorization_endpoint", "token_endpoint", "jwks_uri"].map((key) => new URL(discovery[key]));
+    const issuerUrl = new URL(String(discovery.issuer).replace("{tenantid}", "11111111-2222-3333-4444-555555555555"));
+    const endpointsTrusted = discoveryOverride
+      ? endpointUrls.every((url) => url.origin === discoveryOrigin)
+      : endpointUrls.every((url) => url.protocol === "https:" && url.hostname === "login.microsoftonline.com");
+    const issuerTrusted = issuerUrl.protocol === "https:" && issuerUrl.hostname === "login.microsoftonline.com";
+    if (!endpointsTrusted || !issuerTrusted) throw new Error("untrusted endpoints");
+  } catch {
+    throw commandError(
+      "Microsoft OpenID configuration contained invalid endpoints.",
+      "Check Microsoft tenant selection and retry sign-in.",
+      "OAUTH_DISCOVERY_INVALID",
+    );
+  }
+  return discovery;
+}
+
+async function completeMicrosoftOAuth(database: LooseRecord, context: LooseRecord) {
+  const microsoft = database.authConfig.providers.microsoft;
+  const discovery = await discoverMicrosoftOpenIdConfiguration(microsoft.tenant);
+  const clientId = database.serverEnv[microsoft.clientIdEnv];
+  const clientSecret = database.serverEnv[microsoft.clientSecretEnv];
+  let tokenResponse;
+  try {
+    tokenResponse = await fetch(discovery.token_endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code: context.code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: context.redirectUri,
+        grant_type: "authorization_code",
+        code_verifier: context.pkceVerifier,
+        scope: "openid profile email",
+      }),
+    });
+  } catch {
+    throw commandError(
+      "Microsoft OAuth code exchange failed.",
+      "Check the Microsoft client credentials, tenant, and callback URI, then retry sign-in.",
+      "OAUTH_EXCHANGE_FAILED",
+    );
+  }
+  if (!tokenResponse.ok) {
+    throw commandError(
+      "Microsoft OAuth code exchange failed.",
+      "Check the Microsoft client credentials, tenant, consent, and callback URI, then retry sign-in.",
+      "OAUTH_EXCHANGE_FAILED",
+    );
+  }
+  let token;
+  try {
+    token = await tokenResponse.json();
+  } catch {
+    throw commandError(
+      "Microsoft OAuth response was invalid.",
+      "Check the Microsoft client configuration and retry sign-in.",
+      "OAUTH_EXCHANGE_FAILED",
+    );
+  }
+  if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
+    throw commandError(
+      "Microsoft OAuth response did not include a valid identity token.",
+      "Check the Microsoft client configuration and retry sign-in.",
+      "OAUTH_ID_TOKEN_INVALID",
+    );
+  }
+  return await verifyMicrosoftIdentityToken(database, token.id_token, context.nonce, discovery);
+}
+
+async function verifyMicrosoftIdentityToken(
+  database: LooseRecord,
+  token: string,
+  expectedNonce: string,
+  discovery: LooseRecord,
+) {
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  let header;
+  let claims;
+  try {
+    header = JSON.parse(decodeJwtPart(parts[0]).toString("utf8"));
+    claims = JSON.parse(decodeJwtPart(parts[1]).toString("utf8"));
+  } catch {
+    throw commandError("Microsoft identity token was invalid.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  if (header.alg !== "RS256" || typeof header.kid !== "string") {
+    throw commandError("Microsoft identity token used an unsupported signature.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  let jwks;
+  try {
+    const response = await fetch(discovery.jwks_uri);
+    if (!response.ok) throw new Error("jwks");
+    jwks = await response.json();
+  } catch {
+    throw commandError("Microsoft signing keys could not be loaded.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
+  }
+  const jwk = Array.isArray(jwks?.keys)
+    ? jwks.keys.find((candidate: LooseRecord) =>
+      candidate.kid === header.kid &&
+      candidate.kty === "RSA" &&
+      (candidate.alg === undefined || candidate.alg === "RS256") &&
+      (candidate.use === undefined || candidate.use === "sig")
+    )
+    : null;
+  if (!jwk) {
+    throw commandError("Microsoft identity token signing key was not recognized.", "Retry Microsoft sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  let signatureValid = false;
+  let signatureCheckFailed = false;
+  try {
+    signatureValid = verify(
+      "RSA-SHA256",
+      Buffer.from(`${parts[0]}.${parts[1]}`),
+      { key: jwk, format: "jwk" },
+      decodeJwtPart(parts[2]),
+    );
+  } catch {
+    signatureCheckFailed = true;
+  }
+  const microsoft = database.authConfig.providers.microsoft;
+  const clientId = database.serverEnv[microsoft.clientIdEnv];
+  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  const validTenantId = typeof claims.tid === "string" &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(claims.tid);
+  const expectedIssuer = validTenantId
+    ? String(discovery.issuer).replace("{tenantid}", claims.tid)
+    : "";
+  const expectedKeyIssuer = validTenantId && typeof jwk.issuer === "string"
+    ? jwk.issuer.replace("{tenantid}", claims.tid)
+    : "";
+  const validSubject = typeof claims.sub === "string" &&
+    claims.sub.length <= 255 &&
+    /^[\x21-\x7e]+$/.test(claims.sub);
+  const tenantAllowed = validTenantId && microsoftTenantAllowsClaims(microsoft.tenant, claims.tid, claims.iss, discovery.issuer);
+  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED"
+    : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID"
+    : !validTenantId || claims.iss !== expectedIssuer ? "OAUTH_ID_TOKEN_ISSUER_INVALID"
+    : expectedKeyIssuer !== claims.iss ? "OAUTH_ID_TOKEN_KEY_ISSUER_INVALID"
+    : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID"
+    : typeof claims.exp !== "number" || claims.exp <= Math.floor(Date.now() / 1000) ? "OAUTH_ID_TOKEN_EXPIRED"
+    : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID"
+    : !tenantAllowed ? "OAUTH_TENANT_REJECTED"
+    : !validSubject ? "OAUTH_ID_TOKEN_SUBJECT_INVALID"
+    : null;
+  if (invalidCode) {
+    const tenantFailure = invalidCode === "OAUTH_TENANT_REJECTED";
+    throw commandError(
+      tenantFailure ? "Microsoft account is not allowed by the configured tenant." : "Microsoft identity token failed verification.",
+      tenantFailure ? "Use an account accepted by this Capsule's Microsoft tenant selection." : "Retry Microsoft sign-in.",
+      invalidCode,
+    );
+  }
+  const email = normalizeSimulatedText(claims.email)?.toLowerCase() ?? null;
+  return {
+    subject: `${claims.tid.toLowerCase()}:${claims.sub}`,
+    email,
+    emailVerified: null,
+    displayName: normalizeSimulatedText(claims.name) ?? normalizeSimulatedText(claims.preferred_username) ?? email ?? "Microsoft user",
+    picture: null,
+  };
+}
+
 async function verifyAppleIdentityToken(database: LooseRecord, token: string, expectedNonce: string) {
   if (typeof token !== "string" || token.length > 16 * 1024) {
     throw commandError("Apple identity token was invalid.", "Retry Apple sign-in.", "OAUTH_ID_TOKEN_INVALID");
@@ -9620,6 +9881,22 @@ function sanitizeAppleNamePart(value: any) {
     throw commandError("Apple authorization profile was invalid.", "Retry Apple sign-in.", "OAUTH_APPLE_PROFILE_INVALID");
   }
   return text;
+}
+
+function microsoftTenantAllowsClaims(selectedTenant: string, tenantId: string, issuer: string, discoveredIssuer: string) {
+  const consumerTenant = "9188040d-6c67-4c5b-b112-36a304b66dad";
+  if (selectedTenant === "common") return true;
+  if (selectedTenant === "organizations") return tenantId.toLowerCase() !== consumerTenant;
+  if (selectedTenant === "consumers") return tenantId.toLowerCase() === consumerTenant;
+  if (/^[0-9a-f-]{36}$/i.test(selectedTenant)) return tenantId.toLowerCase() === selectedTenant.toLowerCase();
+  return discoveredIssuer === issuer;
+}
+
+function validMicrosoftTenant(value: any) {
+  if (["common", "organizations", "consumers"].includes(value)) return true;
+  if (typeof value !== "string" || value.length > 253) return false;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return true;
+  return /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/.test(value);
 }
 
 function decodeJwtPart(value: string) {
@@ -11299,7 +11576,7 @@ function authStatus(config: LooseRecord, serverEnv: LooseRecord) {
   const authConfig = config.auth ?? { mode: "anonymous" };
   const normalized = normalizeAuthConfig(authConfig);
   const providerOrder = ["anonymous", "email", "google", "microsoft", "apple", "facebook"] as const;
-  const runtimeProviders = new Set(["anonymous", "email", "google", "apple", "facebook"]);
+  const runtimeProviders = new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
   const providers: LooseRecord = {};
   const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4000;
   for (const providerName of providerOrder) {
@@ -11368,6 +11645,7 @@ function normalizeAuthConfig(authConfig: LooseRecord) {
 
   const googleConfig = readProviderConfig(providerConfig.google);
   const legacyGoogle = authConfig.google ?? {};
+  const microsoftConfig = readProviderConfig(providerConfig.microsoft);
   const googleEnabled = googleConfig.enabled || authConfig.mode === "google";
   const emailConfig = readProviderConfig(providerConfig.email);
   const anonymousConfig = readProviderConfig(providerConfig.anonymous);
@@ -11391,7 +11669,10 @@ function normalizeAuthConfig(authConfig: LooseRecord) {
         enabled: emailConfig.enabled,
         ...emptyProviderConfig(),
       },
-      microsoft: readProviderConfig(providerConfig.microsoft),
+      microsoft: {
+        ...microsoftConfig,
+        tenant: microsoftConfig.tenant ?? "common",
+      },
       apple: readProviderConfig(providerConfig.apple),
       facebook: readFacebookProviderConfig(providerConfig.facebook),
     },

@@ -433,9 +433,9 @@ Supported provider behavior:
 | Anonymous | `auth.providers.anonymous`, legacy `auth.mode`, or unset | Creates a persistent anonymous Sporades session. |
 | Email | `auth.providers.email` | `auth.signUp("email", ...)` links the current session; `auth.signIn("email", ...)` resolves the account later. |
 | Google | `auth.providers.google` with env var names, or legacy Google mode | `auth.signIn("google")` starts a server-owned OAuth redirect and links the verified provider identity. |
-| Microsoft | `auth.providers.microsoft` with client env names and tenant | Configuration is provider-neutral; runtime availability is reported separately from credential completeness. |
 | Apple | `auth.providers.apple` with Services ID, Team ID, Key ID, and private-key env name | HTTPS-domain-only server-owned `form_post` flow; runtime ES256 client credential and strictly verified Apple subject link the current Anonymous account. |
 | Facebook | `auth.providers.facebook` with app env names and Graph `v23.0` | `auth.signIn("facebook")` starts a server-owned authorization-code redirect, requires the stable Graph profile ID, and accepts profiles without email. |
+| Microsoft | `auth.providers.microsoft` with client env names and `common`, `organizations`, `consumers`, tenant-GUID, or tenant-domain selection | `auth.signIn("microsoft")` uses discovered OpenID Connect endpoints and links a verified tenant-qualified subject. |
 
 Provider secrets live in Server env. `sporades.json` stores provider shape,
 non-secret options, and env var names, not secret values. Configuring or
@@ -464,7 +464,7 @@ Session records store `createdAt` and `expiresAt` lifecycle metadata. By
 default a session expires 30 days after creation or refresh. Missing, invalid,
 or expired session tokens resolve to a fresh anonymous session. Email sign-up
 and sign-in rotate the current session token when the linked identity changes.
-Google sign-in refreshes the current session token during the server-owned OAuth
+Google and Microsoft sign-in refresh the current session token during the server-owned OAuth
 callback, preserving the redirect flow without exposing a token handoff in the
 browser.
 Facebook sign-in follows the same Session-linking contract. Its App Secret and

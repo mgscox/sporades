@@ -1490,7 +1490,7 @@ test("sporades auth set merges OAuth providers, supports explicit disablement, a
     assert.equal(data.providers.google.runtimeAvailable, true);
     assert.equal(data.providers.microsoft.enabled, false);
     assert.equal(data.providers.microsoft.configured, true);
-    assert.equal(data.providers.microsoft.runtimeAvailable, false);
+    assert.equal(data.providers.microsoft.runtimeAvailable, true);
     assert.doesNotMatch(disabled.stdout, /google-secret|microsoft-secret|google-id|microsoft-id/);
   });
 });
@@ -1541,7 +1541,7 @@ test("sporades auth set parses provider-specific credential files and reports al
     assert.equal(status.providers.email.configured, true);
     assert.equal(status.providers.email.runtimeAvailable, true);
     assert.equal(status.providers.microsoft.configured, true);
-    assert.equal(status.providers.microsoft.runtimeAvailable, false);
+    assert.equal(status.providers.microsoft.runtimeAvailable, true);
     assert.equal(status.providers.apple.configured, true);
     assert.equal(status.providers.facebook.configured, true);
     assert.equal(status.providers.facebook.runtimeAvailable, true);
@@ -1594,6 +1594,51 @@ test("sporades auth set facebook defaults to and validates the supported Graph v
       },
     });
     assert.doesNotMatch(`${unsupported.stdout}${unsupported.stderr}`, /new-secret/);
+  });
+});
+
+test("sporades auth set microsoft accepts bounded tenant selections and rejects path-like tenant input before writing", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "tenant-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "tenant-island");
+    const selections = [
+      "common",
+      "organizations",
+      "consumers",
+      "11111111-2222-3333-4444-555555555555",
+      "contoso.onmicrosoft.com",
+    ];
+    for (const tenant of selections) {
+      const result = await runCli([
+        "auth", "set", "microsoft",
+        "--client-id", "microsoft-id",
+        "--client-secret", "microsoft-secret",
+        "--tenant", tenant,
+        "--json",
+      ], { cwd: projectDir });
+      assert.equal(result.code, 0, `${tenant}: ${result.stdout || result.stderr}`);
+      assert.equal(JSON.parse(result.stdout).data.providers.microsoft.tenant, tenant);
+      assert.doesNotMatch(result.stdout, /microsoft-secret/);
+    }
+    const configPath = path.join(projectDir, "sporades.json");
+    const envPath = path.join(projectDir, ".env.sporades.server");
+    const configBefore = await readFile(configPath, "utf8");
+    const envBefore = await readFile(envPath, "utf8");
+    const invalid = await runCli([
+      "auth", "set", "microsoft",
+      "--client-id", "replacement-id",
+      "--client-secret", "replacement-secret",
+      "--tenant", "../common",
+      "--json",
+    ], { cwd: projectDir });
+    assert.notEqual(invalid.code, 0);
+    assert.match(invalid.stdout, /Invalid Microsoft tenant/);
+    assert.doesNotMatch(invalid.stdout, /replacement-secret/);
+    assert.equal(await readFile(configPath, "utf8"), configBefore);
+    assert.equal(await readFile(envPath, "utf8"), envBefore);
   });
 });
 

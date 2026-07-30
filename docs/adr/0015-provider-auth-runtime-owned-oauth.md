@@ -40,6 +40,22 @@ The same deadline remains authoritative while a response body is streaming;
 timeout, oversize, malformed JSON, and other read failures cancel and release
 the response reader before returning a bounded error.
 
+The built-in Microsoft adapter discovers the selected Microsoft identity
+platform tenant's OpenID Connect endpoints and uses authorization-code flow
+with PKCE, state, nonce, an exact callback URI, and `openid profile email`
+scopes. It verifies the ID token signature, discovered issuer, signing-key
+issuer, configured audience, expiry, nonce, tenant policy, tenant ID, and stable subject. Provider
+identity is keyed by the tenant-qualified subject, so equal `sub` values in
+different tenants cannot collide. Email and `preferred_username` remain
+optional mutable profile data and are never identity evidence.
+
+Tenant selection accepts `common`, `organizations`, `consumers`, a tenant GUID,
+or a verified tenant domain. `organizations` rejects the Microsoft consumer
+tenant, `consumers` accepts only it, and specific-tenant tokens must agree with
+the selected/discovered tenant context. Consent and interaction requirements,
+tenant rejection, exchange failure, and token-verification failure use bounded
+Sporades errors without reflecting provider response bodies or tokens.
+
 Provider identity is stored separately from the Sporades user. A verified
 `(provider, subject)` pair identifies the Provider identity; provider email,
 display name, and picture are nullable, mutable profile attributes and are not

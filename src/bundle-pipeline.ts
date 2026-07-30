@@ -49,7 +49,7 @@ export type FrameworkBundleConfig = {
 
 const AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"] as const;
 const SUPPORTED_AUTH_PROVIDERS = new Set<string>(AUTH_PROVIDER_ORDER);
-const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "apple", "facebook"]);
+const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
 
 export async function createBundle(
   projectDir: string,
@@ -518,6 +518,7 @@ function normalizeAuthConfig(authConfig: AuthConfig): NormalizedAuthConfig {
 
   const googleConfig = readProviderConfig(providerConfig.google);
   const legacyGoogle = readProviderConfig(authConfig.google);
+  const microsoftConfig = readProviderConfig(providerConfig.microsoft);
   const googleEnabled = googleConfig.enabled || authConfig.mode === "google";
   const emailConfig = readProviderConfig(providerConfig.email);
   const anonymousConfig = readProviderConfig(providerConfig.anonymous);
@@ -541,7 +542,10 @@ function normalizeAuthConfig(authConfig: AuthConfig): NormalizedAuthConfig {
         enabled: emailConfig.enabled,
         ...emptyProviderConfig(),
       },
-      microsoft: readProviderConfig(providerConfig.microsoft),
+      microsoft: {
+        ...microsoftConfig,
+        tenant: microsoftConfig.tenant ?? "common",
+      },
       apple: readProviderConfig(providerConfig.apple),
       facebook: readFacebookProviderConfig(providerConfig.facebook),
     },

@@ -19,6 +19,7 @@ const verifyAppleIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn
 const createAppleClientSecret = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "createAppleClientSecret");
 const appleOAuthOriginEligible = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "appleOAuthOriginEligible");
 const resolveOAuthRequestOrigin = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "resolveOAuthRequestOrigin");
+const verifyMicrosoftIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "verifyMicrosoftIdentityToken");
 const linkProviderIdentity = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkProviderIdentity");
 
 async function withTempDatabase(fn) {
@@ -277,6 +278,33 @@ test("OAuth state is single-use across mismatch, expiry, cancellation, and compl
   });
 });
 
+test("OAuth callbacks distinguish provider action requirements without reflecting provider details", async () => {
+  await withTempDatabase(async (database) => {
+    database.__oauthProviderAdapters = {
+      microsoft: providerAdapter({ provider: "microsoft" }),
+    };
+    const session = await resolveAnonymousSession(database, null);
+    const start = await beginOAuthSignIn(database, session, "microsoft", {
+      origin: "http://127.0.0.1:4000",
+      returnTo: "http://127.0.0.1:4000/after",
+    });
+    const state = new URL(start.url).searchParams.get("state");
+    const response = responseRecorder();
+    await routeSporadesAuth(
+      database,
+      {
+        method: "GET",
+        url: `/__sporades/auth/microsoft/callback?state=${state}&error=consent_required&error_description=secret-provider-detail`,
+        headers: {},
+      },
+      response,
+    );
+    assert.equal(response.statusCode, 500);
+    assert.match(response.body, /OAUTH_PROVIDER_ACTION_REQUIRED/);
+    assert.doesNotMatch(response.body, /secret-provider-detail|consent_required/);
+  });
+});
+
 test("Google identity tokens require signature, issuer, audience, expiry, nonce, and subject", async () => {
   await withTempDatabase(async (database) => {
     const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
@@ -336,6 +364,173 @@ test("Google identity tokens require signature, issuer, audience, expiry, nonce,
           (error) => error.code?.startsWith("OAUTH_ID_TOKEN_"),
         );
       }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("Microsoft uses discovered OIDC endpoints with PKCE, nonce, exact callback, and identity-only scopes", async () => {
+  await withTempDatabase(async (database) => {
+    database.authConfig.providers.microsoft = {
+      enabled: true,
+      configured: true,
+      runtimeAvailable: true,
+      clientIdEnv: "MICROSOFT_CLIENT_ID",
+      clientSecretEnv: "MICROSOFT_CLIENT_SECRET",
+      tenant: "organizations",
+    };
+    database.serverEnv.MICROSOFT_CLIENT_ID = "microsoft-client-id";
+    database.serverEnv.MICROSOFT_CLIENT_SECRET = "microsoft-client-secret";
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      assert.equal(String(url), "https://login.microsoftonline.com/organizations/v2.0/.well-known/openid-configuration");
+      return new Response(JSON.stringify({
+        issuer: "https://login.microsoftonline.com/{tenantid}/v2.0",
+        authorization_endpoint: "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize",
+        token_endpoint: "https://login.microsoftonline.com/organizations/oauth2/v2.0/token",
+        jwks_uri: "https://login.microsoftonline.com/organizations/discovery/v2.0/keys",
+      }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    try {
+      const session = await resolveAnonymousSession(database, null);
+      const start = await beginOAuthSignIn(database, session, "microsoft", {
+        origin: "https://capsule.example.test",
+        returnTo: "https://capsule.example.test/after",
+      });
+      assert.equal(start.ok, true);
+      const authorizationUrl = new URL(start.url);
+      assert.equal(authorizationUrl.origin + authorizationUrl.pathname, "https://login.microsoftonline.com/organizations/oauth2/v2.0/authorize");
+      assert.equal(authorizationUrl.searchParams.get("client_id"), "microsoft-client-id");
+      assert.equal(authorizationUrl.searchParams.get("response_type"), "code");
+      assert.equal(authorizationUrl.searchParams.get("response_mode"), "query");
+      assert.equal(authorizationUrl.searchParams.get("scope"), "openid profile email");
+      assert.equal(authorizationUrl.searchParams.get("redirect_uri"), "https://capsule.example.test/__sporades/auth/microsoft/callback");
+      assert.equal(authorizationUrl.searchParams.get("code_challenge_method"), "S256");
+      assert.ok(authorizationUrl.searchParams.get("code_challenge"));
+      assert.ok(authorizationUrl.searchParams.get("state"));
+      assert.ok(authorizationUrl.searchParams.get("nonce"));
+      assert.equal(authorizationUrl.searchParams.has("offline_access"), false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("Microsoft identity tokens require signed issuer, audience, expiry, nonce, tenant, and collision-safe stable subject", async () => {
+  await withTempDatabase(async (database) => {
+    assert.equal(typeof verifyMicrosoftIdentityToken, "function");
+    const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const { privateKey: attackerKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const kid = "microsoft-key";
+    const jwk = publicKey.export({ format: "jwk" });
+    Object.assign(jwk, {
+      kid,
+      alg: "RS256",
+      use: "sig",
+      issuer: "https://login.microsoftonline.com/{tenantid}/v2.0",
+    });
+    database.authConfig.providers.microsoft = {
+      enabled: true,
+      configured: true,
+      runtimeAvailable: true,
+      clientIdEnv: "MICROSOFT_CLIENT_ID",
+      clientSecretEnv: "MICROSOFT_CLIENT_SECRET",
+      tenant: "organizations",
+    };
+    database.serverEnv.MICROSOFT_CLIENT_ID = "microsoft-client-id";
+    const tenantId = "11111111-2222-3333-4444-555555555555";
+    const issuer = `https://login.microsoftonline.com/${tenantId}/v2.0`;
+    const discovery = {
+      issuer: "https://login.microsoftonline.com/{tenantid}/v2.0",
+      jwks_uri: "https://login.microsoftonline.com/organizations/discovery/v2.0/keys",
+    };
+    const baseClaims = {
+      iss: issuer,
+      aud: "microsoft-client-id",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      nonce: "expected-nonce",
+      tid: tenantId,
+      sub: "same-subject-in-every-tenant",
+      name: "Microsoft Person",
+    };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async (url) => {
+      assert.equal(String(url), discovery.jwks_uri);
+      return new Response(JSON.stringify({ keys: [jwk] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    };
+    try {
+      const identity = await verifyMicrosoftIdentityToken(
+        database,
+        signedJwt(privateKey, kid, baseClaims),
+        "expected-nonce",
+        discovery,
+      );
+      assert.deepEqual(identity, {
+        subject: `${tenantId}:same-subject-in-every-tenant`,
+        email: null,
+        emailVerified: null,
+        displayName: "Microsoft Person",
+        picture: null,
+      });
+
+      const invalidCases = [
+        signedJwt(attackerKey, kid, baseClaims),
+        signedJwt(privateKey, kid, { ...baseClaims, iss: "https://attacker.example" }),
+        signedJwt(privateKey, kid, { ...baseClaims, aud: "wrong-client" }),
+        signedJwt(privateKey, kid, { ...baseClaims, exp: Math.floor(Date.now() / 1000) - 1 }),
+        signedJwt(privateKey, kid, { ...baseClaims, nonce: "wrong-nonce" }),
+        signedJwt(privateKey, kid, { ...baseClaims, tid: "9188040d-6c67-4c5b-b112-36a304b66dad" }),
+        signedJwt(privateKey, kid, { ...baseClaims, sub: "" }),
+      ];
+      for (const token of invalidCases) {
+        await assert.rejects(
+          verifyMicrosoftIdentityToken(database, token, "expected-nonce", discovery),
+          (error) => error.code?.startsWith("OAUTH_ID_TOKEN_") || error.code === "OAUTH_TENANT_REJECTED",
+        );
+      }
+      jwk.issuer = "https://login.microsoftonline.com/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/v2.0";
+      await assert.rejects(
+        verifyMicrosoftIdentityToken(database, signedJwt(privateKey, kid, baseClaims), "expected-nonce", discovery),
+        (error) => error.code === "OAUTH_ID_TOKEN_KEY_ISSUER_INVALID",
+      );
+      jwk.issuer = "https://login.microsoftonline.com/{tenantid}/v2.0";
+
+      const consumerTenant = "9188040d-6c67-4c5b-b112-36a304b66dad";
+      database.authConfig.providers.microsoft.tenant = "consumers";
+      const consumerClaims = {
+        ...baseClaims,
+        iss: `https://login.microsoftonline.com/${consumerTenant}/v2.0`,
+        tid: consumerTenant,
+      };
+      assert.equal(
+        (await verifyMicrosoftIdentityToken(
+          database,
+          signedJwt(privateKey, kid, consumerClaims),
+          "expected-nonce",
+          discovery,
+        )).subject,
+        `${consumerTenant}:same-subject-in-every-tenant`,
+      );
+
+      database.authConfig.providers.microsoft.tenant = tenantId;
+      const otherTenant = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+      await assert.rejects(
+        verifyMicrosoftIdentityToken(
+          database,
+          signedJwt(privateKey, kid, {
+            ...baseClaims,
+            iss: `https://login.microsoftonline.com/${otherTenant}/v2.0`,
+            tid: otherTenant,
+          }),
+          "expected-nonce",
+          discovery,
+        ),
+        (error) => error.code === "OAUTH_TENANT_REJECTED",
+      );
     } finally {
       globalThis.fetch = originalFetch;
     }

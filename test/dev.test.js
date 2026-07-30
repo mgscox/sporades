@@ -53,6 +53,46 @@ async function getTestAvailablePort() {
   return port;
 }
 
+async function runRealBrowserRedirectTracer(url) {
+  const executable = process.env.SPORADES_REAL_BROWSER_CHROME;
+  if (!executable) return false;
+  const profile = await mkdtemp(path.join(tmpdir(), "sporades-oauth-browser-"));
+  try {
+    const child = spawn(executable, [
+      "--headless=new",
+      "--disable-gpu",
+      "--no-first-run",
+      "--no-default-browser-check",
+      `--user-data-dir=${profile}`,
+      "--dump-dom",
+      url,
+    ], { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    const exitCode = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        child.kill("SIGTERM");
+        reject(new Error("Real browser OAuth redirect tracer timed out."));
+      }, 15_000);
+      child.once("error", (error) => {
+        clearTimeout(timer);
+        reject(error);
+      });
+      child.once("exit", (code) => {
+        clearTimeout(timer);
+        resolve(code);
+      });
+    });
+    assert.equal(exitCode, 0, stderr);
+    assert.match(stdout, /<html/i);
+    return true;
+  } finally {
+    await rm(profile, { recursive: true, force: true });
+  }
+}
+
 async function snapshotProjectTree(root, current = root) {
   const snapshot = {};
   for (const name of (await readdir(current)).sort()) {
@@ -1075,6 +1115,85 @@ async function withFakeAppleServer(fn) {
       requests,
       setNonce(value) { nonce = value; },
     });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+async function withFakeMicrosoftServer(fn) {
+  const requests = [];
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: "jwk" });
+  Object.assign(jwk, {
+    kid: "fake-microsoft-key",
+    alg: "RS256",
+    use: "sig",
+    issuer: "https://login.microsoftonline.com/{tenantid}/v2.0",
+  });
+  const tenantId = "11111111-2222-3333-4444-555555555555";
+  let nonce = null;
+  let origin = null;
+  const identityToken = () => {
+    const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid: jwk.kid })).toString("base64url");
+    const payload = Buffer.from(JSON.stringify({
+      iss: `https://login.microsoftonline.com/${tenantId}/v2.0`,
+      aud: "microsoft-client-id",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      nonce,
+      tid: tenantId,
+      sub: "microsoft-subject-mira",
+      name: "Mira Microsoft",
+    })).toString("base64url");
+    const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString("base64url");
+    return `${header}.${payload}.${signature}`;
+  };
+  const server = createServer(async (request, response) => {
+    const requestUrl = new URL(request.url, "http://127.0.0.1");
+    requests.push({ method: request.method, path: requestUrl.pathname });
+    if (request.method === "GET" && requestUrl.pathname === "/discovery") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        issuer: "https://login.microsoftonline.com/{tenantid}/v2.0",
+        authorization_endpoint: `${origin}/authorize`,
+        token_endpoint: `${origin}/token`,
+        jwks_uri: `${origin}/jwks`,
+      }));
+      return;
+    }
+    if (request.method === "GET" && requestUrl.pathname === "/authorize") {
+      nonce = requestUrl.searchParams.get("nonce");
+      response.writeHead(302, {
+        location: `${requestUrl.searchParams.get("redirect_uri")}?code=microsoft-code&state=${requestUrl.searchParams.get("state")}`,
+      });
+      response.end();
+      return;
+    }
+    if (request.method === "POST" && requestUrl.pathname === "/token") {
+      const body = await new Promise((resolve) => {
+        let raw = "";
+        request.on("data", (chunk) => { raw += chunk; });
+        request.on("end", () => resolve(new URLSearchParams(raw)));
+      });
+      requests.at(-1).body = Object.fromEntries(body.entries());
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ id_token: identityToken(), access_token: "server-owned-secret-token" }));
+      return;
+    }
+    if (request.method === "GET" && requestUrl.pathname === "/jwks") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ keys: [jwk] }));
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  origin = `http://127.0.0.1:${server.address().port}`;
+  try {
+    return await fn({ discoveryUrl: `${origin}/discovery`, origin, requests });
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
@@ -7892,7 +8011,7 @@ test("WebSocket auth.get reports enabled providers from multi-provider config", 
       assert.deepEqual(auth.data.providers.anonymous, { enabled: true, configured: true, runtimeAvailable: true });
       assert.deepEqual(auth.data.providers.email, { enabled: true, configured: true, runtimeAvailable: true });
       assert.deepEqual(auth.data.providers.google, { enabled: true, configured: true, runtimeAvailable: true });
-      assert.deepEqual(auth.data.providers.microsoft, { enabled: false, configured: false, runtimeAvailable: false });
+      assert.deepEqual(auth.data.providers.microsoft, { enabled: false, configured: false, runtimeAvailable: true });
       assert.doesNotMatch(JSON.stringify(auth.data.providers), /GOOGLE_CLIENT_ID|GOOGLE_CLIENT_SECRET|client-secret/);
     } finally {
       socket?.close();
@@ -8444,6 +8563,107 @@ test("Facebook auth callback uses the versioned server-owned Graph flow and acce
         } finally {
           sqlite.close();
         }
+      } finally {
+        socket?.close();
+        child.kill("SIGTERM");
+        await new Promise((resolve) => child.once("exit", resolve));
+      }
+    });
+  });
+});
+
+test("Microsoft full-page redirect completes through discovered endpoints and preserves anonymous state", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "microsoft-island", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "microsoft-island");
+    const configPath = path.join(projectDir, "sporades.json");
+    const config = JSON.parse(await readFile(configPath, "utf8"));
+    config.dev.port = 0;
+    await writeFile(configPath, `${JSON.stringify(config, null, 2)}\n`);
+    await installFakeReact(projectDir);
+    const configured = await runCli(
+      ["auth", "set", "microsoft", "--client-id", "microsoft-client-id", "--client-secret", "microsoft-secret", "--tenant", "organizations", "--json"],
+      { cwd: projectDir },
+    );
+    assert.equal(configured.code, 0, configured.stderr);
+    assert.equal(JSON.parse(configured.stdout).data.providers.microsoft.runtimeAvailable, true);
+    assert.doesNotMatch(configured.stdout, /microsoft-secret/);
+
+    await withFakeMicrosoftServer(async (microsoft) => {
+      const child = startCli(["dev", "--json"], {
+        cwd: projectDir,
+        env: { SPORADES_MICROSOFT_DISCOVERY_URL: microsoft.discoveryUrl },
+      });
+      let socket;
+      try {
+        const started = await waitForJsonLine(child);
+        assert.equal(started.ok, true, JSON.stringify(started));
+        socket = await openSocket(started.data.url);
+        socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+        const before = await readSocketMessage(socket);
+        const anonymousUserId = before.data.auth.userId;
+        assert.deepEqual(before.data.providers.microsoft, {
+          enabled: true,
+          configured: true,
+          runtimeAvailable: true,
+        });
+        socket.send(JSON.stringify({ id: "preference", type: "preferences.update", patch: { theme: "night" } }));
+        assert.equal((await readSocketMessage(socket)).error, null);
+        socket.send(JSON.stringify({
+          id: "signin",
+          type: "auth.signIn",
+          provider: "microsoft",
+          returnTo: `${started.data.url}/after`,
+        }));
+        const signIn = await readSocketMessage(socket);
+        assert.equal(signIn.type, "auth.redirect");
+        assert.doesNotMatch(signIn.data.url, /microsoft-secret|server-owned-secret-token/);
+        const authorize = new URL(signIn.data.url);
+        assert.equal(authorize.origin, microsoft.origin);
+        assert.equal(authorize.pathname, "/authorize");
+        assert.equal(authorize.searchParams.get("scope"), "openid profile email");
+        assert.equal(authorize.searchParams.get("response_mode"), "query");
+        assert.ok(authorize.searchParams.get("nonce"));
+        assert.ok(authorize.searchParams.get("state"));
+        assert.ok(authorize.searchParams.get("code_challenge"));
+
+        const usedRealBrowser = await runRealBrowserRedirectTracer(authorize.toString());
+        if (!usedRealBrowser) {
+          const providerRedirect = await fetch(authorize, { redirect: "manual" });
+          assert.equal(providerRedirect.status, 302);
+          const callbackLocation = providerRedirect.headers.get("location");
+          assert.match(callbackLocation, /\/__sporades\/auth\/microsoft\/callback\?/);
+          const callback = await fetch(callbackLocation, { redirect: "manual" });
+          assert.equal(callback.status, 302, await callback.text());
+          assert.equal(callback.headers.get("location"), `${started.data.url}/after`);
+        }
+        const tokenRequest = microsoft.requests.find((request) => request.path === "/token");
+        assert.deepEqual(tokenRequest.body, {
+          code: "microsoft-code",
+          client_id: "microsoft-client-id",
+          client_secret: "microsoft-secret",
+          redirect_uri: `${started.data.url}/__sporades/auth/microsoft/callback`,
+          grant_type: "authorization_code",
+          code_verifier: tokenRequest.body.code_verifier,
+          scope: "openid profile email",
+        });
+        assert.ok(tokenRequest.body.code_verifier);
+        socket.send(JSON.stringify({ id: "auth-after", type: "auth.get" }));
+        const linked = await readSocketMessage(socket);
+        assert.deepEqual(linked.data.auth, {
+          userId: anonymousUserId,
+          displayName: "Mira Microsoft",
+          email: null,
+          picture: null,
+          isAuthenticated: true,
+          isGuest: false,
+          provider: "microsoft",
+        });
+        socket.send(JSON.stringify({ id: "preferences-after", type: "preferences.get" }));
+        assert.deepEqual((await readSocketMessage(socket)).data.preferences, { theme: "night" });
       } finally {
         socket?.close();
         child.kill("SIGTERM");

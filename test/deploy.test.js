@@ -516,6 +516,78 @@ async function withFakeGoogleServer(fn) {
   }
 }
 
+async function withFakeMicrosoftServer(fn) {
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: "jwk" });
+  Object.assign(jwk, {
+    kid: "fake-microsoft-key",
+    alg: "RS256",
+    use: "sig",
+    issuer: "https://login.microsoftonline.com/{tenantid}/v2.0",
+  });
+  const tenantId = "11111111-2222-3333-4444-555555555555";
+  let nonce = null;
+  let origin = null;
+  const identityToken = () => {
+    const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid: jwk.kid })).toString("base64url");
+    const payload = Buffer.from(JSON.stringify({
+      iss: `https://login.microsoftonline.com/${tenantId}/v2.0`,
+      aud: "microsoft-client-id",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      nonce,
+      tid: tenantId,
+      sub: "microsoft-container-subject",
+      preferred_username: "mutable-login@example.com",
+      name: "Container Microsoft",
+    })).toString("base64url");
+    const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString("base64url");
+    return `${header}.${payload}.${signature}`;
+  };
+  const server = createHttpServer(async (request, response) => {
+    const requestUrl = new URL(request.url, "http://127.0.0.1");
+    if (request.method === "GET" && requestUrl.pathname === "/discovery") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        issuer: "https://login.microsoftonline.com/{tenantid}/v2.0",
+        authorization_endpoint: `${origin}/authorize`,
+        token_endpoint: `${origin}/token`,
+        jwks_uri: `${origin}/jwks`,
+      }));
+      return;
+    }
+    if (request.method === "GET" && requestUrl.pathname === "/authorize") {
+      nonce = requestUrl.searchParams.get("nonce");
+      response.writeHead(302, {
+        location: `${requestUrl.searchParams.get("redirect_uri")}?code=container-code&state=${requestUrl.searchParams.get("state")}`,
+      });
+      response.end();
+      return;
+    }
+    if (request.method === "POST" && requestUrl.pathname === "/token") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ id_token: identityToken(), access_token: "container-secret-access-token" }));
+      return;
+    }
+    if (request.method === "GET" && requestUrl.pathname === "/jwks") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ keys: [jwk] }));
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  origin = `http://127.0.0.1:${server.address().port}`;
+  try {
+    return await fn({ discoveryUrl: `${origin}/discovery` });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
 async function withFakeCapsuleService(fn) {
   const server = createHttpServer((request, response) => {
     response.writeHead(200, { "content-type": "application/json" });
@@ -3448,6 +3520,101 @@ export default capsule({
         const endpointBody = await endpointResponse.json();
         assert.equal(endpointResponse.status, 200, JSON.stringify(endpointBody));
         assert.deepEqual(endpointBody, linkedAuth.data.auth);
+      } finally {
+        socket?.close();
+        await stopChild(child);
+      }
+    });
+  });
+});
+
+test("sporades deploy Bundle completes Microsoft OIDC and exposes normal ctx.auth without a client SDK", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "microsoft-endpoint", "--template", "todo", "--no-install", "--no-git", "--json"], {
+      cwd: dir,
+    });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = await realpath(path.join(dir, "microsoft-endpoint"));
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "microsoft-endpoint",
+  endpoints: {
+    authState: endpoint({ method: "GET", path: "/integrations/auth" }, (ctx) => ({
+      status: 200,
+      body: ctx.auth,
+    })),
+  },
+});
+`,
+    );
+    await installFakeReact(projectDir);
+    const configured = await runCli(
+      ["auth", "set", "microsoft", "--client-id", "microsoft-client-id", "--client-secret", "microsoft-secret", "--tenant", "common", "--json"],
+      { cwd: projectDir },
+    );
+    assert.equal(configured.code, 0, configured.stderr);
+    const docker = await installFakeDocker(dir, "container-microsoft-auth");
+
+    await withFakeMicrosoftServer(async (microsoft) => {
+      const deployResult = await runCli(["deploy", "--json"], {
+        cwd: projectDir,
+        env: docker.env,
+      });
+      assert.equal(deployResult.code, 0, deployResult.stderr);
+      const clientBundle = await readFile(path.join(projectDir, ".sporades", "build", "client.js"), "utf8");
+      assert.doesNotMatch(clientBundle, /@azure\/msal|microsoft-authentication-library|client_secret|microsoft-secret/i);
+
+      const port = await getAvailablePort();
+      const child = spawn(process.execPath, [path.join(projectDir, ".sporades", "build", "server.mjs")], {
+        cwd: projectDir,
+        env: {
+          ...process.env,
+          PORT: String(port),
+          SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db"),
+          SPORADES_MICROSOFT_DISCOVERY_URL: microsoft.discoveryUrl,
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let socket;
+      try {
+        await waitForHttp(`http://127.0.0.1:${port}/`, child);
+        socket = await openSocket(`http://127.0.0.1:${port}`);
+        socket.send(JSON.stringify({ id: "auth-before", type: "auth.get" }));
+        const before = await readSocketMessage(socket);
+        const userId = before.data.auth.userId;
+
+        socket.send(JSON.stringify({
+          id: "signin",
+          type: "auth.signIn",
+          provider: "microsoft",
+          returnTo: `http://127.0.0.1:${port}/integrations/auth`,
+        }));
+        const signIn = await readSocketMessage(socket);
+        assert.equal(signIn.type, "auth.redirect");
+        const providerResponse = await fetch(signIn.data.url, { redirect: "manual" });
+        const callbackResponse = await fetch(providerResponse.headers.get("location"), { redirect: "manual" });
+        assert.equal(callbackResponse.status, 302, await callbackResponse.text());
+
+        socket.send(JSON.stringify({ id: "auth-after", type: "auth.get" }));
+        const linked = await readSocketMessage(socket);
+        assert.deepEqual(linked.data.auth, {
+          userId,
+          displayName: "Container Microsoft",
+          email: null,
+          picture: null,
+          isAuthenticated: true,
+          isGuest: false,
+          provider: "microsoft",
+        });
+
+        const endpointResponse = await fetch(`http://127.0.0.1:${port}/integrations/auth`, {
+          headers: { "x-sporades-session-token": before.data.sessionToken },
+        });
+        assert.equal(endpointResponse.status, 200);
+        assert.deepEqual(await endpointResponse.json(), linked.data.auth);
       } finally {
         socket?.close();
         await stopChild(child);
