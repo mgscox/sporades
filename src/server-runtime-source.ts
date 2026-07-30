@@ -1055,6 +1055,9 @@ function normalizeMailgunProvider(provider: any) {
       if (typeof tag !== "string" || tag.length < 1 || tag.length > 128 || /[^\x20-\x7e]/.test(tag)) {
         invalid("Pass each Mailgun tag as 1 to 128 printable ASCII characters.");
       }
+      if (tag.trim() !== tag || /\s{2,}/.test(tag)) {
+        invalid("Pass Mailgun tags without leading, trailing, or repeated whitespace.");
+      }
       headers.push({ name: "X-Mailgun-Tag", value: tag });
     }
   }
@@ -1088,6 +1091,7 @@ function normalizeMailgunProvider(provider: any) {
         }
       }
     }
+    foldMailgunJsonHeader(name, json);
     headers.push({ name, value: json, json: true });
   }
 
@@ -1095,7 +1099,13 @@ function normalizeMailgunProvider(provider: any) {
     ["templateName", "X-Mailgun-Template-Name"],
     ["templateVersion", "X-Mailgun-Template-Version"],
   ] as const) {
-    if (providerData.has(field)) headers.push({ name, value: controlFreeString(field, providerData.get(field)) });
+    if (providerData.has(field)) {
+      const value = controlFreeString(field, providerData.get(field));
+      if (value.trim() !== value || /\s{2,}/.test(value)) {
+        invalid(`Pass \`provider.${field}\` without leading, trailing, or repeated whitespace.`);
+      }
+      headers.push({ name, value });
+    }
   }
   if (providerData.has("templateVariables")) {
     try {
@@ -1103,9 +1113,11 @@ function normalizeMailgunProvider(provider: any) {
     } catch {
       invalid("Pass `provider.templateVariables` as a plain JSON dictionary.");
     }
+    const templateVariables = serializeMailgunJson(providerData.get("templateVariables"), "provider.templateVariables", 32 * 1024);
+    foldMailgunJsonHeader("X-Mailgun-Template-Variables", templateVariables);
     headers.push({
       name: "X-Mailgun-Template-Variables",
-      value: serializeMailgunJson(providerData.get("templateVariables"), "provider.templateVariables", 32 * 1024),
+      value: templateVariables,
       json: true,
     });
   }
@@ -1607,6 +1619,9 @@ function foldMailgunJsonHeader(name: string, value: string) {
   const lines = [];
   let line = prefix;
   for (const candidateAtom of atoms) {
+    if (candidateAtom.length > 997) {
+      throw mailError("INVALID_MAIL_MESSAGE", "Invalid Mailgun provider data.", `${name} JSON keys and values must each encode within 997 characters so Sporades can fold them before SMTP delivery.`);
+    }
     if (`${line}${candidateAtom}`.length <= 78) {
       line += candidateAtom;
       continue;
