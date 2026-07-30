@@ -20,6 +20,8 @@ const createAppleClientSecret = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.
 const appleOAuthOriginEligible = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "appleOAuthOriginEligible");
 const resolveOAuthRequestOrigin = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "resolveOAuthRequestOrigin");
 const verifyMicrosoftIdentityToken = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "verifyMicrosoftIdentityToken");
+const discoverMicrosoftOpenIdConfiguration = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "discoverMicrosoftOpenIdConfiguration");
+const completeMicrosoftOAuth = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "completeMicrosoftOAuth");
 const linkProviderIdentity = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "linkProviderIdentity");
 
 async function withTempDatabase(fn) {
@@ -98,6 +100,35 @@ function signedJwtWithHeader(privateKey, headerValue, claims) {
   const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
   const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString("base64url");
   return `${header}.${payload}.${signature}`;
+}
+
+function signedJwtWithHeader(privateKey, headerValue, claims) {
+  const header = Buffer.from(JSON.stringify(headerValue)).toString("base64url");
+  const payload = Buffer.from(JSON.stringify(claims)).toString("base64url");
+  const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString("base64url");
+  return `${header}.${payload}.${signature}`;
+}
+
+function configureMicrosoft(database, tenant = "organizations") {
+  database.authConfig.providers.microsoft = {
+    enabled: true,
+    configured: true,
+    runtimeAvailable: true,
+    clientIdEnv: "MICROSOFT_CLIENT_ID",
+    clientSecretEnv: "MICROSOFT_CLIENT_SECRET",
+    tenant,
+  };
+  database.serverEnv.MICROSOFT_CLIENT_ID = "microsoft-client-id";
+  database.serverEnv.MICROSOFT_CLIENT_SECRET = "microsoft-client-secret";
+}
+
+function microsoftDiscovery(tenant = "organizations") {
+  return {
+    issuer: "https://login.microsoftonline.com/{tenantid}/v2.0",
+    authorization_endpoint: `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize`,
+    token_endpoint: `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`,
+    jwks_uri: `https://login.microsoftonline.com/${tenant}/discovery/v2.0/keys`,
+  };
 }
 
 test("runtime OAuth provider seam completes query and form-post callbacks with provider-bound state", async () => {
@@ -372,16 +403,7 @@ test("Google identity tokens require signature, issuer, audience, expiry, nonce,
 
 test("Microsoft uses discovered OIDC endpoints with PKCE, nonce, exact callback, and identity-only scopes", async () => {
   await withTempDatabase(async (database) => {
-    database.authConfig.providers.microsoft = {
-      enabled: true,
-      configured: true,
-      runtimeAvailable: true,
-      clientIdEnv: "MICROSOFT_CLIENT_ID",
-      clientSecretEnv: "MICROSOFT_CLIENT_SECRET",
-      tenant: "organizations",
-    };
-    database.serverEnv.MICROSOFT_CLIENT_ID = "microsoft-client-id";
-    database.serverEnv.MICROSOFT_CLIENT_SECRET = "microsoft-client-secret";
+    configureMicrosoft(database);
     const originalFetch = globalThis.fetch;
     globalThis.fetch = async (url) => {
       assert.equal(String(url), "https://login.microsoftonline.com/organizations/v2.0/.well-known/openid-configuration");
@@ -411,6 +433,301 @@ test("Microsoft uses discovered OIDC endpoints with PKCE, nonce, exact callback,
       assert.ok(authorizationUrl.searchParams.get("state"));
       assert.ok(authorizationUrl.searchParams.get("nonce"));
       assert.equal(authorizationUrl.searchParams.has("offline_access"), false);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("Microsoft discovery fetches are deadline-bound, size-bound, no-redirect, and safely classified", async () => {
+  await withTempDatabase(async (database) => {
+    configureMicrosoft(database);
+    database.__microsoftOidcTimeoutMs = 5;
+    const originalFetch = globalThis.fetch;
+    try {
+      let sawRedirectError = false;
+      globalThis.fetch = async (_url, options) => {
+        sawRedirectError = options.redirect === "error";
+        return await new Promise((_resolve, reject) => {
+          options.signal.addEventListener("abort", () => reject(new DOMException("secret stall", "AbortError")), { once: true });
+        });
+      };
+      await assert.rejects(
+        discoverMicrosoftOpenIdConfiguration(database, "organizations"),
+        (error) => error.code === "OAUTH_DISCOVERY_UNAVAILABLE" && !/secret stall/i.test(error.message),
+      );
+      assert.equal(sawRedirectError, true);
+      globalThis.fetch = async (_url, options) => {
+        assert.equal(options.redirect, "error");
+        throw new TypeError("redirect blocked with sensitive location");
+      };
+      await assert.rejects(
+        discoverMicrosoftOpenIdConfiguration(database, "organizations"),
+        (error) => error.code === "OAUTH_DISCOVERY_UNAVAILABLE" && !/sensitive location/i.test(error.message),
+      );
+
+      const cases = [
+        {
+          response: new Response("x".repeat(70 * 1024), { status: 200 }),
+          code: "OAUTH_DISCOVERY_INVALID",
+        },
+        {
+          response: new Response("{broken-json", { status: 200 }),
+          code: "OAUTH_DISCOVERY_INVALID",
+        },
+        {
+          response: new Response("secret upstream body", { status: 503 }),
+          code: "OAUTH_DISCOVERY_UNAVAILABLE",
+        },
+      ];
+      for (const testCase of cases) {
+        globalThis.fetch = async (_url, options) => {
+          assert.equal(options.redirect, "error");
+          assert.ok(options.signal);
+          return testCase.response;
+        };
+        await assert.rejects(
+          discoverMicrosoftOpenIdConfiguration(database, "organizations"),
+          (error) => error.code === testCase.code &&
+            !/secret upstream body|broken-json|x{20}/i.test(`${error.message} ${error.hint}`),
+        );
+      }
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("Microsoft token and JWKS fetches bound stalls, redirects, body size, malformed JSON, and HTTP failures", async () => {
+  await withTempDatabase(async (database) => {
+    configureMicrosoft(database);
+    database.__microsoftOidcTimeoutMs = 5;
+    const discovery = microsoftDiscovery();
+    const context = {
+      code: "server-code",
+      redirectUri: "https://capsule.example/__sporades/auth/microsoft/callback",
+      pkceVerifier: "verifier",
+      nonce: "nonce",
+    };
+    const originalFetch = globalThis.fetch;
+    try {
+      for (const response of [
+        new Response("x".repeat(80 * 1024), { status: 200 }),
+        new Response("{broken-json", { status: 200 }),
+        new Response("null", { status: 200 }),
+        new Response("[]", { status: 200 }),
+        new Response("secret invalid client", { status: 401 }),
+      ]) {
+        globalThis.fetch = async (url, options) => {
+          assert.equal(options.redirect, "error");
+          assert.ok(options.signal);
+          if (String(url).includes("openid-configuration")) {
+            return new Response(JSON.stringify(discovery));
+          }
+          assert.doesNotMatch(String(options.body), /undefined/);
+          return response;
+        };
+        await assert.rejects(
+          completeMicrosoftOAuth(database, context),
+          (error) => error.code === "OAUTH_EXCHANGE_FAILED" &&
+            !/secret invalid client|broken-json|x{20}|microsoft-secret/i.test(`${error.message} ${error.hint}`),
+        );
+      }
+
+      globalThis.fetch = async (url, options) => {
+        assert.equal(options.redirect, "error");
+        if (String(url).includes("openid-configuration")) {
+          return new Response(JSON.stringify(discovery));
+        }
+        return await new Promise((_resolve, reject) => {
+          options.signal.addEventListener("abort", () => reject(new DOMException("token secret stall", "AbortError")), { once: true });
+        });
+      };
+      await assert.rejects(
+        completeMicrosoftOAuth(database, context),
+        (error) => error.code === "OAUTH_EXCHANGE_FAILED" && !/secret stall/i.test(error.message),
+      );
+      globalThis.fetch = async (url, options) => {
+        assert.equal(options.redirect, "error");
+        if (String(url).includes("openid-configuration")) {
+          return new Response(JSON.stringify(discovery));
+        }
+        throw new TypeError("redirect blocked with token secret");
+      };
+      await assert.rejects(
+        completeMicrosoftOAuth(database, context),
+        (error) => error.code === "OAUTH_EXCHANGE_FAILED" && !/token secret/i.test(error.message),
+      );
+
+      const { privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+      const token = signedJwt(privateKey, "missing-key", {
+        iss: "https://login.microsoftonline.com/11111111-2222-3333-4444-555555555555/v2.0",
+        aud: "microsoft-client-id",
+        exp: Math.floor(Date.now() / 1000) + 300,
+        nonce: "nonce",
+        tid: "11111111-2222-3333-4444-555555555555",
+        sub: "subject",
+      });
+      for (const response of [
+        new Response("x".repeat(300 * 1024), { status: 200 }),
+        new Response("{broken-json", { status: 200 }),
+        new Response("null", { status: 200 }),
+        new Response(JSON.stringify({ keys: null }), { status: 200 }),
+        new Response("secret keys failure", { status: 502 }),
+      ]) {
+        globalThis.fetch = async (_url, options) => {
+          assert.equal(options.redirect, "error");
+          assert.ok(options.signal);
+          return response;
+        };
+        await assert.rejects(
+          verifyMicrosoftIdentityToken(database, token, "nonce", discovery),
+          (error) => ["OAUTH_ID_TOKEN_KEYS_INVALID", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE"].includes(error.code) &&
+            !/secret keys failure|broken-json|x{20}/i.test(`${error.message} ${error.hint}`),
+        );
+      }
+      globalThis.fetch = async (_url, options) => {
+        assert.equal(options.redirect, "error");
+        throw new TypeError("redirect blocked with key location");
+      };
+      await assert.rejects(
+        verifyMicrosoftIdentityToken(database, token, "nonce", discovery),
+        (error) => error.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE" && !/key location/i.test(error.message),
+      );
+      globalThis.fetch = async (_url, options) => await new Promise((_resolve, reject) => {
+        assert.equal(options.redirect, "error");
+        options.signal.addEventListener("abort", () => reject(new DOMException("key secret stall", "AbortError")), { once: true });
+      });
+      await assert.rejects(
+        verifyMicrosoftIdentityToken(database, token, "nonce", discovery),
+        (error) => error.code === "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE" && !/secret stall/i.test(error.message),
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("Microsoft discovery and JWKS caches are bounded by TTL and refresh an unknown kid exactly once", async () => {
+  await withTempDatabase(async (database) => {
+    configureMicrosoft(database);
+    database.__microsoftOidcNowMs = 1_000;
+    const discovery = microsoftDiscovery();
+    const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const rotatedJwk = publicKey.export({ format: "jwk" });
+    Object.assign(rotatedJwk, {
+      kid: "rotated-key",
+      alg: "RS256",
+      use: "sig",
+      issuer: "https://login.microsoftonline.com/{tenantid}/v2.0",
+    });
+    const originalFetch = globalThis.fetch;
+    let discoveryFetches = 0;
+    let jwksFetches = 0;
+    globalThis.fetch = async (url, options) => {
+      assert.equal(options.redirect, "error");
+      if (String(url).includes("openid-configuration")) {
+        discoveryFetches += 1;
+        return new Response(JSON.stringify(discovery));
+      }
+      jwksFetches += 1;
+      return new Response(JSON.stringify({
+        keys: jwksFetches === 1
+          ? [{ ...rotatedJwk, kid: "old-key" }]
+          : [rotatedJwk],
+      }));
+    };
+    const tenantId = "11111111-2222-3333-4444-555555555555";
+    const claims = {
+      iss: `https://login.microsoftonline.com/${tenantId}/v2.0`,
+      aud: "microsoft-client-id",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      nonce: "nonce",
+      tid: tenantId,
+      sub: "subject",
+    };
+    try {
+      assert.deepEqual(
+        await discoverMicrosoftOpenIdConfiguration(database, "organizations"),
+        await discoverMicrosoftOpenIdConfiguration(database, "organizations"),
+      );
+      assert.equal(discoveryFetches, 1);
+      database.__microsoftOidcNowMs += 5 * 60 * 1000 + 1;
+      await discoverMicrosoftOpenIdConfiguration(database, "organizations");
+      assert.equal(discoveryFetches, 2);
+
+      const token = signedJwt(privateKey, "rotated-key", claims);
+      assert.equal((await verifyMicrosoftIdentityToken(database, token, "nonce", discovery)).subject, `${tenantId}:subject`);
+      assert.equal(jwksFetches, 2);
+      await verifyMicrosoftIdentityToken(database, token, "nonce", discovery);
+      assert.equal(jwksFetches, 2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
+test("Microsoft rejects hostile JWT and selected JWK shapes with deterministic bounded errors", async () => {
+  await withTempDatabase(async (database) => {
+    configureMicrosoft(database);
+    const discovery = microsoftDiscovery();
+    const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+    const kid = "strict-key";
+    const jwk = publicKey.export({ format: "jwk" });
+    Object.assign(jwk, {
+      kid,
+      alg: "RS256",
+      use: "sig",
+      issuer: "https://login.microsoftonline.com/{tenantid}/v2.0",
+    });
+    const tenantId = "11111111-2222-3333-4444-555555555555";
+    const claims = {
+      iss: `https://login.microsoftonline.com/${tenantId}/v2.0`,
+      aud: "microsoft-client-id",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      nonce: "nonce",
+      tid: tenantId,
+      sub: "subject",
+    };
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({ keys: [null, 42, "string", [], jwk] }));
+    try {
+      assert.equal(
+        (await verifyMicrosoftIdentityToken(database, signedJwt(privateKey, kid, claims), "nonce", discovery)).subject,
+        `${tenantId}:subject`,
+      );
+      const hostileTokens = [
+        ...[null, [], 42, "claims"].map((payload) => signedJwt(privateKey, kid, payload)),
+        ...[null, [], 42, "header"].map((header) => signedJwtWithHeader(privateKey, header, claims)),
+        signedJwtWithHeader(privateKey, { alg: "RS256", kid: "x".repeat(300) }, claims),
+        signedJwt(privateKey, kid, { ...claims, aud: { client: "microsoft-client-id" } }),
+        signedJwt(privateKey, kid, { ...claims, aud: ["microsoft-client-id", 42] }),
+        signedJwt(privateKey, kid, { ...claims, exp: "soon" }),
+        signedJwt(privateKey, kid, { ...claims, exp: 1.5 }),
+        signedJwt(privateKey, kid, { ...claims, exp: -1 }),
+        signedJwt(privateKey, kid, { ...claims, nbf: "later" }),
+        signedJwt(privateKey, kid, { ...claims, nbf: 1.5 }),
+        signedJwt(privateKey, kid, { ...claims, iat: [] }),
+        signedJwt(privateKey, kid, { ...claims, iat: 1.5 }),
+        signedJwt(privateKey, kid, { ...claims, nonce: { value: "nonce" } }),
+        signedJwt(privateKey, kid, { ...claims, iss: ["https://login.microsoftonline.com"] }),
+        `${"a".repeat(20 * 1024)}.e30.signature`,
+      ];
+      for (const token of hostileTokens) {
+        await assert.rejects(
+          verifyMicrosoftIdentityToken(database, token, "nonce", discovery),
+          (error) => error.code === "OAUTH_ID_TOKEN_INVALID",
+        );
+      }
+
+      database.__microsoftOidcNowMs = Date.now() + 5 * 60 * 1000 + 1;
+      globalThis.fetch = async () => new Response(JSON.stringify({
+        keys: [{ kid, kty: "RSA", alg: "RS256", use: "sig", issuer: jwk.issuer, n: null, e: "AQAB" }],
+      }));
+      await assert.rejects(
+        verifyMicrosoftIdentityToken(database, signedJwt(privateKey, kid, claims), "nonce", discovery),
+        (error) => error.code === "OAUTH_ID_TOKEN_KEYS_INVALID",
+      );
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -493,11 +810,13 @@ test("Microsoft identity tokens require signed issuer, audience, expiry, nonce, 
         );
       }
       jwk.issuer = "https://login.microsoftonline.com/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/v2.0";
+      database.__microsoftOidcNowMs = Date.now() + 5 * 60 * 1000 + 1;
       await assert.rejects(
         verifyMicrosoftIdentityToken(database, signedJwt(privateKey, kid, baseClaims), "expected-nonce", discovery),
         (error) => error.code === "OAUTH_ID_TOKEN_KEY_ISSUER_INVALID",
       );
       jwk.issuer = "https://login.microsoftonline.com/{tenantid}/v2.0";
+      database.__microsoftOidcNowMs = Date.now();
 
       const consumerTenant = "9188040d-6c67-4c5b-b112-36a304b66dad";
       database.authConfig.providers.microsoft.tenant = "consumers";

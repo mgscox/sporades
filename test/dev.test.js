@@ -57,39 +57,64 @@ async function runRealBrowserRedirectTracer(url) {
   const executable = process.env.SPORADES_REAL_BROWSER_CHROME;
   if (!executable) return false;
   const profile = await mkdtemp(path.join(tmpdir(), "sporades-oauth-browser-"));
+  let child = null;
   try {
-    const child = spawn(executable, [
+    child = spawn(executable, [
       "--headless=new",
       "--disable-gpu",
+      "--disable-background-networking",
+      "--disable-component-update",
       "--no-first-run",
       "--no-default-browser-check",
       `--user-data-dir=${profile}`,
-      "--dump-dom",
+      "--remote-debugging-port=0",
       url,
-    ], { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
+    ], { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
-    child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
-    const exitCode = await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
-        child.kill("SIGTERM");
-        reject(new Error("Real browser OAuth redirect tracer timed out."));
-      }, 15_000);
-      child.once("error", (error) => {
-        clearTimeout(timer);
-        reject(error);
-      });
-      child.once("exit", (code) => {
-        clearTimeout(timer);
-        resolve(code);
-      });
+    const exited = new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", (code, signal) => resolve({ code, signal }));
     });
-    assert.equal(exitCode, 0, stderr);
-    assert.match(stdout, /<html/i);
+    const deadline = Date.now() + 20_000;
+    let debuggingPort = null;
+    let finalTarget = null;
+    while (Date.now() < deadline && !finalTarget) {
+      if (debuggingPort === null) {
+        const activePort = await readFile(path.join(profile, "DevToolsActivePort"), "utf8").catch(() => null);
+        debuggingPort = activePort ? Number(activePort.split("\n")[0]) : null;
+      }
+      if (Number.isInteger(debuggingPort) && debuggingPort > 0) {
+        const targets = await fetch(`http://127.0.0.1:${debuggingPort}/json/list`)
+          .then((response) => response.json())
+          .catch(() => []);
+        finalTarget = Array.isArray(targets)
+          ? targets.find((target) => {
+            try { return new URL(target.url).pathname === "/after"; } catch { return false; }
+          })
+          : null;
+      }
+      if (!finalTarget) await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    assert.ok(finalTarget, `Real browser OAuth redirect tracer timed out. ${stderr.slice(-1000)}`);
+    child.kill("SIGTERM");
+    let killTimer;
+    const forcedExit = new Promise((resolve) => {
+      killTimer = setTimeout(() => {
+        child.kill("SIGKILL");
+        resolve({ code: null, signal: "SIGKILL" });
+      }, 2_000);
+    });
+    const result = await Promise.race([
+      exited,
+      forcedExit,
+    ]);
+    clearTimeout(killTimer);
+    assert.notEqual(result.signal, "SIGKILL", "Real browser tracer required forced termination.");
     return true;
   } finally {
-    await rm(profile, { recursive: true, force: true });
+    if (child?.exitCode === null && child?.signalCode === null) child.kill("SIGKILL");
+    await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
 }
 

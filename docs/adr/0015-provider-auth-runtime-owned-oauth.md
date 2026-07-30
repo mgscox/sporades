@@ -56,6 +56,14 @@ the selected/discovered tenant context. Consent and interaction requirements,
 tenant rejection, exchange failure, and token-verification failure use bounded
 Sporades errors without reflecting provider response bodies or tokens.
 
+Microsoft discovery, token, and signing-key requests reject HTTP redirects,
+carry finite deadlines, and parse JSON only after enforcing response-byte
+limits. Discovery metadata and JWKS documents are cached inside one runtime
+database context for a bounded TTL. An unknown signing-key ID permits one
+controlled JWKS refresh for key rollover. Malformed metadata, token JSON, JWT
+objects, NumericDate claims, audience shapes, and matching JWK entries fail
+with bounded provider errors rather than escaping as runtime type errors.
+
 Provider identity is stored separately from the Sporades user. A verified
 `(provider, subject)` pair identifies the Provider identity; provider email,
 display name, and picture are nullable, mutable profile attributes and are not

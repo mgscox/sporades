@@ -1393,11 +1393,14 @@ If sign-in fails:
 - `OAUTH_TENANT_REJECTED` means the account is outside the configured tenant;
 - `OAUTH_EXCHANGE_FAILED` commonly means the secret or exact callback URI does
   not match the app registration;
-- `OAUTH_ID_TOKEN_*` means signed identity evidence failed verification.
+- `OAUTH_ID_TOKEN_*` means signed identity evidence failed verification or
+  Microsoft discovery/signing-key data was unavailable or invalid.
 
 Provider response details and tokens are deliberately omitted from browser
-errors and normal logs. Start a new sign-in after any failure because OAuth
-state is single-use.
+errors and normal logs. Sporades rejects redirects on provider network calls,
+uses finite deadlines and response limits, and caches discovery/signing keys
+for a bounded period. Start a new sign-in after any failure because OAuth state
+is single-use.
 
 
 #### Using OAuth sign-in in the client
