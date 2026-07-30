@@ -203,7 +203,7 @@ _Avoid_: guest mode (implies fake/transient — these are real sessions), guest 
 
 **Session token**:
 A string stored in `localStorage` on the client and sent on the WebSocket connection. Custom endpoints may also receive it through the `x-sporades-session-token` HTTP header. No auth SDK is bundled into the client.
-Session records include lifecycle metadata and expire after 30 days by default. Missing, invalid, or expired tokens resolve to a fresh Anonymous session. Email sign-up and sign-in rotate the current token; Google sign-in refreshes the current token during the OAuth callback.
+Session records include lifecycle metadata and expire after 30 days by default. Missing, invalid, or expired tokens resolve to a fresh Anonymous session. Email sign-up and sign-in rotate the current token; provider sign-in refreshes the current token during the OAuth callback.
 _Avoid_: auth token, JWT
 
 Missing or invalid endpoint tokens resolve to a fresh Anonymous session rather than crashing or rejecting the request.
@@ -219,6 +219,10 @@ _Avoid_: provider email, social user, OAuth profile
 **Provider subject**:
 The stable, provider-issued identifier for one external identity, such as Google's verified `sub` claim. It is meaningful only together with its provider and does not change when profile email or display details change.
 _Avoid_: email key, username, profile ID
+
+**OAuth attempt**:
+A short-lived, single-use runtime record binding one provider authorization request to its Session, exact callback URI, same-origin return URL, nonce, and PKCE verifier. The callback spends the attempt before any provider or account work, including cancellation and failure.
+_Avoid_: reusable state, client OAuth session
 
 **Session provenance**:
 The authentication provider recorded on one Session. It reports how that Session authenticated independently of other Sessions or Provider identities linked to the same Sporades user.

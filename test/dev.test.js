@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { generateKeyPairSync, randomBytes, sign } from "node:crypto";
 import { access, chmod, lstat, mkdtemp, mkdir, readdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { connect } from "node:net";
@@ -897,6 +897,26 @@ async function writePackage(projectDir, packageName, exports, files) {
 
 async function withFakeGoogleServer(fn) {
   const requests = [];
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: "jwk" });
+  Object.assign(jwk, { kid: "fake-google-key", alg: "RS256", use: "sig" });
+  let nonce = null;
+  const identityToken = () => {
+    const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid: jwk.kid })).toString("base64url");
+    const payload = Buffer.from(JSON.stringify({
+      iss: "https://accounts.google.com",
+      aud: "client-id",
+      exp: Math.floor(Date.now() / 1000) + 300,
+      nonce,
+      sub: "google-subject-mira",
+      email: "mira@example.com",
+      email_verified: true,
+      name: "Mira",
+      picture: "https://example.com/mira.png",
+    })).toString("base64url");
+    const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString("base64url");
+    return `${header}.${payload}.${signature}`;
+  };
   const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url, "http://127.0.0.1");
     requests.push({ method: request.method, path: requestUrl.pathname });
@@ -911,22 +931,13 @@ async function withFakeGoogleServer(fn) {
       });
       requests.at(-1).body = Object.fromEntries(body.entries());
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ access_token: "server-owned-access-token", token_type: "Bearer" }));
+      response.end(JSON.stringify({ id_token: identityToken(), access_token: "server-owned-access-token", token_type: "Bearer" }));
       return;
     }
 
-    if (request.method === "GET" && requestUrl.pathname === "/userinfo") {
-      requests.at(-1).authorization = request.headers.authorization;
+    if (request.method === "GET" && requestUrl.pathname === "/jwks") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(
-        JSON.stringify({
-          sub: "google-subject-mira",
-          email: "mira@example.com",
-          name: "Mira",
-          picture: "https://example.com/mira.png",
-          email_verified: true,
-        }),
-      );
+      response.end(JSON.stringify({ keys: [jwk] }));
       return;
     }
 
@@ -943,8 +954,11 @@ async function withFakeGoogleServer(fn) {
   try {
     return await fn({
       tokenUrl: `http://127.0.0.1:${port}/token`,
-      userInfoUrl: `http://127.0.0.1:${port}/userinfo`,
+      jwksUrl: `http://127.0.0.1:${port}/jwks`,
       requests,
+      setNonce(value) {
+        nonce = value;
+      },
     });
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -7897,7 +7911,7 @@ test("Google auth callback exchanges the code server-side and links the current 
         cwd: projectDir,
         env: {
           SPORADES_GOOGLE_TOKEN_URL: google.tokenUrl,
-          SPORADES_GOOGLE_USERINFO_URL: google.userInfoUrl,
+          SPORADES_GOOGLE_JWKS_URL: google.jwksUrl,
         },
       });
       let socket;
@@ -7949,8 +7963,12 @@ test("Google auth callback exchanges the code server-side and links the current 
         assert.equal(signInUrl.searchParams.get("client_id"), "client-id");
         assert.equal(signInUrl.searchParams.get("response_type"), "code");
         assert.equal(signInUrl.searchParams.get("scope"), "openid email profile");
+        assert.ok(signInUrl.searchParams.get("nonce"));
+        assert.ok(signInUrl.searchParams.get("code_challenge"));
+        assert.equal(signInUrl.searchParams.get("code_challenge_method"), "S256");
         assert.match(signInUrl.searchParams.get("redirect_uri"), /\/__sporades\/auth\/google\/callback$/);
         assert.notEqual(signInUrl.searchParams.get("state"), anonymousAuth.data.sessionToken);
+        google.setNonce(signInUrl.searchParams.get("nonce"));
 
         const callbackResponse = await fetch(
           `${started.data.url}/__sporades/auth/google/callback?code=server-owned-code&state=${signInUrl.searchParams.get("state")}`,
@@ -7958,7 +7976,9 @@ test("Google auth callback exchanges the code server-side and links the current 
         );
         assert.equal(callbackResponse.status, 302);
         assert.equal(callbackResponse.headers.get("location"), `${started.data.url}/notes`);
-        assert.deepEqual(google.requests[0], {
+        const tokenRequest = google.requests[0];
+        assert.ok(tokenRequest.body.code_verifier);
+        assert.deepEqual(tokenRequest, {
           method: "POST",
           path: "/token",
           body: {
@@ -7967,13 +7987,10 @@ test("Google auth callback exchanges the code server-side and links the current 
             client_secret: "client-secret",
             redirect_uri: `${started.data.url}/__sporades/auth/google/callback`,
             grant_type: "authorization_code",
+            code_verifier: tokenRequest.body.code_verifier,
           },
         });
-        assert.deepEqual(google.requests[1], {
-          method: "GET",
-          path: "/userinfo",
-          authorization: "Bearer server-owned-access-token",
-        });
+        assert.deepEqual(google.requests[1], { method: "GET", path: "/jwks" });
 
         socket.send(JSON.stringify({ id: "auth-2", type: "auth.get" }));
         const linked = await readSocketMessage(socket);
@@ -8597,7 +8614,17 @@ test("sporades db dump returns structured table data from the running dev sessio
             },
             {
               name: "sporades_auth_oauth_states",
-              columns: ["state", "sessionToken", "returnTo", "redirectUri", "createdAt"],
+              columns: [
+                "state",
+                "provider",
+                "sessionToken",
+                "returnTo",
+                "redirectUri",
+                "createdAt",
+                "expiresAt",
+                "nonce",
+                "pkceVerifier",
+              ],
               rows: [],
             },
             {
@@ -9607,7 +9634,7 @@ test("a scaffolded guestbook stores Google-linked author metadata from ctx.auth"
         cwd: projectDir,
         env: {
           SPORADES_GOOGLE_TOKEN_URL: google.tokenUrl,
-          SPORADES_GOOGLE_USERINFO_URL: google.userInfoUrl,
+          SPORADES_GOOGLE_JWKS_URL: google.jwksUrl,
         },
       });
       let socket;
@@ -9625,6 +9652,7 @@ test("a scaffolded guestbook stores Google-linked author metadata from ctx.auth"
         const signIn = await readSocketMessage(socket);
         assert.equal(signIn.type, "auth.redirect");
         const signInUrl = new URL(signIn.data.url);
+        google.setNonce(signInUrl.searchParams.get("nonce"));
         const callbackResponse = await fetch(
           `${started.data.url}/__sporades/auth/google/callback?code=server-owned-code&state=${signInUrl.searchParams.get("state")}`,
           { redirect: "manual" },

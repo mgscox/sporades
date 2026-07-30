@@ -4382,22 +4382,22 @@ test("OAuth provider linking rolls back auth state when session refresh fails", 
         redirectUri: "http://127.0.0.1/__sporades/auth/google/callback",
         createdAt: new Date().toISOString(),
       });
-      globalThis.fetch = async (url) => {
-        if (String(url).includes("token")) {
-          return new Response(JSON.stringify({ access_token: "access-token" }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        }
-        return new Response(
-          JSON.stringify({
-            sub: "google-subject-ada",
-            email: "ada@example.com",
-            name: "Ada",
-            picture: "https://example.com/ada.png",
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
+      database.__oauthProviderAdapters = {
+        google: {
+          provider: "google",
+          responseMode: "query",
+          enabled: true,
+          async complete() {
+            return {
+              sub: "google-subject-ada",
+              email: "ada@example.com",
+              emailVerified: true,
+              name: "Ada",
+              displayName: "Ada",
+              picture: "https://example.com/ada.png",
+            };
+          },
+        },
       };
       database.sqlite = failRuntimeWriteAfter(baseAdapter, "refreshAuthSession", new Error("refresh session exploded"));
       database.adapter = database.sqlite;
@@ -4808,22 +4808,20 @@ test("Google OAuth callback preserves structured Provider identity conflicts", a
         redirectUri: "http://127.0.0.1/__sporades/auth/google/callback",
         createdAt: new Date().toISOString(),
       });
-      globalThis.fetch = async (url) => {
-        if (String(url).includes("token")) {
-          return new Response(JSON.stringify({ access_token: "access-token" }), {
-            status: 200,
-            headers: { "content-type": "application/json" },
-          });
-        }
-        return new Response(
-          JSON.stringify({
-            sub: "owned-google-subject",
-            email: "owner@example.com",
-            email_verified: true,
-            name: "Owner",
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
+      database.__oauthProviderAdapters = {
+        google: {
+          provider: "google",
+          responseMode: "query",
+          enabled: true,
+          async complete() {
+            return {
+              sub: "owned-google-subject",
+              email: "owner@example.com",
+              emailVerified: true,
+              displayName: "Owner",
+            };
+          },
+        },
       };
 
       const response = createResponseRecorder();

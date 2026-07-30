@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { Buffer } from "node:buffer";
+import { generateKeyPairSync, sign } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import { createServer } from "node:net";
@@ -449,25 +450,46 @@ async function writePackage(projectDir, packageName, exports, files) {
 }
 
 async function withFakeGoogleServer(fn) {
+  const { publicKey, privateKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = publicKey.export({ format: "jwk" });
+  Object.assign(jwk, { kid: "fake-google-key", alg: "RS256", use: "sig" });
+  let nonce = null;
+  let audience = "client-id";
+  const identityToken = () => {
+    const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT", kid: jwk.kid })).toString("base64url");
+    const payload = Buffer.from(JSON.stringify({
+      iss: "https://accounts.google.com",
+      aud: audience,
+      exp: Math.floor(Date.now() / 1000) + 300,
+      nonce,
+      sub: "google-subject-mira",
+      email: "mira@example.com",
+      name: "Mira",
+      picture: "https://example.com/mira.png",
+    })).toString("base64url");
+    const signature = sign("RSA-SHA256", Buffer.from(`${header}.${payload}`), privateKey).toString("base64url");
+    return `${header}.${payload}.${signature}`;
+  };
   const server = createHttpServer(async (request, response) => {
     const requestUrl = new URL(request.url, "http://127.0.0.1");
 
     if (request.method === "POST" && requestUrl.pathname === "/token") {
+      const body = await new Promise((resolve) => {
+        let raw = "";
+        request.on("data", (chunk) => {
+          raw += chunk;
+        });
+        request.on("end", () => resolve(new URLSearchParams(raw)));
+      });
+      audience = body.get("client_id");
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(JSON.stringify({ access_token: "container-access-token", token_type: "Bearer" }));
+      response.end(JSON.stringify({ id_token: identityToken(), access_token: "container-access-token", token_type: "Bearer" }));
       return;
     }
 
-    if (request.method === "GET" && requestUrl.pathname === "/userinfo") {
+    if (request.method === "GET" && requestUrl.pathname === "/jwks") {
       response.writeHead(200, { "content-type": "application/json" });
-      response.end(
-        JSON.stringify({
-          sub: "google-subject-mira",
-          email: "mira@example.com",
-          name: "Mira",
-          picture: "https://example.com/mira.png",
-        }),
-      );
+      response.end(JSON.stringify({ keys: [jwk] }));
       return;
     }
 
@@ -484,7 +506,10 @@ async function withFakeGoogleServer(fn) {
   try {
     return await fn({
       tokenUrl: `http://127.0.0.1:${port}/token`,
-      userInfoUrl: `http://127.0.0.1:${port}/userinfo`,
+      jwksUrl: `http://127.0.0.1:${port}/jwks`,
+      setNonce(value) {
+        nonce = value;
+      },
     });
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -3383,7 +3408,7 @@ export default capsule({
           PORT: String(port),
           SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db"),
           SPORADES_GOOGLE_TOKEN_URL: google.tokenUrl,
-          SPORADES_GOOGLE_USERINFO_URL: google.userInfoUrl,
+          SPORADES_GOOGLE_JWKS_URL: google.jwksUrl,
         },
         stdio: ["ignore", "pipe", "pipe"],
       });
@@ -3398,11 +3423,12 @@ export default capsule({
         socket.send(JSON.stringify({ id: "signin", type: "auth.signIn", provider: "google", returnTo: `http://127.0.0.1:${port}/integrations/auth` }));
         const signIn = await readSocketMessage(socket);
         const signInUrl = new URL(signIn.data.url);
+        google.setNonce(signInUrl.searchParams.get("nonce"));
         const callbackResponse = await fetch(
           `http://127.0.0.1:${port}/__sporades/auth/google/callback?code=container-code&state=${signInUrl.searchParams.get("state")}`,
           { redirect: "manual" },
         );
-        assert.equal(callbackResponse.status, 302);
+        assert.equal(callbackResponse.status, 302, await callbackResponse.text());
 
         socket.send(JSON.stringify({ id: "auth-after", type: "auth.get" }));
         const linkedAuth = await readSocketMessage(socket);

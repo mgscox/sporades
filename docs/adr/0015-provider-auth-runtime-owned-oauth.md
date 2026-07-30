@@ -1,6 +1,26 @@
 # Runtime-Owned Provider Auth
 
-Sporades v2 implements Google provider auth in the server runtime rather than adding a browser auth SDK or trusting client-supplied profile data. The browser client sends only sign-in intent through `auth.signIn("google")`; the server creates an opaque OAuth state, stores the current Sporades session token and return URL, generates the Google authorization URL, handles `/__sporades/auth/google/callback`, exchanges the authorization code, fetches Google profile data with the returned access token, and links that identity to the existing anonymous account.
+Sporades v2 implements provider auth in the server runtime rather than adding a
+browser auth SDK or trusting client-supplied profile data. The browser client
+sends only sign-in intent through `auth.signIn(provider)`. A runtime-owned
+provider adapter starts and completes the provider protocol, then hands a
+verified Provider identity to one common linker. The shared callback supports
+both query and `form_post` response modes at
+`/__sporades/auth/<provider>/callback`.
+
+Each authorization attempt has opaque, single-use state bound to the provider,
+current Sporades Session, exact callback URI, same-origin return URL, creation
+and expiry times, nonce, and PKCE verifier. Callback state is consumed before
+cancellation, provider exchange, identity verification, linking, or Session
+work, so every terminal failure requires a fresh attempt. Provider errors are
+returned as bounded Sporades errors; provider response bodies and tokens are
+not sent to clients, logged, or persisted.
+
+The built-in Google adapter uses authorization-code flow with PKCE and nonce.
+It verifies the returned ID token signature against Google's JWKS and requires
+Google issuer, configured audience, unexpired `exp`, matching nonce, and a
+non-empty `sub` before producing the verified Provider identity. Access tokens
+are not used as identity evidence.
 
 Provider identity is stored separately from the Sporades user. A verified
 `(provider, subject)` pair identifies the Provider identity; provider email,

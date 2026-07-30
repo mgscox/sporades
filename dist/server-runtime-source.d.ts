@@ -321,13 +321,7 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
         expiresAt: any;
     }): StatementResultingChanges;
     readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null;
-    insertOAuthState(row: {
-        state: any;
-        sessionToken: any;
-        returnTo: any;
-        redirectUri: any;
-        createdAt: any;
-    }): StatementResultingChanges;
+    insertOAuthState(row: LooseRecord): StatementResultingChanges;
     consumeOAuthState(state: any): Record<string, SQLOutputValue> | null;
     emailCredentialExists(email: any): boolean;
     insertEmailCredential(row: {
@@ -549,6 +543,11 @@ export declare function createPostgresDatabaseAdapter(options: {
     }>;
     writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord): Promise<void>;
     ensureAuthStorage(authConfig?: any): Promise<void>;
+    insertOAuthState(row: LooseRecord): Promise<{
+        changes: number;
+        lastInsertRowid: any;
+    }>;
+    consumeOAuthState(state: string): Promise<any>;
     ensureLogStorage(): Promise<void>;
     ensureFileStorage(): Promise<void>;
     ensureUserPreferencesStorage(): Promise<void>;
@@ -905,14 +904,6 @@ export declare function createPostgresDatabaseAdapter(options: {
         expiresAt: any;
     }): StatementResultingChanges;
     readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null;
-    insertOAuthState(row: {
-        state: any;
-        sessionToken: any;
-        returnTo: any;
-        redirectUri: any;
-        createdAt: any;
-    }): StatementResultingChanges;
-    consumeOAuthState(state: any): Record<string, SQLOutputValue> | null;
     emailCredentialExists(email: any): boolean;
     insertEmailCredential(row: {
         email: any;
@@ -987,6 +978,10 @@ export declare function createLibsqlDatabaseAdapter(options: {
     readRecentLogEvents(limit?: number): Promise<any>;
     ensureFileStorage(): Promise<void>;
     ensureAuthStorage(authConfig?: any): Promise<void>;
+    insertOAuthState(row: LooseRecord): Promise<{
+        changes: number;
+        lastInsertRowid: bigint | undefined;
+    }>;
     consumeOAuthState(state: any): Promise<any>;
     migrateAppSchema(schema: {
         tables: {
@@ -1220,13 +1215,6 @@ export declare function createLibsqlDatabaseAdapter(options: {
         expiresAt: any;
     }): StatementResultingChanges;
     readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null;
-    insertOAuthState(row: {
-        state: any;
-        sessionToken: any;
-        returnTo: any;
-        redirectUri: any;
-        createdAt: any;
-    }): StatementResultingChanges;
     emailCredentialExists(email: any): boolean;
     insertEmailCredential(row: {
         email: any;

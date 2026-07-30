@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse, IncomingHttpHeaders, OutgoingHttpHeaders } from "node:http";
 import { WithImplicitCoercion } from "buffer";
 import { BinaryLike, KeyObject } from "node:crypto";
-import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, randomBytes, randomUUID, scryptSync, timingSafeEqual, verify } from "node:crypto";
 import { PathLike, PathOrFileDescriptor, appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { SQLOutputValue, StatementResultingChanges, StatementColumnMetadata } from "node:sqlite";
 import { Duplex } from "stream";
@@ -373,6 +373,8 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   createAnonymousAuthTables,
   createProviderIdentityTables,
   createLibsqlProviderIdentityTables,
+  ensureOAuthStateColumns,
+  ensureLibsqlOAuthStateColumns,
   createUserPreferencesTables,
   ensureSessionLifecycleColumns,
   ensureSessionProvenanceColumn,
@@ -413,12 +415,15 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   hashEmailPassword,
   verifyEmailPassword,
   emailAuthDisabledError,
-  beginGoogleSignIn,
+  beginOAuthSignIn,
+  oauthProviderAdapter,
+  createGoogleOAuthProviderAdapter,
+  completeGoogleOAuth,
+  verifyGoogleIdentityToken,
+  decodeJwtPart,
+  readOAuthCallbackParameters,
   normalizeReturnTo,
-  exchangeGoogleCode,
-  readGoogleOAuthError,
-  oauthErrorHint,
-  fetchGoogleProfile,
+  linkProviderIdentity,
   linkGoogleAccount,
   writeRedirect,
   createWebSocketAccept,
@@ -1998,14 +2003,21 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       }
       return row;
     },
-    insertOAuthState(row: { state: any; sessionToken: any; returnTo: any; redirectUri: any; createdAt: any; }) {
+    insertOAuthState(row: LooseRecord) {
+      const provider = row.provider ?? "google";
+      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1000).toISOString();
       return this.prepare(
-        "INSERT INTO sporades_auth_oauth_states (state, sessionToken, returnTo, redirectUri, createdAt) VALUES (?, ?, ?, ?, ?)",
-      ).run(row.state, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt);
+        "INSERT INTO sporades_auth_oauth_states " +
+        "(state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
     },
     consumeOAuthState(state: any) {
       const row =
-        this.prepare("SELECT state, sessionToken, returnTo, redirectUri FROM sporades_auth_oauth_states WHERE state = ?").get(state) ??
+        this.prepare(
+          "SELECT state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier " +
+          "FROM sporades_auth_oauth_states WHERE state = ?",
+        ).get(state) ??
         null;
       this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
       return row;
@@ -2315,12 +2327,39 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
         "state TEXT PRIMARY KEY, " +
+        "provider TEXT NOT NULL, " +
         "sessionToken TEXT NOT NULL, " +
         "returnTo TEXT NOT NULL, " +
         "redirectUri TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL" +
+        "createdAt TEXT NOT NULL, " +
+        "expiresAt TEXT NOT NULL, " +
+        "nonce TEXT, " +
+        "pkceVerifier TEXT" +
         ")",
       );
+      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS provider TEXT");
+      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS expiresAt TEXT");
+      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS nonce TEXT");
+      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS pkceVerifier TEXT");
+      await this.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
+      await this.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
+    },
+    async insertOAuthState(row: LooseRecord) {
+      const provider = row.provider ?? "google";
+      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1000).toISOString();
+      return await this.prepare(
+        "INSERT INTO sporades_auth_oauth_states " +
+        "(state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
+    },
+    async consumeOAuthState(state: string) {
+      const row = await (this.prepare(
+        "SELECT state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier " +
+        "FROM sporades_auth_oauth_states WHERE state = ?",
+      ) as any).get(state);
+      await this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
+      return row ?? null;
     },
     async ensureLogStorage() {
       await this.exec(
@@ -2529,7 +2568,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     async withTransaction(fn: (arg0: { engine: string; exec(sql: any): Promise<undefined>; prepare(sql: any): { all(...params: any[]): Promise<any>; get(...params: any[]): Promise<any>; run(...params: any[]): Promise<{ changes: number; lastInsertRowid: undefined; }>; columns(): Promise<{ name: any; }[]>; }; writeSystemMetadata(keyOrMetadata: any, maybeValue: any): Promise<void | { changes: number; lastInsertRowid: undefined; }>; writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }): Promise<void>; ensureAuthStorage(authConfig?: null): Promise<void>; ensureLogStorage(): Promise<void>; ensureFileStorage(): Promise<void>; insertLogIndexEvent(event: any): Promise<void>; pruneLogIndex(limit: any): Promise<void>; readRecentLogEvents(limit?: number): Promise<any>; migrateAppSchema(schema: any): Promise<void>; createAppTable(table: any, tableName?: any): Promise<void>; migrateExistingAppTable(existingTable: any, nextTable: any): Promise<void>; listInspectableTables(): Promise<any>; dumpInspectableDatabase(): Promise<{ name: any; columns: any; rows: any; }[]>; runReadOnlyInspectionQuery(sql: any): Promise<{ ok: boolean; data: { columns: any[]; rows: any; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }>; checkHealth(): Promise<{ ok: boolean; }>; withTransaction(fn: any): Promise<any>; close(): Promise<void>; ensureSystemTable(): void; readSystemMetadata(key: any): Record<string, SQLOutputValue> | null; readSchemaMetadata(): Record<string, SQLOutputValue> | null; findFileBucket(ownerId: any, name: any): Record<string, SQLOutputValue> | null; createFileBucket(row: any): StatementResultingChanges; insertFileRow(row: any): StatementResultingChanges; updatePendingFileRow(row: any): StatementResultingChanges; insertFileUpload(row: any): StatementResultingChanges; selectFileById(fileId: any): Record<string, SQLOutputValue> | null; selectLiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectActiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath(path: any): Record<string, SQLOutputValue> | null; selectFileUpload(uploadId: any): Record<string, SQLOutputValue> | null; completeFileUpload(upload: any, size: any, updatedAt: any): StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath(path: any): StatementResultingChanges; deleteFileUploadsForFile(ownerId: any, fileId: any): StatementResultingChanges; deleteFileUpload(uploadId: any): StatementResultingChanges; selectPublicFileRow(publicUrlId: any): Record<string, SQLOutputValue> | null; insertPublicFileUrl(row: any): StatementResultingChanges; revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any): StatementResultingChanges; revokePublicFileUrlsForFile(fileId: any, revokedAt: any): StatementResultingChanges; markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges; fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null; findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null; insertAuthUser(row: any): StatementResultingChanges; updateAuthUserProfile(row: any): StatementResultingChanges; linkAuthUser(row: any): StatementResultingChanges; insertAuthSession(row: any): StatementResultingChanges; deleteAuthSession(token: any): StatementResultingChanges; refreshAuthSession(token: any, expiresAt: any): StatementResultingChanges; rotateAuthSession(previousToken: any, row: any): StatementResultingChanges; readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null; insertOAuthState(row: any): StatementResultingChanges; consumeOAuthState(state: any): Record<string, SQLOutputValue> | null; emailCredentialExists(email: any): boolean; insertEmailCredential(row: any): StatementResultingChanges; findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null; referenceExists(field: any, value: any): boolean; insertAppRow(table: any, row: any): StatementResultingChanges; selectAppRowById(table: any, id: any): Record<string, SQLOutputValue> | null; updateAppRow(table: any, id: any, values: any, options?: {}): StatementResultingChanges | { changes: number; }; deleteAppRow(table: any, id: any): StatementResultingChanges; selectAppRows(table: any, query?: {}): Record<string, SQLOutputValue>[]; }) => any) {
       await this.exec("BEGIN");
       try {
-        const result = await fn(this);
+        const result = await fn(this as any);
         await this.exec("COMMIT");
         return result;
       } catch (error) {
@@ -3278,9 +3317,9 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
         "expiresAt TEXT NOT NULL" +
         ")",
       );
-      await ensureLibsqlSessionLifecycleColumns(this);
-      await ensureLibsqlSessionProvenanceColumn(this);
-      await createLibsqlProviderIdentityTables(this);
+      await ensureLibsqlSessionLifecycleColumns(this as any);
+      await ensureLibsqlSessionProvenanceColumn(this as any);
+      await createLibsqlProviderIdentityTables(this as any);
       if (authConfig?.providers?.email?.enabled) {
         await this.exec(
           "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
@@ -3295,15 +3334,32 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
         "state TEXT PRIMARY KEY, " +
+        "provider TEXT NOT NULL, " +
         "sessionToken TEXT NOT NULL, " +
         "returnTo TEXT NOT NULL, " +
         "redirectUri TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL" +
+        "createdAt TEXT NOT NULL, " +
+        "expiresAt TEXT NOT NULL, " +
+        "nonce TEXT, " +
+        "pkceVerifier TEXT" +
         ")",
       );
+      await ensureLibsqlOAuthStateColumns(this);
+    },
+    async insertOAuthState(row: LooseRecord) {
+      const provider = row.provider ?? "google";
+      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1000).toISOString();
+      return await this.prepare(
+        "INSERT INTO sporades_auth_oauth_states " +
+        "(state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
     },
     async consumeOAuthState(state: any) {
-      const row = (await this.prepare("SELECT state, sessionToken, returnTo, redirectUri FROM sporades_auth_oauth_states WHERE state = ?").get(state)) ?? null;
+      const row = (await this.prepare(
+        "SELECT state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier " +
+        "FROM sporades_auth_oauth_states WHERE state = ?",
+      ).get(state)) ?? null;
       await this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
       return row;
     },
@@ -7973,18 +8029,19 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
         });
         return;
       }
-      if (provider !== "google") {
+      const providerAdapter = oauthProviderAdapter(database, provider);
+      if (!providerAdapter?.enabled) {
         sendJson(client, {
           id: message.id ?? null,
           type: "error",
           error: {
             message: `Unsupported auth provider: ${provider ?? ""}`.trim(),
-            hint: "Use auth.signIn with a configured provider such as google.",
+            hint: "Use auth.signIn with a configured OAuth provider.",
           },
         });
         return;
       }
-      const result = await beginGoogleSignIn(database, client.session, {
+      const result = await beginOAuthSignIn(database, client.session, provider, {
         origin: client.origin,
         returnTo: message.returnTo,
       });
@@ -8355,29 +8412,67 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
 
 export async function routeSporadesAuth(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & { req: IncomingMessage; }) {
   const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
-  if (request.method !== "GET" || requestUrl.pathname !== "/__sporades/auth/google/callback") {
+  const match = requestUrl.pathname.match(/^\/__sporades\/auth\/([a-z0-9-]+)\/callback$/);
+  if (!match) {
     return false;
   }
-
-  const state = requestUrl.searchParams.get("state");
-  const code = requestUrl.searchParams.get("code");
-  if (!state || !code) {
-    writeEndpointError(response, commandError("Invalid Google OAuth callback.", "Retry Google sign-in from the app."));
+  const provider = match[1];
+  let parameters;
+  try {
+    parameters = await readOAuthCallbackParameters(request, requestUrl);
+  } catch (error) {
+    writeEndpointError(response, error);
     return true;
   }
-
+  const state = parameters.get("state");
+  if (!state) {
+    writeEndpointError(response, commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK"));
+    return true;
+  }
   const stateRow = await database.sqlite.consumeOAuthState(state);
   if (!stateRow) {
-    writeEndpointError(response, commandError("Invalid Google OAuth state.", "Retry Google sign-in from the app."));
+    writeEndpointError(response, commandError("Invalid or already-used OAuth state.", "Retry sign-in from the app.", "OAUTH_INVALID_STATE"));
     return true;
   }
-
   try {
-    const profile = await exchangeGoogleCode(database, code, stateRow.redirectUri);
+    if (stateRow.provider !== provider) {
+      throw commandError("OAuth provider did not match the sign-in request.", "Retry sign-in from the app.", "OAUTH_PROVIDER_MISMATCH");
+    }
+    if (!stateRow.expiresAt || Date.parse(stateRow.expiresAt) <= Date.now()) {
+      throw commandError("OAuth sign-in request expired.", "Retry sign-in from the app.", "OAUTH_STATE_EXPIRED");
+    }
+    const adapter = oauthProviderAdapter(database, provider);
+    if (!adapter?.enabled) {
+      throw commandError("OAuth provider is not configured.", "Configure the provider and retry sign-in.", "OAUTH_PROVIDER_NOT_CONFIGURED");
+    }
+    if ((adapter.responseMode === "form_post" && request.method !== "POST") ||
+        (adapter.responseMode !== "form_post" && request.method !== "GET")) {
+      throw commandError("OAuth callback used the wrong response mode.", "Retry sign-in from the app.", "OAUTH_RESPONSE_MODE_MISMATCH");
+    }
+    const providerError = parameters.get("error");
+    if (providerError) {
+      throw commandError(
+        "OAuth sign-in was cancelled or declined.",
+        "Retry sign-in when you are ready.",
+        "OAUTH_PROVIDER_CANCELLED",
+      );
+    }
+    const code = parameters.get("code");
+    if (!code) {
+      throw commandError("OAuth callback did not include an authorization code.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+    }
+    const profile = await adapter.complete({
+      provider,
+      code,
+      redirectUri: stateRow.redirectUri,
+      nonce: stateRow.nonce,
+      pkceVerifier: stateRow.pkceVerifier,
+      parameters,
+    });
     const session = await resolveAnonymousSession(database, stateRow.sessionToken);
-    const result = await linkGoogleAccount(database, session, profile);
+    const result = await linkProviderIdentity(database, session, provider, profile);
     if (!result.ok) {
-      throw commandError(result.error?.message, result.error?.hint ?? "Retry Google sign-in from the app.", result.error?.code);
+      throw commandError(result.error?.message, result.error?.hint ?? "Retry sign-in from the app.", result.error?.code);
     }
     writeRedirect(response, stateRow.returnTo);
   } catch (error: any) {
@@ -8386,35 +8481,82 @@ export async function routeSporadesAuth(database: LooseRecord, request: Incoming
   return true;
 }
 
-async function beginGoogleSignIn(database: LooseRecord, session: LooseRecord, options: LooseRecord) {
-  if (!database.authConfig.providers.google.enabled || !database.authConfig.google.configured) {
+async function readOAuthCallbackParameters(request: IncomingMessage, requestUrl: URL) {
+  if (request.method === "GET") {
+    return requestUrl.searchParams;
+  }
+  if (request.method !== "POST" || !String(request.headers["content-type"] ?? "").toLowerCase().startsWith("application/x-www-form-urlencoded")) {
+    throw commandError("Unsupported OAuth callback request.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK");
+  }
+  const body = await readRequestBytes(request, 16 * 1024);
+  return new URLSearchParams(body.toString("utf8"));
+}
+
+async function beginOAuthSignIn(database: LooseRecord, session: LooseRecord, provider: string, options: LooseRecord) {
+  const adapter = oauthProviderAdapter(database, provider);
+  if (!adapter?.enabled) {
     return {
       ok: false,
       error: {
-        message: "Google OAuth is not configured.",
-        hint: "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`.",
+        code: "OAUTH_PROVIDER_NOT_CONFIGURED",
+        message: `${provider || "OAuth"} provider is not configured.`,
+        hint: provider === "google"
+          ? "Run `sporades auth set google --client-id <id> --client-secret <secret>` or `sporades auth set google --client-json <path>`."
+          : "Configure this OAuth provider before retrying sign-in.",
       },
     };
   }
   const origin = options.origin;
-  const redirectUri = `${origin}/__sporades/auth/google/callback`;
+  const redirectUri = `${origin}/__sporades/auth/${provider}/callback`;
   const returnTo = normalizeReturnTo(options.returnTo, origin);
   const state = randomBytes(32).toString("base64url");
+  const nonce = randomBytes(32).toString("base64url");
+  const pkceVerifier = randomBytes(48).toString("base64url");
+  const pkceChallenge = createHash("sha256").update(pkceVerifier).digest("base64url");
   const now = new Date().toISOString();
-  await database.sqlite.insertOAuthState({ state, sessionToken: session.token, returnTo, redirectUri, createdAt: now });
-
-  const clientId = database.serverEnv[database.authConfig.google.clientIdEnv];
-  const params = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    response_type: "code",
-    scope: "openid email profile",
+  const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+  let started;
+  try {
+    started = await adapter.begin({
+      provider,
+      state,
+      nonce,
+      redirectUri,
+      pkceChallenge,
+      pkceChallengeMethod: "S256",
+    });
+  } catch {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_PROVIDER_START_FAILED",
+        message: "OAuth sign-in could not be started.",
+        hint: "Check the provider configuration and retry sign-in.",
+      },
+    };
+  }
+  if (!started?.url) {
+    return {
+      ok: false,
+      error: {
+        code: "OAUTH_PROVIDER_START_FAILED",
+        message: "OAuth provider did not return an authorization URL.",
+        hint: "Check the provider configuration and retry sign-in.",
+      },
+    };
+  }
+  await database.sqlite.insertOAuthState({
     state,
+    provider,
+    sessionToken: session.token,
+    returnTo,
+    redirectUri,
+    createdAt: now,
+    expiresAt,
+    nonce,
+    pkceVerifier,
   });
-  return {
-    ok: true,
-    url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`,
-  };
+  return { ok: true, url: started.url };
 }
 
 function normalizeReturnTo(returnTo: string | URL, origin: string | URL | undefined) {
@@ -8432,115 +8574,171 @@ function normalizeReturnTo(returnTo: string | URL, origin: string | URL | undefi
   }
 }
 
-async function exchangeGoogleCode(database: LooseRecord, code: string, redirectUri: any) {
+function oauthProviderAdapter(database: LooseRecord, provider: string) {
+  if (database.__oauthProviderAdapters?.[provider]) {
+    return database.__oauthProviderAdapters[provider];
+  }
+  if (provider === "google") {
+    return createGoogleOAuthProviderAdapter(database);
+  }
+  return null;
+}
+
+function createGoogleOAuthProviderAdapter(database: LooseRecord) {
+  const google = database.authConfig.google;
+  const configured = Boolean(database.authConfig.providers.google.enabled && google.configured);
+  return {
+    provider: "google",
+    responseMode: "query",
+    enabled: configured,
+    begin(context: LooseRecord) {
+      const clientId = database.serverEnv[google.clientIdEnv];
+      const params = new URLSearchParams({
+        client_id: clientId,
+        redirect_uri: context.redirectUri,
+        response_type: "code",
+        scope: "openid email profile",
+        state: context.state,
+        nonce: context.nonce,
+        code_challenge: context.pkceChallenge,
+        code_challenge_method: "S256",
+      });
+      return { url: `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}` };
+    },
+    complete(context: LooseRecord) {
+      return completeGoogleOAuth(database, context);
+    },
+  };
+}
+
+async function completeGoogleOAuth(database: LooseRecord, context: LooseRecord) {
   const google = database.authConfig.google;
   const tokenUrl = process.env.SPORADES_GOOGLE_TOKEN_URL ?? "https://oauth2.googleapis.com/token";
   const clientId = database.serverEnv[google.clientIdEnv];
   const clientSecret = database.serverEnv[google.clientSecretEnv];
-  const tokenResponse = await fetch(tokenUrl, {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      code,
-      client_id: clientId,
-      client_secret: clientSecret,
-      redirect_uri: redirectUri,
-      grant_type: "authorization_code",
-    }),
-  });
+  let tokenResponse;
+  try {
+    tokenResponse = await fetch(tokenUrl, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        code: context.code,
+        client_id: clientId,
+        client_secret: clientSecret,
+        redirect_uri: context.redirectUri,
+        grant_type: "authorization_code",
+        code_verifier: context.pkceVerifier,
+      }),
+    });
+  } catch {
+    throw commandError("Google OAuth code exchange failed.", "Check the Google OAuth client configuration and retry sign-in.", "OAUTH_EXCHANGE_FAILED");
+  }
   if (!tokenResponse.ok) {
-    const details = await readGoogleOAuthError(tokenResponse);
-    throw commandError(
-      `Google OAuth code exchange failed${details.message ? `: ${details.message}` : "."}`,
-      details.hint,
+    throw commandError("Google OAuth code exchange failed.", "Check the Google OAuth client configuration and retry sign-in.", "OAUTH_EXCHANGE_FAILED");
+  }
+  let token;
+  try {
+    token = await tokenResponse.json();
+  } catch {
+    throw commandError("Google OAuth response was invalid.", "Check the Google OAuth client configuration and retry sign-in.", "OAUTH_EXCHANGE_FAILED");
+  }
+  if (typeof token.id_token !== "string" || token.id_token.length > 16 * 1024) {
+    throw commandError("Google OAuth response did not include a valid identity token.", "Check the Google OAuth client configuration and retry sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  return await verifyGoogleIdentityToken(database, token.id_token, context.nonce);
+}
+
+async function verifyGoogleIdentityToken(database: LooseRecord, token: string, expectedNonce: string) {
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    throw commandError("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  let header;
+  let claims;
+  try {
+    header = JSON.parse(decodeJwtPart(parts[0]).toString("utf8"));
+    claims = JSON.parse(decodeJwtPart(parts[1]).toString("utf8"));
+  } catch {
+    throw commandError("Google identity token was invalid.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  if (header.alg !== "RS256" || typeof header.kid !== "string") {
+    throw commandError("Google identity token used an unsupported signature.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  const jwksUrl = process.env.SPORADES_GOOGLE_JWKS_URL ?? "https://www.googleapis.com/oauth2/v3/certs";
+  let jwks;
+  try {
+    const response = await fetch(jwksUrl);
+    if (!response.ok) {
+      throw new Error("jwks");
+    }
+    jwks = await response.json();
+  } catch {
+    throw commandError("Google signing keys could not be loaded.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_KEYS_UNAVAILABLE");
+  }
+  const jwk = Array.isArray(jwks?.keys) ? jwks.keys.find((candidate: LooseRecord) => candidate.kid === header.kid && candidate.kty === "RSA") : null;
+  if (!jwk) {
+    throw commandError("Google identity token signing key was not recognized.", "Retry Google sign-in.", "OAUTH_ID_TOKEN_INVALID");
+  }
+  let signatureValid = false;
+  let signatureCheckFailed = false;
+  try {
+    signatureValid = verify(
+      "RSA-SHA256",
+      Buffer.from(`${parts[0]}.${parts[1]}`),
+      { key: jwk, format: "jwk" },
+      decodeJwtPart(parts[2]),
     );
-  }
-  const token = await tokenResponse.json();
-  if (!token.access_token) {
-    throw commandError("Google OAuth response did not include an access token.", "Check the Google OAuth client configuration and retry sign-in.");
-  }
-  return fetchGoogleProfile(token.access_token);
-}
-
-async function readGoogleOAuthError(response: Response) {
-  const fallback = {
-    message: "",
-    hint: "Check the Google OAuth client configuration and retry sign-in.",
-  };
-  let body;
-  try {
-    body = await response.text();
   } catch {
-    return fallback;
+    signatureCheckFailed = true;
   }
-  if (!body) {
-    return fallback;
+  const clientId = database.serverEnv[database.authConfig.google.clientIdEnv];
+  const audiences = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  const validIssuer = claims.iss === "https://accounts.google.com" || claims.iss === "accounts.google.com";
+  const invalidCode = signatureCheckFailed ? "OAUTH_ID_TOKEN_SIGNATURE_CHECK_FAILED"
+    : !signatureValid ? "OAUTH_ID_TOKEN_SIGNATURE_INVALID"
+    : !validIssuer ? "OAUTH_ID_TOKEN_ISSUER_INVALID"
+    : !audiences.includes(clientId) ? "OAUTH_ID_TOKEN_AUDIENCE_INVALID"
+    : typeof claims.exp !== "number" || claims.exp <= Math.floor(Date.now() / 1000) ? "OAUTH_ID_TOKEN_EXPIRED"
+    : claims.nonce !== expectedNonce ? "OAUTH_ID_TOKEN_NONCE_INVALID"
+    : !normalizeSimulatedText(claims.sub) ? "OAUTH_ID_TOKEN_SUBJECT_INVALID"
+    : null;
+  if (invalidCode) {
+    throw commandError("Google identity token failed verification.", "Retry Google sign-in.", invalidCode);
   }
-  try {
-    const parsed = JSON.parse(body);
-    const code = parsed.error ? String(parsed.error) : "";
-    const description = parsed.error_description ? String(parsed.error_description) : "";
-    return {
-      message: [code, description].filter(Boolean).join(": "),
-      hint: oauthErrorHint(code, description),
-    };
-  } catch {
-    return {
-      message: body.slice(0, 240),
-      hint: fallback.hint,
-    };
-  }
-}
-
-function oauthErrorHint(code: string, description: string) {
-  const detail = `${code} ${description}`.toLowerCase();
-  if (detail.includes("redirect_uri_mismatch") || detail.includes("redirect_uri")) {
-    return "Make sure Google Console has the exact authorized redirect URI shown in the browser callback URL, including scheme, host, and port.";
-  }
-  if (detail.includes("invalid_client")) {
-    return "Check that the Client ID and Client secret belong to the same Web application OAuth client.";
-  }
-  if (detail.includes("invalid_grant")) {
-    return "Retry sign-in from the app. OAuth codes can only be used once and expire quickly; also check that the redirect URI has not changed.";
-  }
-  return "Check the Google OAuth client configuration and retry sign-in.";
-}
-
-async function fetchGoogleProfile(accessToken: any) {
-  const userInfoUrl = process.env.SPORADES_GOOGLE_USERINFO_URL ?? "https://www.googleapis.com/oauth2/v3/userinfo";
-  const profileResponse = await fetch(userInfoUrl, {
-    headers: { authorization: `Bearer ${accessToken}` },
-  });
-  if (!profileResponse.ok) {
-    throw commandError("Google profile lookup failed.", "Retry Google sign-in with an email-bearing account.");
-  }
-  const profile = await profileResponse.json() as LooseRecord;
   return {
-    subject: profile.sub,
-    email: profile.email ?? null,
-    emailVerified: profile.email_verified === true,
-    displayName: profile.name ?? profile.email ?? "Google user",
-    picture: profile.picture ?? null,
+    subject: claims.sub,
+    email: normalizeSimulatedText(claims.email)?.toLowerCase() ?? null,
+    emailVerified: claims.email_verified === true,
+    displayName: normalizeSimulatedText(claims.name) ?? normalizeSimulatedText(claims.email) ?? "Google user",
+    picture: normalizeSimulatedText(claims.picture),
   };
 }
 
-async function linkGoogleAccount(database: LooseRecord, session: LooseRecord, profile: LooseRecord) {
+function decodeJwtPart(value: string) {
+  if (!/^[A-Za-z0-9_-]+$/.test(value)) {
+    throw new Error("Invalid JWT encoding");
+  }
+  return Buffer.from(value, "base64url");
+}
+
+async function linkProviderIdentity(database: LooseRecord, session: LooseRecord, provider: string, profile: LooseRecord) {
   const subject = normalizeSimulatedText(profile.subject ?? profile.sub);
+  const providerName = provider === "google" ? "Google" : "OAuth";
   if (!subject) {
     return {
       ok: false,
       error: {
-        message: "Google profile is missing a stable subject.",
-        hint: "Retry Google sign-in. Sporades requires Google's verified subject claim.",
+        message: `${providerName} profile is missing a stable subject.`,
+        hint: "Retry sign-in. Sporades requires a verified stable subject claim.",
       },
     };
   }
 
   return await database.sqlite.withTransaction(async (tx: LooseRecord) => {
     const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? null;
-    let identity = await tx.findAuthIdentityByProviderSubject("google", subject);
-    if (!identity && email) {
-      const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail("google", email);
+    let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
+    if (!identity && email && provider === "google") {
+      const legacyIdentities = await tx.findLegacyAuthIdentitiesByProviderEmail(provider, email);
       if (legacyIdentities.length > 0 && profile.emailVerified !== true) {
         return {
           ok: false,
@@ -8573,7 +8771,7 @@ async function linkGoogleAccount(database: LooseRecord, session: LooseRecord, pr
         },
       };
     }
-    const displayName = normalizeSimulatedText(profile.displayName) ?? email ?? "Google user";
+    const displayName = normalizeSimulatedText(profile.displayName) ?? email ?? `${providerName} user`;
     const auth = {
       userId: identity?.userId ?? session.auth.userId,
       displayName,
@@ -8581,7 +8779,7 @@ async function linkGoogleAccount(database: LooseRecord, session: LooseRecord, pr
       picture: profile.picture ?? null,
       isAuthenticated: true,
       isGuest: false,
-      provider: "google",
+      provider,
     };
     const now = new Date().toISOString();
     if (identity) {
@@ -8597,7 +8795,7 @@ async function linkGoogleAccount(database: LooseRecord, session: LooseRecord, pr
       await tx.insertAuthIdentity({
         id: randomUUID(),
         userId: auth.userId,
-        provider: "google",
+        provider,
         subject,
         email,
         displayName: auth.displayName,
@@ -8613,16 +8811,20 @@ async function linkGoogleAccount(database: LooseRecord, session: LooseRecord, pr
       picture: auth.picture,
       isAuthenticated: 1,
       isGuest: 0,
-      provider: "google",
+      provider,
     });
     if (session.auth.isGuest && identity?.userId && identity.userId !== session.auth.userId) {
-      await moveSessionToUserOnAdapter(database, tx, session, auth.userId, "google");
+      await moveSessionToUserOnAdapter(database, tx, session, auth.userId, provider);
     } else {
-      await tx.setAuthSessionProvider(session.token, "google");
+      await tx.setAuthSessionProvider(session.token, provider);
       await refreshSessionOnAdapter(tx, session.token);
     }
     return { ok: true, auth };
   });
+}
+
+async function linkGoogleAccount(database: LooseRecord, session: LooseRecord, profile: LooseRecord) {
+  return await linkProviderIdentity(database, session, "google", profile);
 }
 
 function writeRedirect(response: { writeHead: (arg0: number, arg1: { location: any; }) => void; end: () => void; }, location: any) {
@@ -8921,12 +9123,46 @@ function createAnonymousAuthTables(sqlite: LooseRecord, authConfig: LooseRecord 
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
     "state TEXT PRIMARY KEY, " +
+    "provider TEXT NOT NULL, " +
     "sessionToken TEXT NOT NULL, " +
     "returnTo TEXT NOT NULL, " +
     "redirectUri TEXT NOT NULL, " +
-    "createdAt TEXT NOT NULL" +
+    "createdAt TEXT NOT NULL, " +
+    "expiresAt TEXT NOT NULL, " +
+    "nonce TEXT, " +
+    "pkceVerifier TEXT" +
     ")",
   );
+  ensureOAuthStateColumns(sqlite);
+}
+
+function ensureOAuthStateColumns(sqlite: LooseRecord) {
+  const existing = new Set(sqlite.prepare("PRAGMA table_info(sporades_auth_oauth_states)").all().map((row: LooseRecord) => row.name));
+  const columns = [
+    ["provider", "TEXT"],
+    ["expiresAt", "TEXT"],
+    ["nonce", "TEXT"],
+    ["pkceVerifier", "TEXT"],
+  ];
+  for (const [name, type] of columns) {
+    if (!existing.has(name)) {
+      sqlite.exec(`ALTER TABLE sporades_auth_oauth_states ADD COLUMN ${name} ${type}`);
+    }
+  }
+  sqlite.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
+  sqlite.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
+}
+
+async function ensureLibsqlOAuthStateColumns(sqlite: LooseRecord) {
+  const rows = await sqlite.prepare("PRAGMA table_info(sporades_auth_oauth_states)").all();
+  const existing = new Set(rows.map((row: LooseRecord) => row.name));
+  for (const [name, type] of [["provider", "TEXT"], ["expiresAt", "TEXT"], ["nonce", "TEXT"], ["pkceVerifier", "TEXT"]]) {
+    if (!existing.has(name)) {
+      await sqlite.exec(`ALTER TABLE sporades_auth_oauth_states ADD COLUMN ${name} ${type}`);
+    }
+  }
+  await sqlite.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
+  await sqlite.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
 }
 
 function createProviderIdentityTables(sqlite: LooseRecord) {
