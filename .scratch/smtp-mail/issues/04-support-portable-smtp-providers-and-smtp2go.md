@@ -4,7 +4,7 @@
 
 **Blocked by:** 01 — Send mail through generic SMTP.
 
-**Status:** ready-for-agent
+**Status:** done
 
 - [ ] A generic or SMTP2GO SMTP declaration sends the common mail shape without a provider SDK or provider-specific runtime dependency.
 - [ ] `provider.headers` accepts validated custom `X-*` headers with string or repeated string values.
