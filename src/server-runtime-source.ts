@@ -741,11 +741,10 @@ function sanitizeResponseHeaders(headers: OutgoingHttpHeaders | LooseRecord) {
   );
 }
 
-function mailError(code: string, message: string, hint: string, cause: any = undefined) {
+function mailError(code: string, message: string, hint: string) {
   const error: any = new Error(message);
   error.code = code;
   error.hint = hint;
-  if (cause !== undefined) Object.defineProperty(error, "cause", { value: cause, enumerable: false });
   return error;
 }
 
@@ -1482,21 +1481,26 @@ function normalizeMailAddress(value: any, field: string) {
 }
 
 function normalizeMailTransportError(error: any) {
-  if (typeof error?.code === "string" && error.code.startsWith("MAIL_")) return error;
   const code = String(error?.code ?? "");
   if (code === "ETIMEDOUT" || code === "ESOCKETTIMEDOUT") {
-    return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.", error);
+    return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.");
   }
-  if (code === "EAUTH") return mailError("MAIL_AUTH_FAILED", "SMTP authentication failed.", "Check the SMTP Server env credentials and authentication method.", error);
+  if (code === "MAIL_TIMEOUT") return mailError("MAIL_TIMEOUT", "SMTP delivery timed out.", "Check the SMTP host and timeout settings before retrying.");
+  if (code === "EAUTH" || code === "MAIL_AUTH_FAILED") {
+    return mailError("MAIL_AUTH_FAILED", "SMTP authentication failed.", "Check the SMTP Server env credentials and authentication method.");
+  }
   if (
     code === "ETLS"
     || code.startsWith("CERT_")
     || code.startsWith("ERR_TLS_")
     || code.startsWith("ERR_SSL_")
     || ["DEPTH_ZERO_SELF_SIGNED_CERT", "SELF_SIGNED_CERT_IN_CHAIN", "UNABLE_TO_VERIFY_LEAF_SIGNATURE", "UNABLE_TO_GET_ISSUER_CERT", "UNABLE_TO_GET_ISSUER_CERT_LOCALLY"].includes(code)
-  ) return mailError("MAIL_TLS_FAILED", "SMTP TLS negotiation failed.", "Check the SMTP TLS mode, port, and certificate policy.", error);
-  if (code === "EREJECTED") return mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipients, and provider delivery policy.", error);
-  return mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.", error);
+    || code === "MAIL_TLS_FAILED"
+  ) return mailError("MAIL_TLS_FAILED", "SMTP TLS negotiation failed.", "Check the SMTP TLS mode, port, and certificate policy.");
+  if (code === "EREJECTED" || code === "MAIL_REJECTED") {
+    return mailError("MAIL_REJECTED", "The SMTP server rejected the message.", "Check the sender, recipients, and provider delivery policy.");
+  }
+  return mailError("MAIL_CONNECTION_FAILED", "SMTP delivery failed.", "Check the SMTP host, port, network access, and provider status.");
 }
 
 function createMailTransport(smtp: any) {
@@ -1969,23 +1973,27 @@ export async function openDevDatabase(
     await startStaticSchedules(database);
     database.__runtimeInitialized = true;
   };
-  database.shutdown = async () => {
-    try {
-      database.__scheduleStopped = true;
-      abortSchedulePayloadFactories(database);
-      for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
-      database.__scheduleTimers?.clear?.();
-      database.__scheduleRecoveryTimer = null;
-      database.__scheduleRecoveryDueAt = null;
-      await Promise.allSettled([...(database.__activeScheduleOccurrences ?? [])]);
-      if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
-        if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
-        await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+  database.shutdown = () => {
+    if (database.__shutdownPromise) return database.__shutdownPromise;
+    database.__shutdownPromise = (async () => {
+      try {
+        database.__scheduleStopped = true;
+        abortSchedulePayloadFactories(database);
+        for (const timer of database.__scheduleTimers ?? []) database.clock.clearTimer(timer);
+        database.__scheduleTimers?.clear?.();
+        database.__scheduleRecoveryTimer = null;
+        database.__scheduleRecoveryDueAt = null;
+        await Promise.allSettled([...(database.__activeScheduleOccurrences ?? [])]);
+        if (database.__runtimeInitialized && database.lifecycleHooks.shutdown !== undefined) {
+          if (typeof database.lifecycleHooks.shutdown !== "function") throw commandError("Invalid Capsule shutdown hook.", "Declare hooks.shutdown as a function.");
+          await database.lifecycleHooks.shutdown(createMutationContext(database, { userId: "__lifecycle__", displayName: "Capsule lifecycle", email: null, picture: null, isAuthenticated: false, isGuest: false, provider: "lifecycle" }));
+        }
+      } finally {
+        database.__runtimeInitialized = false;
+        await database.mail.close();
       }
-    } finally {
-      database.__runtimeInitialized = false;
-      await database.mail.close();
-    }
+    })();
+    return database.__shutdownPromise;
   };
   database.log = createRuntimeLogSink({
     database: sqlite,

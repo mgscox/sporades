@@ -1429,6 +1429,129 @@ test("mail delivery failure diagnostics expose only stable result categories", a
   });
 });
 
+test("Capsule code cannot inspect raw SMTP transport failure details", async () => {
+  const rawDetail = "AUTH PLAIN password-secret recipient@example.com 535 provider response";
+  const rawSymbol = Symbol("smtp-auth-detail");
+  const transport = {
+    async send() {
+      const error = new Error(rawDetail);
+      error.code = "MAIL_AUTH_FAILED";
+      error.cause = new Error(`nested ${rawDetail}`);
+      error[rawSymbol] = rawDetail;
+      throw error;
+    },
+    close() {},
+  };
+  await withDatabase(smtpConfig, {
+    mutations: {
+      inspect: mutation(async (ctx) => {
+        try {
+          await ctx.mail.send({
+            to: "recipient@example.com",
+            subject: "failure surface",
+            textBody: "failure surface",
+          });
+          return null;
+        } catch (error) {
+          return {
+            public: {
+              code: error.code,
+              message: error.message,
+              hint: error.hint,
+            },
+            hasCause: "cause" in error,
+            causeDescriptor: Object.getOwnPropertyDescriptor(error, "cause") !== undefined,
+            symbolCount: Object.getOwnPropertySymbols(error).length,
+            enumerableKeys: Object.keys(error).sort(),
+            ownKeys: Reflect.ownKeys(error).map((key) => typeof key === "symbol" ? String(key) : key).sort(),
+            serialized: JSON.stringify(error),
+          };
+        }
+      }),
+    },
+  }, { mailTransportFactory: () => transport }, async (database) => {
+    const result = await runMutation(database, user, "inspect", []);
+    assert.deepEqual(result, {
+      ok: true,
+      data: {
+        public: {
+          code: "MAIL_AUTH_FAILED",
+          message: "SMTP authentication failed.",
+          hint: "Check the SMTP Server env credentials and authentication method.",
+        },
+        hasCause: false,
+        causeDescriptor: false,
+        symbolCount: 0,
+        enumerableKeys: ["code", "hint"],
+        ownKeys: ["code", "hint", "message", "stack"],
+        serialized: "{\"code\":\"MAIL_AUTH_FAILED\",\"hint\":\"Check the SMTP Server env credentials and authentication method.\"}",
+      },
+      error: null,
+    });
+    assert.equal(JSON.stringify(result).includes(rawDetail), false);
+  });
+});
+
+test("concurrent and repeated shutdown calls run the lifecycle hook and mail close once", async () => {
+  let releaseHook;
+  const hookBarrier = new Promise((resolve) => {
+    releaseHook = resolve;
+  });
+  let hookCalls = 0;
+  let sends = 0;
+  let closes = 0;
+  const transport = {
+    async send() {
+      sends += 1;
+      return { messageId: "<shutdown-once@example.com>", accepted: ["to@example.com"], rejected: [] };
+    },
+    close() {
+      closes += 1;
+    },
+  };
+  const dir = await mkdtemp(path.join(tmpdir(), "sporades-mail-concurrent-shutdown-"));
+  const database = await openDevDatabase(
+    path.join(dir, "data.db"),
+    "",
+    { SMTP_USERNAME: "user-secret", SMTP_PASSWORD: "password-secret" },
+    smtpConfig,
+    {
+      hooks: {
+        shutdown: async (ctx) => {
+          hookCalls += 1;
+          await ctx.mail.send({ to: "to@example.com", subject: "shutdown once", textBody: "shutdown once" });
+          await hookBarrier;
+        },
+      },
+    },
+    { mailTransportFactory: () => transport },
+  );
+  try {
+    await database.init();
+    const first = database.shutdown();
+    const second = database.shutdown();
+    assert.strictEqual(first, second);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(hookCalls, 1);
+    assert.equal(sends, 1);
+    assert.equal(closes, 0);
+    releaseHook();
+    assert.deepEqual(await Promise.all([first, second]), [undefined, undefined]);
+    assert.equal(hookCalls, 1);
+    assert.equal(sends, 1);
+    assert.equal(closes, 1);
+    const repeated = database.shutdown();
+    assert.strictEqual(repeated, first);
+    assert.equal(await repeated, undefined);
+    assert.equal(hookCalls, 1);
+    assert.equal(sends, 1);
+    assert.equal(closes, 1);
+  } finally {
+    await database.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
 test("runtime shutdown promptly aborts an active stalled SMTP delivery", async () => {
   let acceptConnection;
   const accepted = new Promise((resolve) => {
