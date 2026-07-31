@@ -1,12 +1,12 @@
 # Authentication
 
-Every visitor starts with a real Anonymous session. Email, Google OAuth, or
+Every visitor starts with a real Anonymous session. Email auth, Google OAuth,
 Microsoft OpenID Connect, Sign in with Apple, or Facebook Login links an
-authentication method to that identity so existing
-Capsule data follows the user.
+authentication method to that identity so existing Capsule data follows the
+user.
 
 Follow the [auth workflows](./reference.md#auth-workflows) to inspect
-configuration, configure Google, Microsoft, Apple, or Facebook sign-in, use email auth, or
-simulate local identities.
+configuration, configure Google, Microsoft, Apple, or Facebook sign-in, use
+email auth, or simulate local identities.
 
 For authorization inside handlers, see [`requireAuth` and table ACL](./server.md).

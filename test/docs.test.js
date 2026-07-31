@@ -243,6 +243,58 @@ test("published docs and API describe production SMTP mail parity", async () => 
   assert.match(apiInput, /not an arbitrary provider API payload/);
 });
 
+test("release status docs stay aligned with SMTP mail and multi-provider OAuth", async () => {
+  const smtpIssuePaths = [
+    ".scratch/smtp-mail/issues/01-send-mail-through-generic-smtp.md",
+    ".scratch/smtp-mail/issues/02-support-postmark-smtp-extensions.md",
+    ".scratch/smtp-mail/issues/03-support-mailgun-smtp-extensions.md",
+    ".scratch/smtp-mail/issues/04-support-portable-smtp-providers-and-smtp2go.md",
+    ".scratch/smtp-mail/issues/05-prove-production-runtime-and-documentation-parity.md",
+  ];
+  const [
+    changes,
+    roadmap,
+    prd,
+    authHistory,
+    reference,
+    llmsGenerator,
+    smtpPrd,
+    oauthPrd,
+    ...smtpIssues
+  ] = await Promise.all([
+    readProjectFile("CHANGES.md"),
+    readProjectFile("docs/ROADMAP.md"),
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/adr/0005-better-auth-server-side-anonymous.md"),
+    readProjectFile("docs/guide/reference.md"),
+    readProjectFile("scripts/generate-llms-docs.mjs"),
+    readProjectFile(".scratch/smtp-mail/PRD.md"),
+    readProjectFile(".scratch/multi-provider-oauth/PRD.md"),
+    ...smtpIssuePaths.map(readProjectFile),
+  ]);
+
+  for (const required of ["SMTP", "Microsoft", "Apple", "Facebook", "provider-neutral"]) {
+    assert.match(changes, new RegExp(required, "i"));
+  }
+  assert.match(roadmap, /Recently Implemented[\s\S]*Mail sending \| implemented/i);
+  assert.match(roadmap, /Recently Implemented[\s\S]*Multi-provider OAuth \| implemented/i);
+  assert.doesNotMatch(
+    roadmap.match(/## Ops And Automation[\s\S]*?## Engineering Hygiene/)?.[0] ?? "",
+    /Mail sending \| candidate/i,
+  );
+  for (const provider of ["Google", "Microsoft", "Apple", "Facebook"]) {
+    assert.match(prd.match(/### Implemented scope[\s\S]*?### Future scope/)?.[0] ?? "", new RegExp(provider));
+  }
+  assert.match(prd, /preferences[\s\S]*any\s+supported OAuth provider/i);
+  assert.match(reference, /preferences[\s\S]*any\s+supported OAuth provider/i);
+  assert.doesNotMatch(authHistory, /Current behavior[\s\S]*Google OAuth provider linking/i);
+  assert.match(llmsGenerator, /Server-only SMTP mail/);
+  assert.match(llmsGenerator, /Google, Microsoft, Apple, and Facebook/);
+  assert.match(smtpPrd, /ctx\.mail\.send/);
+  assert.match(oauthPrd, /auth\.signIn\(provider\)/);
+  for (const issue of smtpIssues) assert.doesNotMatch(issue, /^\- \[ \]/m);
+});
+
 test("published docs describe the complete Job scheduling contract", async () => {
   const [prd, context, guide, roadmap, serverSource, serverDeclarations, apiSchedule, apiDefinition] = await Promise.all([
     readProjectFile("docs/PRD.md"),

@@ -13,8 +13,9 @@ owns session management, provider linking, OAuth callbacks, and `ctx.auth`
 population, while the client stores only an opaque Sporades session token and
 does not import a provider SDK.
 
-Current behavior is runtime-owned auth storage with anonymous sessions, email
-sign-up/sign-in, Google OAuth provider linking, local identity simulation, and
-provider configuration through `sporades.json` plus Server env. Provider-linked
-accounts attach to the existing anonymous account so user data follows the
-session instead of being recreated under a new user.
+The current replacement described by ADR 0015 uses runtime-owned auth storage
+with Anonymous sessions, email sign-up/sign-in, and provider-neutral OAuth
+linking for Google, Microsoft, Apple, and Facebook. Provider configuration
+crosses `sporades.json` plus Server env, and Provider identities attach to the
+existing Anonymous account so user data follows the Session instead of being
+recreated under a new user.

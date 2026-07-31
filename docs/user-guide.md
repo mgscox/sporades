@@ -42,7 +42,7 @@ That is the complete starting loop. Everything below extends it.
 - [Upload and publish files](./guide/files.md)
 - [Add realtime activity or App messages](./guide/realtime.md)
 - [Run Jobs and Schedules](./guide/background-work.md)
-- [Configure security, Server env, preferences, and services](./guide/configuration.md)
+- [Configure SMTP mail, security, Server env, preferences, and services](./guide/configuration.md)
 
 ### Run and publish it
 

@@ -109,10 +109,10 @@ The repository currently includes:
 - Additive migrations for new tables and fields. Unsupported destructive or
   shape-changing schema changes fail with a structured error instead of
   silently dropping app data.
-- Runtime-owned auth with anonymous sessions, email sign-up/sign-in, Google
-  OAuth provider linking, local identity simulation helpers, connected-client
-  auth targeting, and provider configuration through `sporades.json` plus
-  Server env.
+- Runtime-owned auth with anonymous sessions, email sign-up/sign-in, and
+  provider-neutral OAuth linking for Google, Microsoft, Apple, and Facebook;
+  local identity simulation helpers; connected-client auth targeting; and
+  provider configuration through `sporades.json` plus Server env.
 - Server-only SMTP mail through `ctx.mail.send(...)`, with one portable
   `sporades.json` contract for Dev sessions, local Container sessions, and
   Hosted Capsules; validated Postmark, Mailgun, SMTP2GO, and generic SMTP
@@ -398,11 +398,11 @@ settings. `preferences.update(...)` merges a partial JSON object into the
 stored preference object and returns the next value.
 
 Preferences follow the resolved auth identity. Values written during an
-Anonymous session remain available when that session links email or Google auth;
-sign-out resolves to a fresh Anonymous preference object, and signing back in
-restores the linked account's stored preferences. Connected clients for the same
-user observe preference updates through `preferences.updated`, while different
-users remain isolated.
+Anonymous session remain available when that session links email or any
+supported OAuth provider; sign-out resolves to a fresh Anonymous preference
+object, and signing back in restores the linked account's stored preferences.
+Connected clients for the same user observe preference updates through
+`preferences.updated`, while different users remain isolated.
 
 `preferences.updated` is delivered over the existing client transport as a
 same-user convergence signal. The updating client should use the result returned

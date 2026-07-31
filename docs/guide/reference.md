@@ -1541,8 +1541,8 @@ queries, and mutations.
 Because Anonymous sessions are real Sporades accounts, preferences written
 before sign-up or provider sign-in move to the signed-in identity when the
 current user is still Anonymous. This applies when an Anonymous user signs up
-with email, signs in to an existing email account, or completes Google or
-Microsoft provider sign-in.
+with email, signs in to an existing email account, or completes sign-in with
+any supported OAuth provider.
 If the signed-in account already has preferences, the Anonymous preferences are
 shallow-merged over the stored signed-in preferences so the current browser's
 explicit Anonymous choices win for matching keys.

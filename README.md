@@ -41,22 +41,22 @@ sporades host push --restart
 - **One command loop for humans and agents**: create, run, inspect, deploy, and
   repair Capsules from the terminal.
 - **Full-stack without the usual wiring**: server schema, queries, mutations,
-  auth, file uploads, custom endpoints, app messages, and browser hooks live
-  behind a small authoring API.
+  auth, server-only SMTP mail, file uploads, custom endpoints, app messages,
+  and browser hooks live behind a small authoring API.
 - **Same bundle everywhere**: Dev sessions, local Docker Container sessions, and
   Hosted Capsules all run the same bundled server and client output.
 - **Private-host friendly**: Host servers use boring, inspectable pieces:
   Docker, Caddy, Node, SQLite, filesystem storage, and SSH.
 - **Agent-operable by default**: structured JSON output, actionable error hints,
   logs, database inspection, and non-interactive commands are first-class.
-- **Comprehensive SDK**: built-in authentication, database, user preferences,
-  and storage.
+- **Comprehensive SDK**: built-in authentication, database, server-only mail,
+  user preferences, and storage.
 - **Realtime everything**: configuration free - automatic notifications, even for Postgress and AWS-S3
 
 ## Documentation
 
 - [User guide](https://mgscox.github.io/sporades/user-guide): build, run, inspect, deploy, auth,
-  preferences, files, endpoints, messages, and common workflows.
+  SMTP mail, preferences, files, endpoints, messages, and common workflows.
 - [Architecture](https://mgscox.github.io/sporades/architecture): platform model, runtime modes, Host
   server design, and ownership boundaries.
 - [Runtime layout](https://mgscox.github.io/sporades/runtime-layout): generated files, mounts, Host
@@ -145,6 +145,8 @@ Sporades currently includes:
 - Runtime-owned auth with anonymous sessions, email auth, Google OAuth,
   Microsoft OpenID Connect, Sign in with Apple, Facebook Login, and
   local identity simulation for tests and agents.
+- Server-only, provider-independent SMTP delivery through `ctx.mail.send(...)`
+  with Postmark, Mailgun, SMTP2GO, and generic SMTP configuration.
 - Runtime-owned current-user preferences exposed through `sporades/client`
   without app preference tables. Preferences follow the Sporades user identity,
   survive Anonymous account linking, and notify same-user connected clients when

@@ -13,13 +13,13 @@ export const SPORADES_LLMS_SECTIONS = [
   {
     heading: "Build",
     entries: [
-      { title: "Server", path: "guide/server.md", description: "Schema, queries, mutations, authorization, middleware, and endpoints." },
+      { title: "Server", path: "guide/server.md", description: "Schema, queries, mutations, authorization, middleware, endpoints, and Server-only SMTP mail." },
       { title: "Client", path: "guide/client.md", description: "Subscribed queries, mutations, auth state, and framework adapters." },
-      { title: "Authentication", path: "guide/auth.md", description: "Anonymous sessions, email auth, Google OAuth, and local identities." },
+      { title: "Authentication", path: "guide/auth.md", description: "Anonymous sessions, email auth, Google, Microsoft, Apple, and Facebook OAuth, and local identities." },
       { title: "Files", path: "guide/files.md", description: "Private uploads, File references, publication, replacement, and deletion." },
       { title: "Realtime", path: "guide/realtime.md", description: "App messages and consented transient User Journey state." },
       { title: "Jobs and Schedules", path: "guide/background-work.md", description: "Durable background work, actors, recurrence, and inspection." },
-      { title: "Configuration", path: "guide/configuration.md", description: "Capsule config, security, Sealed Server env, preferences, and local services." },
+      { title: "Configuration", path: "guide/configuration.md", description: "Capsule config, Server-only SMTP mail, security, Sealed Server env, preferences, and local services." },
     ],
   },
   {
