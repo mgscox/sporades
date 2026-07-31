@@ -236,6 +236,46 @@ export type Logger = {
   error(...args: unknown[]): void;
 };
 
+/** One SMTP mailbox, optionally with a display name. */
+export type MailAddress = string | { email: string; name?: string };
+
+/**
+ * Common provider-independent message shape accepted by `ctx.mail.send(...)`.
+ *
+ * `provider` is validated for the configured SMTP vendor and translated into
+ * approved MIME headers. It is not an arbitrary provider API payload and
+ * cannot override addressing, content, authentication, or transport settings.
+ */
+export type MailSendInput = {
+  to: MailAddress | MailAddress[];
+  cc?: MailAddress | MailAddress[];
+  bcc?: MailAddress | MailAddress[];
+  from?: MailAddress;
+  replyTo?: MailAddress;
+  subject: string;
+  textBody?: string;
+  htmlBody?: string;
+  provider?: JsonObject;
+};
+
+/** Stable SMTP delivery result. */
+export type MailSendResult = {
+  messageId: string;
+  accepted: string[];
+  rejected: string[];
+};
+
+/**
+ * Server-only runtime-owned SMTP delivery API.
+ *
+ * Available to trusted Capsule handlers, lifecycle hooks, middleware,
+ * mutation hooks, Jobs, and active Privileged callbacks. It is intentionally
+ * absent from browser, table ACL, and Schedule payload-factory contexts.
+ */
+export type MailApi = {
+  send(message: MailSendInput): Promise<MailSendResult>;
+};
+
 export type MessageScope =
   | "currentUser"
   | "all"
@@ -369,6 +409,8 @@ export type CapsuleContext<Schema extends SchemaDefinition = SchemaDefinition> =
   privileged: PrivilegedApi<Schema>;
   /** Server-only current-user durable Job Queue. */
   jobs: JobApi;
+  /** Server-only SMTP delivery. Present even when mail is disabled. */
+  mail: MailApi;
 };
 
 /** Request details available only inside Custom endpoint handlers. */

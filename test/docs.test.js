@@ -218,6 +218,31 @@ test("docs publish the implemented User journey tracker contract", async () => {
   assert.match(serverTypes, /Journey tracker/i);
 });
 
+test("published docs and API describe production SMTP mail parity", async () => {
+  const [prd, architecture, configuration, serverGuide, reference, declarations, apiMail, apiInput] = await Promise.all([
+    readProjectFile("docs/PRD.md"),
+    readProjectFile("docs/architecture.md"),
+    readProjectFile("docs/guide/configuration.md"),
+    readProjectFile("docs/guide/server.md"),
+    readProjectFile("docs/guide/reference.md"),
+    readProjectFile("src/types/server.d.ts"),
+    readProjectFile("docs/api/types/server.MailApi.html"),
+    readProjectFile("docs/api/types/server.MailSendInput.html"),
+  ]);
+  const published = [prd, architecture, configuration, serverGuide, reference].join("\n");
+  for (const required of [
+    "Dev sessions", "local Container sessions", "Hosted Capsules", "Postmark",
+    "Mailgun", "SMTP2GO", "at least once", "idempotency", "cannot roll back",
+  ]) assert.match(published, new RegExp(required, "i"));
+  assert.match(configuration, /provider\.headers/);
+  assert.match(configuration, /sendWelcome:\s*job/);
+  assert.match(architecture, /active\s+sockets/i);
+  assert.match(reference, /exclude[\s\S]*addresses[\s\S]*bodies/i);
+  assert.match(declarations, /intentionally[\s\S]*absent from browser, table ACL, and Schedule payload-factory contexts/i);
+  assert.match(apiMail, /Server-only runtime-owned SMTP delivery API/);
+  assert.match(apiInput, /not an arbitrary provider API payload/);
+});
+
 test("published docs describe the complete Job scheduling contract", async () => {
   const [prd, context, guide, roadmap, serverSource, serverDeclarations, apiSchedule, apiDefinition] = await Promise.all([
     readProjectFile("docs/PRD.md"),

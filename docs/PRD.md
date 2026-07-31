@@ -113,6 +113,11 @@ The repository currently includes:
   OAuth provider linking, local identity simulation helpers, connected-client
   auth targeting, and provider configuration through `sporades.json` plus
   Server env.
+- Server-only SMTP mail through `ctx.mail.send(...)`, with one portable
+  `sporades.json` contract for Dev sessions, local Container sessions, and
+  Hosted Capsules; validated Postmark, Mailgun, SMTP2GO, and generic SMTP
+  extensions; bounded transport timeouts; clean shutdown; and secret-safe
+  structured delivery diagnostics.
 - Runtime-owned current-user preferences through the `sporades/client`
   `preferences` SDK, backed by Sporades user identity rather than Capsule app
   schema.
@@ -251,6 +256,7 @@ Every handler receives a runtime-owned context:
 | `ctx.env` | Server-only values from Server env. |
 | `ctx.log` | Runtime logger captured by Sporades inspection surfaces. |
 | `ctx.messages` | App-message fan-out API. |
+| `ctx.mail` | Server-only provider-independent SMTP delivery. |
 | `ctx.request` | Custom endpoint request details, only for endpoint handlers. |
 
 Query, mutation, Custom endpoint, App message, context middleware, and mutation
