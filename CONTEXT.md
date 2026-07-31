@@ -198,7 +198,7 @@ _Avoid_: primary key, timestamp fields (these are Sporades-managed, not user-def
 Sporades owns auth entirely on the server side. The client never sees provider SDKs or runtime auth internals.
 
 **Anonymous session**:
-A real session created automatically for every visitor. Not a fake guest ID - a persistent account with a session token. Data created anonymously is preserved when the user links an authentication method such as email or Google OAuth.
+A real session created automatically for every visitor. Not a fake guest ID - a persistent account with a session token. Data created anonymously is preserved when the user links an authentication method such as email, Google, Microsoft, Apple, or Facebook.
 _Avoid_: guest mode (implies fake/transient — these are real sessions), guest user
 
 **Session token**:
@@ -209,7 +209,7 @@ _Avoid_: auth token, JWT
 Missing or invalid endpoint tokens resolve to a fresh Anonymous session rather than crashing or rejecting the request.
 
 **Linked account**:
-A real authentication method, such as email or Google OAuth, linked to an existing Anonymous session. The user's data follows them because the auth method is linked to the existing account, not a new one.
+A real authentication method, such as email or a supported OAuth provider, linked to an existing Anonymous session. The user's data follows them because the auth method is linked to the existing account, not a new one.
 _Avoid_: upgrade, migration (those are schema concerns, not auth)
 
 **Provider identity**:

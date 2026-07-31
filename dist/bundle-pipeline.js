@@ -8,7 +8,7 @@ import { createPublicTree, discardPublicTree, releasePublicTreeLease, validateAc
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, clientFrameworkCapability, defaultClientToolchain, isClientToolchain, supportsClientCapability } from "./client-capabilities.js";
 const AUTH_PROVIDER_ORDER = ["anonymous", "email", "google", "microsoft", "apple", "facebook"];
 const SUPPORTED_AUTH_PROVIDERS = new Set(AUTH_PROVIDER_ORDER);
-const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "apple", "facebook"]);
+const RUNTIME_AUTH_PROVIDERS = new Set(["anonymous", "email", "google", "microsoft", "apple", "facebook"]);
 export async function createBundle(projectDir, config, options = {}) {
     const frameworkBundleConfig = readFrameworkBundleConfig(config.client?.framework ?? "react");
     const toolchain = readClientToolchain(config.client?.toolchain ?? defaultClientToolchain(frameworkBundleConfig.framework), frameworkBundleConfig.framework);
@@ -454,6 +454,7 @@ function normalizeAuthConfig(authConfig) {
     }
     const googleConfig = readProviderConfig(providerConfig.google);
     const legacyGoogle = readProviderConfig(authConfig.google);
+    const microsoftConfig = readProviderConfig(providerConfig.microsoft);
     const googleEnabled = googleConfig.enabled || authConfig.mode === "google";
     const emailConfig = readProviderConfig(providerConfig.email);
     const anonymousConfig = readProviderConfig(providerConfig.anonymous);
@@ -476,7 +477,10 @@ function normalizeAuthConfig(authConfig) {
                 enabled: emailConfig.enabled,
                 ...emptyProviderConfig(),
             },
-            microsoft: readProviderConfig(providerConfig.microsoft),
+            microsoft: {
+                ...microsoftConfig,
+                tenant: microsoftConfig.tenant ?? "common",
+            },
             apple: readProviderConfig(providerConfig.apple),
             facebook: readFacebookProviderConfig(providerConfig.facebook),
         },

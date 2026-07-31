@@ -746,6 +746,15 @@ function parseAuthArgs(args: string[]): LooseRecord {
           { graphVersion },
         );
       }
+      if (provider === "microsoft" && !disable) {
+        tenant ??= "common";
+        if (!isValidMicrosoftTenantSelection(tenant)) {
+          throw commandError(
+            "Invalid Microsoft tenant.",
+            "Use common, organizations, consumers, a tenant GUID, or a verified tenant domain.",
+          );
+        }
+      }
       return { subcommand, provider, clientId, clientSecret, tenant, teamId, keyId, privateKey, graphVersion, disable, json, projectDir: process.cwd() };
 
     default:
@@ -756,6 +765,13 @@ function parseAuthArgs(args: string[]): LooseRecord {
     "Unknown auth command.",
     "Use `sporades auth status`, `sporades auth clients`, `sporades auth set <provider>`, or `sporades auth as email`.",
   );
+}
+
+function isValidMicrosoftTenantSelection(value: any) {
+  if (["common", "organizations", "consumers"].includes(value)) return true;
+  if (typeof value !== "string" || value.length > 253) return false;
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) return true;
+  return /^(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/.test(value);
 }
 
 function parseEnvArgs(args: string[]): LooseRecord {

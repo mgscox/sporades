@@ -255,7 +255,6 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
         value: any;
         updatedAt: any;
     }): StatementResultingChanges;
-    findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
     findAuthIdentityByProviderSubject(provider: any, subject: any): any;
     findLegacyAuthIdentitiesByProviderEmail(provider: any, email: any): any;
     insertAuthIdentity(row: {
@@ -414,7 +413,6 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
         markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges;
         fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null;
         ensureAuthStorage(authConfig?: null): void;
-        findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
         insertAuthUser(row: any): StatementResultingChanges;
         updateAuthUserProfile(row: any): StatementResultingChanges;
         linkAuthUser(row: any): StatementResultingChanges;
@@ -729,7 +727,6 @@ export declare function createPostgresDatabaseAdapter(options: {
         revokePublicFileUrlsForFile(fileId: any, revokedAt: any): StatementResultingChanges;
         markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges;
         fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null;
-        findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
         insertAuthUser(row: any): StatementResultingChanges;
         updateAuthUserProfile(row: any): StatementResultingChanges;
         linkAuthUser(row: any): StatementResultingChanges;
@@ -838,7 +835,6 @@ export declare function createPostgresDatabaseAdapter(options: {
     revokePublicFileUrlsForFile(fileId: any, revokedAt: any): StatementResultingChanges;
     markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges;
     fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null;
-    findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
     findAuthIdentityByProviderSubject(provider: any, subject: any): any;
     findLegacyAuthIdentitiesByProviderEmail(provider: any, email: any): any;
     insertAuthIdentity(row: {
@@ -1149,7 +1145,6 @@ export declare function createLibsqlDatabaseAdapter(options: {
         value: any;
         updatedAt: any;
     }): StatementResultingChanges;
-    findAuthUserByProviderEmail(provider: any, email: any): Record<string, SQLOutputValue> | null;
     findAuthIdentityByProviderSubject(provider: any, subject: any): any;
     findLegacyAuthIdentitiesByProviderEmail(provider: any, email: any): any;
     insertAuthIdentity(row: {

@@ -488,8 +488,10 @@ Every browser receives an anonymous session by default. The session token is
 stored in `localStorage` and sent over the WebSocket connection. Custom endpoint
 requests can also send it in the `x-sporades-session-token` header.
 
-Provider auth, such as Google, is linked to the existing anonymous session. That
-means data created anonymously follows the user after sign-in.
+Provider auth, such as Google or Microsoft, is linked to the existing anonymous
+session. That means data created anonymously follows the user after sign-in.
+Microsoft uses discovered OpenID Connect endpoints and a tenant-qualified stable
+subject; mutable email and username claims are profile data, not identity keys.
 
 Provider secrets live in Server env. `sporades.json` stores env var names and
 provider configuration, not secret values.
