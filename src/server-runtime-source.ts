@@ -5352,6 +5352,42 @@ function createPrivilegedFileApi(database: LooseRecord, contextGetter: () => Loo
         error: null as any,
       };
     },
+    async read(fileReference: any) {
+      const active = activePrivilegedFileAccess(contextGetter);
+      if (!active.ok) {
+        return active;
+      }
+      const resolved: any = await resolvePrivilegedLiveFileReference(database, fileReference);
+      if (!resolved.ok) {
+        return resolved;
+      }
+      const row = resolved.row;
+      if (!row) {
+        return {
+          ok: false,
+          error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file."),
+        };
+      }
+      try {
+        const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
+        return {
+          ok: true,
+          data: {
+            bytes: new Uint8Array(bytes),
+            file: {
+              ...fileMetadataFromRow(row),
+              ownerId: row.ownerId,
+            },
+          },
+          error: null as any,
+        };
+      } catch {
+        return {
+          ok: false,
+          error: createStructuredFileError("File bytes are unavailable.", "Retry with a live Capsule File reference."),
+        };
+      }
+    },
     async createPublicUrl(fileReference: any, options: LooseRecord = {}) {
       const active = activePrivilegedFileAccess(contextGetter);
       if (!active.ok) {
@@ -5397,7 +5433,7 @@ function createPrivilegedFileApi(database: LooseRecord, contextGetter: () => Loo
       }
       throw commandError(
         "Unsupported privileged file operation.",
-        "Use one of the approved privileged file operations: url, createPublicUrl, or delete.",
+        "Use one of the approved privileged file operations: url, read, createPublicUrl, or delete.",
         "UNSUPPORTED_PRIVILEGED_FILE_OPERATION",
       );
     },

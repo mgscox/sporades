@@ -4963,6 +4963,43 @@ function createPrivilegedFileApi(database, contextGetter) {
                 error: null,
             };
         },
+        async read(fileReference) {
+            const active = activePrivilegedFileAccess(contextGetter);
+            if (!active.ok) {
+                return active;
+            }
+            const resolved = await resolvePrivilegedLiveFileReference(database, fileReference);
+            if (!resolved.ok) {
+                return resolved;
+            }
+            const row = resolved.row;
+            if (!row) {
+                return {
+                    ok: false,
+                    error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a live Capsule file."),
+                };
+            }
+            try {
+                const bytes = await database.fileStorage.readFileVersion({ fileId: row.id, version: row.version });
+                return {
+                    ok: true,
+                    data: {
+                        bytes: new Uint8Array(bytes),
+                        file: {
+                            ...fileMetadataFromRow(row),
+                            ownerId: row.ownerId,
+                        },
+                    },
+                    error: null,
+                };
+            }
+            catch {
+                return {
+                    ok: false,
+                    error: createStructuredFileError("File bytes are unavailable.", "Retry with a live Capsule File reference."),
+                };
+            }
+        },
         async createPublicUrl(fileReference, options = {}) {
             const active = activePrivilegedFileAccess(contextGetter);
             if (!active.ok) {
@@ -5002,7 +5039,7 @@ function createPrivilegedFileApi(database, contextGetter) {
             if (!active.ok) {
                 throw commandError(active.error?.message ?? "Privileged file access is no longer active.", active.error?.hint ?? "Start a new ctx.privileged.run callback before using privileged file operations.", "PRIVILEGED_FILE_ACCESS_INACTIVE");
             }
-            throw commandError("Unsupported privileged file operation.", "Use one of the approved privileged file operations: url, createPublicUrl, or delete.", "UNSUPPORTED_PRIVILEGED_FILE_OPERATION");
+            throw commandError("Unsupported privileged file operation.", "Use one of the approved privileged file operations: url, read, createPublicUrl, or delete.", "UNSUPPORTED_PRIVILEGED_FILE_OPERATION");
         },
     });
 }

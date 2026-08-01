@@ -2755,6 +2755,18 @@ export default capsule({
         },
       )
     ),
+    privilegedFileBytes: mutation((ctx, fileId: string) =>
+      ctx.privileged.run(
+        { operation: "test.file.read", targetResourceKind: "files" },
+        async (privilegedCtx) => {
+          const read = await privilegedCtx.files.read(fileId);
+          return {
+            ownerId: read.ok ? read.data.file.ownerId : null,
+            text: read.ok ? new TextDecoder().decode(read.data.bytes) : null,
+          };
+        },
+      )
+    ),
   },
 
   endpoints: {
@@ -2911,6 +2923,26 @@ export default capsule({
         data: {
           callerUserId: auth.data.auth.userId,
           ownerId: auth.data.auth.userId,
+        },
+        error: null,
+      });
+
+      socket.send(JSON.stringify({
+        id: "privileged-file-bytes",
+        type: "mutation.run",
+        mutation: "privilegedFileBytes",
+        args: [uploaded.data.file.id],
+      }));
+      assert.deepEqual(await waitForSocketMessage(
+        socket,
+        (message) => message.id === "privileged-file-bytes",
+      ), {
+        id: "privileged-file-bytes",
+        type: "mutation.result",
+        mutation: "privilegedFileBytes",
+        data: {
+          ownerId: auth.data.auth.userId,
+          text: "proof",
         },
         error: null,
       });

@@ -351,6 +351,8 @@ export type PrivilegedPublicFileUrl = {
 export type PrivilegedFileApi = {
   /** Return a private runtime URL for one live Capsule File by id or absolute File path. */
   url(fileReference: string): Promise<PrivilegedResult<{ url: string; file: PrivilegedOwnedFileMetadata }>>;
+  /** Read the immutable bytes for one live Capsule File version inside an active Privileged server callback. */
+  read(fileReference: string): Promise<PrivilegedResult<{ bytes: Uint8Array; file: PrivilegedOwnedFileMetadata }>>;
   /** Create a public URL for one live Capsule File while preserving File runtime boundaries. */
   createPublicUrl(fileReference: string, options?: { expires?: string | Date; ttlSeconds?: number; noExpiry?: boolean }): Promise<PrivilegedResult<{ publicUrl: PrivilegedPublicFileUrl }>>;
   /** Delete one live Capsule File through the configured Capsule File storage adapter. */

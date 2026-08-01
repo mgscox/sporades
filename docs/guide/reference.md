@@ -820,6 +820,20 @@ mutation hooks. The derived `privilegedCtx` exposes `auth.userId` as
 `"__privileged__"`, carries `privilegedCtx.signal`, and may use approved
 Capsule DB and File operations through the normal runtime boundaries.
 
+When trusted server logic must validate an uploaded File itself, read the live
+File version inside the audited callback rather than fetching its private URL:
+
+```ts
+const result = await ctx.privileged.run({
+  operation: "imports.validateSource",
+  targetResourceKind: "files",
+}, (privilegedCtx) => privilegedCtx.files.read(fileId));
+```
+
+`files.read(...)` returns the bytes plus owner-aware File metadata only while
+the Privileged callback is active. It does not expose storage paths or grant a
+browser credential.
+
 Privileged server role is not a Capsule role, app admin, Team, user, session,
 service account, or browser credential. It does not make downstream middleware
 or handlers privileged, and leaked derived contexts become ineffective after the
