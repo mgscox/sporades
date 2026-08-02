@@ -43,7 +43,8 @@
     "node": ">=22"
   },
   "dependencies": {
-    "esbuild": "0.25.12",
+    "esbuild": "0.21.5",
+    "fsevents": "2.3.3",
     "vite": "^6.4.3"
   },
   "devDependencies": {
@@ -65,7 +66,7 @@
   "allowScripts": {
     "fsevents@2.3.3": true,
     "inferno@9.1.0": true,
-    "esbuild@0.25.12": true
+    "esbuild@0.21.5": true
   },
   "keywords": [
     "cli",
