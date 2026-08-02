@@ -1784,7 +1784,7 @@ test("sporades create user-defined template without .gitignore still skips .git 
     assert.equal(result.code, 0, result.stderr);
     const projectDir = path.join(dir, "clean-app");
     const entries = await readdir(projectDir, { recursive: true });
-    assert.ok(!entries.some((e) => e.includes(".git")), ".git should not be copied");
+    assert.ok(!entries.some((e) => e === ".git" || e.startsWith(".git/")), ".git directory should not be copied");
     const env = await readFile(path.join(projectDir, ".env.sporades.server"), "utf8");
     assert.equal(env, "# Server-only environment variables for Sporades.\n");
     assert.ok(!env.includes("super-secret-value"), "source .env.sporades.server secrets must not leak");
@@ -1844,5 +1844,153 @@ test("sporades create --help mentions directory path support for --template", as
 
     assert.equal(result.code, 0, result.stderr);
     assert.match(result.stdout, /local directory path/);
+  });
+});
+
+test("sporades create user-defined template generates default sporades.json when absent", async () => {
+  await withTempDir(async (dir) => {
+    const templateDir = path.join(dir, "no-config-template");
+    await mkdir(path.join(templateDir, "server"), { recursive: true });
+    await mkdir(path.join(templateDir, "client"), { recursive: true });
+    await writeFile(path.join(templateDir, "server/index.ts"), `import { capsule } from "sporades/server";\nexport default capsule({ name: "test", schema: {}, queries: {}, mutations: {} });\n`);
+    await writeFile(path.join(templateDir, "client/index.tsx"), `export default function App() {}\n`);
+    await writeFile(path.join(templateDir, "package.json"), `${JSON.stringify({ name: "src", private: true, type: "module", dependencies: { react: "^19.0.0" } })}\n`);
+
+    const result = await runCli(["create", "autoconfig-app", "--template", templateDir, "--no-install", "--no-git", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr);
+    const projectDir = path.join(dir, "autoconfig-app");
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.equal(config.name, "autoconfig-app");
+    assert.equal(config.client.framework, "react");
+    assert.equal(config.client.toolchain, "esbuild");
+    assert.equal(config.auth.mode, "anonymous");
+    assert.equal(config.template, undefined);
+    assert.deepEqual(config.security, { cors: { allowedOrigins: [] }, csp: { mode: "report-only" } });
+  });
+});
+
+test("sporades create user-defined template generates package.json with framework deps when absent", async () => {
+  await withTempDir(async (dir) => {
+    const templateDir = path.join(dir, "no-pkg-template");
+    await mkdir(path.join(templateDir, "server"), { recursive: true });
+    await mkdir(path.join(templateDir, "client"), { recursive: true });
+    await writeFile(path.join(templateDir, "sporades.json"), `${JSON.stringify({ name: "src", client: { framework: "react", toolchain: "esbuild" }, auth: { mode: "anonymous" } })}\n`);
+    await writeFile(path.join(templateDir, "server/index.ts"), `export {};\n`);
+    await writeFile(path.join(templateDir, "client/index.tsx"), `export default function App() {}\n`);
+
+    const result = await runCli(["create", "autodeps-app", "--template", templateDir, "--no-install", "--no-git", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr);
+    const projectDir = path.join(dir, "autodeps-app");
+    const pkg = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
+    assert.equal(pkg.name, "autodeps-app");
+    assert.equal(pkg.dependencies.react, "^19.0.0");
+    assert.equal(pkg.dependencies["react-dom"], "^19.0.0");
+    assert.equal(pkg.devDependencies.sporades, expectedSporadesVersionRange);
+    assert.equal(pkg.devDependencies.typescript, "^5.8.0");
+    assert.equal(pkg.scripts.dev, "sporades dev");
+  });
+});
+
+test("sporades create user-defined template --framework override changes config and package deps", async () => {
+  await withTempDir(async (dir) => {
+    const templateDir = path.join(dir, "override-template");
+    await mkdir(path.join(templateDir, "server"), { recursive: true });
+    await mkdir(path.join(templateDir, "client"), { recursive: true });
+    await writeFile(path.join(templateDir, "sporades.json"), `${JSON.stringify({ name: "src", client: { framework: "react", toolchain: "esbuild" }, auth: { mode: "anonymous" } })}\n`);
+    await writeFile(path.join(templateDir, "server/index.ts"), `export {};\n`);
+    await writeFile(path.join(templateDir, "client/index.tsx"), `export default function App() {}\n`);
+
+    const result = await runCli(["create", "preact-app", "--template", templateDir, "--framework", "preact", "--no-install", "--no-git", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr);
+    const projectDir = path.join(dir, "preact-app");
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.equal(config.client.framework, "preact");
+    assert.equal(config.client.toolchain, "esbuild");
+    const pkg = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
+    assert.equal(pkg.dependencies.preact, "^10.25.0");
+  });
+});
+
+test("sporades create user-defined template generates default index.html when absent", async () => {
+  await withTempDir(async (dir) => {
+    const templateDir = path.join(dir, "no-html-template");
+    await mkdir(path.join(templateDir, "server"), { recursive: true });
+    await mkdir(path.join(templateDir, "client"), { recursive: true });
+    await writeFile(path.join(templateDir, "sporades.json"), `${JSON.stringify({ name: "src", client: { framework: "react", toolchain: "esbuild" }, auth: { mode: "anonymous" } })}\n`);
+    await writeFile(path.join(templateDir, "package.json"), `${JSON.stringify({ name: "src", private: true, type: "module", dependencies: { react: "^19.0.0" } })}\n`);
+    await writeFile(path.join(templateDir, "server/index.ts"), `export {};\n`);
+    await writeFile(path.join(templateDir, "client/index.tsx"), `export default function App() {}\n`);
+
+    const result = await runCli(["create", "autohtml-app", "--template", templateDir, "--no-install", "--no-git", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr);
+    const projectDir = path.join(dir, "autohtml-app");
+    const html = await readFile(path.join(projectDir, "index.html"), "utf8");
+    assert.match(html, /<div id="app"><\/div>/);
+    assert.match(html, /src="\/client\.js"/);
+  });
+});
+
+test("sporades create user-defined template generates default AGENTS.md and CLAUDE.md when absent", async () => {
+  await withTempDir(async (dir) => {
+    const templateDir = path.join(dir, "no-agents-template");
+    await mkdir(path.join(templateDir, "server"), { recursive: true });
+    await mkdir(path.join(templateDir, "client"), { recursive: true });
+    await writeFile(path.join(templateDir, "sporades.json"), `${JSON.stringify({ name: "src", client: { framework: "react", toolchain: "esbuild" }, auth: { mode: "anonymous" } })}\n`);
+    await writeFile(path.join(templateDir, "package.json"), `${JSON.stringify({ name: "src", private: true, type: "module", dependencies: { react: "^19.0.0" } })}\n`);
+    await writeFile(path.join(templateDir, "server/index.ts"), `export {};\n`);
+    await writeFile(path.join(templateDir, "client/index.tsx"), `export default function App() {}\n`);
+
+    const result = await runCli(["create", "autoagents-app", "--template", templateDir, "--no-install", "--no-git", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr);
+    const projectDir = path.join(dir, "autoagents-app");
+    const agents = await readFile(path.join(projectDir, "AGENTS.md"), "utf8");
+    assert.match(agents, /Sporades App Instructions/);
+    assert.match(agents, /Client framework: react/);
+    const claude = await readFile(path.join(projectDir, "CLAUDE.md"), "utf8");
+    assert.match(claude, /Sporades App Instructions/);
+  });
+});
+
+test("sporades create user-defined template generates default .gitignore when absent", async () => {
+  await withTempDir(async (dir) => {
+    const templateDir = path.join(dir, "no-gitignore-gen-template");
+    await mkdir(path.join(templateDir, "server"), { recursive: true });
+    await mkdir(path.join(templateDir, "client"), { recursive: true });
+    await writeFile(path.join(templateDir, "sporades.json"), `${JSON.stringify({ name: "src", client: { framework: "react", toolchain: "esbuild" }, auth: { mode: "anonymous" } })}\n`);
+    await writeFile(path.join(templateDir, "package.json"), `${JSON.stringify({ name: "src", private: true, type: "module", dependencies: { react: "^19.0.0" } })}\n`);
+    await writeFile(path.join(templateDir, "server/index.ts"), `export {};\n`);
+    await writeFile(path.join(templateDir, "client/index.tsx"), `export default function App() {}\n`);
+
+    const result = await runCli(["create", "autogitignore-app", "--template", templateDir, "--no-install", "--no-git", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr);
+    const projectDir = path.join(dir, "autogitignore-app");
+    const gitignore = await readFile(path.join(projectDir, ".gitignore"), "utf8");
+    assert.match(gitignore, /node_modules\//);
+    assert.match(gitignore, /\.sporades\//);
+    assert.match(gitignore, /\.env\*\.local/);
+  });
+});
+
+test("sporades create user-defined template rejects unsupported framework/toolchain with --framework", async () => {
+  await withTempDir(async (dir) => {
+    const templateDir = path.join(dir, "bad-framework-template");
+    await mkdir(path.join(templateDir, "server"), { recursive: true });
+    await mkdir(path.join(templateDir, "client"), { recursive: true });
+    await writeFile(path.join(templateDir, "sporades.json"), `${JSON.stringify({ name: "src", client: { framework: "react", toolchain: "esbuild" }, auth: { mode: "anonymous" } })}\n`);
+    await writeFile(path.join(templateDir, "server/index.ts"), `export {};\n`);
+    await writeFile(path.join(templateDir, "client/index.tsx"), `export default function App() {}\n`);
+
+    const result = await runCli(["create", "bad-framework-app", "--template", templateDir, "--framework", "vanilla", "--toolchain", "vite", "--no-install", "--no-git", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 1);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, false);
+    assert.match(output.error.message, /Unsupported client framework\/toolchain combination/ || /Unsupported framework/);
   });
 });

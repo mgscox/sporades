@@ -2823,7 +2823,8 @@ export async function scaffoldFromDirectory(options: {
     try {
       const config = JSON.parse(templateFiles["sporades.json"]);
       if (!framework && config.client?.framework) framework = config.client.framework;
-      if (!toolchain && config.client?.toolchain) toolchain = config.client.toolchain;
+      // Only inherit toolchain from template when framework was NOT overridden by CLI
+      if (!toolchain && !options.framework && config.client?.toolchain) toolchain = config.client.toolchain;
     } catch {
       // Invalid JSON — leave framework/toolchain as-is
     }
@@ -2838,18 +2839,46 @@ export async function scaffoldFromDirectory(options: {
     throw Object.assign(new Error(details.message), { hint: details.hint });
   }
 
-  // Override name in sporades.json
+  // Framework dependency maps (same as scaffoldFiles)
+  const frameworkDependencies =
+    framework === "react" ? { react: "^19.0.0", "react-dom": "^19.0.0" } :
+    framework === "preact" ? { preact: "^10.25.0" } :
+    framework === "inferno" ? { inferno: "^9.1.0", "inferno-create-element": "^9.1.0" } :
+    framework === "lit" ? { lit: "^3.2.1" } :
+    framework === "vue" ? { vue: "^3.5.13" } :
+    framework === "svelte" ? { svelte: "^5.0.0" } :
+    framework === "solid" ? { "solid-js": "^1.9.0" } : {};
+  const frameworkDevDependencies =
+    framework === "react" ? { "@types/react": "^19.0.0", "@types/react-dom": "^19.0.0" } :
+    framework === "vue" ? { "@vitejs/plugin-vue": "^5.2.4", "@vue/compiler-sfc": "^3.5.13" } :
+    framework === "svelte" ? { "@sveltejs/vite-plugin-svelte": "^5.1.1" } :
+    framework === "solid" ? { "vite-plugin-solid": "^2.11.0" } : {};
+
+  // sporades.json: override name and update client config when CLI flags override
   if (templateFiles["sporades.json"]) {
     try {
       const config = JSON.parse(templateFiles["sporades.json"]);
       config.name = options.name;
+      if (options.framework || options.toolchain) {
+        config.client = { ...(config.client || {}), framework, toolchain };
+      }
       templateFiles["sporades.json"] = JSON.stringify(config, null, 2) + "\n";
     } catch {
       // Invalid JSON — leave as-is
     }
+  } else {
+    // Gap-fill: generate default sporades.json
+    templateFiles["sporades.json"] = JSON.stringify({
+      name: options.name,
+      client: { framework, toolchain },
+      auth: { mode: "anonymous" },
+      security: { cors: { allowedOrigins: [] }, csp: { mode: "report-only" } },
+      deploy: { port: 4000 },
+      dev: { port: null },
+    }, null, 2) + "\n";
   }
 
-  // Merge package.json
+  // package.json: merge or generate
   if (templateFiles["package.json"]) {
     try {
       const pkg = JSON.parse(templateFiles["package.json"]);
@@ -2863,10 +2892,50 @@ export async function scaffoldFromDirectory(options: {
     } catch {
       // Invalid JSON — leave as-is
     }
+  } else {
+    // Gap-fill: generate package.json with framework-specific deps
+    templateFiles["package.json"] = JSON.stringify({
+      name: options.name,
+      private: true,
+      type: "module",
+      scripts: { dev: "sporades dev", deploy: "sporades deploy" },
+      dependencies: frameworkDependencies,
+      devDependencies: { ...frameworkDevDependencies, sporades: sporadesDependency, typescript: "^5.8.0" },
+    }, null, 2) + "\n";
   }
 
   // Always regenerate .env.sporades.server as blank default
   templateFiles[".env.sporades.server"] = "# Server-only environment variables for Sporades.\n";
+
+  // Gap-fill: index.html
+  if (!templateFiles["index.html"]) {
+    templateFiles["index.html"] = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>${escapeHtml(options.name)}</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="${toolchain === "vite" ? `/client/${capability.build.entry}` : "/client.js"}"></script>
+  </body>
+</html>
+`;
+  }
+
+  // Gap-fill: AGENTS.md and CLAUDE.md
+  if (!templateFiles["AGENTS.md"]) {
+    templateFiles["AGENTS.md"] = agentsTemplate(options.templateDir, framework, toolchain);
+  }
+  if (!templateFiles["CLAUDE.md"]) {
+    templateFiles["CLAUDE.md"] = agentsTemplate(options.templateDir, framework, toolchain);
+  }
+
+  // Gap-fill: .gitignore
+  if (!templateFiles[".gitignore"]) {
+    templateFiles[".gitignore"] = "node_modules/\n.sporades/\n.env*.local\n";
+  }
 
   return templateFiles;
 }
