@@ -1,6 +1,6 @@
 {
   "name": "sporades",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "A CLI-first platform for building, running, inspecting, and hosting small full-stack web Capsules — designed for developers and coding agents who want deterministic commands instead of dashboards.",
   "homepage": "https://mgscox.github.io/sporades/",
   "license": "MIT",
