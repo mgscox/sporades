@@ -1,4 +1,3 @@
-import ignore from "ignore";
 import { readdir, readFile } from "node:fs/promises";
 import nodePath from "node:path";
 import { clientCapability, clientCapabilityError, defaultClientToolchain } from "../client-capabilities.js";
@@ -2703,22 +2702,64 @@ function escapeHtml(value) {
     };
     return value.replace(/[&<>"']/g, (char) => replacements[char] ?? char);
 }
+function compileGitignore(gitignoreContent) {
+    const patterns = [];
+    for (const rawLine of gitignoreContent.split("\n")) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith("#") || line.startsWith("!"))
+            continue;
+        const isDir = line.endsWith("/");
+        const text = isDir ? line.slice(0, -1) : line;
+        const hasWildcard = text.includes("*") || text.includes("?");
+        const regex = hasWildcard
+            ? new RegExp("^" + text.replace(/[.+^$()|[\]\\]/g, "\\$&").replace(/\*/g, "[^/]*").replace(/\?/g, "[^/]") + "$")
+            : null;
+        patterns.push({ text, isDir, regex });
+    }
+    return (relativePath) => {
+        const parts = relativePath.split("/");
+        const basename = parts[parts.length - 1];
+        for (const { text, isDir, regex } of patterns) {
+            if (regex) {
+                if (regex.test(basename) || regex.test(relativePath))
+                    return true;
+                if (isDir) {
+                    for (let i = 1; i < parts.length; i++) {
+                        if (regex.test(parts.slice(0, i).join("/")))
+                            return true;
+                    }
+                }
+            }
+            else {
+                for (let i = 0; i < parts.length; i++) {
+                    if (parts[i] === text) {
+                        if (isDir || i === parts.length - 1)
+                            return true;
+                    }
+                }
+            }
+        }
+        return false;
+    };
+}
 async function readTemplateDirectory(templateDir) {
-    const ignoreFilter = ignore();
+    let ignoreFilter = () => false;
     try {
         const gitignoreContent = await readFile(nodePath.join(templateDir, ".gitignore"), "utf8");
-        ignoreFilter.add(gitignoreContent);
+        const userFilter = compileGitignore(gitignoreContent);
+        const alwaysIgnored = compileGitignore(".git\n.env.sporades.server");
+        ignoreFilter = (p) => userFilter(p) || alwaysIgnored(p);
     }
     catch {
         // No .gitignore — only always-ignored entries apply
+        ignoreFilter = compileGitignore(".git\n.env.sporades.server");
     }
-    ignoreFilter.add([".git", ".env.sporades.server"]);
     const files = {};
     async function walk(dir, relativePrefix) {
         const entries = await readdir(dir, { withFileTypes: true });
         for (const entry of entries) {
             const relativePath = relativePrefix ? relativePrefix + "/" + entry.name : entry.name;
-            if (ignoreFilter.ignores(relativePath))
+            if (ignoreFilter(relativePath))
                 continue;
             const fullPath = nodePath.join(dir, entry.name);
             if (entry.isDirectory()) {
