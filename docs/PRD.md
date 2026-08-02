@@ -35,6 +35,10 @@ The repository currently includes:
   with native class-component lifecycle and no React compatibility dependency,
   framework support, `AGENTS.md`, `CLAUDE.md`, `index.html`, `sporades.json`,
   Server env, and optional `npm install` / git initialization.
+  User-defined templates from local directory paths, with `.gitignore`-driven
+  file filtering, wrapper-config merge, gap-filling for missing `sporades.json` /
+  `package.json` / `index.html` / agent instructions, and `--framework` /
+  `--toolchain` override.
 - `sporades dev` for local Node execution with bundling, file watching,
   debounced rebuilds, runtime restart, WebSocket reconnects, JSONL events,
   SQLite persistence, uploaded file storage, debug logs, and database

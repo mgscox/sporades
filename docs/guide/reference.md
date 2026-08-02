@@ -70,11 +70,59 @@ sporades create svelte-guestbook --template guestbook --framework svelte
 sporades create svelte-gallery --template photo-library --framework svelte
 sporades create svelte-campfire --template campfire --framework svelte
 sporades create no-install-yet --no-install --no-git
+
+# Scaffold from a local directory instead of a built-in template
+sporades create my-app --template ./my-defaults
+sporades create derived --template /path/to/customised-project --framework preact
 ```
 
 Available templates are `blank`, `todo`, `guestbook`, `photo-library`, and
 `campfire`. Campfire demonstrates realtime messaging, durable reactions, email
 fixture identities, and explicitly consented ephemeral Journey activity.
+
+### User-defined templates
+
+In addition to built-in template names, `--template` accepts a local directory
+path. When the value resolves to an existing directory, Sporades treats it as a
+user-defined template and copies the file tree into the new project.
+
+This is useful for re-using your own defaults: scaffold a built-in template,
+customise it, and then use the customised project as the basis for future
+scaffolds. The most common workflow is:
+
+```sh
+# Start from a built-in template
+sporades create my-base --template todo
+cd my-base
+# … customise server, client, components, styles …
+
+# Use the customised project as a template for new Capsules
+sporades create new-app --template ./my-base
+```
+
+Sporades honours the template directory's `.gitignore` to skip excluded paths
+(such as `node_modules/`, `.sporades/`, and `package-lock.json`). Two entries
+are always ignored regardless of `.gitignore`: `.git/` (version control history)
+and `.env.sporades.server` (regenerated as a blank default to prevent secret
+leakage).
+
+After copying, Sporades merges wrapper configuration:
+
+- **`sporades.json`** — if present, the `name` field is overridden with the new
+  project name; all other fields are preserved. If absent, a default is generated
+  with anonymous auth and the resolved framework/toolchain.
+- **`package.json`** — if present, the `sporades` dev dependency,
+  `typescript` dev dep, and `dev`/`deploy` scripts are merged in; existing
+  dependencies and metadata are preserved. If absent, one is generated with
+  framework-specific dependencies.
+- **`.env.sporades.server`** — always regenerated as a blank default.
+- **`index.html`**, **`AGENTS.md`**, **`CLAUDE.md`**, **`.gitignore`** — if
+  absent, sensible defaults are generated.
+
+The `--framework` and `--toolchain` flags override the template's declared
+framework. When neither flags nor template config specify a framework, Sporades
+defaults to React/esbuild. The resolved pair is validated against the client
+capability matrix.
 Available client frameworks are `react`, `preact`, `inferno`, `lit`, `solid`, `vue`, `svelte`,
 and framework-neutral Vanilla TypeScript. esbuild remains the React, Preact, and Inferno default client
 toolchain, and they can explicitly select Vite with `--toolchain vite`. Vue

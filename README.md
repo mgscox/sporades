@@ -122,7 +122,7 @@ so the UI can consume queries, mutations, and auth without hand-rolled fetch plu
 Sporades currently includes:
 
 - React, Preact, and Vue project scaffolds with `blank`, `todo`, `guestbook`,
-  `photo-library`, and `campfire` templates. Vue uses native Single-File
+  `photo-library`, and `campfire` built-in templates, plus user-defined templates from any local project directory. Vue uses native Single-File
   Components; Campfire is the complete consented User journey tracker exemplar.
 - Svelte/Vite project scaffolds across the complete template set, with native
   components and lazily observed stores. Campfire preserves identity-safe

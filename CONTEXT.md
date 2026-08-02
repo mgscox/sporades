@@ -434,3 +434,7 @@ _Avoid_: boilerplate, starter (it's a complete project, not a placeholder)
 **Scaffold install**:
 `sporades create` runs `npm install` for the chosen framework after scaffolding. The user (or agent) does not run `npm install` separately. The project's `package.json` includes the framework dependency and the Sporades CLI as dev dependencies.
 _Avoid_: dependency install, setup step
+
+**User-defined template**:
+A local directory passed to `--template` instead of a built-in template name. Sporades copies its file tree (honouring the source `.gitignore`), overrides the Capsule name in `sporades.json`, merges the Sporades dev dependency and scripts into `package.json`, and regenerates a blank `.env.sporades.server`. Missing wrapper files (`sporades.json`, `package.json`, `index.html`, `AGENTS.md`, `CLAUDE.md`, `.gitignore`) are gap-filled with defaults. This lets developers re-use a previously scaffolded and customised project as their own starting point.
+_Avoid_: custom template (too generic), external template (implies remote source)
