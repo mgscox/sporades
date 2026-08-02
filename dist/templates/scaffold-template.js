@@ -1,3 +1,6 @@
+import ignore from "ignore";
+import { readdir, readFile } from "node:fs/promises";
+import nodePath from "node:path";
 import { clientCapability, clientCapabilityError, defaultClientToolchain } from "../client-capabilities.js";
 export function scaffoldFiles(options) {
     const templateOptions = resolveTemplateOptions(options.template);
@@ -2699,5 +2702,90 @@ function escapeHtml(value) {
         "'": "&#39;",
     };
     return value.replace(/[&<>"']/g, (char) => replacements[char] ?? char);
+}
+async function readTemplateDirectory(templateDir) {
+    const ignoreFilter = ignore();
+    try {
+        const gitignoreContent = await readFile(nodePath.join(templateDir, ".gitignore"), "utf8");
+        ignoreFilter.add(gitignoreContent);
+    }
+    catch {
+        // No .gitignore — only always-ignored entries apply
+    }
+    ignoreFilter.add([".git", ".env.sporades.server"]);
+    const files = {};
+    async function walk(dir, relativePrefix) {
+        const entries = await readdir(dir, { withFileTypes: true });
+        for (const entry of entries) {
+            const relativePath = relativePrefix ? relativePrefix + "/" + entry.name : entry.name;
+            if (ignoreFilter.ignores(relativePath))
+                continue;
+            const fullPath = nodePath.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                await walk(fullPath, relativePath);
+            }
+            else if (entry.isFile()) {
+                files[relativePath] = await readFile(fullPath, "utf8");
+            }
+        }
+    }
+    await walk(templateDir, "");
+    return files;
+}
+export async function scaffoldFromDirectory(options) {
+    const templateFiles = await readTemplateDirectory(options.templateDir);
+    const sporadesDependency = options.sporadesDependency ?? "sporades";
+    // Resolve framework/toolchain: CLI flags → template sporades.json → default react/esbuild
+    let framework = options.framework ?? null;
+    let toolchain = options.toolchain ?? null;
+    if (templateFiles["sporades.json"]) {
+        try {
+            const config = JSON.parse(templateFiles["sporades.json"]);
+            if (!framework && config.client?.framework)
+                framework = config.client.framework;
+            if (!toolchain && config.client?.toolchain)
+                toolchain = config.client.toolchain;
+        }
+        catch {
+            // Invalid JSON — leave framework/toolchain as-is
+        }
+    }
+    framework ??= "react";
+    toolchain ??= defaultClientToolchain(framework) ?? "esbuild";
+    const capability = clientCapability(framework, toolchain);
+    if (!capability) {
+        const details = clientCapabilityError(framework, toolchain);
+        throw Object.assign(new Error(details.message), { hint: details.hint });
+    }
+    // Override name in sporades.json
+    if (templateFiles["sporades.json"]) {
+        try {
+            const config = JSON.parse(templateFiles["sporades.json"]);
+            config.name = options.name;
+            templateFiles["sporades.json"] = JSON.stringify(config, null, 2) + "\n";
+        }
+        catch {
+            // Invalid JSON — leave as-is
+        }
+    }
+    // Merge package.json
+    if (templateFiles["package.json"]) {
+        try {
+            const pkg = JSON.parse(templateFiles["package.json"]);
+            pkg.scripts = { ...(pkg.scripts || {}), dev: "sporades dev", deploy: "sporades deploy" };
+            pkg.devDependencies = {
+                ...(pkg.devDependencies || {}),
+                sporades: sporadesDependency,
+                typescript: "^5.8.0",
+            };
+            templateFiles["package.json"] = JSON.stringify(pkg, null, 2) + "\n";
+        }
+        catch {
+            // Invalid JSON — leave as-is
+        }
+    }
+    // Always regenerate .env.sporades.server as blank default
+    templateFiles[".env.sporades.server"] = "# Server-only environment variables for Sporades.\n";
+    return templateFiles;
 }
 //# sourceMappingURL=scaffold-template.js.map

@@ -12,7 +12,7 @@ Scaffold a new Capsule.
 Options:
   --framework <name>  Client framework: ${frameworkHelp}
   --toolchain <name>  Client toolchain: ${toolchainHelp} (framework-dependent)
-  --template <name>   Template: ${templateHelp}
+  --template <name>   Built-in template: ${templateHelp}, or a local directory path
   --no-install        Skip npm install
   --no-git            Skip git initialization
   --json              Write JSON output
