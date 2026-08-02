@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -1680,5 +1680,169 @@ test("sporades auth set leaves config and env exact when transaction staging fai
     assert.equal(await readFile(configPath, "utf8"), configBefore);
     assert.equal(await readFile(envPath, "utf8"), envBefore);
     assert.deepEqual((await readdir(projectDir)).filter((name) => name.includes(".sporades-tx-")), []);
+  });
+});
+
+test("sporades create scaffolds from a user-defined template directory", async () => {
+  await withTempDir(async (dir) => {
+    const templateDir = path.join(dir, "my-template");
+    await mkdir(path.join(templateDir, "server"), { recursive: true });
+    await mkdir(path.join(templateDir, "client"), { recursive: true });
+    await mkdir(path.join(templateDir, "shared"), { recursive: true });
+    await writeFile(path.join(templateDir, "sporades.json"), `${JSON.stringify({
+      name: "template-source",
+      client: { framework: "react", toolchain: "esbuild" },
+      auth: { mode: "anonymous" },
+    }, null, 2)}\n`);
+    await writeFile(path.join(templateDir, "package.json"), `${JSON.stringify({
+      name: "template-source",
+      private: true,
+      type: "module",
+      dependencies: { react: "^19.0.0", "react-dom": "^19.0.0" },
+      devDependencies: { "@types/react": "^19.0.0" },
+    }, null, 2)}\n`);
+    await writeFile(path.join(templateDir, "server/index.ts"), `import { capsule } from "sporades/server";\n\nexport default capsule({ name: "test", schema: {}, queries: {}, mutations: {} });\n`);
+    await writeFile(path.join(templateDir, "client/index.tsx"), `export default function App() { return <div>Custom template</div>; }\n`);
+    await writeFile(path.join(templateDir, "shared/types.ts"), `export {};\n`);
+    await writeFile(path.join(templateDir, "index.html"), `<!doctype html><html><body><div id="app"></div><script type="module" src="/client.js"></script></body></html>\n`);
+
+    const result = await runCli(["create", "newapp", "--template", templateDir, "--no-install", "--no-git", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, true);
+    assert.equal(output.data.template, templateDir);
+
+    const projectDir = path.join(dir, "newapp");
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.equal(config.name, "newapp");
+    assert.equal(config.client.framework, "react");
+    assert.equal(config.client.toolchain, "esbuild");
+
+    const pkg = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
+    assert.equal(pkg.name, "template-source");
+    assert.equal(pkg.dependencies.react, "^19.0.0");
+    assert.equal(pkg.devDependencies.sporades, expectedSporadesVersionRange);
+    assert.equal(pkg.devDependencies.typescript, "^5.8.0");
+    assert.equal(pkg.scripts.dev, "sporades dev");
+    assert.equal(pkg.scripts.deploy, "sporades deploy");
+
+    const server = await readFile(path.join(projectDir, "server/index.ts"), "utf8");
+    assert.match(server, /capsule\(/);
+    const client = await readFile(path.join(projectDir, "client/index.tsx"), "utf8");
+    assert.match(client, /Custom template/);
+    const env = await readFile(path.join(projectDir, ".env.sporades.server"), "utf8");
+    assert.equal(env, "# Server-only environment variables for Sporades.\n");
+  });
+});
+
+test("sporades create user-defined template honours .gitignore filtering", async () => {
+  await withTempDir(async (dir) => {
+    const templateDir = path.join(dir, "filtered-template");
+    await mkdir(path.join(templateDir, "server"), { recursive: true });
+    await mkdir(path.join(templateDir, "client"), { recursive: true });
+    await mkdir(path.join(templateDir, "node_modules"), { recursive: true });
+    await mkdir(path.join(templateDir, ".sporades"), { recursive: true });
+    await writeFile(path.join(templateDir, ".gitignore"), "node_modules/\n.sporades/\npackage-lock.json\n*.local\n");
+    await writeFile(path.join(templateDir, "sporades.json"), `${JSON.stringify({ name: "src", client: { framework: "react", toolchain: "esbuild" }, auth: { mode: "anonymous" } })}\n`);
+    await writeFile(path.join(templateDir, "package.json"), `${JSON.stringify({ name: "src", private: true, type: "module", dependencies: { react: "^19.0.0" } })}\n`);
+    await writeFile(path.join(templateDir, "server/index.ts"), `export {};\n`);
+    await writeFile(path.join(templateDir, "client/index.tsx"), `export default function App() {}\n`);
+    await writeFile(path.join(templateDir, "node_modules/should-not-copy.js"), "module.exports = {};\n");
+    await writeFile(path.join(templateDir, ".sporades/data.db"), "fake-db");
+    await writeFile(path.join(templateDir, "package-lock.json"), "{}\n");
+    await writeFile(path.join(templateDir, "secrets.local"), "secret\n");
+
+    const result = await runCli(["create", "filtered-app", "--template", templateDir, "--no-install", "--no-git", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr);
+    const projectDir = path.join(dir, "filtered-app");
+    const entries = await readdir(projectDir, { recursive: true });
+    assert.ok(!entries.some((e) => e.includes("node_modules")), "node_modules should not be copied");
+    assert.ok(!entries.some((e) => e === ".sporades" || e.startsWith(".sporades/")), ".sporades directory should not be copied");
+    assert.ok(!entries.some((e) => e.includes("package-lock.json")), "package-lock.json should not be copied");
+    assert.ok(!entries.some((e) => e.includes("secrets.local")), "*.local should not be copied");
+    assert.ok(entries.some((e) => e === ".gitignore"), ".gitignore should be copied");
+  });
+});
+
+test("sporades create user-defined template without .gitignore still skips .git and .env.sporades.server", async () => {
+  await withTempDir(async (dir) => {
+    const templateDir = path.join(dir, "no-gitignore-template");
+    await mkdir(path.join(templateDir, "server"), { recursive: true });
+    await mkdir(path.join(templateDir, "client"), { recursive: true });
+    await mkdir(path.join(templateDir, ".git"), { recursive: true });
+    await writeFile(path.join(templateDir, "sporades.json"), `${JSON.stringify({ name: "src", client: { framework: "react", toolchain: "esbuild" }, auth: { mode: "anonymous" } })}\n`);
+    await writeFile(path.join(templateDir, "package.json"), `${JSON.stringify({ name: "src", private: true, type: "module", dependencies: { react: "^19.0.0" } })}\n`);
+    await writeFile(path.join(templateDir, "server/index.ts"), `export {};\n`);
+    await writeFile(path.join(templateDir, "client/index.tsx"), `export default function App() {}\n`);
+    await writeFile(path.join(templateDir, ".env.sporades.server"), "SECRET=super-secret-value\n");
+    await writeFile(path.join(templateDir, ".git/HEAD"), "ref: refs/heads/main\n");
+
+    const result = await runCli(["create", "clean-app", "--template", templateDir, "--no-install", "--no-git", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr);
+    const projectDir = path.join(dir, "clean-app");
+    const entries = await readdir(projectDir, { recursive: true });
+    assert.ok(!entries.some((e) => e.includes(".git")), ".git should not be copied");
+    const env = await readFile(path.join(projectDir, ".env.sporades.server"), "utf8");
+    assert.equal(env, "# Server-only environment variables for Sporades.\n");
+    assert.ok(!env.includes("super-secret-value"), "source .env.sporades.server secrets must not leak");
+  });
+});
+
+test("sporades create user-defined template can reuse a previously-scaffolded project", async () => {
+  await withTempDir(async (dir) => {
+    // First: scaffold a built-in template
+    const firstResult = await runCli(["create", "source-project", "--template", "todo", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(firstResult.code, 0, firstResult.stderr);
+    const sourceDir = path.join(dir, "source-project");
+
+    // Simulate a .gitignore (the scaffold writes one, but let's add node_modules to be sure)
+    // The scaffold already writes .gitignore with node_modules/ and .sporades/
+
+    // Modify: add a custom file
+    await mkdir(path.join(sourceDir, "client", "components"), { recursive: true });
+    await writeFile(path.join(sourceDir, "client", "components", "Button.tsx"), "export function Button() { return <button>Custom</button>; }\n");
+
+    // Second: use the modified project as a template
+    const secondResult = await runCli(["create", "derived-app", "--template", sourceDir, "--no-install", "--no-git", "--json"], { cwd: dir });
+
+    assert.equal(secondResult.code, 0, secondResult.stderr);
+    const derivedDir = path.join(dir, "derived-app");
+    const config = JSON.parse(await readFile(path.join(derivedDir, "sporades.json"), "utf8"));
+    assert.equal(config.name, "derived-app");
+    assert.equal(config.template, "todo");
+
+    const button = await readFile(path.join(derivedDir, "client", "components", "Button.tsx"), "utf8");
+    assert.match(button, /Custom/);
+
+    const entries = await readdir(derivedDir, { recursive: true });
+    assert.ok(!entries.some((e) => e.includes("node_modules")), "node_modules should not be copied");
+    assert.ok(!entries.some((e) => e === ".sporades" || e.startsWith(".sporades/")), ".sporades directory should not be copied");
+  });
+});
+
+test("sporades create rejects template directory same as project directory", async () => {
+  await withTempDir(async (dir) => {
+    // Create a directory with a sporades.json so it looks like a template
+    await mkdir(path.join(dir, "self-ref"), { recursive: true });
+    await writeFile(path.join(dir, "self-ref", "sporades.json"), "{}\n");
+
+    const result = await runCli(["create", "self-ref", "--template", "self-ref", "--no-install", "--no-git", "--json"], { cwd: dir });
+
+    assert.equal(result.code, 1);
+    const output = JSON.parse(result.stdout);
+    assert.equal(output.ok, false);
+    assert.match(output.error.message, /same as the project directory/i);
+  });
+});
+
+test("sporades create --help mentions directory path support for --template", async () => {
+  await withTempDir(async (dir) => {
+    const result = await runCli(["create", "--help"], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.match(result.stdout, /local directory path/);
   });
 });

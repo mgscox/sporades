@@ -109,4 +109,11 @@ export declare function scaffoldFiles(options: {
     ".env.sporades.server": string;
     "index.html": string;
 };
+export declare function scaffoldFromDirectory(options: {
+    templateDir: string;
+    sporadesDependency?: string;
+    framework?: string | null;
+    toolchain?: string | null;
+    name: string;
+}): Promise<Record<string, string>>;
 //# sourceMappingURL=scaffold-template.d.ts.map

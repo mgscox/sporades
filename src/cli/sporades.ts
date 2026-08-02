@@ -58,7 +58,7 @@ import {
   validateReadOnlyInspectionSql,
   writeUnhandledHttpError,
 } from "../server-runtime-source.js";
-import { scaffoldFiles } from "../templates/scaffold-template.js";
+import { scaffoldFiles, scaffoldFromDirectory } from "../templates/scaffold-template.js";
 import {
   CAPSULE_SERVICES_COMPOSE_FILE,
   CAPSULE_SERVICES_STATE_DIR,
@@ -390,29 +390,46 @@ function parseCreateArgs(args: string[]): LooseRecord {
   if (!name) {
     throw commandError("Missing scaffold name.", "Use `sporades create <name>`.");
   }
+  const projectDir = path.resolve(process.cwd(), name);
+
+  // Detect user-defined template from a local directory
+  let templateDir: string | null = null;
+  const templatePath = path.resolve(process.cwd(), template);
+  const templateStat = statSync(templatePath, { throwIfNoEntry: false });
+  if (templateStat?.isDirectory()) {
+    templateDir = templatePath;
+    template = templatePath;
+    if (path.resolve(templateDir) === path.resolve(projectDir)) {
+      throw commandError("Template directory cannot be the same as the project directory.", "Use a different --template path or project name.");
+    }
+  } else if (!SUPPORTED_TEMPLATES.has(template)) {
+    throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
+  }
+
   if (framework !== null && !isClientFramework(framework)) {
     throw commandError(`Unsupported framework: ${framework}`, CLIENT_FRAMEWORK_HINT);
   }
-  toolchain ??= defaultClientToolchain(framework ?? "react")!;
-  if (!isClientToolchain(toolchain)) {
+  // For user-defined templates without --framework, defer toolchain default to scaffoldFromDirectory
+  if (!templateDir || framework !== null) {
+    toolchain ??= defaultClientToolchain(framework ?? "react")!;
+  }
+  if (toolchain !== null && !isClientToolchain(toolchain)) {
     throw commandError(`Unsupported client toolchain: ${toolchain}`, CLIENT_TOOLCHAIN_HINT);
   }
-  if (framework !== null && !supportsClientCapability(framework, toolchain)) {
+  if (framework !== null && toolchain !== null && !supportsClientCapability(framework, toolchain)) {
     const details = clientCapabilityError(framework, toolchain);
     throw commandError(details.message, details.hint);
-  }
-  if (!SUPPORTED_TEMPLATES.has(template)) {
-    throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
   }
   return {
     name,
     framework,
     toolchain,
     template,
+    templateDir,
     install,
     git,
     json,
-    projectDir: path.resolve(process.cwd(), name),
+    projectDir,
   };
 }
 
@@ -1471,10 +1488,18 @@ function isValidAuthClientTarget(value: string) {
 async function createProject(options: LooseRecord) {
   await mkdir(options.projectDir, { recursive: false });
 
-  const files = scaffoldFiles({
-    ...options,
-    sporadesDependency: defaultSporadesDependency(),
-  });
+  const files = options.templateDir
+    ? await scaffoldFromDirectory({
+        templateDir: options.templateDir,
+        sporadesDependency: defaultSporadesDependency(),
+        framework: options.framework,
+        toolchain: options.toolchain,
+        name: options.name,
+      })
+    : scaffoldFiles({
+        ...options,
+        sporadesDependency: defaultSporadesDependency(),
+      });
   await Promise.all(
     Object.entries(files).map(async ([relativePath, contents]) => {
       const filePath = path.join(options.projectDir, relativePath);
