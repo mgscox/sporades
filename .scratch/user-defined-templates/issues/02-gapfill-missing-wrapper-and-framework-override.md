@@ -4,20 +4,20 @@
 
 **Blocked by:** 01 — Scaffold from a complete user-defined template directory.
 
-**Status:** ready-for-agent
+**Status:** done
 
-- [ ] If the template has no `sporades.json`, a default is generated with anonymous auth, the resolved framework/toolchain, standard security/deploy/dev blocks, and the project name; the `template` field is omitted.
-- [ ] If the template has no `package.json`, one is generated with framework-specific dependencies (same maps as built-in scaffolds), the Sporades dev dependency, `typescript` dev dep, and `dev`/`deploy` scripts.
-- [ ] If the template has no `index.html`, a default is generated with the correct script src for the resolved toolchain (`/client.js` for esbuild, `/client/<entry>` for Vite).
-- [ ] If the template has no `AGENTS.md` or `CLAUDE.md`, defaults are generated via the existing agent-instruction helper with the resolved framework, toolchain, and template path.
-- [ ] If the template has no `.gitignore`, the standard default is generated.
-- [ ] Framework/toolchain resolution priority: `--framework`/`--toolchain` CLI flags → template `sporades.json` `client.framework`/`client.toolchain` → default `react`/`esbuild`.
-- [ ] The resolved framework/toolchain pair is validated against the client capability matrix; unsupported combinations produce a structured error with an actionable hint.
-- [ ] `--framework` override changes both the generated `sporades.json` framework and the `package.json` framework-specific dependencies.
-- [ ] Test: missing `sporades.json` — a template without it gets a default generated with `react`/`esbuild` and the project name.
-- [ ] Test: missing `package.json` — a template without it gets a generated `package.json` with framework deps and the Sporades dev dep.
-- [ ] Test: `--framework` override — template `sporades.json` declares `react`; `--framework preact` is passed; the generated config uses `preact` and `package.json` has Preact dependencies.
-- [ ] Test: missing `index.html` — a template without it gets a default with the correct script src for the resolved toolchain.
-- [ ] Test: missing `AGENTS.md` / `CLAUDE.md` — defaults are generated.
-- [ ] Test: missing `.gitignore` — the standard default is generated.
-- [ ] Test: unsupported framework/toolchain combination with `--framework` produces a structured error.
+- [x] If the template has no `sporades.json`, a default is generated with anonymous auth, the resolved framework/toolchain, standard security/deploy/dev blocks, and the project name; the `template` field is omitted.
+- [x] If the template has no `package.json`, one is generated with framework-specific dependencies (same maps as built-in scaffolds), the Sporades dev dependency, `typescript` dev dep, and `dev`/`deploy` scripts.
+- [x] If the template has no `index.html`, a default is generated with the correct script src for the resolved toolchain (`/client.js` for esbuild, `/client/<entry>` for Vite).
+- [x] If the template has no `AGENTS.md` or `CLAUDE.md`, defaults are generated via the existing agent-instruction helper with the resolved framework, toolchain, and template path.
+- [x] If the template has no `.gitignore`, the standard default is generated.
+- [x] Framework/toolchain resolution priority: `--framework`/`--toolchain` CLI flags → template `sporades.json` `client.framework`/`client.toolchain` → default `react`/`esbuild`.
+- [x] The resolved framework/toolchain pair is validated against the client capability matrix; unsupported combinations produce a structured error with an actionable hint.
+- [x] `--framework` override changes both the generated `sporades.json` framework and the `package.json` framework-specific dependencies.
+- [x] Test: missing `sporades.json` — a template without it gets a default generated with `react`/`esbuild` and the project name.
+- [x] Test: missing `package.json` — a template without it gets a generated `package.json` with framework deps and the Sporades dev dep.
+- [x] Test: `--framework` override — template `sporades.json` declares `react`; `--framework preact` is passed; the generated config uses `preact` and `package.json` has Preact dependencies.
+- [x] Test: missing `index.html` — a template without it gets a default with the correct script src for the resolved toolchain.
+- [x] Test: missing `AGENTS.md` / `CLAUDE.md` — defaults are generated.
+- [x] Test: missing `.gitignore` — the standard default is generated.
+- [x] Test: unsupported framework/toolchain combination with `--framework` produces a structured error.
