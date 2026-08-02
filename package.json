@@ -1,7 +1,7 @@
 {
   "name": "sporades",
   "version": "0.6.1",
-  "description": "CLI-first platform for building, running, and hosting full-stack Sporades Capsules.",
+  "description": "A CLI-first platform for building, running, inspecting, and hosting small full-stack web Capsules — designed for developers and coding agents who want deterministic commands instead of dashboards.",
   "homepage": "https://mgscox.github.io/sporades/",
   "license": "MIT",
   "type": "module",
@@ -67,5 +67,30 @@
     "fsevents@2.3.3": true,
     "inferno@9.1.0": true,
     "esbuild@0.25.12": true
-  }
+  },
+  "keywords": [
+    "cli",
+    "fullstack",
+    "scaffold",
+    "react",
+    "preact",
+    "vue",
+    "svelte",
+    "solid",
+    "lit",
+    "inferno",
+    "sqlite",
+    "docker",
+    "deployment",
+    "agent",
+    "realtime"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mgscox/sporades.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mgscox/sporades/issues"
+  },
+  "author": "Matt Cox"
 }
