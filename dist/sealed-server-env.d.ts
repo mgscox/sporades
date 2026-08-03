@@ -1,6 +1,4 @@
 import type { BinaryLike, KeyLike } from "node:crypto";
-import type { PathLike } from "node:fs";
-import type { FileHandle } from "node:fs/promises";
 export type SealedServerEnvPaths = {
     root: string;
     envelope: string;
@@ -44,9 +42,10 @@ export declare function sealServerEnv(values: Record<string, unknown>, publicKey
 export declare function unsealServerEnv(envelope: unknown, privateKey: PrivateEncryptionKey): Record<string, string>;
 export declare function readSealedServerEnv(paths: Pick<SealedServerEnvPaths, "envelope">): Promise<SealedServerEnvEnvelope | null>;
 export declare function writeSealedServerEnv(paths: {
-    root: PathLike;
-    envelope: PathLike | FileHandle;
+    root: string;
+    envelope: string;
 }, envelope: SealedServerEnvEnvelope): Promise<void>;
+export declare function withSealedServerEnvMutationLock<Result>(paths: Pick<SealedServerEnvPaths, "root">, mutate: () => Promise<Result>): Promise<Result>;
 export declare function envelopeSummary(envelope: SealedServerEnvEnvelope | null, paths?: Pick<SealedServerEnvPaths, "envelope" | "privateKey"> | null): SealedServerEnvSummary;
 export declare function exportedEnvelope(envelope: unknown): SealedServerEnvEnvelope & {
     exportedAt: string;

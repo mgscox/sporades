@@ -7,7 +7,15 @@ import { appendFile, chmod, cp, lstat, mkdir, readdir, readFile, rename, rm, wri
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { authStatus, createBundle, parseServerEnv, readServerEnvFile } from "../bundle-pipeline.js";
+import {
+  authStatus,
+  createBundle,
+  isReservedServerEnvKeyName,
+  isValidServerEnvKeyName,
+  parseServerEnv,
+  readServerEnvFile,
+  serverEnvPlaintextSize,
+} from "../bundle-pipeline.js";
 import { replaceFilesAtomically } from "../file-transaction.js";
 import { CLIENT_FRAMEWORK_HINT, CLIENT_TEMPLATES, CLIENT_TOOLCHAIN_HINT, clientCapabilityError, defaultClientToolchain, isClientFramework, isClientToolchain, resolveClientCapability, supportsClientCapability } from "../client-capabilities.js";
 import {
@@ -34,6 +42,7 @@ import {
   sealServerEnv,
   sealedServerEnvPaths,
   unsealServerEnv,
+  withSealedServerEnvMutationLock,
   writeSealedServerEnv,
 } from "../sealed-server-env.js";
 import { DockerRestartPolcy, restartPolicyForMode, restartPolicyStatus } from "../runtime-restart-policy.js";
@@ -105,7 +114,7 @@ import { ServerResponse, IncomingMessage } from "http";
 import type {
   HostHelperEnvelope,
 } from "./host-helper-contract.js";
-import { commandError, errorDetails, writeResult, type CommandError, type LooseRecord } from "./cli-support.js";
+import { commandError, errorDetails, readStdin, writeResult, type CommandError, type LooseRecord } from "./cli-support.js";
 import { CLI_VERSION } from "./cli-version.js";
 
 type HostProfile = LooseRecord;
@@ -782,6 +791,7 @@ function parseEnvArgs(args: string[]): LooseRecord {
   let subname = null;
   let output = null;
   let sealed = false;
+  let stdin = false;
   const positional = [];
 
   for (let index = 0; index < rest.length; index += 1) {
@@ -812,11 +822,15 @@ function parseEnvArgs(args: string[]): LooseRecord {
         sealed = true;
         break;
 
+      case "--stdin":
+        stdin = true;
+        break;
+
       default:
         if (arg.startsWith("--")) {
           throw commandError(
             `Unknown flag: ${arg}`,
-            "Use `sporades env init`, `sporades env import`, `sporades env status`, `sporades env export`, or `sporades env reencrypt`.",
+            "Use `sporades env set`, `sporades env has`, `sporades env init`, `sporades env import`, `sporades env status`, `sporades env export`, or `sporades env reencrypt`.",
           );
         }
         positional.push(arg);
@@ -824,6 +838,23 @@ function parseEnvArgs(args: string[]): LooseRecord {
   }
 
   switch (subcommand) {
+    case "set":
+      if (positional.length !== 1) {
+        throw commandError("Missing Server env key name.", "Use `sporades env set <name> --stdin`.");
+      }
+      if (!stdin) {
+        throw commandError("Missing stdin input flag.", "Pipe the value to `sporades env set <name> --stdin`.");
+      }
+      validateServerEnvKeyName(positional[0]);
+      return { subcommand, name: positional[0], stdin, json, projectDir: process.cwd() };
+
+    case "has":
+      if (positional.length !== 1) {
+        throw commandError("Missing Server env key name.", "Use `sporades env has <name>`.");
+      }
+      validateServerEnvKeyName(positional[0]);
+      return { subcommand, name: positional[0], json, projectDir: process.cwd() };
+
     case "init":
     case "import":
     case "status":
@@ -843,8 +874,17 @@ function parseEnvArgs(args: string[]): LooseRecord {
     default:
       throw commandError(
         `Unknown env command: ${subcommand ?? ""}`.trim(),
-        "Use `sporades env init`, `sporades env import`, `sporades env status`, `sporades env export`, or `sporades env reencrypt`.",
+        "Use `sporades env set`, `sporades env has`, `sporades env init`, `sporades env import`, `sporades env status`, `sporades env export`, or `sporades env reencrypt`.",
       );
+  }
+}
+
+function validateServerEnvKeyName(name: string) {
+  if (!isValidServerEnvKeyName(name)) {
+    throw commandError("Invalid Server env key name.", "Use letters, numbers, and underscores, starting with a letter or underscore.");
+  }
+  if (isReservedServerEnvKeyName(name)) {
+    throw commandError("Reserved Server env key name.", "Choose a key name that does not start with SPORADES_.");
   }
 }
 
@@ -2718,43 +2758,102 @@ async function manageEnv(options: LooseRecord) {
   const paths: any = sealedServerEnvPaths(options.projectDir);
 
   switch (options.subcommand) {
-    case "init": {
-      const keyPair = await ensureSealedServerEnvKeyPair(paths);
-      const existing = await readSealedServerEnv(paths);
-      if (!existing) {
-        await writeSealedServerEnv(paths, sealServerEnv({}, keyPair.publicKey, { source: "init" }));
+    case "set": {
+      const value = stripOneTrailingLineEnding(await readStdin());
+      await withSealedServerEnvMutationLock(paths, async () => {
+        const existingEnvelope = await readSealedServerEnv(paths);
+        let keyPair = await readKeyPair(paths);
+        let values: Record<string, string>;
+        if (existingEnvelope) {
+          if (!keyPair) {
+            throw commandError(
+              "Sealed Server env private key is missing.",
+              "Restore .sporades/sealed-server-env/server-env.private.pem or re-import the Server env values.",
+            );
+          }
+          values = unsealServerEnv(existingEnvelope, keyPair.privateKey);
+        } else {
+          values = parseServerEnv(await readServerEnvFile(path.join(options.projectDir, ".env.sporades.server")));
+          keyPair = await ensureSealedServerEnvKeyPair(paths);
+        }
+        values[options.name] = value;
+        if (Object.keys(values).length > 64) {
+          throw commandError("Too many Server env keys.", "Sealed Server env can contain at most 64 keys.");
+        }
+        if (serverEnvPlaintextSize(values) > 64 * 1024) {
+          throw commandError("Server env is too large.", "Sealed Server env can contain at most 64KB total.");
+        }
+
+        const envelope = sealServerEnv(values, keyPair.publicKey, { source: "set", key: options.name });
+        await writeSealedServerEnv(paths, envelope);
+        await writeEnvResult(options, {
+          ...envelopeSummary(envelope, paths),
+          set: true,
+          name: options.name,
+          privateKeyConfigured: true,
+        });
+      });
+      return;
+    }
+
+    case "has": {
+      const envelope = await readSealedServerEnv(paths);
+      const defined = envelope
+        ? Object.hasOwn(envelope.entries, options.name)
+        : Object.hasOwn(
+          parseServerEnv(await readServerEnvFile(path.join(options.projectDir, ".env.sporades.server"))),
+          options.name,
+        );
+      if (options.json) {
+        writeResult({ ok: true, data: { name: options.name, defined }, error: null }, !defined);
+      } else {
+        process.stdout.write(`${options.name} is ${defined ? "defined" : "not defined"}.\n`);
+        if (!defined) process.exitCode = 1;
       }
-      await writeEnvResult(options, {
-        ...envelopeSummary(await readSealedServerEnv(paths), paths),
-        privateKeyConfigured: true,
+      return;
+    }
+
+    case "init": {
+      await withSealedServerEnvMutationLock(paths, async () => {
+        const keyPair = await ensureSealedServerEnvKeyPair(paths);
+        const existing = await readSealedServerEnv(paths);
+        if (!existing) {
+          await writeSealedServerEnv(paths, sealServerEnv({}, keyPair.publicKey, { source: "init" }));
+        }
+        await writeEnvResult(options, {
+          ...envelopeSummary(await readSealedServerEnv(paths), paths),
+          privateKeyConfigured: true,
+        });
       });
       return;
     }
 
     case "import": {
-      const envPath = path.resolve(options.projectDir, options.file ?? ".env.sporades.server");
-      if (options.sealed) {
-        const envelope = await readPortableSealedServerEnvEnvelope(envPath);
+      await withSealedServerEnvMutationLock(paths, async () => {
+        const envPath = path.resolve(options.projectDir, options.file ?? ".env.sporades.server");
+        if (options.sealed) {
+          const envelope = await readPortableSealedServerEnvEnvelope(envPath);
+          await writeSealedServerEnv(paths, envelope);
+          await writeEnvResult(options, {
+            ...envelopeSummary(envelope, paths),
+            imported: true,
+            sealed: true,
+            source: normalisePathForOutput(path.relative(options.projectDir, envPath) || envPath),
+          });
+          return;
+        }
+        const env = parseServerEnv(await readServerEnvFile(envPath));
+        const keyPair = await ensureSealedServerEnvKeyPair(paths);
+        const envelope = sealServerEnv(env, keyPair.publicKey, {
+          source: normalisePathForOutput(path.relative(options.projectDir, envPath) || envPath),
+        });
         await writeSealedServerEnv(paths, envelope);
         await writeEnvResult(options, {
           ...envelopeSummary(envelope, paths),
           imported: true,
-          sealed: true,
           source: normalisePathForOutput(path.relative(options.projectDir, envPath) || envPath),
+          privateKeyConfigured: true,
         });
-        return;
-      }
-      const env = parseServerEnv(await readServerEnvFile(envPath));
-      const keyPair = await ensureSealedServerEnvKeyPair(paths);
-      const envelope = sealServerEnv(env, keyPair.publicKey, {
-        source: normalisePathForOutput(path.relative(options.projectDir, envPath) || envPath),
-      });
-      await writeSealedServerEnv(paths, envelope);
-      await writeEnvResult(options, {
-        ...envelopeSummary(envelope, paths),
-        imported: true,
-        source: normalisePathForOutput(path.relative(options.projectDir, envPath) || envPath),
-        privateKeyConfigured: true,
       });
       return;
     }
@@ -2834,6 +2933,12 @@ async function manageEnv(options: LooseRecord) {
       });
     }
   }
+}
+
+function stripOneTrailingLineEnding(value: string) {
+  if (value.endsWith("\r\n")) return value.slice(0, -2);
+  if (value.endsWith("\n")) return value.slice(0, -1);
+  return value;
 }
 
 async function readPortableSealedServerEnvEnvelope(filePath: PathLike | FileHandle) {

@@ -88,6 +88,8 @@ Options:
 Manage Sealed Server env.
 
 Commands:
+  set <name>          Read one value from stdin and seal it
+  has <name>          Test whether a Server env key is defined
   init                Create local Sealed Server env key material
   import              Import Server env values from a file
   status              Print Sealed Server env status
@@ -95,6 +97,7 @@ Commands:
   reencrypt           Re-encrypt local Sealed Server env material
 
 Options:
+  --stdin             Read the value for env set from stdin
   --file <path>       Input file for import or export
   --host <alias>      Host profile alias
   --subname <name>    Hosted Capsule subname

@@ -6,12 +6,12 @@ import { spawnSync as spawnSync2 } from "node:child_process";
 import { createHash as createHash4, generateKeyPairSync as generateKeyPairSync2, randomBytes as randomBytes6, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 import { readdirSync, readFileSync as readFileSync2, statSync, watch } from "node:fs";
 import { createServer } from "node:http";
-import { appendFile, chmod as chmod2, cp, lstat as lstat6, mkdir as mkdir6, readdir as readdir2, readFile as readFile8, rename as rename4, rm as rm5, writeFile as writeFile7 } from "node:fs/promises";
+import { appendFile, chmod as chmod2, cp, lstat as lstat7, mkdir as mkdir6, readdir as readdir2, readFile as readFile8, rename as rename5, rm as rm6, writeFile as writeFile7 } from "node:fs/promises";
 import path9 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/bundle-pipeline.ts
-import { lstat as lstat3, mkdir as mkdir3, readFile as readFile4, rename as rename2, rm as rm2, writeFile as writeFile3 } from "node:fs/promises";
+import { lstat as lstat4, mkdir as mkdir3, readFile as readFile4, rename as rename3, rm as rm3, writeFile as writeFile3 } from "node:fs/promises";
 import path4 from "node:path";
 
 // src/client-toolchain.ts
@@ -1613,7 +1613,7 @@ function hasHint(error) {
 
 // src/sealed-server-env.ts
 import { createCipheriv, createDecipheriv, createHash, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes } from "node:crypto";
-import { readFile as readFile2, writeFile, mkdir } from "node:fs/promises";
+import { lstat as lstat2, mkdir, readFile as readFile2, rename, rm, writeFile } from "node:fs/promises";
 import path2 from "node:path";
 var ENVELOPE_VERSION = 1;
 var KEY_ALGORITHM = "rsa";
@@ -1717,8 +1717,81 @@ async function readSealedServerEnv(paths) {
 }
 async function writeSealedServerEnv(paths, envelope) {
   await mkdir(paths.root, { recursive: true, mode: 448 });
-  await writeFile(paths.envelope, `${JSON.stringify(envelope, null, 2)}
+  const targetPath = paths.envelope;
+  const temporaryPath = path2.join(
+    path2.dirname(targetPath),
+    `.${path2.basename(targetPath)}.${process.pid}-${randomBytes(8).toString("hex")}.tmp`
+  );
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(envelope, null, 2)}
+`, { flag: "wx", mode: 384 });
+    await rename(temporaryPath, targetPath);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
+}
+async function withSealedServerEnvMutationLock(paths, mutate) {
+  await mkdir(paths.root, { recursive: true, mode: 448 });
+  const lockDir = path2.join(paths.root, ".mutation-lock");
+  const ownerPath = path2.join(lockDir, "owner.json");
+  const token = randomBytes(16).toString("hex");
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    try {
+      await mkdir(lockDir);
+      await writeFile(ownerPath, `${JSON.stringify({ pid: process.pid, token })}
 `, { mode: 384 });
+      try {
+        return await mutate();
+      } finally {
+        const owner = await readFile2(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+        if (owner?.token !== token) {
+          throw new Error("Sealed Server env mutation lock ownership changed.");
+        }
+        await rm(lockDir, { recursive: true, force: true });
+      }
+    } catch (error) {
+      if (errorCode(error) !== "EEXIST") throw error;
+      const owner = await readFile2(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+      const live = Number.isInteger(owner?.pid) && owner.pid > 0 && processIsLive(owner.pid);
+      if (!live) {
+        const ageMs = Date.now() - await lstat2(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
+        if ((owner !== null || ageMs > 1e3) && await claimAndQuarantineStaleLock(lockDir, ownerPath, owner, token)) {
+          continue;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw new Error("Sealed Server env mutation is busy. Retry after the other env command completes.");
+}
+async function claimAndQuarantineStaleLock(lockDir, ownerPath, observedOwner, token) {
+  const claimPath = path2.join(lockDir, ".recovery-claim.json");
+  try {
+    await writeFile(claimPath, `${JSON.stringify({ pid: process.pid, token })}
+`, { flag: "wx", mode: 384 });
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return true;
+    if (errorCode(error) === "EEXIST") return false;
+    throw error;
+  }
+  const currentOwner = await readFile2(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+  if (!sameMutationLockOwner(currentOwner, observedOwner) || Number.isInteger(currentOwner?.pid) && currentOwner.pid > 0 && processIsLive(currentOwner.pid)) {
+    await rm(claimPath, { force: true });
+    return false;
+  }
+  const quarantinePath = `${lockDir}.stale-${process.pid}-${token}`;
+  try {
+    await rename(lockDir, quarantinePath);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return true;
+    throw error;
+  }
+  await rm(quarantinePath, { recursive: true, force: true });
+  return true;
+}
+function sameMutationLockOwner(left, right) {
+  if (left === null || right === null) return left === right;
+  return left.pid === right.pid && left.token === right.token;
 }
 function envelopeSummary(envelope, paths = null) {
   return {
@@ -1773,6 +1846,14 @@ function errorCode(error) {
 }
 function isNodeError(error) {
   return Boolean(error && typeof error === "object" && "code" in error);
+}
+function processIsLive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return errorCode(error) === "EPERM";
+  }
 }
 
 // src/server.ts
@@ -4504,21 +4585,21 @@ function createLocalFileStorageAdapter({ storagePath }) {
       return await readFile9(localFileVersionPath(storagePath, fileId, version));
     },
     async deleteFileVersion({ fileId, version }) {
-      const { rm: rm6 } = await import("node:fs/promises");
-      await rm6(localFileVersionPath(storagePath, fileId, version), { force: true });
+      const { rm: rm7 } = await import("node:fs/promises");
+      await rm7(localFileVersionPath(storagePath, fileId, version), { force: true });
     },
     async checkHealth() {
-      const { mkdir: mkdir7, rm: rm6, writeFile: writeFile8 } = await import("node:fs/promises");
+      const { mkdir: mkdir7, rm: rm7, writeFile: writeFile8 } = await import("node:fs/promises");
       const path10 = await import("node:path");
       const probeDirectory = path10.join(storagePath, ".sporades-health");
       const probeFile = path10.join(probeDirectory, `${randomUUID()}.tmp`);
       try {
         await mkdir7(probeDirectory, { recursive: true });
         await writeFile8(probeFile, "");
-        await rm6(probeFile, { force: true });
+        await rm7(probeFile, { force: true });
         return { ok: true };
       } catch {
-        await rm6(probeFile, { force: true }).catch(() => {
+        await rm7(probeFile, { force: true }).catch(() => {
         });
         return { ok: false };
       }
@@ -14392,7 +14473,7 @@ function unsealRuntimeServerEnv(envelope, privateKey) {
 }
 
 // src/public-tree.ts
-import { lstat as lstat2, mkdir as mkdir2, readdir, readFile as readFile3, rename, rm, writeFile as writeFile2 } from "node:fs/promises";
+import { lstat as lstat3, mkdir as mkdir2, readdir, readFile as readFile3, rename as rename2, rm as rm2, writeFile as writeFile2 } from "node:fs/promises";
 import { randomBytes as randomBytes3 } from "node:crypto";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -14423,7 +14504,7 @@ async function createPublicTree(buildDir, files, options = {}) {
     }
     await validatePublicTree(stagingDir);
     lease = await createPublicTreeLease(treesDir, nonce);
-    await rename(stagingDir, publicDir);
+    await rename2(stagingDir, publicDir);
     published = true;
     await cleanupPublicTreesUnlocked(buildDir, { keepRoots: [publicDir], maxCompleted: 1, fault: options.cleanupFault });
     return {
@@ -14432,12 +14513,12 @@ async function createPublicTree(buildDir, files, options = {}) {
       lease
     };
   } catch (error) {
-    if (published) await rm(publicDir, { recursive: true, force: true });
+    if (published) await rm2(publicDir, { recursive: true, force: true });
     if (lease) await removePublicTreeLease(lease).catch(() => {
     });
     throw error;
   } finally {
-    await rm(stagingDir, { recursive: true, force: true });
+    await rm2(stagingDir, { recursive: true, force: true });
     await releaseLock();
   }
 }
@@ -14454,7 +14535,7 @@ async function discardPublicTree(tree) {
       );
     }
     await removePublicTreeLease(tree.lease);
-    await rm(tree.root, { recursive: true, force: true });
+    await rm2(tree.root, { recursive: true, force: true });
   } finally {
     await releaseLock();
   }
@@ -14514,7 +14595,7 @@ async function restorePublicTreeConsumer(buildDir, consumer, record, expectedCur
     const recordPath = path3.join(treesDir, ".consumers", `${consumer}.json`);
     await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
     if (record === null) {
-      await rm(recordPath, { recursive: true, force: true });
+      await rm2(recordPath, { recursive: true, force: true });
       return;
     }
     if (!validConsumerRecord(record, consumer)) {
@@ -14537,7 +14618,7 @@ async function removePublicTreeConsumer(buildDir, consumer, expectedCurrent) {
   try {
     const recordPath = path3.join(treesDir, ".consumers", `${consumer}.json`);
     await verifyConsumerExpectation(recordPath, consumer, expectedCurrent);
-    await rm(recordPath, { recursive: true, force: true });
+    await rm2(recordPath, { recursive: true, force: true });
     await cleanupPublicTreesUnlocked(buildDir, { maxCompleted: 1 });
   } finally {
     await releaseLock();
@@ -14561,7 +14642,7 @@ async function verifyConsumerExpectation(recordPath, consumer, expected) {
   }
 }
 async function validatePublicTree(root) {
-  const rootStats = await lstat2(root);
+  const rootStats = await lstat3(root);
   if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
     throw publicTreeError("Invalid public tree.", "The public output root must be a real directory.");
   }
@@ -14584,7 +14665,7 @@ async function validatePublicTree(root) {
       }
       canonicalPaths.set(canonicalPath, relativePath);
       const absolutePath = path3.join(directory, entry.name);
-      const stats = await lstat2(absolutePath);
+      const stats = await lstat3(absolutePath);
       if (stats.isSymbolicLink()) {
         throw publicTreeError("Invalid public tree.", `Replace the symbolic link at ${relativePath} with a regular file.`);
       }
@@ -14610,7 +14691,7 @@ async function validatePublicTree(root) {
     }
   }
   await visit(root);
-  const indexStats = await lstat2(path3.join(root, "index.html")).catch(() => null);
+  const indexStats = await lstat3(path3.join(root, "index.html")).catch(() => null);
   if (!indexStats?.isFile() || indexStats.isSymbolicLink()) {
     throw publicTreeError("Invalid public tree.", "Client output must contain a regular index.html file.");
   }
@@ -14638,7 +14719,7 @@ async function validateActivePublicTreeReference(treesDir, raw) {
     throw publicTreeError("Invalid active public tree reference.", "The active tree name is unsafe or malformed.");
   }
   const root = path3.join(treesDir, tree);
-  const stats = await lstat2(root).catch(() => null);
+  const stats = await lstat3(root).catch(() => null);
   if (!stats?.isDirectory() || stats.isSymbolicLink()) {
     throw publicTreeError("Invalid active public tree reference.", "The active tree must reference an existing real public-tree directory.");
   }
@@ -14660,7 +14741,7 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
   const now = options.now ?? Date.now;
   const { live: liveLeaseNames, stale: staleLeaseNames } = await publicTreeLeaseStates(treesDir, now);
   for (const name of liveLeaseNames) keepNames.add(name);
-  const completed = await Promise.all(entries.filter((entry) => entry.isDirectory() && isPublicTreeName(entry.name)).map(async (entry) => ({ entry, modifiedAt: (await lstat2(path3.join(treesDir, entry.name))).mtimeMs })));
+  const completed = await Promise.all(entries.filter((entry) => entry.isDirectory() && isPublicTreeName(entry.name)).map(async (entry) => ({ entry, modifiedAt: (await lstat3(path3.join(treesDir, entry.name))).mtimeMs })));
   completed.sort((left, right) => right.modifiedAt - left.modifiedAt);
   let recoverableCount = 0;
   for (const item of completed) {
@@ -14677,7 +14758,7 @@ async function cleanupPublicTreesUnlocked(buildDir, options = {}) {
     const entryPath = path3.join(treesDir, entry.name);
     try {
       options.fault?.("before-remove", entryPath);
-      await rm(entryPath, { recursive: true, force: true });
+      await rm2(entryPath, { recursive: true, force: true });
     } catch {
       failures.push(entry.name);
     }
@@ -14793,7 +14874,7 @@ async function removePublicTreeLease(lease) {
     LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
     throw publicTreeError("Public tree lease ownership changed.", "Preserve the candidate and retry cleanup from its owning build.");
   }
-  await rm(lease.path, { force: true });
+  await rm2(lease.path, { force: true });
   LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
 }
 async function publicTreeLeaseStates(treesDir, now) {
@@ -14835,7 +14916,7 @@ async function removeStalePublicTreeLeases(treesDir, completedNames, now) {
         LIVE_PUBLIC_TREE_LEASES.delete(lease.token);
         await stopOwnerHeartbeat(lease.token);
       }
-      await rm(leasePath, { force: true });
+      await rm2(leasePath, { force: true });
     }
   }
 }
@@ -14891,19 +14972,19 @@ async function acquirePublicTreeLock(treesDir) {
         if (currentOwner.token !== token) {
           throw publicTreeError("Public tree lock ownership changed.", "Preserve the successor lock and retry after its owner completes.");
         }
-        await rm(lockDir, { recursive: true, force: true });
+        await rm2(lockDir, { recursive: true, force: true });
       };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
       const owner = await readFile3(path3.join(lockDir, "owner.json"), "utf8").then((raw) => JSON.parse(raw)).catch(() => null);
       if (owner !== null && !await ownerIdentityIsLive(owner, path3.join(lockDir, "owner.json"))) {
-        await rm(lockDir, { recursive: true, force: true });
+        await rm2(lockDir, { recursive: true, force: true });
         continue;
       }
       if (owner === null) {
-        const ageMs = Date.now() - await lstat2(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
+        const ageMs = Date.now() - await lstat3(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
         if (ageMs > 1e3) {
-          await rm(lockDir, { recursive: true, force: true });
+          await rm2(lockDir, { recursive: true, force: true });
           continue;
         }
       }
@@ -14917,7 +14998,7 @@ async function ownerIdentityIsLive(owner, recordPath, clock = Date.now) {
   const actualStart = await getProcessStartIdentity(owner.pid);
   if (actualStart !== null && typeof owner.processStart === "string") return actualStart === owner.processStart;
   const heartbeatAge = clock() - await readOwnerHeartbeat(recordPath, owner);
-  return processIsLive(owner.pid) && heartbeatAge >= -OWNER_CLOCK_SKEW_MS && heartbeatAge <= UNVERIFIED_OWNER_TTL_MS;
+  return processIsLive2(owner.pid) && heartbeatAge >= -OWNER_CLOCK_SKEW_MS && heartbeatAge <= UNVERIFIED_OWNER_TTL_MS;
 }
 function validOwnerRecord(owner) {
   return Boolean(
@@ -14947,7 +15028,7 @@ function startOwnerHeartbeat(recordPath, record) {
       stopped = true;
       clearInterval(timer);
       await inFlight;
-      await rm(heartbeatPath, { force: true });
+      await rm2(heartbeatPath, { force: true });
     }
   });
 }
@@ -14963,9 +15044,9 @@ async function publishOwnerHeartbeat(recordPath, token, heartbeatAt, options = {
     if (!validOwnerRecord(currentOwner) || currentOwner.token !== token) {
       throw publicTreeError("Public tree ownership changed.", "Discard the obsolete heartbeat without replacing its successor.");
     }
-    await rename(temporaryPath, heartbeatPath);
+    await rename2(temporaryPath, heartbeatPath);
   } finally {
-    await rm(temporaryPath, { force: true });
+    await rm2(temporaryPath, { force: true });
   }
 }
 function ownerHeartbeatPath(recordPath, token) {
@@ -15002,14 +15083,14 @@ async function removeOrphanedOwnerHeartbeats(treesDir) {
   for (const entry of heartbeatFiles) {
     const entryPath = path3.join(heartbeatDir, entry);
     if (entry.endsWith(".tmp")) {
-      const age = Date.now() - await lstat2(entryPath).then((stats) => stats.mtimeMs).catch(() => Date.now());
+      const age = Date.now() - await lstat3(entryPath).then((stats) => stats.mtimeMs).catch(() => Date.now());
       if (age < -OWNER_CLOCK_SKEW_MS || age > UNVERIFIED_OWNER_TTL_MS + OWNER_CLOCK_SKEW_MS) {
-        await rm(entryPath, { recursive: true, force: true });
+        await rm2(entryPath, { recursive: true, force: true });
       }
       continue;
     }
     const token = entry.endsWith(".json") ? entry.slice(0, -5) : "";
-    if (!retained.has(token)) await rm(entryPath, { recursive: true, force: true });
+    if (!retained.has(token)) await rm2(entryPath, { recursive: true, force: true });
   }
 }
 async function publicTreeConsumerNames(treesDir) {
@@ -15021,7 +15102,7 @@ async function publicTreeConsumerNames(treesDir) {
     const consumer = entry.endsWith(".json") ? entry.slice(0, -5) : "";
     const record = await readFile3(recordPath, "utf8").then(JSON.parse).catch(() => null);
     if (!validConsumerRecord(record, consumer)) {
-      await rm(recordPath, { recursive: true, force: true });
+      await rm2(recordPath, { recursive: true, force: true });
       continue;
     }
     const root = path3.join(treesDir, record.tree);
@@ -15029,7 +15110,7 @@ async function publicTreeConsumerNames(treesDir) {
       await validatePublicTree(root);
       trees.add(record.tree);
     } catch {
-      await rm(recordPath, { force: true });
+      await rm2(recordPath, { force: true });
     }
   }
   return trees;
@@ -15048,9 +15129,9 @@ async function replaceStateFile(target, contents) {
   const temporary = `${target}.${process.pid}-${randomBytes3(8).toString("hex")}.tmp`;
   try {
     await writeFile2(temporary, contents, { flag: "wx" });
-    await rename(temporary, target);
+    await rename2(temporary, target);
   } finally {
-    await rm(temporary, { force: true });
+    await rm2(temporary, { force: true });
   }
 }
 async function getProcessStartIdentity(pid, options = {}) {
@@ -15081,7 +15162,7 @@ async function getProcessStartIdentity(pid, options = {}) {
   }
   return null;
 }
-function processIsLive(pid) {
+function processIsLive2(pid) {
   if (pid === process.pid) return true;
   try {
     process.kill(pid, 0);
@@ -15188,7 +15269,7 @@ async function createBundle(projectDir, config, options = {}) {
         throw error;
       });
       await publishLegacyBundles(buildDir, legacyFiles.filter((file) => file.contents !== null));
-      await Promise.all(legacyFiles.filter((file) => file.contents === null).map((file) => rm2(file.target, { force: true })));
+      await Promise.all(legacyFiles.filter((file) => file.contents === null).map((file) => rm3(file.target, { force: true })));
       try {
         options.activeReferenceFault?.("before-active-write");
         await replaceBundleStateFile(activeTreePath, `${JSON.stringify({ tree: candidateTreeName })}
@@ -15208,7 +15289,7 @@ async function createBundle(projectDir, config, options = {}) {
     return async () => {
       try {
         options.activeReferenceFault?.("before-active-restore");
-        if (previousActiveTree === null) await rm2(activeTreePath, { force: true });
+        if (previousActiveTree === null) await rm3(activeTreePath, { force: true });
         else await replaceBundleStateFile(activeTreePath, previousActiveTree);
         options.activeReferenceFault?.("after-active-restore");
       } catch {
@@ -15269,7 +15350,7 @@ async function createBundle(projectDir, config, options = {}) {
 async function restoreLegacyBundleFiles(buildDir, previous) {
   const existing = previous.filter((file) => file.contents !== null);
   await publishLegacyBundles(buildDir, existing);
-  await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm2(file.target, { force: true })));
+  await Promise.all(previous.filter((file) => file.contents === null).map((file) => rm3(file.target, { force: true })));
 }
 async function inspectActiveTreeState(filePath) {
   try {
@@ -15301,9 +15382,9 @@ async function replaceBundleStateFile(filePath, contents) {
   const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
     await writeFile3(temporaryPath, contents);
-    await rename2(temporaryPath, filePath);
+    await rename3(temporaryPath, filePath);
   } finally {
-    await rm2(temporaryPath, { force: true });
+    await rm3(temporaryPath, { force: true });
   }
 }
 async function publishLegacyBundles(buildDir, files, options = {}) {
@@ -15314,7 +15395,7 @@ async function publishLegacyBundles(buildDir, files, options = {}) {
   await mkdir3(stagingDir, { recursive: false });
   try {
     for (const [index, file] of files.entries()) {
-      const stats = await lstat3(file.target).catch((error) => {
+      const stats = await lstat4(file.target).catch((error) => {
         if (errorDetails2(error).code === "ENOENT") return null;
         throw error;
       });
@@ -15328,7 +15409,7 @@ async function publishLegacyBundles(buildDir, files, options = {}) {
     try {
       for (const state of states) {
         try {
-          await rename2(state.target, state.backup);
+          await rename3(state.target, state.backup);
           state.moved = true;
         } catch (error) {
           if (errorDetails2(error).code !== "ENOENT") throw error;
@@ -15336,7 +15417,7 @@ async function publishLegacyBundles(buildDir, files, options = {}) {
       }
       for (const [index, state] of states.entries()) {
         options.fault?.("before-publish", index);
-        await rename2(state.candidate, state.target);
+        await rename3(state.candidate, state.target);
         state.published = true;
       }
     } catch (error) {
@@ -15344,8 +15425,8 @@ async function publishLegacyBundles(buildDir, files, options = {}) {
       for (const [index, state] of [...states.entries()].reverse()) {
         try {
           options.fault?.("before-restore", index);
-          if (state.moved) await rename2(state.backup, state.target);
-          else if (state.published) await rm2(state.target, { force: true });
+          if (state.moved) await rename3(state.backup, state.target);
+          else if (state.published) await rm3(state.target, { force: true });
         } catch {
           recoveryFailures.push(index);
         }
@@ -15361,7 +15442,7 @@ async function publishLegacyBundles(buildDir, files, options = {}) {
       throw error;
     }
   } finally {
-    if (!preserveStaging) await rm2(stagingDir, { recursive: true, force: true });
+    if (!preserveStaging) await rm3(stagingDir, { recursive: true, force: true });
   }
 }
 async function readRequiredSealedPrivateKey(paths) {
@@ -15428,10 +15509,10 @@ function parseServerEnv(envFile) {
       throw commandError2("Invalid server env file.", `Fix line ${index + 1} in .env.sporades.server to use KEY=value.`);
     }
     const key = trimmed.slice(0, equalsIndex).trim();
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+    if (!isValidServerEnvKeyName(key)) {
       throw commandError2("Invalid server env file.", `Fix invalid key ${key} in .env.sporades.server.`);
     }
-    if (key.startsWith("SPORADES_")) {
+    if (isReservedServerEnvKeyName(key)) {
       throw commandError2("Invalid server env file.", "Remove reserved SPORADES_ keys from .env.sporades.server.");
     }
     values[key] = parseEnvValue(trimmed.slice(equalsIndex + 1).trim());
@@ -15440,6 +15521,19 @@ function parseServerEnv(envFile) {
     throw commandError2("Invalid server env file.", ".env.sporades.server can contain at most 64 keys.");
   }
   return values;
+}
+function isValidServerEnvKeyName(name) {
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && name !== "__proto__";
+}
+function isReservedServerEnvKeyName(name) {
+  return name.startsWith("SPORADES_");
+}
+function serverEnvPlaintextSize(values) {
+  return Buffer.byteLength(
+    Object.entries(values).map(([key, value]) => `${key}=${value}
+`).join(""),
+    "utf8"
+  );
 }
 function parseEnvValue(value) {
   if (value.startsWith('"') && value.endsWith('"')) {
@@ -15697,7 +15791,7 @@ function tagBuildError(error, phase, framework, toolchain) {
 
 // src/file-transaction.ts
 import { randomBytes as randomBytes4 } from "node:crypto";
-import { lstat as lstat4, rename as rename3, rm as rm3, writeFile as writeFile4 } from "node:fs/promises";
+import { lstat as lstat5, rename as rename4, rm as rm4, writeFile as writeFile4 } from "node:fs/promises";
 import path5 from "node:path";
 var defaultExecutor = async (_operation, action) => action();
 async function replaceFilesAtomically(replacements, options = {}) {
@@ -15739,7 +15833,7 @@ async function replaceFilesAtomically(replacements, options = {}) {
           label: entry.label,
           targetPath: entry.path,
           artifactPath: entry.backupPath
-        }, () => rename3(entry.path, entry.backupPath));
+        }, () => rename4(entry.path, entry.backupPath));
         entry.originalMoved = true;
       }
       entry.replacementMayExist = true;
@@ -15749,7 +15843,7 @@ async function replaceFilesAtomically(replacements, options = {}) {
         label: entry.label,
         targetPath: entry.path,
         artifactPath: entry.temporaryPath
-      }, () => rename3(entry.temporaryPath, entry.path));
+      }, () => rename4(entry.temporaryPath, entry.path));
     }
   } catch (failure) {
     const original = asOperationFailure(failure);
@@ -15776,7 +15870,7 @@ async function targetExists(entry, execute) {
       action: "stat",
       label: entry.label,
       targetPath: entry.path
-    }, () => lstat4(entry.path));
+    }, () => lstat5(entry.path));
     return true;
   } catch (failure) {
     const operationFailure = asOperationFailure(failure);
@@ -15799,7 +15893,7 @@ async function recoverEntries(entries, execute) {
             label: entry.label,
             targetPath: entry.path,
             artifactPath: entry.backupPath
-          }, () => rename3(entry.backupPath, entry.path));
+          }, () => rename4(entry.backupPath, entry.path));
           entry.originalMoved = false;
         } catch (failure) {
           const backupRemains = await artifactExists(entry.backupPath);
@@ -15820,7 +15914,7 @@ async function recoverEntries(entries, execute) {
           action: "remove",
           label: entry.label,
           targetPath: entry.path
-        }, () => rm3(entry.path, { force: true }));
+        }, () => rm4(entry.path, { force: true }));
         entry.replacementMayExist = false;
       } catch (failure) {
         if (await artifactExists(entry.path)) {
@@ -15839,7 +15933,7 @@ async function recoverEntries(entries, execute) {
         label: entry.label,
         targetPath: entry.path,
         artifactPath: entry.temporaryPath
-      }, () => rm3(entry.temporaryPath, { force: true }));
+      }, () => rm4(entry.temporaryPath, { force: true }));
     } catch (failure) {
       if (await artifactExists(entry.temporaryPath)) {
         failures.push(recoveryFailure("remove-temp", entry.label, asOperationFailure(failure).cause));
@@ -15862,7 +15956,7 @@ async function cleanupCommittedEntries(entries, execute) {
           label: entry.label,
           targetPath: entry.path,
           artifactPath
-        }, () => rm3(artifactPath, { force: true }));
+        }, () => rm4(artifactPath, { force: true }));
       } catch (failure) {
         if (await artifactExists(artifactPath)) {
           failures.push(recoveryFailure(action, entry.label, asOperationFailure(failure).cause));
@@ -15874,7 +15968,7 @@ async function cleanupCommittedEntries(entries, execute) {
 }
 async function artifactExists(artifactPath) {
   try {
-    await lstat4(artifactPath);
+    await lstat5(artifactPath);
     return true;
   } catch (error) {
     if (errorCode2(error) === "ENOENT") {
@@ -18881,7 +18975,7 @@ function escapeHtml(value) {
 
 // src/capsule-services.ts
 import { randomBytes as randomBytes5 } from "node:crypto";
-import { mkdir as mkdir4, readFile as readFile5, rm as rm4, writeFile as writeFile5 } from "node:fs/promises";
+import { mkdir as mkdir4, readFile as readFile5, rm as rm5, writeFile as writeFile5 } from "node:fs/promises";
 import path6 from "node:path";
 var SUPPORTED_SERVICE_KEYS = /* @__PURE__ */ new Set(["database", "storage"]);
 var SUPPORTED_DATABASE_ENGINES = /* @__PURE__ */ new Set(["libsql", "postgres"]);
@@ -18923,7 +19017,7 @@ function validateCapsuleServicesConfig(services) {
 async function writeCapsuleServicesCompose(projectDir, config, options = {}) {
   const composePath = path6.join(projectDir, CAPSULE_SERVICES_COMPOSE_FILE);
   if (!hasDeclaredCapsuleServices(config)) {
-    await rm4(composePath, { force: true });
+    await rm5(composePath, { force: true });
     return null;
   }
   validateCapsuleServicesConfig(config.services);
@@ -19548,6 +19642,8 @@ Options:
 Manage Sealed Server env.
 
 Commands:
+  set <name>          Read one value from stdin and seal it
+  has <name>          Test whether a Server env key is defined
   init                Create local Sealed Server env key material
   import              Import Server env values from a file
   status              Print Sealed Server env status
@@ -19555,6 +19651,7 @@ Commands:
   reencrypt           Re-encrypt local Sealed Server env material
 
 Options:
+  --stdin             Read the value for env set from stdin
   --file <path>       Input file for import or export
   --host <alias>      Host profile alias
   --subname <name>    Hosted Capsule subname
@@ -19720,7 +19817,7 @@ function sanitizeScheduleInspectionEnvelope(envelope, invalid) {
 
 // src/cli/doctor.ts
 import { spawn, spawnSync } from "node:child_process";
-import { lstat as lstat5, readFile as readFile7, realpath as realpath2 } from "node:fs/promises";
+import { lstat as lstat6, readFile as readFile7, realpath as realpath2 } from "node:fs/promises";
 import { connect } from "node:net";
 import path8 from "node:path";
 
@@ -19738,6 +19835,17 @@ function commandError4(message, hint, diagnostics = null) {
     error.diagnostics = diagnostics;
   }
   return error;
+}
+function readStdin() {
+  return new Promise((resolve, reject) => {
+    let stdin = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      stdin += chunk;
+    });
+    process.stdin.on("end", () => resolve(stdin));
+    process.stdin.on("error", reject);
+  });
 }
 function writeResult(result, failed = false) {
   process.stdout.write(`${JSON.stringify(result)}
@@ -21042,8 +21150,8 @@ async function containerClientReleaseCheck(container, binding, projectDir) {
     const [actualRoot, expectedRoot, sourceStats, expectedStats] = await Promise.all([
       realpath2(source),
       realpath2(expected),
-      lstat5(source),
-      lstat5(expected)
+      lstat6(source),
+      lstat6(expected)
     ]);
     if (sourceStats.isSymbolicLink() || expectedStats.isSymbolicLink() || !expectedStats.isDirectory() || actualRoot !== expectedRoot) {
       throw new Error("unsafe-or-mismatched-public-root");
@@ -21327,7 +21435,7 @@ async function readOptionalJsonFile(filePath) {
 }
 async function pathExists(targetPath) {
   try {
-    await lstat5(targetPath);
+    await lstat6(targetPath);
     return true;
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
@@ -22194,6 +22302,7 @@ function parseEnvArgs(args) {
   let subname = null;
   let output = null;
   let sealed = false;
+  let stdin = false;
   const positional = [];
   for (let index = 0; index < rest.length; index += 1) {
     const arg = rest[index];
@@ -22216,17 +22325,35 @@ function parseEnvArgs(args) {
       case "--sealed":
         sealed = true;
         break;
+      case "--stdin":
+        stdin = true;
+        break;
       default:
         if (arg.startsWith("--")) {
           throw commandError4(
             `Unknown flag: ${arg}`,
-            "Use `sporades env init`, `sporades env import`, `sporades env status`, `sporades env export`, or `sporades env reencrypt`."
+            "Use `sporades env set`, `sporades env has`, `sporades env init`, `sporades env import`, `sporades env status`, `sporades env export`, or `sporades env reencrypt`."
           );
         }
         positional.push(arg);
     }
   }
   switch (subcommand) {
+    case "set":
+      if (positional.length !== 1) {
+        throw commandError4("Missing Server env key name.", "Use `sporades env set <name> --stdin`.");
+      }
+      if (!stdin) {
+        throw commandError4("Missing stdin input flag.", "Pipe the value to `sporades env set <name> --stdin`.");
+      }
+      validateServerEnvKeyName(positional[0]);
+      return { subcommand, name: positional[0], stdin, json, projectDir: process.cwd() };
+    case "has":
+      if (positional.length !== 1) {
+        throw commandError4("Missing Server env key name.", "Use `sporades env has <name>`.");
+      }
+      validateServerEnvKeyName(positional[0]);
+      return { subcommand, name: positional[0], json, projectDir: process.cwd() };
     case "init":
     case "import":
     case "status":
@@ -22245,8 +22372,16 @@ function parseEnvArgs(args) {
     default:
       throw commandError4(
         `Unknown env command: ${subcommand ?? ""}`.trim(),
-        "Use `sporades env init`, `sporades env import`, `sporades env status`, `sporades env export`, or `sporades env reencrypt`."
+        "Use `sporades env set`, `sporades env has`, `sporades env init`, `sporades env import`, `sporades env status`, `sporades env export`, or `sporades env reencrypt`."
       );
+  }
+}
+function validateServerEnvKeyName(name) {
+  if (!isValidServerEnvKeyName(name)) {
+    throw commandError4("Invalid Server env key name.", "Use letters, numbers, and underscores, starting with a letter or underscore.");
+  }
+  if (isReservedServerEnvKeyName(name)) {
+    throw commandError4("Reserved Server env key name.", "Choose a key name that does not start with SPORADES_.");
   }
 }
 function parseHostArgs(args) {
@@ -22970,7 +23105,7 @@ async function writeActiveDevDatabaseServiceEnv(projectDir, serviceEnv) {
   await replaceFileAtomically(filePath, `${JSON.stringify(databaseEnv)}
 `);
   return async () => {
-    if (previous === null) await rm5(filePath, { force: true });
+    if (previous === null) await rm6(filePath, { force: true });
     else await replaceFileAtomically(filePath, previous);
   };
 }
@@ -22978,9 +23113,9 @@ async function replaceFileAtomically(filePath, contents) {
   const temporaryPath = `${filePath}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
   try {
     await writeFile7(temporaryPath, contents, { mode: 384 });
-    await rename4(temporaryPath, filePath);
+    await rename5(temporaryPath, filePath);
   } finally {
-    await rm5(temporaryPath, { force: true });
+    await rm6(temporaryPath, { force: true });
   }
 }
 async function inspectContainerJobs(options) {
@@ -23537,12 +23672,12 @@ async function startDevSession(options) {
     for (const watcher of watchers) {
       watcher.close();
     }
-    rm5(path9.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
+    rm6(path9.join(options.projectDir, DEV_DATABASE_ENV_FILE), { force: true }).catch(() => {
     });
     websocketHub.disconnectAll();
     await runtime.shutdown();
     server.close(async () => {
-      await rm5(sessionFilePath, { force: true });
+      await rm6(sessionFilePath, { force: true });
       process.off("unhandledRejection", onUnhandledRejection);
       process.off("uncaughtException", onUncaughtException);
       process.exit(0);
@@ -23960,42 +24095,97 @@ async function inspectSecurity(options) {
 async function manageEnv(options) {
   const paths = sealedServerEnvPaths(options.projectDir);
   switch (options.subcommand) {
-    case "init": {
-      const keyPair = await ensureSealedServerEnvKeyPair(paths);
-      const existing = await readSealedServerEnv(paths);
-      if (!existing) {
-        await writeSealedServerEnv(paths, sealServerEnv({}, keyPair.publicKey, { source: "init" }));
+    case "set": {
+      const value = stripOneTrailingLineEnding(await readStdin());
+      await withSealedServerEnvMutationLock(paths, async () => {
+        const existingEnvelope = await readSealedServerEnv(paths);
+        let keyPair = await readKeyPair(paths);
+        let values;
+        if (existingEnvelope) {
+          if (!keyPair) {
+            throw commandError4(
+              "Sealed Server env private key is missing.",
+              "Restore .sporades/sealed-server-env/server-env.private.pem or re-import the Server env values."
+            );
+          }
+          values = unsealServerEnv(existingEnvelope, keyPair.privateKey);
+        } else {
+          values = parseServerEnv(await readServerEnvFile(path9.join(options.projectDir, ".env.sporades.server")));
+          keyPair = await ensureSealedServerEnvKeyPair(paths);
+        }
+        values[options.name] = value;
+        if (Object.keys(values).length > 64) {
+          throw commandError4("Too many Server env keys.", "Sealed Server env can contain at most 64 keys.");
+        }
+        if (serverEnvPlaintextSize(values) > 64 * 1024) {
+          throw commandError4("Server env is too large.", "Sealed Server env can contain at most 64KB total.");
+        }
+        const envelope = sealServerEnv(values, keyPair.publicKey, { source: "set", key: options.name });
+        await writeSealedServerEnv(paths, envelope);
+        await writeEnvResult(options, {
+          ...envelopeSummary(envelope, paths),
+          set: true,
+          name: options.name,
+          privateKeyConfigured: true
+        });
+      });
+      return;
+    }
+    case "has": {
+      const envelope = await readSealedServerEnv(paths);
+      const defined = envelope ? Object.hasOwn(envelope.entries, options.name) : Object.hasOwn(
+        parseServerEnv(await readServerEnvFile(path9.join(options.projectDir, ".env.sporades.server"))),
+        options.name
+      );
+      if (options.json) {
+        writeResult({ ok: true, data: { name: options.name, defined }, error: null }, !defined);
+      } else {
+        process.stdout.write(`${options.name} is ${defined ? "defined" : "not defined"}.
+`);
+        if (!defined) process.exitCode = 1;
       }
-      await writeEnvResult(options, {
-        ...envelopeSummary(await readSealedServerEnv(paths), paths),
-        privateKeyConfigured: true
+      return;
+    }
+    case "init": {
+      await withSealedServerEnvMutationLock(paths, async () => {
+        const keyPair = await ensureSealedServerEnvKeyPair(paths);
+        const existing = await readSealedServerEnv(paths);
+        if (!existing) {
+          await writeSealedServerEnv(paths, sealServerEnv({}, keyPair.publicKey, { source: "init" }));
+        }
+        await writeEnvResult(options, {
+          ...envelopeSummary(await readSealedServerEnv(paths), paths),
+          privateKeyConfigured: true
+        });
       });
       return;
     }
     case "import": {
-      const envPath = path9.resolve(options.projectDir, options.file ?? ".env.sporades.server");
-      if (options.sealed) {
-        const envelope2 = await readPortableSealedServerEnvEnvelope(envPath);
-        await writeSealedServerEnv(paths, envelope2);
-        await writeEnvResult(options, {
-          ...envelopeSummary(envelope2, paths),
-          imported: true,
-          sealed: true,
+      await withSealedServerEnvMutationLock(paths, async () => {
+        const envPath = path9.resolve(options.projectDir, options.file ?? ".env.sporades.server");
+        if (options.sealed) {
+          const envelope2 = await readPortableSealedServerEnvEnvelope(envPath);
+          await writeSealedServerEnv(paths, envelope2);
+          await writeEnvResult(options, {
+            ...envelopeSummary(envelope2, paths),
+            imported: true,
+            sealed: true,
+            source: normalisePathForOutput(path9.relative(options.projectDir, envPath) || envPath)
+          });
+          return;
+        }
+        const env = parseServerEnv(await readServerEnvFile(envPath));
+        const keyPair = await ensureSealedServerEnvKeyPair(paths);
+        const envelope = sealServerEnv(env, keyPair.publicKey, {
           source: normalisePathForOutput(path9.relative(options.projectDir, envPath) || envPath)
         });
-        return;
-      }
-      const env = parseServerEnv(await readServerEnvFile(envPath));
-      const keyPair = await ensureSealedServerEnvKeyPair(paths);
-      const envelope = sealServerEnv(env, keyPair.publicKey, {
-        source: normalisePathForOutput(path9.relative(options.projectDir, envPath) || envPath)
-      });
-      await writeSealedServerEnv(paths, envelope);
-      await writeEnvResult(options, {
-        ...envelopeSummary(envelope, paths),
-        imported: true,
-        source: normalisePathForOutput(path9.relative(options.projectDir, envPath) || envPath),
-        privateKeyConfigured: true
+        await writeSealedServerEnv(paths, envelope);
+        await writeEnvResult(options, {
+          ...envelopeSummary(envelope, paths),
+          imported: true,
+          source: normalisePathForOutput(path9.relative(options.projectDir, envPath) || envPath),
+          privateKeyConfigured: true
+        });
       });
       return;
     }
@@ -24070,6 +24260,11 @@ async function manageEnv(options) {
       });
     }
   }
+}
+function stripOneTrailingLineEnding(value) {
+  if (value.endsWith("\r\n")) return value.slice(0, -2);
+  if (value.endsWith("\n")) return value.slice(0, -1);
+  return value;
 }
 async function readPortableSealedServerEnvEnvelope(filePath) {
   let envelope;
@@ -24991,7 +25186,7 @@ async function startContainerSession(options) {
     }
     try {
       if (existingBinding) await replaceContainerBinding(bindingPath, existingBinding);
-      else await rm5(bindingPath, { force: true });
+      else await rm6(bindingPath, { force: true });
     } catch {
       rollbackFailures.push("binding");
     }
@@ -25885,7 +26080,7 @@ async function createHostReleaseArchive(options) {
     updatePolicyMode: readBaseImageUpdatePolicy(options.projectConfig),
     publicFiles
   });
-  await rm5(packageDir, { recursive: true, force: true });
+  await rm6(packageDir, { recursive: true, force: true });
   await mkdir6(path9.join(packageDir, ".sporades", "sealed-server-env"), { recursive: true });
   await mkdir6(path9.join(packageDir, ".sporades", "ssh"), { recursive: true });
   await cp(options.bundle.staticFiles.publicDir, path9.join(packageDir, "public"), { recursive: true, errorOnExist: true });
@@ -26650,7 +26845,7 @@ async function removeLocalContainerSession(options) {
     "container",
     claimedConsumer ? { token: claimedConsumer.token, identity: claimedConsumer.identity } : null
   );
-  await rm5(bindingPath, { force: true });
+  await rm6(bindingPath, { force: true });
   const services = options.stopServices === false ? {} : await stopLocalCapsuleServices({ ...options, silent: true });
   const container = containerLifecycleSummary("removed", binding);
   if (options.silent) {
@@ -26700,7 +26895,7 @@ async function resetLocalCapsuleServices(options) {
     );
     await Promise.all(
       Object.values(capsuleServices.services).map(
-        (service) => rm5(service.stateDir, { recursive: true, force: true })
+        (service) => rm6(service.stateDir, { recursive: true, force: true })
       )
     );
     const removedImages = removeSporadesOwnedCapsuleImages(capsuleServices, options.projectDir);
@@ -26798,7 +26993,7 @@ function dockerResourceExists(args, cwd) {
 }
 async function pathExists2(targetPath) {
   try {
-    await lstat6(targetPath);
+    await lstat7(targetPath);
     return true;
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
@@ -27213,9 +27408,9 @@ async function replaceContainerBinding(bindingPath, binding) {
   try {
     await writeFile7(temporaryPath, `${JSON.stringify(binding, null, 2)}
 `, { flag: "wx" });
-    await rename4(temporaryPath, bindingPath);
+    await rename5(temporaryPath, bindingPath);
   } finally {
-    await rm5(temporaryPath, { force: true });
+    await rm6(temporaryPath, { force: true });
   }
 }
 function verifyContainerReplacementOwnership(binding, consumer, expectedContainerName) {
@@ -27243,13 +27438,13 @@ async function acquireContainerLifecycleLock(projectDir) {
       return async () => {
         const owner = await readFile8(ownerPath, "utf8").then(JSON.parse).catch(() => null);
         if (owner?.token !== token) throw commandError4("Container lifecycle lock ownership changed.", "Preserve the successor lifecycle lock.");
-        await rm5(lockDir, { recursive: true, force: true });
+        await rm6(lockDir, { recursive: true, force: true });
       };
     } catch (error) {
       if (!(error && typeof error === "object" && "code" in error && error.code === "EEXIST")) throw error;
       const owner = await readFile8(ownerPath, "utf8").then(JSON.parse).catch(() => null);
       if (owner === null) {
-        const age = Date.now() - await lstat6(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
+        const age = Date.now() - await lstat7(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
         if (age <= 1e3) {
           await new Promise((resolve) => setTimeout(resolve, 10));
           continue;
@@ -27260,7 +27455,7 @@ async function acquireContainerLifecycleLock(projectDir) {
         owner && Number.isInteger(owner.pid) && owner.pid > 0 && typeof owner.token === "string" && (actualStart !== null && owner.processStart === actualStart || actualStart === null && processIsLiveForContainerLock(owner.pid))
       );
       if (!live) {
-        await rm5(lockDir, { recursive: true, force: true });
+        await rm6(lockDir, { recursive: true, force: true });
         continue;
       }
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -27287,7 +27482,7 @@ function formatMount(mount) {
 async function prepareRuntimeDataPath(targetPath) {
   let stats;
   try {
-    stats = await lstat6(targetPath);
+    stats = await lstat7(targetPath);
   } catch (error) {
     if (errorDetails3(error).code === "ENOENT") {
       return;

@@ -648,6 +648,29 @@ sporades env import --file .env.sporades.server
 sporades env status --json
 ```
 
+Set or replace one value without putting it in an argument or temporary file:
+
+```sh
+printf '%s' "$OPENAI_API_KEY" | sporades env set OPENAI_API_KEY --stdin
+```
+
+`env set` removes one final LF or CRLF normally added by line-oriented input,
+then preserves and re-seals every other existing value. If no sealed envelope
+exists yet, it preserves values from `.env.sporades.server` while creating the
+sealed envelope. It never prints the value.
+
+Test for a key without decrypting or printing it:
+
+```sh
+if sporades env has OPENAI_API_KEY; then
+  echo "OpenAI is configured"
+fi
+```
+
+`env has` exits `0` when the key is defined and `1` when it is absent. With
+`--json`, it emits `{ "name": "...", "defined": true|false }` inside the
+standard result envelope and keeps the same exit-status contract.
+
 #### Read Values in Server Code
 
 Read them from `ctx.env`:
@@ -663,7 +686,7 @@ endpoint({ method: "POST", path: "/billing/webhook" }, (ctx) => {
 });
 ```
 
-Restart a running Dev session after changing Sealed Server env.
+Restart a running Dev session after importing or setting Sealed Server env.
 
 ### Send SMTP mail
 
@@ -2250,11 +2273,20 @@ Do not accept `ownerId` from the client.
 
 ### Add a Server Secret
 
-1. Add the value to `.env.sporades.server` and run `sporades env import`.
-2. Read it with `ctx.env`.
-3. Restart `sporades dev`.
-4. For Hosted Capsules, run `sporades env reencrypt --host <alias>`, then push
-   and restart the Capsule.
+1. Pipe the value to `sporades env set <name> --stdin`; do not pass it as a
+   command argument.
+2. Check configuration with `sporades env has <name>` when automation needs a
+   value-safe presence test.
+3. Read it with `ctx.env`.
+4. Restart `sporades dev`.
+5. For Hosted Capsules, push and restart the Capsule; `sporades host push`
+   re-encrypts local sealed values to the Hosted Capsule public key.
+
+```sh
+printf '%s' "$STRIPE_WEBHOOK_SECRET" \
+  | sporades env set STRIPE_WEBHOOK_SECRET --stdin
+sporades env has STRIPE_WEBHOOK_SECRET
+```
 
 Do not put secrets in `client/`, `shared/`, `index.html`, or `sporades.json`.
 

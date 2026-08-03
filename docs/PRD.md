@@ -918,7 +918,9 @@ Sealed Server env lives in ignored Runtime or Host state, is decrypted for Dev
 sessions, local Container sessions, and Hosted Capsules, is exposed to server
 code as `ctx.env`, and is never bundled into `client.js`. Legacy
 `.env.sporades.server` files remain supported for import and fallback when no
-sealed envelope exists.
+sealed envelope exists. The CLI accepts a single value over stdin with
+`sporades env set <name> --stdin`, preserving and re-sealing sibling values,
+and exposes value-safe presence checks through `sporades env has <name>`.
 
 ## Non-Goals
 

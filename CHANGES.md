@@ -6,6 +6,8 @@ Changes since v0.6.0.
 
 ### ✨ Features
 
+- Add value-safe Sealed Server env automation with
+  `sporades env set <name> --stdin` and `sporades env has <name>`.
 - Add HTTPS-domain Sign in with Apple using server-owned `form_post`, runtime
   ES256 client credentials, strict identity-token verification, and
   Anonymous-account linking.

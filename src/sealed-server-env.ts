@@ -1,8 +1,6 @@
 import type { BinaryLike, KeyLike } from "node:crypto";
-import type { PathLike } from "node:fs";
-import type { FileHandle } from "node:fs/promises";
 import { createCipheriv, createDecipheriv, createHash, createPublicKey, generateKeyPairSync, privateDecrypt, publicEncrypt, randomBytes } from "node:crypto";
-import { readFile, writeFile, mkdir } from "node:fs/promises";
+import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const ENVELOPE_VERSION = 1;
@@ -158,11 +156,98 @@ export async function readSealedServerEnv(paths: Pick<SealedServerEnvPaths, "env
 }
 
 export async function writeSealedServerEnv(
-  paths: { root: PathLike; envelope: PathLike | FileHandle },
+  paths: { root: string; envelope: string },
   envelope: SealedServerEnvEnvelope,
 ): Promise<void> {
   await mkdir(paths.root, { recursive: true, mode: 0o700 });
-  await writeFile(paths.envelope, `${JSON.stringify(envelope, null, 2)}\n`, { mode: 0o600 });
+  const targetPath = paths.envelope;
+  const temporaryPath = path.join(
+    path.dirname(targetPath),
+    `.${path.basename(targetPath)}.${process.pid}-${randomBytes(8).toString("hex")}.tmp`,
+  );
+  try {
+    await writeFile(temporaryPath, `${JSON.stringify(envelope, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    await rename(temporaryPath, targetPath);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
+}
+
+export async function withSealedServerEnvMutationLock<Result>(
+  paths: Pick<SealedServerEnvPaths, "root">,
+  mutate: () => Promise<Result>,
+): Promise<Result> {
+  await mkdir(paths.root, { recursive: true, mode: 0o700 });
+  const lockDir = path.join(paths.root, ".mutation-lock");
+  const ownerPath = path.join(lockDir, "owner.json");
+  const token = randomBytes(16).toString("hex");
+
+  for (let attempt = 0; attempt < 500; attempt += 1) {
+    try {
+      await mkdir(lockDir);
+      await writeFile(ownerPath, `${JSON.stringify({ pid: process.pid, token })}\n`, { mode: 0o600 });
+      try {
+        return await mutate();
+      } finally {
+        const owner = await readFile(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+        if (owner?.token !== token) {
+          throw new Error("Sealed Server env mutation lock ownership changed.");
+        }
+        await rm(lockDir, { recursive: true, force: true });
+      }
+    } catch (error) {
+      if (errorCode(error) !== "EEXIST") throw error;
+      const owner = await readFile(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+      const live = Number.isInteger(owner?.pid) && owner.pid > 0 && processIsLive(owner.pid);
+      if (!live) {
+        const ageMs = Date.now() - await lstat(lockDir).then((stats) => stats.mtimeMs).catch(() => Date.now());
+        if ((owner !== null || ageMs > 1_000) && await claimAndQuarantineStaleLock(lockDir, ownerPath, owner, token)) {
+          continue;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+  throw new Error("Sealed Server env mutation is busy. Retry after the other env command completes.");
+}
+
+async function claimAndQuarantineStaleLock(
+  lockDir: string,
+  ownerPath: string,
+  observedOwner: unknown,
+  token: string,
+) {
+  const claimPath = path.join(lockDir, ".recovery-claim.json");
+  try {
+    await writeFile(claimPath, `${JSON.stringify({ pid: process.pid, token })}\n`, { flag: "wx", mode: 0o600 });
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return true;
+    if (errorCode(error) === "EEXIST") return false;
+    throw error;
+  }
+
+  const currentOwner = await readFile(ownerPath, "utf8").then(JSON.parse).catch(() => null);
+  if (!sameMutationLockOwner(currentOwner, observedOwner) || (
+    Number.isInteger(currentOwner?.pid) && currentOwner.pid > 0 && processIsLive(currentOwner.pid)
+  )) {
+    await rm(claimPath, { force: true });
+    return false;
+  }
+
+  const quarantinePath = `${lockDir}.stale-${process.pid}-${token}`;
+  try {
+    await rename(lockDir, quarantinePath);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return true;
+    throw error;
+  }
+  await rm(quarantinePath, { recursive: true, force: true });
+  return true;
+}
+
+function sameMutationLockOwner(left: any, right: any) {
+  if (left === null || right === null) return left === right;
+  return left.pid === right.pid && left.token === right.token;
 }
 
 export function envelopeSummary(
@@ -237,4 +322,13 @@ function errorCode(error: unknown): string | undefined {
 
 function isNodeError(error: unknown): error is NodeError {
   return Boolean(error && typeof error === "object" && "code" in error);
+}
+
+function processIsLive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return errorCode(error) === "EPERM";
+  }
 }

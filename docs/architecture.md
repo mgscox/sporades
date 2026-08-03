@@ -510,6 +510,10 @@ Sealed Server env lives under ignored Sporades Runtime or Host state. It is:
 - exposed to server code as `ctx.env`,
 - never bundled into the browser client.
 
+The CLI can atomically replace one entry from stdin while preserving and
+re-sealing the remaining entries (`sporades env set <name> --stdin`), and can
+test key presence without exposing values (`sporades env has <name>`).
+
 For Hosted Capsules, Host private keys are generated and retained on the Host
 server. The CLI reads public keys and fingerprints, not Host private keys, and
 plaintext Server env values do not cross the local-to-Host boundary. If Host key

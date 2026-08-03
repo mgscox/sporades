@@ -118,6 +118,9 @@ export declare function bundleServerCapsuleModule(options: {
 }): Promise<string>;
 export declare function readServerEnvFile(envPath: PathLike | FileHandle): Promise<ServerEnvFile>;
 export declare function parseServerEnv(envFile: ServerEnvFile): ServerEnv;
+export declare function isValidServerEnvKeyName(name: string): boolean;
+export declare function isReservedServerEnvKeyName(name: string): boolean;
+export declare function serverEnvPlaintextSize(values: Record<string, string>): number;
 export declare function authStatus(config: ProjectConfig, serverEnv: ServerEnv): {
     mode: string;
     providers: Record<string, JsonRecord>;

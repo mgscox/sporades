@@ -25,8 +25,12 @@ function runCli(args, options = {}) {
     const child = spawn(process.execPath, [cliPath, ...args], {
       cwd: options.cwd,
       env: { ...process.env, ...options.env },
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [options.stdin === undefined ? "ignore" : "pipe", "pipe", "pipe"],
     });
+
+    if (options.stdin !== undefined) {
+      child.stdin.end(options.stdin);
+    }
 
     let stdout = "";
     let stderr = "";
@@ -41,6 +45,178 @@ function runCli(args, options = {}) {
     });
   });
 }
+
+test("sporades env set reads one value from stdin and preserves every existing sealed key", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "set-env-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "set-env-island");
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "EXISTING_TOKEN=keep-me\nREPLACED_TOKEN=old-value\n");
+    assert.equal((await runCli(["env", "import", "--json"], { cwd: projectDir })).code, 0);
+
+    const setResult = await runCli(["env", "set", "REPLACED_TOKEN", "--stdin", "--json"], {
+      cwd: projectDir,
+      stdin: "new-value\n",
+    });
+    assert.equal(setResult.code, 0, setResult.stderr);
+    assert.doesNotMatch(`${setResult.stdout}${setResult.stderr}`, /new-value|keep-me|old-value/);
+    const output = JSON.parse(setResult.stdout).data;
+    assert.equal(output.configured, true);
+    assert.equal(output.keyCount, 2);
+    assert.match(output.publicKeyFingerprint, /^[a-f0-9]{16}$/);
+    assert.match(output.envelopePath, /\/sealed-server-env\/server-env\.sealed\.json$/);
+    assert.match(output.privateKeyPath, /\/sealed-server-env\/server-env\.private\.pem$/);
+    assert.equal(output.set, true);
+    assert.equal(output.name, "REPLACED_TOKEN");
+    assert.equal(output.privateKeyConfigured, true);
+
+    const envelope = JSON.parse(await readFile(path.join(projectDir, ".sporades", "sealed-server-env", "server-env.sealed.json"), "utf8"));
+    assert.deepEqual(Object.keys(envelope.entries).sort(), ["EXISTING_TOKEN", "REPLACED_TOKEN"]);
+    assert.doesNotMatch(JSON.stringify(envelope), /new-value|keep-me|old-value/);
+
+    await installFakeReact(projectDir);
+    await writeFile(
+      path.join(projectDir, "server", "index.ts"),
+      `import { capsule, endpoint } from "sporades/server";
+
+export default capsule({
+  name: "set-env-island",
+  endpoints: {
+    env: endpoint({ method: "GET", path: "/env" }, (ctx) => ({
+      status: 200,
+      body: { existing: ctx.env.EXISTING_TOKEN, replaced: ctx.env.REPLACED_TOKEN }
+    }))
+  }
+});
+`,
+    );
+    const docker = await installFakeDocker(dir);
+    const deploy = await runCli(["deploy", "--json"], { cwd: projectDir, env: docker.env });
+    assert.equal(deploy.code, 0, `${deploy.stderr}\n${deploy.stdout}`);
+    const port = await getAvailablePort();
+    const child = spawn(process.execPath, [path.join(projectDir, ".sporades", "build", "server.mjs")], {
+      cwd: projectDir,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        SPORADES_DATABASE_PATH: path.join(projectDir, ".sporades", "data.db"),
+        SPORADES_SEALED_SERVER_ENV_PATH: path.join(projectDir, ".sporades", "sealed-server-env", "server-env.sealed.json"),
+        SPORADES_SEALED_SERVER_ENV_PRIVATE_KEY_PATH: path.join(projectDir, ".sporades", "sealed-server-env", "server-env.private.pem"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    try {
+      const response = await waitForHttp(`http://127.0.0.1:${port}/env`, child);
+      assert.deepEqual(await response.json(), { existing: "keep-me", replaced: "new-value" });
+    } finally {
+      await stopChild(child);
+    }
+  });
+});
+
+test("sporades env has reports key presence through its exit status without printing values", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "has-env-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "has-env-island");
+    const setResult = await runCli(["env", "set", "SECRET_TOKEN", "--stdin", "--json"], {
+      cwd: projectDir,
+      stdin: "swordfish\n",
+    });
+    assert.equal(setResult.code, 0, setResult.stderr);
+
+    const present = await runCli(["env", "has", "SECRET_TOKEN", "--json"], { cwd: projectDir });
+    assert.equal(present.code, 0, present.stderr);
+    assert.deepEqual(JSON.parse(present.stdout).data, { name: "SECRET_TOKEN", defined: true });
+    assert.doesNotMatch(`${present.stdout}${present.stderr}`, /swordfish/);
+
+    const absent = await runCli(["env", "has", "MISSING_TOKEN", "--json"], { cwd: projectDir });
+    assert.equal(absent.code, 1, absent.stderr);
+    assert.deepEqual(JSON.parse(absent.stdout).data, { name: "MISSING_TOKEN", defined: false });
+  });
+});
+
+test("sporades env set enforces the 64KB total Server env limit without changing existing values", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "bounded-env-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "bounded-env-island");
+    await writeFile(path.join(projectDir, ".env.sporades.server"), `EXISTING_TOKEN=${"a".repeat(40 * 1024)}\n`);
+    assert.equal((await runCli(["env", "import", "--json"], { cwd: projectDir })).code, 0);
+
+    const rejected = await runCli(["env", "set", "NEW_TOKEN", "--stdin", "--json"], {
+      cwd: projectDir,
+      stdin: "b".repeat(30 * 1024),
+    });
+    assert.equal(rejected.code, 1);
+    assert.match(`${rejected.stdout}${rejected.stderr}`, /64KB total/);
+    assert.equal((await runCli(["env", "has", "EXISTING_TOKEN"], { cwd: projectDir })).code, 0);
+    assert.equal((await runCli(["env", "has", "NEW_TOKEN"], { cwd: projectDir })).code, 1);
+  });
+});
+
+test("concurrent sporades env set commands preserve and reseal every sibling value", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "concurrent-env-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "concurrent-env-island");
+    assert.equal((await runCli(["env", "init", "--json"], { cwd: projectDir })).code, 0);
+
+    const names = Array.from({ length: 8 }, (_, index) => `CONCURRENT_TOKEN_${index}`);
+    const results = await Promise.all(names.map((name, index) => runCli(["env", "set", name, "--stdin", "--json"], {
+      cwd: projectDir,
+      stdin: `value-${index}\n`,
+    })));
+    for (const result of results) assert.equal(result.code, 0, result.stderr);
+    for (const name of names) {
+      const present = await runCli(["env", "has", name, "--json"], { cwd: projectDir });
+      assert.equal(present.code, 0, `${name}: ${present.stderr}`);
+      assert.equal(JSON.parse(present.stdout).data.defined, true);
+    }
+  });
+});
+
+test("sporades env rejects prototype-sensitive key names from stdin and legacy files", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "prototype-env-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "prototype-env-island");
+
+    const setResult = await runCli(["env", "set", "__proto__", "--stdin", "--json"], {
+      cwd: projectDir,
+      stdin: "not-a-prototype\n",
+    });
+    assert.equal(setResult.code, 1);
+    assert.match(`${setResult.stdout}${setResult.stderr}`, /Invalid Server env key name/);
+
+    await writeFile(path.join(projectDir, ".env.sporades.server"), "__proto__=not-a-prototype\n");
+    const importResult = await runCli(["env", "import", "--json"], { cwd: projectDir });
+    assert.equal(importResult.code, 1);
+    assert.match(`${importResult.stdout}${importResult.stderr}`, /invalid key __proto__/i);
+  });
+});
+
+test("concurrent env setters recover one stale mutation lock without overlapping", async () => {
+  await withTempDir(async (dir) => {
+    const createResult = await runCli(["create", "stale-lock-env-island", "--no-install", "--no-git", "--json"], { cwd: dir });
+    assert.equal(createResult.code, 0, createResult.stderr);
+    const projectDir = path.join(dir, "stale-lock-env-island");
+    assert.equal((await runCli(["env", "init", "--json"], { cwd: projectDir })).code, 0);
+    const lockDir = path.join(projectDir, ".sporades", "sealed-server-env", ".mutation-lock");
+    await mkdir(lockDir);
+    await writeFile(path.join(lockDir, "owner.json"), `${JSON.stringify({ pid: 2_147_483_647, token: "abandoned" })}\n`);
+
+    const names = Array.from({ length: 8 }, (_, index) => `RECOVERED_TOKEN_${index}`);
+    const results = await Promise.all(names.map((name, index) => runCli(["env", "set", name, "--stdin", "--json"], {
+      cwd: projectDir,
+      stdin: `value-${index}`,
+    })));
+    for (const result of results) assert.equal(result.code, 0, result.stderr);
+    for (const name of names) {
+      assert.equal((await runCli(["env", "has", name], { cwd: projectDir })).code, 0, name);
+    }
+  });
+});
 
 async function installFakeReact(projectDir) {
   await writePackage(

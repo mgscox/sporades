@@ -358,10 +358,10 @@ export function parseServerEnv(envFile) {
             throw commandError("Invalid server env file.", `Fix line ${index + 1} in .env.sporades.server to use KEY=value.`);
         }
         const key = trimmed.slice(0, equalsIndex).trim();
-        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        if (!isValidServerEnvKeyName(key)) {
             throw commandError("Invalid server env file.", `Fix invalid key ${key} in .env.sporades.server.`);
         }
-        if (key.startsWith("SPORADES_")) {
+        if (isReservedServerEnvKeyName(key)) {
             throw commandError("Invalid server env file.", "Remove reserved SPORADES_ keys from .env.sporades.server.");
         }
         values[key] = parseEnvValue(trimmed.slice(equalsIndex + 1).trim());
@@ -370,6 +370,15 @@ export function parseServerEnv(envFile) {
         throw commandError("Invalid server env file.", ".env.sporades.server can contain at most 64 keys.");
     }
     return values;
+}
+export function isValidServerEnvKeyName(name) {
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && name !== "__proto__";
+}
+export function isReservedServerEnvKeyName(name) {
+    return name.startsWith("SPORADES_");
+}
+export function serverEnvPlaintextSize(values) {
+    return Buffer.byteLength(Object.entries(values).map(([key, value]) => `${key}=${value}\n`).join(""), "utf8");
 }
 function parseEnvValue(value) {
     if (value.startsWith('"') && value.endsWith('"')) {
