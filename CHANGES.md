@@ -175,4 +175,5 @@ Changes since v0.6.1.
 
 ### 📦 Packaging
 
+- Release v0.6.2 (3d21e1a).
 - Align esbuild script approval version (613f597).
