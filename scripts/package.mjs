@@ -158,14 +158,19 @@ function runResult(command, args) {
   });
 }
 
-function parsePackedTarball(stdout) {
+export function parsePackedTarball(stdout) {
   const trimmed = stdout.trim();
   if (!trimmed) {
     throw new Error("npm pack did not report a tarball filename.");
   }
 
   const packed = JSON.parse(trimmed);
-  const filename = packed?.[0]?.filename;
+  const packageEntries = Array.isArray(packed)
+    ? packed
+    : packed && typeof packed === "object"
+      ? Object.values(packed)
+      : [];
+  const filename = packageEntries[0]?.filename;
   if (typeof filename !== "string" || filename.length === 0) {
     throw new Error("npm pack output did not include a tarball filename.");
   }

@@ -10,6 +10,7 @@ import {
   bumpVersion,
   nextReleaseVersion,
   parsePackageArgs,
+  parsePackedTarball,
   releaseCommitMessage,
   releaseTagForVersion,
   usage,
@@ -50,6 +51,24 @@ test("package script writes the exact resolved version to both manifests", () =>
   assert.equal(packageJson.version, "0.5.2");
   assert.equal(packageLock.version, "0.5.2");
   assert.equal(packageLock.packages[""].version, "0.5.2");
+});
+
+test("package script reads npm pack tarball filenames from npm 11 and npm 12 JSON", () => {
+  assert.equal(
+    parsePackedTarball(JSON.stringify([{ name: "sporades", filename: "sporades-0.6.3.tgz" }])),
+    "sporades-0.6.3.tgz",
+  );
+  assert.equal(
+    parsePackedTarball(
+      JSON.stringify({ sporades: { name: "sporades", filename: "sporades-0.6.3.tgz" } }),
+    ),
+    "sporades-0.6.3.tgz",
+  );
+});
+
+test("package script rejects npm pack JSON without a tarball filename", () => {
+  assert.throws(() => parsePackedTarball(""), /did not report a tarball filename/);
+  assert.throws(() => parsePackedTarball(JSON.stringify({ sporades: { name: "sporades" } })), /did not include/);
 });
 
 test("package script derives release tags from semver versions", () => {
