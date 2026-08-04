@@ -82,6 +82,9 @@ export const auth = {
   signOut() {
     return connect().signOut();
   },
+  setPassword(email, newPassword) {
+    return connect().setPassword(email, newPassword);
+  },
 };
 
 export const files = {
@@ -162,6 +165,9 @@ export function createHooks(primitives) {
       signOut() {
         return connect().signOut();
       },
+      setPassword(email, newPassword) {
+        return connect().setPassword(email, newPassword);
+      },
     };
   }
 
@@ -217,6 +223,7 @@ export function createVueComposables(primitives) {
     state.signUp = (provider, credentials) => connect().signUp(provider, credentials);
     state.signIn = (provider, credentials) => connect().signIn(provider, credentials);
     state.signOut = () => connect().signOut();
+    state.setPassword = (email, newPassword) => connect().setPassword(email, newPassword);
     return state;
   }
 
@@ -268,6 +275,7 @@ export function createSolidPrimitives(primitives) {
       signUp: (provider, credentials) => connect().signUp(provider, credentials),
       signIn: (provider, credentials) => connect().signIn(provider, credentials),
       signOut: () => connect().signOut(),
+      setPassword: (email, newPassword) => connect().setPassword(email, newPassword),
     };
   }
 
@@ -365,6 +373,7 @@ export function createLitControllers() {
     controller.signUp = (provider, credentials) => connect().signUp(provider, credentials);
     controller.signIn = (provider, credentials) => connect().signIn(provider, credentials);
     controller.signOut = () => connect().signOut();
+    controller.setPassword = (email, newPassword) => connect().setPassword(email, newPassword);
     return controller;
   }
 
@@ -437,6 +446,7 @@ export function createInfernoAdapters() {
     adapter.signUp = (provider, credentials) => connect().signUp(provider, credentials);
     adapter.signIn = (provider, credentials) => connect().signIn(provider, credentials);
     adapter.signOut = () => connect().signOut();
+    adapter.setPassword = (email, newPassword) => connect().setPassword(email, newPassword);
     return adapter;
   }
   return { queryAdapter, mutationAdapter, authAdapter };
@@ -486,6 +496,7 @@ export function createSvelteStores() {
       signUp: (provider, credentials) => connect().signUp(provider, credentials),
       signIn: (provider, credentials) => connect().signIn(provider, credentials),
       signOut: () => connect().signOut(),
+      setPassword: (email, newPassword) => connect().setPassword(email, newPassword),
     };
   }
 
@@ -989,6 +1000,9 @@ function createConnection() {
         }
         return result;
       });
+    },
+    setPassword(email, newPassword) {
+      return request("auth.setPassword", { email, newPassword });
     },
     subscribeQuery(name, listener) {
       if (typeof name !== "string" || !name) throw new TypeError("queries.subscribe requires a query name.");
@@ -5280,6 +5294,11 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         "INSERT INTO sporades_auth_email_credentials (email, userId, passwordHash, passwordSalt, createdAt) VALUES (?, ?, ?, ?, ?)"
       ).run(row.email, row.userId, row.passwordHash, row.passwordSalt, row.createdAt);
     },
+    updateEmailCredentialPassword(email, passwordHash, passwordSalt) {
+      return this.prepare(
+        "UPDATE sporades_auth_email_credentials SET passwordHash = ?, passwordSalt = ? WHERE email = ?"
+      ).run(passwordHash, passwordSalt, email);
+    },
     findEmailCredentialWithUser(email) {
       const row = this.prepare(
         "SELECT c.email, c.userId, c.passwordHash, c.passwordSalt, u.displayName, u.picture, u.isAuthenticated, u.isGuest FROM sporades_auth_email_credentials c JOIN sporades_auth_users u ON u.id = c.userId WHERE c.email = ?"
@@ -8872,8 +8891,9 @@ async function readEndpointRequest(database, requestUrl, request) {
   };
 }
 function createEndpointContext(database, endpointRequest, session) {
+  const auth = session.auth;
   const context = {
-    auth: session.auth,
+    auth,
     env: database.serverEnv,
     log: createEndpointLogger(database, {
       request: {
@@ -8894,6 +8914,12 @@ function createEndpointContext(database, endpointRequest, session) {
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = database.mail;
+  context.serverAuth = {
+    async setEmailPassword(email, newPassword) {
+      const result = await setEmailPassword(database, { auth }, email, newPassword);
+      if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
+    }
+  };
   return context;
 }
 function createContextHolder(context) {
@@ -10458,6 +10484,16 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "auth.signOut.result" : "error",
+        data: result.ok ? { ok: true } : null,
+        error: result.error ?? null
+      });
+      return;
+    }
+    if (message.type === "auth.setPassword") {
+      const result = await setEmailPassword(database, client.session, message.email ?? "", message.newPassword ?? "");
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "auth.setPassword.result" : "error",
         data: result.ok ? { ok: true } : null,
         error: result.error ?? null
       });
@@ -12582,6 +12618,25 @@ function writeRedirect(response, location) {
   response.writeHead(302, { location });
   response.end();
 }
+async function setEmailPassword(database, _session, email, newPassword) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+  if (!cleanEmail) {
+    return { ok: false, error: { message: "Email is required.", hint: "Provide the email address for the account whose password is being changed." } };
+  }
+  if (typeof newPassword !== "string" || newPassword.length < 8) {
+    return { ok: false, error: { message: "Password is too short.", hint: "Use a password with at least 8 characters." } };
+  }
+  const existing = await database.sqlite.findEmailCredentialWithUser(cleanEmail);
+  if (!existing) {
+    return { ok: false, error: { message: "No email account found for that address.", hint: "Check the email address or register a new account." } };
+  }
+  const password = hashEmailPassword(newPassword);
+  await database.sqlite.updateEmailCredentialPassword(cleanEmail, password.hash, password.salt);
+  return { ok: true };
+}
 async function signUpWithEmail(database, session, provider, credentials) {
   if (provider !== "email") {
     return {
@@ -13519,6 +13574,12 @@ function createMutationContext(database, auth) {
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = database.mail;
+  context.serverAuth = {
+    async setEmailPassword(email, newPassword) {
+      const result = await setEmailPassword(database, { auth }, email, newPassword);
+      if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
+    }
+  };
   return context;
 }
 function createCurrentUserJobApi(database, contextGetter) {

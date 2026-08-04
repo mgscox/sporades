@@ -108,6 +108,7 @@ export type AuthApi = {
   signIn(provider: "email", credentials: EmailCredentials): Promise<SporadesResult>;
   signIn(provider: string, credentials?: unknown): Promise<SporadesResult>;
   signOut(): Promise<SporadesResult<{ ok: boolean }>>;
+  setPassword(email: string, newPassword: string): Promise<SporadesResult<{ ok: boolean }>>;
 };
 
 /** Handle returned by client subscriptions. */
@@ -272,6 +273,7 @@ export type UseAuthState = {
   signUp: AuthApi["signUp"];
   signIn: AuthApi["signIn"];
   signOut: AuthApi["signOut"];
+  setPassword: AuthApi["setPassword"];
 };
 
 /**
@@ -342,6 +344,7 @@ export type SolidAuth = {
   signUp: AuthApi["signUp"];
   signIn: AuthApi["signIn"];
   signOut: AuthApi["signOut"];
+  setPassword: AuthApi["setPassword"];
 };
 
 /** SolidJS-native Sporades primitives over the shared framework-neutral client connection. */
@@ -379,6 +382,7 @@ export type LitAuthController = LitReactiveController & {
   signUp: AuthApi["signUp"];
   signIn: AuthApi["signIn"];
   signOut: AuthApi["signOut"];
+  setPassword: AuthApi["setPassword"];
 };
 
 /** Lit reactive-controller factories over the shared framework-neutral client connection. */
@@ -420,6 +424,7 @@ export type SvelteAuthStore = SvelteReadable<Omit<UseAuthState, "signUp" | "sign
   signUp: AuthApi["signUp"];
   signIn: AuthApi["signIn"];
   signOut: AuthApi["signOut"];
+  setPassword: AuthApi["setPassword"];
 };
 
 /** Svelte-native stores over the shared framework-neutral client connection. */

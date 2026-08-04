@@ -330,6 +330,7 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
         passwordSalt: any;
         createdAt: any;
     }): StatementResultingChanges;
+    updateEmailCredentialPassword(email: any, passwordHash: any, passwordSalt: any): StatementResultingChanges;
     findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null;
     migrateAppSchema(schema: {
         tables: {
@@ -908,6 +909,7 @@ export declare function createPostgresDatabaseAdapter(options: {
         passwordSalt: any;
         createdAt: any;
     }): StatementResultingChanges;
+    updateEmailCredentialPassword(email: any, passwordHash: any, passwordSalt: any): StatementResultingChanges;
     findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null;
     referenceExists(field: {
         targetTable: any;
@@ -1218,6 +1220,7 @@ export declare function createLibsqlDatabaseAdapter(options: {
         passwordSalt: any;
         createdAt: any;
     }): StatementResultingChanges;
+    updateEmailCredentialPassword(email: any, passwordHash: any, passwordSalt: any): StatementResultingChanges;
     findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null;
     createAppTable(table: {
         name: any;
@@ -1408,6 +1411,16 @@ export declare function createWebSocketHub(getDatabase: () => any, trustedRefres
 export declare function routeSporadesAuth(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {
     req: IncomingMessage;
 }): Promise<boolean>;
+export declare function setEmailPassword(database: LooseRecord, _session: LooseRecord, email: string, newPassword: string): Promise<{
+    ok: boolean;
+    error: {
+        message: string;
+        hint: string;
+    };
+} | {
+    ok: boolean;
+    error?: undefined;
+}>;
 export declare function signUpWithEmail(database: LooseRecord, session: LooseRecord, provider: string, credentials: any): Promise<any>;
 export declare function signInWithEmail(database: LooseRecord, session: any, credentials: any): Promise<any>;
 export declare function resolveAnonymousSession(database: LooseRecord, sessionToken: string | null): Promise<{

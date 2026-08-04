@@ -59,6 +59,9 @@ export const auth = {
   signOut() {
     return connect().signOut();
   },
+  setPassword(email, newPassword) {
+    return connect().setPassword(email, newPassword);
+  },
 };
 
 export const files = {
@@ -139,6 +142,9 @@ export function createHooks(primitives) {
       signOut() {
         return connect().signOut();
       },
+      setPassword(email, newPassword) {
+        return connect().setPassword(email, newPassword);
+      },
     };
   }
 
@@ -194,6 +200,7 @@ export function createVueComposables(primitives) {
     state.signUp = (provider, credentials) => connect().signUp(provider, credentials);
     state.signIn = (provider, credentials) => connect().signIn(provider, credentials);
     state.signOut = () => connect().signOut();
+    state.setPassword = (email, newPassword) => connect().setPassword(email, newPassword);
     return state;
   }
 
@@ -245,6 +252,7 @@ export function createSolidPrimitives(primitives) {
       signUp: (provider, credentials) => connect().signUp(provider, credentials),
       signIn: (provider, credentials) => connect().signIn(provider, credentials),
       signOut: () => connect().signOut(),
+      setPassword: (email, newPassword) => connect().setPassword(email, newPassword),
     };
   }
 
@@ -342,6 +350,7 @@ export function createLitControllers() {
     controller.signUp = (provider, credentials) => connect().signUp(provider, credentials);
     controller.signIn = (provider, credentials) => connect().signIn(provider, credentials);
     controller.signOut = () => connect().signOut();
+    controller.setPassword = (email, newPassword) => connect().setPassword(email, newPassword);
     return controller;
   }
 
@@ -414,6 +423,7 @@ export function createInfernoAdapters() {
     adapter.signUp = (provider, credentials) => connect().signUp(provider, credentials);
     adapter.signIn = (provider, credentials) => connect().signIn(provider, credentials);
     adapter.signOut = () => connect().signOut();
+    adapter.setPassword = (email, newPassword) => connect().setPassword(email, newPassword);
     return adapter;
   }
   return { queryAdapter, mutationAdapter, authAdapter };
@@ -463,6 +473,7 @@ export function createSvelteStores() {
       signUp: (provider, credentials) => connect().signUp(provider, credentials),
       signIn: (provider, credentials) => connect().signIn(provider, credentials),
       signOut: () => connect().signOut(),
+      setPassword: (email, newPassword) => connect().setPassword(email, newPassword),
     };
   }
 
@@ -966,6 +977,9 @@ function createConnection() {
         }
         return result;
       });
+    },
+    setPassword(email, newPassword) {
+      return request("auth.setPassword", { email, newPassword });
     },
     subscribeQuery(name, listener) {
       if (typeof name !== "string" || !name) throw new TypeError("queries.subscribe requires a query name.");

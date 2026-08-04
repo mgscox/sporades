@@ -3321,6 +3321,11 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
         "INSERT INTO sporades_auth_email_credentials (email, userId, passwordHash, passwordSalt, createdAt) VALUES (?, ?, ?, ?, ?)",
       ).run(row.email, row.userId, row.passwordHash, row.passwordSalt, row.createdAt);
     },
+    updateEmailCredentialPassword(email: any, passwordHash: any, passwordSalt: any) {
+      return this.prepare(
+        "UPDATE sporades_auth_email_credentials SET passwordHash = ?, passwordSalt = ? WHERE email = ?",
+      ).run(passwordHash, passwordSalt, email);
+    },
     findEmailCredentialWithUser(email: any) {
       const row = (
         this.prepare(
@@ -7545,8 +7550,9 @@ async function readEndpointRequest(database: LooseRecord, requestUrl: URL, reque
 }
 
 function createEndpointContext(database: LooseRecord, endpointRequest: LooseRecord, session: LooseRecord) {
+  const auth = session.auth;
   const context: LooseRecord = {
-    auth: session.auth,
+    auth,
     env: database.serverEnv,
     log: createEndpointLogger(database, {
       request: {
@@ -7567,6 +7573,12 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = database.mail;
+  context.serverAuth = {
+    async setEmailPassword(email: string, newPassword: string) {
+      const result = await setEmailPassword(database, { auth }, email, newPassword);
+      if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
+    },
+  };
   return context;
 }
 
@@ -9286,6 +9298,17 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "auth.signOut.result" : "error",
+        data: result.ok ? { ok: true } : null,
+        error: result.error ?? null,
+      });
+      return;
+    }
+
+    if (message.type === "auth.setPassword") {
+      const result: any = await setEmailPassword(database, client.session, message.email ?? "", message.newPassword ?? "");
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "auth.setPassword.result" : "error",
         data: result.ok ? { ok: true } : null,
         error: result.error ?? null,
       });
@@ -11691,6 +11714,26 @@ function writeRedirect(response: { writeHead: (arg0: number, arg1: { location: a
   response.end();
 }
 
+export async function setEmailPassword(database: LooseRecord, _session: LooseRecord, email: string, newPassword: string) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+  if (!cleanEmail) {
+    return { ok: false, error: { message: "Email is required.", hint: "Provide the email address for the account whose password is being changed." } };
+  }
+  if (typeof newPassword !== "string" || newPassword.length < 8) {
+    return { ok: false, error: { message: "Password is too short.", hint: "Use a password with at least 8 characters." } };
+  }
+  const existing = await database.sqlite.findEmailCredentialWithUser(cleanEmail);
+  if (!existing) {
+    return { ok: false, error: { message: "No email account found for that address.", hint: "Check the email address or register a new account." } };
+  }
+  const password = hashEmailPassword(newPassword);
+  await database.sqlite.updateEmailCredentialPassword(cleanEmail, password.hash, password.salt);
+  return { ok: true };
+}
+
 export async function signUpWithEmail(database: LooseRecord, session: LooseRecord, provider: string, credentials: any) {
   if (provider !== "email") {
     return {
@@ -12790,6 +12833,12 @@ function createMutationContext(database: LooseRecord, auth: any) {
   context.privileged = createContextPrivilegedApi(database, () => holder.current);
   context.jobs = createCurrentUserJobApi(database, () => holder.current);
   context.mail = database.mail;
+  context.serverAuth = {
+    async setEmailPassword(email: string, newPassword: string) {
+      const result = await setEmailPassword(database, { auth }, email, newPassword);
+      if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
+    },
+  };
   return context;
 }
 

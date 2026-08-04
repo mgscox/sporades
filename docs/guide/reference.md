@@ -1514,6 +1514,41 @@ const signIn = await auth.signIn("email", {
 
 Check `result.data` and `result.error`; do not assume sign-in succeeded.
 
+### Reset or Change an Email Password
+
+The runtime exposes `auth.setPassword(email, newPassword)` on the client SDK
+and `ctx.serverAuth.setEmailPassword(email, newPassword)` on the server context.
+Both update an existing email credential's password with server-side scrypt
+hashing and a fresh random salt. The runtime never exposes the password hash,
+salt, or internal credential table to Capsule code.
+
+From the client (e.g. a settings page where the user is already signed in):
+
+```tsx
+import { auth } from "sporades/client";
+
+const result = await auth.setPassword("mira@example.com", "new-secure-password");
+if (result.error) {
+  // show result.error.message
+}
+```
+
+From a server mutation (e.g. a token-based password reset flow where the
+mutation validates a reset token and then sets the new password):
+
+```ts
+resetPassword: mutation(async (ctx, token: string, newPassword: string) => {
+  // validate token, extract email from the token record…
+  await ctx.serverAuth.setEmailPassword(email, newPassword);
+  // mark token as used…
+  return { ok: true };
+}),
+```
+
+`ctx.serverAuth.setEmailPassword` throws if the email is not registered or the
+password is shorter than 8 characters. Wrap it in a try/catch if you want to
+return a user-facing error instead of throwing.
+
 ### Simulate Local Identities
 
 For local browser testing, start a Dev session, then run:

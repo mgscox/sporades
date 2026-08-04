@@ -276,6 +276,18 @@ export type MailApi = {
   send(message: MailSendInput): Promise<MailSendResult>;
 };
 
+/**
+ * Server-only auth management API.
+ *
+ * Available to trusted Capsule handlers. Lets server code update email
+ * credentials (e.g. for password reset flows) without direct access to the
+ * internal auth database.
+ */
+export type ServerAuthApi = {
+  /** Update the password for an existing email credential. Throws if the email is not registered. */
+  setEmailPassword(email: string, newPassword: string): Promise<void>;
+};
+
 export type MessageScope =
   | "currentUser"
   | "all"
@@ -411,6 +423,8 @@ export type CapsuleContext<Schema extends SchemaDefinition = SchemaDefinition> =
   jobs: JobApi;
   /** Server-only SMTP delivery. Present even when mail is disabled. */
   mail: MailApi;
+  /** Server-only auth management (e.g. password reset). */
+  serverAuth: ServerAuthApi;
 };
 
 /** Request details available only inside Custom endpoint handlers. */
