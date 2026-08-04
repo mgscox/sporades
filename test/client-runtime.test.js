@@ -1219,37 +1219,47 @@ test("client preferences SDK reads and updates current-user preferences over the
   try {
     const runtime = await importClientRuntime();
 
+    // Both resolve to the stored preference object itself, not the wire envelope.
     const initial = await runtime.preferences.get();
-    assert.deepEqual({
-      ...initial,
-      id: "request-id",
-    }, {
-      id: "request-id",
-      type: "preferences.result",
-      data: { preferences: {} },
-      error: null,
-    });
+    assert.deepEqual(initial, {});
     assert.deepEqual({ ...JSON.parse(browser.storage.get("preferencesGetMessage")), id: "request-id" }, {
       id: "request-id",
       type: "preferences.get",
     });
 
     const updated = await runtime.preferences.update({ theme: "dark" });
-    assert.deepEqual({
-      ...updated,
-      id: "request-id",
-    }, {
-      id: "request-id",
-      type: "preferences.result",
-      data: { preferences: { theme: "dark" } },
-      error: null,
-    });
+    assert.deepEqual(updated, { theme: "dark" });
     assert.deepEqual({ ...JSON.parse(browser.storage.get("preferencesUpdateMessage")), id: "request-id" }, {
       id: "request-id",
       type: "preferences.update",
       patch: { theme: "dark" },
       sessionToken: "session-token",
     });
+  } finally {
+    browser.cleanup();
+  }
+});
+
+test("client preferences SDK surfaces transport errors as thrown errors", async () => {
+  const browser = installBrowserFakes(anonymousAuth, {
+    handlers: {
+      "preferences.update": async () => ({
+        type: "error",
+        data: null,
+        error: {
+          message: "Preferences update failed.",
+          hint: "Retry the preferences update.",
+          code: "PREFERENCES_UPDATE_FAILED",
+        },
+      }),
+    },
+  });
+  try {
+    const runtime = await importClientRuntime();
+    await assert.rejects(
+      () => runtime.preferences.update({ theme: "dark" }),
+      /Preferences update failed/,
+    );
   } finally {
     browser.cleanup();
   }

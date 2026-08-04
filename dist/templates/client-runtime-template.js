@@ -1011,10 +1011,16 @@ function createConnection() {
       return request("mutation.run", { mutation: name, args });
     },
     getPreferences() {
-      return request("preferences.get");
+      return request("preferences.get").then((result) => {
+        if (result.error) throw structuredError(result.error);
+        return result.data.preferences;
+      });
     },
     updatePreferences(patch) {
-      return request("preferences.update", { patch });
+      return request("preferences.update", { patch }).then((result) => {
+        if (result.error) throw structuredError(result.error);
+        return result.data.preferences;
+      });
     },
     journeyEnable(options = {}) {
       return request("journey.enable", { options }).then((result) => {
