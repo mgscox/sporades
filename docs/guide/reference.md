@@ -107,9 +107,14 @@ Vue/Vite, and Svelte/Vite reference `/client/index.ts`. Lit defines the
 `<sporades-app>` Web Component directly, while Vue and Svelte compile native `client/App.vue`
 or `client/App.svelte` components respectively. SolidJS authors native JSX in
 `client/App.tsx` with `jsxImportSource: "solid-js"`. All
-keep `index.html` author-owned. Sporades runs Vite as an isolated one-shot build
-with local Vite config and `.env*` loading disabled, then serves transformed HTML and its
-hashed JS, CSS, source-map, and imported-asset tree. Sporades remains the only
+keep `index.html` author-owned. Sporades runs Vite as an isolated one-shot build,
+loads a regular project-owned `vite.config.*` so trusted project plugins can
+extend transforms and resolution, and serves transformed HTML with its hashed
+JS, CSS, source-map, and imported-asset tree. Project config is executable build
+code and should only import trusted dependencies. Sporades always overrides
+root, base, entry, output capture and names, public-directory handling, `.env*`
+loading and `import.meta.env`, source maps, watch/library/SSR modes, PostCSS config
+discovery, and the required framework/runtime plugins. Sporades remains the only
 Dev watcher/server and requests a full-page refresh after successful rebuilds;
 none uses a Vite dev server, HMR, framework refresh plugin, or another socket.
 The same acknowledged Sporades full-page refresh protocol covers admitted

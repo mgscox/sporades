@@ -18,6 +18,7 @@ import { installProjectSvelteToolchain } from "./support/project-svelte-toolchai
 import { installProjectSolidToolchain } from "./support/project-solid-toolchain.js";
 import { installProjectLitToolchain } from "./support/project-lit-toolchain.js";
 import { installProjectInfernoToolchain } from "./support/project-inferno-toolchain.js";
+import { installProjectTailwindToolchain } from "./support/project-tailwind-toolchain.js";
 import { CLIENT_CAPABILITIES } from "../dist/client-capabilities.js";
 import { mountLitTemplate } from "./support/lit-template-harness.js";
 import { mountSvelteTemplate } from "./support/svelte-template-harness.js";
@@ -1871,7 +1872,7 @@ for (const framework of ["react", "preact"]) test(`${framework} Vite rejects a l
   });
 });
 
-test("React Vite emits only a normalized transformed public tree and ignores local config and env files", async () => {
+test("React Vite loads project plugins while Sporades build, output, and environment invariants win", async () => {
   await withTempDir(async (dir) => {
     const created = await runCli(
       ["create", "vite-build", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"],
@@ -1885,7 +1886,23 @@ test("React Vite emits only a normalized transformed public tree and ignores loc
     await writeFile(path.join(projectDir, ".env.sporades.server"), "SERVER_ONLY_TOKEN=server-env-secret\n");
     await writeFile(
       path.join(projectDir, "vite.config.ts"),
-      `throw new Error("project-local-vite-config-was-loaded");\n`,
+      `export default {
+  root: "client",
+  base: "/project-base/",
+  publicDir: "public",
+  envFile: true,
+  envPrefix: "VITE_",
+  plugins: [{
+    name: "project-html-marker",
+    transformIndexHtml(html) { return html.replace("</head>", '<meta name="project-vite-plugin" content="loaded"></head>'); },
+  }],
+  build: {
+    write: true,
+    emptyOutDir: true,
+    sourcemap: false,
+    rollupOptions: { input: "client/index.tsx", output: { entryFileNames: "project-owned.js" } },
+  },
+};\n`,
     );
     await writeFile(
       path.join(projectDir, "postcss.config.cjs"),
@@ -1944,11 +1961,12 @@ test("React Vite emits only a normalized transformed public tree and ignores loc
 
       const transformedHtml = await readFile(path.join(bundle.staticFiles.publicDir, "index.html"), "utf8");
       assert.notEqual(transformedHtml, sourceHtml);
+      assert.match(transformedHtml, /<meta name="project-vite-plugin" content="loaded">/);
       assert.equal(await readFile(path.join(projectDir, "index.html"), "utf8"), sourceHtml, "Vite never rewrites author-owned source HTML");
       assert.doesNotMatch(transformedHtml, /\/client\/index\.tsx|\/client\.js/);
       assert.match(transformedHtml, /\/assets\/index-[^"']+\.js/);
       const output = (await Promise.all(files.map((file) => readFile(path.join(bundle.staticFiles.publicDir, file), "utf8")))).join("\n");
-      assert.doesNotMatch(output, /project-local-(?:vite|postcss)-config-was-loaded|project-env-secret|local-env-secret|process-env-secret|server-env-secret|SERVER_ONLY_TOKEN/);
+      assert.doesNotMatch(output, /project-local-postcss-config-was-loaded|project-env-secret|local-env-secret|process-env-secret|server-env-secret|SERVER_ONLY_TOKEN|project-owned\.js/);
       assert.doesNotMatch(output, /\/@vite\/client|react-refresh|vite\/hmr/i);
       assert.deepEqual(Object.keys(bundle.staticFiles).sort(), ["clientBundle", "indexHtml", "publicDir", "publicTree"]);
       assert.equal(bundle.staticFiles.clientBundle, null);
@@ -1956,6 +1974,71 @@ test("React Vite emits only a normalized transformed public tree and ignores loc
       await bundle.releasePublicTreeLease();
       await discardPublicTree(bundle.staticFiles.publicTree);
     }
+  });
+});
+
+test("React Vite loads project plugins so Tailwind utilities reach the normalized public tree", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(
+      ["create", "vite-tailwind-build", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "vite-tailwind-build");
+    await installFakeReact(projectDir);
+    await installProjectTailwindToolchain(projectDir, repoRoot);
+    await writeFile(
+      path.join(projectDir, "vite.config.ts"),
+      `import { defineConfig } from "vite";\nimport tailwindcss from "@tailwindcss/vite";\n\nexport default defineConfig({ plugins: [tailwindcss()] });\n`,
+    );
+    await writeFile(path.join(projectDir, "client", "styles.css"), `@import "tailwindcss";\n`);
+    await writeFile(
+      path.join(projectDir, "client", "index.tsx"),
+      `import { createRoot } from "react-dom/client";\nimport "./styles.css";\n\ncreateRoot(document.getElementById("root")!).render(<button className="inline-flex h-8 rounded-md px-3">Settings</button>);\n`,
+    );
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    const bundle = await createBundle(projectDir, config, { publishLegacy: false });
+    try {
+      const paths = Object.keys(await snapshotProjectTree(bundle.staticFiles.publicDir)).filter((file) => !file.endsWith("/"));
+      const cssPath = paths.find((file) => /^assets\/index-[^/]+\.css$/.test(file));
+      assert.ok(cssPath, JSON.stringify(paths));
+      const css = await readFile(path.join(bundle.staticFiles.publicDir, cssPath), "utf8");
+      assert.match(css, /\.inline-flex\b/);
+      assert.match(css, /\.h-8\b/);
+      assert.match(css, /\.px-3\b/);
+      assert.match(css, /\.rounded-md\b|border-radius:\s*var\(--radius-md\)/);
+      assert.doesNotMatch(css, /@tailwind\s+utilities/);
+      const html = await readFile(path.join(bundle.staticFiles.publicDir, "index.html"), "utf8");
+      assert.match(html, new RegExp(cssPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    } finally {
+      await bundle.releasePublicTreeLease();
+      await discardPublicTree(bundle.staticFiles.publicTree);
+    }
+  });
+});
+
+test("Vite rejects a symlinked project configuration before creating release output", async () => {
+  await withTempDir(async (dir) => {
+    const created = await runCli(
+      ["create", "vite-config-symlink", "--framework", "react", "--toolchain", "vite", "--no-install", "--no-git", "--json"],
+      { cwd: dir },
+    );
+    assert.equal(created.code, 0, created.stderr);
+    const projectDir = path.join(dir, "vite-config-symlink");
+    await installFakeReact(projectDir);
+    const externalConfig = path.join(dir, "external-vite.config.mjs");
+    await writeFile(externalConfig, "export default {};\n");
+    await symlink(externalConfig, path.join(projectDir, "vite.config.mjs"));
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+
+    await assert.rejects(createBundle(projectDir, config), (error) => {
+      assert.equal(error.message, "Vite configuration must be a regular file inside the Capsule: vite.config.mjs.");
+      assert.equal(error.phase, "client");
+      assert.equal(error.framework, "react");
+      assert.equal(error.toolchain, "vite");
+      return true;
+    });
+    await assert.rejects(access(path.join(projectDir, ".sporades")), (error) => error.code === "ENOENT");
   });
 });
 
@@ -1970,7 +2053,7 @@ test("Preact Vite preserves createHooks source compatibility and emits a Preact-
     await installFakePreact(projectDir);
     await writeFile(path.join(projectDir, ".env"), "VITE_PREACT_LEAK=preact-browser-secret\n");
     await writeFile(path.join(projectDir, ".env.sporades.server"), "PREACT_SERVER_ONLY=preact-server-secret\n");
-    await writeFile(path.join(projectDir, "vite.config.mjs"), 'throw new Error("preact-vite-config-loaded");\n');
+    await writeFile(path.join(projectDir, "vite.config.mjs"), 'export default { plugins: [{ name: "preact-vite-config-loaded" }] };\n');
     await writeFile(path.join(projectDir, "postcss.config.js"), 'throw new Error("preact-postcss-config-loaded");\n');
     const clientPath = path.join(projectDir, "client", "index.tsx");
     const clientSource = await readFile(clientPath, "utf8");
@@ -2047,7 +2130,7 @@ test("Vue Vite compiles native SFCs into an isolated normalized public tree", as
     await installVue(projectDir);
     await writeFile(path.join(projectDir, ".env"), "VITE_VUE_LEAK=vue-browser-secret\n");
     await writeFile(path.join(projectDir, ".env.sporades.server"), "VUE_SERVER_ONLY=vue-server-secret\n");
-    await writeFile(path.join(projectDir, "vite.config.ts"), 'throw new Error("vue-vite-config-loaded");\n');
+    await writeFile(path.join(projectDir, "vite.config.ts"), 'export default { plugins: [{ name: "vue-vite-config-loaded" }] };\n');
     await writeFile(path.join(projectDir, "postcss.config.mjs"), 'throw new Error("vue-postcss-config-loaded");\n');
     const entryPath = path.join(projectDir, "client", "index.ts");
     await writeFile(entryPath, `${await readFile(entryPath, "utf8")}\nconsole.log(import.meta.env.VITE_VUE_LEAK);\n`);
@@ -2143,7 +2226,7 @@ for (const { template, marker } of [{ template: "blank", marker: "Blank Sporades
     await installSvelte(projectDir);
     await writeFile(path.join(projectDir, ".env"), "VITE_SVELTE_LEAK=browser-secret\n");
     await writeFile(path.join(projectDir, ".env.sporades.server"), `${template === "photo-library" ? "GOOGLE_CLIENT_ID=dummy-client\nGOOGLE_CLIENT_SECRET=dummy-secret\n" : ""}SVELTE_SERVER_ONLY=server-secret\n`);
-    await writeFile(path.join(projectDir, "vite.config.ts"), 'throw new Error("svelte-vite-config-loaded");\n');
+    await writeFile(path.join(projectDir, "vite.config.ts"), 'export default { plugins: [{ name: "svelte-vite-config-loaded" }] };\n');
     await writeFile(path.join(projectDir, "postcss.config.mjs"), 'throw new Error("svelte-postcss-config-loaded");\n');
     const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
     const bundle = await createBundle(projectDir, config, { publishLegacy: false });
@@ -2972,7 +3055,7 @@ for (const template of ["blank", "todo"]) test(`Solid Vite compiles the ${templa
     await installProjectSolidToolchain(projectDir, repoRoot);
     await writeFile(path.join(projectDir, ".env"), "VITE_SOLID_LEAK=solid-browser-secret\n");
     await writeFile(path.join(projectDir, ".env.sporades.server"), "SOLID_SERVER_ONLY=solid-server-secret\n");
-    await writeFile(path.join(projectDir, "vite.config.ts"), 'throw new Error("solid-vite-config-loaded");\n');
+    await writeFile(path.join(projectDir, "vite.config.ts"), 'export default { plugins: [{ name: "solid-vite-config-loaded" }] };\n');
     await writeFile(path.join(projectDir, "postcss.config.cjs"), 'throw new Error("solid-postcss-config-loaded");\n');
     const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
     const bundle = await createBundle(projectDir, config, { publishLegacy: false });

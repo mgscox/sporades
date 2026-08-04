@@ -25,6 +25,24 @@ watcher, HTML middleware, or HMR WebSocket. Client builds are validated before
 atomically replacing the last successful public tree, and receive neither
 Server env nor unrestricted environment-file loading.
 
+Vite Capsules may provide one regular, project-owned `vite.config.*` file using
+Vite's standard filename precedence. The configuration is trusted executable
+build code: it may register project plugins and extend non-conflicting Vite
+transform, resolution, CSS-preprocessor, and build options. It is not a sandbox
+boundary and should only import trusted dependencies. Sporades does not search
+parent directories or follow a symlinked configuration file.
+
+Sporades applies a final invariant layer after project plugin configuration.
+The Capsule configuration cannot replace the project root, `/` base, MPA mode,
+author-owned `index.html` entry, normalized hashed output names, in-memory
+output capture, disabled public-directory copying, disabled `.env*` loading,
+isolated `import.meta.env`, external source maps, CSS splitting, non-inlined
+assets, or the no-watch/no-library/no-SSR build shape. Project PostCSS config
+discovery remains disabled; Vite plugins may transform CSS directly. Sporades'
+framework compiler plugin, `sporades/client` runtime plugin, and final invariant
+plugin are always appended and verified. These rules are identical for Dev,
+Container, and Hosted builds because all three consume the same Bundle pipeline.
+
 Public trees are recursive but bounded release inputs. Absolute or escaping
 paths, ambiguous decoded paths, symlinks, normalization collisions, excess
 files, and excess bytes are rejected before serving, mounting, packaging, or
@@ -55,8 +73,8 @@ cannot cross release boundaries.
   URL while new toolchains may emit different internal filenames.
 - Framework and toolchain admission is gated by one public-tree conformance
   suite rather than by adding special cases to every execution mode.
-- Project-local Vite configuration and state-preserving HMR remain outside the
-  initial supported contract.
+- Project-local Vite configuration is supported under the invariant precedence
+  above. State-preserving HMR remains outside the supported contract.
 
 This decision supersedes ADR 0010. ADR 0010's author-ownership principle is
 preserved; its fixed, untransformed `index.html` plus `/client.js` runtime

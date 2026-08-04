@@ -547,9 +547,11 @@ Database adapter and keeping app-facing file APIs unchanged.
 `server/`, `client/`, `shared/`, `index.html`, and `sporades.json`. Server and
 shared changes restart the runtime; client and HTML changes refresh served
 assets. Failed rebuilds keep the last successful Bundle running. Sporades
-invokes React/Vite, Preact/Vite, and Vue/Vite as one-shot production builds under its own
-watcher and server; it does not start a Vite dev server, HMR transport, or
-second watcher.
+invokes admitted Vite clients as one-shot production builds under its own
+watcher and server. Project Vite plugins may extend the build, while Sporades
+retains final precedence over runtime plugins, framework compilation, entry and
+output capture, environment isolation, public assets, and source maps. It does
+not start a Vite dev server, HMR transport, or second watcher.
 
 Debug surfaces include logs, database listing/dump/query, auth client listing,
 and local identity simulation.

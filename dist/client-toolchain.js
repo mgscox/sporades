@@ -96,6 +96,8 @@ async function buildVite(options) {
     let projectRoot = path.resolve(options.projectDir);
     try {
         projectRoot = await realpath(options.projectDir);
+        const canonicalIndexHtmlPath = path.join(projectRoot, path.basename(options.indexHtmlPath));
+        const projectConfigFile = await findProjectViteConfig(projectRoot);
         if (options.frameworkConfig.framework === "vue") {
             const { plugin, compiler } = await loadProjectVueToolchain(projectRoot);
             frameworkPlugins.push(plugin({ compiler }));
@@ -115,9 +117,10 @@ async function buildVite(options) {
             root: projectRoot,
             base: "/",
             publicDir: false,
-            configFile: false,
+            configFile: projectConfigFile,
             envFile: false,
             envPrefix: "\0",
+            mode: "production",
             define: {
                 "import.meta.env": JSON.stringify({ BASE_URL: "/", MODE: "production", DEV: false, PROD: true, SSR: false }),
             },
@@ -128,14 +131,25 @@ async function buildVite(options) {
                 ? { jsx: "transform", jsxFactory: "createElement" }
                 : { jsx: "automatic", jsxImportSource: options.frameworkConfig.jsxImportSource ?? undefined },
             css: { postcss: { plugins: [] } },
-            plugins: [...frameworkPlugins, sporadesViteClientPlugin(options.devRefresh === true)],
+            plugins: [
+                ...frameworkPlugins,
+                sporadesViteClientPlugin(options.devRefresh === true),
+                sporadesViteBuildInvariants(canonicalIndexHtmlPath, options.frameworkConfig),
+            ],
             build: {
                 write: false,
                 emptyOutDir: false,
                 sourcemap: true,
                 cssCodeSplit: true,
                 assetsInlineLimit: 0,
+                watch: null,
+                lib: false,
+                ssr: false,
+                manifest: false,
+                ssrManifest: false,
                 rollupOptions: {
+                    input: canonicalIndexHtmlPath,
+                    external: [],
                     output: {
                         entryFileNames: "assets/[name]-[hash].js",
                         chunkFileNames: "assets/[name]-[hash].js",
@@ -172,6 +186,31 @@ async function buildVite(options) {
             throw error;
         throw viteBuildError(error, [options.projectDir, projectRoot], options.frameworkConfig.framework);
     }
+}
+const VITE_CONFIG_NAMES = [
+    "vite.config.js", "vite.config.mjs", "vite.config.ts", "vite.config.cjs", "vite.config.mts", "vite.config.cts",
+];
+async function findProjectViteConfig(projectRoot) {
+    for (const name of VITE_CONFIG_NAMES) {
+        const candidate = path.join(projectRoot, name);
+        try {
+            const metadata = await lstat(candidate);
+            if (!metadata.isFile() || metadata.isSymbolicLink()) {
+                throw clientToolchainError(`Vite configuration must be a regular file inside the Capsule: ${name}.`, `Replace ${name} with a regular project-owned file, then retry.`);
+            }
+            const canonical = await realpath(candidate);
+            if (!isCanonicalDescendant(projectRoot, canonical)) {
+                throw clientToolchainError(`Vite configuration escaped the Capsule project: ${name}.`, `Move ${name} inside the Capsule project, then retry.`);
+            }
+            return canonical;
+        }
+        catch (error) {
+            if (errorDetails(error).code === "ENOENT")
+                continue;
+            throw error;
+        }
+    }
+    return false;
 }
 async function loadProjectVueToolchain(projectRoot) {
     const loaded = await loadProjectCompilerToolchain(projectRoot, {
@@ -338,6 +377,68 @@ function sporadesViteClientPlugin(devRefresh = false) {
         enforce: "pre",
         resolveId(id) { return id === "sporades/client" ? runtimeId : null; },
         load(id) { return id === runtimeId ? createClientRuntimeSource({ devRefresh }) : null; },
+    };
+}
+function sporadesViteBuildInvariants(indexHtmlPath, frameworkConfig) {
+    return {
+        name: "sporades-build-invariants",
+        enforce: "post",
+        config() {
+            return {
+                root: path.dirname(indexHtmlPath),
+                base: "/",
+                publicDir: false,
+                envFile: false,
+                envPrefix: "\0",
+                mode: "production",
+                define: {
+                    "import.meta.env": JSON.stringify({ BASE_URL: "/", MODE: "production", DEV: false, PROD: true, SSR: false }),
+                },
+                appType: "mpa",
+                clearScreen: false,
+                logLevel: "silent",
+                esbuild: frameworkConfig.framework === "inferno"
+                    ? { jsx: "transform", jsxFactory: "createElement" }
+                    : { jsx: "automatic", jsxImportSource: frameworkConfig.jsxImportSource ?? undefined },
+                css: { postcss: { plugins: [] } },
+                build: {
+                    write: false,
+                    emptyOutDir: false,
+                    sourcemap: true,
+                    cssCodeSplit: true,
+                    assetsInlineLimit: 0,
+                    watch: null,
+                    lib: false,
+                    ssr: false,
+                    manifest: false,
+                    ssrManifest: false,
+                    rollupOptions: {
+                        input: indexHtmlPath,
+                        external: [],
+                        output: {
+                            entryFileNames: "assets/[name]-[hash].js",
+                            chunkFileNames: "assets/[name]-[hash].js",
+                            assetFileNames: "assets/[name]-[hash][extname]",
+                        },
+                    },
+                },
+            };
+        },
+        configResolved(config) {
+            const pluginNames = new Set(config.plugins.map((plugin) => plugin.name));
+            if (!pluginNames.has("sporades-client-runtime") || !pluginNames.has("sporades-build-invariants")) {
+                throw new Error("Sporades mandatory Vite plugins were not preserved.");
+            }
+            const requiredFrameworkPlugin = {
+                vue: "vite:vue",
+                svelte: "vite-plugin-svelte",
+                solid: "solid",
+                inferno: "sporades-inferno-project-jsx",
+            }[frameworkConfig.framework];
+            if (requiredFrameworkPlugin && !pluginNames.has(requiredFrameworkPlugin)) {
+                throw new Error(`Sporades mandatory ${frameworkConfig.framework} Vite plugin was not preserved.`);
+            }
+        },
     };
 }
 function referencesLegacyClientShell(html) {
