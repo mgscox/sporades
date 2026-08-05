@@ -70,3 +70,4 @@ overriding the method on one engine's adapter.
 ## Blocked by
 
 - .scratch/database-adapter-engine-conformance/issues/02-run-conformance-specification-against-every-adapter.md
+- .scratch/database-adapter-engine-conformance/issues/07-open-a-conflict-free-conformance-extension-seam.md

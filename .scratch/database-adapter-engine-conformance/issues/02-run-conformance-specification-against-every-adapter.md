@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Run Conformance Specification Against Every Adapter
 
@@ -40,16 +40,16 @@ tests and do not move into the shared specification.
 
 ## Acceptance criteria
 
-- [ ] A single conformance specification is parameterised by a Database adapter factory and executed once per engine.
-- [ ] The specification runs against the SQLite adapter, the libSQL adapter through the in-process fake service, and the Postgres adapter behind its existing environment gate.
-- [ ] At least two engines run under the ordinary test command with no external infrastructure.
-- [ ] The Postgres gate controls only whether that run executes, not which assertions it makes.
-- [ ] The specification covers the six known defects: the email credential existence check, reference integrity, upload completion for a new file, the two reserved-user guards, and the outstanding Reset code count.
-- [ ] Every assertion compares an observed value against an expected value; no case passes merely because a call did not throw.
-- [ ] Every predicate is exercised on both sides — present and absent rows, zero and non-zero counts.
-- [ ] Reverting any one of the six fixes causes the specification to fail on at least one engine.
-- [ ] Per-engine setup previously duplicated in the adapter tests is extracted into the shared runner.
-- [ ] Existing engine-mechanic tests remain where they are and continue to pass.
+- [x] A single conformance specification is parameterised by a Database adapter factory and executed once per engine.
+- [x] The specification runs against the SQLite adapter, the libSQL adapter through the in-process fake service, and the Postgres adapter behind its existing environment gate.
+- [x] At least two engines run under the ordinary test command with no external infrastructure.
+- [x] The Postgres gate controls only whether that run executes, not which assertions it makes.
+- [x] The specification covers the six known defects: the email credential existence check, reference integrity, upload completion for a new file, the two reserved-user guards, and the outstanding Reset code count.
+- [x] Every assertion compares an observed value against an expected value; no case passes merely because a call did not throw.
+- [x] Every predicate is exercised on both sides — present and absent rows, zero and non-zero counts.
+- [x] Reverting any one of the six fixes causes the specification to fail on at least one engine.
+- [x] Per-engine setup previously duplicated in the adapter tests is extracted into the shared runner.
+- [x] Existing engine-mechanic tests remain where they are and continue to pass.
 
 ## Blocked by
 

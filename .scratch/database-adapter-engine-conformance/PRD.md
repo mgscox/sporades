@@ -165,6 +165,7 @@ this spec adds governs the inside of the method.
 
 - `issues/01-record-adapter-contract-and-conformance-adrs.md`
 - `issues/02-run-conformance-specification-against-every-adapter.md`
+- `issues/07-open-a-conflict-free-conformance-extension-seam.md`
 - `issues/03-extend-conformance-coverage-to-auth-storage.md`
 - `issues/04-extend-conformance-coverage-to-file-metadata-storage.md`
 - `issues/05-extend-conformance-coverage-to-app-tables-and-runtime-metadata.md`
