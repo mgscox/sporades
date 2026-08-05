@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Require Conformance Coverage For Every Adapter Method
 
@@ -39,12 +39,12 @@ exemption list long enough to be meaningless.
 
 ## Acceptance criteria
 
-- [ ] A check enumerates the Database adapter method set and fails when a method has no conformance case.
-- [ ] The check runs as part of the ordinary test command.
-- [ ] Methods exempt from conformance coverage are listed explicitly, each with a short recorded reason.
-- [ ] Being overridden by one or more engines is never accepted as an exemption reason; a shared definition shadowed by an await-shim still requires a conformance case.
-- [ ] Adding a method to the adapter without a conformance case fails the check.
-- [ ] The check passes when this ticket lands, with an exemption list limited to genuinely engine-specific mechanics.
+- [x] A check enumerates the Database adapter method set and fails when a method has no conformance case.
+- [x] The check runs as part of the ordinary test command.
+- [x] Methods exempt from conformance coverage are listed explicitly, each with a short recorded reason.
+- [x] Being overridden by one or more engines is never accepted as an exemption reason; a shared definition shadowed by an await-shim still requires a conformance case.
+- [x] Adding a method to the adapter without a conformance case fails the check.
+- [x] The check passes when this ticket lands, with an exemption list limited to genuinely engine-specific mechanics.
 
 ## Blocked by
 

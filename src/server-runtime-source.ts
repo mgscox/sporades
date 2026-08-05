@@ -3065,9 +3065,16 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       return this.readSystemMetadata("schema");
     },
     writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord) {
-      this.writeSystemMetadata("schemaVersion", schemaVersion);
-      this.writeSystemMetadata("schemaHash", schemaHash);
-      this.writeSystemMetadata("schema", schemaJson);
+      // ADR-0034's fourth rule limb: three writes fired and nothing returned leaves the caller no
+      // way to know when they landed, and on an asynchronous engine no way to know they landed in
+      // this order either. Chained and returned, one definition is correct under both synchronous
+      // and asynchronous statement primitives, which is what let the Postgres and libSQL
+      // await-shim copies of this method go.
+      return chainMaybePromise([
+        () => this.writeSystemMetadata("schemaVersion", schemaVersion),
+        () => this.writeSystemMetadata("schemaHash", schemaHash),
+        () => this.writeSystemMetadata("schema", schemaJson),
+      ]);
     },
     ensureLogStorage() {
       return createLogIndexTables(this);
@@ -3607,9 +3614,14 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       }
     },
     checkHealth() {
+      // ADR-0034: the probe's answer is derived from the statement result, so the result has to be
+      // resolved before the answer is given. A `try`/`catch` around an unresolved statement cannot
+      // see a rejection, so the shared definition used to answer `{ ok: true }` for a connection
+      // that had just failed — and escape the rejection as an unhandled one. Both engines carried
+      // an await-shim over this; with the rejection handled here they no longer need one.
       try {
-        this.prepare("SELECT 1 AS ok").get();
-        return { ok: true };
+        const probe: any = this.prepare("SELECT 1 AS ok").get();
+        return isPromiseLike(probe) ? probe.then(() => ({ ok: true }), () => ({ ok: false })) : { ok: true };
       } catch {
         return { ok: false };
       }
@@ -3686,11 +3698,6 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
       return await this.prepare(
         "INSERT INTO sporades (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
       ).run(keyOrMetadata ?? "", maybeValue);
-    },
-    async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord) {
-      await this.writeSystemMetadata("schemaVersion", schemaVersion);
-      await this.writeSystemMetadata("schemaHash", schemaHash);
-      await this.writeSystemMetadata("schema", schemaJson);
     },
     async ensureAuthStorage(authConfig: any = null) {
       await this.exec(
@@ -3772,15 +3779,6 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
       await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS pkceVerifier TEXT");
       await this.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
       await this.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
-    },
-    async insertOAuthState(row: LooseRecord) {
-      const provider = row.provider ?? "google";
-      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1000).toISOString();
-      return await this.prepare(
-        "INSERT INTO sporades_auth_oauth_states " +
-        "(state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
     },
     async consumeOAuthState(state: string) {
       const row = await (this.prepare(
@@ -3884,28 +3882,6 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         "ON CONFLICT (userId) DO UPDATE SET value = EXCLUDED.value, updatedAt = EXCLUDED.updatedAt",
       ).run(row.userId, row.value, row.updatedAt);
     },
-    async insertLogIndexEvent(event: { timestamp: any; category: any; event: any; level: any; message: any; capsule: { name: any; id: any; }; release: { id: any; }; request: { id: any; }; correlation: { id: any; }; }) {
-      // Same SQL as the shared definition; it returns its statement result for the same ADR-0034
-      // reason, so both engines answer a caller the same thing.
-      return await this.prepare(
-        "INSERT INTO sporades_log_events " +
-        "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(
-        randomUUID(),
-        event.timestamp,
-        event.category,
-        event.event,
-        event.level,
-        event.message,
-        event.capsule?.name ?? null,
-        event.capsule?.id ?? null,
-        event.release?.id ?? event.release ?? null,
-        event.request?.id ?? null,
-        event.correlation?.id ?? event.correlation ?? null,
-        JSON.stringify(event),
-      );
-    },
     async pruneLogIndex(limit: any) {
       // A dialect override — Postgres has no `LIMIT -1` — that still returns its statement result.
       return await this.prepare(
@@ -3986,14 +3962,6 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
             hint: "Check the SQL syntax and table names, then retry the query.",
           },
         };
-      }
-    },
-    async checkHealth() {
-      try {
-        await this.prepare("SELECT 1 AS ok").get();
-        return { ok: true };
-      } catch {
-        return { ok: false };
       }
     },
     async withTransaction(fn: (arg0: { engine: string; exec(sql: any): Promise<undefined>; prepare(sql: any): { all(...params: any[]): Promise<any>; get(...params: any[]): Promise<any>; run(...params: any[]): Promise<{ changes: number; lastInsertRowid: undefined; }>; columns(): Promise<{ name: any; }[]>; }; writeSystemMetadata(keyOrMetadata: any, maybeValue: any): Promise<void | { changes: number; lastInsertRowid: undefined; }>; writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }): Promise<void>; ensureAuthStorage(authConfig?: null): Promise<void>; ensureLogStorage(): Promise<void>; ensureFileStorage(): Promise<void>; insertLogIndexEvent(event: any): Promise<void>; pruneLogIndex(limit: any): Promise<void>; readRecentLogEvents(limit?: number): Promise<any>; migrateAppSchema(schema: any): Promise<void>; createAppTable(table: any, tableName?: any): Promise<void>; migrateExistingAppTable(existingTable: any, nextTable: any): Promise<void>; listInspectableTables(): Promise<any>; dumpInspectableDatabase(): Promise<{ name: any; columns: any; rows: any; }[]>; runReadOnlyInspectionQuery(sql: any): Promise<{ ok: boolean; data: { columns: any[]; rows: any; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }>; checkHealth(): Promise<{ ok: boolean; }>; withTransaction(fn: any): Promise<any>; close(): Promise<void>; ensureSystemTable(): void; readSystemMetadata(key: any): Record<string, SQLOutputValue> | null; readSchemaMetadata(): Record<string, SQLOutputValue> | null; findFileBucket(ownerId: any, name: any): Record<string, SQLOutputValue> | null; createFileBucket(row: any): StatementResultingChanges; insertFileRow(row: any): StatementResultingChanges; updatePendingFileRow(row: any): StatementResultingChanges; insertFileUpload(row: any): StatementResultingChanges; selectFileById(fileId: any): Record<string, SQLOutputValue> | null; selectLiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectActiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath(path: any): Record<string, SQLOutputValue> | null; selectFileUpload(uploadId: any): Record<string, SQLOutputValue> | null; completeFileUpload(upload: any, size: any, updatedAt: any): StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath(path: any): StatementResultingChanges; deleteFileUploadsForFile(ownerId: any, fileId: any): StatementResultingChanges; deleteFileUpload(uploadId: any): StatementResultingChanges; selectPublicFileRow(publicUrlId: any): Record<string, SQLOutputValue> | null; insertPublicFileUrl(row: any): StatementResultingChanges; revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any): StatementResultingChanges; revokePublicFileUrlsForFile(fileId: any, revokedAt: any): StatementResultingChanges; markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges; fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null; insertAuthUser(row: any): StatementResultingChanges; updateAuthUserProfile(row: any): StatementResultingChanges; linkAuthUser(row: any): StatementResultingChanges; insertAuthSession(row: any): StatementResultingChanges; deleteAuthSession(token: any): StatementResultingChanges; refreshAuthSession(token: any, expiresAt: any): StatementResultingChanges; rotateAuthSession(previousToken: any, row: any): StatementResultingChanges; readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null; insertOAuthState(row: any): StatementResultingChanges; consumeOAuthState(state: any): Record<string, SQLOutputValue> | null; emailCredentialExists(email: any): boolean; insertEmailCredential(row: any): StatementResultingChanges; findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null; referenceExists(field: any, value: any): boolean; insertAppRow(table: any, row: any): StatementResultingChanges; selectAppRowById(table: any, id: any): Record<string, SQLOutputValue> | null; updateAppRow(table: any, id: any, values: any, options?: {}): StatementResultingChanges | { changes: number; }; deleteAppRow(table: any, id: any): StatementResultingChanges; selectAppRows(table: any, query?: {}): Record<string, SQLOutputValue>[]; }) => any) {
@@ -4609,11 +4577,6 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     ...shape,
     ...createOperations(),
     engine: "libsql",
-    async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord) {
-      await this.writeSystemMetadata("schemaVersion", schemaVersion);
-      await this.writeSystemMetadata("schemaHash", schemaHash);
-      await this.writeSystemMetadata("schema", schemaJson);
-    },
     async ensureLogStorage() {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_log_events (" +
@@ -4758,15 +4721,6 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
       );
       await ensureLibsqlOAuthStateColumns(this);
     },
-    async insertOAuthState(row: LooseRecord) {
-      const provider = row.provider ?? "google";
-      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1000).toISOString();
-      return await this.prepare(
-        "INSERT INTO sporades_auth_oauth_states " +
-        "(state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
-    },
     async consumeOAuthState(state: any) {
       return (await this.prepare(
         "DELETE FROM sporades_auth_oauth_states WHERE state = ? " +
@@ -4778,14 +4732,6 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     },
     async migrateExistingAppTable(existingTable: any, nextTable: any) {
       return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
-    },
-    async checkHealth() {
-      try {
-        await this.prepare("SELECT 1 AS ok").get();
-        return { ok: true };
-      } catch {
-        return { ok: false };
-      }
     },
     async withTransaction(fn: (transactionAdapter: LooseRecord) => any) {
       const transaction = { baton: null as any, baseUrl: endpoint };
