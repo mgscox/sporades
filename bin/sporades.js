@@ -5083,9 +5083,11 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       return this.readSystemMetadata("schema");
     },
     writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
-      this.writeSystemMetadata("schemaVersion", schemaVersion);
-      this.writeSystemMetadata("schemaHash", schemaHash);
-      this.writeSystemMetadata("schema", schemaJson);
+      return chainMaybePromise([
+        () => this.writeSystemMetadata("schemaVersion", schemaVersion),
+        () => this.writeSystemMetadata("schemaHash", schemaHash),
+        () => this.writeSystemMetadata("schema", schemaJson)
+      ]);
     },
     ensureLogStorage() {
       return createLogIndexTables(this);
@@ -5589,8 +5591,8 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     },
     checkHealth() {
       try {
-        this.prepare("SELECT 1 AS ok").get();
-        return { ok: true };
+        const probe = this.prepare("SELECT 1 AS ok").get();
+        return isPromiseLike(probe) ? probe.then(() => ({ ok: true }), () => ({ ok: false })) : { ok: true };
       } catch {
         return { ok: false };
       }
@@ -5661,11 +5663,6 @@ async function createPostgresDatabaseAdapter(options) {
         "INSERT INTO sporades (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
       ).run(keyOrMetadata ?? "", maybeValue);
     },
-    async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
-      await this.writeSystemMetadata("schemaVersion", schemaVersion);
-      await this.writeSystemMetadata("schemaHash", schemaHash);
-      await this.writeSystemMetadata("schema", schemaJson);
-    },
     async ensureAuthStorage(authConfig = null) {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_auth_users (id TEXT PRIMARY KEY, createdAt TEXT NOT NULL, displayName TEXT NOT NULL, email TEXT, picture TEXT, isAuthenticated INTEGER NOT NULL, isGuest INTEGER NOT NULL, provider TEXT NOT NULL)"
@@ -5700,13 +5697,6 @@ async function createPostgresDatabaseAdapter(options) {
       await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS pkceVerifier TEXT");
       await this.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
       await this.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
-    },
-    async insertOAuthState(row) {
-      const provider = row.provider ?? "google";
-      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1e3).toISOString();
-      return await this.prepare(
-        "INSERT INTO sporades_auth_oauth_states (state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
     },
     async consumeOAuthState(state) {
       const row = await this.prepare(
@@ -5753,24 +5743,6 @@ async function createPostgresDatabaseAdapter(options) {
       return await this.prepare(
         "INSERT INTO sporades_user_preferences (userId, value, updatedAt) VALUES (?, ?, ?) ON CONFLICT (userId) DO UPDATE SET value = EXCLUDED.value, updatedAt = EXCLUDED.updatedAt"
       ).run(row.userId, row.value, row.updatedAt);
-    },
-    async insertLogIndexEvent(event) {
-      return await this.prepare(
-        "INSERT INTO sporades_log_events (id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run(
-        randomUUID(),
-        event.timestamp,
-        event.category,
-        event.event,
-        event.level,
-        event.message,
-        event.capsule?.name ?? null,
-        event.capsule?.id ?? null,
-        event.release?.id ?? event.release ?? null,
-        event.request?.id ?? null,
-        event.correlation?.id ?? event.correlation ?? null,
-        JSON.stringify(event)
-      );
     },
     async pruneLogIndex(limit) {
       return await this.prepare(
@@ -5845,14 +5817,6 @@ async function createPostgresDatabaseAdapter(options) {
             hint: "Check the SQL syntax and table names, then retry the query."
           }
         };
-      }
-    },
-    async checkHealth() {
-      try {
-        await this.prepare("SELECT 1 AS ok").get();
-        return { ok: true };
-      } catch {
-        return { ok: false };
       }
     },
     async withTransaction(fn) {
@@ -6434,11 +6398,6 @@ async function createLibsqlDatabaseAdapter(options) {
     ...shape,
     ...createOperations(),
     engine: "libsql",
-    async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
-      await this.writeSystemMetadata("schemaVersion", schemaVersion);
-      await this.writeSystemMetadata("schemaHash", schemaHash);
-      await this.writeSystemMetadata("schema", schemaJson);
-    },
     async ensureLogStorage() {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_log_events (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, category TEXT NOT NULL, event TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL, capsuleName TEXT, capsuleId TEXT, releaseId TEXT, requestId TEXT, correlationId TEXT, payload TEXT NOT NULL)"
@@ -6491,13 +6450,6 @@ async function createLibsqlDatabaseAdapter(options) {
       );
       await ensureLibsqlOAuthStateColumns(this);
     },
-    async insertOAuthState(row) {
-      const provider = row.provider ?? "google";
-      const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1e3).toISOString();
-      return await this.prepare(
-        "INSERT INTO sporades_auth_oauth_states (state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
-    },
     async consumeOAuthState(state) {
       return await this.prepare(
         "DELETE FROM sporades_auth_oauth_states WHERE state = ? RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier"
@@ -6508,14 +6460,6 @@ async function createLibsqlDatabaseAdapter(options) {
     },
     async migrateExistingAppTable(existingTable, nextTable) {
       return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
-    },
-    async checkHealth() {
-      try {
-        await this.prepare("SELECT 1 AS ok").get();
-        return { ok: true };
-      } catch {
-        return { ok: false };
-      }
     },
     async withTransaction(fn) {
       const transaction = { baton: null, baseUrl: endpoint };

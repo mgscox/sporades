@@ -160,7 +160,7 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
     readSystemMetadata(key: string): Record<string, SQLOutputValue> | null;
     writeSystemMetadata(key: string, value: any): StatementResultingChanges;
     readSchemaMetadata(): Record<string, SQLOutputValue> | null;
-    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord): void;
+    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord): any;
     ensureLogStorage(): void;
     insertLogIndexEvent(event: any): any;
     pruneLogIndex(limit: any): any;
@@ -494,9 +494,7 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
     listInspectableTables(): any;
     dumpInspectableDatabase(): any;
     runReadOnlyInspectionQuery(sql: string | undefined): any;
-    checkHealth(): {
-        ok: boolean;
-    };
+    checkHealth(): any;
     close(): void;
 }>;
 export declare function createPostgresDatabaseAdapter(options: {
@@ -515,16 +513,8 @@ export declare function createPostgresDatabaseAdapter(options: {
             name: string;
         }[]>;
     };
-    writeSystemMetadata(keyOrMetadata: string | null, maybeValue: any): Promise<void | {
-        changes: number;
-        lastInsertRowid: any;
-    }>;
-    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord): Promise<void>;
+    writeSystemMetadata(keyOrMetadata: string | null, maybeValue: any): Promise<any>;
     ensureAuthStorage(authConfig?: any): Promise<void>;
-    insertOAuthState(row: LooseRecord): Promise<{
-        changes: number;
-        lastInsertRowid: any;
-    }>;
     consumeOAuthState(state: string): Promise<any>;
     ensureLogStorage(): Promise<void>;
     ensureFileStorage(): Promise<void>;
@@ -534,29 +524,6 @@ export declare function createPostgresDatabaseAdapter(options: {
         userId: any;
         value: any;
         updatedAt: any;
-    }): Promise<{
-        changes: number;
-        lastInsertRowid: any;
-    }>;
-    insertLogIndexEvent(event: {
-        timestamp: any;
-        category: any;
-        event: any;
-        level: any;
-        message: any;
-        capsule: {
-            name: any;
-            id: any;
-        };
-        release: {
-            id: any;
-        };
-        request: {
-            id: any;
-        };
-        correlation: {
-            id: any;
-        };
     }): Promise<{
         changes: number;
         lastInsertRowid: any;
@@ -626,9 +593,6 @@ export declare function createPostgresDatabaseAdapter(options: {
             message: any;
             hint: string;
         };
-    }>;
-    checkHealth(): Promise<{
-        ok: boolean;
     }>;
     withTransaction(fn: (arg0: {
         engine: string;
@@ -740,6 +704,8 @@ export declare function createPostgresDatabaseAdapter(options: {
     ensureSystemTable(): void;
     readSystemMetadata(key: string): Record<string, SQLOutputValue> | null;
     readSchemaMetadata(): Record<string, SQLOutputValue> | null;
+    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord): any;
+    insertLogIndexEvent(event: any): any;
     findFileBucket(ownerId: any, name: any): Record<string, SQLOutputValue> | null;
     createFileBucket(row: {
         id: any;
@@ -884,6 +850,7 @@ export declare function createPostgresDatabaseAdapter(options: {
         expiresAt: any;
     }): StatementResultingChanges;
     readAuthSessionWithUser(token: any): any;
+    insertOAuthState(row: LooseRecord): StatementResultingChanges;
     emailCredentialExists(email: any): any;
     insertEmailCredential(row: {
         email: any;
@@ -924,6 +891,7 @@ export declare function createPostgresDatabaseAdapter(options: {
     selectAppRows(table: {
         name: any;
     }, query?: LooseRecord): Record<string, SQLOutputValue>[];
+    checkHealth(): any;
 }>;
 export declare function createPostgresConnection(url: any): Promise<{
     readonly backendKeyData: Buffer<ArrayBuffer> | null;
@@ -939,14 +907,9 @@ export declare function createLibsqlDatabaseAdapter(options: {
     authToken: any;
 }): Promise<{
     engine: string;
-    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord): Promise<void>;
     ensureLogStorage(): Promise<void>;
     ensureFileStorage(): Promise<void>;
     ensureAuthStorage(authConfig?: any): Promise<void>;
-    insertOAuthState(row: LooseRecord): Promise<{
-        changes: number;
-        lastInsertRowid: bigint | undefined;
-    }>;
     consumeOAuthState(state: any): Promise<any>;
     migrateAppSchema(schema: {
         tables: {
@@ -978,9 +941,6 @@ export declare function createLibsqlDatabaseAdapter(options: {
         }[];
     }): Promise<any>;
     migrateExistingAppTable(existingTable: any, nextTable: any): Promise<void>;
-    checkHealth(): Promise<{
-        ok: boolean;
-    }>;
     withTransaction(fn: (transactionAdapter: LooseRecord) => any): Promise<any>;
     withReadOnlySnapshot(fn: (adapter: LooseRecord) => any): Promise<any>;
     close(): Promise<void>;
@@ -998,6 +958,7 @@ export declare function createLibsqlDatabaseAdapter(options: {
     readSystemMetadata(key: string): Record<string, SQLOutputValue> | null;
     writeSystemMetadata(key: string, value: any): StatementResultingChanges;
     readSchemaMetadata(): Record<string, SQLOutputValue> | null;
+    writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord): any;
     insertLogIndexEvent(event: any): any;
     pruneLogIndex(limit: any): any;
     readRecentLogEvents(limit: number | undefined): any;
@@ -1152,6 +1113,7 @@ export declare function createLibsqlDatabaseAdapter(options: {
         expiresAt: any;
     }): StatementResultingChanges;
     readAuthSessionWithUser(token: any): any;
+    insertOAuthState(row: LooseRecord): StatementResultingChanges;
     emailCredentialExists(email: any): any;
     insertEmailCredential(row: {
         email: any;
@@ -1198,6 +1160,7 @@ export declare function createLibsqlDatabaseAdapter(options: {
     listInspectableTables(): any;
     dumpInspectableDatabase(): any;
     runReadOnlyInspectionQuery(sql: string | undefined): any;
+    checkHealth(): any;
 }>;
 export declare function createPrivilegedAuditLogInput(details?: LooseRecord): {
     category: string;

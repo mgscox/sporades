@@ -2970,9 +2970,16 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
             return this.readSystemMetadata("schema");
         },
         writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
-            this.writeSystemMetadata("schemaVersion", schemaVersion);
-            this.writeSystemMetadata("schemaHash", schemaHash);
-            this.writeSystemMetadata("schema", schemaJson);
+            // ADR-0034's fourth rule limb: three writes fired and nothing returned leaves the caller no
+            // way to know when they landed, and on an asynchronous engine no way to know they landed in
+            // this order either. Chained and returned, one definition is correct under both synchronous
+            // and asynchronous statement primitives, which is what let the Postgres and libSQL
+            // await-shim copies of this method go.
+            return chainMaybePromise([
+                () => this.writeSystemMetadata("schemaVersion", schemaVersion),
+                () => this.writeSystemMetadata("schemaHash", schemaHash),
+                () => this.writeSystemMetadata("schema", schemaJson),
+            ]);
         },
         ensureLogStorage() {
             return createLogIndexTables(this);
@@ -3351,9 +3358,14 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
             }
         },
         checkHealth() {
+            // ADR-0034: the probe's answer is derived from the statement result, so the result has to be
+            // resolved before the answer is given. A `try`/`catch` around an unresolved statement cannot
+            // see a rejection, so the shared definition used to answer `{ ok: true }` for a connection
+            // that had just failed — and escape the rejection as an unhandled one. Both engines carried
+            // an await-shim over this; with the rejection handled here they no longer need one.
             try {
-                this.prepare("SELECT 1 AS ok").get();
-                return { ok: true };
+                const probe = this.prepare("SELECT 1 AS ok").get();
+                return isPromiseLike(probe) ? probe.then(() => ({ ok: true }), () => ({ ok: false })) : { ok: true };
             }
             catch {
                 return { ok: false };
@@ -3417,11 +3429,6 @@ export async function createPostgresDatabaseAdapter(options) {
                 return await this.writeSchemaMetadata(keyOrMetadata);
             }
             return await this.prepare("INSERT INTO sporades (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value").run(keyOrMetadata ?? "", maybeValue);
-        },
-        async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
-            await this.writeSystemMetadata("schemaVersion", schemaVersion);
-            await this.writeSystemMetadata("schemaHash", schemaHash);
-            await this.writeSystemMetadata("schema", schemaJson);
         },
         async ensureAuthStorage(authConfig = null) {
             await this.exec("CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
@@ -3487,13 +3494,6 @@ export async function createPostgresDatabaseAdapter(options) {
             await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS pkceVerifier TEXT");
             await this.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
             await this.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
-        },
-        async insertOAuthState(row) {
-            const provider = row.provider ?? "google";
-            const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1000).toISOString();
-            return await this.prepare("INSERT INTO sporades_auth_oauth_states " +
-                "(state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
         },
         async consumeOAuthState(state) {
             const row = await this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ? " +
@@ -3582,13 +3582,6 @@ export async function createPostgresDatabaseAdapter(options) {
             return await this.prepare("INSERT INTO sporades_user_preferences (userId, value, updatedAt) VALUES (?, ?, ?) " +
                 "ON CONFLICT (userId) DO UPDATE SET value = EXCLUDED.value, updatedAt = EXCLUDED.updatedAt").run(row.userId, row.value, row.updatedAt);
         },
-        async insertLogIndexEvent(event) {
-            // Same SQL as the shared definition; it returns its statement result for the same ADR-0034
-            // reason, so both engines answer a caller the same thing.
-            return await this.prepare("INSERT INTO sporades_log_events " +
-                "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(randomUUID(), event.timestamp, event.category, event.event, event.level, event.message, event.capsule?.name ?? null, event.capsule?.id ?? null, event.release?.id ?? event.release ?? null, event.request?.id ?? null, event.correlation?.id ?? event.correlation ?? null, JSON.stringify(event));
-        },
         async pruneLogIndex(limit) {
             // A dialect override — Postgres has no `LIMIT -1` — that still returns its statement result.
             return await this.prepare("DELETE FROM sporades_log_events WHERE id IN (" +
@@ -3660,15 +3653,6 @@ export async function createPostgresDatabaseAdapter(options) {
                         hint: "Check the SQL syntax and table names, then retry the query.",
                     },
                 };
-            }
-        },
-        async checkHealth() {
-            try {
-                await this.prepare("SELECT 1 AS ok").get();
-                return { ok: true };
-            }
-            catch {
-                return { ok: false };
             }
         },
         async withTransaction(fn) {
@@ -4238,11 +4222,6 @@ export async function createLibsqlDatabaseAdapter(options) {
         ...shape,
         ...createOperations(),
         engine: "libsql",
-        async writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }) {
-            await this.writeSystemMetadata("schemaVersion", schemaVersion);
-            await this.writeSystemMetadata("schemaHash", schemaHash);
-            await this.writeSystemMetadata("schema", schemaJson);
-        },
         async ensureLogStorage() {
             await this.exec("CREATE TABLE IF NOT EXISTS sporades_log_events (" +
                 "id TEXT PRIMARY KEY, " +
@@ -4366,13 +4345,6 @@ export async function createLibsqlDatabaseAdapter(options) {
                 ")");
             await ensureLibsqlOAuthStateColumns(this);
         },
-        async insertOAuthState(row) {
-            const provider = row.provider ?? "google";
-            const expiresAt = row.expiresAt ?? new Date(Date.parse(row.createdAt) + 10 * 60 * 1000).toISOString();
-            return await this.prepare("INSERT INTO sporades_auth_oauth_states " +
-                "(state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
-        },
         async consumeOAuthState(state) {
             return (await this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ? " +
                 "RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier").get(state)) ?? null;
@@ -4382,15 +4354,6 @@ export async function createLibsqlDatabaseAdapter(options) {
         },
         async migrateExistingAppTable(existingTable, nextTable) {
             return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
-        },
-        async checkHealth() {
-            try {
-                await this.prepare("SELECT 1 AS ok").get();
-                return { ok: true };
-            }
-            catch {
-                return { ok: false };
-            }
         },
         async withTransaction(fn) {
             const transaction = { baton: null, baseUrl: endpoint };
