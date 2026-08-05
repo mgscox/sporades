@@ -11,8 +11,6 @@ import {
   completePendingFileUpload,
   createPublicFileUrl,
   createLocalFileStorageAdapter,
-  createLibsqlDatabaseAdapter,
-  createPostgresDatabaseAdapter,
   createRuntimeFileStorageAdapter,
   createS3CompatibleFileStorageAdapter,
   createPendingFileUpload,
@@ -34,6 +32,12 @@ import {
   simulateLocalIdentitySession,
   updateCurrentUserPreferences,
 } from "../dist/server-runtime-source.js";
+import {
+  POSTGRES_SKIP_REASON,
+  withLibsqlAdapter,
+  withPostgresAdapter,
+  withSqliteAdapter,
+} from "./support/database-adapter-engines.js";
 import { withFakeS3CompatibleService } from "./support/fake-s3-compatible-service.js";
 import { withFakeLibsqlService } from "./support/libsql-http-service.js";
 
@@ -100,10 +104,9 @@ test("SQLite database adapter owns setup, query execution, and close lifecycle",
 });
 
 test("database inspection SQL rejects side-effect statements with a structured hint", async () => {
-  await withTempDir(async (dir) => {
-    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "inspection.db"));
-    const database = { adapter, sqlite: adapter };
-    try {
+  await withSqliteAdapter(
+    async (adapter) => {
+      const database = { adapter, sqlite: adapter };
       adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
       adapter.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("one", "hello");
 
@@ -153,10 +156,9 @@ test("database inspection SQL rejects side-effect statements with a structured h
 
       assert.equal(adapter.prepare("SELECT COUNT(*) AS count FROM entries").get().count, 1);
       assert.equal(adapter.prepare("PRAGMA user_version").get().user_version, 0);
-    } finally {
-      adapter.close();
-    }
-  });
+    },
+    { fileName: "inspection.db" },
+  );
 });
 
 test("LocalFileStorageAdapter owns local file bytes, health, and close lifecycle", async () => {
@@ -793,66 +795,58 @@ test("file deletion rolls back metadata deletion when public URL revocation fail
 });
 
 test("libSQL database adapter owns remote connection, result normalization, and transaction sessions", async () => {
-  await withTempDir(async (dir) => {
-    await withFakeLibsqlService(path.join(dir, "libsql.db"), async ({ url, requests }) => {
-      const adapter = await createLibsqlDatabaseAdapter({ url });
-      try {
-        await adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
-        await adapter.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("one", "hello");
+  await withLibsqlAdapter(
+    async (adapter, { requests }) => {
+      await adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
+      await adapter.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("one", "hello");
 
-        assert.deepEqual(await adapter.prepare("SELECT id, value FROM entries WHERE id = ?").get("one"), {
-          id: "one",
-          value: "hello",
-        });
-        assert.deepEqual(await adapter.prepare("SELECT id, value FROM entries ORDER BY id").all(), [
-          { id: "one", value: "hello" },
-        ]);
+      assert.deepEqual(await adapter.prepare("SELECT id, value FROM entries WHERE id = ?").get("one"), {
+        id: "one",
+        value: "hello",
+      });
+      assert.deepEqual(await adapter.prepare("SELECT id, value FROM entries ORDER BY id").all(), [
+        { id: "one", value: "hello" },
+      ]);
 
-        await assert.rejects(
-          adapter.withTransaction(async (transaction) => {
-            await transaction.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("two", "rolled back");
-            throw new Error("rollback please");
-          }),
-          /rollback please/,
-        );
-        assert.equal(await adapter.prepare("SELECT value FROM entries WHERE id = ?").get("two"), null);
+      await assert.rejects(
+        adapter.withTransaction(async (transaction) => {
+          await transaction.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("two", "rolled back");
+          throw new Error("rollback please");
+        }),
+        /rollback please/,
+      );
+      assert.equal(await adapter.prepare("SELECT value FROM entries WHERE id = ?").get("two"), null);
 
-        const transactionRequests = requests.filter((request) =>
-          request.requests?.some((candidate) => candidate.stmt?.sql === "BEGIN" || candidate.stmt?.sql === "ROLLBACK"),
-        );
-        assert.equal(transactionRequests.length, 2);
-        assert.equal(transactionRequests[0].baton ?? null, null);
-        assert.equal(typeof transactionRequests[1].baton, "string");
-        assert.notEqual(transactionRequests[1].baton, "");
-      } finally {
-        await adapter.close();
-      }
-    });
-  });
+      const transactionRequests = requests.filter((request) =>
+        request.requests?.some((candidate) => candidate.stmt?.sql === "BEGIN" || candidate.stmt?.sql === "ROLLBACK"),
+      );
+      assert.equal(transactionRequests.length, 2);
+      assert.equal(transactionRequests[0].baton ?? null, null);
+      assert.equal(typeof transactionRequests[1].baton, "string");
+      assert.notEqual(transactionRequests[1].baton, "");
+    },
+    { fileName: "libsql.db" },
+  );
 });
 
 test("libSQL database adapter does not share transaction baton with non-transaction operations", async () => {
-  await withTempDir(async (dir) => {
-    await withFakeLibsqlService(path.join(dir, "libsql-transaction-scope.db"), async ({ url, requests }) => {
-      const adapter = await createLibsqlDatabaseAdapter({ url });
-      try {
-        await adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
+  await withLibsqlAdapter(
+    async (adapter, { requests }) => {
+      await adapter.exec("CREATE TABLE entries (id TEXT PRIMARY KEY, value TEXT NOT NULL)");
 
-        await adapter.withTransaction(async (transaction) => {
-          await transaction.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("inside", "transaction");
-          await adapter.prepare("SELECT id FROM entries WHERE id = ?").get("inside");
-        });
+      await adapter.withTransaction(async (transaction) => {
+        await transaction.prepare("INSERT INTO entries (id, value) VALUES (?, ?)").run("inside", "transaction");
+        await adapter.prepare("SELECT id FROM entries WHERE id = ?").get("inside");
+      });
 
-        const outsideSelect = requests.find((request) =>
-          request.requests?.some((entry) => entry.stmt?.sql === "SELECT id FROM entries WHERE id = ?"),
-        );
-        assert(outsideSelect, JSON.stringify(requests));
-        assert.equal(outsideSelect.baton, undefined);
-      } finally {
-        await adapter.close();
-      }
-    });
-  });
+      const outsideSelect = requests.find((request) =>
+        request.requests?.some((entry) => entry.stmt?.sql === "SELECT id FROM entries WHERE id = ?"),
+      );
+      assert(outsideSelect, JSON.stringify(requests));
+      assert.equal(outsideSelect.baton, undefined);
+    },
+    { fileName: "libsql-transaction-scope.db" },
+  );
 });
 
 test("runtime selects libSQL only when declared services provide server-only connection env", async () => {
@@ -925,10 +919,25 @@ test("runtime selects libSQL only when declared services provide server-only con
 });
 
 test("libSQL app schema migrations await delayed table creation failures before writing metadata", async () => {
-  await withTempDir(async (dir) => {
-    await withFakeLibsqlService(
-      path.join(dir, "libsql-delayed-create.db"),
-      {
+  await withLibsqlAdapter(
+    async (adapter) => {
+      await adapter.ensureSystemTable();
+      await assert.rejects(
+        adapter.migrateAppSchema({
+          tables: [
+            {
+              name: "delayed_failure",
+              fields: [{ name: "text", kind: "String", sqliteType: "TEXT" }],
+            },
+          ],
+        }),
+        /delayed create failed/,
+      );
+      assert.equal(await adapter.readSchemaMetadata(), null);
+    },
+    {
+      fileName: "libsql-delayed-create.db",
+      service: {
         async beforeStatement(sql) {
           if (/CREATE TABLE IF NOT EXISTS "delayed_failure"/.test(sql)) {
             await new Promise((resolve) => setTimeout(resolve, 25));
@@ -936,34 +945,13 @@ test("libSQL app schema migrations await delayed table creation failures before 
           }
         },
       },
-      async ({ url }) => {
-        const adapter = await createLibsqlDatabaseAdapter({ url });
-        try {
-          await adapter.ensureSystemTable();
-          await assert.rejects(
-            adapter.migrateAppSchema({
-              tables: [
-                {
-                  name: "delayed_failure",
-                  fields: [{ name: "text", kind: "String", sqliteType: "TEXT" }],
-                },
-              ],
-            }),
-            /delayed create failed/,
-          );
-          assert.equal(await adapter.readSchemaMetadata(), null);
-        } finally {
-          await adapter.close();
-        }
-      },
-    );
-  });
+    },
+  );
 });
 
 test("SQLite app schema migrations roll back table changes when metadata write fails", async () => {
-  await withTempDir(async (dir) => {
-    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "schema-rollback.db"));
-    try {
+  await withSqliteAdapter(
+    async (adapter) => {
       const notesTable = {
         name: "notes",
         fields: [{ name: "text", kind: "String", sqliteType: "TEXT" }],
@@ -998,149 +986,144 @@ test("SQLite app schema migrations roll back table changes when metadata write f
       assert.deepEqual(adapter.selectAppRows(notesTable, { columns: ["id", "text"] }).map((row) => ({ ...row })), [
         { id: "note-1", text: "before" },
       ]);
-    } finally {
-      adapter.close();
-    }
-  });
+    },
+    { fileName: "schema-rollback.db" },
+  );
 });
 
 test("libSQL database adapter supports runtime storage, migrations, health, and inspection paths", async () => {
-  await withTempDir(async (dir) => {
-    await withFakeLibsqlService(path.join(dir, "runtime-paths.db"), async ({ url }) => {
-      const adapter = await createLibsqlDatabaseAdapter({ url });
+  await withLibsqlAdapter(
+    async (adapter) => {
       const database = { adapter, sqlite: adapter };
-      try {
-        const notesTable = {
-          name: "notes",
-          fields: [
-            { name: "text", kind: "String", sqliteType: "TEXT" },
-            { name: "ownerId", kind: "String", sqliteType: "TEXT" },
-            { name: "done", kind: "Boolean", sqliteType: "INTEGER", defaultValue: false },
-          ],
-        };
+      const notesTable = {
+        name: "notes",
+        fields: [
+          { name: "text", kind: "String", sqliteType: "TEXT" },
+          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+          { name: "done", kind: "Boolean", sqliteType: "INTEGER", defaultValue: false },
+        ],
+      };
 
-        await adapter.ensureSystemTable();
-        await adapter.writeSystemMetadata("adapter", "libsql");
-        await adapter.migrateAppSchema({ tables: [notesTable] });
-        assert.equal((await adapter.readSystemMetadata("adapter")).value, "libsql");
+      await adapter.ensureSystemTable();
+      await adapter.writeSystemMetadata("adapter", "libsql");
+      await adapter.migrateAppSchema({ tables: [notesTable] });
+      assert.equal((await adapter.readSystemMetadata("adapter")).value, "libsql");
 
-        const now = "2026-07-04T10:00:00.000Z";
-        await adapter.insertAppRow(notesTable, {
-          id: "note-1",
-          createdAt: now,
-          updatedAt: now,
-          text: "service backed",
-          ownerId: "user-1",
-          done: 0,
-        });
-        await adapter.updateAppRow(notesTable, "note-1", { done: 1, updatedAt: "2026-07-04T10:01:00.000Z" });
-        assert.deepEqual(await adapter.selectAppRows(notesTable, { columns: ["text", "done"] }), [
-          { text: "service backed", done: 1 },
-        ]);
+      const now = "2026-07-04T10:00:00.000Z";
+      await adapter.insertAppRow(notesTable, {
+        id: "note-1",
+        createdAt: now,
+        updatedAt: now,
+        text: "service backed",
+        ownerId: "user-1",
+        done: 0,
+      });
+      await adapter.updateAppRow(notesTable, "note-1", { done: 1, updatedAt: "2026-07-04T10:01:00.000Z" });
+      assert.deepEqual(await adapter.selectAppRows(notesTable, { columns: ["text", "done"] }), [
+        { text: "service backed", done: 1 },
+      ]);
 
-        const migratedNotesTable = {
-          ...notesTable,
-          fields: [...notesTable.fields, { name: "summary", kind: "String", sqliteType: "TEXT", defaultValue: "draft" }],
-        };
-        await adapter.migrateAppSchema({ tables: [migratedNotesTable] });
-        assert.deepEqual(await adapter.selectAppRows(migratedNotesTable, { columns: ["text", "summary"] }), [
-          { text: "service backed", summary: "draft" },
-        ]);
+      const migratedNotesTable = {
+        ...notesTable,
+        fields: [...notesTable.fields, { name: "summary", kind: "String", sqliteType: "TEXT", defaultValue: "draft" }],
+      };
+      await adapter.migrateAppSchema({ tables: [migratedNotesTable] });
+      assert.deepEqual(await adapter.selectAppRows(migratedNotesTable, { columns: ["text", "summary"] }), [
+        { text: "service backed", summary: "draft" },
+      ]);
 
-        await adapter.ensureAuthStorage({ providers: { email: { enabled: true } } });
-        await adapter.insertAuthUser({
-          id: "user-1",
-          createdAt: now,
-          displayName: "LibSQL User",
-          email: "libsql@example.com",
-          picture: null,
-          isAuthenticated: 1,
-          isGuest: 0,
-          provider: "email",
-        });
-        await adapter.insertAuthSession({
-          token: "session-1",
-          userId: "user-1",
-          provider: "email",
-          createdAt: now,
-          expiresAt: "2026-08-03T10:00:00.000Z",
-        });
-        assert.equal((await adapter.readAuthSessionWithUser("session-1")).email, "libsql@example.com");
-        await adapter.insertAuthIdentity({
-          id: "identity-1",
-          userId: "user-1",
-          provider: "google",
-          subject: "libsql-google-subject",
-          email: null,
-          displayName: "LibSQL User",
-          picture: null,
-          createdAt: now,
-          updatedAt: now,
-        });
-        assert.equal((await adapter.findAuthIdentityByProviderSubject("google", "libsql-google-subject")).userId, "user-1");
+      await adapter.ensureAuthStorage({ providers: { email: { enabled: true } } });
+      await adapter.insertAuthUser({
+        id: "user-1",
+        createdAt: now,
+        displayName: "LibSQL User",
+        email: "libsql@example.com",
+        picture: null,
+        isAuthenticated: 1,
+        isGuest: 0,
+        provider: "email",
+      });
+      await adapter.insertAuthSession({
+        token: "session-1",
+        userId: "user-1",
+        provider: "email",
+        createdAt: now,
+        expiresAt: "2026-08-03T10:00:00.000Z",
+      });
+      assert.equal((await adapter.readAuthSessionWithUser("session-1")).email, "libsql@example.com");
+      await adapter.insertAuthIdentity({
+        id: "identity-1",
+        userId: "user-1",
+        provider: "google",
+        subject: "libsql-google-subject",
+        email: null,
+        displayName: "LibSQL User",
+        picture: null,
+        createdAt: now,
+        updatedAt: now,
+      });
+      assert.equal((await adapter.findAuthIdentityByProviderSubject("google", "libsql-google-subject")).userId, "user-1");
 
-        await adapter.ensureFileStorage();
-        await adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });
-        await adapter.insertFileRow({
-          id: "file-1",
-          ownerId: "user-1",
-          bucketId: "bucket-1",
-          bucketName: "default",
-          path: "/default/proof.txt",
-          name: "proof.txt",
-          type: "text/plain",
-          size: 5,
-          version: "version-1",
-          status: "uploaded",
-          createdAt: now,
-          updatedAt: now,
-        });
-        assert.equal((await adapter.fileRowForOwner("file-1", "user-1")).name, "proof.txt");
+      await adapter.ensureFileStorage();
+      await adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });
+      await adapter.insertFileRow({
+        id: "file-1",
+        ownerId: "user-1",
+        bucketId: "bucket-1",
+        bucketName: "default",
+        path: "/default/proof.txt",
+        name: "proof.txt",
+        type: "text/plain",
+        size: 5,
+        version: "version-1",
+        status: "uploaded",
+        createdAt: now,
+        updatedAt: now,
+      });
+      assert.equal((await adapter.fileRowForOwner("file-1", "user-1")).name, "proof.txt");
 
-        await adapter.ensureLogStorage();
-        await adapter.insertLogIndexEvent({
-          timestamp: "2026-07-04T10:02:00.000Z",
-          category: "app",
-          event: "ctx.log",
-          level: "info",
-          message: "libsql log",
-          capsule: { name: "libsql-adapter" },
-        });
-        assert.deepEqual((await adapter.readRecentLogEvents(1)).map((event) => event.message), ["libsql log"]);
+      await adapter.ensureLogStorage();
+      await adapter.insertLogIndexEvent({
+        timestamp: "2026-07-04T10:02:00.000Z",
+        category: "app",
+        event: "ctx.log",
+        level: "info",
+        message: "libsql log",
+        capsule: { name: "libsql-adapter" },
+      });
+      assert.deepEqual((await adapter.readRecentLogEvents(1)).map((event) => event.message), ["libsql log"]);
 
-        await assert.rejects(
-          adapter.withTransaction(async (transaction) => {
-            await transaction.insertAppRow(migratedNotesTable, {
-              id: "note-rolled-back",
-              createdAt: now,
-              updatedAt: now,
-              text: "rolled back",
-              ownerId: "user-1",
-              done: 0,
-              summary: "draft",
-            });
-            throw new Error("rollback path");
-          }),
-          /rollback path/,
-        );
-        assert.equal(await adapter.selectAppRowById(migratedNotesTable, "note-rolled-back"), null);
+      await assert.rejects(
+        adapter.withTransaction(async (transaction) => {
+          await transaction.insertAppRow(migratedNotesTable, {
+            id: "note-rolled-back",
+            createdAt: now,
+            updatedAt: now,
+            text: "rolled back",
+            ownerId: "user-1",
+            done: 0,
+            summary: "draft",
+          });
+          throw new Error("rollback path");
+        }),
+        /rollback path/,
+      );
+      assert.equal(await adapter.selectAppRowById(migratedNotesTable, "note-rolled-back"), null);
 
-        assert.deepEqual(await checkRuntimeSqlite(database), { ok: true });
-        assert.deepEqual((await listDatabaseTables(database)).filter((name) => name === "notes"), ["notes"]);
-        assert.equal((await dumpDatabase(database)).find((table) => table.name === "notes").rows.length, 1);
-        assert.deepEqual(await runReadOnlyQuery(database, "SELECT text, summary FROM notes"), {
-          ok: true,
-          data: {
-            columns: ["text", "summary"],
-            rows: [{ text: "service backed", summary: "draft" }],
-          },
-          error: null,
-        });
-      } finally {
-        await adapter.close();
-      }
-    });
-  });
+      assert.deepEqual(await checkRuntimeSqlite(database), { ok: true });
+      assert.deepEqual((await listDatabaseTables(database)).filter((name) => name === "notes"), ["notes"]);
+      assert.equal((await dumpDatabase(database)).find((table) => table.name === "notes").rows.length, 1);
+      assert.deepEqual(await runReadOnlyQuery(database, "SELECT text, summary FROM notes"), {
+        ok: true,
+        data: {
+          columns: ["text", "summary"],
+          rows: [{ text: "service backed", summary: "draft" }],
+        },
+        error: null,
+      });
+    },
+    { fileName: "runtime-paths.db" },
+  );
 });
 
 test("libSQL database adapter supports the runtime email auth storage paths", async () => {
@@ -1221,101 +1204,50 @@ test("libSQL database adapter supports the runtime email auth storage paths", as
   });
 });
 
-test("libSQL database adapter resolves query results before deriving runtime decisions from them", async () => {
-  await withTempDir(async (dir) => {
-    await withFakeLibsqlService(path.join(dir, "result-derived-decisions.db"), async ({ url }) => {
-      const adapter = await createLibsqlDatabaseAdapter({ url });
-      const now = "2026-07-04T10:00:00.000Z";
-      try {
-        await adapter.ensureAuthStorage({ providers: { email: { enabled: true } } });
-        await adapter.ensureFileStorage();
-        await adapter.exec("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, createdAt TEXT, updatedAt TEXT)");
-        await adapter.prepare("INSERT INTO users (id, createdAt, updatedAt) VALUES (?, ?, ?)").run("user-1", now, now);
-
-        // Reference integrity must distinguish present from absent rows, not accept everything.
-        assert.equal(await adapter.referenceExists({ targetTable: "users" }, "user-1"), true);
-        assert.equal(await adapter.referenceExists({ targetTable: "users" }, "missing"), false);
-
-        // Completing an upload for a file with no existing row must insert that row.
-        await adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });
-        await adapter.insertFileUpload({
-          id: "upload-1",
-          fileId: "file-1",
-          ownerId: "user-1",
-          bucketId: "bucket-1",
-          bucketName: "default",
-          path: "/default/proof.txt",
-          name: "proof.txt",
-          type: "text/plain",
-          version: "version-1",
-          expectedSize: 5,
-          createdAt: now,
-        });
-        await adapter.completeFileUpload(await adapter.selectFileUpload("upload-1"), 5, now);
-        const stored = await adapter.selectFileById("file-1");
-        assert.equal(stored?.name, "proof.txt");
-        assert.equal(stored?.status, "uploaded");
-
-        // The reserved privileged user must never be readable as an ordinary Sporades user.
-        await adapter
-          .prepare(
-            "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) " +
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-          )
-          .run("__privileged__", now, "Privileged", "privileged@example.com", null, 1, 0, "email");
-        await adapter
-          .prepare("INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)")
-          .run("privileged-token", "__privileged__", "email", now, "2099-01-01T00:00:00.000Z");
-        await adapter
-          .prepare(
-            "INSERT INTO sporades_auth_email_credentials (email, userId, passwordHash, passwordSalt, createdAt) VALUES (?, ?, ?, ?, ?)",
-          )
-          .run("privileged@example.com", "__privileged__", "hash", "salt", now);
-
-        assert.equal(await adapter.readAuthSessionWithUser("privileged-token"), null);
-        assert.equal(await adapter.findEmailCredentialWithUser("privileged@example.com"), null);
-
-        // The cap on outstanding Reset codes per email must count the stored rows.
-        for (const suffix of [1, 2, 3]) {
-          await adapter.insertPasswordResetCode({
-            selector: `selector-${suffix}`,
-            verifierHash: `verifier-hash-${suffix}`,
-            email: "reset@example.com",
-            userId: "user-1",
-            createdAt: now,
-            expiresAt: "2099-01-01T00:00:00.000Z",
-          });
-        }
-        await adapter.insertPasswordResetCode({
-          selector: "selector-expired",
-          verifierHash: "verifier-hash-expired",
-          email: "reset@example.com",
-          userId: "user-1",
-          createdAt: "2020-01-01T00:00:00.000Z",
-          expiresAt: "2020-01-01T01:00:00.000Z",
-        });
-        assert.equal(await adapter.countPasswordResetCodesForEmail("reset@example.com", now), 3);
-        assert.equal(await adapter.countPasswordResetCodesForEmail("nobody@example.com", now), 0);
-
-        await adapter.deletePasswordResetCodesForUser("user-1");
-        assert.equal(await adapter.countPasswordResetCodesForEmail("reset@example.com", now), 0);
-      } finally {
-        await adapter.close();
-      }
-    });
-  });
-});
-
 test("libSQL OAuth state consumption has exactly one winner under concurrent callbacks", async () => {
-  await withTempDir(async (dir) => {
-    let selectCount = 0;
-    let releaseSelects;
-    const bothSelected = new Promise((resolve) => {
-      releaseSelects = resolve;
-    });
-    await withFakeLibsqlService(
-      path.join(dir, "oauth-state-race.db"),
-      {
+  let selectCount = 0;
+  let releaseSelects;
+  const bothSelected = new Promise((resolve) => {
+    releaseSelects = resolve;
+  });
+  await withLibsqlAdapter(
+    async (adapter) => {
+      await adapter.ensureAuthStorage();
+      const createdAt = new Date().toISOString();
+      await adapter.insertOAuthState({
+        state: "one-use-state",
+        provider: "google",
+        sessionToken: "session",
+        returnTo: "http://127.0.0.1/",
+        redirectUri: "http://127.0.0.1/__sporades/auth/google/callback",
+        createdAt,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        nonce: "nonce",
+        pkceVerifier: "verifier",
+      });
+      const consumed = await Promise.all([
+        adapter.consumeOAuthState("one-use-state"),
+        adapter.consumeOAuthState("one-use-state"),
+      ]);
+      assert.equal(consumed.filter(Boolean).length, 1);
+      assert.deepEqual(
+        {
+          provider: consumed.find(Boolean).provider,
+          sessionToken: consumed.find(Boolean).sessionToken,
+          returnTo: consumed.find(Boolean).returnTo,
+          pkceVerifier: consumed.find(Boolean).pkceVerifier,
+        },
+        {
+          provider: "google",
+          sessionToken: "session",
+          returnTo: "http://127.0.0.1/",
+          pkceVerifier: "verifier",
+        },
+      );
+    },
+    {
+      fileName: "oauth-state-race.db",
+      service: {
         async beforeStatement(sql) {
           if (/SELECT state, provider, sessionToken.+sporades_auth_oauth_states/s.test(sql)) {
             selectCount += 1;
@@ -1326,62 +1258,16 @@ test("libSQL OAuth state consumption has exactly one winner under concurrent cal
           }
         },
       },
-      async ({ url }) => {
-        const adapter = await createLibsqlDatabaseAdapter({ url });
-        try {
-          await adapter.ensureAuthStorage();
-          const createdAt = new Date().toISOString();
-          await adapter.insertOAuthState({
-            state: "one-use-state",
-            provider: "google",
-            sessionToken: "session",
-            returnTo: "http://127.0.0.1/",
-            redirectUri: "http://127.0.0.1/__sporades/auth/google/callback",
-            createdAt,
-            expiresAt: new Date(Date.now() + 60_000).toISOString(),
-            nonce: "nonce",
-            pkceVerifier: "verifier",
-          });
-          const consumed = await Promise.all([
-            adapter.consumeOAuthState("one-use-state"),
-            adapter.consumeOAuthState("one-use-state"),
-          ]);
-          assert.equal(consumed.filter(Boolean).length, 1);
-          assert.deepEqual(
-            {
-              provider: consumed.find(Boolean).provider,
-              sessionToken: consumed.find(Boolean).sessionToken,
-              returnTo: consumed.find(Boolean).returnTo,
-              pkceVerifier: consumed.find(Boolean).pkceVerifier,
-            },
-            {
-              provider: "google",
-              sessionToken: "session",
-              returnTo: "http://127.0.0.1/",
-              pkceVerifier: "verifier",
-            },
-          );
-        } finally {
-          await adapter.close();
-        }
-      },
-    );
-  });
+    },
+  );
 });
 
 test(
   "Postgres database adapter supports runtime storage, migrations, health, and inspection paths",
-  { skip: !process.env.SPORADES_POSTGRES_TEST_URL && "Set SPORADES_POSTGRES_TEST_URL to run the Postgres adapter integration test." },
+  { skip: POSTGRES_SKIP_REASON },
   async () => {
-    const adapter = await createPostgresDatabaseAdapter({ url: process.env.SPORADES_POSTGRES_TEST_URL });
-    const database = { adapter, sqlite: adapter };
-    try {
-      await adapter.exec(
-        "DROP TABLE IF EXISTS notes, sporades, sporades_auth_users, sporades_auth_sessions, sporades_auth_identities, sporades_auth_email_credentials, " +
-          "sporades_auth_oauth_states, sporades_file_buckets, sporades_files, sporades_file_uploads, sporades_file_public_urls, " +
-          "sporades_log_events",
-      );
-
+    await withPostgresAdapter(async (adapter) => {
+      const database = { adapter, sqlite: adapter };
       const notesTable = {
         name: "notes",
         fields: [
@@ -1551,21 +1437,14 @@ test(
         },
         error: null,
       });
-    } finally {
-      await adapter.close();
-    }
+    }, { appTableNames: ["notes"] });
   },
 );
 
 test("SQLite database adapter propagates execution failures", async () => {
-  await withTempDir(async (dir) => {
-    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
-    try {
-      assert.throws(() => adapter.exec("CREATE TABLE broken ("), /incomplete input|syntax error/i);
-      assert.throws(() => adapter.prepare("SELECT * FROM missing_table").all(), /no such table/i);
-    } finally {
-      adapter.close();
-    }
+  await withSqliteAdapter((adapter) => {
+    assert.throws(() => adapter.exec("CREATE TABLE broken ("), /incomplete input|syntax error/i);
+    assert.throws(() => adapter.prepare("SELECT * FROM missing_table").all(), /no such table/i);
   });
 });
 
@@ -1587,305 +1466,295 @@ test("runtime opens and closes SQLite through the internal adapter boundary", as
 });
 
 test("SQLite database adapter owns app schema metadata, migrations, references, queries, and mutations", async () => {
-  await withTempDir(async (dir) => {
-    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
-    try {
-      const usersTable = {
-        name: "users",
-        fields: [
-          { name: "name", kind: "String", sqliteType: "TEXT" },
-          { name: "ownerId", kind: "String", sqliteType: "TEXT" },
-        ],
-      };
-      const postsTable = {
-        name: "posts",
-        fields: [
-          { name: "text", kind: "String", sqliteType: "TEXT" },
-          { name: "authorId", kind: "Reference", sqliteType: "TEXT", targetTable: "users" },
-          { name: "published", kind: "Boolean", sqliteType: "INTEGER", defaultValue: false },
-        ],
-      };
+  await withSqliteAdapter(async (adapter) => {
+    const usersTable = {
+      name: "users",
+      fields: [
+        { name: "name", kind: "String", sqliteType: "TEXT" },
+        { name: "ownerId", kind: "String", sqliteType: "TEXT" },
+      ],
+    };
+    const postsTable = {
+      name: "posts",
+      fields: [
+        { name: "text", kind: "String", sqliteType: "TEXT" },
+        { name: "authorId", kind: "Reference", sqliteType: "TEXT", targetTable: "users" },
+        { name: "published", kind: "Boolean", sqliteType: "INTEGER", defaultValue: false },
+      ],
+    };
 
-      adapter.ensureSystemTable();
-      adapter.migrateAppSchema({ tables: [usersTable, postsTable] });
+    adapter.ensureSystemTable();
+    adapter.migrateAppSchema({ tables: [usersTable, postsTable] });
 
-      const schemaMetadata = adapter.readSchemaMetadata();
-      assert.match(schemaMetadata.value, /"posts"/);
-      assert.deepEqual(
-        adapter.prepare("PRAGMA table_info(posts)").all().map((column) => column.name),
-        ["id", "createdAt", "updatedAt", "text", "authorId", "published"],
-      );
+    const schemaMetadata = adapter.readSchemaMetadata();
+    assert.match(schemaMetadata.value, /"posts"/);
+    assert.deepEqual(
+      adapter.prepare("PRAGMA table_info(posts)").all().map((column) => column.name),
+      ["id", "createdAt", "updatedAt", "text", "authorId", "published"],
+    );
 
-      const now = "2026-07-04T10:00:00.000Z";
-      adapter.insertAppRow(usersTable, {
-        id: "user-1",
-        createdAt: now,
-        updatedAt: now,
-        name: "Ada",
-        ownerId: "owner-1",
-      });
-      assert.equal(adapter.referenceExists({ targetTable: "users" }, "user-1"), true);
-      assert.equal(adapter.referenceExists({ targetTable: "users" }, "missing"), false);
+    const now = "2026-07-04T10:00:00.000Z";
+    adapter.insertAppRow(usersTable, {
+      id: "user-1",
+      createdAt: now,
+      updatedAt: now,
+      name: "Ada",
+      ownerId: "owner-1",
+    });
+    assert.equal(adapter.referenceExists({ targetTable: "users" }, "user-1"), true);
+    assert.equal(adapter.referenceExists({ targetTable: "users" }, "missing"), false);
 
-      adapter.insertAppRow(postsTable, {
-        id: "post-1",
-        createdAt: now,
-        updatedAt: now,
-        text: "First",
-        authorId: "user-1",
-        published: 0,
-      });
-      adapter.updateAppRow(postsTable, "post-1", {
-        text: "Updated",
-        published: 1,
-        updatedAt: "2026-07-04T11:00:00.000Z",
-      });
+    adapter.insertAppRow(postsTable, {
+      id: "post-1",
+      createdAt: now,
+      updatedAt: now,
+      text: "First",
+      authorId: "user-1",
+      published: 0,
+    });
+    adapter.updateAppRow(postsTable, "post-1", {
+      text: "Updated",
+      published: 1,
+      updatedAt: "2026-07-04T11:00:00.000Z",
+    });
 
-      assert.deepEqual(
-        adapter
-          .selectAppRows(postsTable, {
-            columns: ["id", "text", "published"],
-            where: { fieldName: "authorId", value: "user-1" },
-            orderBy: { fieldName: "createdAt", direction: "desc" },
-            limit: 1,
-          })
-          .map((row) => ({ ...row })),
-        [{ id: "post-1", text: "Updated", published: 1 }],
-      );
-      assert.equal(adapter.selectAppRowById(postsTable, "post-1").text, "Updated");
-      assert.equal(adapter.deleteAppRow(postsTable, "missing").changes, 0);
+    assert.deepEqual(
+      adapter
+        .selectAppRows(postsTable, {
+          columns: ["id", "text", "published"],
+          where: { fieldName: "authorId", value: "user-1" },
+          orderBy: { fieldName: "createdAt", direction: "desc" },
+          limit: 1,
+        })
+        .map((row) => ({ ...row })),
+      [{ id: "post-1", text: "Updated", published: 1 }],
+    );
+    assert.equal(adapter.selectAppRowById(postsTable, "post-1").text, "Updated");
+    assert.equal(adapter.deleteAppRow(postsTable, "missing").changes, 0);
 
-      const migratedPostsTable = {
-        ...postsTable,
-        fields: [
-          ...postsTable.fields,
-          { name: "editorId", kind: "Reference", sqliteType: "TEXT", targetTable: "users", defaultValue: "user-1" },
-          { name: "summary", kind: "String", sqliteType: "TEXT", defaultValue: "draft" },
-        ],
-      };
-      adapter.migrateAppSchema({ tables: [usersTable, migratedPostsTable] });
+    const migratedPostsTable = {
+      ...postsTable,
+      fields: [
+        ...postsTable.fields,
+        { name: "editorId", kind: "Reference", sqliteType: "TEXT", targetTable: "users", defaultValue: "user-1" },
+        { name: "summary", kind: "String", sqliteType: "TEXT", defaultValue: "draft" },
+      ],
+    };
+    adapter.migrateAppSchema({ tables: [usersTable, migratedPostsTable] });
 
-      assert.deepEqual(
-        adapter.prepare("PRAGMA table_info(posts)").all().map((column) => column.name),
-        ["id", "createdAt", "updatedAt", "text", "authorId", "published", "editorId", "summary"],
-      );
-      assert.deepEqual(
-        adapter
-          .selectAppRows(migratedPostsTable, { columns: ["text", "editorId", "summary"] })
-          .map((row) => ({ ...row })),
-        [{ text: "Updated", editorId: "user-1", summary: "draft" }],
-      );
-      assert.equal(adapter.deleteAppRow(migratedPostsTable, "post-1").changes, 1);
-      assert.deepEqual(adapter.selectAppRows(migratedPostsTable), []);
+    assert.deepEqual(
+      adapter.prepare("PRAGMA table_info(posts)").all().map((column) => column.name),
+      ["id", "createdAt", "updatedAt", "text", "authorId", "published", "editorId", "summary"],
+    );
+    assert.deepEqual(
+      adapter
+        .selectAppRows(migratedPostsTable, { columns: ["text", "editorId", "summary"] })
+        .map((row) => ({ ...row })),
+      [{ text: "Updated", editorId: "user-1", summary: "draft" }],
+    );
+    assert.equal(adapter.deleteAppRow(migratedPostsTable, "post-1").changes, 1);
+    assert.deepEqual(adapter.selectAppRows(migratedPostsTable), []);
 
-      assert.throws(
-        () =>
-          adapter.migrateAppSchema({
-            tables: [
-              usersTable,
-              {
-                ...migratedPostsTable,
-                fields: migratedPostsTable.fields.filter((field) => field.name !== "summary"),
-              },
-            ],
-          }),
-        {
-          message: "Unsupported Capsule schema change.",
-          hint: "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
-        },
-      );
-      assert.throws(
-        () =>
-          adapter.migrateAppSchema({
-            tables: [
-              usersTable,
-              {
-                ...migratedPostsTable,
-                fields: [
-                  ...migratedPostsTable.fields,
-                  {
-                    name: "reviewerId",
-                    kind: "Reference",
-                    sqliteType: "TEXT",
-                    targetTable: "users",
-                    defaultValue: "missing",
-                  },
-                ],
-              },
-            ],
-          }),
-        {
-          message: "Invalid reference for field: reviewerId",
-          hint: "Pass the id of an existing users row.",
-        },
-      );
-    } finally {
-      adapter.close();
-    }
+    assert.throws(
+      () =>
+        adapter.migrateAppSchema({
+          tables: [
+            usersTable,
+            {
+              ...migratedPostsTable,
+              fields: migratedPostsTable.fields.filter((field) => field.name !== "summary"),
+            },
+          ],
+        }),
+      {
+        message: "Unsupported Capsule schema change.",
+        hint: "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
+      },
+    );
+    assert.throws(
+      () =>
+        adapter.migrateAppSchema({
+          tables: [
+            usersTable,
+            {
+              ...migratedPostsTable,
+              fields: [
+                ...migratedPostsTable.fields,
+                {
+                  name: "reviewerId",
+                  kind: "Reference",
+                  sqliteType: "TEXT",
+                  targetTable: "users",
+                  defaultValue: "missing",
+                },
+              ],
+            },
+          ],
+        }),
+      {
+        message: "Invalid reference for field: reviewerId",
+        hint: "Pass the id of an existing users row.",
+      },
+    );
   });
 });
 
 test("SQLite database adapter owns runtime storage for auth, files, logs, and system metadata", async () => {
-  await withTempDir(async (dir) => {
-    const adapter = await createSqliteDatabaseAdapter(path.join(dir, "data.db"));
-    try {
-      adapter.ensureSystemTable();
-      adapter.writeSystemMetadata("runtimeKey", "runtime-value");
-      assert.deepEqual({ ...adapter.readSystemMetadata("runtimeKey") }, { value: "runtime-value" });
+  await withSqliteAdapter(async (adapter) => {
+    adapter.ensureSystemTable();
+    adapter.writeSystemMetadata("runtimeKey", "runtime-value");
+    assert.deepEqual({ ...adapter.readSystemMetadata("runtimeKey") }, { value: "runtime-value" });
 
-      adapter.ensureAuthStorage({ providers: { email: { enabled: true } } });
-      const now = "2026-07-04T10:00:00.000Z";
-      adapter.insertAuthUser({
-        id: "user-1",
-        createdAt: now,
-        displayName: "Anonymous",
-        email: null,
-        picture: null,
-        isAuthenticated: 0,
-        isGuest: 1,
-        provider: "anonymous",
-      });
-      adapter.insertAuthSession({
-        token: "session-1",
-        userId: "user-1",
-        provider: "anonymous",
-        createdAt: now,
-        expiresAt: "2026-08-03T10:00:00.000Z",
-      });
-      assert.equal(adapter.readAuthSessionWithUser("session-1").provider, "anonymous");
+    adapter.ensureAuthStorage({ providers: { email: { enabled: true } } });
+    const now = "2026-07-04T10:00:00.000Z";
+    adapter.insertAuthUser({
+      id: "user-1",
+      createdAt: now,
+      displayName: "Anonymous",
+      email: null,
+      picture: null,
+      isAuthenticated: 0,
+      isGuest: 1,
+      provider: "anonymous",
+    });
+    adapter.insertAuthSession({
+      token: "session-1",
+      userId: "user-1",
+      provider: "anonymous",
+      createdAt: now,
+      expiresAt: "2026-08-03T10:00:00.000Z",
+    });
+    assert.equal(adapter.readAuthSessionWithUser("session-1").provider, "anonymous");
 
-      adapter.insertEmailCredential({
-        email: "mira@example.com",
-        userId: "user-1",
-        passwordHash: "hash",
-        passwordSalt: "salt",
-        createdAt: now,
-      });
-      assert.equal(adapter.emailCredentialExists("mira@example.com"), true);
-      adapter.linkAuthUser({
-        id: "user-1",
-        displayName: "Mira",
-        email: "mira@example.com",
-        picture: null,
-        isAuthenticated: 1,
-        isGuest: 0,
-        provider: "email",
-      });
-      assert.equal(adapter.findEmailCredentialWithUser("mira@example.com").displayName, "Mira");
-      adapter.insertAuthIdentity({
-        id: "identity-1",
-        userId: "user-1",
-        provider: "google",
-        subject: "sqlite-google-subject",
-        email: null,
-        displayName: "Mira",
-        picture: null,
-        createdAt: now,
-        updatedAt: now,
-      });
-      assert.equal(adapter.findAuthIdentityByProviderSubject("google", "sqlite-google-subject").userId, "user-1");
-      adapter.rotateAuthSession("session-1", {
-        token: "session-2",
-        userId: "user-1",
-        provider: "email",
-        createdAt: "2026-07-04T11:00:00.000Z",
-        expiresAt: "2026-08-03T11:00:00.000Z",
-      });
-      assert.equal(adapter.readAuthSessionWithUser("session-1"), null);
-      assert.equal(adapter.readAuthSessionWithUser("session-2").token, "session-2");
-      adapter.insertOAuthState({
-        state: "oauth-state",
-        sessionToken: "session-2",
-        returnTo: "http://127.0.0.1:4000/after",
-        redirectUri: "http://127.0.0.1:4000/__sporades/auth/google/callback",
-        createdAt: now,
-      });
-      assert.equal(adapter.consumeOAuthState("oauth-state").sessionToken, "session-2");
-      assert.equal(adapter.consumeOAuthState("oauth-state"), null);
+    adapter.insertEmailCredential({
+      email: "mira@example.com",
+      userId: "user-1",
+      passwordHash: "hash",
+      passwordSalt: "salt",
+      createdAt: now,
+    });
+    assert.equal(adapter.emailCredentialExists("mira@example.com"), true);
+    adapter.linkAuthUser({
+      id: "user-1",
+      displayName: "Mira",
+      email: "mira@example.com",
+      picture: null,
+      isAuthenticated: 1,
+      isGuest: 0,
+      provider: "email",
+    });
+    assert.equal(adapter.findEmailCredentialWithUser("mira@example.com").displayName, "Mira");
+    adapter.insertAuthIdentity({
+      id: "identity-1",
+      userId: "user-1",
+      provider: "google",
+      subject: "sqlite-google-subject",
+      email: null,
+      displayName: "Mira",
+      picture: null,
+      createdAt: now,
+      updatedAt: now,
+    });
+    assert.equal(adapter.findAuthIdentityByProviderSubject("google", "sqlite-google-subject").userId, "user-1");
+    adapter.rotateAuthSession("session-1", {
+      token: "session-2",
+      userId: "user-1",
+      provider: "email",
+      createdAt: "2026-07-04T11:00:00.000Z",
+      expiresAt: "2026-08-03T11:00:00.000Z",
+    });
+    assert.equal(adapter.readAuthSessionWithUser("session-1"), null);
+    assert.equal(adapter.readAuthSessionWithUser("session-2").token, "session-2");
+    adapter.insertOAuthState({
+      state: "oauth-state",
+      sessionToken: "session-2",
+      returnTo: "http://127.0.0.1:4000/after",
+      redirectUri: "http://127.0.0.1:4000/__sporades/auth/google/callback",
+      createdAt: now,
+    });
+    assert.equal(adapter.consumeOAuthState("oauth-state").sessionToken, "session-2");
+    assert.equal(adapter.consumeOAuthState("oauth-state"), null);
 
-      adapter.ensureFileStorage();
-      adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });
-      assert.equal(adapter.findFileBucket("user-1", "default").id, "bucket-1");
-      adapter.insertFileRow({
-        id: "file-1",
-        ownerId: "user-1",
-        bucketId: "bucket-1",
-        bucketName: "default",
-        path: "/default/hello.txt",
-        name: "hello.txt",
-        type: "text/plain",
-        size: 5,
-        version: "version-1",
-        status: "pending",
-        createdAt: now,
-        updatedAt: now,
-      });
-      adapter.insertFileUpload({
-        id: "upload-1",
-        fileId: "file-1",
-        ownerId: "user-1",
-        bucketId: "bucket-1",
-        bucketName: "default",
-        path: "/default/hello.txt",
-        name: "hello.txt",
-        type: "text/plain",
-        version: "version-1",
-        expectedSize: 5,
-        createdAt: now,
-      });
-      assert.equal(adapter.selectFileUpload("upload-1").fileId, "file-1");
-      adapter.completeFileUpload(adapter.selectFileUpload("upload-1"), 5, "2026-07-04T10:01:00.000Z");
-      adapter.deleteFileUpload("upload-1");
-      assert.equal(adapter.selectFileUpload("upload-1"), null);
-      assert.equal(adapter.fileRowForOwner("file-1", "user-1").status, "uploaded");
-      adapter.insertPublicFileUrl({
-        id: "public-1",
-        fileId: "file-1",
-        ownerId: "user-1",
-        version: "version-1",
-        expiresAt: null,
-        createdAt: now,
-      });
-      assert.equal(adapter.selectPublicFileRow("public-1").publicVersion, "version-1");
-      adapter.updatePendingFileRow({
-        id: "file-1",
-        bucketId: "bucket-1",
-        bucketName: "default",
-        path: "/default/goodbye.txt",
-        name: "goodbye.txt",
-        type: "text/plain",
-        size: 7,
-        version: "version-2",
-        status: "pending",
-        updatedAt: "2026-07-04T10:02:00.000Z",
-      });
-      adapter.revokePublicFileUrlsForFile("file-1", "2026-07-04T10:02:00.000Z");
-      assert.equal(adapter.selectPublicFileRow("public-1").revokedAt, "2026-07-04T10:02:00.000Z");
-      adapter.markFileDeleted("file-1", "2026-07-04T10:03:00.000Z");
-      assert.equal(adapter.fileRowForOwner("file-1", "user-1"), null);
+    adapter.ensureFileStorage();
+    adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });
+    assert.equal(adapter.findFileBucket("user-1", "default").id, "bucket-1");
+    adapter.insertFileRow({
+      id: "file-1",
+      ownerId: "user-1",
+      bucketId: "bucket-1",
+      bucketName: "default",
+      path: "/default/hello.txt",
+      name: "hello.txt",
+      type: "text/plain",
+      size: 5,
+      version: "version-1",
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    });
+    adapter.insertFileUpload({
+      id: "upload-1",
+      fileId: "file-1",
+      ownerId: "user-1",
+      bucketId: "bucket-1",
+      bucketName: "default",
+      path: "/default/hello.txt",
+      name: "hello.txt",
+      type: "text/plain",
+      version: "version-1",
+      expectedSize: 5,
+      createdAt: now,
+    });
+    assert.equal(adapter.selectFileUpload("upload-1").fileId, "file-1");
+    adapter.completeFileUpload(adapter.selectFileUpload("upload-1"), 5, "2026-07-04T10:01:00.000Z");
+    adapter.deleteFileUpload("upload-1");
+    assert.equal(adapter.selectFileUpload("upload-1"), null);
+    assert.equal(adapter.fileRowForOwner("file-1", "user-1").status, "uploaded");
+    adapter.insertPublicFileUrl({
+      id: "public-1",
+      fileId: "file-1",
+      ownerId: "user-1",
+      version: "version-1",
+      expiresAt: null,
+      createdAt: now,
+    });
+    assert.equal(adapter.selectPublicFileRow("public-1").publicVersion, "version-1");
+    adapter.updatePendingFileRow({
+      id: "file-1",
+      bucketId: "bucket-1",
+      bucketName: "default",
+      path: "/default/goodbye.txt",
+      name: "goodbye.txt",
+      type: "text/plain",
+      size: 7,
+      version: "version-2",
+      status: "pending",
+      updatedAt: "2026-07-04T10:02:00.000Z",
+    });
+    adapter.revokePublicFileUrlsForFile("file-1", "2026-07-04T10:02:00.000Z");
+    assert.equal(adapter.selectPublicFileRow("public-1").revokedAt, "2026-07-04T10:02:00.000Z");
+    adapter.markFileDeleted("file-1", "2026-07-04T10:03:00.000Z");
+    assert.equal(adapter.fileRowForOwner("file-1", "user-1"), null);
 
-      adapter.ensureLogStorage();
-      for (const index of [1, 2, 3]) {
-        adapter.insertLogIndexEvent({
-          timestamp: `2026-07-04T10:00:0${index}.000Z`,
-          category: "app",
-          event: "ctx.log",
-          level: "info",
-          message: `log-${index}`,
-          capsule: { name: "adapter-island" },
-          release: null,
-          request: null,
-          correlation: null,
-        });
-      }
-      adapter.pruneLogIndex(2);
-      assert.deepEqual(
-        adapter.readRecentLogEvents(10).map((entry) => entry.message),
-        ["log-2", "log-3"],
-      );
-    } finally {
-      adapter.close();
+    adapter.ensureLogStorage();
+    for (const index of [1, 2, 3]) {
+      adapter.insertLogIndexEvent({
+        timestamp: `2026-07-04T10:00:0${index}.000Z`,
+        category: "app",
+        event: "ctx.log",
+        level: "info",
+        message: `log-${index}`,
+        capsule: { name: "adapter-island" },
+        release: null,
+        request: null,
+        correlation: null,
+      });
     }
+    adapter.pruneLogIndex(2);
+    assert.deepEqual(
+      adapter.readRecentLogEvents(10).map((entry) => entry.message),
+      ["log-2", "log-3"],
+    );
   });
 });
 
