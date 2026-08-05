@@ -55,8 +55,8 @@ those it did; running the same specification against it can. That matters most
 for the await-shim overrides, which emit the same SQL as a shared body that
 derives from an unresolved result: the shim and the body it shadows are exactly
 the pair whose answers must be shown to agree, and the shared specification is
-what shows it — including after the shim is removed in favour of a
-promise-aware shared definition.
+what shows it — including after the shim is removed in favor of a corrected
+shared definition.
 
 Adding a method to the Database adapter without adding it to the conformance
 specification leaves the work incomplete. A new engine adapter is likewise built
