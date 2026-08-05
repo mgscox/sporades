@@ -49,4 +49,4 @@ the defect above suggests they may never have been exercised there.
 
 ## Blocked by
 
-- None — can start immediately. Independent of issues 05 and 06.
+- None — can start immediately.
