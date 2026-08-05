@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Extend Conformance Coverage To App Tables And Runtime Metadata
 
@@ -56,16 +56,16 @@ overriding the method on one engine's adapter.
 
 ## Acceptance criteria
 
-- [ ] App row insertion, lookup by identifier, update, owner-scoped update, and deletion are covered.
-- [ ] The row selection shapes the runtime relies on are covered, including column projection and filtering by field.
-- [ ] Reference integrity is asserted for both a reference that resolves and one that does not.
-- [ ] System metadata and schema metadata round trip correctly on every engine.
-- [ ] Log index write, recent read, and prune are covered.
-- [ ] Listing inspectable tables, dumping the inspectable database, and running a read-only inspection query are covered on every engine.
-- [ ] A write performed through a write-only adapter method is observable once that method's result has been awaited, on every engine — covering the shape where the shared definition discards its statement result.
-- [ ] Additive schema migration is covered for adding a table and adding a field with a default value; dialect-level DDL emission remains in per-engine tests.
-- [ ] Any divergence found is fixed at the shared method definition, not by adding a per-engine override.
-- [ ] Each case that exposed a divergence remains in the specification as a regression case.
+- [x] App row insertion, lookup by identifier, update, owner-scoped update, and deletion are covered.
+- [x] The row selection shapes the runtime relies on are covered, including column projection and filtering by field.
+- [x] Reference integrity is asserted for both a reference that resolves and one that does not.
+- [x] System metadata and schema metadata round trip correctly on every engine.
+- [x] Log index write, recent read, and prune are covered.
+- [x] Listing inspectable tables, dumping the inspectable database, and running a read-only inspection query are covered on every engine.
+- [x] A write performed through a write-only adapter method is observable once that method's result has been awaited, on every engine — covering the shape where the shared definition discards its statement result.
+- [x] Additive schema migration is covered for adding a table and adding a field with a default value; dialect-level DDL emission remains in per-engine tests.
+- [x] Any divergence found is fixed at the shared method definition, not by adding a per-engine override.
+- [x] Each case that exposed a divergence remains in the specification as a regression case.
 
 ## Blocked by
 
