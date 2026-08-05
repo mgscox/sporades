@@ -30,9 +30,9 @@ tests. Among the overrides that carry behavior there are three kinds, and only
 the first is legitimate.
 
 A **dialect or DDL override** emits different SQL because the engines genuinely
-differ. `ensureAuthStorage` is the clean example: Postgres needs its own
-`CREATE TABLE` column types and uses `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`
-where the SQLite definition cannot. This is the same line ADR-0035 draws when it
+differ. `ensureAuthStorage` is the clean example: Postgres uses
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` where the shared definition must
+probe `PRAGMA table_info` first. This is the same line ADR-0035 draws when it
 leaves SQL dialect emission in per-engine tests: an override may change the
 statement text a method emits; it may not change the answer the method gives.
 

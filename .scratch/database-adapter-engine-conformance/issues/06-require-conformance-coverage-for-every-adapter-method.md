@@ -23,6 +23,16 @@ session mechanics — are exempt through an explicit list that records a short
 reason per entry, so an exemption is a visible decision in a diff rather than a
 silent omission.
 
+One exemption must not be available, and this is the point of the ticket rather
+than a detail. **A method being overridden by an engine is not grounds for
+exempting it.** ADR-0034 names the await-shim: an override that emits the same
+SQL as the shared definition purely to resolve before deriving. Where one
+exists, the shared definition is still wrong and is merely dormant behind the
+shim, so it needs a conformance case more than an unshadowed method does, not
+less. Several such pairs exist today. An exemption rule that keyed off "the
+engines override this anyway" would excuse exactly the methods the suite was
+built to catch.
+
 This ticket comes last because the check is only useful once coverage is broad
 enough for it to pass. Landing it earlier would mean either a failing build or an
 exemption list long enough to be meaningless.
@@ -32,6 +42,7 @@ exemption list long enough to be meaningless.
 - [ ] A check enumerates the Database adapter method set and fails when a method has no conformance case.
 - [ ] The check runs as part of the ordinary test command.
 - [ ] Methods exempt from conformance coverage are listed explicitly, each with a short recorded reason.
+- [ ] Being overridden by one or more engines is never accepted as an exemption reason; a shared definition shadowed by an await-shim still requires a conformance case.
 - [ ] Adding a method to the adapter without a conformance case fails the check.
 - [ ] The check passes when this ticket lands, with an exemption list limited to genuinely engine-specific mechanics.
 

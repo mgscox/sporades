@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Record Adapter Contract And Conformance ADRs
 
@@ -36,14 +36,14 @@ implementation it describes.
 
 ## Acceptance criteria
 
-- [ ] An ADR records that the Database adapter method set is engine-agnostic and defined once, with engine differences confined to statement primitives and connection behaviour.
-- [ ] That ADR states the dual-mode return convention as deliberate, and states the resolve-before-deriving invariant explicitly enough to cite in review.
-- [ ] That ADR records async-first as considered and rejected, naming the ACL fail-closed interaction as the blocking constraint.
-- [ ] That ADR explains that it narrows rather than reverses the completed runtime-path-awaitable decision: that decision governs how call sites consume adapter methods, this one governs how adapter methods consume their own statement primitives.
-- [ ] A second ADR records that one behavioural specification run against every adapter is the verification contract for the Database adapter boundary, and that engine mechanics remain in per-engine tests.
-- [ ] Both ADRs follow the existing house style: a decision-stating title, prose paragraphs, `CONTEXT.md` vocabulary, and no status or consequences headings.
-- [ ] ADR numbers are taken from the next free numbers at the time of writing rather than reserved in advance.
-- [ ] Neither ADR contradicts ADR-0021, ADR-0022, or ADR-0026; any relationship to an existing ADR is stated in the text.
+- [x] An ADR records that the Database adapter method set is engine-agnostic and defined once, stating that as the target and documenting honestly where the code currently departs from it. (Corrected during implementation: the original wording asked for "engine differences confined to statement primitives and connection behaviour" to be recorded as fact, which is not true of the code — Postgres carries 23 further overrides and libSQL 18. Recording it as fact was rejected in review; the norm-as-target-plus-documented-gap framing replaced it.)
+- [x] That ADR states the dual-mode return convention as deliberate, and states the resolve-before-deriving invariant explicitly enough to cite in review.
+- [x] That ADR records async-first as considered and rejected, naming the ACL fail-closed interaction as the blocking constraint.
+- [x] That ADR explains that it narrows rather than reverses the completed runtime-path-awaitable decision: that decision governs how call sites consume adapter methods, this one governs how adapter methods consume their own statement primitives.
+- [x] A second ADR records that one behavioural specification run against every adapter is the verification contract for the Database adapter boundary, and that engine mechanics remain in per-engine tests.
+- [x] Both ADRs follow the existing house style: a decision-stating title, prose paragraphs, `CONTEXT.md` vocabulary, and no status or consequences headings.
+- [x] ADR numbers are taken from the next free numbers at the time of writing rather than reserved in advance.
+- [x] Neither ADR contradicts ADR-0021, ADR-0022, or ADR-0026; any relationship to an existing ADR is stated in the text.
 
 ## Blocked by
 
