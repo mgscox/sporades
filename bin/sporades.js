@@ -5518,17 +5518,43 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         )}${whereSql}${orderSql}${limitSql}`
       ).all(...limit === null ? params : [...params, limit]);
     },
+    // The three inspection methods below each derive from a statement result, so each resolves it
+    // first (ADR-0034). They previously read `.all()` and `.columns()` unresolved and were correct
+    // on the asynchronous engines only because each engine shadowed them with an await-shim.
     listInspectableTables() {
-      return this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all().map((row) => row.name).filter((name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
+      return thenIfPromise(
+        this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all(),
+        (rows) => rows.map((row) => row.name).filter(
+          (name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences"
+        )
+      );
     },
     dumpInspectableDatabase() {
-      return this.listInspectableTables().map((tableName) => ({
-        name: tableName,
-        columns: this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all().map((column) => column.name),
-        rows: this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all()
-      }));
+      const dumpTable = (tableName) => thenIfPromise(
+        this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all(),
+        (columnRows) => thenIfPromise(this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all(), (rows) => ({
+          name: tableName,
+          columns: columnRows.map((column) => column.name),
+          rows
+        }))
+      );
+      return thenIfPromise(
+        this.listInspectableTables(),
+        (tableNames) => tableNames.reduce(
+          (pending, tableName) => thenIfPromise(pending, (tables) => thenIfPromise(dumpTable(tableName), (table) => [...tables, table])),
+          []
+        )
+      );
     },
     runReadOnlyInspectionQuery(sql) {
+      const inspectionQueryFailure = (error) => ({
+        ok: false,
+        data: null,
+        error: {
+          message: error?.message,
+          hint: "Check the SQL syntax and table names, then retry the query."
+        }
+      });
       try {
         const validation = validateReadOnlyInspectionSql(sql);
         if (!validation.ok) {
@@ -5545,25 +5571,20 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
           };
         }
         const statement = this.prepare(String(sql ?? ""));
-        const columns = statement.columns().map((column) => column.name);
-        const rows = statement.all().filter((row) => !isInternalLogIndexMetadataRow(row, sql));
-        return {
-          ok: true,
-          data: {
-            columns,
-            rows
-          },
-          error: null
-        };
+        const result = thenIfPromise(
+          statement.columns(),
+          (columnMetadata) => thenIfPromise(statement.all(), (allRows) => ({
+            ok: true,
+            data: {
+              columns: columnMetadata.map((column) => column.name),
+              rows: allRows.filter((row) => !isInternalLogIndexMetadataRow(row, sql))
+            },
+            error: null
+          }))
+        );
+        return isPromiseLike(result) ? result.then((value) => value, inspectionQueryFailure) : result;
       } catch (error) {
-        return {
-          ok: false,
-          data: null,
-          error: {
-            message: error.message,
-            hint: "Check the SQL syntax and table names, then retry the query."
-          }
-        };
+        return inspectionQueryFailure(error);
       }
     },
     checkHealth() {
@@ -5734,7 +5755,7 @@ async function createPostgresDatabaseAdapter(options) {
       ).run(row.userId, row.value, row.updatedAt);
     },
     async insertLogIndexEvent(event) {
-      await this.prepare(
+      return await this.prepare(
         "INSERT INTO sporades_log_events (id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
       ).run(
         randomUUID(),
@@ -5752,7 +5773,7 @@ async function createPostgresDatabaseAdapter(options) {
       );
     },
     async pruneLogIndex(limit) {
-      await this.prepare(
+      return await this.prepare(
         "DELETE FROM sporades_log_events WHERE id IN (SELECT id FROM sporades_log_events ORDER BY timestamp DESC, id DESC OFFSET ?)"
       ).run(limit);
     },
@@ -6423,34 +6444,6 @@ async function createLibsqlDatabaseAdapter(options) {
         "CREATE TABLE IF NOT EXISTS sporades_log_events (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, category TEXT NOT NULL, event TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL, capsuleName TEXT, capsuleId TEXT, releaseId TEXT, requestId TEXT, correlationId TEXT, payload TEXT NOT NULL)"
       );
     },
-    async insertLogIndexEvent(event) {
-      await this.prepare(
-        "INSERT INTO sporades_log_events (id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-      ).run(
-        randomUUID(),
-        event.timestamp,
-        event.category,
-        event.event,
-        event.level,
-        event.message,
-        event.capsule?.name ?? null,
-        event.capsule?.id ?? null,
-        event.release?.id ?? event.release ?? null,
-        event.request?.id ?? null,
-        event.correlation?.id ?? event.correlation ?? null,
-        JSON.stringify(event)
-      );
-    },
-    async pruneLogIndex(limit) {
-      await this.prepare(
-        "DELETE FROM sporades_log_events WHERE id IN (SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?)"
-      ).run(limit);
-    },
-    async readRecentLogEvents(limit = 200) {
-      const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1e4) : 200;
-      const rows = await this.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?").all(safeLimit);
-      return rows.reverse().map((row) => JSON.parse(row.payload));
-    },
     async ensureFileStorage() {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_file_buckets (id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, name TEXT NOT NULL, createdAt TEXT NOT NULL, UNIQUE(ownerId, name))"
@@ -6515,51 +6508,6 @@ async function createLibsqlDatabaseAdapter(options) {
     },
     async migrateExistingAppTable(existingTable, nextTable) {
       return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
-    },
-    async listInspectableTables() {
-      const rows = await this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-      return rows.map((row) => row.name).filter((name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
-    },
-    async dumpInspectableDatabase() {
-      const tableNames = await this.listInspectableTables();
-      const tables = [];
-      for (const tableName of tableNames) {
-        const columns = (await this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all()).map((column) => column.name);
-        const rows = await this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all();
-        tables.push({ name: tableName, columns, rows });
-      }
-      return tables;
-    },
-    async runReadOnlyInspectionQuery(sql) {
-      try {
-        const validation = validateReadOnlyInspectionSql(sql);
-        if (!validation.ok) {
-          return validation;
-        }
-        if (targetsInternalLogIndexTable(sql)) {
-          return {
-            ok: false,
-            data: null,
-            error: {
-              message: "Internal log index tables are not available through generic DB inspection.",
-              hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs."
-            }
-          };
-        }
-        const statement = this.prepare(String(sql ?? ""));
-        const columns = (await statement.columns()).map((column) => column.name);
-        const rows = (await statement.all()).filter((row) => !isInternalLogIndexMetadataRow(row, sql));
-        return { ok: true, data: { columns, rows }, error: null };
-      } catch (error) {
-        return {
-          ok: false,
-          data: null,
-          error: {
-            message: error.message,
-            hint: "Check the SQL syntax and table names, then retry the query."
-          }
-        };
-      }
     },
     async checkHealth() {
       try {
@@ -7432,7 +7380,7 @@ function createLogIndexTables(sqlite) {
   );
 }
 function insertLogIndexEvent(sqlite, event) {
-  sqlite.prepare(
+  return sqlite.prepare(
     "INSERT INTO sporades_log_events (id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
   ).run(
     randomUUID(),
@@ -7450,13 +7398,16 @@ function insertLogIndexEvent(sqlite, event) {
   );
 }
 function pruneLogIndex(sqlite, limit) {
-  sqlite.prepare(
+  return sqlite.prepare(
     "DELETE FROM sporades_log_events WHERE id IN (SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?)"
   ).run(limit);
 }
 function readRecentLogEvents(sqlite, limit = 200) {
   const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1e4) : 200;
-  return sqlite.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?").all(safeLimit).reverse().map((row) => JSON.parse(row.payload));
+  return thenIfPromise(
+    sqlite.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?").all(safeLimit),
+    (rows) => rows.reverse().map((row) => JSON.parse(row.payload))
+  );
 }
 function readJsonlLogEvents(logPath, limit = 200) {
   let raw = "";

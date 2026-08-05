@@ -3291,22 +3291,33 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
             const limitSql = limit === null ? "" : " LIMIT ?";
             return this.prepare(`SELECT ${columns.map((column) => (column === "*" ? "*" : quoteIdentifier(column))).join(", ")} FROM ${quoteIdentifier(table.name)}${whereSql}${orderSql}${limitSql}`).all(...(limit === null ? params : [...params, limit]));
         },
+        // The three inspection methods below each derive from a statement result, so each resolves it
+        // first (ADR-0034). They previously read `.all()` and `.columns()` unresolved and were correct
+        // on the asynchronous engines only because each engine shadowed them with an await-shim.
         listInspectableTables() {
-            return this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-                .all()
+            return thenIfPromise(this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all(), (rows) => rows
                 .map((row) => row.name)
-                .filter((name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
+                .filter((name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences"));
         },
         dumpInspectableDatabase() {
-            return this.listInspectableTables().map((tableName) => ({
+            const dumpTable = (tableName) => thenIfPromise(this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all(), (columnRows) => thenIfPromise(this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all(), (rows) => ({
                 name: tableName,
-                columns: this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`)
-                    .all()
-                    .map((column) => column.name),
-                rows: this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all(),
-            }));
+                columns: columnRows.map((column) => column.name),
+                rows,
+            })));
+            // Tables are dumped one after another rather than concurrently, so an asynchronous engine
+            // issues the same statement sequence a synchronous one does.
+            return thenIfPromise(this.listInspectableTables(), (tableNames) => tableNames.reduce((pending, tableName) => thenIfPromise(pending, (tables) => thenIfPromise(dumpTable(tableName), (table) => [...tables, table])), []));
         },
         runReadOnlyInspectionQuery(sql) {
+            const inspectionQueryFailure = (error) => ({
+                ok: false,
+                data: null,
+                error: {
+                    message: error?.message,
+                    hint: "Check the SQL syntax and table names, then retry the query.",
+                },
+            });
             try {
                 const validation = validateReadOnlyInspectionSql(sql);
                 if (!validation.ok) {
@@ -3323,26 +3334,20 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
                     };
                 }
                 const statement = this.prepare(String(sql ?? ""));
-                const columns = statement.columns().map((column) => column.name);
-                const rows = statement.all().filter((row) => !isInternalLogIndexMetadataRow(row, sql));
-                return {
+                const result = thenIfPromise(statement.columns(), (columnMetadata) => thenIfPromise(statement.all(), (allRows) => ({
                     ok: true,
                     data: {
-                        columns,
-                        rows,
+                        columns: columnMetadata.map((column) => column.name),
+                        rows: allRows.filter((row) => !isInternalLogIndexMetadataRow(row, sql)),
                     },
                     error: null,
-                };
+                })));
+                // A rejected statement is the asynchronous form of the throw the `catch` below handles, so
+                // it has to reach the same failure result rather than escape as an unhandled rejection.
+                return isPromiseLike(result) ? result.then((value) => value, inspectionQueryFailure) : result;
             }
             catch (error) {
-                return {
-                    ok: false,
-                    data: null,
-                    error: {
-                        message: error.message,
-                        hint: "Check the SQL syntax and table names, then retry the query.",
-                    },
-                };
+                return inspectionQueryFailure(error);
             }
         },
         checkHealth() {
@@ -3578,12 +3583,15 @@ export async function createPostgresDatabaseAdapter(options) {
                 "ON CONFLICT (userId) DO UPDATE SET value = EXCLUDED.value, updatedAt = EXCLUDED.updatedAt").run(row.userId, row.value, row.updatedAt);
         },
         async insertLogIndexEvent(event) {
-            await this.prepare("INSERT INTO sporades_log_events " +
+            // Same SQL as the shared definition; it returns its statement result for the same ADR-0034
+            // reason, so both engines answer a caller the same thing.
+            return await this.prepare("INSERT INTO sporades_log_events " +
                 "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(randomUUID(), event.timestamp, event.category, event.event, event.level, event.message, event.capsule?.name ?? null, event.capsule?.id ?? null, event.release?.id ?? event.release ?? null, event.request?.id ?? null, event.correlation?.id ?? event.correlation ?? null, JSON.stringify(event));
         },
         async pruneLogIndex(limit) {
-            await this.prepare("DELETE FROM sporades_log_events WHERE id IN (" +
+            // A dialect override — Postgres has no `LIMIT -1` — that still returns its statement result.
+            return await this.prepare("DELETE FROM sporades_log_events WHERE id IN (" +
                 "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, id DESC OFFSET ?" +
                 ")").run(limit);
         },
@@ -4251,21 +4259,6 @@ export async function createLibsqlDatabaseAdapter(options) {
                 "payload TEXT NOT NULL" +
                 ")");
         },
-        async insertLogIndexEvent(event) {
-            await this.prepare("INSERT INTO sporades_log_events " +
-                "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(randomUUID(), event.timestamp, event.category, event.event, event.level, event.message, event.capsule?.name ?? null, event.capsule?.id ?? null, event.release?.id ?? event.release ?? null, event.request?.id ?? null, event.correlation?.id ?? event.correlation ?? null, JSON.stringify(event));
-        },
-        async pruneLogIndex(limit) {
-            await this.prepare("DELETE FROM sporades_log_events WHERE id IN (" +
-                "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?" +
-                ")").run(limit);
-        },
-        async readRecentLogEvents(limit = 200) {
-            const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
-            const rows = await this.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?").all(safeLimit);
-            return rows.reverse().map((row) => JSON.parse(row.payload));
-        },
         async ensureFileStorage() {
             await this.exec("CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
                 "id TEXT PRIMARY KEY, " +
@@ -4389,52 +4382,6 @@ export async function createLibsqlDatabaseAdapter(options) {
         },
         async migrateExistingAppTable(existingTable, nextTable) {
             return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
-        },
-        async listInspectableTables() {
-            const rows = await this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-            return rows.map((row) => row.name).filter((name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
-        },
-        async dumpInspectableDatabase() {
-            const tableNames = await this.listInspectableTables();
-            const tables = [];
-            for (const tableName of tableNames) {
-                const columns = (await this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all()).map((column) => column.name);
-                const rows = await this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all();
-                tables.push({ name: tableName, columns, rows });
-            }
-            return tables;
-        },
-        async runReadOnlyInspectionQuery(sql) {
-            try {
-                const validation = validateReadOnlyInspectionSql(sql);
-                if (!validation.ok) {
-                    return validation;
-                }
-                if (targetsInternalLogIndexTable(sql)) {
-                    return {
-                        ok: false,
-                        data: null,
-                        error: {
-                            message: "Internal log index tables are not available through generic DB inspection.",
-                            hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
-                        },
-                    };
-                }
-                const statement = this.prepare(String(sql ?? ""));
-                const columns = (await statement.columns()).map((column) => column.name);
-                const rows = (await statement.all()).filter((row) => !isInternalLogIndexMetadataRow(row, sql));
-                return { ok: true, data: { columns, rows }, error: null };
-            }
-            catch (error) {
-                return {
-                    ok: false,
-                    data: null,
-                    error: {
-                        message: error.message,
-                        hint: "Check the SQL syntax and table names, then retry the query.",
-                    },
-                };
-            }
         },
         async checkHealth() {
             try {
@@ -5334,14 +5281,19 @@ function createLogIndexTables(sqlite) {
         ")");
 }
 function insertLogIndexEvent(sqlite, event) {
-    sqlite
+    // ADR-0034: a Database adapter method that writes returns its statement result rather than
+    // discarding it. Without the return the caller has nothing to await, so the write has landed on
+    // SQLite and has not landed on Postgres or libSQL by the time the method returns — and the Log
+    // index caller's `isPromiseLike` probe can never fire.
+    return sqlite
         .prepare("INSERT INTO sporades_log_events " +
         "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
         .run(randomUUID(), event.timestamp, event.category, event.event, event.level, event.message, event.capsule?.name ?? null, event.capsule?.id ?? null, event.release?.id ?? event.release ?? null, event.request?.id ?? null, event.correlation?.id ?? event.correlation ?? null, JSON.stringify(event));
 }
 function pruneLogIndex(sqlite, limit) {
-    sqlite
+    // ADR-0034: returned rather than discarded, for the same reason as the insert above.
+    return sqlite
         .prepare("DELETE FROM sporades_log_events WHERE id IN (" +
         "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?" +
         ")")
@@ -5349,11 +5301,9 @@ function pruneLogIndex(sqlite, limit) {
 }
 function readRecentLogEvents(sqlite, limit = 200) {
     const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
-    return sqlite
-        .prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?")
-        .all(safeLimit)
-        .reverse()
-        .map((row) => JSON.parse(row.payload));
+    // ADR-0034: the rows are reversed and parsed, so they must be resolved first. Reading them
+    // unresolved reversed and mapped a Promise, which is why libSQL carried an await-shim.
+    return thenIfPromise(sqlite.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?").all(safeLimit), (rows) => rows.reverse().map((row) => JSON.parse(row.payload)));
 }
 export function readJsonlLogEvents(logPath, limit = 200) {
     let raw = "";
