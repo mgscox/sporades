@@ -171,6 +171,8 @@ this spec adds governs the inside of the method.
 - `issues/05-extend-conformance-coverage-to-app-tables-and-runtime-metadata.md`
 - `issues/06-require-conformance-coverage-for-every-adapter-method.md`
 - `issues/08-map-every-runtime-column-name-on-postgres.md`
+- `issues/09-route-shared-schema-migration-through-a-transaction.md`
+- `issues/10-decide-the-log-index-tie-break.md`
 
 ## Further Notes
 
