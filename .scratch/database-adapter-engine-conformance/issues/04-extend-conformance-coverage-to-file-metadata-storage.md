@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Extend Conformance Coverage To File Metadata Storage
 
@@ -36,14 +36,14 @@ in the specification.
 
 ## Acceptance criteria
 
-- [ ] File bucket lookup and creation are covered.
-- [ ] File metadata insertion, lookup by File ID, lookup by absolute File path for live and active rows, and owner-scoped lookup are covered.
-- [ ] The pending upload lifecycle is covered, including lookup by path and by identifier and deletion by path and by file.
-- [ ] Upload completion is proven to insert the row when no row exists, update the row when a live one exists, and leave a deleted row deleted.
-- [ ] Public file URL creation, lookup, single revocation, and revocation of every URL for one file are covered.
-- [ ] File metadata deletion is covered and proven not to remove rows belonging to another owner.
-- [ ] Any divergence found is fixed at the shared method definition, not by adding a per-engine override.
-- [ ] Each case that exposed a divergence remains in the specification as a regression case.
+- [x] File bucket lookup and creation are covered.
+- [x] File metadata insertion, lookup by File ID, lookup by absolute File path for live and active rows, and owner-scoped lookup are covered.
+- [x] The pending upload lifecycle is covered, including lookup by path and by identifier and deletion by path and by file.
+- [x] Upload completion is proven to insert the row when no row exists, update the row when a live one exists, and leave a deleted row deleted.
+- [x] Public file URL creation, lookup, single revocation, and revocation of every URL for one file are covered.
+- [x] File metadata deletion is covered and proven not to remove rows belonging to another owner.
+- [x] Any divergence found is fixed at the shared method definition, not by adding a per-engine override.
+- [x] Each case that exposed a divergence remains in the specification as a regression case.
 
 ## Blocked by
 

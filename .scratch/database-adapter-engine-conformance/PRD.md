@@ -170,6 +170,7 @@ this spec adds governs the inside of the method.
 - `issues/04-extend-conformance-coverage-to-file-metadata-storage.md`
 - `issues/05-extend-conformance-coverage-to-app-tables-and-runtime-metadata.md`
 - `issues/06-require-conformance-coverage-for-every-adapter-method.md`
+- `issues/08-map-every-runtime-column-name-on-postgres.md`
 
 ## Further Notes
 

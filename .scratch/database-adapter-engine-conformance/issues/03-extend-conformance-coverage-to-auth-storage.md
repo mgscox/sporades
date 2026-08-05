@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Extend Conformance Coverage To Auth Storage
 
@@ -38,14 +38,14 @@ the specification.
 
 ## Acceptance criteria
 
-- [ ] The Session lifecycle is covered end to end, including deletion of every Session for one Sporades user.
-- [ ] Provider identity lookup by provider and subject, and the legacy lookup by provider email, are covered.
-- [ ] Email credential creation, existence, password update, and joined-user lookup are covered, with existence exercised for both a registered and an unregistered address.
-- [ ] The Reset code lifecycle is covered, including issuing, lookup by selector, deletion for a user, and pruning.
-- [ ] The outstanding Reset code count is asserted against a known non-zero quantity and proven to exclude expired rows.
-- [ ] Every lookup that joins the user table is proven to return nothing for the reserved Privileged server role identity, on every engine.
-- [ ] Any divergence found is fixed at the shared method definition, not by adding a per-engine override.
-- [ ] Each case that exposed a divergence remains in the specification as a regression case.
+- [x] The Session lifecycle is covered end to end, including deletion of every Session for one Sporades user.
+- [x] Provider identity lookup by provider and subject, and the legacy lookup by provider email, are covered.
+- [x] Email credential creation, existence, password update, and joined-user lookup are covered, with existence exercised for both a registered and an unregistered address.
+- [x] The Reset code lifecycle is covered, including issuing, lookup by selector, deletion for a user, and pruning.
+- [x] The outstanding Reset code count is asserted against a known non-zero quantity and proven to exclude expired rows.
+- [x] Every lookup that joins the user table is proven to return nothing for the reserved Privileged server role identity, on every engine.
+- [x] Any divergence found is fixed at the shared method definition, not by adding a per-engine override.
+- [x] Each case that exposed a divergence remains in the specification as a regression case.
 
 ## Blocked by
 
