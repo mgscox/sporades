@@ -3530,22 +3530,49 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
         )}${whereSql}${orderSql}${limitSql}`,
       ).all(...(limit === null ? params : [...params, limit]));
     },
+    // The three inspection methods below each derive from a statement result, so each resolves it
+    // first (ADR-0034). They previously read `.all()` and `.columns()` unresolved and were correct
+    // on the asynchronous engines only because each engine shadowed them with an await-shim.
     listInspectableTables() {
-      return this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
-        .all()
-        .map((row: any) => row.name)
-        .filter((name: any) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
+      return thenIfPromise(
+        this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all(),
+        (rows: any[]) =>
+          rows
+            .map((row: any) => row.name)
+            .filter(
+              (name: any) =>
+                name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences",
+            ),
+      );
     },
     dumpInspectableDatabase() {
-      return this.listInspectableTables().map((tableName: any) => ({
-        name: tableName,
-        columns: this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`)
-          .all()
-          .map((column: any) => column.name),
-        rows: this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all(),
-      }));
+      const dumpTable = (tableName: any) =>
+        thenIfPromise(this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all(), (columnRows: any[]) =>
+          thenIfPromise(this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all(), (rows: any) => ({
+            name: tableName,
+            columns: columnRows.map((column: any) => column.name),
+            rows,
+          })),
+        );
+      // Tables are dumped one after another rather than concurrently, so an asynchronous engine
+      // issues the same statement sequence a synchronous one does.
+      return thenIfPromise(this.listInspectableTables(), (tableNames: any[]) =>
+        tableNames.reduce(
+          (pending: any, tableName: any) =>
+            thenIfPromise(pending, (tables: any[]) => thenIfPromise(dumpTable(tableName), (table: any) => [...tables, table])),
+          [] as any[],
+        ),
+      );
     },
     runReadOnlyInspectionQuery(sql: string | undefined) {
+      const inspectionQueryFailure = (error: any) => ({
+        ok: false,
+        data: null as any,
+        error: {
+          message: error?.message,
+          hint: "Check the SQL syntax and table names, then retry the query.",
+        },
+      });
       try {
         const validation = validateReadOnlyInspectionSql(sql);
         if (!validation.ok) {
@@ -3562,25 +3589,21 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
           };
         }
         const statement = this.prepare(String(sql ?? ""));
-        const columns = statement.columns().map((column: any) => column.name);
-        const rows = statement.all().filter((row: any) => !isInternalLogIndexMetadataRow(row, sql));
-        return {
-          ok: true,
-          data: {
-            columns,
-            rows,
-          },
-          error: null as any,
-        };
+        const result = thenIfPromise(statement.columns(), (columnMetadata: any[]) =>
+          thenIfPromise(statement.all(), (allRows: any[]) => ({
+            ok: true,
+            data: {
+              columns: columnMetadata.map((column: any) => column.name),
+              rows: allRows.filter((row: any) => !isInternalLogIndexMetadataRow(row, sql)),
+            },
+            error: null as any,
+          })),
+        );
+        // A rejected statement is the asynchronous form of the throw the `catch` below handles, so
+        // it has to reach the same failure result rather than escape as an unhandled rejection.
+        return isPromiseLike(result) ? result.then((value: any) => value, inspectionQueryFailure) : result;
       } catch (error: any) {
-        return {
-          ok: false,
-          data: null,
-          error: {
-            message: error.message,
-            hint: "Check the SQL syntax and table names, then retry the query.",
-          },
-        };
+        return inspectionQueryFailure(error);
       }
     },
     checkHealth() {
@@ -3862,7 +3885,9 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
       ).run(row.userId, row.value, row.updatedAt);
     },
     async insertLogIndexEvent(event: { timestamp: any; category: any; event: any; level: any; message: any; capsule: { name: any; id: any; }; release: { id: any; }; request: { id: any; }; correlation: { id: any; }; }) {
-      await this.prepare(
+      // Same SQL as the shared definition; it returns its statement result for the same ADR-0034
+      // reason, so both engines answer a caller the same thing.
+      return await this.prepare(
         "INSERT INTO sporades_log_events " +
         "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
         "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -3882,7 +3907,8 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
       );
     },
     async pruneLogIndex(limit: any) {
-      await this.prepare(
+      // A dialect override — Postgres has no `LIMIT -1` — that still returns its statement result.
+      return await this.prepare(
         "DELETE FROM sporades_log_events WHERE id IN (" +
         "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, id DESC OFFSET ?" +
         ")",
@@ -4605,38 +4631,6 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
         ")",
       );
     },
-    async insertLogIndexEvent(event: { timestamp: any; category: any; event: any; level: any; message: any; capsule: { name: any; id: any; }; release: { id: any; }; request: { id: any; }; correlation: { id: any; }; }) {
-      await this.prepare(
-        "INSERT INTO sporades_log_events " +
-        "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      ).run(
-        randomUUID(),
-        event.timestamp,
-        event.category,
-        event.event,
-        event.level,
-        event.message,
-        event.capsule?.name ?? null,
-        event.capsule?.id ?? null,
-        event.release?.id ?? event.release ?? null,
-        event.request?.id ?? null,
-        event.correlation?.id ?? event.correlation ?? null,
-        JSON.stringify(event),
-      );
-    },
-    async pruneLogIndex(limit: any) {
-      await this.prepare(
-        "DELETE FROM sporades_log_events WHERE id IN (" +
-        "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?" +
-        ")",
-      ).run(limit);
-    },
-    async readRecentLogEvents(limit = 200) {
-      const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
-      const rows = await this.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?").all(safeLimit);
-      return rows.reverse().map((row: { payload: string; }) => JSON.parse(row.payload));
-    },
     async ensureFileStorage() {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
@@ -4783,51 +4777,6 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     },
     async migrateExistingAppTable(existingTable: any, nextTable: any) {
       return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
-    },
-    async listInspectableTables() {
-      const rows = await this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all();
-      return rows.map((row: { name: any; }) => row.name).filter((name: string) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
-    },
-    async dumpInspectableDatabase() {
-      const tableNames = await this.listInspectableTables();
-      const tables = [];
-      for (const tableName of tableNames) {
-        const columns = (await this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all()).map((column: { name: any; }) => column.name);
-        const rows = await this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all();
-        tables.push({ name: tableName, columns, rows });
-      }
-      return tables;
-    },
-    async runReadOnlyInspectionQuery(sql: string | undefined) {
-      try {
-        const validation = validateReadOnlyInspectionSql(sql);
-        if (!validation.ok) {
-          return validation;
-        }
-        if (targetsInternalLogIndexTable(sql)) {
-          return {
-            ok: false,
-            data: null,
-            error: {
-              message: "Internal log index tables are not available through generic DB inspection.",
-              hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs.",
-            },
-          };
-        }
-        const statement = this.prepare(String(sql ?? ""));
-        const columns = (await statement.columns()).map((column: { name: any; }) => column.name);
-        const rows = (await statement.all()).filter((row: any) => !isInternalLogIndexMetadataRow(row, sql));
-        return { ok: true, data: { columns, rows }, error: null as any };
-      } catch (error: any) {
-        return {
-          ok: false,
-          data: null,
-          error: {
-            message: error.message,
-            hint: "Check the SQL syntax and table names, then retry the query.",
-          },
-        };
-      }
     },
     async checkHealth() {
       try {
@@ -5802,7 +5751,11 @@ function createLogIndexTables(sqlite: { engine?: string; exec: any; prepare?: (s
 }
 
 function insertLogIndexEvent(sqlite: { engine?: string; exec?: (sql: any) => void; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }, event: { timestamp: any; category: any; event: any; level: any; message: any; capsule: { name: any; id: any; }; release: { id: any; }; request: { id: any; }; correlation: { id: any; }; }) {
-  sqlite
+  // ADR-0034: a Database adapter method that writes returns its statement result rather than
+  // discarding it. Without the return the caller has nothing to await, so the write has landed on
+  // SQLite and has not landed on Postgres or libSQL by the time the method returns — and the Log
+  // index caller's `isPromiseLike` probe can never fire.
+  return sqlite
     .prepare(
       "INSERT INTO sporades_log_events " +
       "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
@@ -5825,7 +5778,8 @@ function insertLogIndexEvent(sqlite: { engine?: string; exec?: (sql: any) => voi
 }
 
 function pruneLogIndex(sqlite: { engine?: string; exec?: (sql: any) => void; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }, limit: any) {
-  sqlite
+  // ADR-0034: returned rather than discarded, for the same reason as the insert above.
+  return sqlite
     .prepare(
       "DELETE FROM sporades_log_events WHERE id IN (" +
       "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?" +
@@ -5836,11 +5790,12 @@ function pruneLogIndex(sqlite: { engine?: string; exec?: (sql: any) => void; pre
 
 function readRecentLogEvents(sqlite: { engine?: string; exec?: (sql: any) => void; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }, limit = 200) {
   const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
-  return sqlite
-    .prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?")
-    .all(safeLimit)
-    .reverse()
-    .map((row: { payload: string; }) => JSON.parse(row.payload));
+  // ADR-0034: the rows are reversed and parsed, so they must be resolved first. Reading them
+  // unresolved reversed and mapped a Promise, which is why libSQL carried an await-shim.
+  return thenIfPromise(
+    sqlite.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?").all(safeLimit),
+    (rows: { payload: string; }[]) => rows.reverse().map((row) => JSON.parse(row.payload)),
+  );
 }
 
 export function readJsonlLogEvents(logPath: PathOrFileDescriptor, limit = 200) {

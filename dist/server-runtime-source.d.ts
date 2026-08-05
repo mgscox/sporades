@@ -162,8 +162,8 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
     readSchemaMetadata(): Record<string, SQLOutputValue> | null;
     writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord): void;
     ensureLogStorage(): void;
-    insertLogIndexEvent(event: any): void;
-    pruneLogIndex(limit: any): void;
+    insertLogIndexEvent(event: any): any;
+    pruneLogIndex(limit: any): any;
     readRecentLogEvents(limit: number | undefined): any;
     ensureFileStorage(): void;
     findFileBucket(ownerId: any, name: any): Record<string, SQLOutputValue> | null;
@@ -491,34 +491,9 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
     selectAppRows(table: {
         name: any;
     }, query?: LooseRecord): Record<string, SQLOutputValue>[];
-    listInspectableTables(): any[];
-    dumpInspectableDatabase(): {
-        name: any;
-        columns: any[];
-        rows: Record<string, SQLOutputValue>[];
-    }[];
-    runReadOnlyInspectionQuery(sql: string | undefined): {
-        ok: false;
-        data: any;
-        error: {
-            message: string;
-            hint: string;
-        };
-    } | {
-        ok: boolean;
-        data: {
-            columns: any[];
-            rows: Record<string, SQLOutputValue>[];
-        };
-        error: any;
-    } | {
-        ok: boolean;
-        data: null;
-        error: {
-            message: any;
-            hint: string;
-        };
-    };
+    listInspectableTables(): any;
+    dumpInspectableDatabase(): any;
+    runReadOnlyInspectionQuery(sql: string | undefined): any;
     checkHealth(): {
         ok: boolean;
     };
@@ -582,8 +557,14 @@ export declare function createPostgresDatabaseAdapter(options: {
         correlation: {
             id: any;
         };
-    }): Promise<void>;
-    pruneLogIndex(limit: any): Promise<void>;
+    }): Promise<{
+        changes: number;
+        lastInsertRowid: any;
+    }>;
+    pruneLogIndex(limit: any): Promise<{
+        changes: number;
+        lastInsertRowid: any;
+    }>;
     readRecentLogEvents(limit?: number): Promise<any>;
     migrateAppSchema(schema: {
         tables: {
@@ -960,28 +941,6 @@ export declare function createLibsqlDatabaseAdapter(options: {
     engine: string;
     writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord): Promise<void>;
     ensureLogStorage(): Promise<void>;
-    insertLogIndexEvent(event: {
-        timestamp: any;
-        category: any;
-        event: any;
-        level: any;
-        message: any;
-        capsule: {
-            name: any;
-            id: any;
-        };
-        release: {
-            id: any;
-        };
-        request: {
-            id: any;
-        };
-        correlation: {
-            id: any;
-        };
-    }): Promise<void>;
-    pruneLogIndex(limit: any): Promise<void>;
-    readRecentLogEvents(limit?: number): Promise<any>;
     ensureFileStorage(): Promise<void>;
     ensureAuthStorage(authConfig?: any): Promise<void>;
     insertOAuthState(row: LooseRecord): Promise<{
@@ -1019,34 +978,6 @@ export declare function createLibsqlDatabaseAdapter(options: {
         }[];
     }): Promise<any>;
     migrateExistingAppTable(existingTable: any, nextTable: any): Promise<void>;
-    listInspectableTables(): Promise<any>;
-    dumpInspectableDatabase(): Promise<{
-        name: any;
-        columns: any;
-        rows: any;
-    }[]>;
-    runReadOnlyInspectionQuery(sql: string | undefined): Promise<{
-        ok: false;
-        data: any;
-        error: {
-            message: string;
-            hint: string;
-        };
-    } | {
-        ok: boolean;
-        data: {
-            columns: any;
-            rows: any;
-        };
-        error: any;
-    } | {
-        ok: boolean;
-        data: null;
-        error: {
-            message: any;
-            hint: string;
-        };
-    }>;
     checkHealth(): Promise<{
         ok: boolean;
     }>;
@@ -1067,6 +998,9 @@ export declare function createLibsqlDatabaseAdapter(options: {
     readSystemMetadata(key: string): Record<string, SQLOutputValue> | null;
     writeSystemMetadata(key: string, value: any): StatementResultingChanges;
     readSchemaMetadata(): Record<string, SQLOutputValue> | null;
+    insertLogIndexEvent(event: any): any;
+    pruneLogIndex(limit: any): any;
+    readRecentLogEvents(limit: number | undefined): any;
     findFileBucket(ownerId: any, name: any): Record<string, SQLOutputValue> | null;
     createFileBucket(row: {
         id: any;
@@ -1261,6 +1195,9 @@ export declare function createLibsqlDatabaseAdapter(options: {
     selectAppRows(table: {
         name: any;
     }, query?: LooseRecord): Record<string, SQLOutputValue>[];
+    listInspectableTables(): any;
+    dumpInspectableDatabase(): any;
+    runReadOnlyInspectionQuery(sql: string | undefined): any;
 }>;
 export declare function createPrivilegedAuditLogInput(details?: LooseRecord): {
     category: string;
