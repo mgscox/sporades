@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Open A Conflict-Free Conformance Extension Seam
 
@@ -34,14 +34,14 @@ and counts must not change — that is how this prefactor is verified.
 
 ## Acceptance criteria
 
-- [ ] A shared helper runs a supplied set of conformance cases against every engine, and is the only place engine iteration and gating live.
-- [ ] Per-surface case modules contribute cases through that helper; adding a surface requires no edit to another surface's file.
-- [ ] The six existing cases move unchanged into a surface module, with identical test names.
-- [ ] Each surface gets its own adapter instance and prepared storage, so surfaces cannot interfere through shared rows.
-- [ ] A surface module declares any app tables it needs so the Postgres reset drops them.
-- [ ] The Postgres gate still controls only whether a run executes, never which assertions it makes.
-- [ ] Conformance test names and pass/skip counts are unchanged from issue 02, demonstrated by output before and after.
-- [ ] No source file changes; no coverage added or removed.
+- [x] A shared helper runs a supplied set of conformance cases against every engine, and is the only place engine iteration and gating live.
+- [x] Per-surface case modules contribute cases through that helper; adding a surface requires no edit to another surface's file.
+- [x] The six existing cases move unchanged into a surface module, with identical test names.
+- [x] Each surface gets its own adapter instance and prepared storage, so surfaces cannot interfere through shared rows.
+- [x] A surface module declares any app tables it needs so the Postgres reset drops them.
+- [x] The Postgres gate still controls only whether a run executes, never which assertions it makes.
+- [x] Conformance test names and pass/skip counts are unchanged from issue 02, demonstrated by output before and after.
+- [x] No source file changes; no coverage added or removed.
 
 ## Blocked by
 
