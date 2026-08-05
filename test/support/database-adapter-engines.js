@@ -93,7 +93,9 @@ export async function resetPostgresSchema(adapter, appTableNames = []) {
 }
 
 // The engines the conformance specification runs against. Gating decides only whether the
-// Postgres run happens; every engine that runs, runs the same specification.
+// Postgres run happens; every engine that runs, runs the same specification. Conformance surfaces
+// reach this list only through `runDatabaseAdapterConformance`, which is the one place it is
+// iterated, so no surface can run against a subset of it.
 export const DATABASE_ADAPTER_ENGINES = [
   { name: "SQLite", skip: false, withAdapter: withSqliteAdapter },
   { name: "libSQL", skip: false, withAdapter: withLibsqlAdapter },

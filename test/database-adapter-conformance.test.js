@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
-import test from "node:test";
 
-import { DATABASE_ADAPTER_ENGINES } from "./support/database-adapter-engines.js";
+import { runDatabaseAdapterConformance } from "./support/database-adapter-conformance.js";
 
 // One conformance specification for the Database adapter boundary, executed once per engine
 // (ADR-0035). It asserts what a method answers for a given stored state, never how it reached
@@ -12,6 +11,13 @@ import { DATABASE_ADAPTER_ENGINES } from "./support/database-adapter-engines.js"
 // because none of those defects threw. And every predicate is exercised on both sides, because
 // a check that always answers true and a count that always answers zero each satisfy a single
 // positive assertion.
+//
+// This file is one surface of that specification: the cases seeded from the six defects the
+// suite was built to catch. A surface owns its cases, its app tables and its prepared storage,
+// and contributes them through `runDatabaseAdapterConformance`, which is the single place engine
+// iteration and the Postgres gate live. Coverage for a further surface goes in its own
+// `database-adapter-conformance-<surface>.test.js` sibling, passing its own title, so no two
+// surfaces share a file, an adapter, or a row.
 
 const CONFORMANCE_APP_TABLE = {
   name: "conformance_notes",
@@ -281,18 +287,9 @@ const DATABASE_ADAPTER_CONFORMANCE_CASES = [
   },
 ];
 
-for (const engine of DATABASE_ADAPTER_ENGINES) {
-  test(`Database adapter conformance: ${engine.name}`, { skip: engine.skip }, async (t) => {
-    await engine.withAdapter(
-      async (adapter) => {
-        await prepareConformanceStorage(adapter);
-        for (const conformanceCase of DATABASE_ADAPTER_CONFORMANCE_CASES) {
-          await t.test(conformanceCase.name, async () => {
-            await conformanceCase.run(adapter);
-          });
-        }
-      },
-      { appTableNames: [CONFORMANCE_APP_TABLE.name] },
-    );
-  });
-}
+runDatabaseAdapterConformance({
+  title: "Database adapter conformance",
+  appTableNames: [CONFORMANCE_APP_TABLE.name],
+  prepareStorage: prepareConformanceStorage,
+  cases: DATABASE_ADAPTER_CONFORMANCE_CASES,
+});
