@@ -47,6 +47,14 @@ depends on is asserted. That preserves ADR-0026's split, which already verifies
 workflow-level Transaction boundaries above the adapter while leaving adapter
 mechanics at the boundary.
 
+This is also what makes the per-engine method overrides ADR-0034 describes
+tolerable. Postgres and libSQL each replace a substantial part of the shared
+method set for dialect and DDL reasons, and an override is permitted to change
+the statement text a method emits but not the answer the method gives. Reading
+an override cannot establish which of those it did; running the same
+specification against it can. Where the overrides are the risk, the shared
+specification is the control.
+
 Adding a method to the Database adapter without adding it to the conformance
 specification leaves the work incomplete. A new engine adapter is likewise built
 against this specification rather than against a reading of the SQLite adapter,
