@@ -163,6 +163,9 @@ function validatePublicTreeFileSet(files) {
 // src/server-runtime-source.ts
 import { createHash, createHmac, createPrivateKey, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
+var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
+var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
+var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
 function logPayloadMaxBytes(config = {}) {
   const configured = Number(config.logs?.payloadMaxBytes ?? config.logging?.payloadMaxBytes);
   return Number.isInteger(configured) && configured > 0 ? configured : 4096;

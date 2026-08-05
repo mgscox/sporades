@@ -85,6 +85,15 @@ export const auth = {
   setPassword(email, newPassword) {
     return connect().setPassword(email, newPassword);
   },
+  sendPasswordResetLink(email) {
+    return connect().sendPasswordResetLink(email);
+  },
+  verifyPasswordResetCode(code) {
+    return connect().verifyPasswordResetCode(code);
+  },
+  confirmPasswordReset(code, newPassword) {
+    return connect().confirmPasswordReset(code, newPassword);
+  },
 };
 
 export const files = {
@@ -1003,6 +1012,15 @@ function createConnection() {
     },
     setPassword(email, newPassword) {
       return request("auth.setPassword", { email, newPassword });
+    },
+    sendPasswordResetLink(email) {
+      return request("auth.sendPasswordResetLink", { email });
+    },
+    verifyPasswordResetCode(code) {
+      return request("auth.verifyPasswordResetCode", { code });
+    },
+    confirmPasswordReset(code, newPassword) {
+      return request("auth.confirmPasswordReset", { code, newPassword });
     },
     subscribeQuery(name, listener) {
       if (typeof name !== "string" || !name) throw new TypeError("queries.subscribe requires a query name.");
@@ -2253,9 +2271,19 @@ function validateMailConfig(mail) {
 }
 
 // src/server-runtime-source.ts
+var PRIVILEGED_AUTH_USER_ID = "__privileged__";
 var EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 var EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1e3;
 var EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
+var EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
+var PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
+var PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
+var PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1e3;
+var PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1e3;
+var PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1e3;
+var PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
+var RESERVED_JOB_NAME_PREFIX = "_sporades";
+var PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
 var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   validateMailConfig,
   createMailRuntime,
@@ -2392,6 +2420,9 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   splitSqlStatements,
   openDevDatabase,
   recoverExpiredJobLeases,
+  isReservedJobName,
+  runtimeOwnedJobHandlers,
+  enqueueRuntimeJob,
   jobHandlersFromCapsuleDefinition,
   ensureJobStorage,
   createRuntimeLogSink,
@@ -2658,6 +2689,24 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   hashEmailPassword,
   verifyEmailPassword,
   emailAuthDisabledError,
+  setOwnEmailPassword,
+  emailNotOwnedError,
+  resolvePasswordResetConfig,
+  normalizePasswordResetPath,
+  passwordResetCodeParts,
+  hashPasswordResetVerifier,
+  issuePasswordResetCode,
+  readPasswordResetCode,
+  passwordResetLimitError,
+  invalidPasswordResetCodeError,
+  mailNotConfiguredError,
+  passwordResetMailBody,
+  escapeHtmlAttribute,
+  serverAuthError,
+  createEmailPasswordResetLink,
+  sendEmailPasswordResetLink,
+  verifyPasswordResetCode,
+  confirmPasswordReset,
   beginOAuthSignIn,
   oauthProviderAdapter,
   isOAuthLoopbackHostname,
@@ -3037,6 +3086,7 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
   const smtp = mailConfig?.smtp;
   if (!smtp) {
     return {
+      enabled: false,
       async send() {
         throw mailError(
           "MAIL_DISABLED",
@@ -3087,6 +3137,7 @@ function createMailRuntime(mailConfig, serverEnv, options = {}) {
   let closeStarted = false;
   let closeResult;
   return {
+    enabled: true,
     async send(input) {
       const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
       const messageIdentity = `mail_${randomUUID()}`;
@@ -4138,7 +4189,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   const queries = extractQueryHandlersFromCapsule(capsuleDefinition) ?? extractQueryHandlers(serverSource);
   const mutations = capsuleDefinition ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition) : extractMutationHandlers(serverSource);
   const messages = extractMessageHandlers(serverSource);
-  const jobs = jobHandlersFromCapsuleDefinition(capsuleDefinition);
+  const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers()];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
   const contextMiddleware = extractContextMiddleware(serverSource);
@@ -4174,6 +4225,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
     serverEnv,
     mail,
     authConfig: authStatus(config, serverEnv),
+    passwordResetConfig: resolvePasswordResetConfig(config),
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
     fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
@@ -4633,11 +4685,34 @@ function createRuntimeClock(clock) {
     clearTimer: (timer) => clearTimeout(timer)
   };
 }
+function runtimeOwnedJobHandlers() {
+  return [
+    {
+      name: PASSWORD_RESET_MAIL_JOB,
+      handler: async (ctx, payload) => ctx.mail.send({
+        to: payload.to,
+        subject: payload.subject,
+        textBody: payload.textBody,
+        htmlBody: payload.htmlBody
+      })
+    }
+  ];
+}
+function isReservedJobName(name) {
+  return name.toLowerCase().startsWith(RESERVED_JOB_NAME_PREFIX);
+}
 function jobHandlersFromCapsuleDefinition(capsuleDefinition) {
   const handlers = [];
   for (const [name, definition] of Object.entries(capsuleDefinition?.jobs ?? {})) {
     if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name) || definition?.kind !== "job" || typeof definition.handler !== "function") {
       throw commandError("Invalid Job handler.", "Declare jobs as named job(...) handlers using letters, numbers, underscores, or hyphens.");
+    }
+    if (isReservedJobName(name)) {
+      throw commandError(
+        `Reserved Job handler name: ${name}`,
+        "Job names beginning with `_sporades` are reserved for the Sporades runtime. Rename this Job.",
+        "RESERVED_JOB_NAME"
+      );
     }
     if (handlers.some((handler) => handler.name === name)) {
       throw commandError(`Duplicate Job handler: ${name}`, "Use one unique Job handler name per Capsule.");
@@ -5311,6 +5386,32 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       ).get(email) ?? null;
       return isReservedAuthUserId(row?.userId) ? null : row;
     },
+    deleteAuthSessionsForUser(userId) {
+      return this.prepare("DELETE FROM sporades_auth_sessions WHERE userId = ?").run(userId);
+    },
+    insertPasswordResetCode(row) {
+      assertNotReservedAuthUserId(row.userId);
+      return this.prepare(
+        "INSERT INTO sporades_auth_password_reset_codes (selector, verifierHash, email, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?)"
+      ).run(row.selector, row.verifierHash, row.email, row.userId, row.createdAt, row.expiresAt);
+    },
+    findPasswordResetCode(selector) {
+      return this.prepare(
+        "SELECT selector, verifierHash, email, userId, createdAt, expiresAt FROM sporades_auth_password_reset_codes WHERE selector = ?"
+      ).get(selector) ?? null;
+    },
+    countPasswordResetCodesForEmail(email, now) {
+      const row = this.prepare(
+        "SELECT COUNT(*) AS count FROM sporades_auth_password_reset_codes WHERE email = ? AND expiresAt > ?"
+      ).get(email, now);
+      return Number(row?.count ?? 0);
+    },
+    deletePasswordResetCodesForUser(userId) {
+      return this.prepare("DELETE FROM sporades_auth_password_reset_codes WHERE userId = ?").run(userId);
+    },
+    prunePasswordResetCodes(now) {
+      return this.prepare("DELETE FROM sporades_auth_password_reset_codes WHERE expiresAt <= ?").run(now);
+    },
     migrateAppSchema(schema) {
       this.exec("BEGIN");
       try {
@@ -5552,6 +5653,9 @@ async function createPostgresDatabaseAdapter(options) {
       if (authConfig?.providers?.email?.enabled) {
         await this.exec(
           "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (email TEXT PRIMARY KEY, userId TEXT NOT NULL, passwordHash TEXT NOT NULL, passwordSalt TEXT NOT NULL, createdAt TEXT NOT NULL)"
+        );
+        await this.exec(
+          "CREATE TABLE IF NOT EXISTS sporades_auth_password_reset_codes (selector TEXT PRIMARY KEY, verifierHash TEXT NOT NULL, email TEXT NOT NULL, userId TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL)"
         );
       }
       await this.exec(
@@ -6371,6 +6475,9 @@ async function createLibsqlDatabaseAdapter(options) {
       if (authConfig?.providers?.email?.enabled) {
         await this.exec(
           "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (email TEXT PRIMARY KEY, userId TEXT NOT NULL, passwordHash TEXT NOT NULL, passwordSalt TEXT NOT NULL, createdAt TEXT NOT NULL)"
+        );
+        await this.exec(
+          "CREATE TABLE IF NOT EXISTS sporades_auth_password_reset_codes (selector TEXT PRIMARY KEY, verifierHash TEXT NOT NULL, email TEXT NOT NULL, userId TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL)"
         );
       }
       await this.exec(
@@ -8924,6 +9031,24 @@ function createEndpointContext(database, endpointRequest, session) {
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
       if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
+    },
+    async sendEmailPasswordResetLink(email, options = {}) {
+      const result = await sendEmailPasswordResetLink(database, { auth }, email, options);
+      if (!result.ok) throw serverAuthError(result.error, "Could not send the password reset link.");
+    },
+    async createEmailPasswordResetLink(email) {
+      const result = await createEmailPasswordResetLink(database, { auth }, email);
+      if (!result.ok) throw serverAuthError(result.error, "Could not create a password reset link.");
+      return { link: result.link, expiresAt: result.expiresAt };
+    },
+    async verifyPasswordResetCode(code) {
+      const result = await verifyPasswordResetCode(database, { auth }, code);
+      if (!result.ok) throw serverAuthError(result.error, "Could not verify the password reset code.");
+      return { email: result.email };
+    },
+    async confirmPasswordReset(code, newPassword) {
+      const result = await confirmPasswordReset(database, { auth }, code, newPassword);
+      if (!result.ok) throw serverAuthError(result.error, "Could not complete the password reset.");
     }
   };
   return context;
@@ -10496,10 +10621,51 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
       return;
     }
     if (message.type === "auth.setPassword") {
-      const result = await setEmailPassword(database, client.session, message.email ?? "", message.newPassword ?? "");
+      const result = await setOwnEmailPassword(database, client.session, message.email ?? "", message.newPassword ?? "");
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "auth.setPassword.result" : "error",
+        data: result.ok ? { ok: true } : null,
+        error: result.error ?? null
+      });
+      return;
+    }
+    if (message.type === "auth.sendPasswordResetLink") {
+      const result = await sendEmailPasswordResetLink(database, client.session, message.email ?? "");
+      const misconfigured = result.error?.code === "MAIL_NOT_CONFIGURED";
+      if (misconfigured) {
+        database.log?.emit?.({
+          category: "platform",
+          event: "auth.password_reset.undeliverable",
+          level: "error",
+          message: result.error.message,
+          data: { code: result.error.code, hint: result.error.hint }
+        });
+      }
+      const ok = result.ok || misconfigured;
+      sendJson(client, {
+        id: message.id ?? null,
+        type: ok ? "auth.sendPasswordResetLink.result" : "error",
+        data: ok ? { ok: true } : null,
+        error: ok ? null : result.error ?? null
+      });
+      return;
+    }
+    if (message.type === "auth.verifyPasswordResetCode") {
+      const result = await verifyPasswordResetCode(database, client.session, message.code ?? "");
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "auth.verifyPasswordResetCode.result" : "error",
+        data: result.ok ? { email: result.email } : null,
+        error: result.error ?? null
+      });
+      return;
+    }
+    if (message.type === "auth.confirmPasswordReset") {
+      const result = await confirmPasswordReset(database, client.session, message.code ?? "", message.newPassword ?? "");
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "auth.confirmPasswordReset.result" : "error",
         data: result.ok ? { ok: true } : null,
         error: result.error ?? null
       });
@@ -12624,6 +12790,238 @@ function writeRedirect(response, location) {
   response.writeHead(302, { location });
   response.end();
 }
+function resolvePasswordResetConfig(config) {
+  const passwordReset = config.auth?.email?.passwordReset ?? {};
+  const port = typeof config.dev?.port === "number" ? config.dev.port : typeof config.deploy?.port === "number" ? config.deploy.port : 4e3;
+  const ttlMs = typeof passwordReset.ttlMs === "number" && Number.isFinite(passwordReset.ttlMs) ? Math.min(Math.max(passwordReset.ttlMs, PASSWORD_RESET_MIN_TTL_MS), PASSWORD_RESET_MAX_TTL_MS) : PASSWORD_RESET_DEFAULT_TTL_MS;
+  return {
+    path: normalizePasswordResetPath(passwordReset.path) ?? PASSWORD_RESET_DEFAULT_PATH,
+    origin: normalizeOrigin(config.__sporadesPublicOrigin) ?? `http://localhost:${port}`,
+    ttlMs
+  };
+}
+function normalizePasswordResetPath(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) {
+    return null;
+  }
+  if (value.includes("\\") || value.includes("?") || value.includes("#")) {
+    return null;
+  }
+  if (value.split("/").includes("..")) {
+    return null;
+  }
+  return value;
+}
+function passwordResetCodeParts(database) {
+  const selector = randomBytes2(16).toString("base64url");
+  const verifier = randomBytes2(32).toString("base64url");
+  return {
+    selector,
+    verifier,
+    code: `${selector}.${verifier}`,
+    verifierHash: hashPasswordResetVerifier(verifier),
+    now: database.clock.now()
+  };
+}
+function hashPasswordResetVerifier(verifier) {
+  return createHash2("sha256").update(verifier).digest("base64url");
+}
+async function issuePasswordResetCode(database, credential) {
+  const { selector, code, verifierHash, now } = passwordResetCodeParts(database);
+  const expiresAt = new Date(now.getTime() + database.passwordResetConfig.ttlMs).toISOString();
+  await database.sqlite.prunePasswordResetCodes(now.toISOString());
+  const outstanding = await database.sqlite.countPasswordResetCodesForEmail(credential.email, now.toISOString());
+  if (outstanding >= PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL) {
+    return null;
+  }
+  await database.sqlite.insertPasswordResetCode({
+    selector,
+    verifierHash,
+    email: credential.email,
+    userId: credential.userId,
+    createdAt: now.toISOString(),
+    expiresAt
+  });
+  const link = new URL(database.passwordResetConfig.path, database.passwordResetConfig.origin);
+  link.searchParams.set("code", code);
+  return { code, selector, link: link.toString(), expiresAt };
+}
+async function createEmailPasswordResetLink(database, _session, email) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+  if (!cleanEmail) {
+    return { ok: false, error: { message: "Email is required.", hint: "Provide the email address for the account being reset." } };
+  }
+  const credential = await database.sqlite.findEmailCredentialWithUser(cleanEmail);
+  if (!credential) {
+    return { ok: false, error: { message: "No email account found for that address.", hint: "Check the email address or register a new account." } };
+  }
+  const issued = await issuePasswordResetCode(database, credential);
+  if (!issued) {
+    return { ok: false, error: passwordResetLimitError() };
+  }
+  return { ok: true, link: issued.link, expiresAt: issued.expiresAt };
+}
+function serverAuthError(error, fallback) {
+  const failure = new Error(error?.message ?? fallback);
+  if (error?.code) failure.code = error.code;
+  if (error?.hint) failure.hint = error.hint;
+  return failure;
+}
+function passwordResetLimitError() {
+  return {
+    code: "PASSWORD_RESET_LIMIT_REACHED",
+    message: "Too many password reset links are already outstanding for this account.",
+    hint: "Use the most recent reset link, or wait for the outstanding links to expire."
+  };
+}
+function invalidPasswordResetCodeError() {
+  return {
+    code: "INVALID_PASSWORD_RESET_CODE",
+    message: "This password reset link is invalid or has expired.",
+    hint: "Request a new password reset link."
+  };
+}
+async function readPasswordResetCode(database, code) {
+  const parts = typeof code === "string" ? code.split(".") : [];
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    return null;
+  }
+  const row = await database.sqlite.findPasswordResetCode(parts[0]);
+  const expected = Buffer.from(row?.verifierHash ?? hashPasswordResetVerifier("\0absent"), "base64url");
+  const actual = Buffer.from(hashPasswordResetVerifier(parts[1]), "base64url");
+  const matches = actual.length === expected.length && timingSafeEqual(actual, expected);
+  if (!row || !matches) {
+    return null;
+  }
+  return database.clock.now().getTime() >= Date.parse(row.expiresAt) ? null : row;
+}
+async function verifyPasswordResetCode(database, _session, code) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  const row = await readPasswordResetCode(database, code);
+  if (!row) {
+    return { ok: false, error: invalidPasswordResetCodeError() };
+  }
+  return { ok: true, email: row.email };
+}
+async function confirmPasswordReset(database, _session, code, newPassword) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  if (typeof newPassword !== "string" || newPassword.length < 8) {
+    return { ok: false, error: { message: "Password is too short.", hint: "Use a password with at least 8 characters." } };
+  }
+  const row = await readPasswordResetCode(database, code);
+  if (!row) {
+    return { ok: false, error: invalidPasswordResetCodeError() };
+  }
+  const password = hashEmailPassword(newPassword);
+  return await database.sqlite.withTransaction(async (tx) => {
+    await tx.updateEmailCredentialPassword(row.email, password.hash, password.salt);
+    await tx.deletePasswordResetCodesForUser(row.userId);
+    await tx.deleteAuthSessionsForUser(row.userId);
+    return { ok: true };
+  });
+}
+async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey) {
+  const queueDatabase = database.__rootDatabase ?? database;
+  const now = queueDatabase.clock.now().toISOString();
+  const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
+  await queueDatabase.sqlite.prepare(
+    "INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)"
+  ).run(
+    randomUUID(),
+    handlerName,
+    PRIVILEGED_AUTH_USER_ID,
+    PRIVILEGED_AUTH_USER_ID,
+    "privileged",
+    payloadJson,
+    now,
+    idempotencyKey,
+    now,
+    JSON.stringify(normalizeJobRetry(void 0))
+  );
+  scheduleCurrentUserJobWorker(queueDatabase);
+}
+function passwordResetMailBody(link) {
+  return {
+    textBody: `We received a request to reset your password.
+
+Open this link to choose a new password:
+${link}
+
+If you did not request this, you can ignore this message and your password will stay the same.
+`,
+    htmlBody: `<p>We received a request to reset your password.</p><p><a href="${escapeHtmlAttribute(link)}">Choose a new password</a></p><p>If you did not request this, you can ignore this message and your password will stay the same.</p>`
+  };
+}
+function escapeHtmlAttribute(value) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+async function sendEmailPasswordResetLink(database, session, email, options = {}) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  if (!database.mail.enabled) {
+    return { ok: false, error: mailNotConfiguredError() };
+  }
+  const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+  const throttle = currentEmailSignInThrottleState(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
+  if (throttle.throttled) {
+    return { ok: true };
+  }
+  recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
+  const credential = cleanEmail ? await database.sqlite.findEmailCredentialWithUser(cleanEmail) : null;
+  if (!credential) {
+    hashPasswordResetVerifier(randomBytes2(32).toString("base64url"));
+    return { ok: true };
+  }
+  const issued = await issuePasswordResetCode(database, credential);
+  if (!issued) {
+    return { ok: true };
+  }
+  const body = passwordResetMailBody(issued.link);
+  await enqueueRuntimeJob(database, PASSWORD_RESET_MAIL_JOB, {
+    to: credential.email,
+    subject: typeof options.subject === "string" ? options.subject : "Reset your password",
+    textBody: typeof options.textBody === "string" ? options.textBody : body.textBody,
+    htmlBody: typeof options.htmlBody === "string" ? options.htmlBody : body.htmlBody
+    // Job execution is at least once; the key keeps one Reset code to one mail.
+  }, `password-reset:${issued.selector}`);
+  return { ok: true };
+}
+function mailNotConfiguredError() {
+  return {
+    code: "MAIL_NOT_CONFIGURED",
+    message: "Password reset mail cannot be delivered because SMTP is not configured.",
+    hint: "Set `mail.smtp` in sporades.json, or use ctx.serverAuth.createEmailPasswordResetLink with your own delivery path."
+  };
+}
+async function setOwnEmailPassword(database, session, email, newPassword) {
+  let auth;
+  try {
+    auth = requireAuth({ ...session, kind: "message" }, { linked: true });
+  } catch (error) {
+    return { ok: false, error: { code: error?.code ?? "UNAUTHENTICATED", message: error.message, hint: error.hint } };
+  }
+  const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+  const credential = cleanEmail ? await database.sqlite.findEmailCredentialWithUser(cleanEmail) : null;
+  if (!credential || credential.userId !== auth.userId) {
+    return { ok: false, error: emailNotOwnedError() };
+  }
+  return await setEmailPassword(database, session, cleanEmail, newPassword);
+}
+function emailNotOwnedError() {
+  return {
+    code: "AUTH_EMAIL_NOT_OWNED",
+    message: "That email address is not this account's email credential.",
+    hint: "Change the password for the signed-in account, or use a password reset link."
+  };
+}
 async function setEmailPassword(database, _session, email, newPassword) {
   if (!database.authConfig.providers.email.enabled) {
     return { ok: false, error: emailAuthDisabledError() };
@@ -12733,20 +13131,20 @@ async function signInWithEmail(database, session, credentials) {
     auth
   }));
 }
-function createEmailSignInThrottleState(database) {
-  const existing = database.__emailSignInThrottle;
+function createEmailSignInThrottleState(database, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
+  const existing = database[scope];
   if (existing instanceof Map) {
     return existing;
   }
   const next = /* @__PURE__ */ new Map();
-  database.__emailSignInThrottle = next;
+  database[scope] = next;
   return next;
 }
 function emailSignInThrottleKeys(email, session) {
   return [`email\0${email}`, `caller\0${callerContextKey(session)}`];
 }
-function currentEmailSignInThrottleState(database, email, session) {
-  const attempts = createEmailSignInThrottleState(database);
+function currentEmailSignInThrottleState(database, email, session, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
+  const attempts = createEmailSignInThrottleState(database, scope);
   const now = Date.now();
   pruneEmailSignInThrottleState(attempts, now);
   const keys = emailSignInThrottleKeys(email, session);
@@ -12765,9 +13163,9 @@ function currentEmailSignInThrottleState(database, email, session) {
     resetAt: Math.max(...entries.map((entry) => entry.resetAt))
   };
 }
-function recordFailedEmailSignInAttempt(database, email, session) {
-  const attempts = createEmailSignInThrottleState(database);
-  const current = currentEmailSignInThrottleState(database, email, session);
+function recordFailedEmailSignInAttempt(database, email, session, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
+  const attempts = createEmailSignInThrottleState(database, scope);
+  const current = currentEmailSignInThrottleState(database, email, session, scope);
   for (const entry of current.entries) {
     attempts.set(entry.key, {
       count: entry.count + 1,
@@ -12776,8 +13174,8 @@ function recordFailedEmailSignInAttempt(database, email, session) {
   }
   boundEmailSignInThrottleState(attempts);
 }
-function resetEmailSignInAttempts(database, email, session) {
-  const attempts = createEmailSignInThrottleState(database);
+function resetEmailSignInAttempts(database, email, session, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
+  const attempts = createEmailSignInThrottleState(database, scope);
   for (const key of emailSignInThrottleKeys(email, session)) {
     attempts.delete(key);
   }
@@ -12885,6 +13283,9 @@ function createAnonymousAuthTables(sqlite, authConfig = null) {
   if (authConfig?.providers?.email?.enabled) {
     sqlite.exec(
       "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (email TEXT PRIMARY KEY, userId TEXT NOT NULL, passwordHash TEXT NOT NULL, passwordSalt TEXT NOT NULL, createdAt TEXT NOT NULL)"
+    );
+    sqlite.exec(
+      "CREATE TABLE IF NOT EXISTS sporades_auth_password_reset_codes (selector TEXT PRIMARY KEY, verifierHash TEXT NOT NULL, email TEXT NOT NULL, userId TEXT NOT NULL, createdAt TEXT NOT NULL, expiresAt TEXT NOT NULL)"
     );
   }
   sqlite.exec(
@@ -13584,6 +13985,24 @@ function createMutationContext(database, auth) {
     async setEmailPassword(email, newPassword) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
       if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
+    },
+    async sendEmailPasswordResetLink(email, options = {}) {
+      const result = await sendEmailPasswordResetLink(database, { auth }, email, options);
+      if (!result.ok) throw serverAuthError(result.error, "Could not send the password reset link.");
+    },
+    async createEmailPasswordResetLink(email) {
+      const result = await createEmailPasswordResetLink(database, { auth }, email);
+      if (!result.ok) throw serverAuthError(result.error, "Could not create a password reset link.");
+      return { link: result.link, expiresAt: result.expiresAt };
+    },
+    async verifyPasswordResetCode(code) {
+      const result = await verifyPasswordResetCode(database, { auth }, code);
+      if (!result.ok) throw serverAuthError(result.error, "Could not verify the password reset code.");
+      return { email: result.email };
+    },
+    async confirmPasswordReset(code, newPassword) {
+      const result = await confirmPasswordReset(database, { auth }, code, newPassword);
+      if (!result.ok) throw serverAuthError(result.error, "Could not complete the password reset.");
     }
   };
   return context;
@@ -14434,6 +14853,15 @@ const PRIVILEGED_AUTH_USER_ID = "__privileged__";
 const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
 const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
+const EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
+const PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
+const PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
+const PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1000;
+const PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1000;
+const PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1000;
+const PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
+const RESERVED_JOB_NAME_PREFIX = "_sporades";
+const PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
 const PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
 const PRIVILEGED_AUDIT_ACTOR_KINDS = new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
 const PRIVILEGED_AUDIT_OUTCOMES = new Set(["started", "completed", "errored", "finished"]);
@@ -20083,8 +20511,48 @@ async function readProjectConfig(projectDir) {
   validateClientConfig(config.client);
   validateSchedulingConfig(config.scheduling);
   if (config.mail !== void 0) config.mail = validateMailConfig(config.mail);
+  validatePasswordResetConfig(config.auth);
   validateCapsuleServicesConfig(config.services);
   return config;
+}
+var PASSWORD_RESET_MIN_TTL_MS2 = 5 * 60 * 1e3;
+var PASSWORD_RESET_MAX_TTL_MS2 = 24 * 60 * 60 * 1e3;
+function validatePasswordResetConfig(auth) {
+  const passwordReset = auth?.email?.passwordReset;
+  if (passwordReset === void 0) return;
+  const fail = (message, hint) => {
+    const error = new Error(message);
+    error.code = "INVALID_AUTH_CONFIG";
+    error.hint = hint;
+    throw error;
+  };
+  if (!passwordReset || typeof passwordReset !== "object" || Array.isArray(passwordReset)) {
+    fail("Invalid password reset configuration.", "Set `auth.email.passwordReset` to an object with optional `path` and `ttlMs`.");
+  }
+  const unknown = Object.keys(passwordReset).filter((key) => key !== "path" && key !== "ttlMs");
+  if (unknown.length > 0) {
+    fail(
+      `Unsupported password reset option: ${unknown.sort().join(", ")}`,
+      "Configure only `auth.email.passwordReset.path` and `auth.email.passwordReset.ttlMs`."
+    );
+  }
+  if (passwordReset.path !== void 0 && !isSameOriginResetPath(passwordReset.path)) {
+    fail(
+      "Invalid password reset page path.",
+      "Set `auth.email.passwordReset.path` to a same-origin absolute path such as `/reset-password`, not a URL."
+    );
+  }
+  if (passwordReset.ttlMs !== void 0 && (typeof passwordReset.ttlMs !== "number" || !Number.isFinite(passwordReset.ttlMs) || passwordReset.ttlMs < PASSWORD_RESET_MIN_TTL_MS2 || passwordReset.ttlMs > PASSWORD_RESET_MAX_TTL_MS2)) {
+    fail(
+      "Invalid password reset code lifetime.",
+      "Set `auth.email.passwordReset.ttlMs` between 300000 (5 minutes) and 86400000 (24 hours)."
+    );
+  }
+}
+function isSameOriginResetPath(value) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) return false;
+  if (value.includes("\\") || value.includes("?") || value.includes("#")) return false;
+  return !value.split("/").includes("..");
 }
 function validateClientConfig(client) {
   if (client === void 0) return;

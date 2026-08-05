@@ -286,6 +286,43 @@ export type MailApi = {
 export type ServerAuthApi = {
   /** Update the password for an existing email credential. Throws if the email is not registered. */
   setEmailPassword(email: string, newPassword: string): Promise<void>;
+  /**
+   * Issue a Reset code and deliver it over the runtime SMTP transport.
+   *
+   * Resolves identically whether or not the email is registered, so it cannot
+   * be used to enumerate accounts. Throws only when mail is not configured or
+   * email auth is disabled.
+   */
+  sendEmailPasswordResetLink(email: string, options?: PasswordResetMailOptions): Promise<void>;
+  /**
+   * Issue a Reset code and return its link without sending anything, for
+   * Capsules that deliver through their own mail path.
+   *
+   * Unlike `sendEmailPasswordResetLink` this throws for an unregistered email,
+   * because its whole purpose is to return a link. It is server-only: exposing
+   * its result to an unauthenticated caller reintroduces account enumeration.
+   */
+  createEmailPasswordResetLink(email: string): Promise<PasswordResetLink>;
+  /** Report which account a Reset code belongs to. Does not spend the code. */
+  verifyPasswordResetCode(code: string): Promise<{ email: string }>;
+  /**
+   * Spend a Reset code and set the new password. Revokes every Session for that
+   * user and does not create a new one.
+   */
+  confirmPasswordReset(code: string, newPassword: string): Promise<void>;
+};
+
+/** Copy overrides for the built-in password reset message. */
+export type PasswordResetMailOptions = {
+  subject?: string;
+  textBody?: string;
+  htmlBody?: string;
+};
+
+/** A Reset code rendered as a link to the Capsule's own reset page. */
+export type PasswordResetLink = {
+  link: string;
+  expiresAt: string;
 };
 
 export type MessageScope =

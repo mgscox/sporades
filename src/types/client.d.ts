@@ -109,6 +109,24 @@ export type AuthApi = {
   signIn(provider: string, credentials?: unknown): Promise<SporadesResult>;
   signOut(): Promise<SporadesResult<{ ok: boolean }>>;
   setPassword(email: string, newPassword: string): Promise<SporadesResult<{ ok: boolean }>>;
+  /**
+   * Ask the runtime to mail a password reset link.
+   *
+   * Resolves the same way whether or not the email is registered, so the reply
+   * cannot be used to discover which addresses have accounts.
+   */
+  sendPasswordResetLink(email: string): Promise<SporadesResult<{ ok: boolean }>>;
+  /**
+   * Report which account a Reset code belongs to, so a reset page can name it.
+   * Does not spend the code, so a mail scanner following the link first does
+   * not break it for the recipient.
+   */
+  verifyPasswordResetCode(code: string): Promise<SporadesResult<{ email: string }>>;
+  /**
+   * Spend a Reset code and set the new password. This does not sign the browser
+   * in: sign in with the new password afterwards.
+   */
+  confirmPasswordReset(code: string, newPassword: string): Promise<SporadesResult<{ ok: boolean }>>;
 };
 
 /** Handle returned by client subscriptions. */

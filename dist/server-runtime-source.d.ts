@@ -332,6 +332,12 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
     }): StatementResultingChanges;
     updateEmailCredentialPassword(email: any, passwordHash: any, passwordSalt: any): StatementResultingChanges;
     findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null;
+    deleteAuthSessionsForUser(userId: any): StatementResultingChanges;
+    insertPasswordResetCode(row: LooseRecord): StatementResultingChanges;
+    findPasswordResetCode(selector: any): Record<string, SQLOutputValue> | null;
+    countPasswordResetCodesForEmail(email: any, now: any): number;
+    deletePasswordResetCodesForUser(userId: any): StatementResultingChanges;
+    prunePasswordResetCodes(now: any): StatementResultingChanges;
     migrateAppSchema(schema: {
         tables: {
             name: any;
@@ -911,6 +917,12 @@ export declare function createPostgresDatabaseAdapter(options: {
     }): StatementResultingChanges;
     updateEmailCredentialPassword(email: any, passwordHash: any, passwordSalt: any): StatementResultingChanges;
     findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null;
+    deleteAuthSessionsForUser(userId: any): StatementResultingChanges;
+    insertPasswordResetCode(row: LooseRecord): StatementResultingChanges;
+    findPasswordResetCode(selector: any): Record<string, SQLOutputValue> | null;
+    countPasswordResetCodesForEmail(email: any, now: any): number;
+    deletePasswordResetCodesForUser(userId: any): StatementResultingChanges;
+    prunePasswordResetCodes(now: any): StatementResultingChanges;
     referenceExists(field: {
         targetTable: any;
     }, value: any): boolean;
@@ -1222,6 +1234,12 @@ export declare function createLibsqlDatabaseAdapter(options: {
     }): StatementResultingChanges;
     updateEmailCredentialPassword(email: any, passwordHash: any, passwordSalt: any): StatementResultingChanges;
     findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null;
+    deleteAuthSessionsForUser(userId: any): StatementResultingChanges;
+    insertPasswordResetCode(row: LooseRecord): StatementResultingChanges;
+    findPasswordResetCode(selector: any): Record<string, SQLOutputValue> | null;
+    countPasswordResetCodesForEmail(email: any, now: any): number;
+    deletePasswordResetCodesForUser(userId: any): StatementResultingChanges;
+    prunePasswordResetCodes(now: any): StatementResultingChanges;
     createAppTable(table: {
         name: any;
     }, tableName?: any): any;
@@ -1411,6 +1429,60 @@ export declare function createWebSocketHub(getDatabase: () => any, trustedRefres
 export declare function routeSporadesAuth(database: LooseRecord, request: IncomingMessage, response: ServerResponse<IncomingMessage> & {
     req: IncomingMessage;
 }): Promise<boolean>;
+export declare function createEmailPasswordResetLink(database: LooseRecord, _session: LooseRecord, email: string): Promise<{
+    ok: boolean;
+    error: {
+        message: string;
+        hint: string;
+    };
+    link?: undefined;
+    expiresAt?: undefined;
+} | {
+    ok: boolean;
+    link: string;
+    expiresAt: string;
+    error?: undefined;
+}>;
+export declare function verifyPasswordResetCode(database: LooseRecord, _session: LooseRecord, code: any): Promise<{
+    ok: boolean;
+    error: {
+        message: string;
+        hint: string;
+    };
+    email?: undefined;
+} | {
+    ok: boolean;
+    email: any;
+    error?: undefined;
+}>;
+export declare function confirmPasswordReset(database: LooseRecord, _session: LooseRecord, code: any, newPassword: string): Promise<any>;
+export declare function sendEmailPasswordResetLink(database: LooseRecord, session: LooseRecord, email: string, options?: LooseRecord): Promise<{
+    ok: boolean;
+    error: {
+        message: string;
+        hint: string;
+    };
+} | {
+    ok: boolean;
+    error?: undefined;
+}>;
+export declare function setOwnEmailPassword(database: LooseRecord, session: LooseRecord, email: string, newPassword: string): Promise<{
+    ok: boolean;
+    error: {
+        message: string;
+        hint: string;
+    };
+} | {
+    ok: boolean;
+    error?: undefined;
+} | {
+    ok: boolean;
+    error: {
+        code: any;
+        message: any;
+        hint: any;
+    };
+}>;
 export declare function setEmailPassword(database: LooseRecord, _session: LooseRecord, email: string, newPassword: string): Promise<{
     ok: boolean;
     error: {

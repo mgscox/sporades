@@ -224,6 +224,10 @@ _Avoid_: email key, username, profile ID
 A short-lived, single-use runtime record binding one provider authorization request to its Session, exact callback URI, same-origin return URL, nonce, and PKCE verifier. The callback spends the attempt before any provider or account work, including cancellation and failure.
 _Avoid_: reusable state, client OAuth session
 
+**Reset code**:
+A short-lived, single-use runtime record binding one email credential to one password reset attempt. The code is a selector/verifier pair; the runtime stores the selector and only a hash of the verifier. Verification is repeatable and does not spend the code; confirming a new password spends it, deletes the user's other outstanding Reset codes, and revokes that user's Sessions.
+_Avoid_: reset token, oobCode, magic link (it authorizes a password change, not a sign-in)
+
 **Session provenance**:
 The authentication provider recorded on one Session. It reports how that Session authenticated independently of other Sessions or Provider identities linked to the same Sporades user.
 _Avoid_: user provider, account type, current linked provider
