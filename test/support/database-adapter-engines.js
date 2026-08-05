@@ -1,0 +1,101 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import { createLibsqlDatabaseAdapter, createPostgresDatabaseAdapter, createSqliteDatabaseAdapter } from "../../dist/server-runtime-source.js";
+import { withFakeLibsqlService } from "./libsql-http-service.js";
+
+// Per-engine setup for tests that drive a real Database adapter against real storage.
+// ADR-0035 executes one conformance specification once per engine, so the setup each engine
+// needs to hand a caller a live adapter lives here instead of being copied into every test.
+
+const POSTGRES_TEST_URL_VARIABLE = "SPORADES_POSTGRES_TEST_URL";
+
+const RUNTIME_TABLE_NAMES = [
+  "sporades",
+  "sporades_auth_email_credentials",
+  "sporades_auth_identities",
+  "sporades_auth_oauth_states",
+  "sporades_auth_password_reset_codes",
+  "sporades_auth_sessions",
+  "sporades_auth_users",
+  "sporades_file_buckets",
+  "sporades_file_public_urls",
+  "sporades_file_uploads",
+  "sporades_files",
+  "sporades_jobs",
+  "sporades_log_events",
+  "sporades_schedule_occurrences",
+  "sporades_schedules",
+  "sporades_user_preferences",
+];
+
+export function postgresTestUrl() {
+  return process.env[POSTGRES_TEST_URL_VARIABLE] ?? null;
+}
+
+export const POSTGRES_SKIP_REASON = process.env[POSTGRES_TEST_URL_VARIABLE]
+  ? false
+  : `Set ${POSTGRES_TEST_URL_VARIABLE} to run the Postgres adapter tests.`;
+
+async function withTempDir(prefix, fn) {
+  const dir = await mkdtemp(path.join(tmpdir(), prefix));
+  try {
+    return await fn(dir);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+export async function withSqliteAdapter(fn, options = {}) {
+  return await withTempDir("sporades-adapter-sqlite-", async (dir) => {
+    const adapter = await createSqliteDatabaseAdapter(path.join(dir, options.fileName ?? "adapter.db"));
+    try {
+      return await fn(adapter);
+    } finally {
+      adapter.close();
+    }
+  });
+}
+
+export async function withLibsqlAdapter(fn, options = {}) {
+  return await withTempDir("sporades-adapter-libsql-", async (dir) => {
+    return await withFakeLibsqlService(path.join(dir, options.fileName ?? "adapter.db"), options.service ?? {}, async (service) => {
+      const adapter = await createLibsqlDatabaseAdapter({ url: service.url });
+      try {
+        return await fn(adapter, service);
+      } finally {
+        await adapter.close();
+      }
+    });
+  });
+}
+
+// Postgres is the one engine whose storage outlives the test process, so a run starts by
+// dropping the runtime-owned tables plus any app tables the caller is about to migrate.
+export async function withPostgresAdapter(fn, options = {}) {
+  const url = postgresTestUrl();
+  if (!url) {
+    throw new Error(`${POSTGRES_TEST_URL_VARIABLE} is not set.`);
+  }
+  const adapter = await createPostgresDatabaseAdapter({ url });
+  try {
+    await resetPostgresSchema(adapter, options.appTableNames ?? []);
+    return await fn(adapter);
+  } finally {
+    await adapter.close();
+  }
+}
+
+export async function resetPostgresSchema(adapter, appTableNames = []) {
+  const names = [...appTableNames, ...RUNTIME_TABLE_NAMES].map((name) => `"${name}"`).join(", ");
+  await adapter.exec(`DROP TABLE IF EXISTS ${names} CASCADE`);
+}
+
+// The engines the conformance specification runs against. Gating decides only whether the
+// Postgres run happens; every engine that runs, runs the same specification.
+export const DATABASE_ADAPTER_ENGINES = [
+  { name: "SQLite", skip: false, withAdapter: withSqliteAdapter },
+  { name: "libSQL", skip: false, withAdapter: withLibsqlAdapter },
+  { name: "Postgres", skip: POSTGRES_SKIP_REASON, withAdapter: withPostgresAdapter },
+];
