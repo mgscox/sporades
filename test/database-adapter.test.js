@@ -28,6 +28,7 @@ import {
   runQuery,
   runReadOnlyQuery,
   SERVER_RUNTIME_SOURCE_FUNCTIONS,
+  setEmailPassword,
   signInWithEmail,
   signUpWithEmail,
   simulateLocalIdentitySession,
@@ -1142,6 +1143,144 @@ test("libSQL database adapter supports runtime storage, migrations, health, and 
   });
 });
 
+test("libSQL database adapter supports the runtime email auth storage paths", async () => {
+  await withTempDir(async (dir) => {
+    await withFakeLibsqlService(path.join(dir, "email-auth.db"), async ({ url }) => {
+      const database = await openDevDatabase(
+        path.join(dir, "data.db"),
+        "",
+        {},
+        {
+          auth: { providers: { anonymous: true, email: { enabled: true } } },
+          services: { database: { kind: "database", engine: "libsql" } },
+        },
+        null,
+        {
+          serviceEnv: {
+            SPORADES_SERVICE_DATABASE_ENGINE: "libsql",
+            SPORADES_SERVICE_DATABASE_URL: url,
+          },
+        },
+      );
+
+      try {
+        assert.equal(database.adapter.engine, "libsql");
+
+        assert.equal(await database.sqlite.emailCredentialExists("ada@example.com"), false);
+
+        const signUpSession = await resolveAnonymousSession(database, null);
+        const signUp = await signUpWithEmail(database, signUpSession, "email", {
+          email: "ada@example.com",
+          password: "correct horse battery staple",
+          name: "Ada",
+        });
+        assert.equal(signUp.ok, true);
+        assert.equal(signUp.auth.email, "ada@example.com");
+
+        assert.equal(await database.sqlite.emailCredentialExists("ada@example.com"), true);
+
+        const duplicate = await signUpWithEmail(database, await resolveAnonymousSession(database, null), "email", {
+          email: "ada@example.com",
+          password: "another password",
+          name: "Ada Again",
+        });
+        assert.equal(duplicate.ok, false);
+        assert.equal(duplicate.error.message, "Email is already registered.");
+
+        const signIn = await signInWithEmail(database, await resolveAnonymousSession(database, null), {
+          email: "ada@example.com",
+          password: "correct horse battery staple",
+        });
+        assert.equal(signIn.ok, true);
+        assert.equal(signIn.auth.userId, signUp.auth.userId);
+        assert.equal(signIn.auth.displayName, "Ada");
+        assert.equal(signIn.auth.isAuthenticated, true);
+        assert.equal(signIn.auth.isGuest, false);
+
+        const rejected = await signInWithEmail(database, await resolveAnonymousSession(database, null), {
+          email: "ada@example.com",
+          password: "wrong password",
+        });
+        assert.equal(rejected.ok, false);
+        assert.equal(rejected.error.message, "Email or password is incorrect.");
+
+        assert.deepEqual(await setEmailPassword(database, signIn, "ada@example.com", "a brand new password"), { ok: true });
+
+        const afterReset = await signInWithEmail(database, await resolveAnonymousSession(database, null), {
+          email: "ada@example.com",
+          password: "a brand new password",
+        });
+        assert.equal(afterReset.ok, true);
+        assert.equal(afterReset.auth.userId, signUp.auth.userId);
+
+        assert.equal((await database.sqlite.readAuthSessionWithUser(afterReset.sessionToken)).email, "ada@example.com");
+      } finally {
+        await database.close();
+      }
+    });
+  });
+});
+
+test("libSQL database adapter resolves query results before deriving runtime decisions from them", async () => {
+  await withTempDir(async (dir) => {
+    await withFakeLibsqlService(path.join(dir, "result-derived-decisions.db"), async ({ url }) => {
+      const adapter = await createLibsqlDatabaseAdapter({ url });
+      const now = "2026-07-04T10:00:00.000Z";
+      try {
+        await adapter.ensureAuthStorage({ providers: { email: { enabled: true } } });
+        await adapter.ensureFileStorage();
+        await adapter.exec("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, createdAt TEXT, updatedAt TEXT)");
+        await adapter.prepare("INSERT INTO users (id, createdAt, updatedAt) VALUES (?, ?, ?)").run("user-1", now, now);
+
+        // Reference integrity must distinguish present from absent rows, not accept everything.
+        assert.equal(await adapter.referenceExists({ targetTable: "users" }, "user-1"), true);
+        assert.equal(await adapter.referenceExists({ targetTable: "users" }, "missing"), false);
+
+        // Completing an upload for a file with no existing row must insert that row.
+        await adapter.createFileBucket({ id: "bucket-1", ownerId: "user-1", name: "default", createdAt: now });
+        await adapter.insertFileUpload({
+          id: "upload-1",
+          fileId: "file-1",
+          ownerId: "user-1",
+          bucketId: "bucket-1",
+          bucketName: "default",
+          path: "/default/proof.txt",
+          name: "proof.txt",
+          type: "text/plain",
+          version: "version-1",
+          expectedSize: 5,
+          createdAt: now,
+        });
+        await adapter.completeFileUpload(await adapter.selectFileUpload("upload-1"), 5, now);
+        const stored = await adapter.selectFileById("file-1");
+        assert.equal(stored?.name, "proof.txt");
+        assert.equal(stored?.status, "uploaded");
+
+        // The reserved privileged user must never be readable as an ordinary Sporades user.
+        await adapter
+          .prepare(
+            "INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) " +
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          )
+          .run("__privileged__", now, "Privileged", "privileged@example.com", null, 1, 0, "email");
+        await adapter
+          .prepare("INSERT INTO sporades_auth_sessions (token, userId, provider, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?)")
+          .run("privileged-token", "__privileged__", "email", now, "2099-01-01T00:00:00.000Z");
+        await adapter
+          .prepare(
+            "INSERT INTO sporades_auth_email_credentials (email, userId, passwordHash, passwordSalt, createdAt) VALUES (?, ?, ?, ?, ?)",
+          )
+          .run("privileged@example.com", "__privileged__", "hash", "salt", now);
+
+        assert.equal(await adapter.readAuthSessionWithUser("privileged-token"), null);
+        assert.equal(await adapter.findEmailCredentialWithUser("privileged@example.com"), null);
+      } finally {
+        await adapter.close();
+      }
+    });
+  });
+});
+
 test("libSQL OAuth state consumption has exactly one winner under concurrent callbacks", async () => {
   await withTempDir(async (dir) => {
     let selectCount = 0;
@@ -1284,6 +1423,21 @@ test(
         updatedAt: now,
       });
       assert.equal((await adapter.findAuthIdentityByProviderSubject("google", "postgres-google-subject")).userId, "user-1");
+
+      // Decisions derived from query results must resolve the row first, not the pending query.
+      assert.equal(await adapter.emailCredentialExists("nobody@example.com"), false);
+      await adapter.insertEmailCredential({
+        email: "postgres@example.com",
+        userId: "user-1",
+        passwordHash: "hash",
+        passwordSalt: "salt",
+        createdAt: now,
+      });
+      assert.equal(await adapter.emailCredentialExists("postgres@example.com"), true);
+      assert.equal((await adapter.findEmailCredentialWithUser("postgres@example.com")).userId, "user-1");
+      assert.equal(await adapter.referenceExists({ targetTable: "notes" }, "note-1"), true);
+      assert.equal(await adapter.referenceExists({ targetTable: "notes" }, "missing"), false);
+
       await adapter.insertOAuthState({
         state: "postgres-one-use-state",
         provider: "google",

@@ -3098,48 +3098,53 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       return this.prepare("SELECT * FROM sporades_file_uploads WHERE id = ?").get(uploadId) ?? null;
     },
     completeFileUpload(upload: { id: any; fileId: any; version: any; bucketId: any; bucketName: any; path: any; name: any; type: any; ownerId: any; createdAt: any; }, size: any, updatedAt: any) {
-      const consumed = this.prepare("DELETE FROM sporades_file_uploads WHERE id = ? AND fileId = ? AND version = ?").run(
-        upload.id,
-        upload.fileId,
-        upload.version,
-      );
-      if (consumed.changes === 0) {
-        return consumed;
-      }
-      const existing = this.selectFileById(upload.fileId);
-      if (existing) {
-        if (existing.deletedAt !== null && existing.deletedAt !== undefined) {
-          return { changes: 0 };
-        }
-        return this.prepare(
-          "UPDATE sporades_files SET bucketId = ?, bucketName = ?, path = ?, name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ? WHERE id = ? AND deletedAt IS NULL",
-        ).run(
-          upload.bucketId,
-          upload.bucketName,
-          upload.path,
-          upload.name,
-          upload.type,
-          size,
-          upload.version,
-          "uploaded",
-          updatedAt,
+      return thenIfPromise(
+        this.prepare("DELETE FROM sporades_file_uploads WHERE id = ? AND fileId = ? AND version = ?").run(
+          upload.id,
           upload.fileId,
-        );
-      }
-      return this.insertFileRow({
-        id: upload.fileId,
-        ownerId: upload.ownerId,
-        bucketId: upload.bucketId,
-        bucketName: upload.bucketName,
-        path: upload.path,
-        name: upload.name,
-        type: upload.type,
-        size,
-        version: upload.version,
-        status: "uploaded",
-        createdAt: upload.createdAt,
-        updatedAt,
-      });
+          upload.version,
+        ),
+        (consumed: any) => {
+          if (consumed.changes === 0) {
+            return consumed;
+          }
+          return thenIfPromise(this.selectFileById(upload.fileId), (existing: any) => {
+            if (existing) {
+              if (existing.deletedAt !== null && existing.deletedAt !== undefined) {
+                return { changes: 0 };
+              }
+              return this.prepare(
+                "UPDATE sporades_files SET bucketId = ?, bucketName = ?, path = ?, name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ? WHERE id = ? AND deletedAt IS NULL",
+              ).run(
+                upload.bucketId,
+                upload.bucketName,
+                upload.path,
+                upload.name,
+                upload.type,
+                size,
+                upload.version,
+                "uploaded",
+                updatedAt,
+                upload.fileId,
+              );
+            }
+            return this.insertFileRow({
+              id: upload.fileId,
+              ownerId: upload.ownerId,
+              bucketId: upload.bucketId,
+              bucketName: upload.bucketName,
+              path: upload.path,
+              name: upload.name,
+              type: upload.type,
+              size,
+              version: upload.version,
+              status: "uploaded",
+              createdAt: upload.createdAt,
+              updatedAt,
+            });
+          });
+        },
+      );
     },
     deleteFileUploadsForPath(path: any) {
       return this.prepare("DELETE FROM sporades_file_uploads WHERE path = ?").run(path);
@@ -3281,17 +3286,16 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       );
     },
     readAuthSessionWithUser(token: any) {
-      const row = this.prepare(
-        "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, " +
-        "s.provider AS provider " +
-        "FROM sporades_auth_sessions s " +
-        "JOIN sporades_auth_users u ON u.id = s.userId " +
-        "WHERE s.token = ?",
-      ).get(token) ?? null;
-      if (isReservedAuthUserId(row?.userId)) {
-        return null;
-      }
-      return row;
+      return thenIfPromise(
+        this.prepare(
+          "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, " +
+          "s.provider AS provider " +
+          "FROM sporades_auth_sessions s " +
+          "JOIN sporades_auth_users u ON u.id = s.userId " +
+          "WHERE s.token = ?",
+        ).get(token),
+        (row: any) => (isReservedAuthUserId(row?.userId) ? null : row ?? null),
+      );
     },
     insertOAuthState(row: LooseRecord) {
       const provider = row.provider ?? "google";
@@ -3313,7 +3317,10 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       return row;
     },
     emailCredentialExists(email: any) {
-      return Boolean(this.prepare("SELECT email FROM sporades_auth_email_credentials WHERE email = ?").get(email));
+      return thenIfPromise(
+        this.prepare("SELECT email FROM sporades_auth_email_credentials WHERE email = ?").get(email),
+        (row: any) => Boolean(row),
+      );
     },
     insertEmailCredential(row: { email: any; userId: any; passwordHash: any; passwordSalt: any; createdAt: any; }) {
       assertNotReservedAuthUserId(row.userId);
@@ -3327,15 +3334,15 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       ).run(passwordHash, passwordSalt, email);
     },
     findEmailCredentialWithUser(email: any) {
-      const row = (
+      return thenIfPromise(
         this.prepare(
           "SELECT c.email, c.userId, c.passwordHash, c.passwordSalt, u.displayName, u.picture, u.isAuthenticated, u.isGuest " +
           "FROM sporades_auth_email_credentials c " +
           "JOIN sporades_auth_users u ON u.id = c.userId " +
           "WHERE c.email = ?",
-        ).get(email) ?? null
+        ).get(email),
+        (row: any) => (isReservedAuthUserId(row?.userId) ? null : row ?? null),
       );
-      return isReservedAuthUserId(row?.userId) ? null : row;
     },
     migrateAppSchema(schema: { tables: { name: any; acl: { allowByDefault: boolean; } | { allowByDefault: boolean; resolve(operation: any): any; }; fields: { name: any; kind: any; sqliteType: string; targetTable: string | undefined; defaultValue: any; }[]; }[]; } | { tables: { name: string; fields: ({ name: any; kind: any; sqliteType: string; targetTable: any; defaultValue: any; } | null)[]; }[]; }) {
       this.exec("BEGIN");
@@ -3355,8 +3362,9 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       return migrateExistingAppTable(this, existingTable, nextTable);
     },
     referenceExists(field: { targetTable: any; }, value: any) {
-      return Boolean(
+      return thenIfPromise(
         this.prepare(`SELECT 1 FROM ${quoteIdentifier(field.targetTable)} WHERE id = ? LIMIT 1`).get(String(value)),
+        (row: any) => Boolean(row),
       );
     },
     async withTransaction(fn: (arg0: { engine: string; exec(sql: any): void; prepare(sql: any): { all(...params: any[]): Record<string, SQLOutputValue>[]; get(...params: any[]): Record<string, SQLOutputValue> | undefined; run(...params: any[]): StatementResultingChanges; columns(): StatementColumnMetadata[]; }; ensureSystemTable(): void; readSystemMetadata(key: any): Record<string, SQLOutputValue> | null; writeSystemMetadata(key: any, value: any): StatementResultingChanges; readSchemaMetadata(): Record<string, SQLOutputValue> | null; writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }): void; ensureLogStorage(): void; insertLogIndexEvent(event: any): void; pruneLogIndex(limit: any): void; readRecentLogEvents(limit: any): any; ensureFileStorage(): void; findFileBucket(ownerId: any, name: any): Record<string, SQLOutputValue> | null; createFileBucket(row: any): StatementResultingChanges; insertFileRow(row: any): StatementResultingChanges; updatePendingFileRow(row: any): StatementResultingChanges; insertFileUpload(row: any): StatementResultingChanges; selectFileById(fileId: any): Record<string, SQLOutputValue> | null; selectLiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectActiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath(path: any): Record<string, SQLOutputValue> | null; selectFileUpload(uploadId: any): Record<string, SQLOutputValue> | null; completeFileUpload(upload: any, size: any, updatedAt: any): StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath(path: any): StatementResultingChanges; deleteFileUploadsForFile(ownerId: any, fileId: any): StatementResultingChanges; deleteFileUpload(uploadId: any): StatementResultingChanges; selectPublicFileRow(publicUrlId: any): Record<string, SQLOutputValue> | null; insertPublicFileUrl(row: any): StatementResultingChanges; revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any): StatementResultingChanges; revokePublicFileUrlsForFile(fileId: any, revokedAt: any): StatementResultingChanges; markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges; fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null; ensureAuthStorage(authConfig?: null): void; insertAuthUser(row: any): StatementResultingChanges; updateAuthUserProfile(row: any): StatementResultingChanges; linkAuthUser(row: any): StatementResultingChanges; insertAuthSession(row: any): StatementResultingChanges; deleteAuthSession(token: any): StatementResultingChanges; refreshAuthSession(token: any, expiresAt: any): StatementResultingChanges; rotateAuthSession(previousToken: any, row: any): StatementResultingChanges; readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null; insertOAuthState(row: any): StatementResultingChanges; consumeOAuthState(state: any): Record<string, SQLOutputValue> | null; emailCredentialExists(email: any): boolean; insertEmailCredential(row: any): StatementResultingChanges; findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null; migrateAppSchema(schema: any): any; createAppTable(table: any, tableName?: any): any; migrateExistingAppTable(existingTable: any, nextTable: any): any; referenceExists(field: any, value: any): boolean; withTransaction(fn: any): Promise<any>; insertAppRow(table: any, row: any): StatementResultingChanges; selectAppRowById(table: any, id: any): Record<string, SQLOutputValue> | null; updateAppRow(table: any, id: any, values: any, options?: {}): StatementResultingChanges | { changes: number; }; deleteAppRow(table: any, id: any): StatementResultingChanges; selectAppRows(table: any, query?: {}): Record<string, SQLOutputValue>[]; listInspectableTables(): SQLOutputValue[]; dumpInspectableDatabase(): { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery(sql: any): { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth(): { ok: boolean; }; close(): void; }) => any) {
