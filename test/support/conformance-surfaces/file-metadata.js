@@ -602,13 +602,31 @@ const FILE_METADATA_CONFORMANCE_CASES = [
       assert.equal((await adapter.selectFileById("file-delete-theirs")).id, "file-delete-theirs");
       assert.equal((await adapter.findFileBucket(OWNER_ID, BUCKET_NAME)).id, BUCKET_ID);
 
+      // A pending upload is seeded here rather than relied on from an earlier case, because every
+      // upload those cases created was consumed or deleted by the time they finished. Without a
+      // stored upload row crossing the call below, a DDL path that recreated the uploads table
+      // would satisfy every other assertion in this case while destroying every in-flight Upload
+      // call on each Capsule restart.
+      await adapter.insertFileUpload(
+        pendingUpload({ id: "upload-across-ensure", fileId: "file-across-ensure", path: "/media/across-ensure.txt", name: "across-ensure.txt" }),
+      );
+      assert.equal((await adapter.selectFileUpload("upload-across-ensure")).fileId, "file-across-ensure");
+
       await adapter.ensureFileStorage();
 
-      // Nothing the earlier cases stored is disturbed by the second run.
+      // Nothing the earlier cases stored is disturbed by the second run, and neither is the
+      // pending upload — one assertion per table the method creates.
       assert.equal((await adapter.selectFileById("file-delete-theirs")).id, "file-delete-theirs");
       assert.equal((await adapter.selectFileById("file-delete-mine")).deletedAt, LATER);
       assert.equal((await adapter.findFileBucket(OWNER_ID, BUCKET_NAME)).id, BUCKET_ID);
       assert.equal((await adapter.selectPublicFileRow("purl-elsewhere")).revokedAt, null);
+      assert.deepEqual(
+        {
+          fileId: (await adapter.selectFileUpload("upload-across-ensure"))?.fileId,
+          path: (await adapter.selectPendingFileUploadByPath("/media/across-ensure.txt"))?.path,
+        },
+        { fileId: "file-across-ensure", path: "/media/across-ensure.txt" },
+      );
 
       // And the storage is still writable across every table the method creates.
       assert.equal((await adapter.createFileBucket({ id: "bucket-after-ensure", ownerId: OWNER_ID, name: "after", createdAt: LATEST })).changes, 1);

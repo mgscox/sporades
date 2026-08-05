@@ -29,9 +29,15 @@ import {
 // Every conformance case from every surface, run once against a fresh adapter per surface, with
 // the methods each case calls directly recorded. Storage preparation runs unrecorded on purpose —
 // seeding is not specifying.
+//
+// Only surfaces a test entry point imports are replayed. A surface module nothing imports has
+// never run against libSQL, so crediting its cases here would answer "exercised once against
+// SQLite" while reporting it as conformance coverage — and SQLite's synchronous statement
+// primitives are the one engine's primitives that cannot expose this defect class. Such a module
+// is reported by its own test below rather than counted here.
 async function exerciseConformanceSurfaces() {
-  const surfaces = await loadDatabaseAdapterConformanceSurfaces();
-  assert.ok(surfaces.length > 0, "no conformance surface modules were discovered");
+  const surfaces = (await loadDatabaseAdapterConformanceSurfaces()).filter((surface) => surface.entryPointNames.length > 0);
+  assert.ok(surfaces.length > 0, "no conformance surface modules with a test entry point were discovered");
 
   const calledMethodNames = new Set();
   for (const surface of surfaces) {
@@ -80,6 +86,26 @@ test("every Database adapter method has a conformance case or a recorded exempti
   assert.ok(review.covered.length >= methodNames.length - CONFORMANCE_EXEMPT_METHODS.length);
   assert.ok(review.covered.length <= methodNames.length);
   assert.ok(surfaces.length >= 4, `expected every conformance surface to be replayed, saw ${surfaces.length}`);
+});
+
+test("every conformance surface module is run against every engine by a test entry point", async () => {
+  const surfaces = await loadDatabaseAdapterConformanceSurfaces();
+  assert.ok(surfaces.length > 0, "no conformance surface modules were discovered");
+
+  // Coverage credit and engine execution have to be the same fact. A surface module is only run
+  // against libSQL and the gated Postgres adapter because a `database-adapter-conformance-*.test.js`
+  // entry point imports it and hands it to `runDatabaseAdapterConformance`; the coverage replay
+  // above reaches every module in the directory and runs it against SQLite alone. Without this
+  // test a contributor could add a surface, watch the gate go green, and have covered a method on
+  // the one engine whose synchronous statement primitives cannot expose an unresolved result —
+  // which is this specification's own failure mode, reached from the other side.
+  assert.deepEqual(
+    surfaces.filter((surface) => surface.entryPointNames.length === 0).map((surface) => surface.fileName),
+    [],
+    "conformance surface modules that no test entry point imports, so they never run against any engine but SQLite. " +
+    "Add a test/database-adapter-conformance-<surface>.test.js that imports the module and passes it to " +
+    "runDatabaseAdapterConformance.",
+  );
 });
 
 test("every conformance exemption names a real method, one of the ADR-0035 mechanics, and a reason", async () => {

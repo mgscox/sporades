@@ -1004,10 +1004,28 @@ const AUTH_STORAGE_CONFORMANCE_CASES = [
     // afterwards, and every Capsule start re-runs this over a populated store.
     name: "ensureAuthStorage creates writable auth storage and keeps stored rows when run again",
     async run(adapter) {
+      // An OAuth state is seeded here rather than relied on from the case above, which consumed
+      // every state it created. Without a stored state crossing the call below, a DDL path that
+      // recreated the OAuth state table would satisfy every other assertion in this case while
+      // breaking every in-flight OAuth handshake on each Capsule restart.
+      await adapter.insertOAuthState({
+        state: "oauth-state-across-ensure",
+        provider: "google",
+        sessionToken: "session-oauth",
+        returnTo: "/",
+        redirectUri: "https://example.com/auth/callback",
+        createdAt: NOW,
+      });
+
       await adapter.ensureAuthStorage({ providers: { email: { enabled: true } } });
 
       // Rows written by the cases above survive the second run, across each table the method owns.
       assert.equal((await adapter.readAuthSessionWithUser(REGISTERED_SESSION_TOKEN))?.userId, REGISTERED_USER.id);
+      assert.equal(
+        await countRows(adapter, "SELECT COUNT(*) AS count FROM sporades_auth_oauth_states WHERE state = ?", "oauth-state-across-ensure"),
+        1,
+      );
+      assert.equal((await adapter.consumeOAuthState("oauth-state-across-ensure"))?.returnTo, "/");
       assert.equal(await adapter.emailCredentialExists(SIGNED_IN_USER.email), true);
       assert.equal((await adapter.findPasswordResetCode("reset-selector-sweep-bystander"))?.userId, BYSTANDER_USER.id);
       assert.equal(

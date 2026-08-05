@@ -103,6 +103,16 @@ export function overriddenDatabaseAdapterMethodNames(sharedAdapter, engineAdapte
 // adapter makes into itself are not recorded: the depth counter is raised for the duration of a
 // call, so a sibling-method call reached from inside a method body arrives at depth one and is
 // skipped. A method has to be exercised by a case in its own right to count as covered.
+//
+// The depth counter's invariant: it is only sound while the outer method returns synchronously.
+// `finally { depth -= 1 }` runs when the wrapped function returns, which for an `async` method is
+// its first `await` rather than its completion, so any sibling call that method makes afterwards
+// would be recorded at depth zero and credited as if a case had made it. The replay runs against
+// SQLite, whose method bodies are synchronous apart from `withTransaction` and
+// `withReadOnlySnapshot` — both exempt and neither called by a case — so nothing reaches the
+// unsound path today. Nothing enforces that, though: an `async` method added to the shared set and
+// exercised by a case would quietly inflate coverage, and the fix at that point is to track depth
+// per asynchronous context rather than in one counter.
 export function recordDirectAdapterCalls(adapter, calledMethodNames) {
   let depth = 0;
   const recording = new Proxy(adapter, {

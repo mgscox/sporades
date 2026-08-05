@@ -1,4 +1,4 @@
-import { readdir } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -50,14 +50,47 @@ export function runDatabaseAdapterConformance({ title, appTableNames = [], prepa
 }
 
 const SURFACES_DIRECTORY = new URL("./conformance-surfaces/", import.meta.url);
+const TEST_DIRECTORY = new URL("../", import.meta.url);
+const ENTRY_POINT_PATTERN = /^database-adapter-conformance.*\.test\.js$/;
+const STATIC_IMPORT_PATTERN = /^\s*import[^;]*?from\s*["']([^"']+)["']/gm;
+
+// The test files node:test discovers for this specification, and which surface modules each of
+// them imports. Read as text rather than imported, because importing a test file registers its
+// tests a second time — the reason surfaces are modules in the first place. The pattern is
+// anchored to a statement, so a path mentioned in a comment does not count as running anything.
+async function conformanceEntryPointsBySurface() {
+  const entryPointNames = (await readdir(fileURLToPath(TEST_DIRECTORY))).filter((name) => ENTRY_POINT_PATTERN.test(name));
+  const entryPointsBySurface = new Map();
+  for (const entryPointName of entryPointNames.sort()) {
+    const entryPointUrl = new URL(entryPointName, TEST_DIRECTORY);
+    const source = await readFile(entryPointUrl, "utf8");
+    for (const [, specifier] of source.matchAll(STATIC_IMPORT_PATTERN)) {
+      const resolved = new URL(specifier, entryPointUrl).href;
+      if (!resolved.startsWith(SURFACES_DIRECTORY.href)) {
+        continue;
+      }
+      const surfaceFileName = resolved.slice(SURFACES_DIRECTORY.href.length);
+      entryPointsBySurface.set(surfaceFileName, [...(entryPointsBySurface.get(surfaceFileName) ?? []), entryPointName]);
+    }
+  }
+  return entryPointsBySurface;
+}
 
 // Every surface module in `conformance-surfaces/`, discovered rather than listed, so adding a
 // surface stays an additive change to a directory instead of an edit to a shared array that two
 // authors would collide on. The coverage check reads the same list, which is what makes "every
 // method has a conformance case" a question about the whole specification rather than about
 // whichever surfaces someone remembered to name.
+//
+// Each surface carries the test entry points that import it, which is what ties "the coverage
+// check replayed this surface" to "node:test runs this surface against every engine". A module
+// with no entry point is discovered here and reported by the coverage check rather than silently
+// earning credit: its cases would only ever have run against SQLite, inside the coverage replay,
+// and SQLite's synchronous statement primitives are precisely the ones that cannot expose the
+// defect class this specification exists to catch.
 export async function loadDatabaseAdapterConformanceSurfaces() {
   const fileNames = (await readdir(fileURLToPath(SURFACES_DIRECTORY))).filter((name) => name.endsWith(".js")).sort();
+  const entryPointsBySurface = await conformanceEntryPointsBySurface();
   const surfaces = [];
   for (const fileName of fileNames) {
     const module = await import(new URL(fileName, SURFACES_DIRECTORY).href);
@@ -65,7 +98,7 @@ export async function loadDatabaseAdapterConformanceSurfaces() {
     if (!surface) {
       throw new Error(`Conformance surface ${fileName} does not export CONFORMANCE_SURFACE.`);
     }
-    surfaces.push({ fileName, ...surface });
+    surfaces.push({ fileName, entryPointNames: entryPointsBySurface.get(fileName) ?? [], ...surface });
   }
   return surfaces;
 }
