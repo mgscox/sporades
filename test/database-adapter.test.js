@@ -1274,6 +1274,31 @@ test("libSQL database adapter resolves query results before deriving runtime dec
 
         assert.equal(await adapter.readAuthSessionWithUser("privileged-token"), null);
         assert.equal(await adapter.findEmailCredentialWithUser("privileged@example.com"), null);
+
+        // The cap on outstanding Reset codes per email must count the stored rows.
+        for (const suffix of [1, 2, 3]) {
+          await adapter.insertPasswordResetCode({
+            selector: `selector-${suffix}`,
+            verifierHash: `verifier-hash-${suffix}`,
+            email: "reset@example.com",
+            userId: "user-1",
+            createdAt: now,
+            expiresAt: "2099-01-01T00:00:00.000Z",
+          });
+        }
+        await adapter.insertPasswordResetCode({
+          selector: "selector-expired",
+          verifierHash: "verifier-hash-expired",
+          email: "reset@example.com",
+          userId: "user-1",
+          createdAt: "2020-01-01T00:00:00.000Z",
+          expiresAt: "2020-01-01T01:00:00.000Z",
+        });
+        assert.equal(await adapter.countPasswordResetCodesForEmail("reset@example.com", now), 3);
+        assert.equal(await adapter.countPasswordResetCodesForEmail("nobody@example.com", now), 0);
+
+        await adapter.deletePasswordResetCodesForUser("user-1");
+        assert.equal(await adapter.countPasswordResetCodesForEmail("reset@example.com", now), 0);
       } finally {
         await adapter.close();
       }

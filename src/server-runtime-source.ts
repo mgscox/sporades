@@ -3424,10 +3424,12 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       ).get(selector) ?? null;
     },
     countPasswordResetCodesForEmail(email: any, now: any) {
-      const row = this.prepare(
-        "SELECT COUNT(*) AS count FROM sporades_auth_password_reset_codes WHERE email = ? AND expiresAt > ?",
-      ).get(email, now);
-      return Number(row?.count ?? 0);
+      return thenIfPromise(
+        this.prepare(
+          "SELECT COUNT(*) AS count FROM sporades_auth_password_reset_codes WHERE email = ? AND expiresAt > ?",
+        ).get(email, now),
+        (row: any) => Number(row?.count ?? 0),
+      );
     },
     deletePasswordResetCodesForUser(userId: any) {
       return this.prepare("DELETE FROM sporades_auth_password_reset_codes WHERE userId = ?").run(userId);
