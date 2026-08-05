@@ -22,23 +22,45 @@ roughly 23 further methods and libSQL roughly 18, including `ensureAuthStorage`,
 different bodies — `consumeOAuthState` is a SELECT followed by a DELETE in the
 shared definition and a single `DELETE ... RETURNING` on Postgres.
 
-Those overrides exist for dialect and DDL reasons, and that is the only reason
-that licenses one. This is the same line ADR-0035 draws when it leaves SQL
-dialect emission in per-engine tests: an override may change the statement text
-a method emits; it may not change the answer the method gives. An override that
-exists because the shared body computes the wrong thing is not a dialect
-override, and reducing the override count is the direction of travel rather than
-a settled state.
+Those overrides are not all the same kind of thing, and the difference is the
+whole point. There are three kinds, and only the first is legitimate.
 
-The distinction is not hypothetical. At least one shared definition is still
-non-compliant with this ADR and survives only because it is shadowed:
-`runReadOnlyInspectionQuery` derives its column names from `statement.columns()`
-and filters its rows from `statement.all()` without resolving either, so on an
+A **dialect or DDL override** emits different SQL because the engines genuinely
+differ — `consumeOAuthState` above, or the `CREATE TABLE` shapes behind
+`ensureAuthStorage`. This is the same line ADR-0035 draws when it leaves SQL
+dialect emission in per-engine tests: an override may change the statement text
+a method emits; it may not change the answer the method gives.
+
+An **await-shim override** emits the same SQL as the shared definition and
+exists for one reason only — to resolve the result before deriving from it or
+before depending on the write having landed. libSQL's `pruneLogIndex` and
+`readRecentLogEvents` are byte-identical in SQL to the shared definitions and
+differ only by an `await`. This is the dominant category, and it covers
+`insertLogIndexEvent`, `pruneLogIndex`, `readRecentLogEvents`,
+`listInspectableTables`, `dumpInspectableDatabase`, and
+`runReadOnlyInspectionQuery`. Every one of them is a shared body that violates
+the invariant below, papered over per engine.
+
+A **behavioral divergence** — a method that answers differently on one engine —
+is never licensed, on any grounds.
+
+The remedy for an await-shim is not to bless it. It is to make the shared
+definition promise-aware with `thenIfPromise`, exactly as `completeFileUpload`,
+`emailCredentialExists`, and `referenceExists` now are, and then delete the
+shim. One definition then holds for every engine and the override disappears
+rather than being maintained in duplicate. Reducing the override count is the
+direction of travel, and this is the mechanism that does it; the count grows
+when a shim is added instead.
+
+Leaving an await-shim in place is not neutral, because the shared body it
+shadows stays wrong. `runReadOnlyInspectionQuery` is the clearest case: the
+shared definition derives its column names from `statement.columns()` and
+filters its rows from `statement.all()` without resolving either, so on an
 asynchronous engine it would map and filter Promises. It is dormant rather than
 correct, because both Postgres and libSQL happen to override it. A shadow is not
 a fix — the shared definition is a latent defect that becomes live the moment an
 engine stops shadowing it, or a new engine adapter borrows the set without
-knowing to.
+knowing to. The shared `readRecentLogEvents` is in exactly the same position.
 
 ## The invariant
 
@@ -49,26 +71,37 @@ it without resolving it first.
 
 Stated mechanically, for citation in review: **inside a Database adapter method,
 any value produced by a statement primitive — `get()`, `all()`, `run()`, or
-`columns()` — or by another Database adapter method must be resolved before
-anything is derived from it.** Both halves of that are load-bearing. `columns()`
-is as much a statement primitive as `get()`, and returns a Promise on both
-asynchronous engines. And the sibling-method half is what a rule about
-`prepare(...)` alone would miss: the Upload defect described below branched on
-`this.selectFileById(...)`, not on a `prepare(...)` call, and a rule scoped to
-statement primitives would have waved it through. A method that needs to look at
-a result uses the runtime's existing promise-aware helpers — `thenIfPromise` and
+`columns()` — by another Database adapter method, or by a helper the method
+delegates to that reaches a statement primitive, must be resolved before
+anything is derived from it.** All three limbs are load-bearing, and each
+corresponds to a shape that has actually occurred. `columns()` is as much a
+statement primitive as `get()`, returns a Promise on both asynchronous engines,
+and is inspected unresolved in the shared `runReadOnlyInspectionQuery`. The
+sibling-method limb is what a rule about `prepare(...)` alone would miss: the
+Upload defect described below branched on `this.selectFileById(...)`, not on a
+`prepare(...)` call. The delegation limb matters because a method can be clean
+at its own call site and still wrong — the shared `readRecentLogEvents` is a
+one-line delegation to a module-level function that does
+`.all(safeLimit).reverse().map(...)` on an unresolved result, so reviewing only
+the method body would clear it. A method that needs to look at a result uses the
+runtime's existing promise-aware helpers — `thenIfPromise` and
 `chainMaybePromise` — so that one definition stays correct whether what it
 called was synchronous or asynchronous.
 
-The invariant exists because violating it produces silent wrong answers rather
-than errors. A pending query is a truthy object with no useful properties, so
-`Boolean(pendingQuery)` is always `true`, `Number(pendingQuery?.count ?? 0)` is
-always `0`, and a branch on `pendingQuery.changes` always takes the same path.
-Nothing throws and no request fails. Six shipped defects came from this one
-mechanism: an email credential existence check that reported every address as
-already registered and so made email sign-up impossible on Postgres and libSQL;
-a reference integrity check of the same shape, so `Reference()` never rejected a
-reference to a row that does not exist; an Upload call whose completion branched
+The invariant exists because violating it usually produces a silent wrong answer
+rather than an error. A pending query is a truthy object with no useful
+properties, so `Boolean(pendingQuery)` is always `true`,
+`Number(pendingQuery?.count ?? 0)` is always `0`, and a branch on
+`pendingQuery.changes` always takes the same path — nothing throws and no
+request fails. Not every violation is silent: treating a Promise as an array, as
+`runReadOnlyInspectionQuery` does, throws a `TypeError`, which that method's own
+`try`/`catch` then converts into a returned error result. But the loud cases are
+the lucky ones. Six shipped defects came from this one mechanism, and every one
+of them was silent: an email credential existence check that reported every
+address as already registered and so made email sign-up impossible on Postgres
+and libSQL; a reference integrity check of the same shape, so `Reference()`
+never rejected a reference to a row that does not exist; an Upload call whose
+completion branched
 on an unresolved sibling method result and therefore never wrote the File
 metadata row for a new file; two reserved-user guards that tested a Promise,
 never fired, and left the reserved Privileged server role identity readable as
@@ -86,29 +119,35 @@ and it is rejected on a specific constraint rather than on taste.
 ADR-0022 exposes a constrained read-only ACL context to ACL rules, with scoped
 helpers including `ctx.acl.db.get()` and `ctx.acl.storage.get()`. The runtime
 implements those helpers to fail closed when the underlying adapter read is
-asynchronous: a synchronous ACL rule that cannot see the resolved value denies.
-Making every adapter read asynchronous would therefore make every synchronous
-ACL rule that reads through an ACL context helper fail closed on every engine,
-including SQLite in a Dev session. That is a Capsule-facing breaking change to
-working Capsules, which is a worse outcome than the defect class this ADR
-closes.
+asynchronous: the helper returns null to the rule and marks the evaluation, and
+the decision point denies on that mark. Making every adapter read asynchronous
+would therefore make every ACL rule that reads through an ACL context helper
+fail closed on every engine, including SQLite in a Dev session. That is a
+Capsule-facing breaking change to working Capsules, which is a worse outcome
+than the defect class this ADR closes.
 
-The cost is bounded, and stating it accurately matters more than stating it
-dramatically. The fail-closed flag is only ever set from inside the
-`ctx.acl.db.*` and `ctx.acl.storage.*` helpers, so a synchronous ACL rule that
-decides from `ctx`, `previous`, `next`, or the row alone is unaffected — and
-that is the common case. It is also worth keeping two things separate: ADR-0022
-mandates the ACL context helpers and their read-only vocabulary, but says
-nothing about asynchrony or about failing closed. The fail-closed response to an
-asynchronous read is a property of the current runtime implementation, not an
-ADR-0022 requirement, and could in principle be changed by a decision that faced
-what synchronous ACL rules should then do.
+Writing the rule as `async` is not an escape hatch, and this ADR should not be
+read as implying one. The helper sets the mark from inside itself, before the
+rule can await anything, and the decision point tests that mark on both the
+synchronous and the awaited branch. An `async` rule doing `await
+ctx.acl.db.get(...)` is denied exactly as a synchronous one is. Async-first is
+therefore more blocked than a sync-only framing would suggest, not less.
+
+What does bound the cost is that the mark is only ever set from inside the
+`ctx.acl.db.*` and `ctx.acl.storage.*` helpers. An ACL rule that decides from
+`ctx`, `previous`, `next`, or the row alone is unaffected whatever its
+synchrony, and that is the common case. It is also worth keeping two things
+separate: ADR-0022 mandates the ACL context helpers and their read-only
+vocabulary, but says nothing about asynchrony or about failing closed. The
+fail-closed response to an asynchronous read is a property of the current
+runtime implementation, not an ADR-0022 requirement, and could in principle be
+changed by a decision that faced what helper-reading ACL rules should then do.
 
 A future reader must not reopen async-first without meeting that constraint
-first. What happens to synchronous ACL rules that read through an ACL context
-helper is an ADR-0022 question and needs its own specification; until it is
-answered, the dual-mode return convention stays and the invariant above is what
-keeps it safe.
+first. What happens to ACL rules that read through an ACL context helper —
+synchronous or asynchronous — is an ADR-0022 question and needs its own
+specification; until it is answered, the dual-mode return convention stays and
+the invariant above is what keeps it safe.
 
 ## The dual-mode return convention
 
@@ -133,8 +172,9 @@ That decision governs how call sites consume Database adapter methods — runtim
 paths for app tables, auth storage, File metadata storage, the Log index, schema
 migration, and inspection can await adapter operations without changing the
 Sporades DB API that Capsule handlers reach through `ctx.db`. This ADR governs
-how a Database adapter method consumes its own statement primitives and its own
-sibling methods. Both hold at once, and the second is not implied by the first:
+how a Database adapter method consumes its own statement primitives, its sibling
+methods, and the helpers it delegates to. Both hold at once, and the second is
+not implied by the first:
 awaiting at the call site does not help when the wrong value was already
 computed inside the method.
 

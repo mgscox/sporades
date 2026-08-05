@@ -47,13 +47,16 @@ depends on is asserted. That preserves ADR-0026's split, which already verifies
 workflow-level Transaction boundaries above the adapter while leaving adapter
 mechanics at the boundary.
 
-This is also what makes the per-engine method overrides ADR-0034 describes
-tolerable. Postgres and libSQL each replace a substantial part of the shared
-method set for dialect and DDL reasons, and an override is permitted to change
-the statement text a method emits but not the answer the method gives. Reading
-an override cannot establish which of those it did; running the same
-specification against it can. Where the overrides are the risk, the shared
-specification is the control.
+This is also the control on the per-engine method overrides ADR-0034 describes.
+Postgres and libSQL each replace a substantial part of the shared method set,
+and an override is permitted to change the statement text a method emits but
+not the answer the method gives. Reading an override cannot establish which of
+those it did; running the same specification against it can. That matters most
+for the await-shim overrides, which emit the same SQL as a shared body that
+derives from an unresolved result: the shim and the body it shadows are exactly
+the pair whose answers must be shown to agree, and the shared specification is
+what shows it — including after the shim is removed in favour of a
+promise-aware shared definition.
 
 Adding a method to the Database adapter without adding it to the conformance
 specification leaves the work incomplete. A new engine adapter is likewise built
