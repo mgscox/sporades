@@ -4164,6 +4164,7 @@ function postgresRuntimeColumnName(name) {
         isguest: "isGuest",
         passwordhash: "passwordHash",
         passwordsalt: "passwordSalt",
+        verifierhash: "verifierHash",
         sessiontoken: "sessionToken",
         returnto: "returnTo",
         redirecturi: "redirectUri",
