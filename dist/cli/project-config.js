@@ -54,8 +54,47 @@ export async function readProjectConfig(projectDir) {
     validateSchedulingConfig(config.scheduling);
     if (config.mail !== undefined)
         config.mail = validateMailConfig(config.mail);
+    validatePasswordResetConfig(config.auth);
     validateCapsuleServicesConfig(config.services);
     return config;
+}
+const PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1000;
+const PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1000;
+// The reset page location is a same-origin absolute path, never a URL, so the
+// reset flow has no caller-supplied redirect target to abuse.
+export function validatePasswordResetConfig(auth) {
+    const passwordReset = auth?.email?.passwordReset;
+    if (passwordReset === undefined)
+        return;
+    const fail = (message, hint) => {
+        const error = new Error(message);
+        error.code = "INVALID_AUTH_CONFIG";
+        error.hint = hint;
+        throw error;
+    };
+    if (!passwordReset || typeof passwordReset !== "object" || Array.isArray(passwordReset)) {
+        fail("Invalid password reset configuration.", "Set `auth.email.passwordReset` to an object with optional `path` and `ttlMs`.");
+    }
+    const unknown = Object.keys(passwordReset).filter((key) => key !== "path" && key !== "ttlMs");
+    if (unknown.length > 0) {
+        fail(`Unsupported password reset option: ${unknown.sort().join(", ")}`, "Configure only `auth.email.passwordReset.path` and `auth.email.passwordReset.ttlMs`.");
+    }
+    if (passwordReset.path !== undefined && !isSameOriginResetPath(passwordReset.path)) {
+        fail("Invalid password reset page path.", "Set `auth.email.passwordReset.path` to a same-origin absolute path such as `/reset-password`, not a URL.");
+    }
+    if (passwordReset.ttlMs !== undefined && (typeof passwordReset.ttlMs !== "number"
+        || !Number.isFinite(passwordReset.ttlMs)
+        || passwordReset.ttlMs < PASSWORD_RESET_MIN_TTL_MS
+        || passwordReset.ttlMs > PASSWORD_RESET_MAX_TTL_MS)) {
+        fail("Invalid password reset code lifetime.", "Set `auth.email.passwordReset.ttlMs` between 300000 (5 minutes) and 86400000 (24 hours).");
+    }
+}
+function isSameOriginResetPath(value) {
+    if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//"))
+        return false;
+    if (value.includes("\\") || value.includes("?") || value.includes("#"))
+        return false;
+    return !value.split("/").includes("..");
 }
 export function validateClientConfig(client) {
     if (client === undefined)

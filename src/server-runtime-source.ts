@@ -46,6 +46,15 @@ const PRIVILEGED_AUTH_USER_ID = "__privileged__";
 const EMAIL_SIGN_IN_FAILURE_LIMIT = 5;
 const EMAIL_SIGN_IN_THROTTLE_WINDOW_MS = 15 * 60 * 1000;
 const EMAIL_SIGN_IN_THROTTLE_MAX_ENTRIES = 256;
+const EMAIL_SIGN_IN_THROTTLE_FIELD = "__emailSignInThrottle";
+const PASSWORD_RESET_THROTTLE_FIELD = "__emailPasswordResetThrottle";
+const PASSWORD_RESET_DEFAULT_PATH = "/reset-password";
+const PASSWORD_RESET_DEFAULT_TTL_MS = 60 * 60 * 1000;
+const PASSWORD_RESET_MIN_TTL_MS = 5 * 60 * 1000;
+const PASSWORD_RESET_MAX_TTL_MS = 24 * 60 * 60 * 1000;
+const PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL = 5;
+const RESERVED_JOB_NAME_PREFIX = "_sporades";
+const PASSWORD_RESET_MAIL_JOB = "_sporades_password_reset_mail";
 
 export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   validateMailConfig,
@@ -183,6 +192,9 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   splitSqlStatements,
   openDevDatabase,
   recoverExpiredJobLeases,
+  isReservedJobName,
+  runtimeOwnedJobHandlers,
+  enqueueRuntimeJob,
   jobHandlersFromCapsuleDefinition,
   ensureJobStorage,
   createRuntimeLogSink,
@@ -449,6 +461,24 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   hashEmailPassword,
   verifyEmailPassword,
   emailAuthDisabledError,
+  setOwnEmailPassword,
+  emailNotOwnedError,
+  resolvePasswordResetConfig,
+  normalizePasswordResetPath,
+  passwordResetCodeParts,
+  hashPasswordResetVerifier,
+  issuePasswordResetCode,
+  readPasswordResetCode,
+  passwordResetLimitError,
+  invalidPasswordResetCodeError,
+  mailNotConfiguredError,
+  passwordResetMailBody,
+  escapeHtmlAttribute,
+  serverAuthError,
+  createEmailPasswordResetLink,
+  sendEmailPasswordResetLink,
+  verifyPasswordResetCode,
+  confirmPasswordReset,
   beginOAuthSignIn,
   oauthProviderAdapter,
   isOAuthLoopbackHostname,
@@ -864,6 +894,7 @@ function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv, options: Loos
   const smtp = mailConfig?.smtp;
   if (!smtp) {
     return {
+      enabled: false,
       async send() {
         throw mailError(
           "MAIL_DISABLED",
@@ -914,6 +945,7 @@ function createMailRuntime(mailConfig: any, serverEnv: RuntimeEnv, options: Loos
   let closeStarted = false;
   let closeResult: any;
   return {
+    enabled: true,
     async send(input: any) {
       const message = normalizeMailMessage(input, resolvedSmtp.defaultFrom, resolvedSmtp.vendor);
       const messageIdentity = `mail_${randomUUID()}`;
@@ -2038,7 +2070,7 @@ export async function openDevDatabase(
     ? mutationHandlersFromCapsuleDefinition(serverSource, capsuleDefinition)
     : extractMutationHandlers(serverSource)) as any[];
   const messages = extractMessageHandlers(serverSource);
-  const jobs = jobHandlersFromCapsuleDefinition(capsuleDefinition);
+  const jobs = [...jobHandlersFromCapsuleDefinition(capsuleDefinition), ...runtimeOwnedJobHandlers()];
   const schedules = scheduleDefinitionsFromCapsule(capsuleDefinition, jobs);
   const clock = createRuntimeClock(options?.clock);
   const contextMiddleware = extractContextMiddleware(serverSource);
@@ -2074,6 +2106,7 @@ export async function openDevDatabase(
     serverEnv,
     mail,
     authConfig: authStatus(config, serverEnv),
+    passwordResetConfig: resolvePasswordResetConfig(config),
     securityPolicy: resolveRuntimeSecurityPolicy(config),
     fileStorage,
     fileMaxSizeBytes: config.files?.maxSizeBytes ?? 10 * 1024 * 1024,
@@ -2566,11 +2599,41 @@ export function createControllableRuntimeClock(initialInstant: string | number |
   };
 }
 
+// Jobs the runtime enqueues for itself. They live in the reserved `_sporades`
+// namespace, which Capsule definitions cannot claim.
+function runtimeOwnedJobHandlers() {
+  return [
+    {
+      name: PASSWORD_RESET_MAIL_JOB,
+      handler: async (ctx: LooseRecord, payload: LooseRecord) => ctx.mail.send({
+        to: payload.to,
+        subject: payload.subject,
+        textBody: payload.textBody,
+        htmlBody: payload.htmlBody,
+      }),
+    },
+  ];
+}
+
+function isReservedJobName(name: string) {
+  return name.toLowerCase().startsWith(RESERVED_JOB_NAME_PREFIX);
+}
+
 function jobHandlersFromCapsuleDefinition(capsuleDefinition: any) {
   const handlers: any[] = [];
   for (const [name, definition] of Object.entries(capsuleDefinition?.jobs ?? {}) as [string, any][]) {
     if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name) || definition?.kind !== "job" || typeof definition.handler !== "function") {
       throw commandError("Invalid Job handler.", "Declare jobs as named job(...) handlers using letters, numbers, underscores, or hyphens.");
+    }
+    // The runtime enqueues its own Jobs, such as password reset delivery. A
+    // Capsule handler with the same name would capture that work, so the whole
+    // prefix is reserved rather than any single name.
+    if (isReservedJobName(name)) {
+      throw commandError(
+        `Reserved Job handler name: ${name}`,
+        "Job names beginning with `_sporades` are reserved for the Sporades runtime. Rename this Job.",
+        "RESERVED_JOB_NAME",
+      );
     }
     if (handlers.some((handler) => handler.name === name)) {
       throw commandError(`Duplicate Job handler: ${name}`, "Use one unique Job handler name per Capsule.");
@@ -3337,6 +3400,34 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       );
       return isReservedAuthUserId(row?.userId) ? null : row;
     },
+    deleteAuthSessionsForUser(userId: any) {
+      return this.prepare("DELETE FROM sporades_auth_sessions WHERE userId = ?").run(userId);
+    },
+    insertPasswordResetCode(row: LooseRecord) {
+      assertNotReservedAuthUserId(row.userId);
+      return this.prepare(
+        "INSERT INTO sporades_auth_password_reset_codes " +
+        "(selector, verifierHash, email, userId, createdAt, expiresAt) VALUES (?, ?, ?, ?, ?, ?)",
+      ).run(row.selector, row.verifierHash, row.email, row.userId, row.createdAt, row.expiresAt);
+    },
+    findPasswordResetCode(selector: any) {
+      return this.prepare(
+        "SELECT selector, verifierHash, email, userId, createdAt, expiresAt " +
+        "FROM sporades_auth_password_reset_codes WHERE selector = ?",
+      ).get(selector) ?? null;
+    },
+    countPasswordResetCodesForEmail(email: any, now: any) {
+      const row = this.prepare(
+        "SELECT COUNT(*) AS count FROM sporades_auth_password_reset_codes WHERE email = ? AND expiresAt > ?",
+      ).get(email, now);
+      return Number(row?.count ?? 0);
+    },
+    deletePasswordResetCodesForUser(userId: any) {
+      return this.prepare("DELETE FROM sporades_auth_password_reset_codes WHERE userId = ?").run(userId);
+    },
+    prunePasswordResetCodes(now: any) {
+      return this.prepare("DELETE FROM sporades_auth_password_reset_codes WHERE expiresAt <= ?").run(now);
+    },
     migrateAppSchema(schema: { tables: { name: any; acl: { allowByDefault: boolean; } | { allowByDefault: boolean; resolve(operation: any): any; }; fields: { name: any; kind: any; sqliteType: string; targetTable: string | undefined; defaultValue: any; }[]; }[]; } | { tables: { name: string; fields: ({ name: any; kind: any; sqliteType: string; targetTable: any; defaultValue: any; } | null)[]; }[]; }) {
       this.exec("BEGIN");
       try {
@@ -3616,6 +3707,16 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
           "passwordHash TEXT NOT NULL, " +
           "passwordSalt TEXT NOT NULL, " +
           "createdAt TEXT NOT NULL" +
+          ")",
+        );
+        await this.exec(
+          "CREATE TABLE IF NOT EXISTS sporades_auth_password_reset_codes (" +
+          "selector TEXT PRIMARY KEY, " +
+          "verifierHash TEXT NOT NULL, " +
+          "email TEXT NOT NULL, " +
+          "userId TEXT NOT NULL, " +
+          "createdAt TEXT NOT NULL, " +
+          "expiresAt TEXT NOT NULL" +
           ")",
         );
       }
@@ -4624,6 +4725,16 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
           "passwordHash TEXT NOT NULL, " +
           "passwordSalt TEXT NOT NULL, " +
           "createdAt TEXT NOT NULL" +
+          ")",
+        );
+        await this.exec(
+          "CREATE TABLE IF NOT EXISTS sporades_auth_password_reset_codes (" +
+          "selector TEXT PRIMARY KEY, " +
+          "verifierHash TEXT NOT NULL, " +
+          "email TEXT NOT NULL, " +
+          "userId TEXT NOT NULL, " +
+          "createdAt TEXT NOT NULL, " +
+          "expiresAt TEXT NOT NULL" +
           ")",
         );
       }
@@ -7578,6 +7689,24 @@ function createEndpointContext(database: LooseRecord, endpointRequest: LooseReco
       const result = await setEmailPassword(database, { auth }, email, newPassword);
       if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
     },
+    async sendEmailPasswordResetLink(email: string, options: LooseRecord = {}) {
+      const result: any = await sendEmailPasswordResetLink(database, { auth }, email, options);
+      if (!result.ok) throw serverAuthError(result.error, "Could not send the password reset link.");
+    },
+    async createEmailPasswordResetLink(email: string) {
+      const result: any = await createEmailPasswordResetLink(database, { auth }, email);
+      if (!result.ok) throw serverAuthError(result.error, "Could not create a password reset link.");
+      return { link: result.link, expiresAt: result.expiresAt };
+    },
+    async verifyPasswordResetCode(code: string) {
+      const result: any = await verifyPasswordResetCode(database, { auth }, code);
+      if (!result.ok) throw serverAuthError(result.error, "Could not verify the password reset code.");
+      return { email: result.email };
+    },
+    async confirmPasswordReset(code: string, newPassword: string) {
+      const result: any = await confirmPasswordReset(database, { auth }, code, newPassword);
+      if (!result.ok) throw serverAuthError(result.error, "Could not complete the password reset.");
+    },
   };
   return context;
 }
@@ -9305,10 +9434,61 @@ export function createWebSocketHub(getDatabase: () => any, trustedRefresh: Trust
     }
 
     if (message.type === "auth.setPassword") {
-      const result: any = await setEmailPassword(database, client.session, message.email ?? "", message.newPassword ?? "");
+      const result: any = await setOwnEmailPassword(database, client.session, message.email ?? "", message.newPassword ?? "");
       sendJson(client, {
         id: message.id ?? null,
         type: result.ok ? "auth.setPassword.result" : "error",
+        data: result.ok ? { ok: true } : null,
+        error: result.error ?? null,
+      });
+      return;
+    }
+
+    // The browser sends intent and relays an opaque Reset code. Runtime auth
+    // internals, and the code's stored form, never leave the server.
+    if (message.type === "auth.sendPasswordResetLink") {
+      const result: any = await sendEmailPasswordResetLink(database, client.session, message.email ?? "");
+      // Undeliverable mail is a Capsule misconfiguration, not something the
+      // browser can act on, and reporting it would leak Capsule configuration
+      // state to an unauthenticated caller. Tell the operator, not the client.
+      const misconfigured = result.error?.code === "MAIL_NOT_CONFIGURED";
+      if (misconfigured) {
+        database.log?.emit?.({
+          category: "platform",
+          event: "auth.password_reset.undeliverable",
+          level: "error",
+          message: result.error.message,
+          data: { code: result.error.code, hint: result.error.hint },
+        });
+      }
+      const ok = result.ok || misconfigured;
+      sendJson(client, {
+        id: message.id ?? null,
+        type: ok ? "auth.sendPasswordResetLink.result" : "error",
+        data: ok ? { ok: true } : null,
+        error: ok ? null : result.error ?? null,
+      });
+      return;
+    }
+
+    if (message.type === "auth.verifyPasswordResetCode") {
+      const result: any = await verifyPasswordResetCode(database, client.session, message.code ?? "");
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "auth.verifyPasswordResetCode.result" : "error",
+        data: result.ok ? { email: result.email } : null,
+        error: result.error ?? null,
+      });
+      return;
+    }
+
+    // Completing a reset deliberately does not mint a Session: mailbox access
+    // alone must not be enough without demonstrating the new credential.
+    if (message.type === "auth.confirmPasswordReset") {
+      const result: any = await confirmPasswordReset(database, client.session, message.code ?? "", message.newPassword ?? "");
+      sendJson(client, {
+        id: message.id ?? null,
+        type: result.ok ? "auth.confirmPasswordReset.result" : "error",
         data: result.ok ? { ok: true } : null,
         error: result.error ?? null,
       });
@@ -11714,6 +11894,300 @@ function writeRedirect(response: { writeHead: (arg0: number, arg1: { location: a
   response.end();
 }
 
+// The reset link origin and page path come from Capsule configuration only.
+// Deriving either from a request header would let an attacker who can reach the
+// Capsule mail a victim a genuine reset link pointing at the attacker's server.
+function resolvePasswordResetConfig(config: LooseRecord) {
+  const passwordReset = config.auth?.email?.passwordReset ?? {};
+  const port = typeof config.dev?.port === "number"
+    ? config.dev.port
+    : typeof config.deploy?.port === "number" ? config.deploy.port : 4000;
+  const ttlMs = typeof passwordReset.ttlMs === "number" && Number.isFinite(passwordReset.ttlMs)
+    ? Math.min(Math.max(passwordReset.ttlMs, PASSWORD_RESET_MIN_TTL_MS), PASSWORD_RESET_MAX_TTL_MS)
+    : PASSWORD_RESET_DEFAULT_TTL_MS;
+  return {
+    path: normalizePasswordResetPath(passwordReset.path) ?? PASSWORD_RESET_DEFAULT_PATH,
+    origin: normalizeOrigin(config.__sporadesPublicOrigin) ?? `http://localhost:${port}`,
+    ttlMs,
+  };
+}
+
+// A same-origin absolute path, never a URL: the reset flow has no caller-supplied
+// continue target, so it cannot be turned into an open redirect.
+function normalizePasswordResetPath(value: any) {
+  if (typeof value !== "string" || !value.startsWith("/") || value.startsWith("//")) {
+    return null;
+  }
+  if (value.includes("\\") || value.includes("?") || value.includes("#")) {
+    return null;
+  }
+  if (value.split("/").includes("..")) {
+    return null;
+  }
+  return value;
+}
+
+function passwordResetCodeParts(database: LooseRecord) {
+  const selector = randomBytes(16).toString("base64url");
+  const verifier = randomBytes(32).toString("base64url");
+  return {
+    selector,
+    verifier,
+    code: `${selector}.${verifier}`,
+    verifierHash: hashPasswordResetVerifier(verifier),
+    now: database.clock.now(),
+  };
+}
+
+function hashPasswordResetVerifier(verifier: string) {
+  return createHash("sha256").update(verifier).digest("base64url");
+}
+
+// Issuing does not invalidate outstanding codes, so a flood of reset requests
+// cannot kill a link the user is about to click. The outstanding count is capped
+// instead. Returns null when the account is already at the cap.
+async function issuePasswordResetCode(database: LooseRecord, credential: LooseRecord) {
+  const { selector, code, verifierHash, now } = passwordResetCodeParts(database);
+  const expiresAt = new Date(now.getTime() + database.passwordResetConfig.ttlMs).toISOString();
+  await database.sqlite.prunePasswordResetCodes(now.toISOString());
+  const outstanding = await database.sqlite.countPasswordResetCodesForEmail(credential.email, now.toISOString());
+  if (outstanding >= PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL) {
+    return null;
+  }
+  await database.sqlite.insertPasswordResetCode({
+    selector,
+    verifierHash,
+    email: credential.email,
+    userId: credential.userId,
+    createdAt: now.toISOString(),
+    expiresAt,
+  });
+  const link = new URL(database.passwordResetConfig.path, database.passwordResetConfig.origin);
+  link.searchParams.set("code", code);
+  return { code, selector, link: link.toString(), expiresAt };
+}
+
+export async function createEmailPasswordResetLink(database: LooseRecord, _session: LooseRecord, email: string) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+  if (!cleanEmail) {
+    return { ok: false, error: { message: "Email is required.", hint: "Provide the email address for the account being reset." } };
+  }
+  const credential = await database.sqlite.findEmailCredentialWithUser(cleanEmail);
+  if (!credential) {
+    return { ok: false, error: { message: "No email account found for that address.", hint: "Check the email address or register a new account." } };
+  }
+  const issued = await issuePasswordResetCode(database, credential);
+  if (!issued) {
+    return { ok: false, error: passwordResetLimitError() };
+  }
+  return { ok: true, link: issued.link, expiresAt: issued.expiresAt };
+}
+
+function serverAuthError(error: LooseRecord | undefined, fallback: string) {
+  const failure: Error & { code?: string; hint?: string } = new Error(error?.message ?? fallback);
+  if (error?.code) failure.code = error.code;
+  if (error?.hint) failure.hint = error.hint;
+  return failure;
+}
+
+function passwordResetLimitError() {
+  return {
+    code: "PASSWORD_RESET_LIMIT_REACHED",
+    message: "Too many password reset links are already outstanding for this account.",
+    hint: "Use the most recent reset link, or wait for the outstanding links to expire.",
+  };
+}
+
+function invalidPasswordResetCodeError() {
+  return {
+    code: "INVALID_PASSWORD_RESET_CODE",
+    message: "This password reset link is invalid or has expired.",
+    hint: "Request a new password reset link.",
+  };
+}
+
+// Unknown selector, wrong verifier, and expiry are deliberately indistinguishable,
+// and the verifier comparison is constant-time so lookup timing does not leak
+// which of those it was.
+async function readPasswordResetCode(database: LooseRecord, code: any) {
+  const parts = typeof code === "string" ? code.split(".") : [];
+  if (parts.length !== 2 || !parts[0] || !parts[1]) {
+    return null;
+  }
+  const row = await database.sqlite.findPasswordResetCode(parts[0]);
+  const expected = Buffer.from(row?.verifierHash ?? hashPasswordResetVerifier("\0absent"), "base64url");
+  const actual = Buffer.from(hashPasswordResetVerifier(parts[1]), "base64url");
+  const matches = actual.length === expected.length && timingSafeEqual(actual, expected);
+  if (!row || !matches) {
+    return null;
+  }
+  return database.clock.now().getTime() >= Date.parse(row.expiresAt) ? null : row;
+}
+
+export async function verifyPasswordResetCode(database: LooseRecord, _session: LooseRecord, code: any) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  const row = await readPasswordResetCode(database, code);
+  if (!row) {
+    return { ok: false, error: invalidPasswordResetCodeError() };
+  }
+  return { ok: true, email: row.email };
+}
+
+export async function confirmPasswordReset(database: LooseRecord, _session: LooseRecord, code: any, newPassword: string) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  if (typeof newPassword !== "string" || newPassword.length < 8) {
+    return { ok: false, error: { message: "Password is too short.", hint: "Use a password with at least 8 characters." } };
+  }
+  const row = await readPasswordResetCode(database, code);
+  if (!row) {
+    return { ok: false, error: invalidPasswordResetCodeError() };
+  }
+  const password = hashEmailPassword(newPassword);
+  // Spending the code and writing the password share one Auth transaction, so a
+  // failure leaves the code unspent and the old password intact.
+  return await database.sqlite.withTransaction(async (tx: LooseRecord) => {
+    await tx.updateEmailCredentialPassword(row.email, password.hash, password.salt);
+    await tx.deletePasswordResetCodesForUser(row.userId);
+    // Evicting every Session for the account is the point of the reset: an
+    // attacker holding a live Session must not outlive the password change.
+    await tx.deleteAuthSessionsForUser(row.userId);
+    return { ok: true };
+  });
+}
+
+// Enqueues a runtime-owned Job under the reserved privileged actor. This writes
+// the queue row directly rather than going through the current-user Job API:
+// that API batches enqueues onto the calling Capsule context when a transaction
+// is active, and runtime code has no such context, so the row would be dropped.
+// A direct insert joins whatever transaction is already open, so a rolled-back
+// caller discards the Job with it.
+async function enqueueRuntimeJob(database: LooseRecord, handlerName: string, payload: LooseRecord, idempotencyKey: string) {
+  const queueDatabase = database.__rootDatabase ?? database;
+  const now = queueDatabase.clock.now().toISOString();
+  const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
+  await queueDatabase.sqlite.prepare(
+    "INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) " +
+    "VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)",
+  ).run(
+    randomUUID(),
+    handlerName,
+    PRIVILEGED_AUTH_USER_ID,
+    PRIVILEGED_AUTH_USER_ID,
+    "privileged",
+    payloadJson,
+    now,
+    idempotencyKey,
+    now,
+    JSON.stringify(normalizeJobRetry(undefined)),
+  );
+  scheduleCurrentUserJobWorker(queueDatabase);
+}
+
+function passwordResetMailBody(link: string) {
+  return {
+    textBody:
+      "We received a request to reset your password.\n\n" +
+      `Open this link to choose a new password:\n${link}\n\n` +
+      "If you did not request this, you can ignore this message and your password will stay the same.\n",
+    htmlBody:
+      "<p>We received a request to reset your password.</p>" +
+      `<p><a href="${escapeHtmlAttribute(link)}">Choose a new password</a></p>` +
+      "<p>If you did not request this, you can ignore this message and your password will stay the same.</p>",
+  };
+}
+
+function escapeHtmlAttribute(value: string) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// Resolves identically whether or not the email is registered: no error, count,
+// or send distinguishes the two, so this cannot be used to enumerate accounts.
+export async function sendEmailPasswordResetLink(
+  database: LooseRecord,
+  session: LooseRecord,
+  email: string,
+  options: LooseRecord = {},
+) {
+  if (!database.authConfig.providers.email.enabled) {
+    return { ok: false, error: emailAuthDisabledError() };
+  }
+  if (!database.mail.enabled) {
+    return { ok: false, error: mailNotConfiguredError() };
+  }
+  const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+  const throttle = currentEmailSignInThrottleState(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
+  if (throttle.throttled) {
+    return { ok: true };
+  }
+  recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
+  const credential = cleanEmail ? await database.sqlite.findEmailCredentialWithUser(cleanEmail) : null;
+  if (!credential) {
+    // Comparable work on the unregistered branch so timing does not separate it.
+    hashPasswordResetVerifier(randomBytes(32).toString("base64url"));
+    return { ok: true };
+  }
+  const issued = await issuePasswordResetCode(database, credential);
+  if (!issued) {
+    return { ok: true };
+  }
+  const body = passwordResetMailBody(issued.link);
+  // Delivery is queued, not awaited. Doing the SMTP round trip inline would make
+  // the reply time and any transport failure a reliable oracle for whether the
+  // address is registered, which is exactly what the uniform result prevents.
+  // The Job is durable and retried, so queueing does not mean dropping.
+  await enqueueRuntimeJob(database, PASSWORD_RESET_MAIL_JOB, {
+    to: credential.email,
+    subject: typeof options.subject === "string" ? options.subject : "Reset your password",
+    textBody: typeof options.textBody === "string" ? options.textBody : body.textBody,
+    htmlBody: typeof options.htmlBody === "string" ? options.htmlBody : body.htmlBody,
+    // Job execution is at least once; the key keeps one Reset code to one mail.
+  }, `password-reset:${issued.selector}`);
+  return { ok: true };
+}
+
+function mailNotConfiguredError() {
+  return {
+    code: "MAIL_NOT_CONFIGURED",
+    message: "Password reset mail cannot be delivered because SMTP is not configured.",
+    hint: "Set `mail.smtp` in sporades.json, or use ctx.serverAuth.createEmailPasswordResetLink with your own delivery path.",
+  };
+}
+
+// Browser-facing password change. `setEmailPassword` is the trusted server-only
+// API and deliberately accepts any registered email, so the ownership gate lives
+// here rather than there: a browser may only change the credential its own
+// Session owns. Non-existent and someone-else's emails share one opaque denial,
+// so this cannot be used to discover which addresses have accounts.
+export async function setOwnEmailPassword(database: LooseRecord, session: LooseRecord, email: string, newPassword: string) {
+  let auth: LooseRecord;
+  try {
+    auth = requireAuth({ ...session, kind: "message" }, { linked: true });
+  } catch (error: any) {
+    return { ok: false, error: { code: error?.code ?? "UNAUTHENTICATED", message: error.message, hint: error.hint } };
+  }
+  const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+  const credential = cleanEmail ? await database.sqlite.findEmailCredentialWithUser(cleanEmail) : null;
+  if (!credential || credential.userId !== auth.userId) {
+    return { ok: false, error: emailNotOwnedError() };
+  }
+  return await setEmailPassword(database, session, cleanEmail, newPassword);
+}
+
+function emailNotOwnedError() {
+  return {
+    code: "AUTH_EMAIL_NOT_OWNED",
+    message: "That email address is not this account's email credential.",
+    hint: "Change the password for the signed-in account, or use a password reset link.",
+  };
+}
+
 export async function setEmailPassword(database: LooseRecord, _session: LooseRecord, email: string, newPassword: string) {
   if (!database.authConfig.providers.email.enabled) {
     return { ok: false, error: emailAuthDisabledError() };
@@ -11833,13 +12307,15 @@ export async function signInWithEmail(database: LooseRecord, session: any, crede
   }));
 }
 
-function createEmailSignInThrottleState(database: LooseRecord) {
-  const existing = database.__emailSignInThrottle;
+// Sign-in failures and reset requests share this throttle shape but never share a
+// bucket: requesting a reset must not lock the account out of sign-in.
+function createEmailSignInThrottleState(database: LooseRecord, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
+  const existing = database[scope];
   if (existing instanceof Map) {
     return existing;
   }
   const next = new Map();
-  database.__emailSignInThrottle = next;
+  database[scope] = next;
   return next;
 }
 
@@ -11847,8 +12323,8 @@ function emailSignInThrottleKeys(email: string, session: LooseRecord) {
   return [`email\0${email}`, `caller\0${callerContextKey(session)}`];
 }
 
-function currentEmailSignInThrottleState(database: LooseRecord, email: string, session: LooseRecord) {
-  const attempts = createEmailSignInThrottleState(database);
+function currentEmailSignInThrottleState(database: LooseRecord, email: string, session: LooseRecord, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
+  const attempts = createEmailSignInThrottleState(database, scope);
   const now = Date.now();
   pruneEmailSignInThrottleState(attempts, now);
   const keys = emailSignInThrottleKeys(email, session);
@@ -11868,9 +12344,9 @@ function currentEmailSignInThrottleState(database: LooseRecord, email: string, s
   };
 }
 
-function recordFailedEmailSignInAttempt(database: LooseRecord, email: string, session: LooseRecord) {
-  const attempts = createEmailSignInThrottleState(database);
-  const current = currentEmailSignInThrottleState(database, email, session);
+function recordFailedEmailSignInAttempt(database: LooseRecord, email: string, session: LooseRecord, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
+  const attempts = createEmailSignInThrottleState(database, scope);
+  const current = currentEmailSignInThrottleState(database, email, session, scope);
   for (const entry of current.entries) {
     attempts.set(entry.key, {
       count: entry.count + 1,
@@ -11880,8 +12356,8 @@ function recordFailedEmailSignInAttempt(database: LooseRecord, email: string, se
   boundEmailSignInThrottleState(attempts);
 }
 
-function resetEmailSignInAttempts(database: LooseRecord, email: string, session: LooseRecord) {
-  const attempts = createEmailSignInThrottleState(database);
+function resetEmailSignInAttempts(database: LooseRecord, email: string, session: LooseRecord, scope = EMAIL_SIGN_IN_THROTTLE_FIELD) {
+  const attempts = createEmailSignInThrottleState(database, scope);
   for (const key of emailSignInThrottleKeys(email, session)) {
     attempts.delete(key);
   }
@@ -12019,6 +12495,16 @@ function createAnonymousAuthTables(sqlite: LooseRecord, authConfig: LooseRecord 
       "passwordHash TEXT NOT NULL, " +
       "passwordSalt TEXT NOT NULL, " +
       "createdAt TEXT NOT NULL" +
+      ")",
+    );
+    sqlite.exec(
+      "CREATE TABLE IF NOT EXISTS sporades_auth_password_reset_codes (" +
+      "selector TEXT PRIMARY KEY, " +
+      "verifierHash TEXT NOT NULL, " +
+      "email TEXT NOT NULL, " +
+      "userId TEXT NOT NULL, " +
+      "createdAt TEXT NOT NULL, " +
+      "expiresAt TEXT NOT NULL" +
       ")",
     );
   }
@@ -12837,6 +13323,24 @@ function createMutationContext(database: LooseRecord, auth: any) {
     async setEmailPassword(email: string, newPassword: string) {
       const result = await setEmailPassword(database, { auth }, email, newPassword);
       if (!result.ok) throw new Error(result.error?.message ?? "Could not set password.");
+    },
+    async sendEmailPasswordResetLink(email: string, options: LooseRecord = {}) {
+      const result: any = await sendEmailPasswordResetLink(database, { auth }, email, options);
+      if (!result.ok) throw serverAuthError(result.error, "Could not send the password reset link.");
+    },
+    async createEmailPasswordResetLink(email: string) {
+      const result: any = await createEmailPasswordResetLink(database, { auth }, email);
+      if (!result.ok) throw serverAuthError(result.error, "Could not create a password reset link.");
+      return { link: result.link, expiresAt: result.expiresAt };
+    },
+    async verifyPasswordResetCode(code: string) {
+      const result: any = await verifyPasswordResetCode(database, { auth }, code);
+      if (!result.ok) throw serverAuthError(result.error, "Could not verify the password reset code.");
+      return { email: result.email };
+    },
+    async confirmPasswordReset(code: string, newPassword: string) {
+      const result: any = await confirmPasswordReset(database, { auth }, code, newPassword);
+      if (!result.ok) throw serverAuthError(result.error, "Could not complete the password reset.");
     },
   };
   return context;
