@@ -228,9 +228,7 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
         type: any;
         ownerId: any;
         createdAt: any;
-    }, size: any, updatedAt: any): StatementResultingChanges | {
-        changes: number;
-    };
+    }, size: any, updatedAt: any): any;
     deleteFileUploadsForPath(path: any): StatementResultingChanges;
     deleteFileUploadsForFile(ownerId: any, fileId: any): StatementResultingChanges;
     deleteFileUpload(uploadId: any): StatementResultingChanges;
@@ -319,10 +317,10 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
         createdAt: any;
         expiresAt: any;
     }): StatementResultingChanges;
-    readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null;
+    readAuthSessionWithUser(token: any): any;
     insertOAuthState(row: LooseRecord): StatementResultingChanges;
     consumeOAuthState(state: any): Record<string, SQLOutputValue> | null;
-    emailCredentialExists(email: any): boolean;
+    emailCredentialExists(email: any): any;
     insertEmailCredential(row: {
         email: any;
         userId: any;
@@ -331,11 +329,11 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
         createdAt: any;
     }): StatementResultingChanges;
     updateEmailCredentialPassword(email: any, passwordHash: any, passwordSalt: any): StatementResultingChanges;
-    findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null;
+    findEmailCredentialWithUser(email: any): any;
     deleteAuthSessionsForUser(userId: any): StatementResultingChanges;
     insertPasswordResetCode(row: LooseRecord): StatementResultingChanges;
     findPasswordResetCode(selector: any): Record<string, SQLOutputValue> | null;
-    countPasswordResetCodesForEmail(email: any, now: any): number;
+    countPasswordResetCodesForEmail(email: any, now: any): any;
     deletePasswordResetCodesForUser(userId: any): StatementResultingChanges;
     prunePasswordResetCodes(now: any): StatementResultingChanges;
     migrateAppSchema(schema: {
@@ -373,7 +371,7 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
     migrateExistingAppTable(existingTable: any, nextTable: any): any;
     referenceExists(field: {
         targetTable: any;
-    }, value: any): boolean;
+    }, value: any): any;
     withTransaction(fn: (arg0: {
         engine: string;
         exec(sql: any): void;
@@ -823,9 +821,7 @@ export declare function createPostgresDatabaseAdapter(options: {
         type: any;
         ownerId: any;
         createdAt: any;
-    }, size: any, updatedAt: any): StatementResultingChanges | {
-        changes: number;
-    };
+    }, size: any, updatedAt: any): any;
     deleteFileUploadsForPath(path: any): StatementResultingChanges;
     deleteFileUploadsForFile(ownerId: any, fileId: any): StatementResultingChanges;
     deleteFileUpload(uploadId: any): StatementResultingChanges;
@@ -906,8 +902,8 @@ export declare function createPostgresDatabaseAdapter(options: {
         createdAt: any;
         expiresAt: any;
     }): StatementResultingChanges;
-    readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null;
-    emailCredentialExists(email: any): boolean;
+    readAuthSessionWithUser(token: any): any;
+    emailCredentialExists(email: any): any;
     insertEmailCredential(row: {
         email: any;
         userId: any;
@@ -916,16 +912,16 @@ export declare function createPostgresDatabaseAdapter(options: {
         createdAt: any;
     }): StatementResultingChanges;
     updateEmailCredentialPassword(email: any, passwordHash: any, passwordSalt: any): StatementResultingChanges;
-    findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null;
+    findEmailCredentialWithUser(email: any): any;
     deleteAuthSessionsForUser(userId: any): StatementResultingChanges;
     insertPasswordResetCode(row: LooseRecord): StatementResultingChanges;
     findPasswordResetCode(selector: any): Record<string, SQLOutputValue> | null;
-    countPasswordResetCodesForEmail(email: any, now: any): number;
+    countPasswordResetCodesForEmail(email: any, now: any): any;
     deletePasswordResetCodesForUser(userId: any): StatementResultingChanges;
     prunePasswordResetCodes(now: any): StatementResultingChanges;
     referenceExists(field: {
         targetTable: any;
-    }, value: any): boolean;
+    }, value: any): any;
     insertAppRow(table: {
         name: any;
     }, row: {
@@ -1133,9 +1129,7 @@ export declare function createLibsqlDatabaseAdapter(options: {
         type: any;
         ownerId: any;
         createdAt: any;
-    }, size: any, updatedAt: any): StatementResultingChanges | {
-        changes: number;
-    };
+    }, size: any, updatedAt: any): any;
     deleteFileUploadsForPath(path: any): StatementResultingChanges;
     deleteFileUploadsForFile(ownerId: any, fileId: any): StatementResultingChanges;
     deleteFileUpload(uploadId: any): StatementResultingChanges;
@@ -1223,8 +1217,8 @@ export declare function createLibsqlDatabaseAdapter(options: {
         createdAt: any;
         expiresAt: any;
     }): StatementResultingChanges;
-    readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null;
-    emailCredentialExists(email: any): boolean;
+    readAuthSessionWithUser(token: any): any;
+    emailCredentialExists(email: any): any;
     insertEmailCredential(row: {
         email: any;
         userId: any;
@@ -1233,11 +1227,11 @@ export declare function createLibsqlDatabaseAdapter(options: {
         createdAt: any;
     }): StatementResultingChanges;
     updateEmailCredentialPassword(email: any, passwordHash: any, passwordSalt: any): StatementResultingChanges;
-    findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null;
+    findEmailCredentialWithUser(email: any): any;
     deleteAuthSessionsForUser(userId: any): StatementResultingChanges;
     insertPasswordResetCode(row: LooseRecord): StatementResultingChanges;
     findPasswordResetCode(selector: any): Record<string, SQLOutputValue> | null;
-    countPasswordResetCodesForEmail(email: any, now: any): number;
+    countPasswordResetCodesForEmail(email: any, now: any): any;
     deletePasswordResetCodesForUser(userId: any): StatementResultingChanges;
     prunePasswordResetCodes(now: any): StatementResultingChanges;
     createAppTable(table: {
@@ -1245,7 +1239,7 @@ export declare function createLibsqlDatabaseAdapter(options: {
     }, tableName?: any): any;
     referenceExists(field: {
         targetTable: any;
-    }, value: any): boolean;
+    }, value: any): any;
     insertAppRow(table: {
         name: any;
     }, row: {

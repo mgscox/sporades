@@ -5173,48 +5173,53 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       return this.prepare("SELECT * FROM sporades_file_uploads WHERE id = ?").get(uploadId) ?? null;
     },
     completeFileUpload(upload, size, updatedAt) {
-      const consumed = this.prepare("DELETE FROM sporades_file_uploads WHERE id = ? AND fileId = ? AND version = ?").run(
-        upload.id,
-        upload.fileId,
-        upload.version
-      );
-      if (consumed.changes === 0) {
-        return consumed;
-      }
-      const existing = this.selectFileById(upload.fileId);
-      if (existing) {
-        if (existing.deletedAt !== null && existing.deletedAt !== void 0) {
-          return { changes: 0 };
+      return thenIfPromise(
+        this.prepare("DELETE FROM sporades_file_uploads WHERE id = ? AND fileId = ? AND version = ?").run(
+          upload.id,
+          upload.fileId,
+          upload.version
+        ),
+        (consumed) => {
+          if (consumed.changes === 0) {
+            return consumed;
+          }
+          return thenIfPromise(this.selectFileById(upload.fileId), (existing) => {
+            if (existing) {
+              if (existing.deletedAt !== null && existing.deletedAt !== void 0) {
+                return { changes: 0 };
+              }
+              return this.prepare(
+                "UPDATE sporades_files SET bucketId = ?, bucketName = ?, path = ?, name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ? WHERE id = ? AND deletedAt IS NULL"
+              ).run(
+                upload.bucketId,
+                upload.bucketName,
+                upload.path,
+                upload.name,
+                upload.type,
+                size,
+                upload.version,
+                "uploaded",
+                updatedAt,
+                upload.fileId
+              );
+            }
+            return this.insertFileRow({
+              id: upload.fileId,
+              ownerId: upload.ownerId,
+              bucketId: upload.bucketId,
+              bucketName: upload.bucketName,
+              path: upload.path,
+              name: upload.name,
+              type: upload.type,
+              size,
+              version: upload.version,
+              status: "uploaded",
+              createdAt: upload.createdAt,
+              updatedAt
+            });
+          });
         }
-        return this.prepare(
-          "UPDATE sporades_files SET bucketId = ?, bucketName = ?, path = ?, name = ?, type = ?, size = ?, version = ?, status = ?, updatedAt = ? WHERE id = ? AND deletedAt IS NULL"
-        ).run(
-          upload.bucketId,
-          upload.bucketName,
-          upload.path,
-          upload.name,
-          upload.type,
-          size,
-          upload.version,
-          "uploaded",
-          updatedAt,
-          upload.fileId
-        );
-      }
-      return this.insertFileRow({
-        id: upload.fileId,
-        ownerId: upload.ownerId,
-        bucketId: upload.bucketId,
-        bucketName: upload.bucketName,
-        path: upload.path,
-        name: upload.name,
-        type: upload.type,
-        size,
-        version: upload.version,
-        status: "uploaded",
-        createdAt: upload.createdAt,
-        updatedAt
-      });
+      );
     },
     deleteFileUploadsForPath(path11) {
       return this.prepare("DELETE FROM sporades_file_uploads WHERE path = ?").run(path11);
@@ -5344,13 +5349,12 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       );
     },
     readAuthSessionWithUser(token) {
-      const row = this.prepare(
-        "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, s.provider AS provider FROM sporades_auth_sessions s JOIN sporades_auth_users u ON u.id = s.userId WHERE s.token = ?"
-      ).get(token) ?? null;
-      if (isReservedAuthUserId(row?.userId)) {
-        return null;
-      }
-      return row;
+      return thenIfPromise(
+        this.prepare(
+          "SELECT s.token, s.expiresAt, u.id AS userId, u.displayName, u.email, u.picture, u.isAuthenticated, u.isGuest, s.provider AS provider FROM sporades_auth_sessions s JOIN sporades_auth_users u ON u.id = s.userId WHERE s.token = ?"
+        ).get(token),
+        (row) => isReservedAuthUserId(row?.userId) ? null : row ?? null
+      );
     },
     insertOAuthState(row) {
       const provider = row.provider ?? "google";
@@ -5367,7 +5371,10 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       return row;
     },
     emailCredentialExists(email) {
-      return Boolean(this.prepare("SELECT email FROM sporades_auth_email_credentials WHERE email = ?").get(email));
+      return thenIfPromise(
+        this.prepare("SELECT email FROM sporades_auth_email_credentials WHERE email = ?").get(email),
+        (row) => Boolean(row)
+      );
     },
     insertEmailCredential(row) {
       assertNotReservedAuthUserId(row.userId);
@@ -5381,10 +5388,12 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       ).run(passwordHash, passwordSalt, email);
     },
     findEmailCredentialWithUser(email) {
-      const row = this.prepare(
-        "SELECT c.email, c.userId, c.passwordHash, c.passwordSalt, u.displayName, u.picture, u.isAuthenticated, u.isGuest FROM sporades_auth_email_credentials c JOIN sporades_auth_users u ON u.id = c.userId WHERE c.email = ?"
-      ).get(email) ?? null;
-      return isReservedAuthUserId(row?.userId) ? null : row;
+      return thenIfPromise(
+        this.prepare(
+          "SELECT c.email, c.userId, c.passwordHash, c.passwordSalt, u.displayName, u.picture, u.isAuthenticated, u.isGuest FROM sporades_auth_email_credentials c JOIN sporades_auth_users u ON u.id = c.userId WHERE c.email = ?"
+        ).get(email),
+        (row) => isReservedAuthUserId(row?.userId) ? null : row ?? null
+      );
     },
     deleteAuthSessionsForUser(userId) {
       return this.prepare("DELETE FROM sporades_auth_sessions WHERE userId = ?").run(userId);
@@ -5401,10 +5410,12 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       ).get(selector) ?? null;
     },
     countPasswordResetCodesForEmail(email, now) {
-      const row = this.prepare(
-        "SELECT COUNT(*) AS count FROM sporades_auth_password_reset_codes WHERE email = ? AND expiresAt > ?"
-      ).get(email, now);
-      return Number(row?.count ?? 0);
+      return thenIfPromise(
+        this.prepare(
+          "SELECT COUNT(*) AS count FROM sporades_auth_password_reset_codes WHERE email = ? AND expiresAt > ?"
+        ).get(email, now),
+        (row) => Number(row?.count ?? 0)
+      );
     },
     deletePasswordResetCodesForUser(userId) {
       return this.prepare("DELETE FROM sporades_auth_password_reset_codes WHERE userId = ?").run(userId);
@@ -5430,8 +5441,9 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
       return migrateExistingAppTable(this, existingTable, nextTable);
     },
     referenceExists(field, value) {
-      return Boolean(
-        this.prepare(`SELECT 1 FROM ${quoteIdentifier(field.targetTable)} WHERE id = ? LIMIT 1`).get(String(value))
+      return thenIfPromise(
+        this.prepare(`SELECT 1 FROM ${quoteIdentifier(field.targetTable)} WHERE id = ? LIMIT 1`).get(String(value)),
+        (row) => Boolean(row)
       );
     },
     async withTransaction(fn) {
