@@ -161,6 +161,15 @@ this spec adds governs the inside of the method.
 - Transaction isolation semantics on a shared synchronous connection. Related, but a separate concern from result resolution.
 - Changing `ctx.db`, the Sporades DB API, or any Capsule authoring surface. This work is invisible to Capsule code by design.
 
+## Implementation Issues
+
+- `issues/01-record-adapter-contract-and-conformance-adrs.md`
+- `issues/02-run-conformance-specification-against-every-adapter.md`
+- `issues/03-extend-conformance-coverage-to-auth-storage.md`
+- `issues/04-extend-conformance-coverage-to-file-metadata-storage.md`
+- `issues/05-extend-conformance-coverage-to-app-tables-and-runtime-metadata.md`
+- `issues/06-require-conformance-coverage-for-every-adapter-method.md`
+
 ## Further Notes
 
 The six defects described in the problem statement are already fixed on
