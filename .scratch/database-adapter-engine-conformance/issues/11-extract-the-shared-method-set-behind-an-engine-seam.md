@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Extract The Shared Method Set Behind An Engine Seam
 
@@ -89,14 +89,14 @@ and the proof that it is a seam.
 
 ## Acceptance criteria
 
-- [ ] The engine-agnostic method set is defined once in its own module, not inside any engine's adapter.
-- [ ] No adapter obtains its methods by constructing and spreading another engine's adapter.
-- [ ] An engine is defined by statement primitives, a dialect, and row/value normalization; it supplies no behavioural method bodies of its own except where ADR-0034 licenses a dialect override.
-- [ ] Identifier quoting, the upsert form, the unbounded-limit form, catalog queries and add-column strategy come from the dialect rather than from shared SQL text.
-- [ ] The total count of per-engine behavioural overrides is lower than before this change, and the remaining ones are each justified in the ADR-0034 categories.
-- [ ] The conformance specification passes unchanged on every engine, and issue 06's coverage gate still passes with no new exemptions.
-- [ ] A short written account of what a new engine must implement, sufficient to start one without reading the SQLite adapter.
-- [ ] An ADR records the seam and supersedes or amends the parts of ADR-0034 that describe the borrow-and-override structure as the current state.
+- [x] The engine-agnostic method set is defined once in its own module, not inside any engine's adapter.
+- [x] No adapter obtains its methods by constructing and spreading another engine's adapter.
+- [x] An engine is defined by statement primitives, a dialect, and row/value normalization; it supplies no behavioural method bodies of its own except where ADR-0034 licenses a dialect override.
+- [x] Identifier quoting, the upsert form, the unbounded-limit form, catalog queries and add-column strategy come from the dialect rather than from shared SQL text.
+- [x] The total count of per-engine behavioural overrides is lower than before this change, and the remaining ones are each justified in the ADR-0034 categories.
+- [x] The conformance specification passes unchanged on every engine, and issue 06's coverage gate still passes with no new exemptions.
+- [x] A short written account of what a new engine must implement, sufficient to start one without reading the SQLite adapter.
+- [x] An ADR records the seam and supersedes or amends the parts of ADR-0034 that describe the borrow-and-override structure as the current state.
 
 ## Blocked by
 
@@ -105,3 +105,39 @@ and the proof that it is a seam.
 Row and value normalization is one of the three things this seam must define, and
 issue 08 is deciding how column-name mapping should work. Designing the seam
 against that answer rather than around an open question is worth the wait.
+
+## Outcome
+
+ADR-0037 records the seam. Per-engine behavioural overrides went from 14 (libSQL
+3, Postgres 11) to 0 across a 77-method set, in five green steps.
+
+The dialect ended up with seven entries: `name`, `quoteIdentifier`, `columnType`,
+`upsertSql`, `listTables`, `describeColumns`, `addMissingColumn`. The
+unbounded-limit form was expected and is absent — ADR-0036 removed the only
+caller, and a seam entry with no caller is a seam for a difference the codebase
+no longer has.
+
+Two things were resolved rather than parameterised, because all three engines
+agreed once the question was asked. App-table DDL now quotes `id`, `createdAt`
+and `updatedAt` like every other column, which is what Postgres already emitted
+and what SQLite and libSQL cannot tell apart; that deleted the Postgres
+`createAppTable` override without a dialect entry. And `consumeOAuthState` is one
+`DELETE ... RETURNING` on every engine, node:sqlite included; the two-statement
+shared form was a race on the asynchronous engines, which is why both of them
+overrode it.
+
+`addMissingColumn` also removed a hazard rather than routing around it. Postgres
+gets `ADD COLUMN IF NOT EXISTS`, so no duplicate-column error is raised for a
+`catch` to swallow and abort the enclosing transaction with. Storage bootstrap
+still runs outside the migration transaction.
+
+Issue 09's review finding — that a future engine override of
+`migrateExistingAppTable` would be silently bypassed from inside a migration — is
+answered structurally: an engine has nowhere to put such an override, and
+`test/database-adapter-engine-seam.test.js` fails if that stops being true.
+
+Not done here, deliberately: the identifier-quoting defect (issue 12), which is
+also what would let the Postgres column-name map be deleted and make a missing
+mapping impossible rather than merely visible. The seam makes an incomplete
+normalization impossible; it does not make an incomplete map impossible, and
+ADR-0037 says so.

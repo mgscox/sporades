@@ -7,22 +7,30 @@ engine. A behavioral method body must not diverge by engine. How a method
 phrases the SQL that gets it that answer may differ, because dialects differ;
 what it concludes may not.
 
-## Where the code is today
+## Where the code was, and the three kinds of override
 
-That is the target, and the codebase does not fully reach it yet. The method set
-is written as one object on the SQLite adapter, and the Postgres and libSQL
-adapters build themselves by constructing a throwaway SQLite adapter, spreading
-its methods, and overriding `exec` and `prepare` with asynchronous versions. But
-the overriding does not stop at the statement primitives: Postgres replaces
-roughly 23 further methods and libSQL roughly 18, including `ensureAuthStorage`,
-`migrateExistingAppTable`, `insertLogIndexEvent`, `pruneLogIndex`,
-`readRecentLogEvents`, `readUserPreferences`, `saveUserPreferences`,
-`writeSystemMetadata`, `listInspectableTables`, `dumpInspectableDatabase`,
-`runReadOnlyInspectionQuery`, and `consumeOAuthState`. Several have genuinely
-different bodies — `consumeOAuthState` is a SELECT followed by a DELETE in the
-shared definition and a single `DELETE ... RETURNING` on Postgres.
+**Superseded in part by ADR-0037.** What this section describes as the state of
+the code was the state of the code, and is not any longer: the method set is now
+defined once in its own module, every engine composes it, and no engine supplies
+a behavioural method body. The three categories below are unchanged and are what
+ADR-0037 is built on — they are the vocabulary for deciding whether a proposed
+per-engine difference belongs in the dialect at all. Read the history for why the
+categories exist; read ADR-0037 for how an engine is built now.
 
-Those overrides are not all the same kind of thing, and the difference is the
+The method set used to be written as one object on the SQLite adapter, with the
+Postgres and libSQL adapters building themselves by constructing a throwaway
+SQLite adapter, spreading its methods, and overriding `exec` and `prepare` with
+asynchronous versions. The overriding did not stop at the statement primitives:
+Postgres replaced roughly 23 further methods and libSQL roughly 18, including
+`ensureAuthStorage`, `migrateExistingAppTable`, `insertLogIndexEvent`,
+`pruneLogIndex`, `readRecentLogEvents`, `readUserPreferences`,
+`saveUserPreferences`, `writeSystemMetadata`, `listInspectableTables`,
+`dumpInspectableDatabase`, `runReadOnlyInspectionQuery`, and `consumeOAuthState`.
+Several had genuinely different bodies — `consumeOAuthState` was a SELECT
+followed by a DELETE in the shared definition and a single `DELETE ... RETURNING`
+on Postgres.
+
+Those overrides were not all the same kind of thing, and the difference is the
 whole point. Set aside connection and transaction-session mechanics —
 `withTransaction`, `withReadOnlySnapshot`, and `close` — which are engine
 machinery rather than behavior, and which ADR-0035 likewise leaves to per-engine
@@ -30,11 +38,14 @@ tests. Among the overrides that carry behavior there are three kinds, and only
 the first is legitimate.
 
 A **dialect or DDL override** emits different SQL because the engines genuinely
-differ. `ensureAuthStorage` is the clean example: Postgres uses
-`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` where the shared definition must
+differ. `ensureAuthStorage` was the clean example: Postgres uses
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` where the shared definition had to
 probe `PRAGMA table_info` first. This is the same line ADR-0035 draws when it
 leaves SQL dialect emission in per-engine tests: an override may change the
 statement text a method emits; it may not change the answer the method gives.
+This is the only category that survives, and ADR-0037 is where it now lives: the
+difference is a dialect entry — for this example, `addMissingColumn` — rather
+than a second copy of the method around it.
 
 An **await-shim override** emits the same SQL as the shared definition and
 exists for one reason only — to resolve the result before deriving from it, or
@@ -59,8 +70,11 @@ Where the shared body is **write-only**, as `insertLogIndexEvent` and
 `thenIfPromise` would change nothing, because nothing is derived. The fix there
 is to return the statement result so the caller has something to await. Either
 way the shim then disappears rather than being maintained in duplicate.
-Reducing the override count is the direction of travel, and these are the
-mechanisms that do it; the count grows when a shim is added instead.
+Reducing the override count was the direction of travel, and these are the
+mechanisms that did it. The count reached zero under ADR-0037, and
+`test/database-adapter-engine-seam.test.js` is what keeps it there: an engine has
+nowhere to write a shim, so the remedy above is now the only route open and has
+to be taken in the shared body.
 
 Leaving an await-shim in place is not neutral, because the shared body it
 shadows stays wrong. `runReadOnlyInspectionQuery` is the clearest case: the
@@ -70,7 +84,10 @@ asynchronous engine it would map and filter Promises. It is dormant rather than
 correct, because both Postgres and libSQL happen to override it. A shadow is not
 a fix — the shared definition is a latent defect that becomes live the moment an
 engine stops shadowing it, or a new engine adapter borrows the set without
-knowing to. The shared `readRecentLogEvents` is in exactly the same position.
+knowing to. The shared `readRecentLogEvents` was in exactly the same position.
+Both were fixed in the shared body rather than shadowed, and no shared body is
+shadowed by anything now, which is the hazard ADR-0037 exists to remove rather
+than to keep catching.
 
 ## The invariant
 

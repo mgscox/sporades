@@ -355,8 +355,12 @@ A `Map<rowId, row>` in-memory cache. Rows are cached on read (lazy, per-row) and
 _Avoid_: table cache (it's row-level, not table-level), data cache
 
 **Database adapter**:
-A runtime-owned boundary that maps the Sporades table API, schema migration model, auth storage, file metadata storage, log index, system metadata, and inspection queries onto one database engine's connection behavior and SQL dialect. Code above the Database adapter must remain agnostic to the selected engine.
+A runtime-owned boundary that maps the Sporades table API, schema migration model, auth storage, file metadata storage, log index, system metadata, and inspection queries onto one database engine's connection behavior and SQL dialect. Code above the Database adapter must remain agnostic to the selected engine. Its method set is engine-agnostic and defined once; a Database engine supplies statement primitives, a Database dialect, and row and value normalization, and no behavioural method body of its own.
 _Avoid_: driver (too low-level), ORM, database plugin
+
+**Database dialect**:
+The closed set of places where database engines genuinely cannot agree on the text of a statement — identifier quoting, column type mapping, the upsert form, the catalog queries behind listing tables and describing columns, and the strategy for declaring a column an older database may not have. A Database engine answers every entry or fails when its adapter is constructed. A difference that is not one of these entries is not a dialect difference and does not license a per-engine method body.
+_Avoid_: SQL flavor, engine quirks, database-specific overrides
 
 **Sporades DB API**:
 The engine-agnostic database operation model used by Sporades runtime code. Capsule handlers interact with a runtime instance of this API through `ctx.db`; design discussions may refer to the underlying API as `sporades.db`.
