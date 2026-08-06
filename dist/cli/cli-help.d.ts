@@ -6,7 +6,7 @@ Scaffold a new Capsule.
 Options:
   --framework <name>  Client framework: ${string}
   --toolchain <name>  Client toolchain: ${string} (framework-dependent)
-  --template <name>   Template: ${string}
+  --template <name>   Template: ${string}, or a local directory path
   --no-install        Skip npm install
   --no-git            Skip git initialization
   --json              Write JSON output
@@ -31,7 +31,7 @@ Scaffold a new Capsule.
 Options:
   --framework <name>  Client framework: ${string}
   --toolchain <name>  Client toolchain: ${string} (framework-dependent)
-  --template <name>   Template: ${string}
+  --template <name>   Template: ${string}, or a local directory path
   --no-install        Skip npm install
   --no-git            Skip git initialization
   --json              Write JSON output

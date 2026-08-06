@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { test } from "node:test";
@@ -1268,6 +1268,69 @@ test("sporades create rejects unsupported template values with structured JSON",
         hint: "Use one of: blank, todo, guestbook, photo-library.",
       },
     });
+  });
+});
+
+test("sporades create accepts a local template directory without copying ignored or secret state", async () => {
+  await withTempDir(async (dir) => {
+    const templateDir = path.join(dir, "template");
+    await mkdir(templateDir, { recursive: true });
+    await mkdir(path.join(templateDir, "client"), { recursive: true });
+    await mkdir(path.join(templateDir, "node_modules", "ignored"), { recursive: true });
+    await mkdir(path.join(templateDir, ".sporades"), { recursive: true });
+    await writeFile(path.join(templateDir, ".gitignore"), "node_modules/\n.sporades/\n.env*.local\n");
+    await writeFile(path.join(templateDir, ".env.sporades.server"), "SECRET=must-not-copy\n");
+    await writeFile(path.join(templateDir, ".env.test.local"), "LOCAL=must-not-copy\n");
+    await writeFile(path.join(templateDir, "node_modules", "ignored", "index.js"), "ignored\n");
+    await writeFile(path.join(templateDir, ".sporades", "binding.json"), "{}\n");
+    await writeFile(path.join(templateDir, "client", "index.tsx"), "export {};\n");
+    await writeFile(path.join(templateDir, "package.json"), JSON.stringify({
+      name: "daily-build-template",
+      private: true,
+      type: "module",
+      scripts: { test: "node --test", "custom:check": "node custom.mjs" },
+      dependencies: { react: "^19.0.0" },
+      devDependencies: { sporades: "0.1.0", typescript: "^5.8.0" },
+    }, null, 2));
+    await writeFile(path.join(templateDir, "sporades.json"), JSON.stringify({
+      name: "daily-build-template",
+      template: "blank",
+      client: { framework: "react", toolchain: "vite" },
+    }, null, 2));
+
+    const result = await runCli([
+      "create",
+      "local-island",
+      "--template",
+      templateDir,
+      "--no-install",
+      "--no-git",
+      "--json",
+    ], { cwd: dir });
+
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: true,
+      data: { path: await realpath(path.join(dir, "local-island")), template: templateDir },
+      error: null,
+    });
+
+    const projectDir = path.join(dir, "local-island");
+    const packageJson = JSON.parse(await readFile(path.join(projectDir, "package.json"), "utf8"));
+    const config = JSON.parse(await readFile(path.join(projectDir, "sporades.json"), "utf8"));
+    assert.equal(packageJson.name, "local-island");
+    assert.equal(packageJson.dependencies.react, "^19.0.0");
+    assert.equal(packageJson.devDependencies.typescript, "^5.8.0");
+    assert.equal(packageJson.devDependencies.sporades, expectedSporadesVersionRange);
+    assert.equal(packageJson.scripts.test, "node --test");
+    assert.equal(packageJson.scripts.dev, "sporades dev");
+    assert.equal(packageJson.scripts["custom:check"], "node custom.mjs");
+    assert.equal(config.name, "local-island");
+    assert.equal(await readFile(path.join(projectDir, "client", "index.tsx"), "utf8"), "export {};\n");
+    await assert.rejects(readFile(path.join(projectDir, ".env.sporades.server"), "utf8"), /ENOENT/);
+    await assert.rejects(readFile(path.join(projectDir, ".env.test.local"), "utf8"), /ENOENT/);
+    await assert.rejects(readFile(path.join(projectDir, "node_modules", "ignored", "index.js"), "utf8"), /ENOENT/);
+    await assert.rejects(readFile(path.join(projectDir, ".sporades", "binding.json"), "utf8"), /ENOENT/);
   });
 });
 
