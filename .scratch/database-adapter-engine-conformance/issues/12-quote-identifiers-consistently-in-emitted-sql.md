@@ -2,80 +2,82 @@ Status: ready-for-agent
 
 # Quote Identifiers Consistently In Emitted SQL
 
+## Decision
+
+Made by the maintainer on 2026-08-06, so implement it rather than reopening it.
+
+The runtime settles identifier casing by quoting everywhere: every identifier in
+emitted SQL is quoted through the dialect, including the runtime's own DDL, so
+Postgres never folds and every declared camelCase spelling is preserved on every
+engine. The Postgres column-name map is then deleted — with nothing folded there
+is nothing to restore, and the app-column collision hazard disappears by
+construction rather than by narrowing.
+
+No data migration ships with this. There are currently no installed Capsules
+using a Postgres Capsule service, so no deployed schema holds folded-lowercase
+columns; a pre-release Postgres database created by the old unquoted DDL is
+recreated rather than upgraded. Record in the ADR that this window existed and
+closed here — the same change after the first deployed Postgres Capsule would
+have been a migration project, and a future reader deserves to know why it was
+not one.
+
 ## What to build
 
-Found by running the conformance specification against a real Postgres for the
-first time. It is a live defect on the most Capsule-visible surface there is, not
-a latent one.
+The live defect that forced the question, found the first time the conformance
+specification ran against a real Postgres: app table columns are created quoted
+(`appFieldColumnDefinition` wraps each field name in `quoteIdentifier`, so
+Postgres stores `"ownerId"` case-preserved), while the owner-scope predicate is
+emitted unquoted and folds to `ownerid`. Any owner-scoped app-table operation
+errors outright on Postgres with `column "ownerid" does not exist` — and app
+tables are what Capsule code reaches through `ctx.db`, so this is not a corner
+of the runtime. Runtime-owned tables escaped only by luck: their DDL was
+unquoted too, so both halves folded consistently. SQLite folds nothing, which is
+why the inconsistency was invisible on the default engine.
 
-App table columns are created **quoted**: `appFieldColumnDefinition` wraps each
-field name in `quoteIdentifier`, so Postgres stores `"ownerId"` with its case
-preserved. The owner-scope predicate is emitted **unquoted**: the app-row update
-appends `" AND ownerId = ?"`, which Postgres folds to `ownerid`. That column does
-not exist, so the statement fails with `column "ownerid" does not exist`.
+The fix is the decision above, applied everywhere, not a patch to the predicate
+that happened to fail first. Audit every statement the runtime emits — DDL, DML,
+predicates, indexes, catalog probes — and route every identifier through the
+dialect's quoting. The known failing predicate is in the app-row update, but
+three conformance cases fail today (`updateAppRow`, `selectAppRows`,
+`dumpInspectableDatabase`), so establish the real set of offending sites before
+fixing rather than assuming it is one.
 
-The effect is that any owner-scoped app-table operation errors outright on
-Postgres. App tables are what Capsule code reaches through `ctx.db`, so this is
-not a corner of the runtime.
+Quoting the runtime's own DDL has consequences this ticket owns:
 
-Runtime-owned tables are unaffected only by luck: their DDL is unquoted too, so
-both halves fold consistently to lowercase and match. That is why the File
-metadata and auth storage surfaces pass on Postgres while app tables do not.
+- **The Postgres column-name map is deleted.** ADR-0037's normalization seam
+  stays — it is the seam entry, not the map — but Postgres's `columnName`
+  becomes the identity, matching the other engines. The per-key rename hazard
+  recorded below goes with it.
+- **Issue 08's guard is reworked, not discarded.** Its completeness check
+  asserted that no runtime table declares a camelCase column the map cannot
+  restore. Its successor asserts the stronger thing quoting makes true: every
+  runtime table's declared spellings round-trip through the Postgres read path
+  with no lookup in between. The `verifierHash` regression case asserts the
+  round-trip, not the mechanism, so it must stay green throughout.
+- **Bootstraps and additive migrations quote too.** The duplicate-tolerant
+  `ALTER TABLE ... ADD COLUMN` idiom and every `CREATE TABLE IF NOT EXISTS`
+  follow the same rule; a half-quoted codebase is the disease this ticket cures,
+  so no site is exempt because it is old or rarely runs.
 
-The bug is the inconsistency, not the quoting. Two halves of the same feature
-disagree about whether identifiers are quoted, and SQLite cannot tell the
-difference because it folds nothing — so the divergence is invisible on the
-default engine and fatal on Postgres. Fix it by settling the question one way for
-all emitted SQL rather than by adding quotes at the one call site that failed;
-patching the single predicate would leave the same trap set for the next one.
+## Second symptom, resolved by construction
 
-Whichever way it is settled, note that the DDL is already deployed in both
-styles, so changing the quoting of existing tables is a migration question and
-not merely a code change. Decide deliberately whether existing Capsules keep
-working.
-
-Check for the same shape elsewhere: any place emitted SQL names a camelCase
-column without going through the shared quoting helper is a candidate.
-
-## Relationship to issue 08
-
-Issue 08 covers the read path — restoring camelCase names from Postgres's folded
-result columns. This is the write path: what casing the SQL text asks for in the
-first place. They are the same underlying question about identifier casing and
-may be worth one coherent answer, so issue 08 was told about this finding and
-asked whether its chosen mechanism resolves it. If issue 08 takes it, close this
-as superseded rather than doing the work twice.
-
-## Second symptom: the mapping renames app table columns
-
-Found while reviewing issue 08, confirmed live on Postgres. The Postgres
-column-name map is applied per result key with no table provenance —
-`postgresParseRowDescription` discards the tableOID bytes — so it is not scoped
-to runtime tables at all. An app table column whose declared name matches a
-lowered runtime spelling is renamed on the way out: a Capsule field literally
-named `errorcode` or `jobid` reads back as `errorCode` or `jobId`. Nothing
-validates against such a field name today.
-
-The hazard pre-existed for `userid`, `createdat`, `fileid`, `ownerid`,
-`bucketid` and `expiresat`. Issue 08 roughly doubled the surface and added
-generic names — `jobId`, `errorCode`, `startedAt`, `completedAt`, `failedAt`,
-`availableAt`, `nextOccurrence`, `claimToken` — so the collision is more
-reachable now than it was.
-
-It is recorded here rather than against issue 08 because narrowing the map is
-not the fix. Settling identifier casing is: if the runtime's own DDL stops
-folding, the map can be deleted and the collision cannot exist. That is this
-issue's remit, and it is the reason to prefer settling the question over
-patching the predicate that first failed.
+The Postgres column-name map was applied per result key with no table
+provenance, so a Capsule field literally named `errorcode` or `jobid` read back
+renamed to `errorCode` or `jobId`. That hazard pre-existed issue 08 and was
+widened by it; it is recorded here because deleting the map is the only fix that
+removes it rather than shrinking it. With quoting settled and the map gone, an
+app column round-trips under its own declared name whatever it is called —
+prove that with the collision names that used to rename.
 
 ## Acceptance criteria
 
-- [ ] Emitted SQL is consistent about identifier quoting; no statement names a column in a style the table was not created with.
-- [ ] Owner-scoped app-table update and select work on Postgres, demonstrated by a conformance case that fails against the current code.
-- [ ] The other places emitting bare camelCase column names are audited and brought into line, not just the predicate that failed.
-- [ ] Any change to the quoting of already-created tables is accompanied by a deliberate decision about existing deployments, recorded in the issue or an ADR.
+- [ ] Every identifier in emitted SQL is quoted through the dialect; no statement names a column in a style the table was not created with, on any engine.
+- [ ] Owner-scoped app-table update and select work on Postgres, demonstrated by conformance cases that fail against the current code; the three known failing cases go green.
+- [ ] The Postgres column-name map is deleted, and Postgres row normalization preserves declared spellings with no lookup.
+- [ ] An app table column named `errorcode` or `jobid` round-trips under its own declared name on every engine.
+- [ ] Issue 08's round-trip guard is reworked to assert declared spellings survive the Postgres read path, and is demonstrated to fail against a deliberately unquoted statement.
 - [ ] The full conformance specification passes on SQLite, libSQL and Postgres.
-- [ ] An app table column named to collide with a runtime spelling — `errorcode`, `jobid` — round-trips under its own declared name, or such names are rejected with a clear error.
+- [ ] An ADR records the decision: quoting everywhere, the map's deletion, and that no installed Postgres Capsule existed so no migration shipped.
 
 ## Blocked by
 
