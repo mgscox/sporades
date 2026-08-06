@@ -173,6 +173,7 @@ this spec adds governs the inside of the method.
 - `issues/08-map-every-runtime-column-name-on-postgres.md`
 - `issues/09-route-shared-schema-migration-through-a-transaction.md`
 - `issues/10-sequence-the-log-index-for-engine-independent-order.md`
+- `issues/11-extract-the-shared-method-set-behind-an-engine-seam.md`
 
 ## Further Notes
 
