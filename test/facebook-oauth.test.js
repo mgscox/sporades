@@ -564,7 +564,7 @@ test("Facebook links an anonymous session and a returning subject resolves the s
       assert.equal(linkedReturning.auth.userId, firstSession.auth.userId);
       assert.equal(linkedReturning.auth.provider, "facebook");
 
-      const persisted = database.sqlite.findAuthIdentityByProviderSubject("facebook", "returning-facebook-subject");
+      const persisted = database.adapter.findAuthIdentityByProviderSubject("facebook", "returning-facebook-subject");
       assert.equal(persisted.email, null);
       assert.equal(persisted.displayName, "No Email Person");
       assert.doesNotMatch(JSON.stringify(persisted), /provider-access-token/);
@@ -607,8 +607,8 @@ test("Facebook identity conflicts and transaction failures remain structured and
       origin: "https://capsule.example",
       returnTo: "https://capsule.example/after",
     });
-    const originalTransaction = database.sqlite.withTransaction;
-    database.sqlite.withTransaction = async () => {
+    const originalTransaction = database.adapter.withTransaction;
+    database.adapter.withTransaction = async () => {
       throw new Error("raw-database-secret");
     };
     try {
@@ -625,7 +625,7 @@ test("Facebook identity conflicts and transaction failures remain structured and
       assert.match(response.body, /AUTH_TRANSACTION_FAILED/);
       assert.doesNotMatch(response.body, /raw-database-secret/);
     } finally {
-      database.sqlite.withTransaction = originalTransaction;
+      database.adapter.withTransaction = originalTransaction;
     }
   });
 });

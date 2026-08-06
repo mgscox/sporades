@@ -383,8 +383,8 @@ test("denied write ACLs roll back mutation writes and skip after hooks", async (
         hint: "The current user is not allowed to perform this operation.",
       });
 
-      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[0], {}).map((row) => ({ title: row.title })), []);
-      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[1], {}).map((row) => ({ title: row.title })), []);
+      assert.deepEqual(database.adapter.selectAppRows(database.schema.tables[0], {}).map((row) => ({ title: row.title })), []);
+      assert.deepEqual(database.adapter.selectAppRows(database.schema.tables[1], {}).map((row) => ({ title: row.title })), []);
     } finally {
       database.close();
     }
@@ -424,10 +424,10 @@ test("async ACL writes from after hooks are awaited before commit and can roll b
     try {
       const allowed = await runMutation(database, auth("user-1"), "addTodo", ["allow"]);
       assert.equal(allowed.ok, true);
-      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[0], {}).map((row) => ({ title: row.title })), [
+      assert.deepEqual(database.adapter.selectAppRows(database.schema.tables[0], {}).map((row) => ({ title: row.title })), [
         { title: "allow" },
       ]);
-      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[1], {}).map((row) => ({ title: row.title })), [
+      assert.deepEqual(database.adapter.selectAppRows(database.schema.tables[1], {}).map((row) => ({ title: row.title })), [
         { title: "allow" },
       ]);
 
@@ -438,10 +438,10 @@ test("async ACL writes from after hooks are awaited before commit and can roll b
         message: "Denied.",
         hint: "The current user is not allowed to perform this operation.",
       });
-      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[0], {}).map((row) => ({ title: row.title })), [
+      assert.deepEqual(database.adapter.selectAppRows(database.schema.tables[0], {}).map((row) => ({ title: row.title })), [
         { title: "allow" },
       ]);
-      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[1], {}).map((row) => ({ title: row.title })), [
+      assert.deepEqual(database.adapter.selectAppRows(database.schema.tables[1], {}).map((row) => ({ title: row.title })), [
         { title: "allow" },
       ]);
     } finally {
@@ -612,7 +612,7 @@ test("write ACL fallback, operation-specific override, missing ACL, and async ru
       assert.equal(calls[1].rule, "update");
       assert.equal(calls[1].previous.title, "draft");
       assert.equal(calls[1].next.title, "locked");
-      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[0], {}).map((row) => ({ title: row.title })), [
+      assert.deepEqual(database.adapter.selectAppRows(database.schema.tables[0], {}).map((row) => ({ title: row.title })), [
         { title: "draft" },
       ]);
 
@@ -624,7 +624,7 @@ test("write ACL fallback, operation-specific override, missing ACL, and async ru
 
       const open = await runMutation(database, auth("user-1"), "addOpenLog", ["open"]);
       assert.equal(open.ok, true);
-      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[1], {}).map((row) => ({ title: row.title })), [
+      assert.deepEqual(database.adapter.selectAppRows(database.schema.tables[1], {}).map((row) => ({ title: row.title })), [
         { title: "open" },
       ]);
     } finally {
@@ -658,13 +658,13 @@ test("generated insert and update mutations apply write ACLs", async () => {
       assert.equal(calls[0].next.text, "first");
       assert.equal(calls[0].next.ownerId, "user-1");
 
-      const [{ id }] = database.sqlite.selectAppRows(database.schema.tables[0], {});
+      const [{ id }] = database.adapter.selectAppRows(database.schema.tables[0], {});
       const deniedUpdate = await runMutation(database, auth("user-1"), "updateTodoText", [id, "blocked"]);
       assert.equal(deniedUpdate.ok, false);
       assert.equal(calls[1].operation, "update");
       assert.equal(calls[1].previous.text, "first");
       assert.equal(calls[1].next.text, "blocked");
-      assert.deepEqual(database.sqlite.selectAppRows(database.schema.tables[0], {}).map((row) => ({ text: row.text })), [
+      assert.deepEqual(database.adapter.selectAppRows(database.schema.tables[0], {}).map((row) => ({ text: row.text })), [
         { text: "first" },
       ]);
     } finally {
@@ -794,7 +794,7 @@ test("ACL db helpers fail closed when adapter reads are async", async () => {
       const db = createEndpointDatabaseApi(database);
       const project = db.projects.insert({ name: "Hidden", ownerId: "u1" });
       db.notes.insert({ title: "Denied by async db helper", projectId: project.id });
-      database.sqlite.selectAppRowById = async () => ({ id: project.id, name: "Hidden", ownerId: "u1" });
+      database.adapter.selectAppRowById = async () => ({ id: project.id, name: "Hidden", ownerId: "u1" });
 
       const result = await runQuery(database, auth("u1"), "notes");
 
@@ -837,7 +837,7 @@ test("ACL storage helpers expose live files by File ID and absolute File path", 
     });
 
     try {
-      database.sqlite.insertFileRow({
+      database.adapter.insertFileRow({
         id: "file-1",
         ownerId: "u1",
         bucketId: "bucket-1",
@@ -851,7 +851,7 @@ test("ACL storage helpers expose live files by File ID and absolute File path", 
         createdAt: "2026-07-04T10:00:00.000Z",
         updatedAt: "2026-07-04T10:00:00.000Z",
       });
-      database.sqlite.insertFileRow({
+      database.adapter.insertFileRow({
         id: "file-2",
         ownerId: "u1",
         bucketId: "bucket-1",
@@ -865,7 +865,7 @@ test("ACL storage helpers expose live files by File ID and absolute File path", 
         createdAt: "2026-07-04T10:01:00.000Z",
         updatedAt: "2026-07-04T10:01:00.000Z",
       });
-      database.sqlite.insertFileRow({
+      database.adapter.insertFileRow({
         id: "file-3",
         ownerId: "u1",
         bucketId: "bucket-1",
@@ -879,7 +879,7 @@ test("ACL storage helpers expose live files by File ID and absolute File path", 
         createdAt: "2026-07-04T10:02:00.000Z",
         updatedAt: "2026-07-04T10:02:00.000Z",
       });
-      database.sqlite.insertFileRow({
+      database.adapter.insertFileRow({
         id: "file-deleted",
         ownerId: "u1",
         bucketId: "bucket-1",
@@ -893,8 +893,8 @@ test("ACL storage helpers expose live files by File ID and absolute File path", 
         createdAt: "2026-07-04T10:03:00.000Z",
         updatedAt: "2026-07-04T10:03:00.000Z",
       });
-      database.sqlite.markFileDeleted("file-deleted", "2026-07-04T10:04:00.000Z");
-      database.sqlite.insertFileRow({
+      database.adapter.markFileDeleted("file-deleted", "2026-07-04T10:04:00.000Z");
+      database.adapter.insertFileRow({
         id: "file-pending",
         ownerId: "u1",
         bucketId: "bucket-1",
@@ -908,7 +908,7 @@ test("ACL storage helpers expose live files by File ID and absolute File path", 
         createdAt: "2026-07-04T10:05:00.000Z",
         updatedAt: "2026-07-04T10:05:00.000Z",
       });
-      database.sqlite.insertFileRow({
+      database.adapter.insertFileRow({
         id: "file-other",
         ownerId: "u2",
         bucketId: "bucket-2",
@@ -922,10 +922,10 @@ test("ACL storage helpers expose live files by File ID and absolute File path", 
         createdAt: "2026-07-04T10:06:00.000Z",
         updatedAt: "2026-07-04T10:06:00.000Z",
       });
-      const selectLiveFileByPath = database.sqlite.selectLiveFileByPath.bind(database.sqlite);
-      database.sqlite.selectLiveFileByPath = (filePath) => {
+      const selectLiveFileByPath = database.adapter.selectLiveFileByPath.bind(database.adapter);
+      database.adapter.selectLiveFileByPath = (filePath) => {
         if (filePath === "/teams/u1/ambiguous.txt") {
-          return [database.sqlite.selectFileById("file-1"), database.sqlite.selectFileById("file-2")];
+          return [database.adapter.selectFileById("file-1"), database.adapter.selectFileById("file-2")];
         }
         return selectLiveFileByPath(filePath);
       };
@@ -1033,7 +1033,7 @@ test("ACL helpers return plain values from default sync adapter reads", async ()
     });
 
     try {
-      database.sqlite.insertFileRow({
+      database.adapter.insertFileRow({
         id: "file-1",
         ownerId: "u1",
         bucketId: "bucket-1",
@@ -1135,7 +1135,7 @@ test("ACL storage helpers fail closed when adapter reads are async in read rules
     });
 
     try {
-      database.sqlite.selectFileById = async () => ({
+      database.adapter.selectFileById = async () => ({
         id: "file-1",
         ownerId: "u1",
         bucketId: "bucket-1",
@@ -1195,7 +1195,7 @@ test("ACL storage helpers fail closed when adapter reads are async in write rule
     });
 
     try {
-      database.sqlite.selectFileById = async () => ({
+      database.adapter.selectFileById = async () => ({
         id: "file-1",
         ownerId: "u1",
         bucketId: "bucket-1",
@@ -1258,7 +1258,7 @@ test("ACL storage helpers allow sync file lookups in async ACL rules", async () 
     });
 
     try {
-      database.sqlite.insertFileRow({
+      database.adapter.insertFileRow({
         id: "file-1",
         ownerId: "u1",
         bucketId: "bucket-1",

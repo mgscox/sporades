@@ -32,7 +32,7 @@ test("the full runtime can advance delayed Job timers without sleeping or replac
   }, { clock });
 
   try {
-    database.sqlite.prepare("INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    database.adapter.prepare("INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run("user-a", clock.now().toISOString(), "user-a", null, null, 0, 1, "anonymous");
 
     const queued = await runMutation(database, auth, "enqueue", []);

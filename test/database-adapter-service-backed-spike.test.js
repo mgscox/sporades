@@ -19,7 +19,7 @@ async function withTempDir(fn) {
 test("spike proof: a service-backed SQLite-compatible adapter can run representative runtime paths", async () => {
   await withTempDir(async (dir) => {
     const adapter = await createServiceBackedSqliteAdapter(path.join(dir, "service.db"));
-    const database = { adapter, sqlite: adapter };
+    const database = { adapter };
     try {
       const notesTable = {
         name: "notes",

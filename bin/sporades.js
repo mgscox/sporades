@@ -4198,7 +4198,6 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
   const rowCache = /* @__PURE__ */ new Map();
   const database = {
     adapter: sqlite,
-    sqlite,
     schema,
     endpoints,
     queries,
@@ -4240,7 +4239,7 @@ async function openDevDatabase(databasePath, serverSource, serverEnv = {}, confi
         database.__jobWakeTimer = null;
       }
       const mailResult = database.mail.close();
-      const sqliteResult = database.sqlite.close();
+      const sqliteResult = database.adapter.close();
       const storageResult = database.fileStorage.close();
       const pending = [mailResult, storageResult, sqliteResult].filter((result) => result && typeof result.then === "function");
       return pending.length > 0 ? Promise.all(pending) : void 0;
@@ -4417,7 +4416,7 @@ async function ensureScheduleStorage(sqlite) {
 async function reconcileSchedules(database) {
   const now = database.clock.now();
   const declaredNames = new Set(database.schedules.map((definition) => definition.name));
-  const persisted = await database.sqlite.prepare("SELECT * FROM sporades_schedules").all();
+  const persisted = await database.adapter.prepare("SELECT * FROM sporades_schedules").all();
   const plans = [];
   for (const definition of database.schedules) {
     const row = persisted.find((candidate) => candidate.name === definition.name);
@@ -4444,17 +4443,17 @@ async function reconcileSchedules(database) {
     plans.push({ definition, row, nextOccurrence, recoveredOccurrence });
   }
   for (const row of persisted) {
-    if (!declaredNames.has(String(row.name))) await database.sqlite.prepare("DELETE FROM sporades_schedules WHERE name=?").run(row.name);
+    if (!declaredNames.has(String(row.name))) await database.adapter.prepare("DELETE FROM sporades_schedules WHERE name=?").run(row.name);
   }
   for (const { definition, row, nextOccurrence } of plans) {
-    if (row) await database.sqlite.prepare("UPDATE sporades_schedules SET definitionFingerprint=?, expression=?, effectiveTimezone=?, missedRunPolicy=?, enabled=?, nextOccurrence=? WHERE name=?").run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
+    if (row) await database.adapter.prepare("UPDATE sporades_schedules SET definitionFingerprint=?, expression=?, effectiveTimezone=?, missedRunPolicy=?, enabled=?, nextOccurrence=? WHERE name=?").run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
     else {
       try {
-        await database.sqlite.prepare("INSERT INTO sporades_schedules (name, definitionFingerprint, expression, effectiveTimezone, missedRunPolicy, enabled, nextOccurrence) VALUES (?, ?, ?, ?, ?, ?, ?)").run(definition.name, definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
+        await database.adapter.prepare("INSERT INTO sporades_schedules (name, definitionFingerprint, expression, effectiveTimezone, missedRunPolicy, enabled, nextOccurrence) VALUES (?, ?, ?, ?, ?, ?, ?)").run(definition.name, definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence);
       } catch (error) {
-        const concurrent = await database.sqlite.prepare("SELECT name FROM sporades_schedules WHERE name=?").get(definition.name);
+        const concurrent = await database.adapter.prepare("SELECT name FROM sporades_schedules WHERE name=?").get(definition.name);
         if (!concurrent) throw error;
-        await database.sqlite.prepare("UPDATE sporades_schedules SET definitionFingerprint=?, expression=?, effectiveTimezone=?, missedRunPolicy=?, enabled=?, nextOccurrence=? WHERE name=?").run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
+        await database.adapter.prepare("UPDATE sporades_schedules SET definitionFingerprint=?, expression=?, effectiveTimezone=?, missedRunPolicy=?, enabled=?, nextOccurrence=? WHERE name=?").run(definition.fingerprint, definition.expression, definition.effectiveTimezone, definition.missedRun, definition.enabled ? 1 : 0, nextOccurrence, definition.name);
       }
     }
     definition.nextOccurrence = nextOccurrence;
@@ -4495,10 +4494,10 @@ async function finishFailedScheduledOccurrence(database, definition, occurrence,
   const id = scheduledOccurrenceIdentity(database, definition.name, scheduledFor);
   const completedAt = database.clock.now().toISOString();
   const code = "SCHEDULE_ENQUEUE_FAILED";
-  await database.sqlite.prepare("UPDATE sporades_schedule_occurrences SET status='enqueue-failed', claimToken=NULL, claimExpiresAt=NULL, errorCode=?, updatedAt=? WHERE id=? AND status='pending'").run(code, completedAt, id);
+  await database.adapter.prepare("UPDATE sporades_schedule_occurrences SET status='enqueue-failed', claimToken=NULL, claimExpiresAt=NULL, errorCode=?, updatedAt=? WHERE id=? AND status='pending'").run(code, completedAt, id);
   const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
   definition.nextOccurrence = next;
-  await database.sqlite.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=?, latestOutcome='payload-failed', latestJobId=NULL, latestErrorCode=? WHERE name=? AND enabled=1").run(next, scheduledFor, code, definition.name);
+  await database.adapter.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=?, latestOutcome='payload-failed', latestJobId=NULL, latestErrorCode=? WHERE name=? AND enabled=1").run(next, scheduledFor, code, definition.name);
 }
 async function recordScheduledOccurrence(database, definition, occurrence) {
   const claim = await claimScheduledOccurrence(database, definition, occurrence);
@@ -4510,11 +4509,11 @@ async function recordScheduledOccurrence(database, definition, occurrence) {
   const state = await enqueueScheduledOccurrence(database, definition, occurrence);
   if (state) await database.scheduleOccurrenceFault?.("after-enqueue", { scheduleName: definition.name, scheduledFor: occurrence.toISOString(), jobId: state.id });
   const completedAt = database.clock.now().toISOString();
-  await database.sqlite.prepare("UPDATE sporades_schedule_occurrences SET status=?, claimToken=NULL, claimExpiresAt=NULL, jobId=?, errorCode=?, updatedAt=? WHERE id=? AND claimToken=?").run(state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", completedAt, claim.id, claim.token);
+  await database.adapter.prepare("UPDATE sporades_schedule_occurrences SET status=?, claimToken=NULL, claimExpiresAt=NULL, jobId=?, errorCode=?, updatedAt=? WHERE id=? AND claimToken=?").run(state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", completedAt, claim.id, claim.token);
   if (database.__scheduleStopped) return state;
   const next = nextScheduleOccurrence(definition.fields, occurrence, definition.effectiveTimezone).toISOString();
   definition.nextOccurrence = next;
-  await database.sqlite.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=?, latestOutcome=?, latestJobId=?, latestErrorCode=? WHERE name=? AND enabled=1").run(next, occurrence.toISOString(), state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", definition.name);
+  await database.adapter.prepare("UPDATE sporades_schedules SET nextOccurrence=?, latestScheduledFor=?, latestOutcome=?, latestJobId=?, latestErrorCode=? WHERE name=? AND enabled=1").run(next, occurrence.toISOString(), state ? "enqueued" : "payload-failed", state?.id ?? null, state ? null : "SCHEDULE_PAYLOAD_FAILED", definition.name);
   return state;
 }
 function scheduledOccurrenceIdentity(database, scheduleName, scheduledFor) {
@@ -4528,27 +4527,27 @@ async function claimScheduledOccurrence(database, definition, occurrence) {
   const nowIso = now.toISOString();
   const expiresAt = new Date(now.getTime() + 3e4).toISOString();
   try {
-    await database.sqlite.prepare("INSERT INTO sporades_schedule_occurrences (id, scheduleName, scheduledFor, status, claimToken, claimExpiresAt, createdAt, updatedAt) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)").run(id, definition.name, scheduledFor, token, expiresAt, nowIso, nowIso);
+    await database.adapter.prepare("INSERT INTO sporades_schedule_occurrences (id, scheduleName, scheduledFor, status, claimToken, claimExpiresAt, createdAt, updatedAt) VALUES (?, ?, ?, 'pending', ?, ?, ?, ?)").run(id, definition.name, scheduledFor, token, expiresAt, nowIso, nowIso);
     return { id, token };
   } catch (error) {
-    const existing = await database.sqlite.prepare("SELECT status, claimExpiresAt FROM sporades_schedule_occurrences WHERE id=?").get(id);
+    const existing = await database.adapter.prepare("SELECT status, claimExpiresAt FROM sporades_schedule_occurrences WHERE id=?").get(id);
     if (!existing) throw error;
     if (existing.status !== "pending") return null;
     if (existing.claimExpiresAt && existing.claimExpiresAt > nowIso) {
       schedulePendingOccurrenceRecovery(database, existing.claimExpiresAt);
       return null;
     }
-    const result = await database.sqlite.prepare("UPDATE sporades_schedule_occurrences SET claimToken=?, claimExpiresAt=?, updatedAt=? WHERE id=? AND status='pending' AND (claimExpiresAt IS NULL OR claimExpiresAt <= ?)").run(token, expiresAt, nowIso, id, nowIso);
+    const result = await database.adapter.prepare("UPDATE sporades_schedule_occurrences SET claimToken=?, claimExpiresAt=?, updatedAt=? WHERE id=? AND status='pending' AND (claimExpiresAt IS NULL OR claimExpiresAt <= ?)").run(token, expiresAt, nowIso, id, nowIso);
     return Number(result.changes) === 1 ? { id, token } : null;
   }
 }
 async function recoverPendingScheduleOccurrences(database) {
-  const rows = await database.sqlite.prepare("SELECT scheduleName, scheduledFor FROM sporades_schedule_occurrences WHERE status='pending' AND (claimExpiresAt IS NULL OR claimExpiresAt <= ?) ORDER BY scheduledFor ASC, scheduleName ASC").all(database.clock.now().toISOString());
+  const rows = await database.adapter.prepare("SELECT scheduleName, scheduledFor FROM sporades_schedule_occurrences WHERE status='pending' AND (claimExpiresAt IS NULL OR claimExpiresAt <= ?) ORDER BY scheduledFor ASC, scheduleName ASC").all(database.clock.now().toISOString());
   for (const row of rows) {
     const definition = database.schedules.find((candidate) => candidate.enabled && candidate.name === row.scheduleName);
     if (definition) await recordScheduledOccurrence(database, definition, new Date(row.scheduledFor));
   }
-  const next = await database.sqlite.prepare("SELECT claimExpiresAt FROM sporades_schedule_occurrences WHERE status='pending' AND claimExpiresAt IS NOT NULL ORDER BY claimExpiresAt ASC LIMIT 1").get();
+  const next = await database.adapter.prepare("SELECT claimExpiresAt FROM sporades_schedule_occurrences WHERE status='pending' AND claimExpiresAt IS NOT NULL ORDER BY claimExpiresAt ASC LIMIT 1").get();
   if (next?.claimExpiresAt) schedulePendingOccurrenceRecovery(database, String(next.claimExpiresAt));
 }
 function schedulePendingOccurrenceRecovery(database, claimExpiresAt) {
@@ -4664,16 +4663,16 @@ function abortSchedulePayloadFactories(database) {
 async function recoverExpiredJobLeases(database) {
   const recoveredAt = database.clock.now();
   const recoveredIso = recoveredAt.toISOString();
-  const rows = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status='running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ? ORDER BY availableAt ASC, id ASC").all(recoveredIso);
+  const rows = await database.adapter.prepare("SELECT * FROM sporades_jobs WHERE status='running' AND leaseExpiresAt IS NOT NULL AND leaseExpiresAt <= ? ORDER BY availableAt ASC, id ASC").all(recoveredIso);
   for (const row of rows) {
     const retry = JSON.parse(row.retryJson || '{"maxAttempts":1,"delayMs":0}');
     const history = JSON.parse(row.attemptHistory || "[]");
     history.push({ attempt: Number(row.attempts), outcome: "interrupted", code: "JOB_LEASE_EXPIRED", completedAt: recoveredIso });
     if (Number(row.attempts) < retry.maxAttempts) {
       const availableAt = new Date(recoveredAt.getTime() + retry.delayMs).toISOString();
-      await database.sqlite.prepare("UPDATE sporades_jobs SET status='delayed', availableAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(availableAt, JSON.stringify(history), row.id);
+      await database.adapter.prepare("UPDATE sporades_jobs SET status='delayed', availableAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(availableAt, JSON.stringify(history), row.id);
       database.clock.setTimer(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1);
-    } else await database.sqlite.prepare("UPDATE sporades_jobs SET status='failed', failure=?, failedAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(JSON.stringify({ code: "JOB_LEASE_EXPIRED", message: "Job lease expired." }), recoveredIso, JSON.stringify(history), row.id);
+    } else await database.adapter.prepare("UPDATE sporades_jobs SET status='failed', failure=?, failedAt=?, leaseExpiresAt=NULL, attemptHistory=? WHERE id=?").run(JSON.stringify({ code: "JOB_LEASE_EXPIRED", message: "Job lease expired." }), recoveredIso, JSON.stringify(history), row.id);
   }
   if (rows.some((row) => Number(row.attempts) < JSON.parse(row.retryJson || '{"maxAttempts":1}').maxAttempts)) scheduleCurrentUserJobWorker(database);
 }
@@ -6827,18 +6826,18 @@ async function reindexPrivilegedAuditEventsAfterRollback(database, context) {
       if (await privilegedAuditEventAlreadyIndexed(database, event)) {
         continue;
       }
-      await database.sqlite.insertLogIndexEvent(event);
+      await database.adapter.insertLogIndexEvent(event);
     } catch {
       return;
     }
   }
   try {
-    await database.sqlite.pruneLogIndex(logIndexLimit(database.config ?? {}));
+    await database.adapter.pruneLogIndex(logIndexLimit(database.config ?? {}));
   } catch {
   }
 }
 async function privilegedAuditEventAlreadyIndexed(database, event) {
-  const recent = await database.sqlite.readRecentLogEvents(logIndexLimit(database.config ?? {}));
+  const recent = await database.adapter.readRecentLogEvents(logIndexLimit(database.config ?? {}));
   return Array.isArray(recent) && recent.some((candidate) => samePrivilegedAuditLogEvent(candidate, event));
 }
 function samePrivilegedAuditLogEvent(left, right) {
@@ -6965,7 +6964,7 @@ function createPrivilegedHandlerContext(database, context, signal) {
   return privilegedContext;
 }
 function createPrivilegedScheduleApi(database, contextGetter) {
-  const sqlite = () => (database.__rootDatabase ?? database).sqlite;
+  const sqlite = () => (database.__rootDatabase ?? database).adapter;
   return {
     async get(name) {
       assertActivePrivilegedJobAccess(contextGetter);
@@ -8183,7 +8182,7 @@ async function handleFileHttpRoute(database, request, response, websocketHub = n
   }
   const publicMatch = requestUrl.pathname.match(/^\/__sporades\/files\/public\/([^/]+)$/);
   if (publicMatch && request.method === "GET") {
-    const publicRow = await database.sqlite.selectPublicFileRow(publicMatch[1]);
+    const publicRow = await database.adapter.selectPublicFileRow(publicMatch[1]);
     if (!publicRow || publicRow.revokedAt || publicRow.deletedAt || publicRow.expiresAt && Date.parse(publicRow.expiresAt) <= Date.now() || publicRow.publicVersion !== requestUrl.searchParams.get("v") || publicRow.publicVersion !== publicRow.version) {
       writeNotFound(response);
       return true;
@@ -8226,7 +8225,7 @@ async function createRuntimeHealthResult(database) {
   };
 }
 async function checkRuntimeSqlite(database) {
-  return await (database.adapter ?? database.sqlite).checkHealth();
+  return await (database.adapter ?? database.adapter).checkHealth();
 }
 async function checkRuntimeFileStorage(database) {
   return await database.fileStorage.checkHealth();
@@ -8342,7 +8341,7 @@ async function createPendingFileUpload(database, auth, message) {
         error: createStructuredFileError("File not found.", "Pass the id or absolute File path of a private file owned by the current user.")
       };
     }
-    return await database.sqlite.withTransaction(async (sqlite) => {
+    return await database.adapter.withTransaction(async (sqlite) => {
       const transactionDatabase = { ...database, sqlite, adapter: sqlite };
       let target;
       try {
@@ -8425,7 +8424,7 @@ async function createPendingFileUpload(database, auth, message) {
   });
 }
 async function completePendingFileUpload(database, uploadId, request, websocketHub = null) {
-  const upload = await database.sqlite.selectFileUpload(uploadId);
+  const upload = await database.adapter.selectFileUpload(uploadId);
   if (!upload) {
     return {
       ok: false,
@@ -8434,7 +8433,7 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
     };
   }
   let wroteFileVersion = false;
-  const previousFile = await database.sqlite.selectFileById(upload.fileId);
+  const previousFile = await database.adapter.selectFileById(upload.fileId);
   try {
     websocketHub?.notifyFileEvent?.(upload.ownerId, {
       type: "file.upload.progress",
@@ -8446,7 +8445,7 @@ async function completePendingFileUpload(database, uploadId, request, websocketH
     await database.fileStorage.writeFileVersion({ fileId: upload.fileId, version: upload.version, bytes });
     wroteFileVersion = true;
     const now = (/* @__PURE__ */ new Date()).toISOString();
-    const completion = await database.sqlite.withTransaction(async (sqlite) => {
+    const completion = await database.adapter.withTransaction(async (sqlite) => {
       const completed = await sqlite.completeFileUpload(upload, bytes.length, now);
       if (completed?.changes === 0) {
         return { ok: false, superseded: true };
@@ -8560,7 +8559,7 @@ async function createPublicFileUrl(database, auth, fileReference, options = {}) 
 }
 async function revokePublicFileUrl(database, auth, publicUrlId) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  const result = await database.sqlite.revokePublicFileUrl(publicUrlId, auth.userId, now);
+  const result = await database.adapter.revokePublicFileUrl(publicUrlId, auth.userId, now);
   if (result.changes === 0) {
     return {
       ok: false,
@@ -8611,9 +8610,9 @@ async function deletePrivateFile(database, auth, fileReference) {
 }
 async function runFileMetadataTransaction(database, fn) {
   if (database.__transactionActive) {
-    return await fn(database.sqlite);
+    return await fn(database.adapter);
   }
-  return await database.sqlite.withTransaction(fn);
+  return await database.adapter.withTransaction(fn);
 }
 function validatePublicUrlExpiry(options) {
   const choices = [options.ttlSeconds !== void 0, options.expires !== void 0, options.noExpiry === true].filter(Boolean);
@@ -8654,7 +8653,7 @@ async function fileRowForOwner(database, fileId, ownerId) {
     const resolved = await resolveLiveFileReference(database, ownerId, reference);
     return resolved.ok ? resolved.row : null;
   }
-  return await database.sqlite.fileRowForOwner(reference, ownerId);
+  return await database.adapter.fileRowForOwner(reference, ownerId);
 }
 function fileMetadataFromRow(row) {
   return {
@@ -8703,20 +8702,20 @@ async function resolveFileWriteTarget(database, ownerId, input, now) {
   const explicitPath = input.path === void 0 || input.path === null ? null : normalizeAbsoluteFilePath(input.path);
   const path10 = explicitPath ?? `/default/${normalizeFileName(input.name, null)}`;
   const firstSegment = path10.split("/").filter(Boolean)[0] ?? "default";
-  const existingBucket = await database.sqlite.findFileBucket(ownerId, firstSegment);
+  const existingBucket = await database.adapter.findFileBucket(ownerId, firstSegment);
   const bucket = existingBucket ?? await ensureFileBucket(database, ownerId, "default", now);
   return { bucket, path: path10 };
 }
 async function ensureFileBucket(database, ownerId, name, now) {
-  const existing = await database.sqlite.findFileBucket(ownerId, name);
+  const existing = await database.adapter.findFileBucket(ownerId, name);
   if (existing) return existing;
   const bucket = { id: randomUUID(), ownerId, name, createdAt: now };
   try {
-    await database.sqlite.createFileBucket(bucket);
+    await database.adapter.createFileBucket(bucket);
     return bucket;
   } catch (error) {
     if (!isUniqueConstraintError(error)) throw error;
-    const raced = await database.sqlite.findFileBucket(ownerId, name);
+    const raced = await database.adapter.findFileBucket(ownerId, name);
     if (raced) return raced;
     throw error;
   }
@@ -8756,7 +8755,7 @@ async function resolveLiveFileReference(database, ownerId, reference) {
     }
     return { ok: true, row: resolved?.ownerId === ownerId ? resolved : null };
   }
-  return { ok: true, row: await database.sqlite.fileRowForOwner(value, ownerId) };
+  return { ok: true, row: await database.adapter.fileRowForOwner(value, ownerId) };
 }
 async function resolvePrivilegedLiveFileReference(database, reference) {
   const value = String(reference ?? "");
@@ -8773,20 +8772,20 @@ async function resolvePrivilegedLiveFileReference(database, reference) {
     }
     return { ok: true, row: resolved };
   }
-  const row = await database.sqlite.selectFileById(value);
+  const row = await database.adapter.selectFileById(value);
   if (!row || row.deletedAt !== null || row.status !== "uploaded") {
     return { ok: true, row: null };
   }
   return { ok: true, row };
 }
 function singleLiveFileRowByPath(database, path10) {
-  return thenIfPromise(database.sqlite.selectLiveFileByPath(path10), (rows) => {
+  return thenIfPromise(database.adapter.selectLiveFileByPath(path10), (rows) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
 }
 function singleActiveFileRowByPath(database, path10) {
-  return thenIfPromise(database.sqlite.selectActiveFileByPath(path10), (rows) => {
+  return thenIfPromise(database.adapter.selectActiveFileByPath(path10), (rows) => {
     if (rows.length > 1) return { ambiguous: true };
     return rows[0] ?? null;
   });
@@ -8871,7 +8870,7 @@ async function runEndpoint(database, endpoint, requestUrl, request) {
   const session = await resolveAnonymousSession(database, readEndpointSessionToken(endpointRequest.headers, endpointRequest.query));
   let context;
   try {
-    const result = await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
+    const result = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       context = await applyContextMiddleware(
         transactionDatabase,
@@ -9080,7 +9079,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
         const columns = Object.keys(row);
         const next = deserializeRow(table, row);
         return runTableWriteWithAcl(database, table, "insert", null, next, contextGetter, () => {
-          const result = database.sqlite.insertAppRow(table, Object.fromEntries(columns.map((column) => [column, row[column]])));
+          const result = database.adapter.insertAppRow(table, Object.fromEntries(columns.map((column) => [column, row[column]])));
           database.rowCache.clear();
           return thenIfPromise(result, () => next);
         });
@@ -9114,7 +9113,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
             ...Object.fromEntries(fieldsToUpdate.map((field) => [field.name, deserializeFieldValue(field, serializedValues[field.name])]))
           };
           return runTableWriteWithAcl(database, table, "update", previous, next, contextGetter, () => {
-            const result = database.sqlite.updateAppRow(table, id, serializedValues);
+            const result = database.adapter.updateAppRow(table, id, serializedValues);
             database.rowCache.clear();
             return thenIfPromise(result, (writeResult2) => {
               if (writeResult2.changes === 0) {
@@ -9126,7 +9125,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
         };
         return fieldValues.some(isPromiseLike) ? Promise.all(fieldValues).then(finishValues) : finishValues(fieldValues);
       };
-      const selected = database.sqlite.selectAppRowById(table, id);
+      const selected = database.adapter.selectAppRowById(table, id);
       const operation = thenIfPromise(selected, finishExisting);
       if (isPromiseLike(operation)) {
         contextGetter?.()?.__pendingAclWrites?.push(operation);
@@ -9140,12 +9139,12 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
         }
         const previous = deserializeRow(table, existing);
         return runTableWriteWithAcl(database, table, "delete", previous, null, contextGetter, () => {
-          const result = database.sqlite.deleteAppRow(table, id);
+          const result = database.adapter.deleteAppRow(table, id);
           database.rowCache.clear();
           return thenIfPromise(result, (writeResult2) => writeResult2.changes > 0);
         });
       };
-      const operation = thenIfPromise(database.sqlite.selectAppRowById(table, id), finish);
+      const operation = thenIfPromise(database.adapter.selectAppRowById(table, id), finish);
       if (isPromiseLike(operation)) {
         contextGetter?.()?.__pendingAclWrites?.push(operation);
       }
@@ -9161,7 +9160,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
       return createEndpointTableApi(database, table, { ...query, limit: count }, contextGetter);
     },
     get() {
-      const selected = database.sqlite.selectAppRows(table, {
+      const selected = database.adapter.selectAppRows(table, {
         where: query.where ? {
           fieldName: query.where.fieldName,
           value: serializeFieldValue(
@@ -9184,7 +9183,7 @@ function createEndpointTableApi(database, table, query = {}, contextGetter = nul
     },
     all() {
       const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
-      const selected = database.sqlite.selectAppRows(table, {
+      const selected = database.adapter.selectAppRows(table, {
         where: query.where ? {
           fieldName: query.where.fieldName,
           value: serializeFieldValue(
@@ -9333,7 +9332,7 @@ function createAclDbHelpers(database, state) {
     get(tableName, id) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
-      const selected = database.sqlite.selectAppRowById(table, id);
+      const selected = database.adapter.selectAppRowById(table, id);
       if (markAsyncAclHelperRead(state, selected)) {
         return null;
       }
@@ -9342,7 +9341,7 @@ function createAclDbHelpers(database, state) {
     exists(tableName, id) {
       assertAclHelperReadAllowed(state);
       const table = resolveAclAppTable(database, tableName);
-      const selected = database.sqlite.selectAppRowById(table, id);
+      const selected = database.adapter.selectAppRowById(table, id);
       if (markAsyncAclHelperRead(state, selected)) {
         return false;
       }
@@ -9380,14 +9379,14 @@ function resolveAclStorageFileReference(database, state, reference) {
     } catch {
       return null;
     }
-    const selected2 = database.sqlite.selectLiveFileByPath(path10);
+    const selected2 = database.adapter.selectLiveFileByPath(path10);
     if (markAsyncAclHelperRead(state, selected2)) {
       return null;
     }
     const resolved = selected2.length > 1 ? { ambiguous: true } : selected2[0] ?? null;
     return resolved?.ambiguous ? null : resolved;
   }
-  const selected = database.sqlite.selectFileById(value);
+  const selected = database.adapter.selectFileById(value);
   if (markAsyncAclHelperRead(state, selected)) {
     return null;
   }
@@ -9549,7 +9548,7 @@ function invalidReferenceError(field) {
   return commandError(`Invalid reference for field: ${field.name}`, `Pass the id of an existing ${field.targetTable} row.`);
 }
 function referenceExists(database, field, value) {
-  return database.sqlite.referenceExists(field, value);
+  return database.adapter.referenceExists(field, value);
 }
 function serializeFieldValue(field, value) {
   if (value === void 0) {
@@ -9780,13 +9779,13 @@ function toSqlLiteral(value, field = null) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }
 async function listDatabaseTables(database) {
-  return await (database.adapter ?? database.sqlite).listInspectableTables();
+  return await (database.adapter ?? database.adapter).listInspectableTables();
 }
 async function dumpDatabase(database) {
-  return await (database.adapter ?? database.sqlite).dumpInspectableDatabase();
+  return await (database.adapter ?? database.adapter).dumpInspectableDatabase();
 }
 async function runReadOnlyQuery(database, sql) {
-  return await (database.adapter ?? database.sqlite).runReadOnlyInspectionQuery(sql);
+  return await (database.adapter ?? database.adapter).runReadOnlyInspectionQuery(sql);
 }
 function validateReadOnlyInspectionSql(sql) {
   const text = String(sql ?? "");
@@ -10116,7 +10115,7 @@ async function simulateLocalIdentitySession(database, options = {}) {
   const picture = normalizeSimulatedText(options.picture);
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const token = createSessionToken();
-  return await database.sqlite.withTransaction(async (tx) => {
+  return await database.adapter.withTransaction(async (tx) => {
     const subject = `local:${email}`;
     const identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
     const userId = identity?.userId ?? randomUUID();
@@ -10941,7 +10940,7 @@ function createWebSocketHub(getDatabase, trustedRefresh = null) {
   }
   async function signOutSession(database, client) {
     try {
-      await database.sqlite.deleteAuthSession(client.session.token);
+      await database.adapter.deleteAuthSession(client.session.token);
       client.session = await resolveAnonymousSession(database, null);
       return { ok: true };
     } catch (error) {
@@ -11012,7 +11011,7 @@ async function routeSporadesAuth(database, request, response) {
     writeEndpointError(response, commandError("Invalid OAuth callback.", "Retry sign-in from the app.", "OAUTH_INVALID_CALLBACK"));
     return true;
   }
-  const stateRow = await database.sqlite.consumeOAuthState(state);
+  const stateRow = await database.adapter.consumeOAuthState(state);
   if (!stateRow) {
     writeEndpointError(response, commandError("Invalid or already-used OAuth state.", "Retry sign-in from the app.", "OAUTH_INVALID_STATE"));
     return true;
@@ -11259,7 +11258,7 @@ async function beginOAuthSignIn(database, session, provider, options) {
       }
     };
   }
-  await database.sqlite.insertOAuthState({
+  await database.adapter.insertOAuthState({
     state,
     provider,
     sessionToken: session.token,
@@ -12606,7 +12605,7 @@ async function linkProviderIdentity(database, session, provider, profile) {
       }
     };
   }
-  return await database.sqlite.withTransaction(async (tx) => {
+  return await database.adapter.withTransaction(async (tx) => {
     let identity = await tx.findAuthIdentityByProviderSubject(provider, subject);
     const email = normalizeSimulatedText(profile.email)?.toLowerCase() ?? identity?.email ?? null;
     if (!identity && email && provider === "google") {
@@ -12737,12 +12736,12 @@ function hashPasswordResetVerifier(verifier) {
 async function issuePasswordResetCode(database, credential) {
   const { selector, code, verifierHash, now } = passwordResetCodeParts(database);
   const expiresAt = new Date(now.getTime() + database.passwordResetConfig.ttlMs).toISOString();
-  await database.sqlite.prunePasswordResetCodes(now.toISOString());
-  const outstanding = await database.sqlite.countPasswordResetCodesForEmail(credential.email, now.toISOString());
+  await database.adapter.prunePasswordResetCodes(now.toISOString());
+  const outstanding = await database.adapter.countPasswordResetCodesForEmail(credential.email, now.toISOString());
   if (outstanding >= PASSWORD_RESET_MAX_OUTSTANDING_PER_EMAIL) {
     return null;
   }
-  await database.sqlite.insertPasswordResetCode({
+  await database.adapter.insertPasswordResetCode({
     selector,
     verifierHash,
     email: credential.email,
@@ -12762,7 +12761,7 @@ async function createEmailPasswordResetLink(database, _session, email) {
   if (!cleanEmail) {
     return { ok: false, error: { message: "Email is required.", hint: "Provide the email address for the account being reset." } };
   }
-  const credential = await database.sqlite.findEmailCredentialWithUser(cleanEmail);
+  const credential = await database.adapter.findEmailCredentialWithUser(cleanEmail);
   if (!credential) {
     return { ok: false, error: { message: "No email account found for that address.", hint: "Check the email address or register a new account." } };
   }
@@ -12797,7 +12796,7 @@ async function readPasswordResetCode(database, code) {
   if (parts.length !== 2 || !parts[0] || !parts[1]) {
     return null;
   }
-  const row = await database.sqlite.findPasswordResetCode(parts[0]);
+  const row = await database.adapter.findPasswordResetCode(parts[0]);
   const expected = Buffer.from(row?.verifierHash ?? hashPasswordResetVerifier("\0absent"), "base64url");
   const actual = Buffer.from(hashPasswordResetVerifier(parts[1]), "base64url");
   const matches = actual.length === expected.length && timingSafeEqual(actual, expected);
@@ -12828,7 +12827,7 @@ async function confirmPasswordReset(database, _session, code, newPassword) {
     return { ok: false, error: invalidPasswordResetCodeError() };
   }
   const password = hashEmailPassword(newPassword);
-  return await database.sqlite.withTransaction(async (tx) => {
+  return await database.adapter.withTransaction(async (tx) => {
     await tx.updateEmailCredentialPassword(row.email, password.hash, password.salt);
     await tx.deletePasswordResetCodesForUser(row.userId);
     await tx.deleteAuthSessionsForUser(row.userId);
@@ -12839,7 +12838,7 @@ async function enqueueRuntimeJob(database, handlerName, payload, idempotencyKey)
   const queueDatabase = database.__rootDatabase ?? database;
   const now = queueDatabase.clock.now().toISOString();
   const payloadJson = boundedJobJson(payload, 64 * 1024, "JOB_PAYLOAD_TOO_LARGE", "Job payload");
-  await queueDatabase.sqlite.prepare(
+  await queueDatabase.adapter.prepare(
     "INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?, 0, ?, ?, ?, '[]', NULL, NULL)"
   ).run(
     randomUUID(),
@@ -12883,7 +12882,7 @@ async function sendEmailPasswordResetLink(database, session, email, options = {}
     return { ok: true };
   }
   recordFailedEmailSignInAttempt(database, cleanEmail, session, PASSWORD_RESET_THROTTLE_FIELD);
-  const credential = cleanEmail ? await database.sqlite.findEmailCredentialWithUser(cleanEmail) : null;
+  const credential = cleanEmail ? await database.adapter.findEmailCredentialWithUser(cleanEmail) : null;
   if (!credential) {
     hashPasswordResetVerifier(randomBytes2(32).toString("base64url"));
     return { ok: true };
@@ -12917,7 +12916,7 @@ async function setOwnEmailPassword(database, session, email, newPassword) {
     return { ok: false, error: { code: error?.code ?? "UNAUTHENTICATED", message: error.message, hint: error.hint } };
   }
   const cleanEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
-  const credential = cleanEmail ? await database.sqlite.findEmailCredentialWithUser(cleanEmail) : null;
+  const credential = cleanEmail ? await database.adapter.findEmailCredentialWithUser(cleanEmail) : null;
   if (!credential || credential.userId !== auth.userId) {
     return { ok: false, error: emailNotOwnedError() };
   }
@@ -12941,12 +12940,12 @@ async function setEmailPassword(database, _session, email, newPassword) {
   if (typeof newPassword !== "string" || newPassword.length < 8) {
     return { ok: false, error: { message: "Password is too short.", hint: "Use a password with at least 8 characters." } };
   }
-  const existing = await database.sqlite.findEmailCredentialWithUser(cleanEmail);
+  const existing = await database.adapter.findEmailCredentialWithUser(cleanEmail);
   if (!existing) {
     return { ok: false, error: { message: "No email account found for that address.", hint: "Check the email address or register a new account." } };
   }
   const password = hashEmailPassword(newPassword);
-  await database.sqlite.updateEmailCredentialPassword(cleanEmail, password.hash, password.salt);
+  await database.adapter.updateEmailCredentialPassword(cleanEmail, password.hash, password.salt);
   return { ok: true };
 }
 async function signUpWithEmail(database, session, provider, credentials) {
@@ -12966,7 +12965,7 @@ async function signUpWithEmail(database, session, provider, credentials) {
   if (!normalized.ok) {
     return normalized;
   }
-  if (await database.sqlite.emailCredentialExists(normalized.email)) {
+  if (await database.adapter.emailCredentialExists(normalized.email)) {
     return {
       ok: false,
       error: {
@@ -12986,7 +12985,7 @@ async function signUpWithEmail(database, session, provider, credentials) {
     isGuest: false,
     provider: "email"
   };
-  return await database.sqlite.withTransaction(async (tx) => {
+  return await database.adapter.withTransaction(async (tx) => {
     await tx.insertEmailCredential({
       email: normalized.email,
       userId: auth.userId,
@@ -13018,7 +13017,7 @@ async function signInWithEmail(database, session, credentials) {
   if (throttle.throttled) {
     return { ok: false, error: invalidEmailCredentialsError({ code: "INVALID_EMAIL_CREDENTIALS" }) };
   }
-  const row = await database.sqlite.findEmailCredentialWithUser(normalized.email);
+  const row = await database.adapter.findEmailCredentialWithUser(normalized.email);
   if (!row || !verifyEmailPassword(normalized.password, row.passwordSalt, row.passwordHash)) {
     recordFailedEmailSignInAttempt(database, normalized.email, session);
     return { ok: false, error: invalidEmailCredentialsError() };
@@ -13033,7 +13032,7 @@ async function signInWithEmail(database, session, credentials) {
     isGuest: Boolean(row.isGuest),
     provider: "email"
   };
-  return await database.sqlite.withTransaction(async (tx) => ({
+  return await database.adapter.withTransaction(async (tx) => ({
     ok: true,
     sessionToken: await rotateSessionOnAdapter(database, tx, session, auth.userId, "email"),
     auth
@@ -13365,7 +13364,7 @@ function createSessionToken() {
   return randomBytes2(32).toString("base64url");
 }
 async function refreshSession(database, token) {
-  return await refreshSessionOnAdapter(database.sqlite, token);
+  return await refreshSessionOnAdapter(database.adapter, token);
 }
 async function refreshSessionOnAdapter(sqlite, token) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -13374,7 +13373,7 @@ async function refreshSessionOnAdapter(sqlite, token) {
   return expiresAt;
 }
 async function rotateSession(database, session, userId, provider = session.auth.provider) {
-  return await database.sqlite.withTransaction(async (tx) => rotateSessionOnAdapter(database, tx, session, userId, provider));
+  return await database.adapter.withTransaction(async (tx) => rotateSessionOnAdapter(database, tx, session, userId, provider));
 }
 async function rotateSessionOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -13384,7 +13383,7 @@ async function rotateSessionOnAdapter(database, sqlite, session, userId, provide
   return token;
 }
 async function moveSessionToUser(database, session, userId, provider = session.auth.provider) {
-  return await database.sqlite.withTransaction(async (tx) => moveSessionToUserOnAdapter(database, tx, session, userId, provider));
+  return await database.adapter.withTransaction(async (tx) => moveSessionToUserOnAdapter(database, tx, session, userId, provider));
 }
 async function moveSessionToUserOnAdapter(database, sqlite, session, userId, provider = session.auth.provider) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -13421,14 +13420,14 @@ async function migrateAnonymousPreferences(database, auth, targetUserId, sqlite 
     await migrate(sqlite);
     return;
   }
-  await database.sqlite.withTransaction(migrate);
+  await database.adapter.withTransaction(migrate);
 }
 async function resolveAnonymousSession(database, sessionToken) {
   if (sessionToken) {
-    const existing = await database.sqlite.readAuthSessionWithUser(sessionToken);
+    const existing = await database.adapter.readAuthSessionWithUser(sessionToken);
     if (existing) {
       if (isExpiredSession(existing)) {
-        await database.sqlite.deleteAuthSession(sessionToken);
+        await database.adapter.deleteAuthSession(sessionToken);
       } else {
         return sessionFromRow(existing);
       }
@@ -13437,7 +13436,7 @@ async function resolveAnonymousSession(database, sessionToken) {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const userId = randomUUID();
   const token = createSessionToken();
-  await database.sqlite.withTransaction(async (tx) => {
+  await database.adapter.withTransaction(async (tx) => {
     await tx.insertAuthUser({
       id: userId,
       createdAt: now,
@@ -13478,7 +13477,7 @@ function sessionFromRow(row) {
   };
 }
 async function readCurrentUserPreferences(database, auth) {
-  const row = await database.sqlite.readUserPreferences(auth.userId);
+  const row = await database.adapter.readUserPreferences(auth.userId);
   return {
     ok: true,
     data: {
@@ -13490,7 +13489,7 @@ async function readCurrentUserPreferences(database, auth) {
 async function updateCurrentUserPreferences(database, auth, patch) {
   try {
     const normalizedPatch = normalizePreferencesPatch(patch);
-    const preferences = await database.sqlite.withTransaction(async (tx) => {
+    const preferences = await database.adapter.withTransaction(async (tx) => {
       const row = await tx.readUserPreferences(auth.userId);
       const current = row ? JSON.parse(row.value) : {};
       const next = { ...current, ...normalizedPatch };
@@ -13663,7 +13662,7 @@ async function runQuery(database, auth, queryName) {
   if (!database.rowCache.has(cacheKey)) {
     const columns = ["id", "createdAt", "updatedAt", ...table.fields.map((field) => field.name)];
     const ownerScoped = table.fields.some((field) => field.name === "ownerId");
-    const rows2 = (await database.sqlite.selectAppRows(table, {
+    const rows2 = (await database.adapter.selectAppRows(table, {
       columns,
       ownerId: ownerScoped ? context.auth.userId : void 0,
       orderBy: { fieldName: "createdAt", direction: "desc" }
@@ -13701,7 +13700,7 @@ async function runMutation(database, auth, mutationName, args) {
   let context;
   let result;
   try {
-    const committed = await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
+    const committed = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       context = await applyContextMiddleware(transactionDatabase, createMutationContext(transactionDatabase, auth), "mutation");
       for (const hookSource of database.mutationHooks.beforeMutation) {
@@ -13790,7 +13789,7 @@ async function runAppMessage(database, auth, messageName, data, options = {}) {
       assertJsonCompatible(data);
     }
     const createHandler = new Function(`return (${handler.handlerSource});`);
-    const response = await (database.adapter ?? database.sqlite).withTransaction(async (transactionAdapter) => {
+    const response = await (database.adapter ?? database.adapter).withTransaction(async (transactionAdapter) => {
       const transactionDatabase = createTransactionDatabase(database, transactionAdapter);
       context = await applyContextMiddleware(
         transactionDatabase,
@@ -13934,7 +13933,7 @@ function createCurrentUserJobApi(database, contextGetter) {
         throw jobError("INVALID_JOB_OPTIONS", "Invalid Job idempotency key.", "Pass a non-empty idempotencyKey no longer than 256 characters.");
       }
       if (idempotencyKey) {
-        const existing = await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
+        const existing = await queueDatabase.adapter.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
         if (existing) {
           assertJobScheduleProvenance(existing, scheduleProvenance);
           return jobState(existing, true);
@@ -13961,10 +13960,10 @@ function createCurrentUserJobApi(database, contextGetter) {
         return jobState(row, true);
       }
       try {
-        await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)").run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
+        await queueDatabase.adapter.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)").run(id, handlerName, row.enqueuedByUserId, row.actorUserId, row.actorProvider, payloadJson, row.status, availableAt, idempotencyKey ?? null, now, row.retryJson, row.attemptHistory, row.scheduleName, row.scheduledFor);
       } catch (error) {
         if (idempotencyKey) {
-          const existing = await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
+          const existing = await queueDatabase.adapter.prepare("SELECT * FROM sporades_jobs WHERE handler = ? AND actorUserId = ? AND idempotencyKey = ?").get(handlerName, context.auth.userId, idempotencyKey);
           if (existing) {
             assertJobScheduleProvenance(existing, scheduleProvenance);
             return jobState(existing, true);
@@ -13973,11 +13972,11 @@ function createCurrentUserJobApi(database, contextGetter) {
         throw error;
       }
       scheduleCurrentUserJobWorker(queueDatabase);
-      return jobState(await queueDatabase.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id), true);
+      return jobState(await queueDatabase.adapter.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id), true);
     },
     async get(id) {
       const context = contextGetter();
-      const row = await (database.__rootDatabase ?? database).sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId);
+      const row = await (database.__rootDatabase ?? database).adapter.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId);
       return row ? jobState(row, true) : null;
     },
     async cancel(id) {
@@ -14012,7 +14011,7 @@ function createCurrentUserJobApi(database, contextGetter) {
         clauses.push("(createdAt > ? OR (createdAt = ? AND id > ?))");
         params.push(cursor.createdAt, cursor.createdAt, cursor.id);
       }
-      const rows = await queueDatabase.sqlite.prepare(`SELECT * FROM sporades_jobs WHERE ${clauses.join(" AND ")} ORDER BY createdAt ASC, id ASC LIMIT ?`).all(...params, limit + 1);
+      const rows = await queueDatabase.adapter.prepare(`SELECT * FROM sporades_jobs WHERE ${clauses.join(" AND ")} ORDER BY createdAt ASC, id ASC LIMIT ?`).all(...params, limit + 1);
       const page = rows.slice(0, limit);
       return { jobs: page.map((row) => jobSummary(row)), nextCursor: rows.length > limit ? encodeJobCursor(page.at(-1)) : null };
     }
@@ -14126,16 +14125,16 @@ function normalizeJobRetry(value) {
   return { maxAttempts: value.maxAttempts, delayMs: value.delayMs ?? 0 };
 }
 async function cancelJob(database, context, id) {
-  const row = context.__privilegedJobAccess ? await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id) : await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId);
+  const row = context.__privilegedJobAccess ? await database.adapter.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id) : await database.adapter.prepare("SELECT * FROM sporades_jobs WHERE id = ? AND actorUserId = ?").get(id, context.auth.userId);
   if (!row) return null;
   const now = database.clock.now().toISOString();
   if (["queued", "delayed"].includes(row.status)) {
-    await database.sqlite.prepare("UPDATE sporades_jobs SET status='cancelled', completedAt=? WHERE id=?").run(now, id);
+    await database.adapter.prepare("UPDATE sporades_jobs SET status='cancelled', completedAt=? WHERE id=?").run(now, id);
     return jobState({ ...row, status: "cancelled", completedAt: now }, true);
   }
   if (row.status === "running") {
     database.__jobAbortControllers?.get(id)?.abort();
-    await database.sqlite.prepare("UPDATE sporades_jobs SET cancelRequestedAt=? WHERE id=?").run(now, id);
+    await database.adapter.prepare("UPDATE sporades_jobs SET cancelRequestedAt=? WHERE id=?").run(now, id);
     return jobState({ ...row, cancelRequestedAt: now }, true);
   }
   throw jobError("INVALID_JOB_STATE", "Job cannot be cancelled from its current state.", "Only queued, delayed, or running Jobs can be cancelled.");
@@ -14152,7 +14151,7 @@ function createPrivilegedJobApi(database, contextGetter) {
     },
     async get(id) {
       assertActivePrivilegedJobAccess(contextGetter);
-      const row = await (database.__rootDatabase ?? database).sqlite.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id);
+      const row = await (database.__rootDatabase ?? database).adapter.prepare("SELECT * FROM sporades_jobs WHERE id = ?").get(id);
       return row ? jobState(row, true) : null;
     },
     async list(options = {}) {
@@ -14161,7 +14160,7 @@ function createPrivilegedJobApi(database, contextGetter) {
       const limit = options.limit === void 0 ? 50 : options.limit;
       if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw jobError("INVALID_JOB_OPTIONS", "Invalid Job list limit.", "Pass a whole-number limit from 1 to 100.");
       const cursor = decodeJobCursor(options.cursor);
-      const sqlite = (database.__rootDatabase ?? database).sqlite;
+      const sqlite = (database.__rootDatabase ?? database).adapter;
       const clauses = [];
       const params = [];
       if (options.status) {
@@ -14216,7 +14215,7 @@ async function flushPendingJobEnqueues(context) {
   context.__pendingJobsFlushed = true;
   const queueDatabase = context.__jobQueueDatabase;
   for (const row of context.__pendingJobEnqueues) {
-    await queueDatabase.sqlite.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory, row.scheduleName ?? null, row.scheduledFor ?? null);
+    await queueDatabase.adapter.prepare("INSERT INTO sporades_jobs (id, handler, enqueuedByUserId, actorUserId, actorProvider, payload, status, availableAt, attempts, idempotencyKey, createdAt, retryJson, attemptHistory, scheduleName, scheduledFor) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(row.id, row.handler, row.enqueuedByUserId, row.actorUserId, row.actorProvider, row.payload, row.status, row.availableAt, row.attempts, row.idempotencyKey, row.createdAt, row.retryJson, row.attemptHistory, row.scheduleName ?? null, row.scheduledFor ?? null);
   }
   scheduleCurrentUserJobWorker(queueDatabase);
 }
@@ -14229,7 +14228,7 @@ function scheduleCurrentUserJobWorker(database) {
   }, 0);
 }
 async function scheduleNextDelayedJob(database) {
-  const row = await database.sqlite.prepare("SELECT availableAt FROM sporades_jobs WHERE status='delayed' ORDER BY availableAt ASC, id ASC LIMIT 1").get();
+  const row = await database.adapter.prepare("SELECT availableAt FROM sporades_jobs WHERE status='delayed' ORDER BY availableAt ASC, id ASC LIMIT 1").get();
   if (!row) return;
   if (database.__jobWakeTimer) database.clock.clearTimer(database.__jobWakeTimer);
   database.__jobWakeTimer = database.clock.setTimer(() => {
@@ -14242,14 +14241,14 @@ async function runCurrentUserJobWorker(database) {
   database.__jobWorkerRunning = true;
   try {
     while (true) {
-      await database.sqlite.prepare("UPDATE sporades_jobs SET status='queued' WHERE status='delayed' AND availableAt <= ?").run(database.clock.now().toISOString());
-      const row = await database.sqlite.prepare("SELECT * FROM sporades_jobs WHERE status = 'queued' AND availableAt <= ? ORDER BY availableAt ASC, id ASC LIMIT 1").get(database.clock.now().toISOString());
+      await database.adapter.prepare("UPDATE sporades_jobs SET status='queued' WHERE status='delayed' AND availableAt <= ?").run(database.clock.now().toISOString());
+      const row = await database.adapter.prepare("SELECT * FROM sporades_jobs WHERE status = 'queued' AND availableAt <= ? ORDER BY availableAt ASC, id ASC LIMIT 1").get(database.clock.now().toISOString());
       if (!row) {
         await scheduleNextDelayedJob(database);
         return;
       }
       const startedAt = database.clock.now().toISOString();
-      const claimed = await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'running', attempts = attempts + 1, startedAt = ?, leaseExpiresAt = ? WHERE id = ? AND status = 'queued'").run(startedAt, new Date(database.clock.now().getTime() + 3e4).toISOString(), row.id);
+      const claimed = await database.adapter.prepare("UPDATE sporades_jobs SET status = 'running', attempts = attempts + 1, startedAt = ?, leaseExpiresAt = ? WHERE id = ? AND status = 'queued'").run(startedAt, new Date(database.clock.now().getTime() + 3e4).toISOString(), row.id);
       if (!claimed?.changes) continue;
       const handler = database.jobs?.find((candidate) => candidate.name === row.handler);
       database.__jobAbortControllers ??= /* @__PURE__ */ new Map();
@@ -14262,7 +14261,7 @@ async function runCurrentUserJobWorker(database) {
           const context = createMutationContext(database, { userId: row.enqueuedByUserId, displayName: "Job enqueuer", email: null, picture: null, isAuthenticated: false, isGuest: true, provider: "job" });
           result = await context.privileged.run({ operation: "jobs.execute", targetResourceKind: "job-queue", signal: abortController.signal, metadata: { jobId: row.id, handler: row.handler, attempt: Number(row.attempts) + 1, ...row.scheduleName ? { scheduleName: String(row.scheduleName), scheduledFor: String(row.scheduledFor) } : {} } }, (privilegedCtx) => handler.handler(privilegedCtx, JSON.parse(row.payload)));
         } else {
-          const user = await database.sqlite.prepare(
+          const user = await database.adapter.prepare(
             "SELECT id, displayName, email, picture, isAuthenticated, isGuest FROM sporades_auth_users WHERE id = ?"
           ).get(row.actorUserId);
           if (!user) throw jobError("JOB_ACTOR_UNAVAILABLE", "The captured Job actor is unavailable.", "The user no longer exists, so this Job cannot run.");
@@ -14283,7 +14282,7 @@ async function runCurrentUserJobWorker(database) {
         const completedAt = database.clock.now().toISOString();
         const history = JSON.parse(row.attemptHistory || "[]");
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: "succeeded", completedAt });
-        await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'succeeded', result = ?, completedAt = ?, attemptHistory = ? WHERE id = ?").run(resultJson, completedAt, JSON.stringify(history), row.id);
+        await database.adapter.prepare("UPDATE sporades_jobs SET status = 'succeeded', result = ?, completedAt = ?, attemptHistory = ? WHERE id = ?").run(resultJson, completedAt, JSON.stringify(history), row.id);
       } catch (error) {
         const failure = safeJobFailure(error);
         const failedAt = database.clock.now().toISOString();
@@ -14292,12 +14291,12 @@ async function runCurrentUserJobWorker(database) {
         const abortError = error?.cause ?? error;
         const cancelled = abortController.signal.aborted && (abortError?.name === "AbortError" || abortError?.code === "ABORT_ERR");
         history.push({ attempt: Number(row.attempts) + 1, startedAt, outcome: cancelled ? "cancelled" : "failed", code: failure.code, completedAt: failedAt });
-        if (cancelled) await database.sqlite.prepare("UPDATE sporades_jobs SET status='cancelled', failure=?, failedAt=?, attemptHistory=? WHERE id=?").run(JSON.stringify(failure), failedAt, JSON.stringify(history), row.id);
+        if (cancelled) await database.adapter.prepare("UPDATE sporades_jobs SET status='cancelled', failure=?, failedAt=?, attemptHistory=? WHERE id=?").run(JSON.stringify(failure), failedAt, JSON.stringify(history), row.id);
         else if (Number(row.attempts) + 1 < retry.maxAttempts) {
           const availableAt = new Date(database.clock.now().getTime() + retry.delayMs).toISOString();
-          await database.sqlite.prepare("UPDATE sporades_jobs SET status='delayed', availableAt=?, attemptHistory=? WHERE id=?").run(availableAt, JSON.stringify(history), row.id);
+          await database.adapter.prepare("UPDATE sporades_jobs SET status='delayed', availableAt=?, attemptHistory=? WHERE id=?").run(availableAt, JSON.stringify(history), row.id);
           database.clock.setTimer(() => scheduleCurrentUserJobWorker(database), retry.delayMs + 1);
-        } else await database.sqlite.prepare("UPDATE sporades_jobs SET status = 'failed', failure = ?, failedAt = ?, attemptHistory=? WHERE id = ?").run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt, JSON.stringify(history), row.id);
+        } else await database.adapter.prepare("UPDATE sporades_jobs SET status = 'failed', failure = ?, failedAt = ?, attemptHistory=? WHERE id = ?").run(boundedJobJson(failure, 8 * 1024, "JOB_FAILURE_TOO_LARGE", "Job failure metadata"), failedAt, JSON.stringify(history), row.id);
       } finally {
         database.__jobAbortControllers?.delete(row.id);
       }
@@ -14395,7 +14394,7 @@ async function runInsertMutation(database, context, mutationName, args) {
     };
   }
   await runTableWriteWithAcl(database, table, "insert", null, deserializeRow(table, values), () => context, async () => {
-    await database.sqlite.insertAppRow(table, values);
+    await database.adapter.insertAppRow(table, values);
     database.rowCache.clear();
   });
   return { ok: true, error: null };
@@ -14432,7 +14431,7 @@ async function runUpdateMutation(database, context, mutationName, args) {
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const ownerScoped = resolved.table.fields.some((field) => field.name === "ownerId");
-  const previousRow = (await database.sqlite.selectAppRows(resolved.table, {
+  const previousRow = (await database.adapter.selectAppRows(resolved.table, {
     ownerId: ownerScoped ? context.auth.userId : void 0,
     where: { fieldName: "id", value: String(id) },
     limit: 1
@@ -14444,7 +14443,7 @@ async function runUpdateMutation(database, context, mutationName, args) {
     return { ok: false, error: { message: error.message, hint: error.hint } };
   }
   const write = async () => {
-    await database.sqlite.updateAppRow(
+    await database.adapter.updateAppRow(
       resolved.table,
       id,
       {

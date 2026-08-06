@@ -1279,7 +1279,7 @@ test("mail authority reaches trusted server contexts but not ACL or Schedule pay
     },
   };
   await withDatabase(smtpConfig, capsule, { mailTransportFactory: () => transport }, async (database) => {
-    database.sqlite.prepare("INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    database.adapter.prepare("INSERT INTO sporades_auth_users (id, createdAt, displayName, email, picture, isAuthenticated, isGuest, provider) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
       .run(user.userId, new Date().toISOString(), user.displayName, user.email, null, 1, 0, user.provider);
     await database.init();
     database.contextMiddleware = ["async (ctx) => { if (ctx.kind === 'mutation') await ctx.mail.send({ to: 'to@example.com', subject: 'middleware', textBody: 'middleware' }); }"];
