@@ -5047,7 +5047,7 @@ function s3ObjectNotFoundError() {
   return error;
 }
 function createDatabaseDialect(spec) {
-  const required = ["name", "quoteIdentifier", "columnType", "upsertSql"];
+  const required = ["name", "quoteIdentifier", "columnType", "upsertSql", "listTables", "describeColumns"];
   const missing = required.filter((key) => spec[key] === void 0);
   if (missing.length > 0) {
     throw commandError(
@@ -5068,7 +5068,11 @@ function sqliteDatabaseDialect() {
     // Write-or-replace a row identified by its key columns. The names are emitted unquoted because
     // the runtime-owned tables are declared unquoted; issue 12 owns settling that, and the upsert
     // has to ask for the columns in the style its table was created with.
-    upsertSql: (table, columns, _conflictColumns) => `INSERT OR REPLACE INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`
+    upsertSql: (table, columns, _conflictColumns) => `INSERT OR REPLACE INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
+    // The catalog. Both entries answer rows carrying a `name`, whatever the engine's catalog calls
+    // the column, so the shared inspection methods read one shape.
+    listTables: (adapter) => adapter.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all(),
+    describeColumns: (adapter, tableName) => adapter.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all()
   });
 }
 function postgresDatabaseDialect() {
@@ -5085,7 +5089,16 @@ function postgresDatabaseDialect() {
     upsertSql: (table, columns, conflictColumns) => {
       const updated = columns.filter((column) => !conflictColumns.includes(column));
       return `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT (${conflictColumns.join(", ")}) DO UPDATE SET ` + updated.map((column) => `${column} = EXCLUDED.${column}`).join(", ");
-    }
+    },
+    // `sqlite_schema` and `PRAGMA table_info` are SQLite's alone; `information_schema` is the
+    // standard catalog. Both answer rows carrying a `name`, which is the shape the shared
+    // inspection methods read.
+    listTables: (adapter) => adapter.prepare(
+      "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name"
+    ).all(),
+    describeColumns: (adapter, tableName) => adapter.prepare(
+      "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? ORDER BY ordinal_position"
+    ).all(tableName)
   });
 }
 function createSharedDatabaseAdapterMethods(dialect) {
@@ -5519,7 +5532,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     // on the asynchronous engines only because each engine shadowed them with an await-shim.
     listInspectableTables() {
       return thenIfPromise(
-        this.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all(),
+        dialect.listTables(this),
         (rows) => rows.map((row) => row.name).filter(
           (name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences"
         )
@@ -5527,7 +5540,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     dumpInspectableDatabase() {
       const dumpTable = (tableName) => thenIfPromise(
-        this.prepare(`PRAGMA table_info(${dialect.quoteIdentifier(tableName)})`).all(),
+        dialect.describeColumns(this, tableName),
         (columnRows) => thenIfPromise(this.prepare(`SELECT * FROM ${dialect.quoteIdentifier(tableName)}`).all(), (rows) => ({
           name: tableName,
           columns: columnRows.map((column) => column.name),
@@ -5799,60 +5812,12 @@ async function createPostgresDatabaseAdapter(options) {
     // because it folds an unquoted identifier to lower case. Quoting is now a dialect entry the
     // shared definition asks for, and quoting an identifier that needs no quoting changes nothing
     // on SQLite or libSQL, so one definition emits what each engine requires.
-    async listInspectableTables() {
-      const rows = await this.prepare(
-        "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name"
-      ).all();
-      return rows.map((row) => row.name).filter((name) => name !== "sporades_log_events" && name !== "sporades_schedules" && name !== "sporades_schedule_occurrences");
-    },
-    async dumpInspectableDatabase() {
-      const tableNames = await this.listInspectableTables();
-      const tables = [];
-      for (const tableName of tableNames) {
-        const columns = (await this.prepare(
-          "SELECT column_name AS name FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = ? ORDER BY ordinal_position"
-        ).all(tableName)).map((column) => column.name);
-        const rows = await this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all();
-        tables.push({ name: tableName, columns, rows });
-      }
-      return tables;
-    },
-    async runReadOnlyInspectionQuery(sql) {
-      try {
-        const validation = validateReadOnlyInspectionSql(sql);
-        if (!validation.ok) {
-          return validation;
-        }
-        if (targetsInternalLogIndexTable(sql)) {
-          return {
-            ok: false,
-            data: null,
-            error: {
-              message: "Internal log index tables are not available through generic DB inspection.",
-              hint: "Use `sporades logs --json` or `sporades logs tail --json` to inspect Capsule logs."
-            }
-          };
-        }
-        const result = await query(String(sql ?? ""));
-        return {
-          ok: true,
-          data: {
-            columns: result.fields.map((field) => postgresRuntimeColumnName(field.name)),
-            rows: postgresRowsFromResult(result).filter((row) => !isInternalLogIndexMetadataRow(row, sql))
-          },
-          error: null
-        };
-      } catch (error) {
-        return {
-          ok: false,
-          data: null,
-          error: {
-            message: error.message,
-            hint: "Check the SQL syntax and table names, then retry the query."
-          }
-        };
-      }
-    },
+    // `listInspectableTables`, `dumpInspectableDatabase` and `runReadOnlyInspectionQuery` were
+    // overridden here for the catalog: `sqlite_schema` and `PRAGMA table_info` are SQLite’s alone.
+    // Listing tables and describing a table’s columns are dialect entries now, so all three come
+    // from the shared definitions. The inspection query reads its column names through the
+    // `columns()` statement primitive, which the Postgres adapter already normalizes to the
+    // runtime’s declared spellings, so the answer is the one the override gave.
     async withTransaction(fn) {
       await this.exec("BEGIN");
       try {
