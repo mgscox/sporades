@@ -263,7 +263,10 @@ function parseCreateArgs(args) {
         const details = clientCapabilityError(framework, toolchain);
         throw commandError(details.message, details.hint);
     }
-    if (!SUPPORTED_TEMPLATES.has(template)) {
+    const localTemplateDir = isLocalTemplateReference(template)
+        ? path.resolve(process.cwd(), template)
+        : null;
+    if (!SUPPORTED_TEMPLATES.has(template) && !localTemplateDir) {
         throw commandError(`Unsupported template: ${template}`, "Use one of: blank, todo, guestbook, photo-library.");
     }
     return {
@@ -271,11 +274,15 @@ function parseCreateArgs(args) {
         framework,
         toolchain,
         template,
+        localTemplateDir,
         install,
         git,
         json,
         projectDir: path.resolve(process.cwd(), name),
     };
+}
+function isLocalTemplateReference(value) {
+    return path.isAbsolute(value) || value.startsWith("./") || value.startsWith("../") || /[\\/]/.test(value);
 }
 function parseDevArgs(args) {
     const lifecycleCommands = new Set(["status", "stop", "reset"]);
@@ -1163,6 +1170,10 @@ function isValidAuthClientTarget(value) {
     return value === "current" || value === "all" || /^client-[a-z0-9]+$/.test(value);
 }
 async function createProject(options) {
+    if (options.localTemplateDir) {
+        await createProjectFromLocalTemplate(options);
+        return;
+    }
     await mkdir(options.projectDir, { recursive: false });
     const files = scaffoldFiles({
         ...options,
@@ -1179,6 +1190,118 @@ async function createProject(options) {
     if (options.git) {
         run("git", ["init"], options.projectDir, "Git initialization failed.", "Run `git init` inside the scaffold.");
     }
+}
+async function createProjectFromLocalTemplate(options) {
+    const sourceDir = path.resolve(options.localTemplateDir);
+    const projectDir = path.resolve(options.projectDir);
+    let sourceStat;
+    try {
+        sourceStat = await lstat(sourceDir);
+    }
+    catch {
+        throw commandError(`Local template not found: ${options.template}`, "Pass a readable template directory.");
+    }
+    if (!sourceStat.isDirectory()) {
+        throw commandError(`Local template is not a directory: ${options.template}`, "Pass a readable template directory.");
+    }
+    const relativeDestination = path.relative(sourceDir, projectDir);
+    if (!relativeDestination || (!relativeDestination.startsWith("..") && !path.isAbsolute(relativeDestination))) {
+        throw commandError("The scaffold destination cannot be inside the local template.", "Choose a project name outside the template directory.");
+    }
+    const ignoreRules = await readLocalTemplateIgnoreRules(sourceDir);
+    await mkdir(projectDir, { recursive: false });
+    try {
+        await cp(sourceDir, projectDir, {
+            recursive: true,
+            filter: (sourcePath) => shouldCopyLocalTemplatePath(sourceDir, sourcePath, ignoreRules),
+        });
+        await finalizeLocalTemplateProject(options, projectDir);
+        if (options.install) {
+            run("npm", ["install"], projectDir, "Dependency install failed.", "Run `npm install` inside the scaffold.");
+        }
+        if (options.git) {
+            run("git", ["init"], projectDir, "Git initialization failed.", "Run `git init` inside the scaffold.");
+        }
+    }
+    catch (error) {
+        await rm(projectDir, { recursive: true, force: true });
+        throw error;
+    }
+}
+async function readLocalTemplateIgnoreRules(sourceDir) {
+    let contents = "";
+    try {
+        contents = await readFile(path.join(sourceDir, ".gitignore"), "utf8");
+    }
+    catch {
+        return [];
+    }
+    return contents
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line && !line.startsWith("#"))
+        .map((line) => {
+        const ignored = !line.startsWith("!");
+        const raw = (ignored ? line : line.slice(1)).replace(/^\//, "").replace(/\/$/, "");
+        const escaped = raw.replace(/[.+^${}()|[\]\\]/g, "\\$&")
+            .replace(/\*\*/g, "\u0000")
+            .replace(/\*/g, "[^/]*")
+            .replace(/\?/g, "[^/]")
+            .replace(/\u0000/g, ".*");
+        const prefix = raw.includes("/") ? "^" : "^(?:.*/)?";
+        return { ignored, pattern: new RegExp(`${prefix}${escaped}(?:/.*)?$`) };
+    });
+}
+function shouldCopyLocalTemplatePath(sourceDir, sourcePath, rules) {
+    const relative = path.relative(sourceDir, sourcePath).split(path.sep).join("/");
+    if (!relative)
+        return true;
+    const first = relative.split("/")[0];
+    if (first === ".git" || first === "node_modules" || first === ".sporades")
+        return false;
+    if (relative === ".env.sporades.server")
+        return false;
+    let ignored = false;
+    for (const rule of rules) {
+        if (rule.pattern.test(relative))
+            ignored = rule.ignored;
+    }
+    return !ignored;
+}
+async function finalizeLocalTemplateProject(options, projectDir) {
+    const packagePath = path.join(projectDir, "package.json");
+    const configPath = path.join(projectDir, "sporades.json");
+    let packageJson;
+    let projectConfig;
+    try {
+        packageJson = JSON.parse(await readFile(packagePath, "utf8"));
+        projectConfig = JSON.parse(await readFile(configPath, "utf8"));
+    }
+    catch {
+        throw commandError("Local template must include valid package.json and sporades.json files.", "Add both metadata files to the template and try again.");
+    }
+    const { localTemplateDir: _localTemplateDir, ...scaffoldOptions } = options;
+    const defaults = scaffoldFiles({
+        ...scaffoldOptions,
+        template: "blank",
+        sporadesDependency: defaultSporadesDependency(),
+    });
+    const defaultPackage = JSON.parse(defaults["package.json"]);
+    const dependencies = { ...(packageJson.dependencies ?? {}) };
+    delete dependencies.sporades;
+    const nextPackage = {
+        ...packageJson,
+        name: options.name,
+        scripts: { ...defaultPackage.scripts, ...(packageJson.scripts ?? {}) },
+        dependencies,
+        devDependencies: {
+            ...(packageJson.devDependencies ?? {}),
+            sporades: defaultSporadesDependency(),
+        },
+    };
+    const nextConfig = { ...projectConfig, name: options.name };
+    await writeFile(packagePath, `${JSON.stringify(nextPackage, null, 2)}\n`);
+    await writeFile(configPath, `${JSON.stringify(nextConfig, null, 2)}\n`);
 }
 async function runDoctor(options) {
     const envelope = createDoctorEnvelope(options, await runDoctorChecks(options));
