@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Teach The SQL Skipper About Dollar-Quoted Strings
 
@@ -35,11 +35,11 @@ belongs in one issue rather than as a patch to either.
 
 ## Acceptance criteria
 
-- [ ] The skipper recognises dollar-quoted strings, including tagged forms, and E-strings.
-- [ ] A read-only inspection query containing a semicolon inside a dollar-quoted literal is accepted rather than rejected.
-- [ ] A query containing `--` or `/*` inside a dollar-quoted or E-string literal answers identically on SQLite, libSQL and Postgres, or the remaining difference is recorded as a genuine dialect divergence with its reason.
-- [ ] The statement-injection surface is unchanged: no second statement can be smuggled past the validator, demonstrated by test.
-- [ ] Cases fail against the current skipper.
+- [x] The skipper recognises dollar-quoted strings, including tagged forms, and E-strings.
+- [x] A read-only inspection query containing a semicolon inside a dollar-quoted literal is accepted rather than rejected.
+- [x] A query containing `--` or `/*` inside a dollar-quoted or E-string literal answers identically on SQLite, libSQL and Postgres, or the remaining difference is recorded as a genuine dialect divergence with its reason.
+- [x] The statement-injection surface is unchanged: no second statement can be smuggled past the validator, demonstrated by test.
+- [x] Cases fail against the current skipper.
 
 ## Blocked by
 

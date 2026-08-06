@@ -179,6 +179,7 @@ this spec adds governs the inside of the method.
 - `issues/14-guard-the-log-index-additive-migration.md`
 - `issues/15-teach-the-sql-skipper-about-dollar-quoted-strings.md`
 - `issues/16-serialize-the-bundle-preamble-constants.md`
+- `issues/17-close-the-inspection-query-statement-boundary.md`
 
 ## Running the Postgres leg locally
 
