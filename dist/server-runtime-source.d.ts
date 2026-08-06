@@ -177,7 +177,6 @@ export declare function createLibsqlDatabaseAdapter(options: {
     dialect: {
         [x: string]: any;
     };
-    consumeOAuthState(state: any): Promise<any>;
     withTransaction(fn: (transactionAdapter: LooseRecord) => any): Promise<any>;
     withReadOnlySnapshot(fn: (adapter: LooseRecord) => any): Promise<any>;
     close(): Promise<void>;

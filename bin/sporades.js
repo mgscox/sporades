@@ -5413,12 +5413,18 @@ function createSharedDatabaseAdapterMethods(dialect) {
         "INSERT INTO sporades_auth_oauth_states (state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
       ).run(row.state, provider, row.sessionToken, row.returnTo, row.redirectUri, row.createdAt, expiresAt, row.nonce ?? null, row.pkceVerifier ?? null);
     },
+    // One statement, not a SELECT followed by a DELETE. The two-statement form was correct on
+    // SQLite and a race everywhere else: nothing ordered the delete after the read, so on an
+    // asynchronous engine the two were in flight together. Both service engines carried their own
+    // `DELETE ... RETURNING` copy for exactly that reason, and node:sqlite speaks RETURNING too, so
+    // there is one definition and no ordering left to get wrong.
     consumeOAuthState(state) {
-      const row = this.prepare(
-        "SELECT state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier FROM sporades_auth_oauth_states WHERE state = ?"
-      ).get(state) ?? null;
-      this.prepare("DELETE FROM sporades_auth_oauth_states WHERE state = ?").run(state);
-      return row;
+      return thenIfPromise(
+        this.prepare(
+          "DELETE FROM sporades_auth_oauth_states WHERE state = ? RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier"
+        ).get(state),
+        (row) => row ?? null
+      );
     },
     emailCredentialExists(email) {
       return thenIfPromise(
@@ -5746,12 +5752,8 @@ async function createPostgresDatabaseAdapter(options) {
     // declaring a missing column is a dialect entry that reaches for `ADD COLUMN IF NOT EXISTS`
     // here. That is the safer form as well as the shorter one: swallowing a duplicate-column error
     // on Postgres aborts the enclosing transaction.
-    async consumeOAuthState(state) {
-      const row = await this.prepare(
-        "DELETE FROM sporades_auth_oauth_states WHERE state = ? RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier"
-      ).get(state);
-      return row ?? null;
-    },
+    // `consumeOAuthState` was overridden here to make the consume one statement. The shared
+    // definition is that statement now.
     // `ensureLogStorage` was overridden here until ADR-0036, as an await-shim over a shared
     // definition that emitted the same DDL and discarded the statement result. The shared
     // definition now also runs the ordering field's additive migration and its backfill, so a copy
@@ -6403,11 +6405,8 @@ async function createLibsqlDatabaseAdapter(options) {
     // probed `PRAGMA table_info` to decide whether a column had to be added. The shared
     // definitions chain now, and declaring a missing column is a dialect entry — which for libSQL
     // is SQLite's duplicate-tolerant ALTER, the same statement this copy used to send.
-    async consumeOAuthState(state) {
-      return await this.prepare(
-        "DELETE FROM sporades_auth_oauth_states WHERE state = ? RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier"
-      ).get(state) ?? null;
-    },
+    // `consumeOAuthState` was overridden here to make the consume one statement. The shared
+    // definition is that statement now.
     async withTransaction(fn) {
       const transaction = { baton: null, baseUrl: endpoint };
       const transactionAdapter = {
