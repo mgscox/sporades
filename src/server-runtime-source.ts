@@ -110,6 +110,10 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   validatedRequestHost,
   appendVaryHeader,
   sanitizeResponseHeaders,
+  createDatabaseDialect,
+  sqliteDatabaseDialect,
+  postgresDatabaseDialect,
+  createSharedDatabaseAdapterMethods,
   createSqliteDatabaseAdapter,
   createLibsqlDatabaseAdapter,
   createPostgresDatabaseAdapter,
@@ -176,7 +180,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   postgresErrorFromBody,
   postgresRowsFromResult,
   postgresRuntimeColumnName,
-  postgresAppTableColumnDefinitions,
   libsqlPipelineUrl,
   assertLibsqlOpen,
   libsqlHasMultipleStatements,
@@ -2664,7 +2667,7 @@ async function ensureJobStorage(sqlite: LooseRecord) {
   await sqlite.exec("UPDATE sporades_jobs SET actorProvider = 'anonymous' WHERE actorProvider IS NULL OR actorProvider = ''");
 }
 
-async function createRuntimeDatabaseAdapter(databasePath: any, serverEnv: RuntimeEnv = {}, config: RuntimeConfig = {}) {
+async function createRuntimeDatabaseAdapter(databasePath: any, serverEnv: RuntimeEnv = {}, config: RuntimeConfig = {}): Promise<LooseRecord> {
   if (
     config.services?.database?.engine === "libsql" &&
     serverEnv.SPORADES_SERVICE_DATABASE_ENGINE === "libsql" &&
@@ -3031,34 +3034,63 @@ function s3ObjectNotFoundError() {
   return error;
 }
 
-export async function createSqliteDatabaseAdapter(databasePath: PathLike, options: LooseRecord = {}) {
-  const { DatabaseSync } = await import("node:sqlite");
-  const path = await import("node:path");
-  if (!options.readOnly) mkdirSync(path.dirname(String(databasePath)), { recursive: true });
-  const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+// The Database adapter engine seam.
+//
+// A Database engine supplies three things and nothing else: statement primitives, a dialect, and
+// row and value normalization. Every behavioural method body comes from
+// `createSharedDatabaseAdapterMethods` below, which no engine's adapter owns and none of them has
+// to borrow. ADR-0037 records the seam; ADR-0034 records the invariant the shared bodies keep.
+//
+// The dialect is the closed set of places where the engines genuinely cannot agree on the text of a
+// statement. ADR-0034 licenses exactly that category of difference — an override may change the
+// statement text a method emits, never the answer the method gives — so expressing those
+// differences as dialect entries rather than as replacement method bodies turns the licence into
+// something the structure enforces instead of something a reviewer has to check by reading.
+//
+// Every entry is required. A dialect that omits one fails here, at adapter construction, rather
+// than at the first statement that needed it: a new engine cannot half-answer the seam and
+// discover the gap in production.
+function createDatabaseDialect(spec: LooseRecord) {
+  const required = ["name", "quoteIdentifier", "columnType"];
+  const missing = required.filter((key) => spec[key] === undefined);
+  if (missing.length > 0) {
+    throw commandError(
+      `Incomplete Database adapter dialect: ${missing.join(", ")}.`,
+      "A Database engine supplies statement primitives, a dialect and row normalization. Answer every dialect entry.",
+    );
+  }
+  return { ...spec };
+}
 
-  const adapter = {
-    engine: "sqlite",
-    exec(sql: string) {
-      return connection.exec(sql);
-    },
-    prepare(sql: string) {
-      const statement = connection.prepare(sql);
-      return {
-        all(...params: any[]) {
-          return statement.all(...params);
-        },
-        get(...params: any[]) {
-          return statement.get(...params);
-        },
-        run(...params: string[]) {
-          return statement.run(...params);
-        },
-        columns() {
-          return statement.columns();
-        },
-      };
-    },
+// SQLite's dialect, which libSQL shares because libSQL speaks SQLite's SQL.
+function sqliteDatabaseDialect() {
+  return createDatabaseDialect({
+    name: "sqlite",
+    quoteIdentifier,
+    // The declared field type is emitted verbatim. `sqliteType` is what the Capsule schema carries,
+    // and an engine whose type names differ maps them here rather than in a copy of every DDL
+    // method.
+    columnType: (field: LooseRecord) => field.sqliteType,
+  });
+}
+
+function postgresDatabaseDialect() {
+  return createDatabaseDialect({
+    name: "postgres",
+    quoteIdentifier,
+    // TEXT, INTEGER and REAL all name real Postgres types, so the mapping is the identity here.
+    // That is a fact about Postgres rather than a reason to drop the entry: the seam exists for the
+    // engine whose type names do differ, and an identity mapping written down is checkable where an
+    // absent one is not.
+    columnType: (field: LooseRecord) => field.sqliteType,
+  });
+}
+
+// The engine-agnostic Database adapter method set, defined once. Composed into every engine's
+// adapter by spreading, so each method is an own enumerable property and the conformance coverage
+// gate's enumeration sees the same names on every engine.
+function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseRecord {
+  return {
     ensureSystemTable() {
       return this.exec("CREATE TABLE IF NOT EXISTS sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     },
@@ -3469,37 +3501,20 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     },
     referenceExists(field: { targetTable: any; }, value: any) {
       return thenIfPromise(
-        this.prepare(`SELECT 1 FROM ${quoteIdentifier(field.targetTable)} WHERE id = ? LIMIT 1`).get(String(value)),
+        this.prepare(`SELECT 1 FROM ${dialect.quoteIdentifier(field.targetTable)} WHERE id = ? LIMIT 1`).get(String(value)),
         (row: any) => Boolean(row),
       );
-    },
-    async withTransaction(fn: (arg0: { engine: string; exec(sql: any): void; prepare(sql: any): { all(...params: any[]): Record<string, SQLOutputValue>[]; get(...params: any[]): Record<string, SQLOutputValue> | undefined; run(...params: any[]): StatementResultingChanges; columns(): StatementColumnMetadata[]; }; ensureSystemTable(): void; readSystemMetadata(key: any): Record<string, SQLOutputValue> | null; writeSystemMetadata(key: any, value: any): StatementResultingChanges; readSchemaMetadata(): Record<string, SQLOutputValue> | null; writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }): void; ensureLogStorage(): void; insertLogIndexEvent(event: any): void; pruneLogIndex(limit: any): void; readRecentLogEvents(limit: any): any; ensureFileStorage(): void; findFileBucket(ownerId: any, name: any): Record<string, SQLOutputValue> | null; createFileBucket(row: any): StatementResultingChanges; insertFileRow(row: any): StatementResultingChanges; updatePendingFileRow(row: any): StatementResultingChanges; insertFileUpload(row: any): StatementResultingChanges; selectFileById(fileId: any): Record<string, SQLOutputValue> | null; selectLiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectActiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath(path: any): Record<string, SQLOutputValue> | null; selectFileUpload(uploadId: any): Record<string, SQLOutputValue> | null; completeFileUpload(upload: any, size: any, updatedAt: any): StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath(path: any): StatementResultingChanges; deleteFileUploadsForFile(ownerId: any, fileId: any): StatementResultingChanges; deleteFileUpload(uploadId: any): StatementResultingChanges; selectPublicFileRow(publicUrlId: any): Record<string, SQLOutputValue> | null; insertPublicFileUrl(row: any): StatementResultingChanges; revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any): StatementResultingChanges; revokePublicFileUrlsForFile(fileId: any, revokedAt: any): StatementResultingChanges; markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges; fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null; ensureAuthStorage(authConfig?: null): void; insertAuthUser(row: any): StatementResultingChanges; updateAuthUserProfile(row: any): StatementResultingChanges; linkAuthUser(row: any): StatementResultingChanges; insertAuthSession(row: any): StatementResultingChanges; deleteAuthSession(token: any): StatementResultingChanges; refreshAuthSession(token: any, expiresAt: any): StatementResultingChanges; rotateAuthSession(previousToken: any, row: any): StatementResultingChanges; readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null; insertOAuthState(row: any): StatementResultingChanges; consumeOAuthState(state: any): Record<string, SQLOutputValue> | null; emailCredentialExists(email: any): boolean; insertEmailCredential(row: any): StatementResultingChanges; findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null; migrateAppSchema(schema: any): any; createAppTable(table: any, tableName?: any): any; migrateExistingAppTable(existingTable: any, nextTable: any): any; referenceExists(field: any, value: any): boolean; withTransaction(fn: any): Promise<any>; insertAppRow(table: any, row: any): StatementResultingChanges; selectAppRowById(table: any, id: any): Record<string, SQLOutputValue> | null; updateAppRow(table: any, id: any, values: any, options?: {}): StatementResultingChanges | { changes: number; }; deleteAppRow(table: any, id: any): StatementResultingChanges; selectAppRows(table: any, query?: {}): Record<string, SQLOutputValue>[]; listInspectableTables(): SQLOutputValue[]; dumpInspectableDatabase(): { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery(sql: any): { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth(): { ok: boolean; }; close(): void; }) => any) {
-      this.exec("BEGIN");
-      try {
-        const result = await fn(this as any);
-        this.exec("COMMIT");
-        return result;
-      } catch (error) {
-        this.exec("ROLLBACK");
-        throw error;
-      }
-    },
-    async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
-      this.exec("BEGIN"); this.exec("PRAGMA query_only = ON");
-      try { const result = await fn(this); this.exec("COMMIT"); return result; }
-      catch (error) { this.exec("ROLLBACK"); throw error; }
-      finally { if (!options.readOnly) this.exec("PRAGMA query_only = OFF"); }
     },
     insertAppRow(table: { name: any; }, row: { [x: string]: any; }) {
       const columns = Object.keys(row);
       return this.prepare(
-        `INSERT INTO ${quoteIdentifier(table.name)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns
+        `INSERT INTO ${dialect.quoteIdentifier(table.name)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns
           .map(() => "?")
           .join(", ")})`,
       ).run(...columns.map((column) => row[column]));
     },
     selectAppRowById(table: { name: any; }, id: any) {
-      return this.prepare(`SELECT * FROM ${quoteIdentifier(table.name)} WHERE id = ?`).get(String(id)) ?? null;
+      return this.prepare(`SELECT * FROM ${dialect.quoteIdentifier(table.name)} WHERE id = ?`).get(String(id)) ?? null;
     },
     updateAppRow(table: { name: any; }, id: any, values: { [x: string]: any; }, options: LooseRecord = {}) {
       const columns = Object.keys(values);
@@ -3507,7 +3522,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
         return { changes: 0 };
       }
       return this.prepare(
-        `UPDATE ${quoteIdentifier(table.name)} SET ${columns.map((column) => `${quoteIdentifier(column)} = ?`).join(", ")} WHERE id = ?` +
+        `UPDATE ${dialect.quoteIdentifier(table.name)} SET ${columns.map((column) => `${dialect.quoteIdentifier(column)} = ?`).join(", ")} WHERE id = ?` +
         (options.ownerId === undefined ? "" : " AND ownerId = ?"),
       ).run(
         ...columns.map((column) => values[column]),
@@ -3516,29 +3531,29 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
       );
     },
     deleteAppRow(table: { name: any; }, id: any) {
-      return this.prepare(`DELETE FROM ${quoteIdentifier(table.name)} WHERE id = ?`).run(String(id));
+      return this.prepare(`DELETE FROM ${dialect.quoteIdentifier(table.name)} WHERE id = ?`).run(String(id));
     },
     selectAppRows(table: { name: any; }, query: LooseRecord = {}) {
       const columns = query.columns ?? ["*"];
       const whereClauses = [];
       const params = [];
       if (query.ownerId !== undefined) {
-        whereClauses.push(`${quoteIdentifier("ownerId")} = ?`);
+        whereClauses.push(`${dialect.quoteIdentifier("ownerId")} = ?`);
         params.push(query.ownerId);
       }
       if (query.where) {
-        whereClauses.push(`${quoteIdentifier(query.where.fieldName)} = ?`);
+        whereClauses.push(`${dialect.quoteIdentifier(query.where.fieldName)} = ?`);
         params.push(query.where.value);
       }
       const whereSql = whereClauses.length > 0 ? ` WHERE ${whereClauses.join(" AND ")}` : "";
       const orderSql = query.orderBy
-        ? ` ORDER BY ${quoteIdentifier(query.orderBy.fieldName)} ${String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"
+        ? ` ORDER BY ${dialect.quoteIdentifier(query.orderBy.fieldName)} ${String(query.orderBy.direction).toLowerCase() === "desc" ? "DESC" : "ASC"
         }`
         : "";
       const limit = Number.isInteger(query.limit) && query.limit >= 0 ? query.limit : null;
       const limitSql = limit === null ? "" : " LIMIT ?";
       return this.prepare(
-        `SELECT ${columns.map((column: string) => (column === "*" ? "*" : quoteIdentifier(column))).join(", ")} FROM ${quoteIdentifier(
+        `SELECT ${columns.map((column: string) => (column === "*" ? "*" : dialect.quoteIdentifier(column))).join(", ")} FROM ${dialect.quoteIdentifier(
           table.name,
         )}${whereSql}${orderSql}${limitSql}`,
       ).all(...(limit === null ? params : [...params, limit]));
@@ -3560,8 +3575,8 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     },
     dumpInspectableDatabase() {
       const dumpTable = (tableName: any) =>
-        thenIfPromise(this.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all(), (columnRows: any[]) =>
-          thenIfPromise(this.prepare(`SELECT * FROM ${quoteIdentifier(tableName)}`).all(), (rows: any) => ({
+        thenIfPromise(this.prepare(`PRAGMA table_info(${dialect.quoteIdentifier(tableName)})`).all(), (columnRows: any[]) =>
+          thenIfPromise(this.prepare(`SELECT * FROM ${dialect.quoteIdentifier(tableName)}`).all(), (rows: any) => ({
             name: tableName,
             columns: columnRows.map((column: any) => column.name),
             rows,
@@ -3632,6 +3647,59 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
         return { ok: false };
       }
     },
+  };
+}
+
+export async function createSqliteDatabaseAdapter(databasePath: PathLike, options: LooseRecord = {}) {
+  const { DatabaseSync } = await import("node:sqlite");
+  const path = await import("node:path");
+  if (!options.readOnly) mkdirSync(path.dirname(String(databasePath)), { recursive: true });
+  const connection = new DatabaseSync(databasePath, { readOnly: Boolean(options.readOnly) });
+  const dialect = sqliteDatabaseDialect();
+
+  // SQLite is an engine like the others now, not the thing the others borrow from: what it supplies
+  // below its own name is a connection, statement primitives and transaction session mechanics.
+  const adapter: LooseRecord = {
+    ...createSharedDatabaseAdapterMethods(dialect),
+    engine: "sqlite",
+    dialect,
+    exec(sql: string) {
+      return connection.exec(sql);
+    },
+    prepare(sql: string) {
+      const statement = connection.prepare(sql);
+      return {
+        all(...params: any[]) {
+          return statement.all(...params);
+        },
+        get(...params: any[]) {
+          return statement.get(...params);
+        },
+        run(...params: string[]) {
+          return statement.run(...params);
+        },
+        columns() {
+          return statement.columns();
+        },
+      };
+    },
+    async withTransaction(fn: (transactionAdapter: LooseRecord) => any) {
+      this.exec("BEGIN");
+      try {
+        const result = await fn(this as any);
+        this.exec("COMMIT");
+        return result;
+      } catch (error) {
+        this.exec("ROLLBACK");
+        throw error;
+      }
+    },
+    async withReadOnlySnapshot(fn: (adapter: LooseRecord) => any) {
+      this.exec("BEGIN"); this.exec("PRAGMA query_only = ON");
+      try { const result = await fn(this); this.exec("COMMIT"); return result; }
+      catch (error) { this.exec("ROLLBACK"); throw error; }
+      finally { if (!options.readOnly) this.exec("PRAGMA query_only = OFF"); }
+    },
     close() {
       return connection.close();
     },
@@ -3654,9 +3722,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
 
   const client = await createPostgresConnection(url);
   let closed = false;
-
-  const shape = await createSqliteDatabaseAdapter(":memory:");
-  shape.close();
+  const dialect = postgresDatabaseDialect();
 
   const assertOpen = () => {
     if (closed) {
@@ -3669,9 +3735,10 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     return await client.query(postgresInterpolate(sql, params));
   };
 
-  const adapter = {
-    ...shape,
+  const adapter: LooseRecord = {
+    ...createSharedDatabaseAdapterMethods(dialect),
     engine: "postgres",
+    dialect,
     exec(sql: string) {
       return query(sql).then((): undefined => undefined);
     },
@@ -3883,13 +3950,11 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     // `timestamp` and breaking the tie per engine. Ordering by the runtime-assigned sequence needs
     // neither, so ADR-0034's rule applies and the overrides are deleted rather than maintained in
     // duplicate: two engines cannot disagree about an order they no longer each define.
-    async createAppTable(table: { name: any; }, tableName = table.name) {
-      await this.exec(
-        `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` +
-        postgresAppTableColumnDefinitions(table).join(", ") +
-        ")",
-      );
-    },
+    // `createAppTable` was overridden here until the engine seam. It differed from the shared
+    // definition in one respect: it quoted `id`, `createdAt` and `updatedAt`, which Postgres needs
+    // because it folds an unquoted identifier to lower case. Quoting is now a dialect entry the
+    // shared definition asks for, and quoting an identifier that needs no quoting changes nothing
+    // on SQLite or libSQL, so one definition emits what each engine requires.
     async listInspectableTables() {
       const rows = await this.prepare(
         "SELECT table_name AS name FROM information_schema.tables WHERE table_schema = current_schema() AND table_type = 'BASE TABLE' ORDER BY table_name",
@@ -3946,7 +4011,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         };
       }
     },
-    async withTransaction(fn: (arg0: { engine: string; exec(sql: any): Promise<undefined>; prepare(sql: any): { all(...params: any[]): Promise<any>; get(...params: any[]): Promise<any>; run(...params: any[]): Promise<{ changes: number; lastInsertRowid: undefined; }>; columns(): Promise<{ name: any; }[]>; }; writeSystemMetadata(keyOrMetadata: any, maybeValue: any): Promise<void | { changes: number; lastInsertRowid: undefined; }>; writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }): Promise<void>; ensureAuthStorage(authConfig?: null): Promise<void>; ensureLogStorage(): Promise<void>; ensureFileStorage(): Promise<void>; insertLogIndexEvent(event: any): Promise<void>; pruneLogIndex(limit: any): Promise<void>; readRecentLogEvents(limit?: number): Promise<any>; migrateAppSchema(schema: any): Promise<void>; createAppTable(table: any, tableName?: any): Promise<void>; migrateExistingAppTable(existingTable: any, nextTable: any): Promise<void>; listInspectableTables(): Promise<any>; dumpInspectableDatabase(): Promise<{ name: any; columns: any; rows: any; }[]>; runReadOnlyInspectionQuery(sql: any): Promise<{ ok: boolean; data: { columns: any[]; rows: any; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }>; checkHealth(): Promise<{ ok: boolean; }>; withTransaction(fn: any): Promise<any>; close(): Promise<void>; ensureSystemTable(): void; readSystemMetadata(key: any): Record<string, SQLOutputValue> | null; readSchemaMetadata(): Record<string, SQLOutputValue> | null; findFileBucket(ownerId: any, name: any): Record<string, SQLOutputValue> | null; createFileBucket(row: any): StatementResultingChanges; insertFileRow(row: any): StatementResultingChanges; updatePendingFileRow(row: any): StatementResultingChanges; insertFileUpload(row: any): StatementResultingChanges; selectFileById(fileId: any): Record<string, SQLOutputValue> | null; selectLiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectActiveFileByPath(path: any): Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath(path: any): Record<string, SQLOutputValue> | null; selectFileUpload(uploadId: any): Record<string, SQLOutputValue> | null; completeFileUpload(upload: any, size: any, updatedAt: any): StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath(path: any): StatementResultingChanges; deleteFileUploadsForFile(ownerId: any, fileId: any): StatementResultingChanges; deleteFileUpload(uploadId: any): StatementResultingChanges; selectPublicFileRow(publicUrlId: any): Record<string, SQLOutputValue> | null; insertPublicFileUrl(row: any): StatementResultingChanges; revokePublicFileUrl(publicUrlId: any, ownerId: any, revokedAt: any): StatementResultingChanges; revokePublicFileUrlsForFile(fileId: any, revokedAt: any): StatementResultingChanges; markFileDeleted(fileId: any, deletedAt: any): StatementResultingChanges; fileRowForOwner(fileId: any, ownerId: any): Record<string, SQLOutputValue> | null; insertAuthUser(row: any): StatementResultingChanges; updateAuthUserProfile(row: any): StatementResultingChanges; linkAuthUser(row: any): StatementResultingChanges; insertAuthSession(row: any): StatementResultingChanges; deleteAuthSession(token: any): StatementResultingChanges; refreshAuthSession(token: any, expiresAt: any): StatementResultingChanges; rotateAuthSession(previousToken: any, row: any): StatementResultingChanges; readAuthSessionWithUser(token: any): Record<string, SQLOutputValue> | null; insertOAuthState(row: any): StatementResultingChanges; consumeOAuthState(state: any): Record<string, SQLOutputValue> | null; emailCredentialExists(email: any): boolean; insertEmailCredential(row: any): StatementResultingChanges; findEmailCredentialWithUser(email: any): Record<string, SQLOutputValue> | null; referenceExists(field: any, value: any): boolean; insertAppRow(table: any, row: any): StatementResultingChanges; selectAppRowById(table: any, id: any): Record<string, SQLOutputValue> | null; updateAppRow(table: any, id: any, values: any, options?: {}): StatementResultingChanges | { changes: number; }; deleteAppRow(table: any, id: any): StatementResultingChanges; selectAppRows(table: any, query?: {}): Record<string, SQLOutputValue>[]; }) => any) {
+    async withTransaction(fn: (transactionAdapter: LooseRecord) => any) {
       await this.exec("BEGIN");
       try {
         const result = await fn(this as any);
@@ -4562,15 +4627,6 @@ function postgresRuntimeColumnName(name: string) {
   return restore.get(name) ?? name;
 }
 
-function postgresAppTableColumnDefinitions(table: any) {
-  return [
-    `${quoteIdentifier("id")} TEXT PRIMARY KEY`,
-    `${quoteIdentifier("createdAt")} TEXT NOT NULL`,
-    `${quoteIdentifier("updatedAt")} TEXT NOT NULL`,
-    ...table.fields.map((field: any) => appFieldColumnDefinition(field)),
-  ];
-}
-
 export async function createLibsqlDatabaseAdapter(options: { url: any; authToken: any; }) {
   const url = typeof options === "string" ? options : options?.url;
   if (!url) {
@@ -4585,8 +4641,10 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
   let closed = false;
   const activeTransactions = new Set<any>();
 
-  const shape = await createSqliteDatabaseAdapter(":memory:");
-  shape.close();
+  // libSQL speaks SQLite's SQL, so it takes SQLite's dialect. That is a statement about the two
+  // engines rather than a borrowing: the dialect is a value both adapters ask for, not an adapter
+  // one of them builds and strips for parts.
+  const dialect = sqliteDatabaseDialect();
 
   const createOperations = (transaction: any = null) => ({
     exec(sql: string) {
@@ -4624,9 +4682,10 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
   });
 
   const adapter = {
-    ...shape,
+    ...createSharedDatabaseAdapterMethods(dialect),
     ...createOperations(),
     engine: "libsql",
+    dialect,
     // `ensureLogStorage` was overridden here until ADR-0036, as an await-shim over a shared
     // definition that emitted the same DDL and discarded the statement result. The shared
     // definition now also runs the ordering field's additive migration and its backfill, so a copy
@@ -5827,7 +5886,7 @@ function backfillLogIndexSequences(sqlite: LooseRecord) {
   );
 }
 
-function insertLogIndexEvent(sqlite: { engine?: string; exec?: (sql: any) => void; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }, event: { timestamp: any; category: any; event: any; level: any; message: any; capsule: { name: any; id: any; }; release: { id: any; }; request: { id: any; }; correlation: { id: any; }; }) {
+function insertLogIndexEvent(sqlite: LooseRecord, event: LooseRecord) {
   // ADR-0034: a Database adapter method that writes returns its statement result rather than
   // discarding it. Without the return the caller has nothing to await, so the write has landed on
   // SQLite and has not landed on Postgres or libSQL by the time the method returns — and the Log
@@ -5858,7 +5917,7 @@ function insertLogIndexEvent(sqlite: { engine?: string; exec?: (sql: any) => voi
     );
 }
 
-function pruneLogIndex(sqlite: { engine?: string; exec?: (sql: any) => void; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }, limit: any) {
+function pruneLogIndex(sqlite: LooseRecord, limit: any) {
   // ADR-0034: returned rather than discarded, for the same reason as the insert above.
   //
   // ADR-0036: the bound is expressed as "keep the most recently indexed N" rather than "delete
@@ -5881,7 +5940,7 @@ function pruneLogIndex(sqlite: { engine?: string; exec?: (sql: any) => void; pre
     .run(limit);
 }
 
-function readRecentLogEvents(sqlite: { engine?: string; exec?: (sql: any) => void; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }, limit = 200) {
+function readRecentLogEvents(sqlite: LooseRecord, limit = 200) {
   const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
   // ADR-0034: the rows are reversed and parsed, so they must be resolved first. Reading them
   // unresolved reversed and mapped a Promise, which is why libSQL carried an await-shim.
@@ -6158,6 +6217,10 @@ function assertAdditiveSchemaMigration(existingSchema: LooseRecord, nextSchema: 
 // rebuild copies every row of the table into a temporary copy and renames it into place — which is
 // precisely the work that must not be left half done, and precisely why its caller wraps it.
 function migrateExistingAppTableInTransaction(sqlite: LooseRecord, existingTable: any, nextTable: LooseRecord) {
+  // The dialect is reached through the adapter rather than passed alongside it, so a helper the
+  // shared method set delegates to cannot end up emitting a different engine's SQL than the method
+  // that called it.
+  const dialect = sqlite.dialect;
   const tempTableName = `__sporades_migrating_${nextTable.name}`;
   const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field: { name: any; }) => field.name)];
   return chainMaybePromise([
@@ -6170,25 +6233,25 @@ function migrateExistingAppTableInTransaction(sqlite: LooseRecord, existingTable
           }
         }),
       ),
-    () => sqlite.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`),
+    () => sqlite.exec(`DROP TABLE IF EXISTS ${dialect.quoteIdentifier(tempTableName)}`),
     () => sqlite.createAppTable(nextTable, tempTableName),
     () =>
       sqlite.exec(
-        `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
-        `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
-        `FROM ${quoteIdentifier(nextTable.name)}`,
+        `INSERT INTO ${dialect.quoteIdentifier(tempTableName)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) ` +
+        `SELECT ${columns.map((column) => columnSelectExpressionForMigration(dialect, existingTable, nextTable, column)).join(", ")} ` +
+        `FROM ${dialect.quoteIdentifier(nextTable.name)}`,
       ),
-    () => sqlite.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`),
-    () => sqlite.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`),
+    () => sqlite.exec(`DROP TABLE ${dialect.quoteIdentifier(nextTable.name)}`),
+    () => sqlite.exec(`ALTER TABLE ${dialect.quoteIdentifier(tempTableName)} RENAME TO ${dialect.quoteIdentifier(nextTable.name)}`),
   ]);
 }
 
-function columnSelectExpressionForMigration(existingTable: LooseRecord, nextTable: LooseRecord, columnName: string) {
+function columnSelectExpressionForMigration(dialect: LooseRecord, existingTable: LooseRecord, nextTable: LooseRecord, columnName: string) {
   if (["id", "createdAt", "updatedAt"].includes(columnName)) {
-    return quoteIdentifier(columnName);
+    return dialect.quoteIdentifier(columnName);
   }
   if ((existingTable.fields ?? []).some((field: { name: any; }) => field.name === columnName)) {
-    return quoteIdentifier(columnName);
+    return dialect.quoteIdentifier(columnName);
   }
   const field = nextTable.fields.find((candidate: { name: any; }) => candidate.name === columnName);
   return field?.defaultValue === undefined ? "NULL" : toSqlLiteral(field.defaultValue, field);
@@ -6201,25 +6264,30 @@ function addedFieldsForTable(existingTable: LooseRecord, nextTable: LooseRecord)
 
 function createAppTable(sqlite: LooseRecord, table: LooseRecord, tableName = table.name) {
   return sqlite.exec(
-    `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` +
-    appTableColumnDefinitions(table).join(", ") +
+    `CREATE TABLE IF NOT EXISTS ${sqlite.dialect.quoteIdentifier(tableName)} (` +
+    appTableColumnDefinitions(sqlite.dialect, table).join(", ") +
     ")",
   );
 }
 
-function appTableColumnDefinitions(table: LooseRecord) {
+// `id`, `createdAt` and `updatedAt` are quoted like every other column. Postgres folds an unquoted
+// identifier to lower case, and its adapter used to carry a whole copy of `createAppTable` for no
+// other reason; on SQLite and libSQL, which fold nothing, quoting a name that needed no quoting
+// declares exactly the same column. One definition, and the difference the engines actually have is
+// answered by the dialect entry rather than by a second method body.
+function appTableColumnDefinitions(dialect: LooseRecord, table: LooseRecord) {
   return [
-    "id TEXT PRIMARY KEY",
-    "createdAt TEXT NOT NULL",
-    "updatedAt TEXT NOT NULL",
-    ...table.fields.map((field: any) => appFieldColumnDefinition(field)),
+    `${dialect.quoteIdentifier("id")} TEXT PRIMARY KEY`,
+    `${dialect.quoteIdentifier("createdAt")} TEXT NOT NULL`,
+    `${dialect.quoteIdentifier("updatedAt")} TEXT NOT NULL`,
+    ...table.fields.map((field: any) => appFieldColumnDefinition(dialect, field)),
   ];
 }
 
-function appFieldColumnDefinition(field: LooseRecord) {
+function appFieldColumnDefinition(dialect: LooseRecord, field: LooseRecord) {
   const defaultSql = fieldColumnDefaultSql(field);
   const notNullSql = field.defaultValue !== undefined && !fieldDefaultIsSqlNull(field) ? " NOT NULL" : "";
-  return `${quoteIdentifier(field.name)} ${field.sqliteType}${notNullSql}${defaultSql}`;
+  return `${dialect.quoteIdentifier(field.name)} ${dialect.columnType(field)}${notNullSql}${defaultSql}`;
 }
 
 function fieldDefaultIsSqlNull(field: LooseRecord) {
@@ -6865,7 +6933,7 @@ export async function checkRuntimeFileStorage(database: LooseRecord) {
   return await database.fileStorage.checkHealth();
 }
 
-function createFileStorageTables(sqlite: { engine?: string; exec: any; prepare?: (sql: any) => { all(...params: any[]): Record<string, SQLOutputValue>[]; get(...params: any[]): Record<string, SQLOutputValue> | undefined; run(...params: any[]): StatementResultingChanges; columns(): StatementColumnMetadata[]; }; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => void; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable?: (table: any, tableName?: any) => any; migrateExistingAppTable?: (existingTable: any, nextTable: any) => any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }) {
+function createFileStorageTables(sqlite: LooseRecord) {
   sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
     "id TEXT PRIMARY KEY, " +
@@ -12621,7 +12689,7 @@ function ensureSessionProvenanceColumn(sqlite: LooseRecord) {
   );
 }
 
-async function ensureLibsqlSessionLifecycleColumns(sqlite: { engine?: string; writeSchemaMetadata?: ({ schemaVersion, schemaHash, schemaJson }: { schemaVersion: any; schemaHash: any; schemaJson: any; }) => Promise<void>; ensureLogStorage?: () => Promise<void>; insertLogIndexEvent?: (event: any) => Promise<void>; pruneLogIndex?: (limit: any) => Promise<void>; readRecentLogEvents?: (limit?: number) => Promise<any>; ensureFileStorage?: () => Promise<void>; ensureAuthStorage?: (authConfig?: null) => Promise<void>; consumeOAuthState?: (state: any) => Promise<any>; migrateAppSchema?: (schema: any) => Promise<void>; migrateExistingAppTable?: (existingTable: any, nextTable: any) => Promise<void>; listInspectableTables?: () => Promise<any>; dumpInspectableDatabase?: () => Promise<{ name: any; columns: any; rows: any; }[]>; runReadOnlyInspectionQuery?: (sql: any) => Promise<{ ok: boolean; data: { columns: any; rows: any; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }>; checkHealth?: () => Promise<{ ok: boolean; }>; withTransaction?: (fn: any) => Promise<any>; close?: () => Promise<void>; exec: any; prepare: any; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata?: () => Record<string, SQLOutputValue> | null; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; createAppTable?: (table: any, tableName?: any) => any; referenceExists?: (field: any, value: any) => boolean; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; }) {
+async function ensureLibsqlSessionLifecycleColumns(sqlite: LooseRecord) {
   const columns = await sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
   const hasExpiresAt = columns.some((column: { name: string; }) => column.name === "expiresAt");
   if (!hasExpiresAt) {
