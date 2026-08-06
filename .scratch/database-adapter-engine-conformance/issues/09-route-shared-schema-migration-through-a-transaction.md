@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Route Shared Schema Migration Through A Transaction
 
@@ -34,11 +34,11 @@ own issue rather than a rider on a coverage ticket.
 
 ## Acceptance criteria
 
-- [ ] The shared schema migration path uses the adapter's transaction primitive rather than bare BEGIN/COMMIT statements.
-- [ ] Nothing in the shared body derives from an unresolved query result.
-- [ ] A failed migration rolls back on every engine, proven by test rather than by inspection.
-- [ ] The engine-specific migration path is merged into the shared definition, or the remaining difference is recorded as a licensed dialect override.
-- [ ] Existing additive-migration conformance cases continue to pass on every engine.
+- [x] The shared schema migration path uses the adapter's transaction primitive rather than bare BEGIN/COMMIT statements.
+- [x] Nothing in the shared body derives from an unresolved query result.
+- [x] A failed migration rolls back on every engine, proven by test rather than by inspection.
+- [x] The engine-specific migration path is merged into the shared definition, or the remaining difference is recorded as a licensed dialect override.
+- [x] Existing additive-migration conformance cases continue to pass on every engine.
 
 ## Blocked by
 
