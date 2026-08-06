@@ -5047,7 +5047,7 @@ function s3ObjectNotFoundError() {
   return error;
 }
 function createDatabaseDialect(spec) {
-  const required = ["name", "quoteIdentifier", "columnType"];
+  const required = ["name", "quoteIdentifier", "columnType", "upsertSql"];
   const missing = required.filter((key) => spec[key] === void 0);
   if (missing.length > 0) {
     throw commandError(
@@ -5064,7 +5064,11 @@ function sqliteDatabaseDialect() {
     // The declared field type is emitted verbatim. `sqliteType` is what the Capsule schema carries,
     // and an engine whose type names differ maps them here rather than in a copy of every DDL
     // method.
-    columnType: (field) => field.sqliteType
+    columnType: (field) => field.sqliteType,
+    // Write-or-replace a row identified by its key columns. The names are emitted unquoted because
+    // the runtime-owned tables are declared unquoted; issue 12 owns settling that, and the upsert
+    // has to ask for the columns in the style its table was created with.
+    upsertSql: (table, columns, _conflictColumns) => `INSERT OR REPLACE INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`
   });
 }
 function postgresDatabaseDialect() {
@@ -5075,7 +5079,13 @@ function postgresDatabaseDialect() {
     // That is a fact about Postgres rather than a reason to drop the entry: the seam exists for the
     // engine whose type names do differ, and an identity mapping written down is checkable where an
     // absent one is not.
-    columnType: (field) => field.sqliteType
+    columnType: (field) => field.sqliteType,
+    // Postgres has no `INSERT OR REPLACE`; the same intent is `ON CONFLICT ... DO UPDATE`, which
+    // updates the non-key columns from the row that was offered.
+    upsertSql: (table, columns, conflictColumns) => {
+      const updated = columns.filter((column) => !conflictColumns.includes(column));
+      return `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ON CONFLICT (${conflictColumns.join(", ")}) DO UPDATE SET ` + updated.map((column) => `${column} = EXCLUDED.${column}`).join(", ");
+    }
   });
 }
 function createSharedDatabaseAdapterMethods(dialect) {
@@ -5087,7 +5097,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
       return this.prepare("SELECT value FROM sporades WHERE key = ?").get(key) ?? null;
     },
     writeSystemMetadata(key, value) {
-      return this.prepare("INSERT OR REPLACE INTO sporades (key, value) VALUES (?, ?)").run(key, value);
+      return this.prepare(dialect.upsertSql("sporades", ["key", "value"], ["key"])).run(key, value);
     },
     readSchemaMetadata() {
       return this.readSystemMetadata("schema");
@@ -5286,7 +5296,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     },
     saveUserPreferences(row) {
       return this.prepare(
-        "INSERT OR REPLACE INTO sporades_user_preferences (userId, value, updatedAt) VALUES (?, ?, ?)"
+        dialect.upsertSql("sporades_user_preferences", ["userId", "value", "updatedAt"], ["userId"])
       ).run(row.userId, row.value, row.updatedAt);
     },
     findAuthIdentityByProviderSubject(provider, subject) {
@@ -5696,14 +5706,11 @@ async function createPostgresDatabaseAdapter(options) {
         }
       };
     },
-    async writeSystemMetadata(keyOrMetadata, maybeValue) {
-      if (typeof keyOrMetadata === "object" && keyOrMetadata !== null) {
-        return await this.writeSchemaMetadata(keyOrMetadata);
-      }
-      return await this.prepare(
-        "INSERT INTO sporades (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
-      ).run(keyOrMetadata ?? "", maybeValue);
-    },
+    // `writeSystemMetadata` and `saveUserPreferences` were overridden here for the upsert form:
+    // Postgres has no `INSERT OR REPLACE`. That is now a dialect entry, so both come from the
+    // shared definition. The override also carried a dead branch that dispatched an object first
+    // argument to `writeSchemaMetadata`; nothing in the runtime or the specification ever called it
+    // that way, and it went with the copy.
     async ensureAuthStorage(authConfig = null) {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_auth_users (id TEXT PRIMARY KEY, createdAt TEXT NOT NULL, displayName TEXT NOT NULL, email TEXT, picture TEXT, isAuthenticated INTEGER NOT NULL, isGuest INTEGER NOT NULL, provider TEXT NOT NULL)"
@@ -5775,17 +5782,11 @@ async function createPostgresDatabaseAdapter(options) {
         "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (id TEXT PRIMARY KEY, fileId TEXT NOT NULL, ownerId TEXT NOT NULL, version TEXT NOT NULL, expiresAt TEXT, createdAt TEXT NOT NULL, revokedAt TEXT)"
       );
     },
-    async ensureUserPreferencesStorage() {
-      await createUserPreferencesTables(this);
-    },
-    async readUserPreferences(userId) {
-      return await this.prepare("SELECT userId, value, updatedAt FROM sporades_user_preferences WHERE userId = ?").get(userId) ?? null;
-    },
-    async saveUserPreferences(row) {
-      return await this.prepare(
-        "INSERT INTO sporades_user_preferences (userId, value, updatedAt) VALUES (?, ?, ?) ON CONFLICT (userId) DO UPDATE SET value = EXCLUDED.value, updatedAt = EXCLUDED.updatedAt"
-      ).run(row.userId, row.value, row.updatedAt);
-    },
+    // `ensureUserPreferencesStorage` and `readUserPreferences` were await-shims in ADR-0034's
+    // sense: the same SQL as the shared definitions, differing only by an `await` that the caller
+    // already performs. Nothing was derived from an unresolved result in either shared body, so
+    // they answered exactly what the shims answered and are deleted rather than maintained in
+    // duplicate.
     // `pruneLogIndex` and `readRecentLogEvents` were overridden here until ADR-0036. The prune was
     // a dialect override because the shared definition used `LIMIT -1 OFFSET ?`, which Postgres
     // does not accept; the read was a dialect override only because it named `id` as the tie-break

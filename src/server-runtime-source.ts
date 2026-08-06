@@ -3051,7 +3051,7 @@ function s3ObjectNotFoundError() {
 // than at the first statement that needed it: a new engine cannot half-answer the seam and
 // discover the gap in production.
 function createDatabaseDialect(spec: LooseRecord) {
-  const required = ["name", "quoteIdentifier", "columnType"];
+  const required = ["name", "quoteIdentifier", "columnType", "upsertSql"];
   const missing = required.filter((key) => spec[key] === undefined);
   if (missing.length > 0) {
     throw commandError(
@@ -3071,6 +3071,11 @@ function sqliteDatabaseDialect() {
     // and an engine whose type names differ maps them here rather than in a copy of every DDL
     // method.
     columnType: (field: LooseRecord) => field.sqliteType,
+    // Write-or-replace a row identified by its key columns. The names are emitted unquoted because
+    // the runtime-owned tables are declared unquoted; issue 12 owns settling that, and the upsert
+    // has to ask for the columns in the style its table was created with.
+    upsertSql: (table: string, columns: string[], _conflictColumns: string[]) =>
+      `INSERT OR REPLACE INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`,
   });
 }
 
@@ -3083,6 +3088,16 @@ function postgresDatabaseDialect() {
     // engine whose type names do differ, and an identity mapping written down is checkable where an
     // absent one is not.
     columnType: (field: LooseRecord) => field.sqliteType,
+    // Postgres has no `INSERT OR REPLACE`; the same intent is `ON CONFLICT ... DO UPDATE`, which
+    // updates the non-key columns from the row that was offered.
+    upsertSql: (table: string, columns: string[], conflictColumns: string[]) => {
+      const updated = columns.filter((column) => !conflictColumns.includes(column));
+      return (
+        `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${columns.map(() => "?").join(", ")}) ` +
+        `ON CONFLICT (${conflictColumns.join(", ")}) DO UPDATE SET ` +
+        updated.map((column) => `${column} = EXCLUDED.${column}`).join(", ")
+      );
+    },
   });
 }
 
@@ -3098,7 +3113,7 @@ function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseRecord {
       return this.prepare("SELECT value FROM sporades WHERE key = ?").get(key) ?? null;
     },
     writeSystemMetadata(key: string, value: any) {
-      return this.prepare("INSERT OR REPLACE INTO sporades (key, value) VALUES (?, ?)").run(key, value);
+      return this.prepare(dialect.upsertSql("sporades", ["key", "value"], ["key"])).run(key, value);
     },
     readSchemaMetadata() {
       return this.readSystemMetadata("schema");
@@ -3315,7 +3330,7 @@ function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseRecord {
     },
     saveUserPreferences(row: { userId: any; value: any; updatedAt: any; }) {
       return this.prepare(
-        "INSERT OR REPLACE INTO sporades_user_preferences (userId, value, updatedAt) VALUES (?, ?, ?)",
+        dialect.upsertSql("sporades_user_preferences", ["userId", "value", "updatedAt"], ["userId"]),
       ).run(row.userId, row.value, row.updatedAt);
     },
     findAuthIdentityByProviderSubject(provider: any, subject: any) {
@@ -3764,14 +3779,11 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         },
       };
     },
-    async writeSystemMetadata(keyOrMetadata: string | null, maybeValue: any) {
-      if (typeof keyOrMetadata === "object" && keyOrMetadata !== null) {
-        return await this.writeSchemaMetadata(keyOrMetadata);
-      }
-      return await this.prepare(
-        "INSERT INTO sporades (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
-      ).run(keyOrMetadata ?? "", maybeValue);
-    },
+    // `writeSystemMetadata` and `saveUserPreferences` were overridden here for the upsert form:
+    // Postgres has no `INSERT OR REPLACE`. That is now a dialect entry, so both come from the
+    // shared definition. The override also carried a dead branch that dispatched an object first
+    // argument to `writeSchemaMetadata`; nothing in the runtime or the specification ever called it
+    // that way, and it went with the copy.
     async ensureAuthStorage(authConfig: any = null) {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
@@ -3931,18 +3943,11 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         ")",
       );
     },
-    async ensureUserPreferencesStorage() {
-      await createUserPreferencesTables(this);
-    },
-    async readUserPreferences(userId: any) {
-      return (await this.prepare("SELECT userId, value, updatedAt FROM sporades_user_preferences WHERE userId = ?").get(userId)) ?? null;
-    },
-    async saveUserPreferences(row: { userId: any; value: any; updatedAt: any; }) {
-      return await this.prepare(
-        "INSERT INTO sporades_user_preferences (userId, value, updatedAt) VALUES (?, ?, ?) " +
-        "ON CONFLICT (userId) DO UPDATE SET value = EXCLUDED.value, updatedAt = EXCLUDED.updatedAt",
-      ).run(row.userId, row.value, row.updatedAt);
-    },
+    // `ensureUserPreferencesStorage` and `readUserPreferences` were await-shims in ADR-0034's
+    // sense: the same SQL as the shared definitions, differing only by an `await` that the caller
+    // already performs. Nothing was derived from an unresolved result in either shared body, so
+    // they answered exactly what the shims answered and are deleted rather than maintained in
+    // duplicate.
     // `pruneLogIndex` and `readRecentLogEvents` were overridden here until ADR-0036. The prune was
     // a dialect override because the shared definition used `LIMIT -1 OFFSET ?`, which Postgres
     // does not accept; the read was a dialect override only because it named `id` as the tie-break
