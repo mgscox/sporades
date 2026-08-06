@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Emitted Bundle Must Define Every Identifier It References
 
@@ -42,11 +42,11 @@ known to work.
 
 ## Acceptance criteria
 
-- [ ] Each of the four identifiers is confirmed reachable or not, with its path recorded, before any fix.
-- [ ] Every identifier the emitted bundle references is defined within it.
-- [ ] A check fails when a runtime function references something the bundle does not define, and runs in the ordinary test command.
-- [ ] The check is demonstrated to fail against a deliberately introduced free binding.
-- [ ] No behavioural change to any runtime path beyond making the referenced definitions available.
+- [x] Each of the four identifiers is confirmed reachable or not, with its path recorded, before any fix.
+- [x] Every identifier the emitted bundle references is defined within it.
+- [x] A check fails when a runtime function references something the bundle does not define, and runs in the ordinary test command.
+- [x] The check is demonstrated to fail against a deliberately introduced free binding.
+- [x] No behavioural change to any runtime path beyond making the referenced definitions available.
 
 ## Blocked by
 
