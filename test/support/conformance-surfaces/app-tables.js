@@ -554,6 +554,63 @@ const APP_TABLE_CONFORMANCE_CASES = [
     },
   },
   {
+    // `sporades db query <sql>` is typed by a human, and `validateReadOnlyInspectionSql`
+    // deliberately admits one trailing statement terminator. So a semicolon is ordinary input, and
+    // a trailing line comment is the shape someone leaves behind while editing a query.
+    //
+    // Neither is decoration to an engine that cannot ask a statement for its result shape
+    // directly. Postgres describes a statement by embedding it in a subquery bounded to no rows: a
+    // trailing `;` makes that a syntax error, and a trailing `--` comment swallows the closing
+    // parenthesis and everything after it. Both answered on SQLite and libSQL and failed on
+    // Postgres, which is the divergence class this whole specification exists to close, so the
+    // terminator belongs on both sides of a conformance predicate rather than in none of its SQL.
+    name: "runReadOnlyInspectionQuery answers the same for a query with and without a trailing terminator",
+    async run(adapter) {
+      const plain = await adapter.runReadOnlyInspectionQuery("SELECT id, label FROM conformance_accounts ORDER BY id");
+      assert.equal(plain.ok, true);
+
+      const terminated = await adapter.runReadOnlyInspectionQuery("SELECT id, label FROM conformance_accounts ORDER BY id;");
+      assert.equal(terminated.ok, true, `a trailing semicolon must not change the answer: ${terminated.error?.message}`);
+      assert.equal(terminated.error, null);
+      assert.deepEqual(terminated.data.columns, ["id", "label"]);
+      assert.deepEqual(terminated.data.rows.map((row) => pick(row, ["id", "label"])), plain.data.rows.map((row) => pick(row, ["id", "label"])));
+
+      // Trailing whitespace after the terminator is the same input a shell leaves behind.
+      const spaced = await adapter.runReadOnlyInspectionQuery("SELECT id, label FROM conformance_accounts ORDER BY id ; ");
+      assert.equal(spaced.ok, true, `whitespace after a terminator must not change the answer: ${spaced.error?.message}`);
+      assert.deepEqual(spaced.data.columns, ["id", "label"]);
+    },
+  },
+  {
+    name: "runReadOnlyInspectionQuery answers the same for a query with a trailing line comment",
+    async run(adapter) {
+      const commented = await adapter.runReadOnlyInspectionQuery(
+        "SELECT id, label FROM conformance_accounts ORDER BY id -- the accounts this Capsule holds",
+      );
+      assert.equal(commented.ok, true, `a trailing line comment must not change the answer: ${commented.error?.message}`);
+      assert.equal(commented.error, null);
+      assert.deepEqual(commented.data.columns, ["id", "label"]);
+      assert.deepEqual(commented.data.rows.map((row) => pick(row, ["id", "label"])), [
+        { id: RESIDENT_ACCOUNT.id, label: RESIDENT_ACCOUNT.label },
+      ]);
+
+      // A terminator and a comment together, which is what an edited query actually looks like.
+      const both = await adapter.runReadOnlyInspectionQuery(
+        "SELECT id, label FROM conformance_accounts ORDER BY id; -- keep this around",
+      );
+      assert.equal(both.ok, true, `a terminator followed by a comment must not change the answer: ${both.error?.message}`);
+      assert.deepEqual(both.data.columns, ["id", "label"]);
+
+      // The negative side of the predicate: a `--` inside a string literal is text, not a comment,
+      // so nothing may be stripped from it. An over-eager strip would truncate this query into
+      // `SELECT ` and fail, or silently answer a different shape.
+      const literal = await adapter.runReadOnlyInspectionQuery("SELECT '-- not a comment' AS marker");
+      assert.equal(literal.ok, true, `a string literal containing a comment marker must survive: ${literal.error?.message}`);
+      assert.deepEqual(literal.data.columns, ["marker"]);
+      assert.deepEqual(literal.data.rows.map((row) => row.marker), ["-- not a comment"]);
+    },
+  },
+  {
     name: "migrateAppSchema additively adds a table and a field with a default, keeping stored rows",
     async run(adapter) {
       await adapter.insertAppRow(ENTRIES_TABLE, entryRow({ id: "entry-kept", note: "written before the migration" }));

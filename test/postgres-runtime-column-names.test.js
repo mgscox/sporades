@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../dist/server-runtime-source.js";
+import { SERVER_RUNTIME_SOURCE_FUNCTIONS, sqliteDatabaseDialect } from "../dist/server-runtime-source.js";
 import { POSTGRES_SKIP_REASON, withLibsqlAdapter, withPostgresAdapter, withSqliteAdapter } from "./support/database-adapter-engines.js";
 
 // Postgres folds an unquoted identifier to lower case, so a runtime-owned table declared with
@@ -90,10 +90,15 @@ function unrestorableRuntimeColumns(declared, restore) {
 // Records the statement text a shared schema definition emits, without an engine underneath it.
 // A shared definition is sent verbatim to whichever engine is configured, so a statement only one
 // engine understands is a defect in the definition rather than in the engine that rejects it.
+// A fake engine, built the way the seam says an engine is built: statement primitives plus a
+// dialect. It carries SQLite's real dialect on purpose, because SQLite is the engine whose
+// add-a-missing-column idiom is `PRAGMA table_info` — so if a shared bootstrap could still reach a
+// PRAGMA through the dialect, this is the dialect that would produce one.
 function recordingSchemaAdapter() {
   const statements = [];
   return {
     statements,
+    dialect: sqliteDatabaseDialect(),
     exec(sql) {
       statements.push(String(sql));
       return Promise.resolve(undefined);
