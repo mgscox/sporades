@@ -161,7 +161,7 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
     writeSystemMetadata(key: string, value: any): StatementResultingChanges;
     readSchemaMetadata(): Record<string, SQLOutputValue> | null;
     writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord): any;
-    ensureLogStorage(): void;
+    ensureLogStorage(): any;
     insertLogIndexEvent(event: any): any;
     pruneLogIndex(limit: any): any;
     readRecentLogEvents(limit: number | undefined): any;
@@ -488,7 +488,6 @@ export declare function createPostgresDatabaseAdapter(options: {
     writeSystemMetadata(keyOrMetadata: string | null, maybeValue: any): Promise<any>;
     ensureAuthStorage(authConfig?: any): Promise<void>;
     consumeOAuthState(state: string): Promise<any>;
-    ensureLogStorage(): Promise<void>;
     ensureFileStorage(): Promise<void>;
     ensureUserPreferencesStorage(): Promise<void>;
     readUserPreferences(userId: any): Promise<any>;
@@ -500,11 +499,6 @@ export declare function createPostgresDatabaseAdapter(options: {
         changes: number;
         lastInsertRowid: any;
     }>;
-    pruneLogIndex(limit: any): Promise<{
-        changes: number;
-        lastInsertRowid: any;
-    }>;
-    readRecentLogEvents(limit?: number): Promise<any>;
     createAppTable(table: {
         name: any;
     }, tableName?: any): Promise<void>;
@@ -647,7 +641,10 @@ export declare function createPostgresDatabaseAdapter(options: {
     readSystemMetadata(key: string): Record<string, SQLOutputValue> | null;
     readSchemaMetadata(): Record<string, SQLOutputValue> | null;
     writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord): any;
+    ensureLogStorage(): any;
     insertLogIndexEvent(event: any): any;
+    pruneLogIndex(limit: any): any;
+    readRecentLogEvents(limit: number | undefined): any;
     findFileBucket(ownerId: any, name: any): Record<string, SQLOutputValue> | null;
     createFileBucket(row: {
         id: any;
@@ -851,7 +848,6 @@ export declare function createLibsqlDatabaseAdapter(options: {
     authToken: any;
 }): Promise<{
     engine: string;
-    ensureLogStorage(): Promise<void>;
     ensureFileStorage(): Promise<void>;
     ensureAuthStorage(authConfig?: any): Promise<void>;
     consumeOAuthState(state: any): Promise<any>;
@@ -873,6 +869,7 @@ export declare function createLibsqlDatabaseAdapter(options: {
     writeSystemMetadata(key: string, value: any): StatementResultingChanges;
     readSchemaMetadata(): Record<string, SQLOutputValue> | null;
     writeSchemaMetadata({ schemaVersion, schemaHash, schemaJson }: LooseRecord): any;
+    ensureLogStorage(): any;
     insertLogIndexEvent(event: any): any;
     pruneLogIndex(limit: any): any;
     readRecentLogEvents(limit: number | undefined): any;

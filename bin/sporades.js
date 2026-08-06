@@ -2467,7 +2467,11 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   isSensitiveLogString,
   isSensitiveLogKey,
   capLogEnvelope,
+  formatLogIndexSequence,
+  nextLogIndexSequence,
+  backfilledLogIndexSequence,
   createLogIndexTables,
+  backfillLogIndexSequences,
   insertLogIndexEvent,
   pruneLogIndex,
   readRecentLogEvents,
@@ -5699,11 +5703,12 @@ async function createPostgresDatabaseAdapter(options) {
       ).get(state);
       return row ?? null;
     },
-    async ensureLogStorage() {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_log_events (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, category TEXT NOT NULL, event TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL, capsuleName TEXT, capsuleId TEXT, releaseId TEXT, requestId TEXT, correlationId TEXT, payload TEXT NOT NULL)"
-      );
-    },
+    // `ensureLogStorage` was overridden here until ADR-0036, as an await-shim over a shared
+    // definition that emitted the same DDL and discarded the statement result. The shared
+    // definition now also runs the ordering field's additive migration and its backfill, so a copy
+    // of the bare `CREATE TABLE` here would be a Log index that never gained the column — the
+    // dormant-shared-body hazard ADR-0034 describes, arriving as a missing migration instead of an
+    // unresolved result.
     async ensureFileStorage() {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_file_buckets (id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, name TEXT NOT NULL, createdAt TEXT NOT NULL, UNIQUE(ownerId, name))"
@@ -5739,16 +5744,13 @@ async function createPostgresDatabaseAdapter(options) {
         "INSERT INTO sporades_user_preferences (userId, value, updatedAt) VALUES (?, ?, ?) ON CONFLICT (userId) DO UPDATE SET value = EXCLUDED.value, updatedAt = EXCLUDED.updatedAt"
       ).run(row.userId, row.value, row.updatedAt);
     },
-    async pruneLogIndex(limit) {
-      return await this.prepare(
-        "DELETE FROM sporades_log_events WHERE id IN (SELECT id FROM sporades_log_events ORDER BY timestamp DESC, id DESC OFFSET ?)"
-      ).run(limit);
-    },
-    async readRecentLogEvents(limit = 200) {
-      const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1e4) : 200;
-      const rows = await this.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, id DESC LIMIT ?").all(safeLimit);
-      return rows.reverse().map((row) => JSON.parse(row.payload));
-    },
+    // `pruneLogIndex` and `readRecentLogEvents` were overridden here until ADR-0036. The prune was
+    // a dialect override because the shared definition used `LIMIT -1 OFFSET ?`, which Postgres
+    // does not accept; the read was a dialect override only because it named `id` as the tie-break
+    // where the shared definition named `rowid`. Both differences were consequences of ordering by
+    // `timestamp` and breaking the tie per engine. Ordering by the runtime-assigned sequence needs
+    // neither, so ADR-0034's rule applies and the overrides are deleted rather than maintained in
+    // duplicate: two engines cannot disagree about an order they no longer each define.
     async createAppTable(table, tableName = table.name) {
       await this.exec(
         `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` + postgresAppTableColumnDefinitions(table).join(", ") + ")"
@@ -6329,6 +6331,7 @@ function postgresRuntimeColumnName(name) {
       "releaseId",
       "requestId",
       "correlationId",
+      "indexSequence",
       // sporades_files, sporades_file_buckets, sporades_file_uploads, sporades_file_public_urls,
       // including the `publicUrlId` and `publicVersion` aliases the public URL join selects.
       "bucketId",
@@ -6426,11 +6429,12 @@ async function createLibsqlDatabaseAdapter(options) {
     ...shape,
     ...createOperations(),
     engine: "libsql",
-    async ensureLogStorage() {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_log_events (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, category TEXT NOT NULL, event TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL, capsuleName TEXT, capsuleId TEXT, releaseId TEXT, requestId TEXT, correlationId TEXT, payload TEXT NOT NULL)"
-      );
-    },
+    // `ensureLogStorage` was overridden here until ADR-0036, as an await-shim over a shared
+    // definition that emitted the same DDL and discarded the statement result. The shared
+    // definition now also runs the ordering field's additive migration and its backfill, so a copy
+    // of the bare `CREATE TABLE` here would be a Log index that never gained the column — the
+    // dormant-shared-body hazard ADR-0034 describes, arriving as a missing migration instead of an
+    // unresolved result.
     async ensureFileStorage() {
       await this.exec(
         "CREATE TABLE IF NOT EXISTS sporades_file_buckets (id TEXT PRIMARY KEY, ownerId TEXT NOT NULL, name TEXT NOT NULL, createdAt TEXT NOT NULL, UNIQUE(ownerId, name))"
@@ -7340,14 +7344,58 @@ function capLogEnvelope(envelope, maxBytes) {
   capped.message = capped.message.slice(0, 256);
   return capped;
 }
+function formatLogIndexSequence(nanosSinceEpoch) {
+  return String(nanosSinceEpoch).padStart(20, "0");
+}
+function nextLogIndexSequence() {
+  const state = nextLogIndexSequence;
+  state.anchor ??= { wallNanos: BigInt(Date.now()) * 1000000n, monotonic: process.hrtime.bigint() };
+  const derived = state.anchor.wallNanos + (process.hrtime.bigint() - state.anchor.monotonic);
+  const previous = state.previous ?? 0n;
+  state.previous = derived > previous ? derived : previous + 1n;
+  return formatLogIndexSequence(state.previous);
+}
+function backfilledLogIndexSequence(timestamp) {
+  const parsed = Date.parse(String(timestamp ?? ""));
+  return Number.isFinite(parsed) ? BigInt(parsed) * 1000000n : 0n;
+}
 function createLogIndexTables(sqlite) {
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_log_events (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, category TEXT NOT NULL, event TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL, capsuleName TEXT, capsuleId TEXT, releaseId TEXT, requestId TEXT, correlationId TEXT, payload TEXT NOT NULL)"
+  let chain = chainSchemaOperation(
+    void 0,
+    () => sqlite.exec(
+      "CREATE TABLE IF NOT EXISTS sporades_log_events (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, category TEXT NOT NULL, event TEXT NOT NULL, level TEXT NOT NULL, message TEXT NOT NULL, capsuleName TEXT, capsuleId TEXT, releaseId TEXT, requestId TEXT, correlationId TEXT, indexSequence TEXT, payload TEXT NOT NULL)"
+    )
+  );
+  chain = chainSchemaOperation(
+    chain,
+    () => runSchemaExecIgnoringDuplicateColumn(sqlite, "ALTER TABLE sporades_log_events ADD COLUMN indexSequence TEXT")
+  );
+  return chainSchemaOperation(chain, () => backfillLogIndexSequences(sqlite));
+}
+function backfillLogIndexSequences(sqlite) {
+  return thenIfPromise(
+    sqlite.prepare(
+      "SELECT id, timestamp FROM sporades_log_events WHERE indexSequence IS NULL ORDER BY timestamp ASC, id ASC"
+    ).all(),
+    (rows) => {
+      let previous = 0n;
+      let chain = void 0;
+      for (const row of rows) {
+        const derived = backfilledLogIndexSequence(row.timestamp);
+        previous = derived > previous ? derived : previous + 1n;
+        const sequence = formatLogIndexSequence(previous);
+        chain = chainSchemaOperation(
+          chain,
+          () => sqlite.prepare("UPDATE sporades_log_events SET indexSequence = ? WHERE id = ?").run(sequence, row.id)
+        );
+      }
+      return chain;
+    }
   );
 }
 function insertLogIndexEvent(sqlite, event) {
   return sqlite.prepare(
-    "INSERT INTO sporades_log_events (id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    "INSERT INTO sporades_log_events (id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, indexSequence, payload) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
   ).run(
     randomUUID(),
     event.timestamp,
@@ -7360,18 +7408,22 @@ function insertLogIndexEvent(sqlite, event) {
     event.release?.id ?? event.release ?? null,
     event.request?.id ?? null,
     event.correlation?.id ?? event.correlation ?? null,
+    // ADR-0036: assigned here, as the event is indexed, and deliberately not added to the
+    // envelope that is stringified into `payload` below. The field orders the Log index; it is
+    // not part of what a log event says.
+    nextLogIndexSequence(),
     JSON.stringify(event)
   );
 }
 function pruneLogIndex(sqlite, limit) {
   return sqlite.prepare(
-    "DELETE FROM sporades_log_events WHERE id IN (SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?)"
+    "DELETE FROM sporades_log_events WHERE id NOT IN (SELECT id FROM (SELECT id FROM sporades_log_events ORDER BY indexSequence DESC LIMIT ?) AS retained)"
   ).run(limit);
 }
 function readRecentLogEvents(sqlite, limit = 200) {
   const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 1e4) : 200;
   return thenIfPromise(
-    sqlite.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?").all(safeLimit),
+    sqlite.prepare("SELECT payload FROM sporades_log_events ORDER BY indexSequence DESC LIMIT ?").all(safeLimit),
     (rows) => rows.reverse().map((row) => JSON.parse(row.payload))
   );
 }
