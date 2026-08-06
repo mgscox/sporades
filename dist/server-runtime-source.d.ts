@@ -304,6 +304,9 @@ export declare function validateReadOnlyInspectionSql(sql: any): {
 } | {
     ok: true;
 };
+export declare const SAFE_INSPECTION_PRAGMAS: Set<string>;
+export declare const SIDE_EFFECT_SQL_KEYWORDS: Set<string>;
+export declare const SIDE_EFFECT_SQL_FUNCTIONS: Set<string>;
 export declare function sqlWithoutTrailingTerminator(sql: any): string;
 export declare function simulateLocalIdentitySession(database: LooseRecord, options?: LooseRecord): Promise<any>;
 type TrustedRefreshTransport = {
