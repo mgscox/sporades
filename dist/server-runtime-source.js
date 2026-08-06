@@ -219,6 +219,21 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     // Reached from `sqlWithoutTrailingTerminator`, which the Postgres `columns()` primitive calls, so
     // it has to be emitted into the Capsule bundle rather than left behind as a free binding.
     skipSqlStringOrComment,
+    // The read-only gate `runReadOnlyInspectionQuery` opens with, and the whole tokeniser behind it.
+    // Absent from here, the call threw inside that method's own `try`, so every DB inspection query
+    // in a deployed Capsule came back as an ordinary "check the SQL syntax" failure instead of
+    // running. The gate's three keyword tables are module constants rather than functions, so they
+    // reach the bundle through the template's preamble instead of through this list.
+    validateReadOnlyInspectionSql,
+    readOnlyInspectionSqlError,
+    readFirstSqlToken,
+    hasMultipleSqlStatements,
+    isSafeInspectionPragma,
+    readBareSqlIdentifier,
+    containsSideEffectSqlToken,
+    readSqlTokens,
+    readSqlTokenIdentifier,
+    skipSqlLiteralOrComment,
     targetsInternalLogIndexTable,
     readSqlTableReference,
     skipSqlTrivia,
@@ -292,8 +307,13 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     filterRowsByReadAcl,
     createAclHelpers,
     aclRuleTouchedAsyncHelperRead,
+    // The two halves of the ACL helpers' async-read detection. Both are reached from the frozen
+    // helper objects an ACL rule is handed, so without them here every rule that consulted
+    // `ctx.acl.db` or `ctx.acl.storage` threw out of the rule rather than answering it.
+    markAsyncAclHelperRead,
     createAclDbHelpers,
     createAclStorageHelpers,
+    resolveAclStorageFileReference,
     assertAclHelperReadAllowed,
     resolveAclAppTable,
     resolveAclStorageResource,
@@ -428,6 +448,10 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     hashEmailPassword,
     verifyEmailPassword,
     emailAuthDisabledError,
+    // The trusted server-only credential write. `setOwnEmailPassword` and both `ctx.serverAuth`
+    // surfaces call it, and each of those calls sits behind its own ownership or privilege gate, so
+    // the missing definition failed the change only after the caller had already authorised it.
+    setEmailPassword,
     setOwnEmailPassword,
     emailNotOwnedError,
     resolvePasswordResetConfig,
@@ -7790,7 +7814,10 @@ function isSafeInspectionPragma(sql, pragmaTokenLength) {
     }
     return true;
 }
-const SAFE_INSPECTION_PRAGMAS = new Set([
+// The three keyword tables the read-only gate consults. Exported because a module-level binding
+// does not travel with the source text of a function that closes over it: the bundle template
+// serializes these into its constant preamble so the emitted gate has them.
+export const SAFE_INSPECTION_PRAGMAS = new Set([
     "database_list",
     "foreign_key_list",
     "index_info",
@@ -7812,7 +7839,7 @@ function containsSideEffectSqlToken(sql) {
     }
     return false;
 }
-const SIDE_EFFECT_SQL_KEYWORDS = new Set([
+export const SIDE_EFFECT_SQL_KEYWORDS = new Set([
     "alter",
     "analyze",
     "attach",
@@ -7826,7 +7853,7 @@ const SIDE_EFFECT_SQL_KEYWORDS = new Set([
     "update",
     "vacuum",
 ]);
-const SIDE_EFFECT_SQL_FUNCTIONS = new Set([
+export const SIDE_EFFECT_SQL_FUNCTIONS = new Set([
     "load_extension",
     "nextval",
     "set_config",

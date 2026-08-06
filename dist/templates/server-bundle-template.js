@@ -1,4 +1,4 @@
-import { SERVER_RUNTIME_SOURCE_FUNCTIONS } from "../server-runtime-source.js";
+import { SAFE_INSPECTION_PRAGMAS, SERVER_RUNTIME_SOURCE_FUNCTIONS, SIDE_EFFECT_SQL_FUNCTIONS, SIDE_EFFECT_SQL_KEYWORDS, } from "../server-runtime-source.js";
 import { PUBLIC_TREE_LIMITS, normalizePublicTreePath, publicTreePathFromRequest } from "../public-tree-contract.js";
 export function createServerBundleSource({ config, serverEnv, sealedServerEnv = { enabled: false }, serverSource, serverModuleSource }) {
     const runtimeFunctions = SERVER_RUNTIME_SOURCE_FUNCTIONS
@@ -9,6 +9,17 @@ export function createServerBundleSource({ config, serverEnv, sealedServerEnv = 
         normalizePublicTreePath.toString(),
         publicTreePathFromRequest.toString(),
     ].join("\n\n");
+    // The read-only inspection gate's keyword tables. A runtime function reaches the bundle as its
+    // own source text and a module-level binding it closes over does not follow, so these are
+    // written out here — serialized from the real Sets rather than restated, which is the same thing
+    // `PUBLIC_TREE_LIMITS` above does and leaves nothing that can drift from the runtime source.
+    const readOnlyInspectionKeywords = [
+        ["SAFE_INSPECTION_PRAGMAS", SAFE_INSPECTION_PRAGMAS],
+        ["SIDE_EFFECT_SQL_KEYWORDS", SIDE_EFFECT_SQL_KEYWORDS],
+        ["SIDE_EFFECT_SQL_FUNCTIONS", SIDE_EFFECT_SQL_FUNCTIONS],
+    ]
+        .map(([name, values]) => `const ${name} = new Set(${JSON.stringify([...values])});`)
+        .join("\n");
     const serverModuleDataUrl = `data:text/javascript;base64,${Buffer.from(serverModuleSource, "utf8").toString("base64")}`;
     return `// Sporades server bundle
 import { createDecipheriv, createHash, createHash as createHash2, createHmac, createPrivateKey, privateDecrypt, randomBytes, randomBytes as randomBytes2, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
@@ -42,6 +53,7 @@ const PRIVILEGED_AUDIT_SCHEMA = "sporades.privileged-audit.v1";
 const PRIVILEGED_AUDIT_ACTOR_KINDS = new Set(["privileged-server-role", "captured-user", "platform", "unknown"]);
 const PRIVILEGED_AUDIT_OUTCOMES = new Set(["started", "completed", "errored", "finished"]);
 const ACL_HELPER_STATE = Symbol("sporades.aclHelperState");
+${readOnlyInspectionKeywords}
 ${runtimeFunctions}
 ${publicTreeContract}
 
