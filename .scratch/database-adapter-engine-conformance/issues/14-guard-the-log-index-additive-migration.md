@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Guard The Log Index Additive Migration
 
@@ -26,11 +26,11 @@ consistent across engines, and a second boot is a no-op.
 
 ## Acceptance criteria
 
-- [ ] A test creates `sporades_log_events` without `indexSequence`, boots storage, and asserts the column is added and existing rows backfilled.
-- [ ] It runs on SQLite, libSQL and Postgres.
-- [ ] Deleting the `ALTER TABLE ... ADD COLUMN` statement makes it fail.
-- [ ] Backfilled rows order correctly against rows written after the upgrade.
-- [ ] A second boot changes nothing.
+- [x] A test creates `sporades_log_events` without `indexSequence`, boots storage, and asserts the column is added and existing rows backfilled.
+- [x] It runs on SQLite, libSQL and Postgres.
+- [x] Deleting the `ALTER TABLE ... ADD COLUMN` statement makes it fail.
+- [x] Backfilled rows order correctly against rows written after the upgrade.
+- [x] A second boot changes nothing.
 
 ## Blocked by
 
