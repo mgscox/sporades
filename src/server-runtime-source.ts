@@ -113,6 +113,10 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   createDatabaseDialect,
   sqliteDatabaseDialect,
   postgresDatabaseDialect,
+  createDatabaseNormalization,
+  sqliteRowNormalization,
+  postgresRowNormalization,
+  libsqlRowNormalization,
   createSharedDatabaseAdapterMethods,
   createSqliteDatabaseAdapter,
   createLibsqlDatabaseAdapter,
@@ -3044,7 +3048,7 @@ function s3ObjectNotFoundError() {
 // Every entry is required. A dialect that omits one fails here, at adapter construction, rather
 // than at the first statement that needed it: a new engine cannot half-answer the seam and
 // discover the gap in production.
-export function createDatabaseDialect(spec: LooseRecord) {
+export function createDatabaseDialect(spec: LooseRecord): LooseRecord {
   const required = [
     "name",
     "quoteIdentifier",
@@ -3062,6 +3066,64 @@ export function createDatabaseDialect(spec: LooseRecord) {
     );
   }
   return { ...spec };
+}
+
+// The third thing an engine supplies: how a result row maps back to the names and values the
+// runtime reads. Two entries, both required for the same reason the dialect's are — an engine that
+// simply omitted one would answer rows the runtime silently misreads, which is how a missing
+// `verifierHash` spelling rejected every valid password Reset code on Postgres.
+//
+// `columnName` restores the runtime's declared spelling of a result column. `value` coerces a
+// single value into the JavaScript the runtime expects. `row` is derived from the two so that no
+// engine can apply one and forget the other.
+export function createDatabaseNormalization(spec: LooseRecord): LooseRecord {
+  const missing = ["name", "columnName", "value"].filter((key) => spec[key] === undefined);
+  if (missing.length > 0) {
+    throw commandError(
+      `Incomplete Database adapter normalization: ${missing.join(", ")}.`,
+      "A Database engine supplies statement primitives, a dialect and row normalization. Answer every normalization entry.",
+    );
+  }
+  return {
+    ...spec,
+    row: (raw: LooseRecord) =>
+      Object.fromEntries(Object.entries(raw).map(([key, value]) => [spec.columnName(key), spec.value(value)])),
+  };
+}
+
+// SQLite preserves the case it was given and `node:sqlite` already hands back JavaScript values, so
+// both entries are the identity. Its statement primitives therefore return rows as the driver
+// produced them rather than rebuilding each one to prove a no-op; the identity is declared here so
+// it can be read, and paid for nowhere.
+export function sqliteRowNormalization() {
+  return createDatabaseNormalization({
+    name: "sqlite",
+    columnName: (name: string) => name,
+    value: (value: any) => value,
+  });
+}
+
+export function postgresRowNormalization() {
+  return createDatabaseNormalization({
+    name: "postgres",
+    // Postgres folds an unquoted identifier to lower case; the declared spelling is restored here.
+    columnName: postgresRuntimeColumnName,
+    // Values are already coerced by the wire parser, which reads each column's type oid from the
+    // row description. The row does not carry the oid, so the per-value entry cannot repeat that
+    // work and does not need to.
+    value: (value: any) => value,
+  });
+}
+
+export function libsqlRowNormalization() {
+  return createDatabaseNormalization({
+    name: "libsql",
+    // libSQL preserves declared case, so there is nothing to restore.
+    columnName: (name: string) => name,
+    // The pipeline protocol tags every value with its type, and this turns the tagged form back
+    // into JavaScript.
+    value: libsqlValueToJs,
+  });
 }
 
 // SQLite's dialect, which libSQL shares because libSQL speaks SQLite's SQL.
@@ -3720,6 +3782,7 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     ...createSharedDatabaseAdapterMethods(dialect),
     engine: "sqlite",
     dialect,
+    normalization: sqliteRowNormalization(),
     exec(sql: string) {
       return connection.exec(sql);
     },
@@ -3780,6 +3843,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
   const client = await createPostgresConnection(url);
   let closed = false;
   const dialect = postgresDatabaseDialect();
+  const normalization = postgresRowNormalization();
 
   const assertOpen = () => {
     if (closed) {
@@ -3796,6 +3860,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     ...createSharedDatabaseAdapterMethods(dialect),
     engine: "postgres",
     dialect,
+    normalization,
     exec(sql: string) {
       return query(sql).then((): undefined => undefined);
     },
@@ -3803,7 +3868,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
       assertOpen();
       return {
         all(...params: (number | undefined)[]) {
-          return query(sql, params).then((result: any) => postgresRowsFromResult(result));
+          return query(sql, params).then((result: any) => postgresRowsFromResult(normalization, result));
         },
         get(...params: undefined[]) {
           return this.all(...params).then((rows: any[]) => rows[0] ?? null);
@@ -3816,7 +3881,7 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
         },
         columns() {
           return query(`SELECT * FROM (${sql}) AS __sporades_columns LIMIT 0`).then((result) =>
-            result.fields.map((field) => ({ name: postgresRuntimeColumnName(field.name) })),
+            result.fields.map((field) => ({ name: normalization.columnName(field.name) })),
           );
         },
       };
@@ -4367,14 +4432,8 @@ function postgresPlaceholders(sql: any) {
   return result;
 }
 
-function postgresRowsFromResult(result: { fields?: any[]; rows: any; rowCount?: number; }) {
-  return result.rows.map((row: { [s: string]: unknown; } | ArrayLike<unknown>) => {
-    const normalized: LooseRecord = {};
-    for (const [key, value] of Object.entries(row)) {
-      normalized[postgresRuntimeColumnName(key)] = value;
-    }
-    return normalized;
-  });
+function postgresRowsFromResult(normalization: LooseRecord, result: { fields?: any[]; rows: any; rowCount?: number; }) {
+  return result.rows.map((row: LooseRecord) => normalization.row(row));
 }
 
 // Postgres folds an unquoted identifier to lower case, so a runtime-owned table declared with
@@ -4498,6 +4557,9 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
   // engines rather than a borrowing: the dialect is a value both adapters ask for, not an adapter
   // one of them builds and strips for parts.
   const dialect = sqliteDatabaseDialect();
+  // Normalization is libSQL's own, though: the pipeline protocol tags every value with its type,
+  // where node:sqlite hands back JavaScript directly.
+  const normalization = libsqlRowNormalization();
 
   const createOperations = (transaction: any = null) => ({
     exec(sql: string) {
@@ -4512,7 +4574,7 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
       return {
         all(...params: (number | undefined)[]) {
           return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) =>
-            libsqlRowsFromResult(result),
+            libsqlRowsFromResult(normalization, result),
           );
         },
         get(...params: undefined[]) {
@@ -4539,6 +4601,7 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     ...createOperations(),
     engine: "libsql",
     dialect,
+    normalization,
     // `ensureLogStorage` was overridden here until ADR-0036, as an await-shim over a shared
     // definition that emitted the same DDL and discarded the statement result. The shared
     // definition now also runs the ordering field's additive migration and its backfill, so a copy
@@ -4673,14 +4736,11 @@ async function libsqlPipeline({ endpoint, authToken, transaction = null, request
   return results.filter((result: { response: { type: string; }; }) => result.response?.type !== "close").map((result: { response: any; }) => result.response);
 }
 
-function libsqlRowsFromResult(result: { cols: any; rows: any; }) {
+function libsqlRowsFromResult(normalization: LooseRecord, result: { cols: any; rows: any; }) {
   const columns = (result.cols ?? []).map((column: { name: any; }) => column.name);
-  return (result.rows ?? []).map((row: { [s: string]: unknown; } | ArrayLike<unknown>) => {
-    if (!Array.isArray(row)) {
-      return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, libsqlValueToJs(value)]));
-    }
-    return Object.fromEntries(columns.map((column: any, index: number) => [column, libsqlValueToJs(row[index])]));
-  });
+  return (result.rows ?? []).map((row: LooseRecord) =>
+    normalization.row(Array.isArray(row) ? Object.fromEntries(columns.map((column: any, index: number) => [column, row[index]])) : row),
+  );
 }
 
 function libsqlValueFromJs(value: unknown) {
@@ -5864,7 +5924,14 @@ function migrateAppSchemaInTransaction(sqlite: LooseRecord, schema: LooseRecord)
       ...schema.tables.map((table: { name: unknown; }) => () => {
         const existingTable = existingTables.get(table.name);
         // The in-transaction table rebuild rather than the adapter method, which opens a
-        // transaction of its own and would nest inside the one already enclosing this migration.
+        // transaction of its own and would nest inside the one already enclosing this migration —
+        // and libSQL's transaction adapter throws on a nested `withTransaction`.
+        //
+        // Issue 09's review asked what happens when an engine overrides `migrateExistingAppTable`:
+        // this call would bypass it, from inside a migration, silently. ADR-0037 answers it — an
+        // engine supplies statement primitives, a dialect and normalization, and has nowhere to put
+        // a behavioural method body. What this call skips is the transaction wrapper and nothing
+        // else, and `test/database-adapter-engine-seam.test.js` fails if that stops being true.
         return schemaChanged && existingTable
           ? migrateExistingAppTableInTransaction(sqlite, existingTable, table)
           : sqlite.createAppTable(table);

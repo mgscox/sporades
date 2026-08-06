@@ -2341,6 +2341,10 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   createDatabaseDialect,
   sqliteDatabaseDialect,
   postgresDatabaseDialect,
+  createDatabaseNormalization,
+  sqliteRowNormalization,
+  postgresRowNormalization,
+  libsqlRowNormalization,
   createSharedDatabaseAdapterMethods,
   createSqliteDatabaseAdapter,
   createLibsqlDatabaseAdapter,
@@ -5061,6 +5065,47 @@ function createDatabaseDialect(spec) {
   }
   return { ...spec };
 }
+function createDatabaseNormalization(spec) {
+  const missing = ["name", "columnName", "value"].filter((key) => spec[key] === void 0);
+  if (missing.length > 0) {
+    throw commandError(
+      `Incomplete Database adapter normalization: ${missing.join(", ")}.`,
+      "A Database engine supplies statement primitives, a dialect and row normalization. Answer every normalization entry."
+    );
+  }
+  return {
+    ...spec,
+    row: (raw) => Object.fromEntries(Object.entries(raw).map(([key, value]) => [spec.columnName(key), spec.value(value)]))
+  };
+}
+function sqliteRowNormalization() {
+  return createDatabaseNormalization({
+    name: "sqlite",
+    columnName: (name) => name,
+    value: (value) => value
+  });
+}
+function postgresRowNormalization() {
+  return createDatabaseNormalization({
+    name: "postgres",
+    // Postgres folds an unquoted identifier to lower case; the declared spelling is restored here.
+    columnName: postgresRuntimeColumnName,
+    // Values are already coerced by the wire parser, which reads each column's type oid from the
+    // row description. The row does not carry the oid, so the per-value entry cannot repeat that
+    // work and does not need to.
+    value: (value) => value
+  });
+}
+function libsqlRowNormalization() {
+  return createDatabaseNormalization({
+    name: "libsql",
+    // libSQL preserves declared case, so there is nothing to restore.
+    columnName: (name) => name,
+    // The pipeline protocol tags every value with its type, and this turns the tagged form back
+    // into JavaScript.
+    value: libsqlValueToJs
+  });
+}
 function sqliteDatabaseDialect() {
   return createDatabaseDialect({
     name: "sqlite",
@@ -5637,6 +5682,7 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     ...createSharedDatabaseAdapterMethods(dialect),
     engine: "sqlite",
     dialect,
+    normalization: sqliteRowNormalization(),
     exec(sql) {
       return connection.exec(sql);
     },
@@ -5702,6 +5748,7 @@ async function createPostgresDatabaseAdapter(options) {
   const client = await createPostgresConnection(url);
   let closed = false;
   const dialect = postgresDatabaseDialect();
+  const normalization = postgresRowNormalization();
   const assertOpen = () => {
     if (closed) {
       throw new Error("database is not open");
@@ -5715,6 +5762,7 @@ async function createPostgresDatabaseAdapter(options) {
     ...createSharedDatabaseAdapterMethods(dialect),
     engine: "postgres",
     dialect,
+    normalization,
     exec(sql) {
       return query(sql).then(() => void 0);
     },
@@ -5722,7 +5770,7 @@ async function createPostgresDatabaseAdapter(options) {
       assertOpen();
       return {
         all(...params) {
-          return query(sql, params).then((result) => postgresRowsFromResult(result));
+          return query(sql, params).then((result) => postgresRowsFromResult(normalization, result));
         },
         get(...params) {
           return this.all(...params).then((rows) => rows[0] ?? null);
@@ -5735,7 +5783,7 @@ async function createPostgresDatabaseAdapter(options) {
         },
         columns() {
           return query(`SELECT * FROM (${sql}) AS __sporades_columns LIMIT 0`).then(
-            (result) => result.fields.map((field) => ({ name: postgresRuntimeColumnName(field.name) }))
+            (result) => result.fields.map((field) => ({ name: normalization.columnName(field.name) }))
           );
         }
       };
@@ -6266,14 +6314,8 @@ function postgresPlaceholders(sql) {
   }
   return result;
 }
-function postgresRowsFromResult(result) {
-  return result.rows.map((row) => {
-    const normalized = {};
-    for (const [key, value] of Object.entries(row)) {
-      normalized[postgresRuntimeColumnName(key)] = value;
-    }
-    return normalized;
-  });
+function postgresRowsFromResult(normalization, result) {
+  return result.rows.map((row) => normalization.row(row));
 }
 function postgresRuntimeColumnName(name) {
   const restore = postgresRuntimeColumnName.declaredColumnNames ??= new Map(
@@ -6360,6 +6402,7 @@ async function createLibsqlDatabaseAdapter(options) {
   let closed = false;
   const activeTransactions = /* @__PURE__ */ new Set();
   const dialect = sqliteDatabaseDialect();
+  const normalization = libsqlRowNormalization();
   const createOperations = (transaction = null) => ({
     exec(sql) {
       assertLibsqlOpen(closed);
@@ -6371,7 +6414,7 @@ async function createLibsqlDatabaseAdapter(options) {
       return {
         all(...params) {
           return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then(
-            (result) => libsqlRowsFromResult(result)
+            (result) => libsqlRowsFromResult(normalization, result)
           );
         },
         get(...params) {
@@ -6394,6 +6437,7 @@ async function createLibsqlDatabaseAdapter(options) {
     ...createOperations(),
     engine: "libsql",
     dialect,
+    normalization,
     // `ensureLogStorage` was overridden here until ADR-0036, as an await-shim over a shared
     // definition that emitted the same DDL and discarded the statement result. The shared
     // definition now also runs the ordering field's additive migration and its backfill, so a copy
@@ -6529,14 +6573,11 @@ async function libsqlPipeline({ endpoint, authToken, transaction = null, request
   }
   return results.filter((result) => result.response?.type !== "close").map((result) => result.response);
 }
-function libsqlRowsFromResult(result) {
+function libsqlRowsFromResult(normalization, result) {
   const columns = (result.cols ?? []).map((column) => column.name);
-  return (result.rows ?? []).map((row) => {
-    if (!Array.isArray(row)) {
-      return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, libsqlValueToJs(value)]));
-    }
-    return Object.fromEntries(columns.map((column, index) => [column, libsqlValueToJs(row[index])]));
-  });
+  return (result.rows ?? []).map(
+    (row) => normalization.row(Array.isArray(row) ? Object.fromEntries(columns.map((column, index) => [column, row[index]])) : row)
+  );
 }
 function libsqlValueFromJs(value) {
   if (value === null || value === void 0) {

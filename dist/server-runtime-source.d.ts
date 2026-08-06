@@ -146,15 +146,13 @@ export declare function createS3CompatibleFileStorageAdapter({ endpoint, bucket,
     }>;
     close(): void;
 };
-export declare function createDatabaseDialect(spec: LooseRecord): {
-    [x: string]: any;
-};
-export declare function sqliteDatabaseDialect(): {
-    [x: string]: any;
-};
-export declare function postgresDatabaseDialect(): {
-    [x: string]: any;
-};
+export declare function createDatabaseDialect(spec: LooseRecord): LooseRecord;
+export declare function createDatabaseNormalization(spec: LooseRecord): LooseRecord;
+export declare function sqliteRowNormalization(): LooseRecord;
+export declare function postgresRowNormalization(): LooseRecord;
+export declare function libsqlRowNormalization(): LooseRecord;
+export declare function sqliteDatabaseDialect(): LooseRecord;
+export declare function postgresDatabaseDialect(): LooseRecord;
 export declare function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseRecord;
 export declare function createSqliteDatabaseAdapter(databasePath: PathLike, options?: LooseRecord): Promise<LooseRecord>;
 export declare function createPostgresDatabaseAdapter(options: {
@@ -174,9 +172,8 @@ export declare function createLibsqlDatabaseAdapter(options: {
     authToken: any;
 }): Promise<{
     engine: string;
-    dialect: {
-        [x: string]: any;
-    };
+    dialect: LooseRecord;
+    normalization: LooseRecord;
     withTransaction(fn: (transactionAdapter: LooseRecord) => any): Promise<any>;
     withReadOnlySnapshot(fn: (adapter: LooseRecord) => any): Promise<any>;
     close(): Promise<void>;

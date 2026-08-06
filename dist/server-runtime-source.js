@@ -71,6 +71,10 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     createDatabaseDialect,
     sqliteDatabaseDialect,
     postgresDatabaseDialect,
+    createDatabaseNormalization,
+    sqliteRowNormalization,
+    postgresRowNormalization,
+    libsqlRowNormalization,
     createSharedDatabaseAdapterMethods,
     createSqliteDatabaseAdapter,
     createLibsqlDatabaseAdapter,
@@ -2964,6 +2968,56 @@ export function createDatabaseDialect(spec) {
     }
     return { ...spec };
 }
+// The third thing an engine supplies: how a result row maps back to the names and values the
+// runtime reads. Two entries, both required for the same reason the dialect's are — an engine that
+// simply omitted one would answer rows the runtime silently misreads, which is how a missing
+// `verifierHash` spelling rejected every valid password Reset code on Postgres.
+//
+// `columnName` restores the runtime's declared spelling of a result column. `value` coerces a
+// single value into the JavaScript the runtime expects. `row` is derived from the two so that no
+// engine can apply one and forget the other.
+export function createDatabaseNormalization(spec) {
+    const missing = ["name", "columnName", "value"].filter((key) => spec[key] === undefined);
+    if (missing.length > 0) {
+        throw commandError(`Incomplete Database adapter normalization: ${missing.join(", ")}.`, "A Database engine supplies statement primitives, a dialect and row normalization. Answer every normalization entry.");
+    }
+    return {
+        ...spec,
+        row: (raw) => Object.fromEntries(Object.entries(raw).map(([key, value]) => [spec.columnName(key), spec.value(value)])),
+    };
+}
+// SQLite preserves the case it was given and `node:sqlite` already hands back JavaScript values, so
+// both entries are the identity. Its statement primitives therefore return rows as the driver
+// produced them rather than rebuilding each one to prove a no-op; the identity is declared here so
+// it can be read, and paid for nowhere.
+export function sqliteRowNormalization() {
+    return createDatabaseNormalization({
+        name: "sqlite",
+        columnName: (name) => name,
+        value: (value) => value,
+    });
+}
+export function postgresRowNormalization() {
+    return createDatabaseNormalization({
+        name: "postgres",
+        // Postgres folds an unquoted identifier to lower case; the declared spelling is restored here.
+        columnName: postgresRuntimeColumnName,
+        // Values are already coerced by the wire parser, which reads each column's type oid from the
+        // row description. The row does not carry the oid, so the per-value entry cannot repeat that
+        // work and does not need to.
+        value: (value) => value,
+    });
+}
+export function libsqlRowNormalization() {
+    return createDatabaseNormalization({
+        name: "libsql",
+        // libSQL preserves declared case, so there is nothing to restore.
+        columnName: (name) => name,
+        // The pipeline protocol tags every value with its type, and this turns the tagged form back
+        // into JavaScript.
+        value: libsqlValueToJs,
+    });
+}
 // SQLite's dialect, which libSQL shares because libSQL speaks SQLite's SQL.
 export function sqliteDatabaseDialect() {
     return createDatabaseDialect({
@@ -3427,6 +3481,7 @@ export async function createSqliteDatabaseAdapter(databasePath, options = {}) {
         ...createSharedDatabaseAdapterMethods(dialect),
         engine: "sqlite",
         dialect,
+        normalization: sqliteRowNormalization(),
         exec(sql) {
             return connection.exec(sql);
         },
@@ -3493,6 +3548,7 @@ export async function createPostgresDatabaseAdapter(options) {
     const client = await createPostgresConnection(url);
     let closed = false;
     const dialect = postgresDatabaseDialect();
+    const normalization = postgresRowNormalization();
     const assertOpen = () => {
         if (closed) {
             throw new Error("database is not open");
@@ -3506,6 +3562,7 @@ export async function createPostgresDatabaseAdapter(options) {
         ...createSharedDatabaseAdapterMethods(dialect),
         engine: "postgres",
         dialect,
+        normalization,
         exec(sql) {
             return query(sql).then(() => undefined);
         },
@@ -3513,7 +3570,7 @@ export async function createPostgresDatabaseAdapter(options) {
             assertOpen();
             return {
                 all(...params) {
-                    return query(sql, params).then((result) => postgresRowsFromResult(result));
+                    return query(sql, params).then((result) => postgresRowsFromResult(normalization, result));
                 },
                 get(...params) {
                     return this.all(...params).then((rows) => rows[0] ?? null);
@@ -3525,7 +3582,7 @@ export async function createPostgresDatabaseAdapter(options) {
                     }));
                 },
                 columns() {
-                    return query(`SELECT * FROM (${sql}) AS __sporades_columns LIMIT 0`).then((result) => result.fields.map((field) => ({ name: postgresRuntimeColumnName(field.name) })));
+                    return query(`SELECT * FROM (${sql}) AS __sporades_columns LIMIT 0`).then((result) => result.fields.map((field) => ({ name: normalization.columnName(field.name) })));
                 },
             };
         },
@@ -4044,14 +4101,8 @@ function postgresPlaceholders(sql) {
     }
     return result;
 }
-function postgresRowsFromResult(result) {
-    return result.rows.map((row) => {
-        const normalized = {};
-        for (const [key, value] of Object.entries(row)) {
-            normalized[postgresRuntimeColumnName(key)] = value;
-        }
-        return normalized;
-    });
+function postgresRowsFromResult(normalization, result) {
+    return result.rows.map((row) => normalization.row(row));
 }
 // Postgres folds an unquoted identifier to lower case, so a runtime-owned table declared with
 // `createdAt TEXT NOT NULL` is stored as `createdat` and hands that name back on every read. Code
@@ -4166,6 +4217,9 @@ export async function createLibsqlDatabaseAdapter(options) {
     // engines rather than a borrowing: the dialect is a value both adapters ask for, not an adapter
     // one of them builds and strips for parts.
     const dialect = sqliteDatabaseDialect();
+    // Normalization is libSQL's own, though: the pipeline protocol tags every value with its type,
+    // where node:sqlite hands back JavaScript directly.
+    const normalization = libsqlRowNormalization();
     const createOperations = (transaction = null) => ({
         exec(sql) {
             assertLibsqlOpen(closed);
@@ -4178,7 +4232,7 @@ export async function createLibsqlDatabaseAdapter(options) {
             assertLibsqlOpen(closed);
             return {
                 all(...params) {
-                    return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => libsqlRowsFromResult(result));
+                    return libsqlExecute({ endpoint, authToken, transaction, sql, params, close: !transaction }).then((result) => libsqlRowsFromResult(normalization, result));
                 },
                 get(...params) {
                     return this.all(...params).then((rows) => rows[0] ?? null);
@@ -4202,6 +4256,7 @@ export async function createLibsqlDatabaseAdapter(options) {
         ...createOperations(),
         engine: "libsql",
         dialect,
+        normalization,
         // `ensureLogStorage` was overridden here until ADR-0036, as an await-shim over a shared
         // definition that emitted the same DDL and discarded the statement result. The shared
         // definition now also runs the ordering field's additive migration and its backfill, so a copy
@@ -4340,14 +4395,9 @@ async function libsqlPipeline({ endpoint, authToken, transaction = null, request
     }
     return results.filter((result) => result.response?.type !== "close").map((result) => result.response);
 }
-function libsqlRowsFromResult(result) {
+function libsqlRowsFromResult(normalization, result) {
     const columns = (result.cols ?? []).map((column) => column.name);
-    return (result.rows ?? []).map((row) => {
-        if (!Array.isArray(row)) {
-            return Object.fromEntries(Object.entries(row).map(([key, value]) => [key, libsqlValueToJs(value)]));
-        }
-        return Object.fromEntries(columns.map((column, index) => [column, libsqlValueToJs(row[index])]));
-    });
+    return (result.rows ?? []).map((row) => normalization.row(Array.isArray(row) ? Object.fromEntries(columns.map((column, index) => [column, row[index]])) : row));
 }
 function libsqlValueFromJs(value) {
     if (value === null || value === undefined) {
@@ -5373,7 +5423,14 @@ function migrateAppSchemaInTransaction(sqlite, schema) {
             ...schema.tables.map((table) => () => {
                 const existingTable = existingTables.get(table.name);
                 // The in-transaction table rebuild rather than the adapter method, which opens a
-                // transaction of its own and would nest inside the one already enclosing this migration.
+                // transaction of its own and would nest inside the one already enclosing this migration —
+                // and libSQL's transaction adapter throws on a nested `withTransaction`.
+                //
+                // Issue 09's review asked what happens when an engine overrides `migrateExistingAppTable`:
+                // this call would bypass it, from inside a migration, silently. ADR-0037 answers it — an
+                // engine supplies statement primitives, a dialect and normalization, and has nowhere to put
+                // a behavioural method body. What this call skips is the transaction wrapper and nothing
+                // else, and `test/database-adapter-engine-seam.test.js` fails if that stops being true.
                 return schemaChanged && existingTable
                     ? migrateExistingAppTableInTransaction(sqlite, existingTable, table)
                     : sqlite.createAppTable(table);
