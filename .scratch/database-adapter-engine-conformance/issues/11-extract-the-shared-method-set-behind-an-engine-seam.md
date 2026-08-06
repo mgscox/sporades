@@ -100,4 +100,8 @@ and the proof that it is a seam.
 
 ## Blocked by
 
-- None — can start immediately, though landing issue 08 first would let the row-normalization seam be designed against a solved problem rather than an open one.
+- .scratch/database-adapter-engine-conformance/issues/08-map-every-runtime-column-name-on-postgres.md
+
+Row and value normalization is one of the three things this seam must define, and
+issue 08 is deciding how column-name mapping should work. Designing the seam
+against that answer rather than around an open question is worth the wait.
