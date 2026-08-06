@@ -31,6 +31,12 @@ import assert from "node:assert/strict";
 // the reported change count and then assert that the write is observable once that result has
 // been awaited.
 //
+// The Log index also carries the one behaviour this surface asserts because the engines were
+// known to disagree about it rather than suspected of it. ADR-0036 replaced a per-engine tie-break
+// with a runtime-assigned ordering sequence, and the two ordering cases below are what stop the
+// tie-break coming back: each is written so that it fails under the ordering it replaced, on every
+// engine, rather than only on the engine whose answer was visibly wrong.
+//
 // Reference integrity is deliberately not re-asserted here. The seeded surface in
 // `database-adapter-conformance.test.js` already exercises `referenceExists` against a target row
 // that resolves and one that dangles, and duplicating it would put the same behaviour in two
@@ -131,6 +137,38 @@ function logEvent(index) {
     request: { id: `request-${index}` },
     correlation: { id: `correlation-${index}` },
   };
+}
+
+// A Log index envelope whose message and envelope timestamp are chosen by the case rather than
+// derived from an index, because the ordering cases need the envelope timestamp to disagree with
+// the order the events are indexed in.
+function orderedLogEvent(message, timestamp) {
+  return {
+    timestamp,
+    category: "app",
+    event: "ctx.log",
+    level: "info",
+    message,
+    capsule: { name: "conformance-app-tables", id: "capsule-conformance" },
+    release: { id: "release-order" },
+    request: { id: "request-order" },
+    correlation: { id: "correlation-order" },
+  };
+}
+
+// Writes a row straight into the Log index table, bypassing `insertLogIndexEvent` so the row
+// carries no ordering sequence. This is the shape every row stored before the ordering field
+// existed has, and the only way to reach the backfill from a conformance case.
+async function insertLogRowWithoutSequence(adapter, id, message, timestamp) {
+  await adapter
+    .prepare(
+      "INSERT INTO sporades_log_events (id, timestamp, category, event, level, message, payload) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .run(id, timestamp, "app", "ctx.log", "info", message, JSON.stringify(orderedLogEvent(message, timestamp)));
+}
+
+async function indexedLogMessages(adapter, limit = 50) {
+  return (await adapter.readRecentLogEvents(limit)).map((event) => event.message);
 }
 
 // Rows come back from three engines with three row representations, so every comparison is made
@@ -353,6 +391,90 @@ const APP_TABLE_CONFORMANCE_CASES = [
       ]);
 
       assert.equal((await adapter.pruneLogIndex(0)).changes, 2);
+      assert.deepEqual(await adapter.readRecentLogEvents(50), []);
+    },
+  },
+  {
+    // The blind spot ADR-0036 closes. `readRecentLogEvents` and `pruneLogIndex` used to order by
+    // `timestamp` with a per-engine tie-break — `rowid` on SQLite and libSQL, the `randomUUID()`
+    // `id` on Postgres — so two Capsules on different engines returned different orders and
+    // pruning kept different subsets. Both tie-breaks are gone and every engine now orders by the
+    // runtime-assigned sequence, which is the order the events were indexed in.
+    //
+    // Each limb of this case is what makes it discriminate, on every engine, against the two
+    // orderings it replaces:
+    //
+    // - Three events sharing one envelope timestamp must come back in the order they were indexed.
+    //   Under the old Postgres tie-break their order was the UUID order, which is effectively
+    //   random, so this limb is what fails there.
+    // - An event whose envelope timestamp is older than the ones already indexed must still come
+    //   back after them, and one whose timestamp is newer must not jump ahead of anything. Under
+    //   either old ordering `timestamp DESC` dominated, so this limb is what fails on SQLite and
+    //   libSQL, where the `rowid` tie-break did give indexing order among the tied three.
+    name: "readRecentLogEvents and pruneLogIndex order by the runtime-assigned sequence on every engine",
+    async run(adapter) {
+      assert.deepEqual(await adapter.readRecentLogEvents(50), []);
+
+      const TIED = "2026-07-04T11:00:00.000Z";
+      await adapter.insertLogIndexEvent(orderedLogEvent("order-tied-1", TIED));
+      await adapter.insertLogIndexEvent(orderedLogEvent("order-tied-2", TIED));
+      await adapter.insertLogIndexEvent(orderedLogEvent("order-tied-3", TIED));
+
+      // Indexed fourth, but stamped half an hour before the three above.
+      await adapter.insertLogIndexEvent(orderedLogEvent("order-backdated", "2026-07-04T10:30:00.000Z"));
+      // Indexed last, and stamped after everything, so the two orderings agree about this one.
+      await adapter.insertLogIndexEvent(orderedLogEvent("order-postdated", "2026-07-04T11:30:00.000Z"));
+
+      assert.deepEqual(await indexedLogMessages(adapter), [
+        "order-tied-1",
+        "order-tied-2",
+        "order-tied-3",
+        "order-backdated",
+        "order-postdated",
+      ]);
+
+      // A bounded read takes the most recently indexed events, which is the window
+      // `privilegedAuditEventAlreadyIndexed` decides its dedup from.
+      assert.deepEqual(await indexedLogMessages(adapter, 2), ["order-backdated", "order-postdated"]);
+
+      // Pruning keeps the same subset that a bounded read returns, rather than a different one.
+      assert.equal((await adapter.pruneLogIndex(3)).changes, 2);
+      assert.deepEqual(await indexedLogMessages(adapter), ["order-tied-3", "order-backdated", "order-postdated"]);
+
+      assert.equal((await adapter.pruneLogIndex(0)).changes, 3);
+      assert.deepEqual(await adapter.readRecentLogEvents(50), []);
+    },
+  },
+  {
+    // The additive migration's backfill. Rows stored before the ordering field existed carry no
+    // sequence, and `ensureLogStorage` derives one for them from the timestamp they did store, so
+    // their relative order survives and they sort against newly indexed rows rather than beside
+    // them. Ties among already-stored rows are historical and unrecoverable, so the two legacy
+    // rows here are given distinct timestamps and written in the opposite order — which is what
+    // makes the case fail if the backfill is skipped and the order falls back to `rowid`.
+    name: "ensureLogStorage backfills rows stored before the ordering field into the same order",
+    async run(adapter) {
+      // Indexed first and therefore holding the lowest `rowid`, but stamped before both legacy
+      // rows, so neither `rowid` nor `timestamp` ordering puts it where the sequence does.
+      await adapter.insertLogIndexEvent(orderedLogEvent("order-live", "2026-07-04T09:00:00.000Z"));
+
+      await insertLogRowWithoutSequence(adapter, "legacy-newer", "order-legacy-newer", "2026-07-04T09:20:00.000Z");
+      await insertLogRowWithoutSequence(adapter, "legacy-older", "order-legacy-older", "2026-07-04T09:10:00.000Z");
+
+      await adapter.ensureLogStorage();
+
+      assert.deepEqual(await indexedLogMessages(adapter), ["order-legacy-older", "order-legacy-newer", "order-live"]);
+
+      // Running the bootstrap again is a no-op rather than a re-backfill that renumbers rows.
+      await adapter.ensureLogStorage();
+      assert.deepEqual(await indexedLogMessages(adapter), ["order-legacy-older", "order-legacy-newer", "order-live"]);
+
+      // And the backfilled rows prune against the live one on the same scale, so a bound applied
+      // after a migration keeps the newest events rather than the ones that happened to be there.
+      assert.equal((await adapter.pruneLogIndex(1)).changes, 2);
+      assert.deepEqual(await indexedLogMessages(adapter), ["order-live"]);
+
+      assert.equal((await adapter.pruneLogIndex(0)).changes, 1);
       assert.deepEqual(await adapter.readRecentLogEvents(50), []);
     },
   },
@@ -724,9 +846,12 @@ const APP_TABLE_CONFORMANCE_CASES = [
       assert.equal((await adapter.writeSystemMetadata("conformance-idempotence", "written after")).changes, 1);
       assert.equal((await adapter.readSystemMetadata("conformance-idempotence")).value, "written after");
       assert.equal((await adapter.insertLogIndexEvent(logEvent(8))).changes, 1);
+      // Indexing order, not envelope-timestamp order: event 8 carries the earlier timestamp and is
+      // still returned last, because ADR-0036 orders the Log index by when the runtime indexed an
+      // event rather than by what the envelope says about when it happened.
       assert.deepEqual((await adapter.readRecentLogEvents(10)).map((event) => event.message), [
-        "conformance-log-8",
         "conformance-log-9",
+        "conformance-log-8",
       ]);
     },
   },

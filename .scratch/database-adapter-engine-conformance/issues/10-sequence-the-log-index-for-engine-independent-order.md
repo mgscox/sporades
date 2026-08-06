@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Sequence The Log Index So Its Order Is Engine-Independent
 
@@ -80,15 +80,15 @@ overrides still need to exist once ordering is shared, and delete them if not.
 
 ## Acceptance criteria
 
-- [ ] `sporades_log_events` carries an internal runtime-assigned ordering field, added by additive migration, with existing rows backfilled in a way that preserves their relative order.
-- [ ] The field is strictly monotonic within a process and correctly ordered across a restart; the construction is documented where it is generated.
-- [ ] The field is stored as zero-padded text of fixed width, not as an integer column.
-- [ ] `readRecentLogEvents` and `pruneLogIndex` order by the new field on every engine, with the `rowid` and `id` tie-breaks removed.
-- [ ] The new column round-trips correctly through the Postgres read path, demonstrated rather than assumed.
-- [ ] A conformance case asserts that events sharing a timestamp are returned in the same order on every engine, and that pruning keeps the same subset. It must fail if ordering falls back to `rowid` or `id`.
-- [ ] The log envelope and the JSONL stream are unchanged; the field is internal to the Log index.
-- [ ] Any Postgres override made redundant by shared ordering is deleted rather than left in duplicate.
-- [ ] An ADR records the decision and why unspecified ordering and `id`-everywhere were both rejected.
+- [x] `sporades_log_events` carries an internal runtime-assigned ordering field, added by additive migration, with existing rows backfilled in a way that preserves their relative order.
+- [x] The field is strictly monotonic within a process and correctly ordered across a restart; the construction is documented where it is generated.
+- [x] The field is stored as zero-padded text of fixed width, not as an integer column.
+- [x] `readRecentLogEvents` and `pruneLogIndex` order by the new field on every engine, with the `rowid` and `id` tie-breaks removed.
+- [x] The new column round-trips correctly through the Postgres read path, demonstrated rather than assumed.
+- [x] A conformance case asserts that events sharing a timestamp are returned in the same order on every engine, and that pruning keeps the same subset. It must fail if ordering falls back to `rowid` or `id`.
+- [x] The log envelope and the JSONL stream are unchanged; the field is internal to the Log index.
+- [x] Any Postgres override made redundant by shared ordering is deleted rather than left in duplicate.
+- [x] An ADR records the decision and why unspecified ordering and `id`-everywhere were both rejected.
 
 ## Blocked by
 

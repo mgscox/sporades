@@ -197,7 +197,11 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     isSensitiveLogString,
     isSensitiveLogKey,
     capLogEnvelope,
+    formatLogIndexSequence,
+    nextLogIndexSequence,
+    backfilledLogIndexSequence,
     createLogIndexTables,
+    backfillLogIndexSequences,
     insertLogIndexEvent,
     pruneLogIndex,
     readRecentLogEvents,
@@ -3498,22 +3502,12 @@ export async function createPostgresDatabaseAdapter(options) {
                 "RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier").get(state);
             return row ?? null;
         },
-        async ensureLogStorage() {
-            await this.exec("CREATE TABLE IF NOT EXISTS sporades_log_events (" +
-                "id TEXT PRIMARY KEY, " +
-                "timestamp TEXT NOT NULL, " +
-                "category TEXT NOT NULL, " +
-                "event TEXT NOT NULL, " +
-                "level TEXT NOT NULL, " +
-                "message TEXT NOT NULL, " +
-                "capsuleName TEXT, " +
-                "capsuleId TEXT, " +
-                "releaseId TEXT, " +
-                "requestId TEXT, " +
-                "correlationId TEXT, " +
-                "payload TEXT NOT NULL" +
-                ")");
-        },
+        // `ensureLogStorage` was overridden here until ADR-0036, as an await-shim over a shared
+        // definition that emitted the same DDL and discarded the statement result. The shared
+        // definition now also runs the ordering field's additive migration and its backfill, so a copy
+        // of the bare `CREATE TABLE` here would be a Log index that never gained the column — the
+        // dormant-shared-body hazard ADR-0034 describes, arriving as a missing migration instead of an
+        // unresolved result.
         async ensureFileStorage() {
             await this.exec("CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
                 "id TEXT PRIMARY KEY, " +
@@ -3580,17 +3574,13 @@ export async function createPostgresDatabaseAdapter(options) {
             return await this.prepare("INSERT INTO sporades_user_preferences (userId, value, updatedAt) VALUES (?, ?, ?) " +
                 "ON CONFLICT (userId) DO UPDATE SET value = EXCLUDED.value, updatedAt = EXCLUDED.updatedAt").run(row.userId, row.value, row.updatedAt);
         },
-        async pruneLogIndex(limit) {
-            // A dialect override — Postgres has no `LIMIT -1` — that still returns its statement result.
-            return await this.prepare("DELETE FROM sporades_log_events WHERE id IN (" +
-                "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, id DESC OFFSET ?" +
-                ")").run(limit);
-        },
-        async readRecentLogEvents(limit = 200) {
-            const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
-            const rows = await this.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, id DESC LIMIT ?").all(safeLimit);
-            return rows.reverse().map((row) => JSON.parse(row.payload));
-        },
+        // `pruneLogIndex` and `readRecentLogEvents` were overridden here until ADR-0036. The prune was
+        // a dialect override because the shared definition used `LIMIT -1 OFFSET ?`, which Postgres
+        // does not accept; the read was a dialect override only because it named `id` as the tie-break
+        // where the shared definition named `rowid`. Both differences were consequences of ordering by
+        // `timestamp` and breaking the tie per engine. Ordering by the runtime-assigned sequence needs
+        // neither, so ADR-0034's rule applies and the overrides are deleted rather than maintained in
+        // duplicate: two engines cannot disagree about an order they no longer each define.
         async createAppTable(table, tableName = table.name) {
             await this.exec(`CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` +
                 postgresAppTableColumnDefinitions(table).join(", ") +
@@ -4186,6 +4176,7 @@ function postgresRuntimeColumnName(name) {
         "releaseId",
         "requestId",
         "correlationId",
+        "indexSequence",
         // sporades_files, sporades_file_buckets, sporades_file_uploads, sporades_file_public_urls,
         // including the `publicUrlId` and `publicVersion` aliases the public URL join selects.
         "bucketId",
@@ -4281,22 +4272,12 @@ export async function createLibsqlDatabaseAdapter(options) {
         ...shape,
         ...createOperations(),
         engine: "libsql",
-        async ensureLogStorage() {
-            await this.exec("CREATE TABLE IF NOT EXISTS sporades_log_events (" +
-                "id TEXT PRIMARY KEY, " +
-                "timestamp TEXT NOT NULL, " +
-                "category TEXT NOT NULL, " +
-                "event TEXT NOT NULL, " +
-                "level TEXT NOT NULL, " +
-                "message TEXT NOT NULL, " +
-                "capsuleName TEXT, " +
-                "capsuleId TEXT, " +
-                "releaseId TEXT, " +
-                "requestId TEXT, " +
-                "correlationId TEXT, " +
-                "payload TEXT NOT NULL" +
-                ")");
-        },
+        // `ensureLogStorage` was overridden here until ADR-0036, as an await-shim over a shared
+        // definition that emitted the same DDL and discarded the statement result. The shared
+        // definition now also runs the ordering field's additive migration and its backfill, so a copy
+        // of the bare `CREATE TABLE` here would be a Log index that never gained the column — the
+        // dormant-shared-body hazard ADR-0034 describes, arriving as a missing migration instead of an
+        // unresolved result.
         async ensureFileStorage() {
             await this.exec("CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
                 "id TEXT PRIMARY KEY, " +
@@ -5280,8 +5261,61 @@ function capLogEnvelope(envelope, maxBytes) {
     capped.message = capped.message.slice(0, 256);
     return capped;
 }
+// The Log index's internal ordering field (ADR-0036). It is assigned by the runtime when an event
+// is indexed, it is the only thing `readRecentLogEvents` and `pruneLogIndex` order by, and it never
+// appears in the log envelope or the JSONL log stream.
+//
+// The column name is written out at each use rather than lifted into a shared constant, and the
+// generator's state hangs off the generator instead of living at module scope. That is not style:
+// the generated server bundle is assembled from the source text of the functions in
+// `SERVER_RUNTIME_SOURCE_FUNCTIONS`, so a module-level binding one of them closes over does not
+// travel with it and becomes a `ReferenceError` the first time a deployed Capsule boots. The same
+// constraint is why `postgresRuntimeColumnName` keeps its restoration table on itself.
+// Nanoseconds since the epoch is around 1.76e18 today, so the 20-digit width below reaches the year
+// 5138. The width is fixed rather than natural because the values are compared as text: a value
+// that grew a digit would sort before every narrower one and silently invert the whole index.
+function formatLogIndexSequence(nanosSinceEpoch) {
+    return String(nanosSinceEpoch).padStart(20, "0");
+}
+// Nanoseconds since the epoch, strictly increasing for as long as this process lives.
+//
+// `Date.now()` alone is not enough: it has millisecond resolution, so events indexed in the same
+// burst — the routine case, not the exotic one — would tie, and a tie is exactly the undefined
+// order this field exists to remove. `process.hrtime.bigint()` alone is not enough either: its
+// origin is arbitrary per process, so two runs of the same Capsule would produce values that do not
+// order against each other. So the two clocks are read together, once, and every sequence is that
+// wall anchor plus the monotonic delta: ordered within the process, and correctly placed against
+// sequences any other run wrote.
+//
+// The previous value is carried forward and stepped past, which is what makes the field monotonic
+// by construction rather than by trusting the platform's clock resolution. `process.hrtime.bigint()`
+// is strictly increasing on the platforms Sporades runs on, but "increasing because the call takes
+// longer than the tick" is a property of the host rather than of this code, and a rare tie would
+// leave the order undefined in precisely the case the conformance specification asserts.
+function nextLogIndexSequence() {
+    const state = nextLogIndexSequence;
+    state.anchor ??= { wallNanos: BigInt(Date.now()) * 1000000n, monotonic: process.hrtime.bigint() };
+    const derived = state.anchor.wallNanos + (process.hrtime.bigint() - state.anchor.monotonic);
+    const previous = state.previous ?? 0n;
+    state.previous = derived > previous ? derived : previous + 1n;
+    return formatLogIndexSequence(state.previous);
+}
+// The sequence a row stored before this field existed is given. Its envelope timestamp is the only
+// evidence of when it happened, so it is converted to the same units and the same width as a live
+// sequence; that is what lets a backfilled row and a newly indexed one sort against each other
+// rather than beside each other. Ties among already-stored rows are historical and unrecoverable,
+// so the backfill only has to preserve the order the timestamps do record.
+function backfilledLogIndexSequence(timestamp) {
+    const parsed = Date.parse(String(timestamp ?? ""));
+    return Number.isFinite(parsed) ? BigInt(parsed) * 1000000n : 0n;
+}
 function createLogIndexTables(sqlite) {
-    sqlite.exec("CREATE TABLE IF NOT EXISTS sporades_log_events (" +
+    // Kept outside any transaction by its caller. The ALTER below tolerates the column already
+    // existing by swallowing the engine's duplicate-column error, and on Postgres a swallowed error
+    // aborts the enclosing transaction, so everything after it would fail with `current transaction
+    // is aborted`. Storage bootstrap runs before the migration transaction opens; it has to stay
+    // there.
+    let chain = chainSchemaOperation(undefined, () => sqlite.exec("CREATE TABLE IF NOT EXISTS sporades_log_events (" +
         "id TEXT PRIMARY KEY, " +
         "timestamp TEXT NOT NULL, " +
         "category TEXT NOT NULL, " +
@@ -5293,8 +5327,37 @@ function createLogIndexTables(sqlite) {
         "releaseId TEXT, " +
         "requestId TEXT, " +
         "correlationId TEXT, " +
+        "indexSequence TEXT, " +
         "payload TEXT NOT NULL" +
-        ")");
+        ")"));
+    // The additive migration for a Log index table that already exists. `PRAGMA table_info` is
+    // SQLite's alone and this definition is sent verbatim to whichever engine is configured, so the
+    // column is declared with a duplicate-tolerant ALTER rather than probed for first — the same
+    // idiom `ensureJobStorage` and `ensureFileUploadTargetColumns` already use.
+    chain = chainSchemaOperation(chain, () => runSchemaExecIgnoringDuplicateColumn(sqlite, "ALTER TABLE sporades_log_events ADD COLUMN indexSequence TEXT"));
+    return chainSchemaOperation(chain, () => backfillLogIndexSequences(sqlite));
+}
+// Gives every row stored before the ordering field existed a sequence derived from its timestamp.
+// After the first Capsule start that runs it the selection is empty, so later starts cost one
+// bounded read and write nothing.
+function backfillLogIndexSequences(sqlite) {
+    return thenIfPromise(sqlite
+        .prepare("SELECT id, timestamp FROM sporades_log_events WHERE indexSequence IS NULL ORDER BY timestamp ASC, id ASC")
+        .all(), (rows) => {
+        // Rows sharing a timestamp are separated by a nanosecond each, in the order the read
+        // returned them, so that the backfilled values are distinct and the result of running the
+        // backfill is the same on every engine. Which of two historically tied rows comes first is
+        // not recoverable; that they come back in a defined order is.
+        let previous = 0n;
+        let chain = undefined;
+        for (const row of rows) {
+            const derived = backfilledLogIndexSequence(row.timestamp);
+            previous = derived > previous ? derived : previous + 1n;
+            const sequence = formatLogIndexSequence(previous);
+            chain = chainSchemaOperation(chain, () => sqlite.prepare("UPDATE sporades_log_events SET indexSequence = ? WHERE id = ?").run(sequence, row.id));
+        }
+        return chain;
+    });
 }
 function insertLogIndexEvent(sqlite, event) {
     // ADR-0034: a Database adapter method that writes returns its statement result rather than
@@ -5303,15 +5366,31 @@ function insertLogIndexEvent(sqlite, event) {
     // index caller's `isPromiseLike` probe can never fire.
     return sqlite
         .prepare("INSERT INTO sporades_log_events " +
-        "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, payload) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-        .run(randomUUID(), event.timestamp, event.category, event.event, event.level, event.message, event.capsule?.name ?? null, event.capsule?.id ?? null, event.release?.id ?? event.release ?? null, event.request?.id ?? null, event.correlation?.id ?? event.correlation ?? null, JSON.stringify(event));
+        "(id, timestamp, category, event, level, message, capsuleName, capsuleId, releaseId, requestId, correlationId, indexSequence, payload) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run(randomUUID(), event.timestamp, event.category, event.event, event.level, event.message, event.capsule?.name ?? null, event.capsule?.id ?? null, event.release?.id ?? event.release ?? null, event.request?.id ?? null, event.correlation?.id ?? event.correlation ?? null, 
+    // ADR-0036: assigned here, as the event is indexed, and deliberately not added to the
+    // envelope that is stringified into `payload` below. The field orders the Log index; it is
+    // not part of what a log event says.
+    nextLogIndexSequence(), JSON.stringify(event));
 }
 function pruneLogIndex(sqlite, limit) {
     // ADR-0034: returned rather than discarded, for the same reason as the insert above.
+    //
+    // ADR-0036: the bound is expressed as "keep the most recently indexed N" rather than "delete
+    // everything past offset N". The offset form needed `LIMIT -1 OFFSET ?`, which is SQLite's alone
+    // and is why Postgres carried its own copy of this method; naming the kept set instead is
+    // portable, so there is one definition and one answer. It also states the intent directly: this
+    // is the same subset a bounded `readRecentLogEvents` returns, which is what stops two Capsules on
+    // different engines retaining different history.
+    //
+    // A bound of zero keeps nothing, so `NOT IN` an empty set removes every row. `id` is the primary
+    // key and never null, so the `NOT IN` has no null to be confused by.
     return sqlite
-        .prepare("DELETE FROM sporades_log_events WHERE id IN (" +
-        "SELECT id FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?" +
+        .prepare("DELETE FROM sporades_log_events WHERE id NOT IN (" +
+        "SELECT id FROM (" +
+        "SELECT id FROM sporades_log_events ORDER BY indexSequence DESC LIMIT ?" +
+        ") AS retained" +
         ")")
         .run(limit);
 }
@@ -5319,7 +5398,13 @@ function readRecentLogEvents(sqlite, limit = 200) {
     const safeLimit = Number.isInteger(limit) && limit > 0 ? Math.min(limit, 10000) : 200;
     // ADR-0034: the rows are reversed and parsed, so they must be resolved first. Reading them
     // unresolved reversed and mapped a Promise, which is why libSQL carried an await-shim.
-    return thenIfPromise(sqlite.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, rowid DESC LIMIT ?").all(safeLimit), (rows) => rows.reverse().map((row) => JSON.parse(row.payload)));
+    //
+    // ADR-0036: ordered by the runtime-assigned sequence alone. The envelope `timestamp` no longer
+    // participates, because it is a millisecond-resolution value that ties routinely and left the
+    // order to a tie-break that differed by engine.
+    return thenIfPromise(sqlite
+        .prepare("SELECT payload FROM sporades_log_events ORDER BY indexSequence DESC LIMIT ?")
+        .all(safeLimit), (rows) => rows.reverse().map((row) => JSON.parse(row.payload)));
 }
 export function readJsonlLogEvents(logPath, limit = 200) {
     let raw = "";
