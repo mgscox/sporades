@@ -5788,49 +5788,17 @@ async function createPostgresDatabaseAdapter(options) {
         }
       };
     },
-    // `writeSystemMetadata` and `saveUserPreferences` were overridden here for the upsert form:
-    // Postgres has no `INSERT OR REPLACE`. That is now a dialect entry, so both come from the
-    // shared definition. The override also carried a dead branch that dispatched an object first
-    // argument to `writeSchemaMetadata`; nothing in the runtime or the specification ever called it
-    // that way, and it went with the copy.
-    // `ensureAuthStorage` and `ensureFileStorage` were overridden here because the shared
-    // definitions fired their statements without chaining them, which is a sequence on a
-    // synchronous engine and a race on an asynchronous one, and because probing `PRAGMA
-    // table_info` for a missing column is SQLite+s idiom alone. The shared definitions chain, and
-    // declaring a missing column is a dialect entry that reaches for `ADD COLUMN IF NOT EXISTS`
-    // here. That is the safer form as well as the shorter one: swallowing a duplicate-column error
-    // on Postgres aborts the enclosing transaction.
-    // `consumeOAuthState` was overridden here to make the consume one statement. The shared
-    // definition is that statement now.
-    // `ensureLogStorage` was overridden here until ADR-0036, as an await-shim over a shared
-    // definition that emitted the same DDL and discarded the statement result. The shared
-    // definition now also runs the ordering field's additive migration and its backfill, so a copy
-    // of the bare `CREATE TABLE` here would be a Log index that never gained the column — the
-    // dormant-shared-body hazard ADR-0034 describes, arriving as a missing migration instead of an
-    // unresolved result.
-    // `ensureUserPreferencesStorage` and `readUserPreferences` were await-shims in ADR-0034's
-    // sense: the same SQL as the shared definitions, differing only by an `await` that the caller
-    // already performs. Nothing was derived from an unresolved result in either shared body, so
-    // they answered exactly what the shims answered and are deleted rather than maintained in
-    // duplicate.
-    // `pruneLogIndex` and `readRecentLogEvents` were overridden here until ADR-0036. The prune was
-    // a dialect override because the shared definition used `LIMIT -1 OFFSET ?`, which Postgres
-    // does not accept; the read was a dialect override only because it named `id` as the tie-break
-    // where the shared definition named `rowid`. Both differences were consequences of ordering by
-    // `timestamp` and breaking the tie per engine. Ordering by the runtime-assigned sequence needs
-    // neither, so ADR-0034's rule applies and the overrides are deleted rather than maintained in
-    // duplicate: two engines cannot disagree about an order they no longer each define.
-    // `createAppTable` was overridden here until the engine seam. It differed from the shared
-    // definition in one respect: it quoted `id`, `createdAt` and `updatedAt`, which Postgres needs
-    // because it folds an unquoted identifier to lower case. Quoting is now a dialect entry the
-    // shared definition asks for, and quoting an identifier that needs no quoting changes nothing
-    // on SQLite or libSQL, so one definition emits what each engine requires.
-    // `listInspectableTables`, `dumpInspectableDatabase` and `runReadOnlyInspectionQuery` were
-    // overridden here for the catalog: `sqlite_schema` and `PRAGMA table_info` are SQLite’s alone.
-    // Listing tables and describing a table’s columns are dialect entries now, so all three come
-    // from the shared definitions. The inspection query reads its column names through the
-    // `columns()` statement primitive, which the Postgres adapter already normalizes to the
-    // runtime’s declared spellings, so the answer is the one the override gave.
+    // No behavioural method body lives here, deliberately (ADR-0037). Eleven used to: the upsert
+    // form, the auth and File metadata storage bootstraps, the catalog queries behind the three
+    // inspection methods, the app-table DDL, the OAuth state consume, and two await-shims. Each is
+    // now either a dialect entry or a corrected shared definition, and ADR-0034 and ADR-0036 record
+    // why each existed. `test/database-adapter-engine-seam.test.js` is what stops another appearing.
+    //
+    // The hazard that made removing them better than maintaining them, rather than merely tidier: a
+    // shared body an engine shadows is dormant, not correct. It becomes live the moment the shadow
+    // goes, or the moment a new engine composes the set without knowing to shadow it. `ensureLogStorage`
+    // is the sharpest illustration — a copy of its bare `CREATE TABLE` here would be a Log index
+    // that silently never ran ADR-0036's ordering migration.
     async withTransaction(fn) {
       await this.exec("BEGIN");
       try {
@@ -6438,19 +6406,10 @@ async function createLibsqlDatabaseAdapter(options) {
     engine: "libsql",
     dialect,
     normalization,
-    // `ensureLogStorage` was overridden here until ADR-0036, as an await-shim over a shared
-    // definition that emitted the same DDL and discarded the statement result. The shared
-    // definition now also runs the ordering field's additive migration and its backfill, so a copy
-    // of the bare `CREATE TABLE` here would be a Log index that never gained the column — the
-    // dormant-shared-body hazard ADR-0034 describes, arriving as a missing migration instead of an
-    // unresolved result.
-    // `ensureFileStorage` and `ensureAuthStorage` were overridden here for the same two reasons
-    // Postgres had: the shared definitions fired their statements without chaining them, and they
-    // probed `PRAGMA table_info` to decide whether a column had to be added. The shared
-    // definitions chain now, and declaring a missing column is a dialect entry — which for libSQL
-    // is SQLite's duplicate-tolerant ALTER, the same statement this copy used to send.
-    // `consumeOAuthState` was overridden here to make the consume one statement. The shared
-    // definition is that statement now.
+    // No behavioural method body lives here either, for the reasons ADR-0037 records and the
+    // Postgres adapter states above. Six used to: the two storage bootstraps, the OAuth state
+    // consume, and three await-shims over Log index methods that ADR-0036 corrected in the shared
+    // body instead.
     async withTransaction(fn) {
       const transaction = { baton: null, baseUrl: endpoint };
       const transactionAdapter = {
