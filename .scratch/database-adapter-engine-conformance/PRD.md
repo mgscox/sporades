@@ -172,7 +172,7 @@ this spec adds governs the inside of the method.
 - `issues/06-require-conformance-coverage-for-every-adapter-method.md`
 - `issues/08-map-every-runtime-column-name-on-postgres.md`
 - `issues/09-route-shared-schema-migration-through-a-transaction.md`
-- `issues/10-decide-the-log-index-tie-break.md`
+- `issues/10-sequence-the-log-index-for-engine-independent-order.md`
 
 ## Further Notes
 
