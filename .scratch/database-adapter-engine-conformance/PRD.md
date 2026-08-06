@@ -175,6 +175,8 @@ this spec adds governs the inside of the method.
 - `issues/10-sequence-the-log-index-for-engine-independent-order.md`
 - `issues/11-extract-the-shared-method-set-behind-an-engine-seam.md`
 - `issues/12-quote-identifiers-consistently-in-emitted-sql.md`
+- `issues/13-emitted-bundle-must-define-every-identifier-it-references.md`
+- `issues/14-guard-the-log-index-additive-migration.md`
 
 ## Running the Postgres leg locally
 
