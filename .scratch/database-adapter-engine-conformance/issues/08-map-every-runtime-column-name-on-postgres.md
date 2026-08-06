@@ -1,4 +1,4 @@
-Status: ready-for-agent
+Status: done
 
 # Map Every Runtime Column Name On Postgres
 
@@ -41,11 +41,11 @@ the defect above suggests they may never have been exercised there.
 
 ## Acceptance criteria
 
-- [ ] Every camelCase column on every runtime-owned table round-trips correctly through the Postgres read path.
-- [ ] A runtime table gaining a camelCase column cannot silently miss its mapping — the gap is prevented by construction or fails a check.
-- [ ] The Job queue and Schedule read paths are shown to return correctly-named fields on Postgres.
-- [ ] Any defect found in those surfaces is fixed at the shared definition, not by a per-engine override.
-- [ ] The existing `verifierHash` regression case continues to pass.
+- [x] Every camelCase column on every runtime-owned table round-trips correctly through the Postgres read path.
+- [x] A runtime table gaining a camelCase column cannot silently miss its mapping — the gap is prevented by construction or fails a check.
+- [x] The Job queue and Schedule read paths are shown to return correctly-named fields on Postgres.
+- [x] Any defect found in those surfaces is fixed at the shared definition, not by a per-engine override.
+- [x] The existing `verifierHash` regression case continues to pass.
 
 ## Blocked by
 
