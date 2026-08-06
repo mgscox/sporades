@@ -7929,6 +7929,23 @@ function skipSqlLiteralOrComment(sql, index) {
     }
     return sql.length;
 }
+// The end of the quoted or commented run starting at `index`, or `index` itself when the character
+// there opens neither. One tokenizer serves the read-only inspection validator and the terminator
+// strip, so it covers the union of the three engines' quoting rather than any one engine's:
+// `'…'` with `''` doubling, `"…"`, backtick and `[…]` identifier quoting, `--` and `/*…*/`
+// comments, and Postgres's two extra string forms — dollar quoting (`$$…$$`, `$tag$…$tag$`) and
+// E-strings, where a backslash escapes the next character.
+//
+// `skipSqlLiteralOrComment`, which the side-effect keyword scan walks with, is deliberately left
+// knowing neither of the two Postgres forms. Widening it would let `SELECT $$a; DROP TABLE t$$ AS s`
+// through as one literal — true of Postgres, and false of the two engines that have no dollar
+// quoting and read a real second statement there. Refusing it costs a conservative false reject on
+// Postgres and buys the other two a belt this walk cannot give them.
+//
+// Everything here is written inline rather than factored into helpers because the generated server
+// bundle is assembled from the source text of the functions in `SERVER_RUNTIME_SOURCE_FUNCTIONS`, so
+// a helper this one called would have to travel with it or become a `ReferenceError` in a deployed
+// Capsule.
 function skipSqlStringOrComment(sql, index) {
     if (sql[index] === "/" && sql[index + 1] === "*") {
         const end = sql.indexOf("*/", index + 2);
@@ -7937,6 +7954,55 @@ function skipSqlStringOrComment(sql, index) {
     if (sql[index] === "-" && sql[index + 1] === "-") {
         const end = sql.indexOf("\n", index + 2);
         return end === -1 ? sql.length : end + 1;
+    }
+    // Postgres's two forms are recognised only where Postgres's own longest-match lexer would
+    // recognise them, which is why both are guarded on the preceding character. `$` and `E` are
+    // ordinary identifier characters there — as is every non-ASCII byte — so `t1$$` is the identifier
+    // `t1$$` followed by a stray delimiter, and `aE'…'` is the identifier `aE` followed by an
+    // ordinary string. Reading either as one literal is how a `;` hides: `validateReadOnlyInspectionSql`
+    // permits exactly one trailing semicolon precisely so that a second statement cannot reach
+    // Postgres's simple query protocol, which executes multi-statement strings.
+    const opensToken = !/[A-Za-z0-9_$\u0080-\uffff]/.test(sql[index - 1] ?? "");
+    // A dollar-quoted string ends at the first repeat of its own opening delimiter, tag and all.
+    //
+    // A tag is spelled with the identifier alphabet above less the `$`, non-ASCII included, because
+    // that is the alphabet Postgres spells one with. The two rules have to name the same set or they
+    // contradict each other, and they did: while the tag alphabet was ASCII-only, `$é$a--b$é$` was a
+    // literal to the engine and a stray delimiter here, so the strip severed it and the validator
+    // refused a `;` inside it. Widening the guard without widening this is the same bug mirrored.
+    //
+    // An unterminated one is deliberately not skipped at all. That is the conservative direction: the
+    // walk reads straight on through the content, so a `;` inside it stays a separator and the
+    // validator refuses. Nothing legal is lost, because every engine also refuses to parse the input.
+    if (sql[index] === "$" && opensToken) {
+        const delimiter = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/.exec(sql.slice(index))?.[0];
+        if (!delimiter) {
+            return index;
+        }
+        const end = sql.indexOf(delimiter, index + delimiter.length);
+        return end === -1 ? index : end + delimiter.length;
+    }
+    // An E-string takes both escape regimes: `\` escapes whatever follows it, and `''` still doubles.
+    // An ordinary `'…'` takes only the doubling, which is why this cannot be folded into the loop
+    // below — the two are different quoting regimes sharing a delimiter, and a backslash is content
+    // in one and punctuation in the other.
+    if ((sql[index] === "E" || sql[index] === "e") && sql[index + 1] === "'" && opensToken) {
+        let cursor = index + 2;
+        while (cursor < sql.length) {
+            if (sql[cursor] === "\\") {
+                cursor += 2;
+                continue;
+            }
+            if (sql[cursor] === "'") {
+                if (sql[cursor + 1] === "'") {
+                    cursor += 2;
+                    continue;
+                }
+                return cursor + 1;
+            }
+            cursor += 1;
+        }
+        return index;
     }
     const quote = sql[index];
     const closingQuote = quote === "[" ? "]" : quote;
