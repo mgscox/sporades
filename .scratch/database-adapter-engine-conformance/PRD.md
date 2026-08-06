@@ -196,6 +196,28 @@ because nobody had run it, and the first real run found a fourth.
 suite resets the runtime tables on entry, so the database can be reused between
 runs, and `npm test` serialises files so concurrent resets cannot collide.
 
+A second divergence is deliberately unfixed, recorded here for the same reason.
+Postgres dollar-quoted strings (`$$…$$`) and E-strings (`E'…'`) are forms SQLite
+and libSQL do not have: `$…` is a bind parameter there and `E'…'` resolves to a
+missing column `E`. Issue 15 made the read-only inspection validator agree on the
+*verdict* — a literal's contents are content on every engine, so such a query now
+reaches the engine instead of being refused first — but the *answer* still
+differs, and no adapter tokenizer can close that, because the disagreement is in
+the engines' grammars rather than in the seam.
+
+One consequence is worth stating plainly, because it runs against this feature's
+own grain. Admitting a `;` inside a dollar-quoted literal means SQLite and libSQL
+now answer such a query quietly, under a garbage column name with a NULL value,
+where they previously refused it. That was judged the right trade rather than
+merely a tolerable one: the same inputs without a semicolon were *already*
+accepted and already answered that way, so refusing only the semicolon-bearing
+ones would draw the line at an unprincipled place; this is `sporades db query`, a
+human inspection path rather than a Capsule authoring surface; the value is not
+*plausible*, which is what made the six original defects dangerous; and the only
+alternative — a dialect-aware verdict — would put a behavioural difference back
+into the shared method set that ADR-0037 exists to keep out. A write inside such
+a literal stays refused on every engine.
+
 ## Further Notes
 
 The six defects described in the problem statement are already fixed on
