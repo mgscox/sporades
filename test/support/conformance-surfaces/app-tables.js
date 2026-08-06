@@ -86,9 +86,11 @@ const MIGRATED_SCHEMA = { tables: [ACCOUNTS_TABLE, MIGRATED_ENTRIES_TABLE, ARCHI
 // failure land after real DDL and real row copying rather than before any of it: the accounts table
 // is dropped, rebuilt with its new column and repopulated, and only then does the entries table's
 // dangling Reference default abort the whole thing.
+const REBUILT_ACCOUNTS_FIELD = { name: "region", kind: "String", sqliteType: "TEXT", defaultValue: "unset" };
+
 const REBUILT_ACCOUNTS_TABLE = {
   ...ACCOUNTS_TABLE,
-  fields: [...ACCOUNTS_TABLE.fields, { name: "region", kind: "String", sqliteType: "TEXT", defaultValue: "unset" }],
+  fields: [...ACCOUNTS_TABLE.fields, REBUILT_ACCOUNTS_FIELD],
 };
 
 const DANGLING_REFERENCE_FIELD = {
@@ -501,12 +503,22 @@ const APP_TABLE_CONFORMANCE_CASES = [
       const accountsBefore = dumpBefore.find((table) => table.name === ACCOUNTS_TABLE.name);
       const entriesBefore = dumpBefore.find((table) => table.name === ENTRIES_TABLE.name);
 
-      // The state this case is protecting is real state, not an empty schema: the accounts table
-      // holds the resident row and the entries table holds the rows the migration case left.
-      assert.deepEqual(accountsBefore.columns, ["id", "createdAt", "updatedAt", "label"]);
-      assert.deepEqual(entriesBefore.columns, ["id", "createdAt", "updatedAt", "note", "ownerId", "accountId", "status"]);
-      assert.equal(accountsBefore.rows.length, 1);
-      assert.equal(entriesBefore.rows.length, 3);
+      // The precondition is what makes the assertions below mean something, so it states the two
+      // facts they rely on and nothing more: both tables hold rows, so there is real data to lose,
+      // and neither yet has the column the failing migration would add, so its later absence is
+      // evidence of a rollback rather than of it never having been attempted.
+      //
+      // Deliberately derived rather than fixed. Asserting a particular row count here would make
+      // this case depend on every earlier case in the surface having cleaned up after itself, and
+      // an engine where one of them does not would abort at the precondition — before
+      // `migrateAppSchema` is ever called, leaving the case unable to distinguish a working
+      // rollback from a broken one on exactly the engine where that question is hardest to answer
+      // by reading the code. What the case asserts is that the rollback changed nothing, so the
+      // before-state it compares against is whatever it observes, not whatever it expected.
+      assert.equal(accountsBefore.rows.length > 0, true);
+      assert.equal(entriesBefore.rows.length > 0, true);
+      assert.equal(accountsBefore.columns.includes(REBUILT_ACCOUNTS_FIELD.name), false);
+      assert.equal(entriesBefore.columns.includes(DANGLING_REFERENCE_FIELD.name), false);
 
       await assert.rejects(adapter.migrateAppSchema(FAILING_SCHEMA), {
         message: `Invalid reference for field: ${DANGLING_REFERENCE_FIELD.name}`,
@@ -518,10 +530,10 @@ const APP_TABLE_CONFORMANCE_CASES = [
       // rows it held before, not a copy that survived in a half-committed rebuild.
       const dumpAfter = await adapter.dumpInspectableDatabase();
       const accountsAfter = dumpAfter.find((table) => table.name === ACCOUNTS_TABLE.name);
-      assert.deepEqual(accountsAfter.columns, ["id", "createdAt", "updatedAt", "label"]);
+      assert.deepEqual(accountsAfter.columns, accountsBefore.columns);
       assert.deepEqual(
-        accountsAfter.rows.map((row) => pick(row, ["id", "createdAt", "updatedAt", "label"])),
-        accountsBefore.rows.map((row) => pick(row, ["id", "createdAt", "updatedAt", "label"])),
+        accountsAfter.rows.map((row) => pick(row, accountsBefore.columns)),
+        accountsBefore.rows.map((row) => pick(row, accountsBefore.columns)),
       );
 
       // The table the migration failed on keeps its own columns and rows too.
