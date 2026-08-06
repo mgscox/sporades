@@ -174,6 +174,23 @@ this spec adds governs the inside of the method.
 - `issues/09-route-shared-schema-migration-through-a-transaction.md`
 - `issues/10-sequence-the-log-index-for-engine-independent-order.md`
 - `issues/11-extract-the-shared-method-set-behind-an-engine-seam.md`
+- `issues/12-quote-identifiers-consistently-in-emitted-sql.md`
+
+## Running the Postgres leg locally
+
+The Postgres conformance run is gated on `SPORADES_POSTGRES_TEST_URL`. It is not
+optional detail: three defects in this feature shipped as reasoned-but-unverified
+because nobody had run it, and the first real run found a fourth.
+
+    docker run -d --name sporades-conformance-pg \
+      -e POSTGRES_PASSWORD=sporades -e POSTGRES_USER=sporades \
+      -e POSTGRES_DB=sporades_conformance -p 55432:5432 postgres:16-alpine
+
+    export SPORADES_POSTGRES_TEST_URL="postgres://sporades:sporades@127.0.0.1:55432/sporades_conformance"
+
+`postgres:16-alpine` matches the image the Capsule service compose uses. The
+suite resets the runtime tables on entry, so the database can be reused between
+runs, and `npm test` serialises files so concurrent resets cannot collide.
 
 ## Further Notes
 
