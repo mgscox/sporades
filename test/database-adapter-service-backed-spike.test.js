@@ -32,7 +32,7 @@ test("spike proof: a service-backed SQLite-compatible adapter can run representa
 
       adapter.ensureSystemTable();
       adapter.writeSystemMetadata("spike", "service-backed");
-      adapter.migrateAppSchema({ tables: [notesTable] });
+      await adapter.migrateAppSchema({ tables: [notesTable] });
       assert.equal(adapter.readSystemMetadata("spike").value, "service-backed");
 
       const now = "2026-07-04T10:00:00.000Z";

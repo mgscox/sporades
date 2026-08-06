@@ -107,12 +107,18 @@ export function overriddenDatabaseAdapterMethodNames(sharedAdapter, engineAdapte
 // The depth counter's invariant: it is only sound while the outer method returns synchronously.
 // `finally { depth -= 1 }` runs when the wrapped function returns, which for an `async` method is
 // its first `await` rather than its completion, so any sibling call that method makes afterwards
-// would be recorded at depth zero and credited as if a case had made it. The replay runs against
-// SQLite, whose method bodies are synchronous apart from `withTransaction` and
-// `withReadOnlySnapshot` — both exempt and neither called by a case — so nothing reaches the
-// unsound path today. Nothing enforces that, though: an `async` method added to the shared set and
-// exercised by a case would quietly inflate coverage, and the fix at that point is to track depth
-// per asynchronous context rather than in one counter.
+// would be recorded at depth zero and credited as if a case had made it.
+//
+// Two shared methods reach that path. `migrateAppSchema` and `migrateExistingAppTable` route their
+// work through `withTransaction`, so on every engine they return at the transaction's first
+// `await`. What that costs is bounded and was measured rather than assumed: the whole migration
+// body runs synchronously on SQLite before that `await`, so every sibling method it calls is still
+// recorded below depth zero, and the only call that lands in the resumed continuation is the
+// transaction's own closing `exec`. `exec` is exempt, so no method earns coverage it has not been
+// exercised for. That bound is a property of these two methods and not of the counter: a shared
+// method that awaited partway through its own body and then called a sibling would quietly inflate
+// coverage, and the fix at that point is to track depth per asynchronous context rather than in one
+// counter.
 export function recordDirectAdapterCalls(adapter, calledMethodNames) {
   let depth = 0;
   const recording = new Proxy(adapter, {

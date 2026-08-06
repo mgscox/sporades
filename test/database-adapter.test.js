@@ -962,7 +962,7 @@ test("SQLite app schema migrations roll back table changes when metadata write f
       };
 
       adapter.ensureSystemTable();
-      adapter.migrateAppSchema({ tables: [notesTable] });
+      await adapter.migrateAppSchema({ tables: [notesTable] });
       adapter.insertAppRow(notesTable, {
         id: "note-1",
         createdAt: "2026-07-07T10:00:00.000Z",
@@ -975,7 +975,11 @@ test("SQLite app schema migrations roll back table changes when metadata write f
         throw new Error("schema metadata write failed");
       };
 
-      assert.throws(() => adapter.migrateAppSchema({ tables: [migratedNotesTable] }), /schema metadata write failed/);
+      // The engine-agnostic rollback assertions live in the app tables conformance surface. What
+      // stays here is the SQLite mechanics of it: the failure arrives from the last step of the
+      // migration rather than from a table rebuild, and the rollback is observed through
+      // `PRAGMA table_info` rather than through the adapter's own inspection surface.
+      await assert.rejects(adapter.migrateAppSchema({ tables: [migratedNotesTable] }), /schema metadata write failed/);
 
       adapter.writeSchemaMetadata = originalWriteSchemaMetadata;
       assert.deepEqual(
@@ -1484,7 +1488,7 @@ test("SQLite database adapter owns app schema metadata, migrations, references, 
     };
 
     adapter.ensureSystemTable();
-    adapter.migrateAppSchema({ tables: [usersTable, postsTable] });
+    await adapter.migrateAppSchema({ tables: [usersTable, postsTable] });
 
     const schemaMetadata = adapter.readSchemaMetadata();
     assert.match(schemaMetadata.value, /"posts"/);
@@ -1540,7 +1544,7 @@ test("SQLite database adapter owns app schema metadata, migrations, references, 
         { name: "summary", kind: "String", sqliteType: "TEXT", defaultValue: "draft" },
       ],
     };
-    adapter.migrateAppSchema({ tables: [usersTable, migratedPostsTable] });
+    await adapter.migrateAppSchema({ tables: [usersTable, migratedPostsTable] });
 
     assert.deepEqual(
       adapter.prepare("PRAGMA table_info(posts)").all().map((column) => column.name),
@@ -1555,42 +1559,40 @@ test("SQLite database adapter owns app schema metadata, migrations, references, 
     assert.equal(adapter.deleteAppRow(migratedPostsTable, "post-1").changes, 1);
     assert.deepEqual(adapter.selectAppRows(migratedPostsTable), []);
 
-    assert.throws(
-      () =>
-        adapter.migrateAppSchema({
-          tables: [
-            usersTable,
-            {
-              ...migratedPostsTable,
-              fields: migratedPostsTable.fields.filter((field) => field.name !== "summary"),
-            },
-          ],
-        }),
+    await assert.rejects(
+      adapter.migrateAppSchema({
+        tables: [
+          usersTable,
+          {
+            ...migratedPostsTable,
+            fields: migratedPostsTable.fields.filter((field) => field.name !== "summary"),
+          },
+        ],
+      }),
       {
         message: "Unsupported Capsule schema change.",
         hint: "Only adding new tables or fields is supported right now. Revert table or field changes, or move data aside and recreate the Runtime directory.",
       },
     );
-    assert.throws(
-      () =>
-        adapter.migrateAppSchema({
-          tables: [
-            usersTable,
-            {
-              ...migratedPostsTable,
-              fields: [
-                ...migratedPostsTable.fields,
-                {
-                  name: "reviewerId",
-                  kind: "Reference",
-                  sqliteType: "TEXT",
-                  targetTable: "users",
-                  defaultValue: "missing",
-                },
-              ],
-            },
-          ],
-        }),
+    await assert.rejects(
+      adapter.migrateAppSchema({
+        tables: [
+          usersTable,
+          {
+            ...migratedPostsTable,
+            fields: [
+              ...migratedPostsTable.fields,
+              {
+                name: "reviewerId",
+                kind: "Reference",
+                sqliteType: "TEXT",
+                targetTable: "users",
+                defaultValue: "missing",
+              },
+            ],
+          },
+        ],
+      }),
       {
         message: "Invalid reference for field: reviewerId",
         hint: "Pass the id of an existing users row.",
@@ -2071,7 +2073,7 @@ test("privileged table writes only use sentinel ownership when Capsule code supp
         ],
       };
       database.schema = { tables: [table] };
-      database.adapter.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
       database.queries = [
         {
           name: "writePrivilegedNotes",
@@ -2139,7 +2141,7 @@ test("privileged table API bypasses normal ACL gates while normal ctx.db remains
         },
       };
       database.schema = { tables: [table] };
-      database.adapter.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
       database.adapter.insertAppRow(table, {
         id: "seed-note",
         text: "blocked seed",
@@ -2229,7 +2231,7 @@ test("privileged DB writes in failing mutations roll back while audit evidence r
         },
       };
       database.schema = { tables: [table] };
-      database.adapter.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
       database.adapter.insertAppRow(table, {
         id: "seed-note",
         text: "seed",
@@ -2310,7 +2312,7 @@ test("privileged DB work outside existing transactions does not add callback-wid
         },
       };
       database.schema = { tables: [table] };
-      database.adapter.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
       database.queries = [
         {
           name: "privilegedRepairThenFail",
@@ -2382,7 +2384,7 @@ test("privileged audit rollback recovery does not duplicate already durable audi
         },
       };
       database.schema = { tables: [table] };
-      database.adapter.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
       database.adapter = createDurableAuditTransactionAdapter(baseAdapter);
       database.mutations = [
         {
@@ -2448,7 +2450,7 @@ test("normal handler contexts cannot forge privileged DB ACL bypass", async () =
         },
       };
       database.schema = { tables: [table] };
-      database.adapter.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
       database.adapter.insertAppRow(table, {
         id: "seed-note",
         text: "forgery seed",
@@ -2536,7 +2538,7 @@ test("leaked privileged table APIs cannot bypass ACL after privileged run finish
         },
       };
       database.schema = { tables: [table] };
-      database.adapter.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
       database.adapter.insertAppRow(table, {
         id: "seed-note",
         text: "leak seed",
@@ -3238,7 +3240,7 @@ test("privileged runs are available across trusted server surfaces without leaki
         },
       };
       database.schema = { tables: [table] };
-      database.adapter.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
       const fileOwnerAuth = { userId: "file-owner", displayName: "File Owner", isAuthenticated: true, isGuest: false, provider: "email" };
       const pendingFile = await createPendingFileUpload(database, fileOwnerAuth, {
         file: { name: "leak.txt", type: "text/plain", size: 11, path: "/leaks/private.txt" },
@@ -3490,7 +3492,7 @@ test("supported lifecycle hooks emit privileged audit events for each actual hoo
         },
       };
       database.schema = { tables: [table] };
-      database.adapter.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
       database.mutations = [
         {
           name: "writeNormalNote",
@@ -3816,7 +3818,7 @@ test("SQLite database adapter owns transactions for successful and failing mutat
         },
       ];
       database.mutationHooks = { beforeMutation: [], afterMutation: [] };
-      database.adapter.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
 
       const committed = await runMutation(database, { userId: "user-1" }, "addTodo", ["committed"]);
       assert.equal(committed.ok, true);
@@ -3856,7 +3858,7 @@ test("SQLite database adapter owns inspection and health surfaces", async () => 
         ],
       };
       database.schema = { tables: [table] };
-      database.adapter.migrateAppSchema(database.schema);
+      await database.adapter.migrateAppSchema(database.schema);
       database.adapter.insertAppRow(table, {
         id: "todo-1",
         createdAt: "2026-07-04T10:00:00.000Z",

@@ -2415,8 +2415,6 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   libsqlValueFromJs,
   libsqlValueToJs,
   ensureLibsqlSessionLifecycleColumns,
-  migrateLibsqlAppSchema,
-  migrateExistingLibsqlAppTable,
   splitSqlStatements,
   openDevDatabase,
   recoverExpiredJobLeases,
@@ -2511,12 +2509,12 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   extractObjectPropertySource,
   findMatchingDelimiter,
   splitTopLevelList,
-  migrateAppSchema,
+  migrateAppSchemaInTransaction,
   normalizeSchema,
   hashSchema,
   assertValidReferenceTargets,
   assertAdditiveSchemaMigration,
-  migrateExistingAppTable,
+  migrateExistingAppTableInTransaction,
   columnSelectExpressionForMigration,
   addedFieldsForTable,
   createAppTable,
@@ -5424,22 +5422,21 @@ async function createSqliteDatabaseAdapter(databasePath, options = {}) {
     prunePasswordResetCodes(now) {
       return this.prepare("DELETE FROM sporades_auth_password_reset_codes WHERE expiresAt <= ?").run(now);
     },
+    // ADR-0026: a schema migration is a multi-write workflow that has to succeed or fail as one
+    // unit, so it runs inside the adapter's own transaction primitive rather than emitting BEGIN
+    // and COMMIT itself. Doing it with bare statements only worked on a synchronous engine: an
+    // unawaited `exec("BEGIN")` leaves the enclosing `try`/`catch` unable to see an asynchronous
+    // rejection, and the COMMIT fires before the migration it is meant to enclose has finished.
     migrateAppSchema(schema) {
-      this.exec("BEGIN");
-      try {
-        const result = migrateAppSchema(this, schema);
-        this.exec("COMMIT");
-        return result;
-      } catch (error) {
-        this.exec("ROLLBACK");
-        throw error;
-      }
+      return this.withTransaction((transaction) => migrateAppSchemaInTransaction(transaction, schema));
     },
     createAppTable(table, tableName = table.name) {
       return createAppTable(this, table, tableName);
     },
     migrateExistingAppTable(existingTable, nextTable) {
-      return migrateExistingAppTable(this, existingTable, nextTable);
+      return this.withTransaction(
+        (transaction) => migrateExistingAppTableInTransaction(transaction, existingTable, nextTable)
+      );
     },
     referenceExists(field, value) {
       return thenIfPromise(
@@ -5753,16 +5750,10 @@ async function createPostgresDatabaseAdapter(options) {
       const rows = await this.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, id DESC LIMIT ?").all(safeLimit);
       return rows.reverse().map((row) => JSON.parse(row.payload));
     },
-    async migrateAppSchema(schema) {
-      return await this.withTransaction((transaction) => migrateLibsqlAppSchema(transaction, schema));
-    },
     async createAppTable(table, tableName = table.name) {
       await this.exec(
         `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` + postgresAppTableColumnDefinitions(table).join(", ") + ")"
       );
-    },
-    async migrateExistingAppTable(existingTable, nextTable) {
-      return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
     },
     async listInspectableTables() {
       const rows = await this.prepare(
@@ -6453,12 +6444,6 @@ async function createLibsqlDatabaseAdapter(options) {
       return await this.prepare(
         "DELETE FROM sporades_auth_oauth_states WHERE state = ? RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier"
       ).get(state) ?? null;
-    },
-    async migrateAppSchema(schema) {
-      return await this.withTransaction((transaction) => migrateLibsqlAppSchema(transaction, schema));
-    },
-    async migrateExistingAppTable(existingTable, nextTable) {
-      return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
     },
     async withTransaction(fn) {
       const transaction = { baton: null, baseUrl: endpoint };
@@ -7478,74 +7463,39 @@ function sqliteTypeForFieldKind(kind) {
   }
   return "TEXT";
 }
-function migrateAppSchema(sqlite, schema) {
+function migrateAppSchemaInTransaction(sqlite, schema) {
   const nextSchema = normalizeSchema(schema);
   const nextSchemaJson = JSON.stringify(nextSchema);
   const nextSchemaHash = hashSchema(nextSchemaJson);
-  const existingSchemaRow = sqlite.readSchemaMetadata();
-  let existingSchema = null;
-  let schemaChanged = false;
-  if (existingSchemaRow) {
-    try {
-      existingSchema = JSON.parse(existingSchemaRow.value);
-    } catch {
-      throw commandError(
-        "Invalid Sporades schema metadata.",
-        "Delete the Runtime directory only if you can lose local data, then restart the Capsule."
-      );
+  return thenIfPromise(sqlite.readSchemaMetadata(), (existingSchemaRow) => {
+    let existingSchema = null;
+    let schemaChanged = false;
+    if (existingSchemaRow) {
+      try {
+        existingSchema = JSON.parse(existingSchemaRow.value);
+      } catch {
+        throw commandError(
+          "Invalid Sporades schema metadata.",
+          "Delete the Runtime directory only if you can lose local data, then restart the Capsule."
+        );
+      }
+      schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
+      if (schemaChanged) {
+        assertAdditiveSchemaMigration(existingSchema, nextSchema);
+      }
     }
-    schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
-    if (schemaChanged) {
-      assertAdditiveSchemaMigration(existingSchema, nextSchema);
-    }
-  }
-  const existingTables = new Map((existingSchema?.tables ?? []).map((table) => [table.name, table]));
-  return chainMaybePromise([
-    ...schema.tables.map((table) => () => {
-      const existingTable = existingTables.get(table.name);
-      return schemaChanged && existingTable ? sqlite.migrateExistingAppTable(existingTable, table) : sqlite.createAppTable(table);
-    }),
-    () => sqlite.writeSchemaMetadata({
-      schemaVersion: "v1:additive-fields",
-      schemaHash: nextSchemaHash,
-      schemaJson: nextSchemaJson
-    })
-  ]);
-}
-async function migrateLibsqlAppSchema(sqlite, schema) {
-  const nextSchema = normalizeSchema(schema);
-  const nextSchemaJson = JSON.stringify(nextSchema);
-  const nextSchemaHash = hashSchema(nextSchemaJson);
-  const existingSchemaRow = await sqlite.readSchemaMetadata();
-  let existingSchema = null;
-  let schemaChanged = false;
-  if (existingSchemaRow) {
-    try {
-      existingSchema = JSON.parse(existingSchemaRow.value);
-    } catch {
-      throw commandError(
-        "Invalid Sporades schema metadata.",
-        "Delete the Runtime directory only if you can lose local data, then restart the Capsule."
-      );
-    }
-    schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
-    if (schemaChanged) {
-      assertAdditiveSchemaMigration(existingSchema, nextSchema);
-    }
-  }
-  const existingTables = new Map((existingSchema?.tables ?? []).map((table) => [table.name, table]));
-  for (const table of schema.tables) {
-    const existingTable = existingTables.get(table.name);
-    if (schemaChanged && existingTable) {
-      await migrateExistingLibsqlAppTableInTransaction(sqlite, existingTable, table);
-    } else {
-      await sqlite.createAppTable(table);
-    }
-  }
-  await sqlite.writeSchemaMetadata({
-    schemaVersion: "v1:additive-fields",
-    schemaHash: nextSchemaHash,
-    schemaJson: nextSchemaJson
+    const existingTables = new Map((existingSchema?.tables ?? []).map((table) => [table.name, table]));
+    return chainMaybePromise([
+      ...schema.tables.map((table) => () => {
+        const existingTable = existingTables.get(table.name);
+        return schemaChanged && existingTable ? migrateExistingAppTableInTransaction(sqlite, existingTable, table) : sqlite.createAppTable(table);
+      }),
+      () => sqlite.writeSchemaMetadata({
+        schemaVersion: "v1:additive-fields",
+        schemaHash: nextSchemaHash,
+        schemaJson: nextSchemaJson
+      })
+    ]);
   });
 }
 function normalizeSchema(schema) {
@@ -7600,7 +7550,7 @@ function assertAdditiveSchemaMigration(existingSchema, nextSchema) {
     }
   }
 }
-function migrateExistingAppTable(sqlite, existingTable, nextTable) {
+function migrateExistingAppTableInTransaction(sqlite, existingTable, nextTable) {
   const tempTableName = `__sporades_migrating_${nextTable.name}`;
   const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
   return chainMaybePromise([
@@ -7619,27 +7569,6 @@ function migrateExistingAppTable(sqlite, existingTable, nextTable) {
     () => sqlite.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`),
     () => sqlite.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`)
   ]);
-}
-async function migrateExistingLibsqlAppTable(sqlite, existingTable, nextTable) {
-  await sqlite.withTransaction(async (transaction) => {
-    await migrateExistingLibsqlAppTableInTransaction(transaction, existingTable, nextTable);
-  });
-}
-async function migrateExistingLibsqlAppTableInTransaction(sqlite, existingTable, nextTable) {
-  for (const field of addedFieldsForTable(existingTable, nextTable)) {
-    if (field.kind === "Reference" && field.defaultValue !== void 0 && field.defaultValue !== null && !await sqlite.referenceExists(field, field.defaultValue)) {
-      throw invalidReferenceError(field);
-    }
-  }
-  const tempTableName = `__sporades_migrating_${nextTable.name}`;
-  const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field) => field.name)];
-  await sqlite.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`);
-  await sqlite.createAppTable(nextTable, tempTableName);
-  await sqlite.exec(
-    `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} FROM ${quoteIdentifier(nextTable.name)}`
-  );
-  await sqlite.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`);
-  await sqlite.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`);
 }
 function columnSelectExpressionForMigration(existingTable, nextTable, columnName) {
   if (["id", "createdAt", "updatedAt"].includes(columnName)) {
