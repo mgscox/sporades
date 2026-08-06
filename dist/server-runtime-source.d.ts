@@ -336,39 +336,11 @@ export declare function createSqliteDatabaseAdapter(databasePath: PathLike, opti
     countPasswordResetCodesForEmail(email: any, now: any): any;
     deletePasswordResetCodesForUser(userId: any): StatementResultingChanges;
     prunePasswordResetCodes(now: any): StatementResultingChanges;
-    migrateAppSchema(schema: {
-        tables: {
-            name: any;
-            acl: {
-                allowByDefault: boolean;
-            } | {
-                allowByDefault: boolean;
-                resolve(operation: any): any;
-            };
-            fields: {
-                name: any;
-                kind: any;
-                sqliteType: string;
-                targetTable: string | undefined;
-                defaultValue: any;
-            }[];
-        }[];
-    } | {
-        tables: {
-            name: string;
-            fields: ({
-                name: any;
-                kind: any;
-                sqliteType: string;
-                targetTable: any;
-                defaultValue: any;
-            } | null)[];
-        }[];
-    }): any;
+    migrateAppSchema(schema: LooseRecord): Promise<any>;
     createAppTable(table: {
         name: any;
     }, tableName?: any): any;
-    migrateExistingAppTable(existingTable: any, nextTable: any): any;
+    migrateExistingAppTable(existingTable: any, nextTable: any): Promise<any>;
     referenceExists(field: {
         targetTable: any;
     }, value: any): any;
@@ -533,39 +505,9 @@ export declare function createPostgresDatabaseAdapter(options: {
         lastInsertRowid: any;
     }>;
     readRecentLogEvents(limit?: number): Promise<any>;
-    migrateAppSchema(schema: {
-        tables: {
-            name: any;
-            acl: {
-                allowByDefault: boolean;
-            } | {
-                allowByDefault: boolean;
-                resolve(operation: any): any;
-            };
-            fields: {
-                name: any;
-                kind: any;
-                sqliteType: string;
-                targetTable: string | undefined;
-                defaultValue: any;
-            }[];
-        }[];
-    } | {
-        tables: {
-            name: string;
-            fields: ({
-                name: any;
-                kind: any;
-                sqliteType: string;
-                targetTable: any;
-                defaultValue: any;
-            } | null)[];
-        }[];
-    }): Promise<any>;
     createAppTable(table: {
         name: any;
     }, tableName?: any): Promise<void>;
-    migrateExistingAppTable(existingTable: any, nextTable: any): Promise<void>;
     listInspectableTables(): Promise<any>;
     dumpInspectableDatabase(): Promise<{
         name: any;
@@ -867,6 +809,8 @@ export declare function createPostgresDatabaseAdapter(options: {
     countPasswordResetCodesForEmail(email: any, now: any): any;
     deletePasswordResetCodesForUser(userId: any): StatementResultingChanges;
     prunePasswordResetCodes(now: any): StatementResultingChanges;
+    migrateAppSchema(schema: LooseRecord): Promise<any>;
+    migrateExistingAppTable(existingTable: any, nextTable: any): Promise<any>;
     referenceExists(field: {
         targetTable: any;
     }, value: any): any;
@@ -911,36 +855,6 @@ export declare function createLibsqlDatabaseAdapter(options: {
     ensureFileStorage(): Promise<void>;
     ensureAuthStorage(authConfig?: any): Promise<void>;
     consumeOAuthState(state: any): Promise<any>;
-    migrateAppSchema(schema: {
-        tables: {
-            name: any;
-            acl: {
-                allowByDefault: boolean;
-            } | {
-                allowByDefault: boolean;
-                resolve(operation: any): any;
-            };
-            fields: {
-                name: any;
-                kind: any;
-                sqliteType: string;
-                targetTable: string | undefined;
-                defaultValue: any;
-            }[];
-        }[];
-    } | {
-        tables: {
-            name: string;
-            fields: ({
-                name: any;
-                kind: any;
-                sqliteType: string;
-                targetTable: any;
-                defaultValue: any;
-            } | null)[];
-        }[];
-    }): Promise<any>;
-    migrateExistingAppTable(existingTable: any, nextTable: any): Promise<void>;
     withTransaction(fn: (transactionAdapter: LooseRecord) => any): Promise<any>;
     withReadOnlySnapshot(fn: (adapter: LooseRecord) => any): Promise<any>;
     close(): Promise<void>;
@@ -1130,9 +1044,11 @@ export declare function createLibsqlDatabaseAdapter(options: {
     countPasswordResetCodesForEmail(email: any, now: any): any;
     deletePasswordResetCodesForUser(userId: any): StatementResultingChanges;
     prunePasswordResetCodes(now: any): StatementResultingChanges;
+    migrateAppSchema(schema: LooseRecord): Promise<any>;
     createAppTable(table: {
         name: any;
     }, tableName?: any): any;
+    migrateExistingAppTable(existingTable: any, nextTable: any): Promise<any>;
     referenceExists(field: {
         targetTable: any;
     }, value: any): any;

@@ -187,8 +187,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   libsqlValueFromJs,
   libsqlValueToJs,
   ensureLibsqlSessionLifecycleColumns,
-  migrateLibsqlAppSchema,
-  migrateExistingLibsqlAppTable,
   splitSqlStatements,
   openDevDatabase,
   recoverExpiredJobLeases,
@@ -283,12 +281,12 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   extractObjectPropertySource,
   findMatchingDelimiter,
   splitTopLevelList,
-  migrateAppSchema,
+  migrateAppSchemaInTransaction,
   normalizeSchema,
   hashSchema,
   assertValidReferenceTargets,
   assertAdditiveSchemaMigration,
-  migrateExistingAppTable,
+  migrateExistingAppTableInTransaction,
   columnSelectExpressionForMigration,
   addedFieldsForTable,
   createAppTable,
@@ -3449,22 +3447,21 @@ export async function createSqliteDatabaseAdapter(databasePath: PathLike, option
     prunePasswordResetCodes(now: any) {
       return this.prepare("DELETE FROM sporades_auth_password_reset_codes WHERE expiresAt <= ?").run(now);
     },
-    migrateAppSchema(schema: { tables: { name: any; acl: { allowByDefault: boolean; } | { allowByDefault: boolean; resolve(operation: any): any; }; fields: { name: any; kind: any; sqliteType: string; targetTable: string | undefined; defaultValue: any; }[]; }[]; } | { tables: { name: string; fields: ({ name: any; kind: any; sqliteType: string; targetTable: any; defaultValue: any; } | null)[]; }[]; }) {
-      this.exec("BEGIN");
-      try {
-        const result = migrateAppSchema(this, schema);
-        this.exec("COMMIT");
-        return result;
-      } catch (error) {
-        this.exec("ROLLBACK");
-        throw error;
-      }
+    // ADR-0026: a schema migration is a multi-write workflow that has to succeed or fail as one
+    // unit, so it runs inside the adapter's own transaction primitive rather than emitting BEGIN
+    // and COMMIT itself. Doing it with bare statements only worked on a synchronous engine: an
+    // unawaited `exec("BEGIN")` leaves the enclosing `try`/`catch` unable to see an asynchronous
+    // rejection, and the COMMIT fires before the migration it is meant to enclose has finished.
+    migrateAppSchema(schema: LooseRecord) {
+      return this.withTransaction((transaction: LooseRecord) => migrateAppSchemaInTransaction(transaction, schema));
     },
     createAppTable(table: { name: any; }, tableName = table.name) {
       return createAppTable(this, table, tableName);
     },
     migrateExistingAppTable(existingTable: any, nextTable: any) {
-      return migrateExistingAppTable(this, existingTable, nextTable);
+      return this.withTransaction((transaction: LooseRecord) =>
+        migrateExistingAppTableInTransaction(transaction, existingTable, nextTable),
+      );
     },
     referenceExists(field: { targetTable: any; }, value: any) {
       return thenIfPromise(
@@ -3900,18 +3897,12 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
       const rows = await this.prepare("SELECT payload FROM sporades_log_events ORDER BY timestamp DESC, id DESC LIMIT ?").all(safeLimit);
       return rows.reverse().map((row: { payload: string; }) => JSON.parse(row.payload));
     },
-    async migrateAppSchema(schema: { tables: { name: any; acl: { allowByDefault: boolean; } | { allowByDefault: boolean; resolve(operation: any): any; }; fields: { name: any; kind: any; sqliteType: string; targetTable: string | undefined; defaultValue: any; }[]; }[]; } | { tables: { name: string; fields: ({ name: any; kind: any; sqliteType: string; targetTable: any; defaultValue: any; } | null)[]; }[]; }) {
-      return await this.withTransaction((transaction) => migrateLibsqlAppSchema(transaction as any, schema));
-    },
     async createAppTable(table: { name: any; }, tableName = table.name) {
       await this.exec(
         `CREATE TABLE IF NOT EXISTS ${quoteIdentifier(tableName)} (` +
         postgresAppTableColumnDefinitions(table).join(", ") +
         ")",
       );
-    },
-    async migrateExistingAppTable(existingTable: any, nextTable: any) {
-      return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
     },
     async listInspectableTables() {
       const rows = await this.prepare(
@@ -4798,12 +4789,6 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
         "DELETE FROM sporades_auth_oauth_states WHERE state = ? " +
         "RETURNING state, provider, sessionToken, returnTo, redirectUri, createdAt, expiresAt, nonce, pkceVerifier",
       ).get(state)) ?? null;
-    },
-    async migrateAppSchema(schema: { tables: { name: any; acl: { allowByDefault: boolean; } | { allowByDefault: boolean; resolve(operation: any): any; }; fields: { name: any; kind: any; sqliteType: string; targetTable: string | undefined; defaultValue: any; }[]; }[]; } | { tables: { name: string; fields: ({ name: any; kind: any; sqliteType: string; targetTable: any; defaultValue: any; } | null)[]; }[]; }) {
-      return await this.withTransaction((transaction) => migrateLibsqlAppSchema(transaction as any, schema));
-    },
-    async migrateExistingAppTable(existingTable: any, nextTable: any) {
-      return await migrateExistingLibsqlAppTable(this, existingTable, nextTable);
     },
     async withTransaction(fn: (transactionAdapter: LooseRecord) => any) {
       const transaction = { baton: null as any, baseUrl: endpoint };
@@ -5960,87 +5945,60 @@ function sqliteTypeForFieldKind(kind: string) {
   return "TEXT";
 }
 
-function migrateAppSchema(sqlite: { engine?: string; exec?: (sql: any) => void; prepare?: (sql: any) => { all(...params: any[]): Record<string, SQLOutputValue>[]; get(...params: any[]): Record<string, SQLOutputValue> | undefined; run(...params: any[]): StatementResultingChanges; columns(): StatementColumnMetadata[]; }; ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; writeSystemMetadata?: (key: any, value: any) => StatementResultingChanges; readSchemaMetadata: any; writeSchemaMetadata: any; ensureLogStorage?: () => void; insertLogIndexEvent?: (event: any) => void; pruneLogIndex?: (limit: any) => void; readRecentLogEvents?: (limit: any) => any; ensureFileStorage?: () => void; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; ensureAuthStorage?: (authConfig?: null) => void; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: (state: any) => Record<string, SQLOutputValue> | null; emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; migrateAppSchema?: (schema: any) => any; createAppTable: any; migrateExistingAppTable: any; referenceExists?: (field: any, value: any) => boolean; withTransaction?: (fn: any) => Promise<any>; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; listInspectableTables?: () => SQLOutputValue[]; dumpInspectableDatabase?: () => { name: SQLOutputValue; columns: SQLOutputValue[]; rows: Record<string, SQLOutputValue>[]; }[]; runReadOnlyInspectionQuery?: (sql: any) => { ok: boolean; data: { columns: string[]; rows: Record<string, SQLOutputValue>[]; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }; checkHealth?: () => { ok: boolean; }; close?: () => void; }, schema: { tables: any[]; }) {
+// The one definition of what a Capsule schema migration does, run inside a transaction the caller
+// has already opened. Its caller is the `migrateAppSchema` adapter method, which is what supplies
+// that transaction; it takes the transaction-scoped adapter rather than the adapter itself so that
+// every statement it and the table rebuilds below emit belongs to the same unit of work.
+function migrateAppSchemaInTransaction(sqlite: LooseRecord, schema: LooseRecord) {
   const nextSchema = normalizeSchema(schema);
   const nextSchemaJson = JSON.stringify(nextSchema);
   const nextSchemaHash = hashSchema(nextSchemaJson);
-  const existingSchemaRow = sqlite.readSchemaMetadata();
-  let existingSchema = null;
-  let schemaChanged = false;
 
-  if (existingSchemaRow) {
-    try {
-      existingSchema = JSON.parse(existingSchemaRow.value);
-    } catch {
-      throw commandError(
-        "Invalid Sporades schema metadata.",
-        "Delete the Runtime directory only if you can lose local data, then restart the Capsule.",
-      );
+  // ADR-0034: the recorded schema is read before anything is derived from it. On an asynchronous
+  // engine `readSchemaMetadata()` answers a Promise, which is truthy even when there is no recorded
+  // schema at all, so every branch below — whether a schema exists, whether it parses, whether it
+  // changed, and whether the change is additive — has to be taken against the resolved row.
+  return thenIfPromise(sqlite.readSchemaMetadata(), (existingSchemaRow: any) => {
+    let existingSchema = null;
+    let schemaChanged = false;
+
+    if (existingSchemaRow) {
+      try {
+        existingSchema = JSON.parse(existingSchemaRow.value);
+      } catch {
+        throw commandError(
+          "Invalid Sporades schema metadata.",
+          "Delete the Runtime directory only if you can lose local data, then restart the Capsule.",
+        );
+      }
+
+      schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
+      if (schemaChanged) {
+        assertAdditiveSchemaMigration(existingSchema, nextSchema);
+      }
     }
 
-    schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
-    if (schemaChanged) {
-      assertAdditiveSchemaMigration(existingSchema, nextSchema);
-    }
-  }
-
-  const existingTables = new Map((existingSchema?.tables ?? []).map((table: { name: any; }) => [table.name, table]));
-  return chainMaybePromise([
-    ...schema.tables.map((table: { name: unknown; }) => () => {
-      const existingTable = existingTables.get(table.name);
-      return schemaChanged && existingTable ? sqlite.migrateExistingAppTable(existingTable, table) : sqlite.createAppTable(table);
-    }),
-    () =>
-      sqlite.writeSchemaMetadata({
-        schemaVersion: "v1:additive-fields",
-        schemaHash: nextSchemaHash,
-        schemaJson: nextSchemaJson,
+    const existingTables = new Map((existingSchema?.tables ?? []).map((table: { name: any; }) => [table.name, table]));
+    return chainMaybePromise([
+      ...schema.tables.map((table: { name: unknown; }) => () => {
+        const existingTable = existingTables.get(table.name);
+        // The in-transaction table rebuild rather than the adapter method, which opens a
+        // transaction of its own and would nest inside the one already enclosing this migration.
+        return schemaChanged && existingTable
+          ? migrateExistingAppTableInTransaction(sqlite, existingTable, table)
+          : sqlite.createAppTable(table);
       }),
-  ]);
-}
-
-async function migrateLibsqlAppSchema(sqlite: { engine?: string; exec?: ((sql: any) => Promise<undefined>) | ((sql: any) => Promise<undefined>); prepare?: ((sql: any) => { all(...params: any[]): Promise<any>; get(...params: any[]): Promise<any>; run(...params: any[]): Promise<{ changes: number; lastInsertRowid: bigint | undefined; }>; columns(): Promise<any>; }) | ((sql: any) => { all(...params: any[]): Promise<any>; get(...params: any[]): Promise<any>; run(...params: any[]): Promise<{ changes: number; lastInsertRowid: undefined; }>; columns(): Promise<{ name: any; }[]>; }); writeSystemMetadata?: ((key: any, value: any) => StatementResultingChanges) | ((keyOrMetadata: any, maybeValue: any) => Promise<void | { changes: number; lastInsertRowid: undefined; }>); writeSchemaMetadata: any; ensureAuthStorage?: ((authConfig?: null) => Promise<void>) | ((authConfig?: null) => Promise<void>); ensureLogStorage?: (() => Promise<void>) | (() => Promise<void>); ensureFileStorage?: (() => Promise<void>) | (() => Promise<void>); insertLogIndexEvent?: ((event: any) => Promise<void>) | ((event: any) => Promise<void>); pruneLogIndex?: ((limit: any) => Promise<void>) | ((limit: any) => Promise<void>); readRecentLogEvents?: ((limit?: number) => Promise<any>) | ((limit?: number) => Promise<any>); migrateAppSchema?: ((schema: any) => Promise<void>) | ((schema: any) => Promise<void>); createAppTable: any; migrateExistingAppTable: any; listInspectableTables?: (() => Promise<any>) | (() => Promise<any>); dumpInspectableDatabase?: (() => Promise<{ name: any; columns: any; rows: any; }[]>) | (() => Promise<{ name: any; columns: any; rows: any; }[]>); runReadOnlyInspectionQuery?: ((sql: any) => Promise<{ ok: boolean; data: { columns: any; rows: any; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }>) | ((sql: any) => Promise<{ ok: boolean; data: { columns: any[]; rows: any; }; error: null; } | { ok: boolean; data: null; error: { message: any; hint: string; }; }>); checkHealth?: (() => Promise<{ ok: boolean; }>) | (() => Promise<{ ok: boolean; }>); withTransaction?: ((fn: any) => Promise<any>) | ((fn: any) => Promise<any>); close?: (() => Promise<void>) | (() => Promise<void>); ensureSystemTable?: () => void; readSystemMetadata?: (key: any) => Record<string, SQLOutputValue> | null; readSchemaMetadata: any; findFileBucket?: (ownerId: any, name: any) => Record<string, SQLOutputValue> | null; createFileBucket?: (row: any) => StatementResultingChanges; insertFileRow?: (row: any) => StatementResultingChanges; updatePendingFileRow?: (row: any) => StatementResultingChanges; insertFileUpload?: (row: any) => StatementResultingChanges; selectFileById?: (fileId: any) => Record<string, SQLOutputValue> | null; selectLiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectActiveFileByPath?: (path: any) => Record<string, SQLOutputValue>[]; selectPendingFileUploadByPath?: (path: any) => Record<string, SQLOutputValue> | null; selectFileUpload?: (uploadId: any) => Record<string, SQLOutputValue> | null; completeFileUpload?: (upload: any, size: any, updatedAt: any) => StatementResultingChanges | { changes: number; }; deleteFileUploadsForPath?: (path: any) => StatementResultingChanges; deleteFileUploadsForFile?: (ownerId: any, fileId: any) => StatementResultingChanges; deleteFileUpload?: (uploadId: any) => StatementResultingChanges; selectPublicFileRow?: (publicUrlId: any) => Record<string, SQLOutputValue> | null; insertPublicFileUrl?: (row: any) => StatementResultingChanges; revokePublicFileUrl?: (publicUrlId: any, ownerId: any, revokedAt: any) => StatementResultingChanges; revokePublicFileUrlsForFile?: (fileId: any, revokedAt: any) => StatementResultingChanges; markFileDeleted?: (fileId: any, deletedAt: any) => StatementResultingChanges; fileRowForOwner?: (fileId: any, ownerId: any) => Record<string, SQLOutputValue> | null; insertAuthUser?: (row: any) => StatementResultingChanges; updateAuthUserProfile?: (row: any) => StatementResultingChanges; linkAuthUser?: (row: any) => StatementResultingChanges; insertAuthSession?: (row: any) => StatementResultingChanges; deleteAuthSession?: (token: any) => StatementResultingChanges; refreshAuthSession?: (token: any, expiresAt: any) => StatementResultingChanges; rotateAuthSession?: (previousToken: any, row: any) => StatementResultingChanges; readAuthSessionWithUser?: (token: any) => Record<string, SQLOutputValue> | null; insertOAuthState?: (row: any) => StatementResultingChanges; consumeOAuthState?: ((state: any) => Record<string, SQLOutputValue> | null) | ((state: any) => Promise<any>); emailCredentialExists?: (email: any) => boolean; insertEmailCredential?: (row: any) => StatementResultingChanges; findEmailCredentialWithUser?: (email: any) => Record<string, SQLOutputValue> | null; referenceExists?: (field: any, value: any) => boolean; insertAppRow?: (table: any, row: any) => StatementResultingChanges; selectAppRowById?: (table: any, id: any) => Record<string, SQLOutputValue> | null; updateAppRow?: (table: any, id: any, values: any, options?: {}) => StatementResultingChanges | { changes: number; }; deleteAppRow?: (table: any, id: any) => StatementResultingChanges; selectAppRows?: (table: any, query?: {}) => Record<string, SQLOutputValue>[]; }, schema: { tables: any; }) {
-  const nextSchema = normalizeSchema(schema);
-  const nextSchemaJson = JSON.stringify(nextSchema);
-  const nextSchemaHash = hashSchema(nextSchemaJson);
-  const existingSchemaRow = await sqlite.readSchemaMetadata();
-  let existingSchema = null;
-  let schemaChanged = false;
-
-  if (existingSchemaRow) {
-    try {
-      existingSchema = JSON.parse(existingSchemaRow.value);
-    } catch {
-      throw commandError(
-        "Invalid Sporades schema metadata.",
-        "Delete the Runtime directory only if you can lose local data, then restart the Capsule.",
-      );
-    }
-
-    schemaChanged = hashSchema(JSON.stringify(existingSchema)) !== nextSchemaHash;
-    if (schemaChanged) {
-      assertAdditiveSchemaMigration(existingSchema, nextSchema);
-    }
-  }
-
-  const existingTables = new Map((existingSchema?.tables ?? []).map((table: { name: any; }) => [table.name, table]));
-  for (const table of schema.tables) {
-    const existingTable = existingTables.get(table.name);
-    if (schemaChanged && existingTable) {
-      await migrateExistingLibsqlAppTableInTransaction(sqlite, existingTable, table);
-    } else {
-      await sqlite.createAppTable(table);
-    }
-  }
-
-  await sqlite.writeSchemaMetadata({
-    schemaVersion: "v1:additive-fields",
-    schemaHash: nextSchemaHash,
-    schemaJson: nextSchemaJson,
+      () =>
+        sqlite.writeSchemaMetadata({
+          schemaVersion: "v1:additive-fields",
+          schemaHash: nextSchemaHash,
+          schemaJson: nextSchemaJson,
+        }),
+    ]);
   });
 }
 
-function normalizeSchema(schema: { tables: any[]; }) {
+function normalizeSchema(schema: LooseRecord) {
   return {
     tables: schema.tables
       .map((table: { name: any; fields: any[]; }) => ({
@@ -6100,7 +6058,11 @@ function assertAdditiveSchemaMigration(existingSchema: LooseRecord, nextSchema: 
   }
 }
 
-function migrateExistingAppTable(sqlite: LooseRecord, existingTable: any, nextTable: LooseRecord) {
+// The one definition of an additive table rebuild, run inside a transaction the caller has already
+// opened. SQLite cannot add a column to a table that carries a default without rewriting it, so the
+// rebuild copies every row of the table into a temporary copy and renames it into place — which is
+// precisely the work that must not be left half done, and precisely why its caller wraps it.
+function migrateExistingAppTableInTransaction(sqlite: LooseRecord, existingTable: any, nextTable: LooseRecord) {
   const tempTableName = `__sporades_migrating_${nextTable.name}`;
   const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field: { name: any; }) => field.name)];
   return chainMaybePromise([
@@ -6124,37 +6086,6 @@ function migrateExistingAppTable(sqlite: LooseRecord, existingTable: any, nextTa
     () => sqlite.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`),
     () => sqlite.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`),
   ]);
-}
-
-async function migrateExistingLibsqlAppTable(sqlite: LooseRecord, existingTable: any, nextTable: LooseRecord) {
-  await sqlite.withTransaction(async (transaction: LooseRecord) => {
-    await migrateExistingLibsqlAppTableInTransaction(transaction, existingTable, nextTable);
-  });
-}
-
-async function migrateExistingLibsqlAppTableInTransaction(sqlite: LooseRecord, existingTable: any, nextTable: LooseRecord) {
-  for (const field of addedFieldsForTable(existingTable, nextTable)) {
-    if (
-      field.kind === "Reference" &&
-      field.defaultValue !== undefined &&
-      field.defaultValue !== null &&
-      !(await sqlite.referenceExists(field, field.defaultValue))
-    ) {
-      throw invalidReferenceError(field);
-    }
-  }
-
-  const tempTableName = `__sporades_migrating_${nextTable.name}`;
-  const columns = ["id", "createdAt", "updatedAt", ...nextTable.fields.map((field: { name: any; }) => field.name)];
-  await sqlite.exec(`DROP TABLE IF EXISTS ${quoteIdentifier(tempTableName)}`);
-  await sqlite.createAppTable(nextTable, tempTableName);
-  await sqlite.exec(
-    `INSERT INTO ${quoteIdentifier(tempTableName)} (${columns.map(quoteIdentifier).join(", ")}) ` +
-    `SELECT ${columns.map((column) => columnSelectExpressionForMigration(existingTable, nextTable, column)).join(", ")} ` +
-    `FROM ${quoteIdentifier(nextTable.name)}`,
-  );
-  await sqlite.exec(`DROP TABLE ${quoteIdentifier(nextTable.name)}`);
-  await sqlite.exec(`ALTER TABLE ${quoteIdentifier(tempTableName)} RENAME TO ${quoteIdentifier(nextTable.name)}`);
 }
 
 function columnSelectExpressionForMigration(existingTable: LooseRecord, nextTable: LooseRecord, columnName: string) {

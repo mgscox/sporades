@@ -81,6 +81,33 @@ const MIGRATED_ENTRIES_TABLE = {
 const BASE_SCHEMA = { tables: [ACCOUNTS_TABLE, ENTRIES_TABLE] };
 const MIGRATED_SCHEMA = { tables: [ACCOUNTS_TABLE, MIGRATED_ENTRIES_TABLE, ARCHIVE_TABLE] };
 
+// The two tables of the migration that must fail partway. A migration walks the schema's tables in
+// order, so putting a table that migrates cleanly ahead of one that cannot is what makes the
+// failure land after real DDL and real row copying rather than before any of it: the accounts table
+// is dropped, rebuilt with its new column and repopulated, and only then does the entries table's
+// dangling Reference default abort the whole thing.
+const REBUILT_ACCOUNTS_FIELD = { name: "region", kind: "String", sqliteType: "TEXT", defaultValue: "unset" };
+
+const REBUILT_ACCOUNTS_TABLE = {
+  ...ACCOUNTS_TABLE,
+  fields: [...ACCOUNTS_TABLE.fields, REBUILT_ACCOUNTS_FIELD],
+};
+
+const DANGLING_REFERENCE_FIELD = {
+  name: "reviewerId",
+  kind: "Reference",
+  sqliteType: "TEXT",
+  targetTable: ACCOUNTS_TABLE.name,
+  defaultValue: "account-that-does-not-exist",
+};
+
+const FAILING_ENTRIES_TABLE = {
+  ...MIGRATED_ENTRIES_TABLE,
+  fields: [...MIGRATED_ENTRIES_TABLE.fields, DANGLING_REFERENCE_FIELD],
+};
+
+const FAILING_SCHEMA = { tables: [REBUILT_ACCOUNTS_TABLE, FAILING_ENTRIES_TABLE, ARCHIVE_TABLE] };
+
 const NOW = "2026-07-04T10:00:00.000Z";
 const LATER = "2026-07-04T10:05:00.000Z";
 const OWNER_A = "owner-a";
@@ -454,6 +481,88 @@ const APP_TABLE_CONFORMANCE_CASES = [
     },
   },
   {
+    // Migrations rewrite user data, so the answer that matters most from this method is the one it
+    // gives when it cannot finish. ADR-0026 puts a multi-write workflow that must succeed or fail
+    // as one unit inside a Database adapter transaction, and a schema migration is the largest one
+    // the runtime owns: it drops tables, rebuilds them, copies every row across and then records
+    // the new schema. Half of that is not a smaller migration, it is a Capsule whose stored data no
+    // longer matches its schema metadata.
+    //
+    // The failure is driven from inside the migration rather than by breaking the adapter, so the
+    // same case means the same thing on every engine: the accounts table migrates cleanly first,
+    // then the entries table asks for a Reference default that names no row. What is asserted is
+    // the state afterwards — every table's columns, every table's rows, the schema metadata, and
+    // the absence of the temporary table the rebuild builds — because a transaction that opened and
+    // committed without enclosing its work would leave the accounts rebuild applied and everything
+    // after it missing, while throwing exactly the same error.
+    name: "a migration that fails partway leaves every table, row and schema metadata value unchanged",
+    async run(adapter) {
+      const schemaBefore = (await adapter.readSchemaMetadata()).value;
+      const hashBefore = (await adapter.readSystemMetadata("schemaHash")).value;
+      const dumpBefore = await adapter.dumpInspectableDatabase();
+      const accountsBefore = dumpBefore.find((table) => table.name === ACCOUNTS_TABLE.name);
+      const entriesBefore = dumpBefore.find((table) => table.name === ENTRIES_TABLE.name);
+
+      // The precondition is what makes the assertions below mean something, so it states the two
+      // facts they rely on and nothing more: both tables hold rows, so there is real data to lose,
+      // and neither yet has the column the failing migration would add, so its later absence is
+      // evidence of a rollback rather than of it never having been attempted.
+      //
+      // Deliberately derived rather than fixed. Asserting a particular row count here would make
+      // this case depend on every earlier case in the surface having cleaned up after itself, and
+      // an engine where one of them does not would abort at the precondition — before
+      // `migrateAppSchema` is ever called, leaving the case unable to distinguish a working
+      // rollback from a broken one on exactly the engine where that question is hardest to answer
+      // by reading the code. What the case asserts is that the rollback changed nothing, so the
+      // before-state it compares against is whatever it observes, not whatever it expected.
+      assert.equal(accountsBefore.rows.length > 0, true);
+      assert.equal(entriesBefore.rows.length > 0, true);
+      assert.equal(accountsBefore.columns.includes(REBUILT_ACCOUNTS_FIELD.name), false);
+      assert.equal(entriesBefore.columns.includes(DANGLING_REFERENCE_FIELD.name), false);
+
+      await assert.rejects(adapter.migrateAppSchema(FAILING_SCHEMA), {
+        message: `Invalid reference for field: ${DANGLING_REFERENCE_FIELD.name}`,
+        hint: `Pass the id of an existing ${ACCOUNTS_TABLE.name} row.`,
+      });
+
+      // The accounts table is the one the migration had already finished rebuilding when the
+      // entries table aborted it. Its added column must be gone and its rows must be exactly the
+      // rows it held before, not a copy that survived in a half-committed rebuild.
+      const dumpAfter = await adapter.dumpInspectableDatabase();
+      const accountsAfter = dumpAfter.find((table) => table.name === ACCOUNTS_TABLE.name);
+      assert.deepEqual(accountsAfter.columns, accountsBefore.columns);
+      assert.deepEqual(
+        accountsAfter.rows.map((row) => pick(row, accountsBefore.columns)),
+        accountsBefore.rows.map((row) => pick(row, accountsBefore.columns)),
+      );
+
+      // The table the migration failed on keeps its own columns and rows too.
+      const entriesAfter = dumpAfter.find((table) => table.name === ENTRIES_TABLE.name);
+      assert.deepEqual(entriesAfter.columns, entriesBefore.columns);
+      assert.deepEqual(
+        entriesAfter.rows.map((row) => pick(row, entriesBefore.columns)),
+        entriesBefore.rows.map((row) => pick(row, entriesBefore.columns)),
+      );
+
+      // The rebuild works through a temporary table, and a rollback has to take that with it.
+      assert.equal((await adapter.listInspectableTables()).includes(`__sporades_migrating_${ACCOUNTS_TABLE.name}`), false);
+      assert.equal((await adapter.listInspectableTables()).includes(`__sporades_migrating_${ENTRIES_TABLE.name}`), false);
+
+      // And the schema metadata still describes the schema the storage actually has. A recorded
+      // schema the tables do not match is what makes a half-applied migration unrecoverable: the
+      // next start compares against it and concludes nothing changed.
+      assert.equal((await adapter.readSchemaMetadata()).value, schemaBefore);
+      assert.equal((await adapter.readSystemMetadata("schemaHash")).value, hashBefore);
+      assert.equal((await adapter.readSystemMetadata("schemaVersion")).value, "v1:additive-fields");
+
+      // The transaction really closed rather than being left open behind the failure: an ordinary
+      // write after it lands and is readable.
+      await adapter.insertAppRow(ACCOUNTS_TABLE, { id: "account-after-rollback", createdAt: NOW, updatedAt: NOW, label: "written after" });
+      assert.equal((await adapter.selectAppRowById(ACCOUNTS_TABLE, "account-after-rollback")).label, "written after");
+      assert.equal((await adapter.deleteAppRow(ACCOUNTS_TABLE, "account-after-rollback")).changes, 1);
+    },
+  },
+  {
     // ADR-0034's fourth rule limb reaches this method through three writes rather than one: the
     // shared definition used to fire all three and return nothing, so a caller had nothing to
     // await and, on an asynchronous engine, no ordering between them either. What the caller can
@@ -650,6 +759,7 @@ export const CONFORMANCE_SURFACE = {
     ARCHIVE_TABLE.name,
     STANDALONE_TABLE.name,
     STANDALONE_ALIAS_TABLE_NAME,
+    `__sporades_migrating_${ACCOUNTS_TABLE.name}`,
     `__sporades_migrating_${ENTRIES_TABLE.name}`,
     `__sporades_migrating_${STANDALONE_TABLE.name}`,
   ],
