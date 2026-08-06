@@ -9,6 +9,7 @@ import {
   libsqlRowNormalization,
   postgresDatabaseDialect,
   postgresRowNormalization,
+  sqlWithoutTrailingTerminator,
   sqliteDatabaseDialect,
   sqliteRowNormalization,
 } from "../dist/server-runtime-source.js";
@@ -122,6 +123,33 @@ test("SQLite is an engine like the others, not the set the others borrow from", 
   });
 });
 
+// An engine that cannot ask a statement for its result shape has to embed the statement in more
+// SQL, and embedding is where a trailing terminator or comment stops being decoration. The
+// conformance specification asserts that the engines agree about such a query; this asserts the
+// piece of machinery they agree through, including the shapes a conformance case would need a
+// contrived query to reach.
+test("a statement's text can be taken without its terminator or trailing trivia", () => {
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 1"), "SELECT 1");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 1;"), "SELECT 1");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 1 ; "), "SELECT 1");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 1 -- why"), "SELECT 1");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 1; -- why"), "SELECT 1");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 1 /* why */"), "SELECT 1");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 1\n-- why\n"), "SELECT 1");
+
+  // Nothing inside a string literal is punctuation. An over-eager strip would truncate the first
+  // of these to `SELECT ` and change what the second one answers.
+  assert.equal(sqlWithoutTrailingTerminator("SELECT '-- not a comment' AS s"), "SELECT '-- not a comment' AS s");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT 'a;b' AS s;"), "SELECT 'a;b' AS s");
+  assert.equal(sqlWithoutTrailingTerminator(`SELECT "odd;name" FROM t;`), `SELECT "odd;name" FROM t`);
+
+  // A statement that is only trivia has no text, and neither null nor undefined may throw.
+  assert.equal(sqlWithoutTrailingTerminator("-- nothing here"), "");
+  assert.equal(sqlWithoutTrailingTerminator(";"), "");
+  assert.equal(sqlWithoutTrailingTerminator(null), "");
+  assert.equal(sqlWithoutTrailingTerminator(undefined), "");
+});
+
 test("a dialect that answers only some of the seam fails at construction", () => {
   // The failure a new engine will actually hit, and the point of making it a construction-time
   // error: an entry nobody wrote is otherwise discovered by the first statement that needed it,
@@ -144,6 +172,19 @@ test("a dialect that answers only some of the seam fails at construction", () =>
       assert.match(error.message, /value/);
       return true;
     },
+  );
+
+  // An entry written as null is the same gap as an entry not written at all, and is the likelier
+  // of the two: it is what a placeholder looks like. Rejecting only `undefined` would let it
+  // through construction and fail at the first statement that needed it, which is the failure this
+  // factory exists to move forward.
+  assert.throws(
+    () => createDatabaseDialect({ ...sqliteDatabaseDialect(), upsertSql: null }),
+    /Incomplete Database adapter dialect: upsertSql/,
+  );
+  assert.throws(
+    () => createDatabaseNormalization({ name: "mysql", columnName: (name) => name, value: null }),
+    /Incomplete Database adapter normalization: value/,
   );
 });
 

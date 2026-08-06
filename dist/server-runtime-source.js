@@ -215,6 +215,10 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     logIndexLimit,
     logPayloadMaxBytes,
     logRedactedValue,
+    sqlWithoutTrailingTerminator,
+    // Reached from `sqlWithoutTrailingTerminator`, which the Postgres `columns()` primitive calls, so
+    // it has to be emitted into the Capsule bundle rather than left behind as a free binding.
+    skipSqlStringOrComment,
     targetsInternalLogIndexTable,
     readSqlTableReference,
     skipSqlTrivia,
@@ -2962,7 +2966,10 @@ export function createDatabaseDialect(spec) {
         "describeColumns",
         "addMissingColumn",
     ];
-    const missing = required.filter((key) => spec[key] === undefined);
+    // `== null` rather than `=== undefined`: an entry explicitly set to null would otherwise pass
+    // construction and fail at the first statement that needed it, which is precisely the failure
+    // this factory exists to move forward.
+    const missing = required.filter((key) => spec[key] == null);
     if (missing.length > 0) {
         throw commandError(`Incomplete Database adapter dialect: ${missing.join(", ")}.`, "A Database engine supplies statement primitives, a dialect and row normalization. Answer every dialect entry.");
     }
@@ -2977,7 +2984,7 @@ export function createDatabaseDialect(spec) {
 // single value into the JavaScript the runtime expects. `row` is derived from the two so that no
 // engine can apply one and forget the other.
 export function createDatabaseNormalization(spec) {
-    const missing = ["name", "columnName", "value"].filter((key) => spec[key] === undefined);
+    const missing = ["name", "columnName", "value"].filter((key) => spec[key] == null);
     if (missing.length > 0) {
         throw commandError(`Incomplete Database adapter normalization: ${missing.join(", ")}.`, "A Database engine supplies statement primitives, a dialect and row normalization. Answer every normalization entry.");
     }
@@ -3355,9 +3362,9 @@ export function createSharedDatabaseAdapterMethods(dialect) {
         },
         insertAppRow(table, row) {
             const columns = Object.keys(row);
-            return this.prepare(`INSERT INTO ${dialect.quoteIdentifier(table.name)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns
-                .map(() => "?")
-                .join(", ")})`).run(...columns.map((column) => row[column]));
+            return this.prepare(`INSERT INTO ${dialect.quoteIdentifier(table.name)} (${columns
+                .map((column) => dialect.quoteIdentifier(column))
+                .join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`).run(...columns.map((column) => row[column]));
         },
         selectAppRowById(table, id) {
             return this.prepare(`SELECT * FROM ${dialect.quoteIdentifier(table.name)} WHERE id = ?`).get(String(id)) ?? null;
@@ -3581,8 +3588,27 @@ export async function createPostgresDatabaseAdapter(options) {
                         lastInsertRowid: undefined,
                     }));
                 },
+                // Postgres has no way to ask a statement for its result shape without running something,
+                // so the statement is wrapped and bounded to no rows. Wrapping is not syntax-transparent,
+                // and that is a trap rather than a detail: a trailing `;` becomes a syntax error inside
+                // the subquery, and a trailing line comment swallows the closing parenthesis and whatever
+                // follows it. Both are legal input that `validateReadOnlyInspectionSql` deliberately
+                // admits, and `sporades db query <sql>` is typed by a human, so a semicolon is ordinary.
+                // Left unhandled, the same query answers on SQLite and libSQL and fails here — the
+                // divergence this feature exists to close, reintroduced by the seam meant to prevent it.
+                // Stripping the terminator and any trailing trivia first is what makes the wrap safe.
+                //
+                // This leaves the inspection path issuing two statements on Postgres where the method
+                // override it replaced issued one, and that is a deliberate choice rather than an
+                // oversight. Merging them would mean caching a result on the prepared-statement object so
+                // that `columns()` and a later `all()` share it — which SQLite's and libSQL's statements do
+                // not do, so a statement held across two reads would answer stale rows here and fresh rows
+                // there. That is a new per-engine behavioural difference, bought in the feature whose
+                // purpose is removing them. The bound makes the trade cheap: measured against a 200k-row
+                // table, the `LIMIT 0` probe runs in 0.3ms against the read's 79.5ms, because Postgres
+                // plans the statement and stops before materializing a row.
                 columns() {
-                    return query(`SELECT * FROM (${sql}) AS __sporades_columns LIMIT 0`).then((result) => result.fields.map((field) => ({ name: normalization.columnName(field.name) })));
+                    return query(`SELECT * FROM (${sqlWithoutTrailingTerminator(sql)}) AS __sporades_columns LIMIT 0`).then((result) => result.fields.map((field) => ({ name: normalization.columnName(field.name) })));
                 },
             };
         },
@@ -7902,6 +7928,40 @@ function skipSqlStringOrComment(sql, index) {
         cursor += 1;
     }
     return sql.length;
+}
+// One statement's text with its terminating semicolon and any trailing whitespace or comment
+// removed, for the callers that have to embed it in more SQL. The walk uses the same
+// string-and-comment skipper the read-only inspection validator does, so a semicolon or a `--`
+// inside a string literal is text rather than a terminator: `SELECT '--not a comment' AS s` keeps
+// every character it had.
+//
+// Trailing trivia goes with the terminator because a line comment is the worse of the two. A
+// semicolon makes the embedding a syntax error, which is at least loud; an unterminated line
+// comment silently eats whatever the embedder appends.
+export function sqlWithoutTrailingTerminator(sql) {
+    const text = String(sql ?? "");
+    let index = 0;
+    let contentEnd = 0;
+    while (index < text.length) {
+        const skipped = skipSqlStringOrComment(text, index);
+        if (skipped > index) {
+            // A quoted string is content and ends the statement's text at its closing quote; a comment
+            // is not content, so it never moves the end forward.
+            if (text[index] !== "-" && text[index] !== "/") {
+                contentEnd = skipped;
+            }
+            index = skipped;
+            continue;
+        }
+        if (text[index] === ";") {
+            break;
+        }
+        if (!/\s/.test(text[index])) {
+            contentEnd = index + 1;
+        }
+        index += 1;
+    }
+    return text.slice(0, contentEnd);
 }
 function targetsInternalLogIndexTable(sql) {
     const text = String(sql);

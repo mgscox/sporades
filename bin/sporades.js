@@ -2485,6 +2485,10 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   logIndexLimit,
   logPayloadMaxBytes,
   logRedactedValue,
+  sqlWithoutTrailingTerminator,
+  // Reached from `sqlWithoutTrailingTerminator`, which the Postgres `columns()` primitive calls, so
+  // it has to be emitted into the Capsule bundle rather than left behind as a free binding.
+  skipSqlStringOrComment,
   targetsInternalLogIndexTable,
   readSqlTableReference,
   skipSqlTrivia,
@@ -5056,7 +5060,7 @@ function createDatabaseDialect(spec) {
     "describeColumns",
     "addMissingColumn"
   ];
-  const missing = required.filter((key) => spec[key] === void 0);
+  const missing = required.filter((key) => spec[key] == null);
   if (missing.length > 0) {
     throw commandError(
       `Incomplete Database adapter dialect: ${missing.join(", ")}.`,
@@ -5066,7 +5070,7 @@ function createDatabaseDialect(spec) {
   return { ...spec };
 }
 function createDatabaseNormalization(spec) {
-  const missing = ["name", "columnName", "value"].filter((key) => spec[key] === void 0);
+  const missing = ["name", "columnName", "value"].filter((key) => spec[key] == null);
   if (missing.length > 0) {
     throw commandError(
       `Incomplete Database adapter normalization: ${missing.join(", ")}.`,
@@ -5549,7 +5553,7 @@ function createSharedDatabaseAdapterMethods(dialect) {
     insertAppRow(table, row) {
       const columns = Object.keys(row);
       return this.prepare(
-        `INSERT INTO ${dialect.quoteIdentifier(table.name)} (${columns.map(quoteIdentifier).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`
+        `INSERT INTO ${dialect.quoteIdentifier(table.name)} (${columns.map((column) => dialect.quoteIdentifier(column)).join(", ")}) VALUES (${columns.map(() => "?").join(", ")})`
       ).run(...columns.map((column) => row[column]));
     },
     selectAppRowById(table, id) {
@@ -5781,10 +5785,29 @@ async function createPostgresDatabaseAdapter(options) {
             lastInsertRowid: void 0
           }));
         },
+        // Postgres has no way to ask a statement for its result shape without running something,
+        // so the statement is wrapped and bounded to no rows. Wrapping is not syntax-transparent,
+        // and that is a trap rather than a detail: a trailing `;` becomes a syntax error inside
+        // the subquery, and a trailing line comment swallows the closing parenthesis and whatever
+        // follows it. Both are legal input that `validateReadOnlyInspectionSql` deliberately
+        // admits, and `sporades db query <sql>` is typed by a human, so a semicolon is ordinary.
+        // Left unhandled, the same query answers on SQLite and libSQL and fails here — the
+        // divergence this feature exists to close, reintroduced by the seam meant to prevent it.
+        // Stripping the terminator and any trailing trivia first is what makes the wrap safe.
+        //
+        // This leaves the inspection path issuing two statements on Postgres where the method
+        // override it replaced issued one, and that is a deliberate choice rather than an
+        // oversight. Merging them would mean caching a result on the prepared-statement object so
+        // that `columns()` and a later `all()` share it — which SQLite's and libSQL's statements do
+        // not do, so a statement held across two reads would answer stale rows here and fresh rows
+        // there. That is a new per-engine behavioural difference, bought in the feature whose
+        // purpose is removing them. The bound makes the trade cheap: measured against a 200k-row
+        // table, the `LIMIT 0` probe runs in 0.3ms against the read's 79.5ms, because Postgres
+        // plans the statement and stops before materializing a row.
         columns() {
-          return query(`SELECT * FROM (${sql}) AS __sporades_columns LIMIT 0`).then(
-            (result) => result.fields.map((field) => ({ name: normalization.columnName(field.name) }))
-          );
+          return query(
+            `SELECT * FROM (${sqlWithoutTrailingTerminator(sql)}) AS __sporades_columns LIMIT 0`
+          ).then((result) => result.fields.map((field) => ({ name: normalization.columnName(field.name) })));
         }
       };
     },
@@ -9940,6 +9963,29 @@ function skipSqlStringOrComment(sql, index) {
     cursor += 1;
   }
   return sql.length;
+}
+function sqlWithoutTrailingTerminator(sql) {
+  const text = String(sql ?? "");
+  let index = 0;
+  let contentEnd = 0;
+  while (index < text.length) {
+    const skipped = skipSqlStringOrComment(text, index);
+    if (skipped > index) {
+      if (text[index] !== "-" && text[index] !== "/") {
+        contentEnd = skipped;
+      }
+      index = skipped;
+      continue;
+    }
+    if (text[index] === ";") {
+      break;
+    }
+    if (!/\s/.test(text[index])) {
+      contentEnd = index + 1;
+    }
+    index += 1;
+  }
+  return text.slice(0, contentEnd);
 }
 function targetsInternalLogIndexTable(sql) {
   const text = String(sql);

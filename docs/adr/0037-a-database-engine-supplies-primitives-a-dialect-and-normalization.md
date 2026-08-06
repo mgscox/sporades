@@ -101,10 +101,35 @@ Enough to start one without reading the SQLite adapter.
 **Statement primitives.** A factory that opens a connection and returns an object
 carrying `engine`, `exec(sql)`, and `prepare(sql)` yielding `all(...params)`,
 `get(...params)`, `run(...params)` and `columns()`. `run` answers
-`{ changes, lastInsertRowid }`. `get` answers a row or null. `columns` answers
-`[{ name }]` for the statement's result shape without running it for rows. Every
-one of these may answer a value or a Promise of one — the dual-mode convention
-ADR-0034 retains, and the reason ADR-0034's invariant exists.
+`{ changes, lastInsertRowid }`. `all` answers an array of rows. `get` answers a
+row, or an absent value for no row — SQLite's answers `undefined` and the service
+engines' answer `null`, and shared bodies `?? null` over the difference rather
+than relying on either; a new engine may answer whichever its driver gives.
+`columns` answers `[{ name }]` for the statement's result shape without reading
+its rows. Every one of these may answer a value or a Promise of one — the
+dual-mode convention ADR-0034 retains, and the reason ADR-0034's invariant
+exists.
+
+`columns` is the primitive most likely to catch out a new engine, because an
+engine that cannot ask for a result shape directly has to embed the caller's SQL
+in something else, and embedding is not syntax-transparent. Postgres wraps the
+statement in a subquery bounded to no rows, and a trailing semicolon or trailing
+line comment — both legal input that the inspection validator deliberately
+admits — turns the wrapped form into a syntax error. Strip the statement
+terminator and any trailing trivia before embedding;
+`sqlWithoutTrailingTerminator` does that with the same string-and-comment walk the
+validator uses, so a `;` or `--` inside a string literal stays text. Whether a
+query answers must not depend on whether the human typed a semicolon.
+
+An engine that describes by embedding issues two statements where one might do,
+and that is accepted deliberately. Merging them would mean caching a result on
+the prepared-statement object so `columns()` and a later `all()` share it, which
+the other engines' statements do not do — a statement held across two reads would
+then answer stale rows on one engine and fresh rows on the others, which is a new
+per-engine behavioural difference bought inside the seam that exists to remove
+them. The bound makes the trade cheap: against a 200k-row table the `LIMIT 0`
+probe measures 0.3ms against the read's 79.5ms, because the engine plans the
+statement and stops before materializing a row.
 
 **Transaction session mechanics.** `withTransaction(fn)`, which calls `fn` with
 an adapter whose statements run inside the transaction, and

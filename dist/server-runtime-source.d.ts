@@ -304,6 +304,7 @@ export declare function validateReadOnlyInspectionSql(sql: any): {
 } | {
     ok: true;
 };
+export declare function sqlWithoutTrailingTerminator(sql: any): string;
 export declare function simulateLocalIdentitySession(database: LooseRecord, options?: LooseRecord): Promise<any>;
 type TrustedRefreshTransport = {
     subscribeType: "dev.refresh.subscribe";
