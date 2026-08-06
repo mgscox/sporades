@@ -9948,7 +9948,7 @@ function skipSqlStringOrComment(sql, index) {
   }
   const opensToken = !/[A-Za-z0-9_$\u0080-\uffff]/.test(sql[index - 1] ?? "");
   if (sql[index] === "$" && opensToken) {
-    const delimiter = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(index))?.[0];
+    const delimiter = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/.exec(sql.slice(index))?.[0];
     if (!delimiter) {
       return index;
     }

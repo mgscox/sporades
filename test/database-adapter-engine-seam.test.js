@@ -164,6 +164,15 @@ test("a statement's text survives a dollar-quoted or an E-string literal", () =>
   assert.equal(sqlWithoutTrailingTerminator("SELECT $tag$a--b$tag$ AS s"), "SELECT $tag$a--b$tag$ AS s");
   assert.equal(sqlWithoutTrailingTerminator("SELECT $$--$$ AS s"), "SELECT $$--$$ AS s");
 
+  // A tag is spelled with Postgres's identifier alphabet less the `$`, which means every non-ASCII
+  // character too — the same alphabet the guard below counts as continuing an identifier. The two
+  // rules have to name one alphabet or they disagree with each other, and the engine takes all of
+  // these tags.
+  assert.equal(sqlWithoutTrailingTerminator("SELECT $é$a--b$é$ AS s"), "SELECT $é$a--b$é$ AS s");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT $日$a--b$日$ AS s"), "SELECT $日$a--b$日$ AS s");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT $ñx$a;b$ñx$ AS s;"), "SELECT $ñx$a;b$ñx$ AS s");
+  assert.equal(sqlWithoutTrailingTerminator("SELECT $µ$a--b$µ$ AS s"), "SELECT $µ$a--b$µ$ AS s");
+
   // A literal closes at the first occurrence of its own delimiter, which is what Postgres does, so
   // an inner delimiter that only looks like nesting is content rather than a close.
   assert.equal(sqlWithoutTrailingTerminator("SELECT $$a$x$b$$ AS s"), "SELECT $$a$x$b$$ AS s");
@@ -200,6 +209,8 @@ test("a read-only inspection query may hold a separator inside a dollar-quoted o
   for (const sql of [
     "SELECT $$a;b$$ AS s",
     "SELECT $tag$a;b$tag$ AS s",
+    "SELECT $ñx$a;b$ñx$ AS s",
+    "SELECT $日$a;b$日$ AS s",
     "SELECT E'a\\';b' AS s",
     "SELECT e'a\\';b' AS s",
     // Plus the one trailing terminator the validator already admits, which is the shape a human
@@ -245,20 +256,36 @@ const INJECTION_ATTEMPTS = [
   "SELECT t1$$; DROP TABLE sporades_injection_canary; --$$",
   "SELECT aE'\\'; DROP TABLE sporades_injection_canary; --'",
 
-  // A tag that almost matches never closes the literal, and neither does an absent close.
+  // The same hole reached through a non-ASCII identifier, which is the arm of the guard the wider
+  // tag alphabet puts under most pressure. Both of these really are two statements to Postgres —
+  // `SELECT 1 AS café$$; SELECT 2; --$$` returns two result sets when handed to the engine raw.
+  "SELECT 1 AS café$$; SELECT 2; --$$",
+  "SELECT 1 AS t1$$; SELECT 2; --$$",
+  "SELECT 1 AS café$$; DROP TABLE sporades_injection_canary; --$$",
+
+  // A tag that almost matches never closes the literal, and neither does an absent close. The
+  // near-miss pairs differ only in a non-ASCII character, which is the shape a wider tag alphabet
+  // makes newly possible.
   "SELECT $a$x$b$; SELECT 2",
   "SELECT $$x; SELECT 2",
   "SELECT E'x\\'; SELECT 2",
+  "SELECT $é$a$è$; SELECT 2",
+  "SELECT $é$x; SELECT 2",
+  "SELECT $日$a$本$; SELECT 2",
   "SELECT $a$x$b$; DROP TABLE sporades_injection_canary",
   "SELECT $$x; DROP TABLE sporades_injection_canary",
   "SELECT E'x\\'; DROP TABLE sporades_injection_canary",
+  "SELECT $é$a$è$; DROP TABLE sporades_injection_canary",
+  "SELECT $é$x; DROP TABLE sporades_injection_canary",
 
   // Nesting-shaped input closes at its first matching delimiter, exactly as Postgres does, so the
   // separator after it is outside the literal.
   "SELECT $$a$x$b$$; SELECT 2",
   "SELECT $$a$$ || $$b$$; SELECT 2",
+  "SELECT $é$a$è$b$é$; SELECT 2",
   "SELECT $$a$x$b$$; DROP TABLE sporades_injection_canary",
   "SELECT $$a$$ || $$b$$; DROP TABLE sporades_injection_canary",
+  "SELECT $é$a$è$b$é$; DROP TABLE sporades_injection_canary",
 
   // A delimiter inside a comment cannot re-open a literal that already closed.
   "SELECT $$a$$ AS s; SELECT 2 -- $$",
@@ -277,6 +304,7 @@ const INJECTION_ATTEMPTS = [
   "SELECT $$a; DROP TABLE sporades_injection_canary$$ AS s",
   "SELECT $$a; DELETE FROM sporades_injection_canary$$ AS s",
   "SELECT $tag$a; DROP TABLE sporades_injection_canary$tag$ AS s",
+  "SELECT $é$a; DROP TABLE sporades_injection_canary$é$ AS s",
   "SELECT E'a\\'; DROP TABLE sporades_injection_canary' AS s",
 ];
 
@@ -299,6 +327,10 @@ test("Postgres describes a statement whose literal holds a comment marker", { sk
         ["SELECT $$a--b$$ AS s", "a--b"],
         ["SELECT $$a/*b$$ AS s", "a/*b"],
         ["SELECT $tag$a--b$tag$ AS s", "a--b"],
+        ["SELECT $é$a--b$é$ AS s", "a--b"],
+        ["SELECT $日$a--b$日$ AS s", "a--b"],
+        ["SELECT $ñx$a;b$ñx$ AS s;", "a;b"],
+        ["SELECT $µ$a/*b$µ$ AS s", "a/*b"],
         ["SELECT $$a;b$$ AS s", "a;b"],
         ["SELECT $$a;b$$ AS s;", "a;b"],
         ["SELECT $$a--b$$ AS s; -- keep this around", "a--b"],

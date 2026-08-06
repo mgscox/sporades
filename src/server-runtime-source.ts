@@ -8724,11 +8724,17 @@ function skipSqlStringOrComment(sql: string, index: number) {
 
   // A dollar-quoted string ends at the first repeat of its own opening delimiter, tag and all.
   //
+  // A tag is spelled with the identifier alphabet above less the `$`, non-ASCII included, because
+  // that is the alphabet Postgres spells one with. The two rules have to name the same set or they
+  // contradict each other, and they did: while the tag alphabet was ASCII-only, `$é$a--b$é$` was a
+  // literal to the engine and a stray delimiter here, so the strip severed it and the validator
+  // refused a `;` inside it. Widening the guard without widening this is the same bug mirrored.
+  //
   // An unterminated one is deliberately not skipped at all. That is the conservative direction: the
   // walk reads straight on through the content, so a `;` inside it stays a separator and the
   // validator refuses. Nothing legal is lost, because every engine also refuses to parse the input.
   if (sql[index] === "$" && opensToken) {
-    const delimiter = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(index))?.[0];
+    const delimiter = /^\$(?:[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*)?\$/.exec(sql.slice(index))?.[0];
     if (!delimiter) {
       return index;
     }
