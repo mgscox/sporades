@@ -46,6 +46,28 @@ may be worth one coherent answer, so issue 08 was told about this finding and
 asked whether its chosen mechanism resolves it. If issue 08 takes it, close this
 as superseded rather than doing the work twice.
 
+## Second symptom: the mapping renames app table columns
+
+Found while reviewing issue 08, confirmed live on Postgres. The Postgres
+column-name map is applied per result key with no table provenance —
+`postgresParseRowDescription` discards the tableOID bytes — so it is not scoped
+to runtime tables at all. An app table column whose declared name matches a
+lowered runtime spelling is renamed on the way out: a Capsule field literally
+named `errorcode` or `jobid` reads back as `errorCode` or `jobId`. Nothing
+validates against such a field name today.
+
+The hazard pre-existed for `userid`, `createdat`, `fileid`, `ownerid`,
+`bucketid` and `expiresat`. Issue 08 roughly doubled the surface and added
+generic names — `jobId`, `errorCode`, `startedAt`, `completedAt`, `failedAt`,
+`availableAt`, `nextOccurrence`, `claimToken` — so the collision is more
+reachable now than it was.
+
+It is recorded here rather than against issue 08 because narrowing the map is
+not the fix. Settling identifier casing is: if the runtime's own DDL stops
+folding, the map can be deleted and the collision cannot exist. That is this
+issue's remit, and it is the reason to prefer settling the question over
+patching the predicate that first failed.
+
 ## Acceptance criteria
 
 - [ ] Emitted SQL is consistent about identifier quoting; no statement names a column in a style the table was not created with.
@@ -53,6 +75,7 @@ as superseded rather than doing the work twice.
 - [ ] The other places emitting bare camelCase column names are audited and brought into line, not just the predicate that failed.
 - [ ] Any change to the quoting of already-created tables is accompanied by a deliberate decision about existing deployments, recorded in the issue or an ADR.
 - [ ] The full conformance specification passes on SQLite, libSQL and Postgres.
+- [ ] An app table column named to collide with a runtime spelling — `errorcode`, `jobid` — round-trips under its own declared name, or such names are rejected with a clear error.
 
 ## Blocked by
 

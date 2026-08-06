@@ -4162,6 +4162,14 @@ function postgresRowsFromResult(result) {
 // App table columns are absent on purpose. `postgresAppTableColumnDefinitions` quotes them, so
 // Postgres preserves their declared case and there is nothing to restore; only the runtime's own
 // unquoted DDL folds.
+//
+// Absent is not the same as exempt, and this map is not scoped to runtime tables. Normalization is
+// applied per result key with no table provenance, because `postgresParseRowDescription` discards
+// the tableOID bytes, so an app table column whose declared name happens to match a lowered
+// spelling here is renamed too. A Capsule field literally named `errorcode` or `jobid` comes back
+// as `errorCode` or `jobId`. Nothing forbids such a field today. The collision is tracked on issue
+// 12, whose remit — settling identifier casing so this map can be deleted — is the only fix that
+// removes it rather than narrowing it.
 function postgresRuntimeColumnName(name) {
     const restore = (postgresRuntimeColumnName.declaredColumnNames ??= new Map([
         // Shared across the runtime-owned tables.
