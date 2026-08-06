@@ -2651,8 +2651,14 @@ async function ensureJobStorage(sqlite: LooseRecord) {
   );
   await sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_jobs_idempotency ON sporades_jobs(handler, actorUserId, idempotencyKey) WHERE idempotencyKey IS NOT NULL");
   await sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_jobs_runnable ON sporades_jobs(status, availableAt, id)");
-  const columns = await sqlite.prepare("PRAGMA table_info(sporades_jobs)").all();
-  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) if (!columns.some((column: any) => column.name === name)) await sqlite.exec(`ALTER TABLE sporades_jobs ADD COLUMN ${name} ${type}`);
+  // The columns added to the Job queue after its first release are declared with an ALTER that
+  // tolerates the column already being there, rather than probed for first. `PRAGMA table_info` is
+  // SQLite's alone, and this is a shared definition the Database adapter sends verbatim to
+  // whichever engine is configured, so the probe made every Capsule boot on a Postgres Capsule
+  // service fail with `syntax error at or near "PRAGMA"` before the Job queue existed. That is the
+  // same portable idiom `ensureFileUploadTargetColumns` already uses for the File metadata columns
+  // added after the fact.
+  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) await runSchemaExecIgnoringDuplicateColumn(sqlite, `ALTER TABLE sporades_jobs ADD COLUMN ${name} ${type}`);
   await sqlite.exec("UPDATE sporades_jobs SET actorProvider = 'anonymous' WHERE actorProvider IS NULL OR actorProvider = ''");
 }
 
@@ -4476,39 +4482,98 @@ function postgresRowsFromResult(result: { fields?: any[]; rows: any; rowCount?: 
   });
 }
 
+// Postgres folds an unquoted identifier to lower case, so a runtime-owned table declared with
+// `createdAt TEXT NOT NULL` is stored as `createdat` and hands that name back on every read. Code
+// above the Database adapter reads `row.createdAt`, so the declared spelling is restored here.
+//
+// A spelling missing from this list is not an error on any engine. The read simply answers
+// `undefined` for that field and the runtime carries on with it — which is how a missing
+// `verifierHash` entry rejected every valid password Reset code on Postgres while presenting an
+// ordinary "invalid code", and how every field on the Job queue and Schedule tables read back
+// empty there. Review has no way to notice an absent entry, so completeness is not left to it:
+// `test/postgres-runtime-column-names.test.js` bootstraps every runtime-owned table on an engine
+// that preserves declared case, enumerates the columns those tables actually declare, and fails
+// on any camelCase column this function cannot restore. A runtime table gaining a camelCase
+// column without a spelling here is an ordinary test failure rather than a silent wrong answer in
+// a Hosted Capsule.
+//
+// Each spelling is written once, in its declared form, and lowered to build the lookup. A
+// hand-written `verifierhash: "verifierHash"` pair has two places to mistype and only one of them
+// fails visibly.
+//
+// App table columns are absent on purpose. `postgresAppTableColumnDefinitions` quotes them, so
+// Postgres preserves their declared case and there is nothing to restore; only the runtime's own
+// unquoted DDL folds.
 function postgresRuntimeColumnName(name: string) {
-  return (
-    {
-      ownerid: "ownerId",
-      bucketid: "bucketId",
-      bucketname: "bucketName",
-      createdat: "createdAt",
-      updatedat: "updatedAt",
-      deletedat: "deletedAt",
-      fileid: "fileId",
-      expectedsize: "expectedSize",
-      publicurlid: "publicUrlId",
-      publicversion: "publicVersion",
-      expiresat: "expiresAt",
-      revokedat: "revokedAt",
-      userid: "userId",
-      displayname: "displayName",
-      isauthenticated: "isAuthenticated",
-      isguest: "isGuest",
-      passwordhash: "passwordHash",
-      passwordsalt: "passwordSalt",
-      verifierhash: "verifierHash",
-      sessiontoken: "sessionToken",
-      returnto: "returnTo",
-      redirecturi: "redirectUri",
-      pkceverifier: "pkceVerifier",
-      capsulename: "capsuleName",
-      capsuleid: "capsuleId",
-      releaseid: "releaseId",
-      requestid: "requestId",
-      correlationid: "correlationId",
-    }[name] ?? name
-  );
+  const restore = ((postgresRuntimeColumnName as LooseRecord).declaredColumnNames ??= new Map(
+    [
+      // Shared across the runtime-owned tables.
+      "createdAt",
+      "updatedAt",
+      "deletedAt",
+      "expiresAt",
+      "userId",
+      "ownerId",
+      // sporades_auth_users, sporades_auth_sessions, sporades_auth_identities.
+      "displayName",
+      "isAuthenticated",
+      "isGuest",
+      // sporades_auth_email_credentials, sporades_auth_password_reset_codes.
+      "passwordHash",
+      "passwordSalt",
+      "verifierHash",
+      // sporades_auth_oauth_states.
+      "sessionToken",
+      "returnTo",
+      "redirectUri",
+      "pkceVerifier",
+      // sporades_log_events.
+      "capsuleName",
+      "capsuleId",
+      "releaseId",
+      "requestId",
+      "correlationId",
+      // sporades_files, sporades_file_buckets, sporades_file_uploads, sporades_file_public_urls,
+      // including the `publicUrlId` and `publicVersion` aliases the public URL join selects.
+      "bucketId",
+      "bucketName",
+      "fileId",
+      "expectedSize",
+      "revokedAt",
+      "publicUrlId",
+      "publicVersion",
+      // sporades_jobs.
+      "enqueuedByUserId",
+      "actorUserId",
+      "actorProvider",
+      "availableAt",
+      "idempotencyKey",
+      "startedAt",
+      "completedAt",
+      "failedAt",
+      "retryJson",
+      "attemptHistory",
+      "cancelRequestedAt",
+      "leaseExpiresAt",
+      // sporades_schedules.
+      "definitionFingerprint",
+      "effectiveTimezone",
+      "missedRunPolicy",
+      "nextOccurrence",
+      "latestScheduledFor",
+      "latestOutcome",
+      "latestJobId",
+      "latestErrorCode",
+      // sporades_schedule_occurrences, and the two columns it shares with sporades_jobs.
+      "scheduleName",
+      "scheduledFor",
+      "claimToken",
+      "claimExpiresAt",
+      "jobId",
+      "errorCode",
+    ].map((declared) => [declared.toLowerCase(), declared]),
+  )) as Map<string, string>;
+  return restore.get(name) ?? name;
 }
 
 function postgresAppTableColumnDefinitions(table: any) {

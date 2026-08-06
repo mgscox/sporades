@@ -4726,8 +4726,7 @@ async function ensureJobStorage(sqlite) {
   );
   await sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_jobs_idempotency ON sporades_jobs(handler, actorUserId, idempotencyKey) WHERE idempotencyKey IS NOT NULL");
   await sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_jobs_runnable ON sporades_jobs(status, availableAt, id)");
-  const columns = await sqlite.prepare("PRAGMA table_info(sporades_jobs)").all();
-  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) if (!columns.some((column) => column.name === name)) await sqlite.exec(`ALTER TABLE sporades_jobs ADD COLUMN ${name} ${type}`);
+  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) await runSchemaExecIgnoringDuplicateColumn(sqlite, `ALTER TABLE sporades_jobs ADD COLUMN ${name} ${type}`);
   await sqlite.exec("UPDATE sporades_jobs SET actorProvider = 'anonymous' WHERE actorProvider IS NULL OR actorProvider = ''");
 }
 async function createRuntimeDatabaseAdapter(databasePath, serverEnv = {}, config = {}) {
@@ -6311,36 +6310,75 @@ function postgresRowsFromResult(result) {
   });
 }
 function postgresRuntimeColumnName(name) {
-  return {
-    ownerid: "ownerId",
-    bucketid: "bucketId",
-    bucketname: "bucketName",
-    createdat: "createdAt",
-    updatedat: "updatedAt",
-    deletedat: "deletedAt",
-    fileid: "fileId",
-    expectedsize: "expectedSize",
-    publicurlid: "publicUrlId",
-    publicversion: "publicVersion",
-    expiresat: "expiresAt",
-    revokedat: "revokedAt",
-    userid: "userId",
-    displayname: "displayName",
-    isauthenticated: "isAuthenticated",
-    isguest: "isGuest",
-    passwordhash: "passwordHash",
-    passwordsalt: "passwordSalt",
-    verifierhash: "verifierHash",
-    sessiontoken: "sessionToken",
-    returnto: "returnTo",
-    redirecturi: "redirectUri",
-    pkceverifier: "pkceVerifier",
-    capsulename: "capsuleName",
-    capsuleid: "capsuleId",
-    releaseid: "releaseId",
-    requestid: "requestId",
-    correlationid: "correlationId"
-  }[name] ?? name;
+  const restore = postgresRuntimeColumnName.declaredColumnNames ??= new Map(
+    [
+      // Shared across the runtime-owned tables.
+      "createdAt",
+      "updatedAt",
+      "deletedAt",
+      "expiresAt",
+      "userId",
+      "ownerId",
+      // sporades_auth_users, sporades_auth_sessions, sporades_auth_identities.
+      "displayName",
+      "isAuthenticated",
+      "isGuest",
+      // sporades_auth_email_credentials, sporades_auth_password_reset_codes.
+      "passwordHash",
+      "passwordSalt",
+      "verifierHash",
+      // sporades_auth_oauth_states.
+      "sessionToken",
+      "returnTo",
+      "redirectUri",
+      "pkceVerifier",
+      // sporades_log_events.
+      "capsuleName",
+      "capsuleId",
+      "releaseId",
+      "requestId",
+      "correlationId",
+      // sporades_files, sporades_file_buckets, sporades_file_uploads, sporades_file_public_urls,
+      // including the `publicUrlId` and `publicVersion` aliases the public URL join selects.
+      "bucketId",
+      "bucketName",
+      "fileId",
+      "expectedSize",
+      "revokedAt",
+      "publicUrlId",
+      "publicVersion",
+      // sporades_jobs.
+      "enqueuedByUserId",
+      "actorUserId",
+      "actorProvider",
+      "availableAt",
+      "idempotencyKey",
+      "startedAt",
+      "completedAt",
+      "failedAt",
+      "retryJson",
+      "attemptHistory",
+      "cancelRequestedAt",
+      "leaseExpiresAt",
+      // sporades_schedules.
+      "definitionFingerprint",
+      "effectiveTimezone",
+      "missedRunPolicy",
+      "nextOccurrence",
+      "latestScheduledFor",
+      "latestOutcome",
+      "latestJobId",
+      "latestErrorCode",
+      // sporades_schedule_occurrences, and the two columns it shares with sporades_jobs.
+      "scheduleName",
+      "scheduledFor",
+      "claimToken",
+      "claimExpiresAt",
+      "jobId",
+      "errorCode"
+    ].map((declared) => [declared.toLowerCase(), declared])
+  );
+  return restore.get(name) ?? name;
 }
 function postgresAppTableColumnDefinitions(table) {
   return [
