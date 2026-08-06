@@ -189,7 +189,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   libsqlRowsFromResult,
   libsqlValueFromJs,
   libsqlValueToJs,
-  ensureLibsqlSessionLifecycleColumns,
   splitSqlStatements,
   openDevDatabase,
   recoverExpiredJobLeases,
@@ -423,13 +422,10 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS: Function[] = [
   contentTypeForFile,
   createAnonymousAuthTables,
   createProviderIdentityTables,
-  createLibsqlProviderIdentityTables,
   ensureOAuthStateColumns,
-  ensureLibsqlOAuthStateColumns,
   createUserPreferencesTables,
   ensureSessionLifecycleColumns,
   ensureSessionProvenanceColumn,
-  ensureLibsqlSessionProvenanceColumn,
   sessionExpiresAt,
   isExpiredSession,
   createSessionToken,
@@ -2656,14 +2652,12 @@ async function ensureJobStorage(sqlite: LooseRecord) {
   );
   await sqlite.exec("CREATE UNIQUE INDEX IF NOT EXISTS sporades_jobs_idempotency ON sporades_jobs(handler, actorUserId, idempotencyKey) WHERE idempotencyKey IS NOT NULL");
   await sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_jobs_runnable ON sporades_jobs(status, availableAt, id)");
-  // The columns added to the Job queue after its first release are declared with an ALTER that
-  // tolerates the column already being there, rather than probed for first. `PRAGMA table_info` is
-  // SQLite's alone, and this is a shared definition the Database adapter sends verbatim to
-  // whichever engine is configured, so the probe made every Capsule boot on a Postgres Capsule
-  // service fail with `syntax error at or near "PRAGMA"` before the Job queue existed. That is the
-  // same portable idiom `ensureFileUploadTargetColumns` already uses for the File metadata columns
-  // added after the fact.
-  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) await runSchemaExecIgnoringDuplicateColumn(sqlite, `ALTER TABLE sporades_jobs ADD COLUMN ${name} ${type}`);
+  // The columns added to the Job queue after its first release are declared through the dialect's
+  // add-missing-column strategy rather than probed for first. `PRAGMA table_info` is SQLite's
+  // alone, and this definition is sent verbatim to whichever engine is configured, so the probe
+  // made every Capsule boot on a Postgres Capsule service fail with `syntax error at or near
+  // "PRAGMA"` before the Job queue existed.
+  for (const [name, type] of [["retryJson", "TEXT"], ["attemptHistory", "TEXT"], ["cancelRequestedAt", "TEXT"], ["leaseExpiresAt", "TEXT"], ["scheduleName", "TEXT"], ["scheduledFor", "TEXT"], ["actorProvider", "TEXT"]]) await sqlite.dialect.addMissingColumn(sqlite, "sporades_jobs", name, type);
   await sqlite.exec("UPDATE sporades_jobs SET actorProvider = 'anonymous' WHERE actorProvider IS NULL OR actorProvider = ''");
 }
 
@@ -3050,8 +3044,16 @@ function s3ObjectNotFoundError() {
 // Every entry is required. A dialect that omits one fails here, at adapter construction, rather
 // than at the first statement that needed it: a new engine cannot half-answer the seam and
 // discover the gap in production.
-function createDatabaseDialect(spec: LooseRecord) {
-  const required = ["name", "quoteIdentifier", "columnType", "upsertSql", "listTables", "describeColumns"];
+export function createDatabaseDialect(spec: LooseRecord) {
+  const required = [
+    "name",
+    "quoteIdentifier",
+    "columnType",
+    "upsertSql",
+    "listTables",
+    "describeColumns",
+    "addMissingColumn",
+  ];
   const missing = required.filter((key) => spec[key] === undefined);
   if (missing.length > 0) {
     throw commandError(
@@ -3063,7 +3065,7 @@ function createDatabaseDialect(spec: LooseRecord) {
 }
 
 // SQLite's dialect, which libSQL shares because libSQL speaks SQLite's SQL.
-function sqliteDatabaseDialect() {
+export function sqliteDatabaseDialect() {
   return createDatabaseDialect({
     name: "sqlite",
     quoteIdentifier,
@@ -3082,10 +3084,16 @@ function sqliteDatabaseDialect() {
       adapter.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all(),
     describeColumns: (adapter: LooseRecord, tableName: string) =>
       adapter.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all(),
+    // Declare a column that an older database may not have. SQLite has no
+    // `ADD COLUMN IF NOT EXISTS`, so the ALTER is issued and a duplicate-column error swallowed.
+    // Probing `PRAGMA table_info` first would work here and nowhere else, which is exactly why the
+    // strategy is a dialect entry rather than a line in a shared body.
+    addMissingColumn: (adapter: LooseRecord, table: string, column: string, type: string) =>
+      runSchemaExecIgnoringDuplicateColumn(adapter, `ALTER TABLE ${table} ADD COLUMN ${column} ${type}`),
   });
 }
 
-function postgresDatabaseDialect() {
+export function postgresDatabaseDialect() {
   return createDatabaseDialect({
     name: "postgres",
     quoteIdentifier,
@@ -3121,13 +3129,20 @@ function postgresDatabaseDialect() {
           "WHERE table_schema = current_schema() AND table_name = ? ORDER BY ordinal_position",
         )
         .all(tableName),
+    // Postgres has `ADD COLUMN IF NOT EXISTS`, and using it is not merely tidier than swallowing a
+    // duplicate-column error. A swallowed error on Postgres aborts the enclosing transaction, so
+    // every statement after it fails with `current transaction is aborted`. Storage bootstrap runs
+    // outside the migration transaction to keep that hazard out of reach; asking the engine not to
+    // raise the error in the first place removes it.
+    addMissingColumn: (adapter: LooseRecord, table: string, column: string, type: string) =>
+      adapter.exec(`ALTER TABLE ${table} ADD COLUMN IF NOT EXISTS ${column} ${type}`),
   });
 }
 
 // The engine-agnostic Database adapter method set, defined once. Composed into every engine's
 // adapter by spreading, so each method is an own enumerable property and the conformance coverage
 // gate's enumeration sees the same names on every engine.
-function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseRecord {
+export function createSharedDatabaseAdapterMethods(dialect: LooseRecord): LooseRecord {
   return {
     ensureSystemTable() {
       return this.exec("CREATE TABLE IF NOT EXISTS sporades (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
@@ -3807,87 +3822,13 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     // shared definition. The override also carried a dead branch that dispatched an object first
     // argument to `writeSchemaMetadata`; nothing in the runtime or the specification ever called it
     // that way, and it went with the copy.
-    async ensureAuthStorage(authConfig: any = null) {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
-        "id TEXT PRIMARY KEY, " +
-        "createdAt TEXT NOT NULL, " +
-        "displayName TEXT NOT NULL, " +
-        "email TEXT, " +
-        "picture TEXT, " +
-        "isAuthenticated INTEGER NOT NULL, " +
-        "isGuest INTEGER NOT NULL, " +
-        "provider TEXT NOT NULL" +
-        ")",
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
-        "token TEXT PRIMARY KEY, " +
-        "userId TEXT NOT NULL, " +
-        "provider TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "expiresAt TEXT NOT NULL" +
-        ")",
-      );
-      await this.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN IF NOT EXISTS provider TEXT");
-      await this.exec(
-        "UPDATE sporades_auth_sessions SET provider = " +
-        "COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') " +
-        "WHERE provider IS NULL",
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_identities (" +
-        "id TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, " +
-        "displayName TEXT, picture TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, UNIQUE(provider, subject))",
-      );
-      await this.exec(
-        "INSERT INTO sporades_auth_identities " +
-        "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) " +
-        "SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt " +
-        "FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' " +
-        "AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)",
-      );
-      if (authConfig?.providers?.email?.enabled) {
-        await this.exec(
-          "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
-          "email TEXT PRIMARY KEY, " +
-          "userId TEXT NOT NULL, " +
-          "passwordHash TEXT NOT NULL, " +
-          "passwordSalt TEXT NOT NULL, " +
-          "createdAt TEXT NOT NULL" +
-          ")",
-        );
-        await this.exec(
-          "CREATE TABLE IF NOT EXISTS sporades_auth_password_reset_codes (" +
-          "selector TEXT PRIMARY KEY, " +
-          "verifierHash TEXT NOT NULL, " +
-          "email TEXT NOT NULL, " +
-          "userId TEXT NOT NULL, " +
-          "createdAt TEXT NOT NULL, " +
-          "expiresAt TEXT NOT NULL" +
-          ")",
-        );
-      }
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
-        "state TEXT PRIMARY KEY, " +
-        "provider TEXT NOT NULL, " +
-        "sessionToken TEXT NOT NULL, " +
-        "returnTo TEXT NOT NULL, " +
-        "redirectUri TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "expiresAt TEXT NOT NULL, " +
-        "nonce TEXT, " +
-        "pkceVerifier TEXT" +
-        ")",
-      );
-      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS provider TEXT");
-      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS expiresAt TEXT");
-      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS nonce TEXT");
-      await this.exec("ALTER TABLE sporades_auth_oauth_states ADD COLUMN IF NOT EXISTS pkceVerifier TEXT");
-      await this.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
-      await this.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
-    },
+    // `ensureAuthStorage` and `ensureFileStorage` were overridden here because the shared
+    // definitions fired their statements without chaining them, which is a sequence on a
+    // synchronous engine and a race on an asynchronous one, and because probing `PRAGMA
+    // table_info` for a missing column is SQLite+s idiom alone. The shared definitions chain, and
+    // declaring a missing column is a dialect entry that reaches for `ADD COLUMN IF NOT EXISTS`
+    // here. That is the safer form as well as the shorter one: swallowing a duplicate-column error
+    // on Postgres aborts the enclosing transaction.
     async consumeOAuthState(state: string) {
       const row = await (this.prepare(
         "DELETE FROM sporades_auth_oauth_states WHERE state = ? " +
@@ -3901,71 +3842,6 @@ export async function createPostgresDatabaseAdapter(options: { url: any; }) {
     // of the bare `CREATE TABLE` here would be a Log index that never gained the column — the
     // dormant-shared-body hazard ADR-0034 describes, arriving as a missing migration instead of an
     // unresolved result.
-    async ensureFileStorage() {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
-        "id TEXT PRIMARY KEY, " +
-        "ownerId TEXT NOT NULL, " +
-        "name TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "UNIQUE(ownerId, name)" +
-        ")",
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_files (" +
-        "id TEXT PRIMARY KEY, " +
-        "ownerId TEXT NOT NULL, " +
-        "bucketId TEXT NOT NULL, " +
-        "bucketName TEXT NOT NULL, " +
-        "path TEXT NOT NULL, " +
-        "name TEXT NOT NULL, " +
-        "type TEXT NOT NULL, " +
-        "size INTEGER NOT NULL, " +
-        "version TEXT NOT NULL, " +
-        "status TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "updatedAt TEXT NOT NULL, " +
-        "deletedAt TEXT" +
-        ")",
-      );
-      await this.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT").catch((error: any) => {
-        if (!isDuplicateColumnError(error)) throw error;
-      });
-      await this.exec(filePathBackfillSql());
-      await this.exec(activeFilePathDedupeSql());
-      await this.exec("CREATE INDEX IF NOT EXISTS sporades_files_path_live ON sporades_files (path, deletedAt, status)");
-      await this.exec(
-        "CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_path_active_unique " +
-        "ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')",
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
-        "id TEXT PRIMARY KEY, " +
-        "fileId TEXT NOT NULL, " +
-        "ownerId TEXT NOT NULL, " +
-        "bucketId TEXT NOT NULL, " +
-        "bucketName TEXT NOT NULL, " +
-        "path TEXT NOT NULL, " +
-        "name TEXT NOT NULL, " +
-        "type TEXT NOT NULL, " +
-        "version TEXT NOT NULL, " +
-        "expectedSize INTEGER NOT NULL, " +
-        "createdAt TEXT NOT NULL" +
-        ")",
-      );
-      await ensureFileUploadTargetColumns(this);
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (" +
-        "id TEXT PRIMARY KEY, " +
-        "fileId TEXT NOT NULL, " +
-        "ownerId TEXT NOT NULL, " +
-        "version TEXT NOT NULL, " +
-        "expiresAt TEXT, " +
-        "createdAt TEXT NOT NULL, " +
-        "revokedAt TEXT" +
-        ")",
-      );
-    },
     // `ensureUserPreferencesStorage` and `readUserPreferences` were await-shims in ADR-0034's
     // sense: the same SQL as the shared definitions, differing only by an `await` that the caller
     // already performs. Nothing was derived from an unresolved result in either shared body, so
@@ -4670,132 +4546,11 @@ export async function createLibsqlDatabaseAdapter(options: { url: any; authToken
     // of the bare `CREATE TABLE` here would be a Log index that never gained the column — the
     // dormant-shared-body hazard ADR-0034 describes, arriving as a missing migration instead of an
     // unresolved result.
-    async ensureFileStorage() {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
-        "id TEXT PRIMARY KEY, " +
-        "ownerId TEXT NOT NULL, " +
-        "name TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "UNIQUE(ownerId, name)" +
-        ")",
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_files (" +
-        "id TEXT PRIMARY KEY, " +
-        "ownerId TEXT NOT NULL, " +
-        "bucketId TEXT NOT NULL, " +
-        "bucketName TEXT NOT NULL, " +
-        "path TEXT NOT NULL, " +
-        "name TEXT NOT NULL, " +
-        "type TEXT NOT NULL, " +
-        "size INTEGER NOT NULL, " +
-        "version TEXT NOT NULL, " +
-        "status TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "updatedAt TEXT NOT NULL, " +
-        "deletedAt TEXT" +
-        ")",
-      );
-      await this.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT").catch((error: any) => {
-        if (!isDuplicateColumnError(error)) throw error;
-      });
-      await this.exec(filePathBackfillSql());
-      await this.exec(activeFilePathDedupeSql());
-      await this.exec("CREATE INDEX IF NOT EXISTS sporades_files_path_live ON sporades_files (path, deletedAt, status)");
-      await this.exec(
-        "CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_path_active_unique " +
-        "ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')",
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
-        "id TEXT PRIMARY KEY, " +
-        "fileId TEXT NOT NULL, " +
-        "ownerId TEXT NOT NULL, " +
-        "bucketId TEXT NOT NULL, " +
-        "bucketName TEXT NOT NULL, " +
-        "path TEXT NOT NULL, " +
-        "name TEXT NOT NULL, " +
-        "type TEXT NOT NULL, " +
-        "version TEXT NOT NULL, " +
-        "expectedSize INTEGER NOT NULL, " +
-        "createdAt TEXT NOT NULL" +
-        ")",
-      );
-      await ensureFileUploadTargetColumns(this);
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (" +
-        "id TEXT PRIMARY KEY, " +
-        "fileId TEXT NOT NULL, " +
-        "ownerId TEXT NOT NULL, " +
-        "version TEXT NOT NULL, " +
-        "expiresAt TEXT, " +
-        "createdAt TEXT NOT NULL, " +
-        "revokedAt TEXT" +
-        ")",
-      );
-    },
-    async ensureAuthStorage(authConfig: any = null) {
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
-        "id TEXT PRIMARY KEY, " +
-        "createdAt TEXT NOT NULL, " +
-        "displayName TEXT NOT NULL, " +
-        "email TEXT, " +
-        "picture TEXT, " +
-        "isAuthenticated INTEGER NOT NULL, " +
-        "isGuest INTEGER NOT NULL, " +
-        "provider TEXT NOT NULL" +
-        ")",
-      );
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
-        "token TEXT PRIMARY KEY, " +
-        "userId TEXT NOT NULL, " +
-        "provider TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "expiresAt TEXT NOT NULL" +
-        ")",
-      );
-      await ensureLibsqlSessionLifecycleColumns(this as any);
-      await ensureLibsqlSessionProvenanceColumn(this as any);
-      await createLibsqlProviderIdentityTables(this as any);
-      if (authConfig?.providers?.email?.enabled) {
-        await this.exec(
-          "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
-          "email TEXT PRIMARY KEY, " +
-          "userId TEXT NOT NULL, " +
-          "passwordHash TEXT NOT NULL, " +
-          "passwordSalt TEXT NOT NULL, " +
-          "createdAt TEXT NOT NULL" +
-          ")",
-        );
-        await this.exec(
-          "CREATE TABLE IF NOT EXISTS sporades_auth_password_reset_codes (" +
-          "selector TEXT PRIMARY KEY, " +
-          "verifierHash TEXT NOT NULL, " +
-          "email TEXT NOT NULL, " +
-          "userId TEXT NOT NULL, " +
-          "createdAt TEXT NOT NULL, " +
-          "expiresAt TEXT NOT NULL" +
-          ")",
-        );
-      }
-      await this.exec(
-        "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
-        "state TEXT PRIMARY KEY, " +
-        "provider TEXT NOT NULL, " +
-        "sessionToken TEXT NOT NULL, " +
-        "returnTo TEXT NOT NULL, " +
-        "redirectUri TEXT NOT NULL, " +
-        "createdAt TEXT NOT NULL, " +
-        "expiresAt TEXT NOT NULL, " +
-        "nonce TEXT, " +
-        "pkceVerifier TEXT" +
-        ")",
-      );
-      await ensureLibsqlOAuthStateColumns(this);
-    },
+    // `ensureFileStorage` and `ensureAuthStorage` were overridden here for the same two reasons
+    // Postgres had: the shared definitions fired their statements without chaining them, and they
+    // probed `PRAGMA table_info` to decide whether a column had to be added. The shared
+    // definitions chain now, and declaring a missing column is a dialect entry — which for libSQL
+    // is SQLite's duplicate-tolerant ALTER, the same statement this copy used to send.
     async consumeOAuthState(state: any) {
       return (await this.prepare(
         "DELETE FROM sporades_auth_oauth_states WHERE state = ? " +
@@ -5824,12 +5579,11 @@ function createLogIndexTables(sqlite: LooseRecord) {
       ")",
     ),
   );
-  // The additive migration for a Log index table that already exists. `PRAGMA table_info` is
-  // SQLite's alone and this definition is sent verbatim to whichever engine is configured, so the
-  // column is declared with a duplicate-tolerant ALTER rather than probed for first — the same
-  // idiom `ensureJobStorage` and `ensureFileUploadTargetColumns` already use.
+  // The additive migration for a Log index table that already exists. Declaring a column an older
+  // database may not have is a dialect entry, because the strategies genuinely differ: `PRAGMA
+  // table_info` is SQLite's alone, SQLite has no `ADD COLUMN IF NOT EXISTS`, and Postgres does.
   chain = chainSchemaOperation(chain, () =>
-    runSchemaExecIgnoringDuplicateColumn(sqlite, "ALTER TABLE sporades_log_events ADD COLUMN indexSequence TEXT"),
+    sqlite.dialect.addMissingColumn(sqlite, "sporades_log_events", "indexSequence", "TEXT"),
   );
   return chainSchemaOperation(chain, () => backfillLogIndexSequences(sqlite));
 }
@@ -6911,72 +6665,77 @@ export async function checkRuntimeFileStorage(database: LooseRecord) {
   return await database.fileStorage.checkHealth();
 }
 
+// The one definition of the File metadata storage bootstrap, for every engine. Chained rather than
+// fired, and outside any transaction, for the reasons `createAnonymousAuthTables` records.
 function createFileStorageTables(sqlite: LooseRecord) {
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
-    "id TEXT PRIMARY KEY, " +
-    "ownerId TEXT NOT NULL, " +
-    "name TEXT NOT NULL, " +
-    "createdAt TEXT NOT NULL, " +
-    "UNIQUE(ownerId, name)" +
-    ")",
-  );
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_files (" +
-    "id TEXT PRIMARY KEY, " +
-    "ownerId TEXT NOT NULL, " +
-    "bucketId TEXT NOT NULL, " +
-    "bucketName TEXT NOT NULL, " +
-    "path TEXT NOT NULL, " +
-    "name TEXT NOT NULL, " +
-    "type TEXT NOT NULL, " +
-    "size INTEGER NOT NULL, " +
-    "version TEXT NOT NULL, " +
-    "status TEXT NOT NULL, " +
-    "createdAt TEXT NOT NULL, " +
-    "updatedAt TEXT NOT NULL, " +
-    "deletedAt TEXT" +
-    ")",
-  );
-  try {
-    sqlite.exec("ALTER TABLE sporades_files ADD COLUMN path TEXT");
-  } catch (error: any) {
-    if (!isDuplicateColumnError(error)) throw error;
-  }
-  sqlite.exec(filePathBackfillSql());
-  sqlite.exec(activeFilePathDedupeSql());
-  sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_files_path_live ON sporades_files (path, deletedAt, status)");
-  sqlite.exec(
-    "CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_path_active_unique " +
-    "ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')",
-  );
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
-    "id TEXT PRIMARY KEY, " +
-    "fileId TEXT NOT NULL, " +
-    "ownerId TEXT NOT NULL, " +
-    "bucketId TEXT NOT NULL, " +
-    "bucketName TEXT NOT NULL, " +
-    "path TEXT NOT NULL, " +
-    "name TEXT NOT NULL, " +
-    "type TEXT NOT NULL, " +
-    "version TEXT NOT NULL, " +
-    "expectedSize INTEGER NOT NULL, " +
-    "createdAt TEXT NOT NULL" +
-    ")",
-  );
-  ensureFileUploadTargetColumns(sqlite);
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (" +
-    "id TEXT PRIMARY KEY, " +
-    "fileId TEXT NOT NULL, " +
-    "ownerId TEXT NOT NULL, " +
-    "version TEXT NOT NULL, " +
-    "expiresAt TEXT, " +
-    "createdAt TEXT NOT NULL, " +
-    "revokedAt TEXT" +
-    ")",
-  );
+  return chainMaybePromise([
+    () =>
+      sqlite.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_file_buckets (" +
+        "id TEXT PRIMARY KEY, " +
+        "ownerId TEXT NOT NULL, " +
+        "name TEXT NOT NULL, " +
+        "createdAt TEXT NOT NULL, " +
+        "UNIQUE(ownerId, name)" +
+        ")",
+      ),
+    () =>
+      sqlite.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_files (" +
+        "id TEXT PRIMARY KEY, " +
+        "ownerId TEXT NOT NULL, " +
+        "bucketId TEXT NOT NULL, " +
+        "bucketName TEXT NOT NULL, " +
+        "path TEXT NOT NULL, " +
+        "name TEXT NOT NULL, " +
+        "type TEXT NOT NULL, " +
+        "size INTEGER NOT NULL, " +
+        "version TEXT NOT NULL, " +
+        "status TEXT NOT NULL, " +
+        "createdAt TEXT NOT NULL, " +
+        "updatedAt TEXT NOT NULL, " +
+        "deletedAt TEXT" +
+        ")",
+      ),
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_files", "path", "TEXT"),
+    () => sqlite.exec(filePathBackfillSql()),
+    () => sqlite.exec(activeFilePathDedupeSql()),
+    () => sqlite.exec("CREATE INDEX IF NOT EXISTS sporades_files_path_live ON sporades_files (path, deletedAt, status)"),
+    () =>
+      sqlite.exec(
+        "CREATE UNIQUE INDEX IF NOT EXISTS sporades_files_path_active_unique " +
+        "ON sporades_files (path) WHERE deletedAt IS NULL AND status IN ('pending', 'uploaded')",
+      ),
+    () =>
+      sqlite.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_file_uploads (" +
+        "id TEXT PRIMARY KEY, " +
+        "fileId TEXT NOT NULL, " +
+        "ownerId TEXT NOT NULL, " +
+        "bucketId TEXT NOT NULL, " +
+        "bucketName TEXT NOT NULL, " +
+        "path TEXT NOT NULL, " +
+        "name TEXT NOT NULL, " +
+        "type TEXT NOT NULL, " +
+        "version TEXT NOT NULL, " +
+        "expectedSize INTEGER NOT NULL, " +
+        "createdAt TEXT NOT NULL" +
+        ")",
+      ),
+    () => ensureFileUploadTargetColumns(sqlite),
+    () =>
+      sqlite.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_file_public_urls (" +
+        "id TEXT PRIMARY KEY, " +
+        "fileId TEXT NOT NULL, " +
+        "ownerId TEXT NOT NULL, " +
+        "version TEXT NOT NULL, " +
+        "expiresAt TEXT, " +
+        "createdAt TEXT NOT NULL, " +
+        "revokedAt TEXT" +
+        ")",
+      ),
+  ]);
 }
 
 async function readRequestBytes(request: any, maxBytes: number) {
@@ -7602,12 +7361,14 @@ function activeFilePathDedupeSql() {
 }
 
 function ensureFileUploadTargetColumns(sqlite: LooseRecord) {
+  const addedColumns = [
+    ["bucketId", "TEXT"],
+    ["bucketName", "TEXT"],
+    ["path", "TEXT"],
+    ["name", "TEXT"],
+    ["type", "TEXT"],
+  ];
   const statements = [
-    "ALTER TABLE sporades_file_uploads ADD COLUMN bucketId TEXT",
-    "ALTER TABLE sporades_file_uploads ADD COLUMN bucketName TEXT",
-    "ALTER TABLE sporades_file_uploads ADD COLUMN path TEXT",
-    "ALTER TABLE sporades_file_uploads ADD COLUMN name TEXT",
-    "ALTER TABLE sporades_file_uploads ADD COLUMN type TEXT",
     "UPDATE sporades_file_uploads SET " +
     "bucketId = COALESCE(bucketId, (SELECT bucketId FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
     "bucketName = COALESCE(bucketName, (SELECT bucketName FROM sporades_files WHERE sporades_files.id = sporades_file_uploads.fileId)), " +
@@ -7621,15 +7382,10 @@ function ensureFileUploadTargetColumns(sqlite: LooseRecord) {
     "CREATE INDEX IF NOT EXISTS sporades_file_uploads_path ON sporades_file_uploads (path)",
     "CREATE UNIQUE INDEX IF NOT EXISTS sporades_file_uploads_path_unique ON sporades_file_uploads (path)",
   ];
-  let chain = undefined;
-  for (const statement of statements) {
-    const operation = () =>
-      statement.startsWith("ALTER TABLE")
-        ? runSchemaExecIgnoringDuplicateColumn(sqlite, statement)
-        : sqlite.exec(statement);
-    chain = chainSchemaOperation(chain, operation);
-  }
-  return chain;
+  return chainMaybePromise([
+    ...addedColumns.map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_file_uploads", name, type)),
+    ...statements.map((statement) => () => sqlite.exec(statement)),
+  ]);
 }
 
 function runSchemaExecIgnoringDuplicateColumn(sqlite: LooseRecord, sql: string) {
@@ -12518,123 +12274,132 @@ function emailAuthDisabledError() {
   };
 }
 
+// The one definition of the auth storage bootstrap, for every engine.
+//
+// Each step is chained rather than fired: on a synchronous engine that is the order the statements
+// already ran in, and on an asynchronous one it is the difference between a sequence and a race.
+// The unchained form worked on SQLite alone, which is why Postgres and libSQL each carried a copy
+// that awaited the same statements in order.
+//
+// Kept outside any transaction by its caller. `addMissingColumn` tolerates a column that is
+// already there, and on Postgres a swallowed duplicate-column error would abort the enclosing
+// transaction and fail everything after it. The Postgres dialect asks the engine not to raise the
+// error at all, but storage bootstrap still runs before the migration transaction opens; it has to
+// stay there.
 function createAnonymousAuthTables(sqlite: LooseRecord, authConfig: LooseRecord | null = null) {
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
-    "id TEXT PRIMARY KEY, " +
-    "createdAt TEXT NOT NULL, " +
-    "displayName TEXT NOT NULL, " +
-    "email TEXT, " +
-    "picture TEXT, " +
-    "isAuthenticated INTEGER NOT NULL, " +
-    "isGuest INTEGER NOT NULL, " +
-    "provider TEXT NOT NULL" +
-    ")",
-  );
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
-    "token TEXT PRIMARY KEY, " +
-    "userId TEXT NOT NULL, " +
-    "provider TEXT NOT NULL, " +
-    "createdAt TEXT NOT NULL, " +
-    "expiresAt TEXT NOT NULL" +
-    ")",
-  );
-  ensureSessionLifecycleColumns(sqlite);
-  ensureSessionProvenanceColumn(sqlite);
-  createProviderIdentityTables(sqlite);
-  if (authConfig?.providers?.email?.enabled) {
-    sqlite.exec(
-      "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
-      "email TEXT PRIMARY KEY, " +
-      "userId TEXT NOT NULL, " +
-      "passwordHash TEXT NOT NULL, " +
-      "passwordSalt TEXT NOT NULL, " +
-      "createdAt TEXT NOT NULL" +
-      ")",
-    );
-    sqlite.exec(
-      "CREATE TABLE IF NOT EXISTS sporades_auth_password_reset_codes (" +
-      "selector TEXT PRIMARY KEY, " +
-      "verifierHash TEXT NOT NULL, " +
-      "email TEXT NOT NULL, " +
-      "userId TEXT NOT NULL, " +
-      "createdAt TEXT NOT NULL, " +
-      "expiresAt TEXT NOT NULL" +
-      ")",
-    );
-  }
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
-    "state TEXT PRIMARY KEY, " +
-    "provider TEXT NOT NULL, " +
-    "sessionToken TEXT NOT NULL, " +
-    "returnTo TEXT NOT NULL, " +
-    "redirectUri TEXT NOT NULL, " +
-    "createdAt TEXT NOT NULL, " +
-    "expiresAt TEXT NOT NULL, " +
-    "nonce TEXT, " +
-    "pkceVerifier TEXT" +
-    ")",
-  );
-  ensureOAuthStateColumns(sqlite);
+  return chainMaybePromise([
+    () =>
+      sqlite.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_auth_users (" +
+        "id TEXT PRIMARY KEY, " +
+        "createdAt TEXT NOT NULL, " +
+        "displayName TEXT NOT NULL, " +
+        "email TEXT, " +
+        "picture TEXT, " +
+        "isAuthenticated INTEGER NOT NULL, " +
+        "isGuest INTEGER NOT NULL, " +
+        "provider TEXT NOT NULL" +
+        ")",
+      ),
+    () =>
+      sqlite.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_auth_sessions (" +
+        "token TEXT PRIMARY KEY, " +
+        "userId TEXT NOT NULL, " +
+        "provider TEXT NOT NULL, " +
+        "createdAt TEXT NOT NULL, " +
+        "expiresAt TEXT NOT NULL" +
+        ")",
+      ),
+    () => ensureSessionLifecycleColumns(sqlite),
+    () => ensureSessionProvenanceColumn(sqlite),
+    () => createProviderIdentityTables(sqlite),
+    ...(authConfig?.providers?.email?.enabled
+      ? [
+        () =>
+          sqlite.exec(
+            "CREATE TABLE IF NOT EXISTS sporades_auth_email_credentials (" +
+            "email TEXT PRIMARY KEY, " +
+            "userId TEXT NOT NULL, " +
+            "passwordHash TEXT NOT NULL, " +
+            "passwordSalt TEXT NOT NULL, " +
+            "createdAt TEXT NOT NULL" +
+            ")",
+          ),
+        () =>
+          sqlite.exec(
+            "CREATE TABLE IF NOT EXISTS sporades_auth_password_reset_codes (" +
+            "selector TEXT PRIMARY KEY, " +
+            "verifierHash TEXT NOT NULL, " +
+            "email TEXT NOT NULL, " +
+            "userId TEXT NOT NULL, " +
+            "createdAt TEXT NOT NULL, " +
+            "expiresAt TEXT NOT NULL" +
+            ")",
+          ),
+      ]
+      : []),
+    () =>
+      sqlite.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_auth_oauth_states (" +
+        "state TEXT PRIMARY KEY, " +
+        "provider TEXT NOT NULL, " +
+        "sessionToken TEXT NOT NULL, " +
+        "returnTo TEXT NOT NULL, " +
+        "redirectUri TEXT NOT NULL, " +
+        "createdAt TEXT NOT NULL, " +
+        "expiresAt TEXT NOT NULL, " +
+        "nonce TEXT, " +
+        "pkceVerifier TEXT" +
+        ")",
+      ),
+    () => ensureOAuthStateColumns(sqlite),
+  ]);
 }
 
 function ensureOAuthStateColumns(sqlite: LooseRecord) {
-  const existing = new Set(sqlite.prepare("PRAGMA table_info(sporades_auth_oauth_states)").all().map((row: LooseRecord) => row.name));
-  const columns = [
-    ["provider", "TEXT"],
-    ["expiresAt", "TEXT"],
-    ["nonce", "TEXT"],
-    ["pkceVerifier", "TEXT"],
-  ];
-  for (const [name, type] of columns) {
-    if (!existing.has(name)) {
-      sqlite.exec(`ALTER TABLE sporades_auth_oauth_states ADD COLUMN ${name} ${type}`);
-    }
-  }
-  sqlite.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
-  sqlite.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
-}
-
-async function ensureLibsqlOAuthStateColumns(sqlite: LooseRecord) {
-  const rows = await sqlite.prepare("PRAGMA table_info(sporades_auth_oauth_states)").all();
-  const existing = new Set(rows.map((row: LooseRecord) => row.name));
-  for (const [name, type] of [["provider", "TEXT"], ["expiresAt", "TEXT"], ["nonce", "TEXT"], ["pkceVerifier", "TEXT"]]) {
-    if (!existing.has(name)) {
-      await sqlite.exec(`ALTER TABLE sporades_auth_oauth_states ADD COLUMN ${name} ${type}`);
-    }
-  }
-  await sqlite.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL");
-  await sqlite.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL");
+  return chainMaybePromise([
+    ...[
+      ["provider", "TEXT"],
+      ["expiresAt", "TEXT"],
+      ["nonce", "TEXT"],
+      ["pkceVerifier", "TEXT"],
+    ].map(([name, type]) => () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_oauth_states", name, type)),
+    () => sqlite.exec("UPDATE sporades_auth_oauth_states SET provider = 'google' WHERE provider IS NULL"),
+    () => sqlite.exec("UPDATE sporades_auth_oauth_states SET expiresAt = createdAt WHERE expiresAt IS NULL"),
+  ]);
 }
 
 function createProviderIdentityTables(sqlite: LooseRecord) {
-  sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_identities (" +
-    "id TEXT PRIMARY KEY, " +
-    "userId TEXT NOT NULL, " +
-    "provider TEXT NOT NULL, " +
-    "subject TEXT NOT NULL, " +
-    "email TEXT, " +
-    "displayName TEXT, " +
-    "picture TEXT, " +
-    "createdAt TEXT NOT NULL, " +
-    "updatedAt TEXT NOT NULL, " +
-    "UNIQUE(provider, subject)" +
-    ")",
-  );
-  sqlite.exec(
-    "INSERT INTO sporades_auth_identities " +
-    "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) " +
-    "SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt " +
-    "FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' " +
-    "AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)",
-  );
+  return chainMaybePromise([
+    () =>
+      sqlite.exec(
+        "CREATE TABLE IF NOT EXISTS sporades_auth_identities (" +
+        "id TEXT PRIMARY KEY, " +
+        "userId TEXT NOT NULL, " +
+        "provider TEXT NOT NULL, " +
+        "subject TEXT NOT NULL, " +
+        "email TEXT, " +
+        "displayName TEXT, " +
+        "picture TEXT, " +
+        "createdAt TEXT NOT NULL, " +
+        "updatedAt TEXT NOT NULL, " +
+        "UNIQUE(provider, subject)" +
+        ")",
+      ),
+    () =>
+      sqlite.exec(
+        "INSERT INTO sporades_auth_identities " +
+        "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) " +
+        "SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt " +
+        "FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' " +
+        "AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)",
+      ),
+  ]);
 }
 
-async function createUserPreferencesTables(sqlite: LooseRecord) {
-  await sqlite.exec(
+function createUserPreferencesTables(sqlite: LooseRecord) {
+  return sqlite.exec(
     "CREATE TABLE IF NOT EXISTS sporades_user_preferences (" +
     "userId TEXT PRIMARY KEY, " +
     "value TEXT NOT NULL, " +
@@ -12643,66 +12408,30 @@ async function createUserPreferencesTables(sqlite: LooseRecord) {
   );
 }
 
+// The backfill runs unconditionally rather than only when the column was just added. It was
+// conditional because the `PRAGMA table_info` probe happened to say whether the ALTER had fired,
+// and the probe is SQLite's alone; the predicate does the same work portably, because a session
+// that already has an expiry has a non-null one.
 function ensureSessionLifecycleColumns(sqlite: LooseRecord) {
-  const columns = sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
-  const hasExpiresAt = columns.some((column: { name: string; }) => column.name === "expiresAt");
-  if (!hasExpiresAt) {
-    sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN expiresAt TEXT");
-    sqlite
-      .prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE expiresAt IS NULL")
-      .run(sessionExpiresAt(new Date().toISOString()));
-  }
+  return chainMaybePromise([
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_sessions", "expiresAt", "TEXT"),
+    () =>
+      sqlite
+        .prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE expiresAt IS NULL")
+        .run(sessionExpiresAt(new Date().toISOString())),
+  ]);
 }
 
 function ensureSessionProvenanceColumn(sqlite: LooseRecord) {
-  const columns = sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
-  const hasProvider = columns.some((column: { name: string; }) => column.name === "provider");
-  if (!hasProvider) {
-    sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN provider TEXT");
-  }
-  sqlite.exec(
-    "UPDATE sporades_auth_sessions SET provider = " +
-    "COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') " +
-    "WHERE provider IS NULL",
-  );
-}
-
-async function ensureLibsqlSessionLifecycleColumns(sqlite: LooseRecord) {
-  const columns = await sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
-  const hasExpiresAt = columns.some((column: { name: string; }) => column.name === "expiresAt");
-  if (!hasExpiresAt) {
-    await sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN expiresAt TEXT");
-    await sqlite
-      .prepare("UPDATE sporades_auth_sessions SET expiresAt = ? WHERE expiresAt IS NULL")
-      .run(sessionExpiresAt(new Date().toISOString()));
-  }
-}
-
-async function ensureLibsqlSessionProvenanceColumn(sqlite: LooseRecord) {
-  const columns = await sqlite.prepare("PRAGMA table_info(sporades_auth_sessions)").all();
-  if (!columns.some((column: { name: string; }) => column.name === "provider")) {
-    await sqlite.exec("ALTER TABLE sporades_auth_sessions ADD COLUMN provider TEXT");
-  }
-  await sqlite.exec(
-    "UPDATE sporades_auth_sessions SET provider = " +
-    "COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') " +
-    "WHERE provider IS NULL",
-  );
-}
-
-async function createLibsqlProviderIdentityTables(sqlite: LooseRecord) {
-  await sqlite.exec(
-    "CREATE TABLE IF NOT EXISTS sporades_auth_identities (" +
-    "id TEXT PRIMARY KEY, userId TEXT NOT NULL, provider TEXT NOT NULL, subject TEXT NOT NULL, email TEXT, " +
-    "displayName TEXT, picture TEXT, createdAt TEXT NOT NULL, updatedAt TEXT NOT NULL, UNIQUE(provider, subject))",
-  );
-  await sqlite.exec(
-    "INSERT INTO sporades_auth_identities " +
-    "(id, userId, provider, subject, email, displayName, picture, createdAt, updatedAt) " +
-    "SELECT 'legacy:' || id, id, provider, 'legacy:' || id, email, displayName, picture, createdAt, createdAt " +
-    "FROM sporades_auth_users u WHERE provider = 'google' AND id != '__privileged__' " +
-    "AND NOT EXISTS (SELECT 1 FROM sporades_auth_identities i WHERE i.userId = u.id AND i.provider = u.provider)",
-  );
+  return chainMaybePromise([
+    () => sqlite.dialect.addMissingColumn(sqlite, "sporades_auth_sessions", "provider", "TEXT"),
+    () =>
+      sqlite.exec(
+        "UPDATE sporades_auth_sessions SET provider = " +
+        "COALESCE(provider, (SELECT provider FROM sporades_auth_users WHERE id = sporades_auth_sessions.userId), 'anonymous') " +
+        "WHERE provider IS NULL",
+      ),
+  ]);
 }
 
 function splitSqlStatements(sql: any) {
