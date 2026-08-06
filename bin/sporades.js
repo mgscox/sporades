@@ -9946,6 +9946,33 @@ function skipSqlStringOrComment(sql, index) {
     const end = sql.indexOf("\n", index + 2);
     return end === -1 ? sql.length : end + 1;
   }
+  const opensToken = !/[A-Za-z0-9_$\u0080-\uffff]/.test(sql[index - 1] ?? "");
+  if (sql[index] === "$" && opensToken) {
+    const delimiter = /^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(index))?.[0];
+    if (!delimiter) {
+      return index;
+    }
+    const end = sql.indexOf(delimiter, index + delimiter.length);
+    return end === -1 ? index : end + delimiter.length;
+  }
+  if ((sql[index] === "E" || sql[index] === "e") && sql[index + 1] === "'" && opensToken) {
+    let cursor2 = index + 2;
+    while (cursor2 < sql.length) {
+      if (sql[cursor2] === "\\") {
+        cursor2 += 2;
+        continue;
+      }
+      if (sql[cursor2] === "'") {
+        if (sql[cursor2 + 1] === "'") {
+          cursor2 += 2;
+          continue;
+        }
+        return cursor2 + 1;
+      }
+      cursor2 += 1;
+    }
+    return index;
+  }
   const quote = sql[index];
   const closingQuote = quote === "[" ? "]" : quote;
   if (quote !== "'" && quote !== '"' && quote !== "`" && quote !== "[") {
