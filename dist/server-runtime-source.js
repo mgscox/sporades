@@ -131,7 +131,6 @@ export const SERVER_RUNTIME_SOURCE_FUNCTIONS = [
     scheduleNextDelayedJob,
     runCurrentUserJobWorker,
     safeJobFailure,
-    postgresPlaceholders,
     postgresInterpolate,
     createPostgresConnection,
     postgresUrlOptions,
@@ -4080,6 +4079,43 @@ function postgresErrorFromBody(body) {
     }
     return new Error(fields.M ?? "Postgres query failed.");
 }
+// `?` placeholders replaced with literals, skipping the ones inside strings and comments.
+//
+// **This is a second SQL lexer, it is on the read-only inspection path, and it is deliberately not
+// collapsed into `skipSqlQuotedOrCommented`.** Recording that here rather than leaving it to be
+// rediscovered, because the collapse in the inspection region reads as a completeness claim and
+// this is the exception to it:
+//
+//     runReadOnlyInspectionQuery -> prepare(sqlWithoutTrailingTerminator(sql))
+//       all()     -> query(sql, params)      -> client.query(postgresInterpolate(sql, params))
+//       columns() -> query(`SELECT * FROM (…) AS … LIMIT 0`) -> the same
+//
+// So every Postgres inspection query passes through it twice, and it disagrees with the one
+// tokenizer on four points: it ends a line comment at LF only where that one ends it at CR too, and
+// it knows neither dollar quoting, nor E-strings, nor `[…]`.
+//
+// It is **not** inert there, and the first draft of this comment claimed it was. `params` is empty
+// on the whole inspection path — `prepare(sql).all()` is called with no arguments — so there is
+// nothing to substitute, and on almost every admitted statement this copies its input character for
+// character. But a `?` sitting inside a form this lexer does not know is not protected by it, and
+// `SELECT $$?$$ AS s` is admitted by the gate, is legal Postgres, and dies here with
+// `Missing Postgres query parameter.` A corpus without `?` in its alphabet reports this clean, and
+// one did.
+//
+// What that costs is a **false rejection on Postgres only**, and only that. The failure is a throw
+// before the wire, so it fails closed: with no parameters this function can return its input
+// unchanged or it can throw, and there is no third case in which it silently returns *different*
+// text. That is the property the gate actually depends on — the text checked is the text executed —
+// and it is asserted rather than argued in
+// `test/database-adapter-engine-seam.test.js`. It is also byte-identical to the pre-work base, so
+// none of this is new.
+//
+// Collapsing it would fix that false rejection and would reach well past this ticket to do it. Its
+// quoting regime treats `\` as an escape inside every string, which the union dialect does not, so
+// routing it through changes what `'a\'b'` means on the *write* path — every ordinary query the
+// runtime issues to Postgres, not just inspection. That is a larger behavioural surface than the
+// read-only gate and wants its own ticket with its own differential rather than a free ride on
+// this one.
 function postgresInterpolate(sql, params = []) {
     let index = 0;
     let quote = null;
@@ -4151,74 +4187,6 @@ function postgresInterpolate(sql, params = []) {
     }
     if (index < params.length) {
         throw new Error("Too many Postgres query parameters.");
-    }
-    return result;
-}
-function postgresPlaceholders(sql) {
-    let index = 0;
-    let quote = null;
-    let escaped = false;
-    let lineComment = false;
-    let blockComment = false;
-    let result = "";
-    const text = String(sql ?? "");
-    for (let position = 0; position < text.length; position += 1) {
-        const char = text[position];
-        const next = text[position + 1];
-        if (lineComment) {
-            result += char;
-            if (char === "\n") {
-                lineComment = false;
-            }
-            continue;
-        }
-        if (blockComment) {
-            result += char;
-            if (char === "*" && next === "/") {
-                result += next;
-                position += 1;
-                blockComment = false;
-            }
-            continue;
-        }
-        if (quote) {
-            result += char;
-            if (escaped) {
-                escaped = false;
-                continue;
-            }
-            if (char === "\\") {
-                escaped = true;
-                continue;
-            }
-            if (char === quote) {
-                quote = null;
-            }
-            continue;
-        }
-        if (char === "-" && next === "-") {
-            result += char + next;
-            position += 1;
-            lineComment = true;
-            continue;
-        }
-        if (char === "/" && next === "*") {
-            result += char + next;
-            position += 1;
-            blockComment = true;
-            continue;
-        }
-        if (char === '"' || char === "'" || char === "`") {
-            quote = char;
-            result += char;
-            continue;
-        }
-        if (char === "?") {
-            index += 1;
-            result += `$${index}`;
-            continue;
-        }
-        result += char;
     }
     return result;
 }
@@ -8149,7 +8117,11 @@ export const SIDE_EFFECT_SQL_FUNCTIONS = new Set([
 // naming it here is the point of the parameter: this used to be the difference between two function
 // bodies, so the only way to know which lexing a walk had was to read a comment beside it and trust
 // that nobody had since edited the other one to match.
-function readSqlTokens(sql, lineCommentEndsAtCarriageReturn = true) {
+// The terminator is required rather than defaulted. It defaulted to the carriage-return reading,
+// which is the one that blinded this scan: a `--<CR>` exposes a `/*` that then swallows the verb
+// past the LF. No caller relied on the default — the only one passes both readings in turn — so a
+// default here bought nothing and left a new caller one omitted argument away from the defect.
+function readSqlTokens(sql, lineCommentEndsAtCarriageReturn) {
     const dialect = sqlDialectWithoutPostgresStringForms(lineCommentEndsAtCarriageReturn);
     const tokens = [];
     let index = 0;

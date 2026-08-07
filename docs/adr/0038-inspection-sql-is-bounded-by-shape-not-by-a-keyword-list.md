@@ -102,8 +102,9 @@ the asymmetry; nothing failed, because no type, parameter or test encoded it. Th
 same family of defect then recurred four more times, each fix landing in one
 walker and leaving its sibling.
 
-There is one tokenizer now, `skipSqlQuotedOrCommented`, and the engine differences
-are a dialect profile it takes as an argument. The keyword scan asks for
+The five walks in the inspection region are one tokenizer now,
+`skipSqlQuotedOrCommented`, and the engine differences are a dialect profile it
+takes as an argument. The keyword scan asks for
 `sqlDialectWithoutPostgresStringForms` and asks for it by name, so reading the
 call site tells you which lexing it walks with; widening that profile fails a test
 rather than a Capsule. The trivia skipper and both identifier readers were a third,
@@ -115,6 +116,37 @@ The bundling constraint is what shaped the answer rather than something worked
 around: a runtime function reaches the generated Capsule bundle as its own source
 text, so it cannot close over a module constant, and the profiles are functions
 emitted alongside it rather than constants it would have to restate.
+
+**"One tokenizer" is a claim about that region and not about the runtime, and the
+difference matters enough to spell out, because the first draft of this section
+read as the wider claim and execution falsifies it.** Two other SQL lexers survive,
+and one of them is on this path:
+
+- `postgresInterpolate` replaces `?` placeholders, and every Postgres inspection
+  query passes through it twice — once for `all()` and once for the `columns()`
+  wrap. It ends a line comment at LF only, and knows neither dollar quoting, nor
+  E-strings, nor `[…]`. It is **not** inert there, which a second draft of this
+  section also got wrong: `SELECT $$?$$ AS s` is admitted by the gate, is legal
+  Postgres, and dies in it with `Missing Postgres query parameter`, because the
+  `?` sits inside a form it cannot see. That is a Postgres-only false rejection
+  and nothing worse — with no parameters the function can return its input
+  unchanged or throw, and there is no third case where it returns *different*
+  text, so the gate's "the text checked is the text executed" survives it. The
+  property is asserted rather than argued. Collapsing it would fix the false
+  rejection and would change what a backslash means inside a literal on the
+  *write* path, which is a larger surface than this gate and wants its own ticket.
+- `splitSqlStatements` decides whether libSQL sends `sequence` or `execute`. It is
+  off this path — inspection goes through `prepare`, not `exec` — and is latent
+  duplication of the same class, with its own ticket.
+
+A census test enumerates every emitted runtime function that names comment or
+quote delimiters and requires each to be either the one tokenizer or a listed
+exception carrying its reason. It is deliberately coupled to the delimiter
+*alphabet* rather than to source spellings: the first version grepped for four
+idioms unique to the collapsed body, and a walker written the way the pre-collapse
+ones were written — `char === "-" && next === "-"`, a line comment ending at LF —
+passed all four. Three planted walkers in that style, one comment-only, one
+quoting-only, are what the current version was tuned against.
 
 Union, not refuse-on-disagreement, and the difference is worth holding onto: the
 other walks answer *which statement is this*, where two readings disagreeing means

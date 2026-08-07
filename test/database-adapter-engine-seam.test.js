@@ -727,25 +727,134 @@ test("the dialect the keyword scan asks for withholds the two string forms only 
   );
 });
 
-// One tokenizer, asserted by counting the copies rather than by trusting that the collapse was
-// complete. The ticket's warning is that a fix leaving a third copy in place has not removed the
-// class, and there were five copies: the two skippers, the trivia skipper and the two token
-// readers.
+// Every runtime function that names the delimiters a SQL comment or quoted run is bounded by, found
+// by the *alphabet it names* rather than by the expression shape it names it with.
 //
-// Each fact below is a *terminator* rule — where a run ends — because that is the class. Every one
-// of the five defects was an end that moved. Where a run *begins* has never been the fault, and the
-// deliberate second reading in `sqlTheEnginesLexDifferently` is a nesting oracle that has to
-// disagree with the tokenizer to do its job, so it is not counted here.
-test("one tokenizer answers where a comment, a string or a quoted identifier ends", () => {
+// The first version of this guard grepped for four source spellings unique to the collapsed body.
+// That is not the same claim: a sixth walker written the way the pre-collapse ones were written —
+// `char === "-" && next === "-"`, a line comment ending at LF only, which is exactly the historical
+// defect — passes all four. A guard has to be coupled to the thing it guards, and the thing here is
+// "a second function decides where a run ends", not "a second function is spelled like this one".
+//
+// So the detector asks what delimiters the source mentions at all. Any walk that decides where a
+// comment or a quoted run ends has to name the characters that open and close one, whatever
+// comparison it writes them into: `indexOf("*/")`, `slice(i, i + 2) === "--"` and
+// `char === "-" && next === "-"` all name the same alphabet.
+const namesRunDelimiters = (source) => {
+  const literals = new Set();
+  for (const match of source.matchAll(/"((?:[^"\\]|\\.){1,2})"|'((?:[^'\\]|\\.){1,2})'/g)) {
+    literals.add(match[1] ?? match[2]);
+  }
+  const twoCharCommentDelimiter = literals.has("--") || literals.has("/*") || literals.has("*/");
+  const commentCharacters = literals.has("-") || (literals.has("*") && literals.has("/"));
+  const quotes = ["'", '"', "`", "[", "$"].filter((quote) => literals.has(quote));
+  // Three independent signals, because a walker needs only one of the two halves to be a walker.
+  // A two-character comment delimiter is enough on its own — nothing else in this runtime spells
+  // one. Single comment characters are ambiguous (a date separator, a CSP wildcard), so they need a
+  // quote delimiter alongside. And a quoting alphabet on its own is enough: the first draft of this
+  // detector required a comment signal, and a planted walker that lexed quoted runs and no comments
+  // walked straight past it.
+  return twoCharCommentDelimiter || (commentCharacters && quotes.length > 0) || quotes.length >= 2;
+};
+
+// The census, and the point of it: the detected set must equal this exactly. A new walker fails
+// because it is not listed; a listed one that disappears fails too, so the reasons below cannot
+// quietly go stale. Each entry says why it is not the one tokenizer.
+//
+// Four of the seven lex JavaScript rather than SQL. They are here because no detector working from
+// delimiter literals can tell the two apart — both spell a string run with the same three quote
+// characters — and listing them with the reason is honest where narrowing the detector to exclude
+// them would just be the spelling-coupled guard again under a new name.
+const RUN_LEXER_CENSUS = {
+  skipSqlQuotedOrCommented: "the one tokenizer every read-only inspection consumer asks a dialect of",
+  // On the inspection path — every Postgres inspection query passes through it twice — and left
+  // uncollapsed deliberately. It is *not* inert there: a `?` inside a form it does not know makes it
+  // throw, which is a Postgres-only false rejection. It fails closed, and the property the gate
+  // depends on is asserted below. Collapsing it would change what a backslash means inside a
+  // literal on the write path, which is a larger surface than this gate.
+  postgresInterpolate: "recorded exception: on the inspection path, fails closed, see its comment",
+  // Off the inspection path: reached only from libSQL's `exec`, and `runReadOnlyInspectionQuery`
+  // goes through `prepare`. Latent duplication of the same class; has its own ticket.
+  splitSqlStatements: "recorded exception: reached only from libSQL exec, not from the inspection path",
+  extractObjectPropertySource: "lexes Capsule definition JavaScript, not SQL",
+  findMatchingDelimiter: "lexes Capsule definition JavaScript, not SQL",
+  findMatchingParen: "lexes Capsule definition JavaScript, not SQL",
+  splitTopLevelList: "lexes Capsule definition JavaScript, not SQL",
+};
+
+test("no second function decides where a SQL comment or quoted run ends", () => {
+  const detected = SERVER_RUNTIME_SOURCE_FUNCTIONS.filter((fn) => namesRunDelimiters(fn.toString()))
+    .map((fn) => fn.name)
+    .sort();
+
+  assert.deepEqual(
+    detected,
+    Object.keys(RUN_LEXER_CENSUS).sort(),
+    "the set of runtime functions that lex comment or quoted runs changed — add it to the census with the reason it is not the one tokenizer, or route it through",
+  );
+
+  // `postgresInterpolate` is on the inspection path, so what it does there is asserted rather than
+  // assumed — and it is not the identity, which an earlier draft of this test claimed.
+  //
+  // The property the gate depends on is narrower and is the one that holds: with no parameters, it
+  // either returns its input unchanged or it throws. There is no third case where it returns
+  // *different* text. That is what keeps "the text checked is the text executed" true across it; a
+  // silent rewrite would break the gate's whole claim, a throw only costs a false rejection.
+  //
+  // The alphabet below has `?` in it deliberately. It is the only character this function acts on,
+  // so a corpus without it reports inertness for the same reason a corpus without `\r` reported the
+  // line-comment class clean.
+  const interpolate = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "postgresInterpolate");
+  const identityOrThrow = (sql) => {
+    try {
+      return interpolate(sql) === sql ? "identity" : "REWROTE";
+    } catch {
+      return "threw";
+    }
+  };
+
+  let threw = 0;
+  const corpus = [];
+  for (const piece of ["", "?", "$$?$$", "'?'", '"?"', "E'?'", "[?]", "-- ?\r", "/* ? */", "$tag$?$tag$", "\\?"]) {
+    corpus.push(`SELECT ${piece} AS s`, `SELECT 1 AS s ${piece}`, `WITH t AS (SELECT ${piece} AS s) SELECT * FROM t`);
+  }
+  corpus.push(...INJECTION_ATTEMPTS, ...DOLLAR_QUOTE_BELT_ATTEMPTS);
+
+  for (const sql of corpus) {
+    for (const text of [sql, sqlWithoutTrailingTerminator(sql), `SELECT * FROM (${sqlWithoutTrailingTerminator(sql)}) AS c LIMIT 0`]) {
+      const outcome = identityOrThrow(text);
+      assert.notEqual(
+        outcome,
+        "REWROTE",
+        `postgresInterpolate silently rewrote an inspection statement, so the text checked is not the text executed: ${JSON.stringify(text)}`,
+      );
+      if (outcome === "threw") threw += 1;
+    }
+  }
+
+  // And the corpus must actually be able to reach the throwing branch, or the assertion above is
+  // satisfied by a corpus that never exercises it.
+  assert.ok(threw > 0, "corpus cannot reach postgresInterpolate's throwing branch — it proves nothing");
+  assert.equal(identityOrThrow("SELECT $$?$$ AS s"), "threw", "the recorded Postgres-only false rejection changed");
+  assert.equal(identityOrThrow("SELECT '?' AS s"), "identity", "a `?` inside an ordinary literal stopped being protected");
+
+  // The nesting oracle is not in the census because it lexes no quoted run — it counts block-comment
+  // depth and nothing else. It is *required* to disagree with the tokenizer, which is the opposite
+  // of the property this test enforces, so it is named here rather than left to look like an
+  // omission.
+  const oracle = SERVER_RUNTIME_SOURCE_FUNCTIONS.find((fn) => fn.name === "sqlTheEnginesLexDifferently");
+  assert.ok(oracle, "the nesting oracle no longer travels into the bundle");
+  assert.match(oracle.toString(), /skipSqlQuotedOrCommented/, "the oracle stopped comparing against the one tokenizer");
+});
+
+// The spelling checks the first version of this guard consisted of, kept as a second and weaker
+// line: they cannot catch a walker written in a different style, but they do catch a copy that
+// reuses this one's, which is how a "just extract it for reuse" edit would look.
+test("no terminator rule of the one tokenizer is spelled twice", () => {
   const facts = [
-    // The line-comment terminator: the edit that started this, applied to two functions because
-    // they looked like one.
     ["a line comment's terminator", /lineCommentEndsAtCarriageReturn \? \/\[\\n\\r\]\/ : \/\\n\//],
-    // Postgres's dollar-quote delimiter, tag alphabet and all.
     ["a dollar-quote delimiter", /\\\$\(\?:\[A-Za-z_/],
-    // The E-string, whose backslash escape regime is a second reading of the same `'…'` delimiter.
     ["an E-string's opener", /sql\[index\] === "E" \|\| sql\[index\] === "e"/],
-    // `[…]` closing at `]` while every other quoting form closes at its own character.
     ["a bracket-quoted identifier's close", /=== "\[" \? "\]"/],
   ];
 

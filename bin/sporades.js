@@ -2395,7 +2395,6 @@ var SERVER_RUNTIME_SOURCE_FUNCTIONS = [
   scheduleNextDelayedJob,
   runCurrentUserJobWorker,
   safeJobFailure,
-  postgresPlaceholders,
   postgresInterpolate,
   createPostgresConnection,
   postgresUrlOptions,
@@ -6396,74 +6395,6 @@ function postgresInterpolate(sql, params = []) {
   }
   return result;
 }
-function postgresPlaceholders(sql) {
-  let index = 0;
-  let quote = null;
-  let escaped = false;
-  let lineComment = false;
-  let blockComment = false;
-  let result = "";
-  const text = String(sql ?? "");
-  for (let position = 0; position < text.length; position += 1) {
-    const char = text[position];
-    const next = text[position + 1];
-    if (lineComment) {
-      result += char;
-      if (char === "\n") {
-        lineComment = false;
-      }
-      continue;
-    }
-    if (blockComment) {
-      result += char;
-      if (char === "*" && next === "/") {
-        result += next;
-        position += 1;
-        blockComment = false;
-      }
-      continue;
-    }
-    if (quote) {
-      result += char;
-      if (escaped) {
-        escaped = false;
-        continue;
-      }
-      if (char === "\\") {
-        escaped = true;
-        continue;
-      }
-      if (char === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (char === "-" && next === "-") {
-      result += char + next;
-      position += 1;
-      lineComment = true;
-      continue;
-    }
-    if (char === "/" && next === "*") {
-      result += char + next;
-      position += 1;
-      blockComment = true;
-      continue;
-    }
-    if (char === '"' || char === "'" || char === "`") {
-      quote = char;
-      result += char;
-      continue;
-    }
-    if (char === "?") {
-      index += 1;
-      result += `$${index}`;
-      continue;
-    }
-    result += char;
-  }
-  return result;
-}
 function postgresRowsFromResult(normalization, result) {
   return result.rows.map((row) => normalization.row(row));
 }
@@ -10069,7 +10000,7 @@ var SIDE_EFFECT_SQL_FUNCTIONS = /* @__PURE__ */ new Set([
   "set_config",
   "setval"
 ]);
-function readSqlTokens(sql, lineCommentEndsAtCarriageReturn = true) {
+function readSqlTokens(sql, lineCommentEndsAtCarriageReturn) {
   const dialect = sqlDialectWithoutPostgresStringForms(lineCommentEndsAtCarriageReturn);
   const tokens = [];
   let index = 0;
